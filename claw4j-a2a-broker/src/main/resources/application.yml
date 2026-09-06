@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: claw4j-a2a-broker
+
+server:
+  port: 8084

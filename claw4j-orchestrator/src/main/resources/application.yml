@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: claw4j-orchestrator
+
+server:
+  port: 8081

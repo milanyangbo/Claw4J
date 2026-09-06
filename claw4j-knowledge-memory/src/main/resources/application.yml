@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: claw4j-knowledge-memory
+
+server:
+  port: 8083

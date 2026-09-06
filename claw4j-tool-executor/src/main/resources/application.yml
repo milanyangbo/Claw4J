@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: claw4j-tool-executor
+
+server:
+  port: 8082
