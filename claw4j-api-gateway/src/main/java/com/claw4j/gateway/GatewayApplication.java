@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * Entry point for the Claw4J API Gateway service.
  */
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "com.claw4j")
 public class GatewayApplication {
 
     /**

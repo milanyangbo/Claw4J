@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * Entry point for the Claw4J A2A Broker service.
  */
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "com.claw4j")
 public class A2aBrokerApplication {
 
     /**

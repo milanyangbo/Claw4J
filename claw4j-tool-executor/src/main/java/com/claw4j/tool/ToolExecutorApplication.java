@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * Entry point for the Claw4J Tool Executor service.
  */
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "com.claw4j")
 public class ToolExecutorApplication {
 
     /**

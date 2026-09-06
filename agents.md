@@ -16,7 +16,7 @@ claw4j/
 
 **包的归属**：
 - 代码必须放在 `com.claw4j.<模块名>` 包下
-- 子包只能从以下列表中选择：`controller` / `service` / `repository` / `config` / `dto` / `entity` / `exception` / `util` / `annotation`
+- 子包只能从以下列表中选择：`controller` / `service` / `repository` / `config` / `dto` / `entity` / `exception` / `util` / `annotation` / `constant`
 - 如果确实需要新子包，必须在代码注释中说明理由，并在 PR 描述中标注
 
 ## 2. 代码风格（必须严格遵守）
