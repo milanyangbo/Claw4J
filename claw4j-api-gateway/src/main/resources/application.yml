@@ -2,6 +2,14 @@ spring:
   application:
     name: claw4j-api-gateway
   cloud:
+    openfeign:
+      circuitbreaker:
+        enabled: ${CLAW4J_FEIGN_CIRCUITBREAKER_ENABLED:true}
+      client:
+        config:
+          claw4j-orchestrator:
+            connectTimeout: ${CLAW4J_ORCHESTRATOR_FEIGN_CONNECT_TIMEOUT_MS:1000}
+            readTimeout: ${CLAW4J_ORCHESTRATOR_FEIGN_READ_TIMEOUT_MS:3000}
     nacos:
       discovery:
         server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}

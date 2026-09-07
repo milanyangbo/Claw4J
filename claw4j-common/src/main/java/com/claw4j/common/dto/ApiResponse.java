@@ -1,6 +1,8 @@
 package com.claw4j.common.dto;
 
 import com.claw4j.common.constant.CommonConstants;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * Standard response envelope for successful Claw4J API calls.
@@ -9,11 +11,20 @@ import com.claw4j.common.constant.CommonConstants;
  */
 public final class ApiResponse<T> {
 
+    private static final String SUCCESS_FIELD = "success";
+    private static final String MESSAGE_FIELD = "message";
+    private static final String DATA_FIELD = "data";
+
     private final boolean success;
     private final String message;
     private final T data;
 
-    private ApiResponse(boolean success, String message, T data) {
+    @JsonCreator
+    private ApiResponse(
+            @JsonProperty(SUCCESS_FIELD) boolean success,
+            @JsonProperty(MESSAGE_FIELD) String message,
+            @JsonProperty(DATA_FIELD) T data
+    ) {
         this.success = success;
         this.message = message;
         this.data = data;

@@ -6,12 +6,15 @@ import com.claw4j.common.annotation.Tool;
 import com.claw4j.common.constant.CommonConstants;
 import com.claw4j.common.dto.ApiResponse;
 import com.claw4j.common.dto.ErrorResponse;
+import com.claw4j.common.dto.InternalServiceStatus;
 import com.claw4j.common.exception.BusinessException;
 import com.claw4j.common.exception.Claw4jException;
 import com.claw4j.common.exception.ErrorCode;
 import com.claw4j.common.exception.GlobalExceptionHandler;
 import com.claw4j.common.util.IdUtil;
 import com.claw4j.common.util.JsonUtil;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -58,6 +61,61 @@ class CommonFoundationContractTest {
         assertThat(error.getCode()).isEqualTo(ErrorCode.INVALID_REQUEST.getCode());
         assertThat(error.getMessage()).isEqualTo("Invalid input");
         assertThat(error.getRequestId()).isEqualTo("req-123");
+    }
+
+    @Test
+    void apiResponseDeserializesInternalStatusEnvelopeForFeignClients() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        ApiResponse<InternalServiceStatus> response = ApiResponse.success(InternalServiceStatus.of(
+                "claw4j-orchestrator",
+                "orchestrator",
+                8081,
+                "req-feign"
+        ));
+
+        String json = objectMapper.writeValueAsString(response);
+        ApiResponse<InternalServiceStatus> decoded = objectMapper.readValue(
+                json,
+                new TypeReference<>() {
+                }
+        );
+
+        assertThat(decoded.isSuccess()).isTrue();
+        assertThat(decoded.getMessage()).isEqualTo(CommonConstants.DEFAULT_SUCCESS_MESSAGE);
+        assertThat(decoded.getData().getServiceName()).isEqualTo("claw4j-orchestrator");
+        assertThat(decoded.getData().getRequestId()).isEqualTo("req-feign");
+    }
+
+    @Test
+    void internalCallContractsExposeRequiredHeadersAndUnavailableErrorCode() {
+        assertThat(CommonConstants.REQUEST_ID_HEADER).isEqualTo("X-Request-Id");
+        assertThat(CommonConstants.TENANT_ID_HEADER).isEqualTo("X-Tenant-Id");
+        assertThat(CommonConstants.USER_ID_HEADER).isEqualTo("X-User-Id");
+        assertThat(CommonConstants.IDEMPOTENCY_KEY_HEADER).isEqualTo("X-Idempotency-Key");
+        assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getCode()).isEqualTo("CLAW4J-RPC-001");
+        assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getMessage()).isEqualTo("Downstream service unavailable");
+        assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getHttpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    @Test
+    void internalServiceStatusRequiresTraceableServiceIdentity() {
+        InternalServiceStatus status = InternalServiceStatus.of(
+                "claw4j-orchestrator",
+                "orchestrator",
+                8081,
+                "req-789"
+        );
+
+        assertThat(status.getServiceName()).isEqualTo("claw4j-orchestrator");
+        assertThat(status.getRole()).isEqualTo("orchestrator");
+        assertThat(status.getInstancePort()).isEqualTo(8081);
+        assertThat(status.getRequestId()).isEqualTo("req-789");
+        assertThatThrownBy(() -> InternalServiceStatus.of("", "orchestrator", 8081, "req-789"))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> InternalServiceStatus.of("claw4j-orchestrator", "orchestrator", 0, "req-789"))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> InternalServiceStatus.of("claw4j-orchestrator", "orchestrator", 8081, " "))
+                .isInstanceOf(BusinessException.class);
     }
 
     @Test

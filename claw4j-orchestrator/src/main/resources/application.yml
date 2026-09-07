@@ -2,6 +2,14 @@ spring:
   application:
     name: claw4j-orchestrator
   cloud:
+    openfeign:
+      circuitbreaker:
+        enabled: ${CLAW4J_FEIGN_CIRCUITBREAKER_ENABLED:true}
+      client:
+        config:
+          claw4j-a2a-broker:
+            connectTimeout: ${CLAW4J_A2A_BROKER_FEIGN_CONNECT_TIMEOUT_MS:1000}
+            readTimeout: ${CLAW4J_A2A_BROKER_FEIGN_READ_TIMEOUT_MS:3000}
     nacos:
       discovery:
         server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}
