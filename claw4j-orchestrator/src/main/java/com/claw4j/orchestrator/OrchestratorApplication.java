@@ -2,11 +2,13 @@ package com.claw4j.orchestrator;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 
 /**
  * Entry point for the Claw4J Orchestrator service.
  */
 @SpringBootApplication(scanBasePackages = "com.claw4j")
+@EnableDiscoveryClient
 public class OrchestratorApplication {
 
     /**

@@ -1,6 +1,27 @@
 spring:
   application:
     name: claw4j-tool-executor
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${CLAW4J_NACOS_NAMESPACE:public}
+        group: ${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}
+        metadata:
+          module: claw4j-tool-executor
+          role: tool-executor
+          port: ${server.port}
+          environment: ${CLAW4J_ENVIRONMENT:local}
 
 server:
   port: 8082
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true

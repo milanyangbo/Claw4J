@@ -2,11 +2,13 @@ package com.claw4j.gateway;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 
 /**
  * Entry point for the Claw4J API Gateway service.
  */
 @SpringBootApplication(scanBasePackages = "com.claw4j")
+@EnableDiscoveryClient
 public class GatewayApplication {
 
     /**
