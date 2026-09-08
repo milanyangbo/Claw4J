@@ -15,6 +15,7 @@ Claw4J is a Java AI Agent microservice cluster based on Spring AI Alibaba and Sp
 
 - [Local Deployment](DEPLOYMENT.md): Docker-based Nacos setup, service startup, and registration checks.
 - [OpenFeign Smoke Tests](OPENFEIGN_SMOKE_TESTS.md): curl checks for service-name calls, load balancing, and fallback degradation.
+- [Nacos Config Smoke Tests](NACOS_CONFIG_SMOKE_TESTS.md): curl checks for dynamic config loading, hot refresh, fallback, and rollback.
 
 ## Quick Build
 
