@@ -31,7 +31,9 @@ public class GatewayFeignRequestContextInterceptor implements RequestInterceptor
             CommonConstants.REQUEST_ID_HEADER,
             CommonConstants.TENANT_ID_HEADER,
             CommonConstants.USER_ID_HEADER,
-            CommonConstants.IDEMPOTENCY_KEY_HEADER
+            CommonConstants.IDEMPOTENCY_KEY_HEADER,
+            CommonConstants.STREAM_SESSION_ID_HEADER,
+            CommonConstants.LAST_EVENT_ID_HEADER
     );
 
     /**

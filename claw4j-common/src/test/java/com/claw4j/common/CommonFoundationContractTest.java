@@ -7,6 +7,7 @@ import com.claw4j.common.constant.CommonConstants;
 import com.claw4j.common.dto.ApiResponse;
 import com.claw4j.common.dto.ErrorResponse;
 import com.claw4j.common.dto.InternalServiceStatus;
+import com.claw4j.common.dto.StreamingModelRequest;
 import com.claw4j.common.exception.BusinessException;
 import com.claw4j.common.exception.Claw4jException;
 import com.claw4j.common.exception.ErrorCode;
@@ -92,11 +93,34 @@ class CommonFoundationContractTest {
     }
 
     @Test
+    void streamingModelRequestIsSharedModelFocusedContract() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        StreamingModelRequest request = new StreamingModelRequest("stream answer", true, false, true);
+
+        String json = objectMapper.writeValueAsString(request);
+        StreamingModelRequest decoded = objectMapper.readValue(json, StreamingModelRequest.class);
+
+        assertThat(decoded.getQuery()).isEqualTo("stream answer");
+        assertThat(decoded.isSimulatePrimaryFailure()).isTrue();
+        assertThat(decoded.isSimulatePrimaryTtfbTimeout()).isFalse();
+        assertThat(decoded.isSimulateMalformedOutput()).isTrue();
+        assertThat(json).doesNotContain("tenantId");
+        assertThat(json).doesNotContain("userId");
+        assertThat(json).doesNotContain("sessionId");
+        assertThatThrownBy(() -> StreamingModelRequest.of(" "))
+                .isInstanceOf(BusinessException.class)
+                .extracting("errorCode")
+                .isEqualTo(ErrorCode.INVALID_REQUEST);
+    }
+
+    @Test
     void internalCallContractsExposeRequiredHeadersAndUnavailableErrorCode() {
         assertThat(CommonConstants.REQUEST_ID_HEADER).isEqualTo("X-Request-Id");
         assertThat(CommonConstants.TENANT_ID_HEADER).isEqualTo("X-Tenant-Id");
         assertThat(CommonConstants.USER_ID_HEADER).isEqualTo("X-User-Id");
         assertThat(CommonConstants.IDEMPOTENCY_KEY_HEADER).isEqualTo("X-Idempotency-Key");
+        assertThat(CommonConstants.STREAM_SESSION_ID_HEADER).isEqualTo("X-Session-Id");
+        assertThat(CommonConstants.LAST_EVENT_ID_HEADER).isEqualTo("Last-Event-ID");
         assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getCode()).isEqualTo("CLAW4J-RPC-001");
         assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getMessage()).isEqualTo("Downstream service unavailable");
         assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getHttpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
@@ -106,6 +130,15 @@ class CommonFoundationContractTest {
         assertThat(ErrorCode.CIRCUIT_OPEN.getCode()).isEqualTo("CLAW4J-SENTINEL-503");
         assertThat(ErrorCode.CIRCUIT_OPEN.getMessage()).isEqualTo("Circuit breaker is open");
         assertThat(ErrorCode.CIRCUIT_OPEN.getHttpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(ErrorCode.STREAM_RESUME_EXPIRED.getCode()).isEqualTo("CLAW4J-STREAM-410");
+        assertThat(ErrorCode.STREAM_RESUME_EXPIRED.getMessage()).isEqualTo("Streaming resume state expired");
+        assertThat(ErrorCode.STREAM_RESUME_EXPIRED.getHttpStatus()).isEqualTo(HttpStatus.GONE);
+        assertThat(ErrorCode.MODEL_CONTEXT_TOO_LARGE.getCode()).isEqualTo("CLAW4J-MODEL-413");
+        assertThat(ErrorCode.MODEL_CONTEXT_TOO_LARGE.getMessage()).isEqualTo("Model context is too large");
+        assertThat(ErrorCode.MODEL_CONTEXT_TOO_LARGE.getHttpStatus()).isEqualTo(HttpStatus.CONTENT_TOO_LARGE);
+        assertThat(ErrorCode.MODEL_OUTPUT_PARSER_FAILURE.getCode()).isEqualTo("CLAW4J-MODEL-422");
+        assertThat(ErrorCode.MODEL_OUTPUT_PARSER_FAILURE.getMessage()).isEqualTo("Model output parser failed");
+        assertThat(ErrorCode.MODEL_OUTPUT_PARSER_FAILURE.getHttpStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_CONTENT);
     }
 
     @Test

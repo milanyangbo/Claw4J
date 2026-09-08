@@ -11,6 +11,8 @@ public final class CommonConstants {
     public static final String TENANT_ID_HEADER = "X-Tenant-Id";
     public static final String USER_ID_HEADER = "X-User-Id";
     public static final String IDEMPOTENCY_KEY_HEADER = "X-Idempotency-Key";
+    public static final String STREAM_SESSION_ID_HEADER = "X-Session-Id";
+    public static final String LAST_EVENT_ID_HEADER = "Last-Event-ID";
     public static final String REQUEST_ID_PREFIX = "req";
     public static final String DEFAULT_ID_PREFIX = "id";
     public static final String ID_SEPARATOR = "-";

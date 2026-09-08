@@ -12,6 +12,9 @@ public enum ErrorCode {
     DOWNSTREAM_SERVICE_UNAVAILABLE("CLAW4J-RPC-001", "Downstream service unavailable", HttpStatus.SERVICE_UNAVAILABLE),
     RATE_LIMITED("CLAW4J-SENTINEL-429", "Request rate limit exceeded", HttpStatus.TOO_MANY_REQUESTS),
     CIRCUIT_OPEN("CLAW4J-SENTINEL-503", "Circuit breaker is open", HttpStatus.SERVICE_UNAVAILABLE),
+    STREAM_RESUME_EXPIRED("CLAW4J-STREAM-410", "Streaming resume state expired", HttpStatus.GONE),
+    MODEL_CONTEXT_TOO_LARGE("CLAW4J-MODEL-413", "Model context is too large", HttpStatus.CONTENT_TOO_LARGE),
+    MODEL_OUTPUT_PARSER_FAILURE("CLAW4J-MODEL-422", "Model output parser failed", HttpStatus.UNPROCESSABLE_CONTENT),
     JSON_SERIALIZATION_ERROR("CLAW4J-JSON-001", "JSON serialization failed", HttpStatus.INTERNAL_SERVER_ERROR),
     JSON_DESERIALIZATION_ERROR("CLAW4J-JSON-002", "JSON deserialization failed", HttpStatus.BAD_REQUEST),
     INVALID_ID_PREFIX("CLAW4J-ID-001", "Identifier prefix is invalid", HttpStatus.BAD_REQUEST);

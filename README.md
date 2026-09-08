@@ -17,6 +17,7 @@ Claw4J is a Java AI Agent microservice cluster based on Spring AI Alibaba and Sp
 - [OpenFeign Smoke Tests](OPENFEIGN_SMOKE_TESTS.md): curl checks for service-name calls, load balancing, and fallback degradation.
 - [Nacos Config Smoke Tests](NACOS_CONFIG_SMOKE_TESTS.md): curl checks for dynamic config loading, hot refresh, fallback, and rollback.
 - [Sentinel Smoke Tests](SENTINEL_SMOKE_TESTS.md): curl checks for global limiting, tenant isolation, circuit breaking, fallback, and rollback.
+- [Streaming Model Resume Smoke Tests](STREAMING_MODEL_RESUME_SMOKE_TESTS.md): curl checks for Gateway -> Orchestrator SSE fallback resume, reconnect, context adaptation, parser normalization, and cleanup.
 
 ## Quick Build
 

@@ -62,6 +62,26 @@ claw4j:
       minimum-request-amount: ${CLAW4J_SENTINEL_ORCHESTRATOR_MIN_REQUEST_AMOUNT:2}
       stat-interval-ms: ${CLAW4J_SENTINEL_ORCHESTRATOR_STAT_INTERVAL_MS:1000}
       recovery-window-seconds: ${CLAW4J_SENTINEL_ORCHESTRATOR_RECOVERY_WINDOW_SECONDS:2}
+  model:
+    streaming:
+      fallback:
+        ttfb-timeout: ${CLAW4J_MODEL_STREAMING_TTFB_TIMEOUT:5s}
+        resume-enabled: ${CLAW4J_MODEL_STREAMING_RESUME_ENABLED:true}
+        resume-buffer-size: ${CLAW4J_MODEL_STREAMING_RESUME_BUFFER_SIZE:10000}
+        session-retention: ${CLAW4J_MODEL_STREAMING_SESSION_RETENTION:10m}
+      context:
+        primary-max-tokens: ${CLAW4J_MODEL_STREAMING_PRIMARY_MAX_TOKENS:128000}
+        fallback-max-tokens: ${CLAW4J_MODEL_STREAMING_FALLBACK_MAX_TOKENS:32000}
+        truncation-strategy: ${CLAW4J_MODEL_STREAMING_TRUNCATION_STRATEGY:summary}
+      parser:
+        reject-malformed-output: ${CLAW4J_MODEL_STREAMING_REJECT_MALFORMED_OUTPUT:true}
+      proof-client:
+        primary-model-type: ${CLAW4J_MODEL_STREAMING_PRIMARY_MODEL_TYPE:deepseek}
+        fallback-model-type: ${CLAW4J_MODEL_STREAMING_FALLBACK_MODEL_TYPE:qwq}
+        primary-success-content: ${CLAW4J_MODEL_STREAMING_PRIMARY_SUCCESS_CONTENT:primary model response}
+        primary-failure-prefix: ${CLAW4J_MODEL_STREAMING_PRIMARY_FAILURE_PREFIX:partial primary response }
+        fallback-continuation: ${CLAW4J_MODEL_STREAMING_FALLBACK_CONTINUATION:continued by fallback model}
+        malformed-output: ${CLAW4J_MODEL_STREAMING_MALFORMED_OUTPUT:<think>internal reasoning only</think>}
 
 server:
   port: 8081
