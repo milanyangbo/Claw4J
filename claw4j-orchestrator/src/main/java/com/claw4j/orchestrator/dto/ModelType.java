@@ -5,6 +5,10 @@ package com.claw4j.orchestrator.dto;
  */
 public enum ModelType {
     DEEPSEEK,
+    QWEN,
+    /**
+     * Legacy Qwen-family reasoning model alias kept for existing configuration compatibility.
+     */
     QWQ,
     GENERIC
 }

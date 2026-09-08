@@ -2,7 +2,7 @@
 
 This guide verifies the Gateway -> Orchestrator streaming model proof path: MVC SSE streaming, primary interruption fallback, bounded reconnect replay, context adaptation, parser redaction, rollback, and cleanup.
 
-Start Nacos, Gateway, and Orchestrator by following [Local Deployment](DEPLOYMENT.md). The proof path does not call real DeepSeek, QwQ, DashScope, Redis, WebFlux, or WebSocket infrastructure.
+Start Nacos, Gateway, and Orchestrator by following [Local Deployment](DEPLOYMENT.md). The proof path does not call real DeepSeek, Qwen/DashScope, Redis, WebFlux, or WebSocket infrastructure.
 
 ## Defaults
 
@@ -11,7 +11,7 @@ The local proof path uses these defaults:
 - Gateway endpoint: `http://127.0.0.1:8080/api/model/stream`
 - Internal Orchestrator endpoint: `/internal/orchestrator/model/stream` is called by Gateway through OpenFeign and is not the smoke-test entrypoint.
 - Primary model type: `DEEPSEEK`
-- Fallback model type: `QWQ`
+- Fallback model type: `QWEN`
 - Resume enabled: `true`
 - TTFB timeout: `5s`
 - Resume buffer size: `10000`

@@ -123,7 +123,7 @@ class StreamingModelResumeAdaptationContractTest {
         assertThat(properties.getContext().getFallbackMaxTokens()).isEqualTo(32_000);
         assertThat(properties.getContext().getTruncationStrategy()).isEqualTo(TruncationStrategy.SUMMARY);
         assertThat(properties.getProofClient().getPrimaryModelType()).isEqualTo(ModelType.DEEPSEEK);
-        assertThat(properties.getProofClient().getFallbackModelType()).isEqualTo(ModelType.QWQ);
+        assertThat(properties.getProofClient().getFallbackModelType()).isEqualTo(ModelType.QWEN);
         assertThat(properties.getProofClient().getPrimarySuccessContent()).isEqualTo("primary model response");
         assertThat(properties.getProofClient().getFallbackContinuation()).isEqualTo(FALLBACK_CONTINUATION);
     }
@@ -319,9 +319,9 @@ class StreamingModelResumeAdaptationContractTest {
         ModelContextAdapter adapter = new ModelContextAdapter(properties);
         String longContext = "A".repeat(SMALL_CONTEXT_BUDGET * 12);
 
-        ContextAdaptationStatus summarized = adapter.adapt(longContext, ModelType.QWQ);
+        ContextAdaptationStatus summarized = adapter.adapt(longContext, ModelType.QWEN);
         properties.getContext().setTruncationStrategy(TruncationStrategy.TRUNCATE);
-        ContextAdaptationStatus truncated = adapter.adapt(longContext, ModelType.QWQ);
+        ContextAdaptationStatus truncated = adapter.adapt(longContext, ModelType.QWEN);
         properties.getContext().setTruncationStrategy(TruncationStrategy.REJECT);
         properties.getContext().setPrimaryMaxTokens(ONE_TOKEN_BUDGET);
         ContextAdaptationStatus rejected = adapter.adapt("oversized context", ModelType.DEEPSEEK);
@@ -353,7 +353,7 @@ class StreamingModelResumeAdaptationContractTest {
         assertThat(eventNames(fallbackEvents)).contains(ModelStreamEvent.EVENT_ADAPTATION);
         assertThat(fallbackEvents).anySatisfy(event -> {
             assertThat(event.getEventName()).isEqualTo(ModelStreamEvent.EVENT_ADAPTATION);
-            assertThat(event.getModelType()).isEqualTo(ModelType.QWQ);
+            assertThat(event.getModelType()).isEqualTo(ModelType.QWEN);
         });
     }
 
@@ -375,7 +375,11 @@ class StreamingModelResumeAdaptationContractTest {
         ModelOutputParser parser = new ModelOutputParser(defaultProperties());
 
         StandardModelOutput deepSeek = parser.parse("<think>hidden</think>visible", ModelType.DEEPSEEK);
-        StandardModelOutput qwq = parser.parse(
+        StandardModelOutput qwen = parser.parse(
+                "<|begin_of_thought|>hidden<|end_of_thought|>visible",
+                ModelType.QWEN
+        );
+        StandardModelOutput legacyQwq = parser.parse(
                 "<|begin_of_thought|>hidden<|end_of_thought|>visible",
                 ModelType.QWQ
         );
@@ -388,8 +392,10 @@ class StreamingModelResumeAdaptationContractTest {
 
         assertThat(deepSeek.getVisibleContent()).isEqualTo("visible");
         assertThat(deepSeek.isReasoningRedacted()).isTrue();
-        assertThat(qwq.getVisibleContent()).isEqualTo("visible");
-        assertThat(qwq.isReasoningRedacted()).isTrue();
+        assertThat(qwen.getVisibleContent()).isEqualTo("visible");
+        assertThat(qwen.isReasoningRedacted()).isTrue();
+        assertThat(legacyQwq.getVisibleContent()).isEqualTo("visible");
+        assertThat(legacyQwq.isReasoningRedacted()).isTrue();
         assertThat(malformed.isSuccessful()).isFalse();
         assertThat(malformed.getParserStatus()).isEqualTo(StandardModelOutput.STATUS_PARSER_FAILURE);
         assertThat(events).hasSize(1);

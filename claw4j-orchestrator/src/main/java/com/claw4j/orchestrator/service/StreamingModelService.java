@@ -29,8 +29,6 @@ public class StreamingModelService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(StreamingModelService.class);
     private static final String STATUS_OK = "OK";
-    private static final String STATUS_PRIMARY_INTERRUPTED = "PRIMARY_INTERRUPTED";
-    private static final String STATUS_PRIMARY_TTFB_TIMEOUT = "PRIMARY_TTFB_TIMEOUT";
     private static final String STATUS_RESUME_DISABLED = "RESUME_DISABLED";
     private static final String STATUS_FALLBACK_STARTED = "FALLBACK_STARTED";
     private static final String STATUS_COMPLETED = "COMPLETED";
@@ -122,6 +120,7 @@ public class StreamingModelService {
                     primaryModelType,
                     primaryContext.getContent(),
                     validatedRequest,
+                    context,
                     token -> emitVisibleToken(context, events, emittedContent, emittedAnyContent, primaryModelType, token)
             );
             if (!emittedAnyContent.get()) {
@@ -198,6 +197,7 @@ public class StreamingModelService {
                 fallbackModelType,
                 fallbackContext.getContent(),
                 request,
+                context,
                 token -> emitFallbackToken(context, events, emittedContent, emittedAnyContent, fallbackModelType, token)
         );
         if (!emittedAnyContent.get()) {
@@ -318,10 +318,7 @@ public class StreamingModelService {
     }
 
     private static String fallbackStartStatus(ModelStreamClient.ModelStreamException exception) {
-        if (exception.isBeforeFirstToken()) {
-            return STATUS_PRIMARY_TTFB_TIMEOUT;
-        }
-        return STATUS_PRIMARY_INTERRUPTED;
+        return exception.getStatusCode();
     }
 
     private static String trimDuplicatePrefix(String candidate, String emittedContent) {

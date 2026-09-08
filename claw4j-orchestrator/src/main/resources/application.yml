@@ -1,6 +1,21 @@
 spring:
   application:
     name: claw4j-orchestrator
+  ai:
+    model:
+      chat: ${CLAW4J_SPRING_AI_MODEL_CHAT:none}
+    deepseek:
+      api-key: ${CLAW4J_DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: ${CLAW4J_DEEPSEEK_MODEL_NAME:deepseek-reasoner}
+    dashscope:
+      api-key: ${CLAW4J_DASHSCOPE_API_KEY:}
+      chat:
+        options:
+          model: ${CLAW4J_QWEN_MODEL_NAME:qwen-plus}
+          stream: true
+          incremental-output: true
   config:
     import:
       - optional:nacos:${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:claw4j-shared.yaml}?group=${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}&refreshEnabled=${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
@@ -63,6 +78,15 @@ claw4j:
       stat-interval-ms: ${CLAW4J_SENTINEL_ORCHESTRATOR_STAT_INTERVAL_MS:1000}
       recovery-window-seconds: ${CLAW4J_SENTINEL_ORCHESTRATOR_RECOVERY_WINDOW_SECONDS:2}
   model:
+    client:
+      mode: ${CLAW4J_MODEL_CLIENT_MODE:deterministic}
+    resilience:
+      primary-timeout: ${CLAW4J_MODEL_PRIMARY_TIMEOUT:30s}
+      failure-rate-threshold: ${CLAW4J_MODEL_FAILURE_RATE_THRESHOLD:50}
+      sliding-window-size: ${CLAW4J_MODEL_SLIDING_WINDOW_SIZE:10}
+      minimum-number-of-calls: ${CLAW4J_MODEL_MIN_CALLS:4}
+      wait-duration-in-open-state: ${CLAW4J_MODEL_OPEN_WAIT:30s}
+      permitted-calls-in-half-open-state: ${CLAW4J_MODEL_HALF_OPEN_CALLS:1}
     streaming:
       fallback:
         ttfb-timeout: ${CLAW4J_MODEL_STREAMING_TTFB_TIMEOUT:5s}
@@ -77,7 +101,7 @@ claw4j:
         reject-malformed-output: ${CLAW4J_MODEL_STREAMING_REJECT_MALFORMED_OUTPUT:true}
       proof-client:
         primary-model-type: ${CLAW4J_MODEL_STREAMING_PRIMARY_MODEL_TYPE:deepseek}
-        fallback-model-type: ${CLAW4J_MODEL_STREAMING_FALLBACK_MODEL_TYPE:qwq}
+        fallback-model-type: ${CLAW4J_MODEL_STREAMING_FALLBACK_MODEL_TYPE:qwen}
         primary-success-content: ${CLAW4J_MODEL_STREAMING_PRIMARY_SUCCESS_CONTENT:primary model response}
         primary-failure-prefix: ${CLAW4J_MODEL_STREAMING_PRIMARY_FAILURE_PREFIX:partial primary response }
         fallback-continuation: ${CLAW4J_MODEL_STREAMING_FALLBACK_CONTINUATION:continued by fallback model}

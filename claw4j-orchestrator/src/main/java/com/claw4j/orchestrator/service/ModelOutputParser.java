@@ -17,7 +17,7 @@ public class ModelOutputParser {
     private static final Pattern DEEPSEEK_THINK_PATTERN = Pattern.compile(
             "(?is)<think>.*?</think>|<thinking>.*?</thinking>"
     );
-    private static final Pattern QWQ_THOUGHT_PATTERN = Pattern.compile(
+    private static final Pattern QWEN_THOUGHT_PATTERN = Pattern.compile(
             "(?is)<\\|begin_of_thought\\|>.*?<\\|end_of_thought\\|>|<think>.*?</think>"
     );
     private static final Pattern GENERIC_REASONING_PATTERN = Pattern.compile(
@@ -75,10 +75,14 @@ public class ModelOutputParser {
         if (ModelType.DEEPSEEK == modelType) {
             return DEEPSEEK_THINK_PATTERN.matcher(rawOutput).replaceAll(EMPTY_TEXT);
         }
-        if (ModelType.QWQ == modelType) {
-            return QWQ_THOUGHT_PATTERN.matcher(rawOutput).replaceAll(EMPTY_TEXT);
+        if (isQwenFamily(modelType)) {
+            return QWEN_THOUGHT_PATTERN.matcher(rawOutput).replaceAll(EMPTY_TEXT);
         }
         return GENERIC_REASONING_PATTERN.matcher(rawOutput).replaceAll(EMPTY_TEXT);
+    }
+
+    private static boolean isQwenFamily(ModelType modelType) {
+        return ModelType.QWEN == modelType || ModelType.QWQ == modelType;
     }
 
     private static String defaultIfMissing(String value) {

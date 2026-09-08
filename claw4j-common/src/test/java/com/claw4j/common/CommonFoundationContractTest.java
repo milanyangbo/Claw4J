@@ -139,6 +139,11 @@ class CommonFoundationContractTest {
         assertThat(ErrorCode.MODEL_OUTPUT_PARSER_FAILURE.getCode()).isEqualTo("CLAW4J-MODEL-422");
         assertThat(ErrorCode.MODEL_OUTPUT_PARSER_FAILURE.getMessage()).isEqualTo("Model output parser failed");
         assertThat(ErrorCode.MODEL_OUTPUT_PARSER_FAILURE.getHttpStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_CONTENT);
+        assertThat(ErrorCode.MODEL_PROVIDER_CONFIGURATION_INVALID.getCode()).isEqualTo("CLAW4J-MODEL-500");
+        assertThat(ErrorCode.MODEL_PROVIDER_CONFIGURATION_INVALID.getMessage())
+                .isEqualTo("Model provider configuration is invalid");
+        assertThat(ErrorCode.MODEL_PROVIDER_CONFIGURATION_INVALID.getHttpStatus())
+                .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     @Test

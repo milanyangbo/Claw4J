@@ -253,7 +253,7 @@ public class OrchestratorStreamingModelProperties {
     public static final class ProofClient {
 
         private ModelType primaryModelType = ModelType.DEEPSEEK;
-        private ModelType fallbackModelType = ModelType.QWQ;
+        private ModelType fallbackModelType = ModelType.QWEN;
         private String primarySuccessContent = DEFAULT_PRIMARY_SUCCESS_CONTENT;
         private String primaryFailurePrefix = DEFAULT_PRIMARY_FAILURE_PREFIX;
         private String fallbackContinuation = DEFAULT_FALLBACK_CONTINUATION;

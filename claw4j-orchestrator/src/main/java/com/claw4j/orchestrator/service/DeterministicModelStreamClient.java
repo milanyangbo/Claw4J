@@ -3,6 +3,7 @@ package com.claw4j.orchestrator.service;
 import com.claw4j.orchestrator.config.OrchestratorStreamingModelProperties;
 import com.claw4j.common.dto.StreamingModelRequest;
 import com.claw4j.orchestrator.dto.ModelType;
+import com.claw4j.orchestrator.dto.StreamingRequestContext;
 import java.util.Objects;
 import org.springframework.stereotype.Service;
 
@@ -21,7 +22,7 @@ public class DeterministicModelStreamClient implements ModelStreamClient {
     private static final String ESCAPED_CDATA_CLOSE = "]]&gt;";
     private static final String SPACING = " ";
     private static final String DEEPSEEK_REASONING_PREFIX = "<think>local reasoning</think>";
-    private static final String QWQ_REASONING_PREFIX = "<|begin_of_thought|>local reasoning<|end_of_thought|>";
+    private static final String QWEN_REASONING_PREFIX = "<|begin_of_thought|>local reasoning<|end_of_thought|>";
 
     private final OrchestratorStreamingModelProperties properties;
 
@@ -40,6 +41,7 @@ public class DeterministicModelStreamClient implements ModelStreamClient {
      * @param modelType model family to invoke
      * @param prompt adapted prompt for model invocation
      * @param request business request controls for the proof path
+     * @param context Header-derived request context
      * @param tokenConsumer consumer that receives raw model tokens
      */
     @Override
@@ -47,11 +49,13 @@ public class DeterministicModelStreamClient implements ModelStreamClient {
             ModelType modelType,
             String prompt,
             StreamingModelRequest request,
+            StreamingRequestContext context,
             TokenConsumer tokenConsumer
     ) {
         Objects.requireNonNull(modelType, "modelType must not be null");
         requireText(prompt, "prompt");
         Objects.requireNonNull(request, "request must not be null");
+        Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(tokenConsumer, "tokenConsumer must not be null");
 
         if (request.isSimulateMalformedOutput()) {
@@ -80,10 +84,10 @@ public class DeterministicModelStreamClient implements ModelStreamClient {
         String cachedOutput = extractCachedOutput(prompt);
         String continuation = properties.getProofClient().getFallbackContinuation();
         if (cachedOutput.isBlank()) {
-            tokenConsumer.accept(QWQ_REASONING_PREFIX + continuation);
+            tokenConsumer.accept(QWEN_REASONING_PREFIX + continuation);
             return;
         }
-        tokenConsumer.accept(QWQ_REASONING_PREFIX + cachedOutput + SPACING + continuation);
+        tokenConsumer.accept(QWEN_REASONING_PREFIX + cachedOutput + SPACING + continuation);
     }
 
     private boolean isPrimary(ModelType modelType) {

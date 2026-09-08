@@ -15,6 +15,11 @@ public enum ErrorCode {
     STREAM_RESUME_EXPIRED("CLAW4J-STREAM-410", "Streaming resume state expired", HttpStatus.GONE),
     MODEL_CONTEXT_TOO_LARGE("CLAW4J-MODEL-413", "Model context is too large", HttpStatus.CONTENT_TOO_LARGE),
     MODEL_OUTPUT_PARSER_FAILURE("CLAW4J-MODEL-422", "Model output parser failed", HttpStatus.UNPROCESSABLE_CONTENT),
+    MODEL_PROVIDER_CONFIGURATION_INVALID(
+            "CLAW4J-MODEL-500",
+            "Model provider configuration is invalid",
+            HttpStatus.INTERNAL_SERVER_ERROR
+    ),
     JSON_SERIALIZATION_ERROR("CLAW4J-JSON-001", "JSON serialization failed", HttpStatus.INTERNAL_SERVER_ERROR),
     JSON_DESERIALIZATION_ERROR("CLAW4J-JSON-002", "JSON deserialization failed", HttpStatus.BAD_REQUEST),
     INVALID_ID_PREFIX("CLAW4J-ID-001", "Identifier prefix is invalid", HttpStatus.BAD_REQUEST);
