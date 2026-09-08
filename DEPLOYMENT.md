@@ -69,6 +69,47 @@ The console is available at:
 http://127.0.0.1:18080/next/
 ```
 
+## Sentinel Dashboard
+
+Use Docker to start a local Sentinel Dashboard aligned with the current Sentinel runtime. Pin the image to `bladex/sentinel-dashboard:1.8.9`; do not use a floating `latest` tag for repeatable local tests.
+
+> This Docker setup is for local development and smoke testing only. The `bladex/sentinel-dashboard` image is a pinned community image that packages Sentinel Dashboard `1.8.9`; replace it with an internally reviewed image before production use.
+
+Keep Dashboard startup here, and keep service-call traffic checks in [Sentinel Smoke Tests](SENTINEL_SMOKE_TESTS.md).
+
+### Start Sentinel Dashboard
+
+Verify the Docker-compatible daemon is running, as described in the Nacos section, then run:
+
+```bash
+docker run --name claw4j-sentinel-dashboard \
+  -p 8858:8858 \
+  -p 18719:8719 \
+  -d bladex/sentinel-dashboard:1.8.9
+```
+
+If the container already exists, restart it instead:
+
+```bash
+docker start claw4j-sentinel-dashboard
+```
+
+Watch startup logs until the Dashboard reports that it started successfully:
+
+```bash
+docker logs -f claw4j-sentinel-dashboard
+```
+
+### Verify Sentinel Dashboard
+
+The console is available at:
+
+```text
+http://127.0.0.1:8858/
+```
+
+The default local Dashboard login is `sentinel` / `sentinel`. The container exposes the Dashboard HTTP port on `8858` and maps its internal Sentinel command port `8719` to host port `18719`, so Gateway and Orchestrator can keep their configured client ports.
+
 ## Services
 
 Build the services with their reactor dependencies:
@@ -81,9 +122,11 @@ Start services in separate terminals:
 
 ```bash
 java -Duser.home="$PWD/target/runtime-home/gateway" \
+  -Dcsp.sentinel.log.dir="$PWD/target/sentinel-logs/gateway" \
   -jar claw4j-api-gateway/target/claw4j-api-gateway-0.0.1-SNAPSHOT.jar
 
 java -Duser.home="$PWD/target/runtime-home/orchestrator" \
+  -Dcsp.sentinel.log.dir="$PWD/target/sentinel-logs/orchestrator" \
   -jar claw4j-orchestrator/target/claw4j-orchestrator-0.0.1-SNAPSHOT.jar
 
 java -Duser.home="$PWD/target/runtime-home/a2a-broker" \
@@ -98,6 +141,7 @@ CLAW4J_NACOS_NAMESPACE=public \
 CLAW4J_NACOS_GROUP=CLAW4J_DEV_GROUP \
 CLAW4J_ENVIRONMENT=local \
 java -Duser.home="$PWD/target/runtime-home/gateway" \
+  -Dcsp.sentinel.log.dir="$PWD/target/sentinel-logs/gateway" \
   -jar claw4j-api-gateway/target/claw4j-api-gateway-0.0.1-SNAPSHOT.jar
 ```
 
@@ -113,9 +157,11 @@ curl 'http://127.0.0.1:8848/nacos/v3/client/ns/instance/list?serviceName=claw4j-
 
 Stop a service with `Ctrl+C`, then rerun the matching query to confirm the instance is removed or marked unavailable.
 
-## Stop Nacos
+## Stop Local Containers
 
 ```bash
+docker stop claw4j-sentinel-dashboard
+docker rm claw4j-sentinel-dashboard
 docker stop claw4j-nacos
 docker rm claw4j-nacos
 ```

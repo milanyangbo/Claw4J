@@ -15,7 +15,10 @@ import com.claw4j.common.util.IdUtil;
 import com.claw4j.common.util.JsonUtil;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -30,6 +33,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Verifies the shared contracts exposed by the common foundation module.
  */
 class CommonFoundationContractTest {
+
+    private static final Path POM_PATH = Path.of("pom.xml");
 
     @Test
     void annotationsKeepRuntimeMetadataForCrossCuttingServices() throws NoSuchMethodException {
@@ -95,6 +100,21 @@ class CommonFoundationContractTest {
         assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getCode()).isEqualTo("CLAW4J-RPC-001");
         assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getMessage()).isEqualTo("Downstream service unavailable");
         assertThat(ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE.getHttpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(ErrorCode.RATE_LIMITED.getCode()).isEqualTo("CLAW4J-SENTINEL-429");
+        assertThat(ErrorCode.RATE_LIMITED.getMessage()).isEqualTo("Request rate limit exceeded");
+        assertThat(ErrorCode.RATE_LIMITED.getHttpStatus()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(ErrorCode.CIRCUIT_OPEN.getCode()).isEqualTo("CLAW4J-SENTINEL-503");
+        assertThat(ErrorCode.CIRCUIT_OPEN.getMessage()).isEqualTo("Circuit breaker is open");
+        assertThat(ErrorCode.CIRCUIT_OPEN.getHttpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    @Test
+    void commonModuleDoesNotDeclareSentinelRuntimeDependency() throws IOException {
+        String pom = Files.readString(POM_PATH);
+
+        assertThat(pom).doesNotContain("spring-cloud-starter-alibaba-sentinel");
+        assertThat(pom).doesNotContain("sentinel-datasource-nacos");
+        assertThat(pom).doesNotContain("sentinel-core");
     }
 
     @Test

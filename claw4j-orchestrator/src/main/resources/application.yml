@@ -14,6 +14,20 @@ spring:
           claw4j-a2a-broker:
             connectTimeout: ${CLAW4J_A2A_BROKER_FEIGN_CONNECT_TIMEOUT_MS:1000}
             readTimeout: ${CLAW4J_A2A_BROKER_FEIGN_READ_TIMEOUT_MS:3000}
+    sentinel:
+      eager: ${CLAW4J_SENTINEL_EAGER:true}
+      transport:
+        dashboard: ${CLAW4J_SENTINEL_DASHBOARD:127.0.0.1:8858}
+        port: ${CLAW4J_SENTINEL_ORCHESTRATOR_TRANSPORT_PORT:8720}
+      datasource:
+        orchestrator-degrade-rules:
+          nacos:
+            server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
+            namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
+            group-id: ${CLAW4J_SENTINEL_RULE_GROUP:${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}}
+            data-id: ${CLAW4J_SENTINEL_ORCHESTRATOR_DEGRADE_DATA_ID:claw4j-orchestrator-sentinel-degrade-rules.json}
+            data-type: json
+            rule-type: degrade
     nacos:
       config:
         server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
@@ -41,6 +55,13 @@ claw4j:
       shared-data-id: ${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:claw4j-shared.yaml}
       service-data-id: ${CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID:${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}.${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}}
       refresh-enabled: ${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
+  sentinel:
+    orchestrator:
+      agent-call-resource-name: ${CLAW4J_SENTINEL_ORCHESTRATOR_AGENT_CALL_RESOURCE_NAME:claw4j-orchestrator-agent-call}
+      error-ratio-threshold: ${CLAW4J_SENTINEL_ORCHESTRATOR_ERROR_RATIO_THRESHOLD:0.5}
+      minimum-request-amount: ${CLAW4J_SENTINEL_ORCHESTRATOR_MIN_REQUEST_AMOUNT:2}
+      stat-interval-ms: ${CLAW4J_SENTINEL_ORCHESTRATOR_STAT_INTERVAL_MS:1000}
+      recovery-window-seconds: ${CLAW4J_SENTINEL_ORCHESTRATOR_RECOVERY_WINDOW_SECONDS:2}
 
 server:
   port: 8081

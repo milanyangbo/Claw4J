@@ -10,6 +10,8 @@ public enum ErrorCode {
     INVALID_REQUEST("CLAW4J-400", "Invalid request", HttpStatus.BAD_REQUEST),
     INTERNAL_ERROR("CLAW4J-500", "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR),
     DOWNSTREAM_SERVICE_UNAVAILABLE("CLAW4J-RPC-001", "Downstream service unavailable", HttpStatus.SERVICE_UNAVAILABLE),
+    RATE_LIMITED("CLAW4J-SENTINEL-429", "Request rate limit exceeded", HttpStatus.TOO_MANY_REQUESTS),
+    CIRCUIT_OPEN("CLAW4J-SENTINEL-503", "Circuit breaker is open", HttpStatus.SERVICE_UNAVAILABLE),
     JSON_SERIALIZATION_ERROR("CLAW4J-JSON-001", "JSON serialization failed", HttpStatus.INTERNAL_SERVER_ERROR),
     JSON_DESERIALIZATION_ERROR("CLAW4J-JSON-002", "JSON deserialization failed", HttpStatus.BAD_REQUEST),
     INVALID_ID_PREFIX("CLAW4J-ID-001", "Identifier prefix is invalid", HttpStatus.BAD_REQUEST);

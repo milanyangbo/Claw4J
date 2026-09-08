@@ -14,6 +14,28 @@ spring:
           claw4j-orchestrator:
             connectTimeout: ${CLAW4J_ORCHESTRATOR_FEIGN_CONNECT_TIMEOUT_MS:1000}
             readTimeout: ${CLAW4J_ORCHESTRATOR_FEIGN_READ_TIMEOUT_MS:3000}
+    sentinel:
+      eager: ${CLAW4J_SENTINEL_EAGER:true}
+      transport:
+        dashboard: ${CLAW4J_SENTINEL_DASHBOARD:127.0.0.1:8858}
+        port: ${CLAW4J_SENTINEL_GATEWAY_TRANSPORT_PORT:8719}
+      datasource:
+        gateway-flow-rules:
+          nacos:
+            server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
+            namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
+            group-id: ${CLAW4J_SENTINEL_RULE_GROUP:${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}}
+            data-id: ${CLAW4J_SENTINEL_GATEWAY_FLOW_DATA_ID:claw4j-api-gateway-sentinel-flow-rules.json}
+            data-type: json
+            rule-type: flow
+        gateway-param-flow-rules:
+          nacos:
+            server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
+            namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
+            group-id: ${CLAW4J_SENTINEL_RULE_GROUP:${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}}
+            data-id: ${CLAW4J_SENTINEL_GATEWAY_PARAM_FLOW_DATA_ID:claw4j-api-gateway-sentinel-param-flow-rules.json}
+            data-type: json
+            rule-type: param-flow
     nacos:
       config:
         server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
@@ -38,6 +60,11 @@ claw4j:
     gateway:
       smoke-rate-limit-threshold: ${CLAW4J_GATEWAY_DYNAMIC_CONFIG_SMOKE_RATE_LIMIT_THRESHOLD:10}
       demo-message: ${CLAW4J_GATEWAY_DYNAMIC_CONFIG_DEMO_MESSAGE:local-default}
+  sentinel:
+    gateway:
+      resource-name: ${CLAW4J_SENTINEL_GATEWAY_RESOURCE_NAME:claw4j-gateway-ingress}
+      global-qps-threshold: ${CLAW4J_SENTINEL_GATEWAY_GLOBAL_QPS:2}
+      tenant-qps-threshold: ${CLAW4J_SENTINEL_GATEWAY_TENANT_QPS:1}
 
 server:
   port: 8080
