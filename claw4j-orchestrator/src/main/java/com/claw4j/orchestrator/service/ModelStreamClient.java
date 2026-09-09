@@ -5,7 +5,7 @@ import com.claw4j.common.dto.StreamingModelRequest;
 import com.claw4j.orchestrator.dto.StreamingRequestContext;
 
 /**
- * Streams model output tokens for the Orchestrator proof path.
+ * Streams model output tokens for the Orchestrator model path.
  */
 public interface ModelStreamClient {
 
@@ -19,7 +19,7 @@ public interface ModelStreamClient {
      *
      * @param modelType model family to invoke
      * @param prompt adapted prompt for model invocation
-     * @param request business request controls for the proof path
+     * @param request business request
      * @param context Header-derived request context
      * @param tokenConsumer consumer that receives raw model tokens
      */
@@ -46,7 +46,7 @@ public interface ModelStreamClient {
     }
 
     /**
-     * Signals deterministic model stream interruption.
+     * Signals model stream interruption.
      */
     final class ModelStreamException extends RuntimeException {
 

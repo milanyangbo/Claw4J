@@ -34,21 +34,20 @@ class NacosDynamicConfigContractTest {
         String applicationYaml = Files.readString(APPLICATION_YML_PATH);
 
         assertThat(applicationYaml).contains("import:");
-        assertThat(applicationYaml).contains("optional:nacos:${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:" + SHARED_DATA_ID + "}");
+        assertThat(applicationYaml).contains("optional:nacos:" + SHARED_DATA_ID + "?group=CLAW4J_DEV_GROUP&refreshEnabled=true");
         assertThat(applicationYaml).contains(
-                "optional:nacos:${CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID:${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}.${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}}"
+                "optional:nacos:${spring.application.name}.yaml?group=CLAW4J_DEV_GROUP&refreshEnabled=true"
         );
-        assertThat(applicationYaml.indexOf("CLAW4J_NACOS_CONFIG_SHARED_DATA_ID"))
-                .isLessThan(applicationYaml.indexOf("CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID"));
-        assertThat(applicationYaml).contains("server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}");
-        assertThat(applicationYaml).contains("namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}");
-        assertThat(applicationYaml).contains("group: ${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}");
-        assertThat(applicationYaml).contains("prefix: ${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}");
-        assertThat(applicationYaml).contains("file-extension: ${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}");
-        assertThat(applicationYaml).contains("refresh-enabled: ${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}");
-        assertThat(applicationYaml).contains("timeout: ${CLAW4J_NACOS_CONFIG_TIMEOUT_MS:3000}");
-        assertThat(applicationYaml).contains("shared-data-id: ${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:" + SHARED_DATA_ID + "}");
-        assertThat(applicationYaml).contains("service-data-id: ${CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID:${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}.${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}}");
+        assertThat(applicationYaml.indexOf(SHARED_DATA_ID))
+                .isLessThan(applicationYaml.indexOf("${spring.application.name}.yaml"));
+        assertThat(applicationYaml).contains("server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}");
+        assertThat(applicationYaml).contains("namespace: public");
+        assertThat(applicationYaml).contains("group: CLAW4J_DEV_GROUP");
+        assertThat(applicationYaml).contains("prefix: ${spring.application.name}");
+        assertThat(applicationYaml).contains("file-extension: yaml");
+        assertThat(applicationYaml).contains("refresh-enabled: true");
+        assertThat(applicationYaml).contains("timeout: 3000");
+        assertThat(applicationYaml).doesNotContain("CLAW4J_NACOS_CONFIG_");
         assertThat(Files.exists(BOOTSTRAP_YML_PATH)).isFalse();
         assertThat(Files.exists(BOOTSTRAP_PROPERTIES_PATH)).isFalse();
     }

@@ -95,15 +95,14 @@ class CommonFoundationContractTest {
     @Test
     void streamingModelRequestIsSharedModelFocusedContract() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
-        StreamingModelRequest request = new StreamingModelRequest("stream answer", true, false, true);
+        StreamingModelRequest request = new StreamingModelRequest("stream answer");
 
         String json = objectMapper.writeValueAsString(request);
         StreamingModelRequest decoded = objectMapper.readValue(json, StreamingModelRequest.class);
 
         assertThat(decoded.getQuery()).isEqualTo("stream answer");
-        assertThat(decoded.isSimulatePrimaryFailure()).isTrue();
-        assertThat(decoded.isSimulatePrimaryTtfbTimeout()).isFalse();
-        assertThat(decoded.isSimulateMalformedOutput()).isTrue();
+        assertThat(json).contains("\"query\":\"stream answer\"");
+        assertThat(json).doesNotContain("simulate");
         assertThat(json).doesNotContain("tenantId");
         assertThat(json).doesNotContain("userId");
         assertThat(json).doesNotContain("sessionId");

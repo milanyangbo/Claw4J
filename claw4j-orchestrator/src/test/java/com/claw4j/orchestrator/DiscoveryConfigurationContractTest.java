@@ -46,11 +46,11 @@ class DiscoveryConfigurationContractTest {
         assertThat(applicationYaml).contains("name: " + APPLICATION_NAME);
         assertThat(applicationYaml).contains("port: " + SERVICE_PORT);
         assertThat(applicationYaml).contains("server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}");
-        assertThat(applicationYaml).contains("namespace: ${CLAW4J_NACOS_NAMESPACE:public}");
-        assertThat(applicationYaml).contains("group: ${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}");
+        assertThat(applicationYaml).contains("namespace: public");
+        assertThat(applicationYaml).contains("group: CLAW4J_DEV_GROUP");
         assertThat(applicationYaml).contains("module: " + APPLICATION_NAME);
         assertThat(applicationYaml).contains("role: " + SERVICE_ROLE);
-        assertThat(applicationYaml).contains("environment: ${CLAW4J_ENVIRONMENT:local}");
+        assertThat(applicationYaml).contains("environment: local");
         assertThat(applicationYaml).contains("include: health");
         assertThat(applicationYaml).contains("probes:");
         assertThat(applicationYaml).contains("enabled: true");

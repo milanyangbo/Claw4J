@@ -25,7 +25,6 @@ import org.springframework.ai.model.deepseek.autoconfigure.DeepSeekChatPropertie
 import org.springframework.ai.model.deepseek.autoconfigure.DeepSeekConnectionProperties;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.core.retry.RetryPolicy;
 import org.springframework.core.retry.RetryTemplate;
@@ -35,7 +34,6 @@ import org.springframework.stereotype.Component;
  * Adapts Spring AI DeepSeek and Spring AI Alibaba DashScope streams to Claw4J callbacks.
  */
 @Component
-@ConditionalOnProperty(prefix = "claw4j.model.client", name = "mode", havingValue = "real")
 @EnableConfigurationProperties({
         DeepSeekConnectionProperties.class,
         DeepSeekChatProperties.class,
@@ -57,8 +55,8 @@ public class SpringAiModelProviderClient implements ModelProviderClient {
     private final DeepSeekChatProperties deepSeekChatProperties;
     private final DashScopeConnectionProperties dashScopeConnectionProperties;
     private final DashScopeChatProperties dashScopeChatProperties;
-    private final DeepSeekChatModel deepSeekChatModel;
-    private final DashScopeChatModel qwenChatModel;
+    private final ObjectProvider<DeepSeekChatModel> deepSeekChatModelProvider;
+    private final ObjectProvider<DashScopeChatModel> qwenChatModelProvider;
 
     /**
      * Creates the Spring AI provider client.
@@ -94,9 +92,14 @@ public class SpringAiModelProviderClient implements ModelProviderClient {
                 dashScopeChatProperties,
                 "dashScopeChatProperties must not be null"
         );
-        validateOfficialCredentials();
-        this.deepSeekChatModel = deepSeekChatModel.getIfAvailable(this::buildDeepSeekChatModel);
-        this.qwenChatModel = dashScopeChatModel.getIfAvailable(this::buildQwenChatModel);
+        this.deepSeekChatModelProvider = Objects.requireNonNull(
+                deepSeekChatModel,
+                "deepSeekChatModel must not be null"
+        );
+        this.qwenChatModelProvider = Objects.requireNonNull(
+                dashScopeChatModel,
+                "dashScopeChatModel must not be null"
+        );
     }
 
     /**
@@ -131,6 +134,8 @@ public class SpringAiModelProviderClient implements ModelProviderClient {
                     .blockLast();
         } catch (ModelProviderException exception) {
             throw exception;
+        } catch (BusinessException exception) {
+            throw exception;
         } catch (RuntimeException exception) {
             throw new ModelProviderException(PROVIDER_FAILURE_MESSAGE, exception);
         }
@@ -138,10 +143,12 @@ public class SpringAiModelProviderClient implements ModelProviderClient {
 
     private StreamingChatModel modelFor(ModelType modelType) {
         if (ModelType.DEEPSEEK == modelType) {
-            return deepSeekChatModel;
+            requireOfficialCredential(DEEPSEEK_PROVIDER_NAME, deepSeekApiKey());
+            return deepSeekChatModelProvider.getIfAvailable(this::buildDeepSeekChatModel);
         }
         if (isQwenFamily(modelType)) {
-            return qwenChatModel;
+            requireOfficialCredential(QWEN_PROVIDER_NAME, dashScopeApiKey());
+            return qwenChatModelProvider.getIfAvailable(this::buildQwenChatModel);
         }
         throw new ModelProviderException(UNSUPPORTED_MODEL_MESSAGE);
     }
@@ -224,11 +231,6 @@ public class SpringAiModelProviderClient implements ModelProviderClient {
 
     private static RetryTemplate retryTemplate() {
         return new RetryTemplate(RetryPolicy.withMaxRetries(PROVIDER_RETRY_LIMIT));
-    }
-
-    private void validateOfficialCredentials() {
-        requireOfficialCredential(DEEPSEEK_PROVIDER_NAME, deepSeekApiKey());
-        requireOfficialCredential(QWEN_PROVIDER_NAME, dashScopeApiKey());
     }
 
     private String deepSeekApiKey() {

@@ -11,6 +11,7 @@ import com.claw4j.gateway.client.OrchestratorClient;
 import com.claw4j.gateway.client.OrchestratorClientFallback;
 import com.claw4j.gateway.controller.GatewayInternalCallController;
 import com.claw4j.gateway.controller.GatewayStreamingModelController;
+import com.claw4j.gateway.service.GatewaySentinelGuardService;
 import com.claw4j.gateway.service.OrchestratorGatewayService;
 import feign.Client;
 import feign.Request;
@@ -26,6 +27,7 @@ import java.nio.file.Path;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.cloud.client.loadbalancer.LoadBalancerClient;
@@ -38,7 +40,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -125,10 +126,11 @@ class OpenFeignServiceCallContractTest {
 
         assertThat(applicationYaml).contains("openfeign:");
         assertThat(applicationYaml).contains("circuitbreaker:");
-        assertThat(applicationYaml).contains("enabled: ${CLAW4J_FEIGN_CIRCUITBREAKER_ENABLED:true}");
+        assertThat(applicationYaml).contains("enabled: true");
         assertThat(applicationYaml).contains("claw4j-orchestrator:");
-        assertThat(applicationYaml).contains("connectTimeout: ${CLAW4J_ORCHESTRATOR_FEIGN_CONNECT_TIMEOUT_MS:1000}");
-        assertThat(applicationYaml).contains("readTimeout: ${CLAW4J_ORCHESTRATOR_FEIGN_READ_TIMEOUT_MS:3000}");
+        assertThat(applicationYaml).contains("connectTimeout: 1000");
+        assertThat(applicationYaml).contains("readTimeout: 300000");
+        assertThat(applicationYaml).doesNotContain("CLAW4J_ORCHESTRATOR_FEIGN");
     }
 
     @Test
@@ -156,7 +158,7 @@ class OpenFeignServiceCallContractTest {
     @Test
     void serviceRejectsMissingContextBeforeCallingOrchestrator() {
         RecordingOrchestratorClient client = new RecordingOrchestratorClient();
-        OrchestratorGatewayService service = new OrchestratorGatewayService(client);
+        OrchestratorGatewayService service = gatewayService(client);
 
         assertThatThrownBy(() -> service.getOrchestratorStatus("req-1", "tenant-1", "", "idem-1"))
                 .isInstanceOf(BusinessException.class)
@@ -173,7 +175,7 @@ class OpenFeignServiceCallContractTest {
     @Test
     void serviceForwardsGatewayStreamToOrchestratorThroughFeign() throws IOException {
         RecordingOrchestratorClient client = new RecordingOrchestratorClient();
-        OrchestratorGatewayService service = new OrchestratorGatewayService(client);
+        OrchestratorGatewayService service = gatewayService(client);
 
         ResponseEntity<StreamingResponseBody> response = service.streamModel(
                 StreamingModelRequest.of("through gateway"),
@@ -201,7 +203,7 @@ class OpenFeignServiceCallContractTest {
     @Test
     void serviceRejectsMissingStreamSessionBeforeCallingOrchestrator() {
         RecordingOrchestratorClient client = new RecordingOrchestratorClient();
-        OrchestratorGatewayService service = new OrchestratorGatewayService(client);
+        OrchestratorGatewayService service = gatewayService(client);
 
         assertThatThrownBy(() -> service.streamModel(
                 StreamingModelRequest.of("missing session"),
@@ -221,7 +223,7 @@ class OpenFeignServiceCallContractTest {
     @Test
     void controllerDelegatesToGatewayService() {
         RecordingOrchestratorClient client = new RecordingOrchestratorClient();
-        GatewayInternalCallController controller = new GatewayInternalCallController(new OrchestratorGatewayService(client));
+        GatewayInternalCallController controller = new GatewayInternalCallController(gatewayService(client));
 
         ApiResponse<InternalServiceStatus> response = controller.getOrchestratorStatus(
                 "req-1",
@@ -237,7 +239,6 @@ class OpenFeignServiceCallContractTest {
     @Test
     void streamingControllerExposesGatewayEndpointAndDelegatesToOrchestratorService()
             throws IOException, NoSuchMethodException {
-        RequestMapping requestMapping = GatewayStreamingModelController.class.getAnnotation(RequestMapping.class);
         PostMapping postMapping = GatewayStreamingModelController.class
                 .getDeclaredMethod(
                         "stream",
@@ -252,7 +253,7 @@ class OpenFeignServiceCallContractTest {
                 .getAnnotation(PostMapping.class);
         RecordingOrchestratorClient client = new RecordingOrchestratorClient();
         GatewayStreamingModelController controller = new GatewayStreamingModelController(
-                new OrchestratorGatewayService(client)
+                gatewayService(client)
         );
 
         ResponseEntity<StreamingResponseBody> response = controller.stream(
@@ -270,8 +271,7 @@ class OpenFeignServiceCallContractTest {
         assertThat(body).isNotNull();
         body.writeTo(outputStream);
 
-        assertThat(requestMapping.value()).containsExactly("/api/model");
-        assertThat(postMapping.value()).containsExactly("/stream");
+        assertThat(postMapping.value()).containsExactly("/api/model/stream");
         assertThat(client.streamCallCount).isEqualTo(1);
         assertThat(client.lastLastEventId).isEqualTo("2");
         assertThat(outputStream.toString(StandardCharsets.UTF_8)).contains("data: visible");
@@ -319,6 +319,24 @@ class OpenFeignServiceCallContractTest {
     private static void assertHeader(RequestTemplate template, String headerName, String expectedValue) {
         Collection<String> values = template.headers().get(headerName);
         assertThat(values).containsExactly(expectedValue);
+    }
+
+    private static OrchestratorGatewayService gatewayService(RecordingOrchestratorClient client) {
+        return new OrchestratorGatewayService(client, new PassthroughGatewaySentinelGuardService());
+    }
+
+    private static final class PassthroughGatewaySentinelGuardService extends GatewaySentinelGuardService {
+
+        @Override
+        public <T> T guardModelStream(
+                String requestId,
+                String tenantId,
+                String userId,
+                String idempotencyKey,
+                Supplier<T> operation
+        ) {
+            return operation.get();
+        }
     }
 
     private static final class RecordingOrchestratorClient implements OrchestratorClient {

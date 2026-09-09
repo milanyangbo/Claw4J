@@ -4,12 +4,13 @@ import com.claw4j.common.constant.CommonConstants;
 import com.claw4j.common.dto.StreamingModelRequest;
 import com.claw4j.gateway.service.OrchestratorGatewayService;
 import java.util.Objects;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
-import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
@@ -17,7 +18,6 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
  * Exposes Gateway streaming endpoints backed by Orchestrator model governance.
  */
 @RestController
-@RequestMapping("/api/model")
 public class GatewayStreamingModelController {
 
     private final OrchestratorGatewayService orchestratorGatewayService;
@@ -47,7 +47,7 @@ public class GatewayStreamingModelController {
      * @return SSE response body proxied from Orchestrator
      */
     @PostMapping(
-            value = "/stream",
+            value = "/api/model/stream",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.TEXT_EVENT_STREAM_VALUE
     )
@@ -69,5 +69,19 @@ public class GatewayStreamingModelController {
                 sessionId,
                 lastEventId
         );
+    }
+
+    /**
+     * Opens a browser-friendly Gateway SSE endpoint and creates local context for the internal stream.
+     *
+     * @param query user query from the browser address bar
+     * @return SSE response body proxied from Orchestrator
+     */
+    @GetMapping(
+            value = "/ai/chat",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE
+    )
+    public ResponseEntity<StreamingResponseBody> chat(@RequestParam(value = "query", required = false) String query) {
+        return orchestratorGatewayService.streamBrowserModel(query);
     }
 }

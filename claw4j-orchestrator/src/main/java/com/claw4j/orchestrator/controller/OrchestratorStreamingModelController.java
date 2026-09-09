@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
- * Exposes Orchestrator streaming model proof endpoints.
+ * Exposes Orchestrator streaming model endpoints.
  */
 @RestController
 @RequestMapping("/internal/orchestrator/model")
@@ -35,7 +35,7 @@ public class OrchestratorStreamingModelController {
     }
 
     /**
-     * Opens the streaming model proof endpoint.
+     * Opens the streaming model endpoint.
      *
      * @param requestId request id Header
      * @param tenantId tenant id Header

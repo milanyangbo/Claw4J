@@ -16,6 +16,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -30,9 +31,7 @@ public class StreamingModelService {
     private static final Logger LOGGER = LoggerFactory.getLogger(StreamingModelService.class);
     private static final String STATUS_OK = "OK";
     private static final String STATUS_RESUME_DISABLED = "RESUME_DISABLED";
-    private static final String STATUS_FALLBACK_STARTED = "FALLBACK_STARTED";
     private static final String STATUS_COMPLETED = "COMPLETED";
-    private static final String STATUS_REPLAY = "REPLAY";
     private static final String STATUS_ADAPTED_PREFIX = "CONTEXT_";
     private static final String FALLBACK_STARTED_CONTENT = "fallback continuation started";
     private static final String STREAM_COMPLETED_CONTENT = "stream completed";
@@ -40,6 +39,7 @@ public class StreamingModelService {
     private static final String CONTEXT_TOO_LARGE_CONTENT = "context exceeds target model budget";
     private static final String PARSER_FAILURE_CONTENT = "model output could not be parsed";
     private static final String RESUME_EXPIRED_CONTENT = "stream resume state is unavailable";
+    private static final String FALLBACK_FAILURE_CONTENT = "fallback model provider failed";
 
     private final OrchestratorStreamingModelProperties properties;
     private final ModelStreamClient modelStreamClient;
@@ -47,6 +47,7 @@ public class StreamingModelService {
     private final ModelOutputParser outputParser;
     private final StreamingResumePromptBuilder resumePromptBuilder;
     private final StreamingSessionStore sessionStore;
+    private final Function<Long, SseEmitter> emitterFactory;
 
     /**
      * Creates the streaming model service.
@@ -66,30 +67,52 @@ public class StreamingModelService {
             StreamingResumePromptBuilder resumePromptBuilder,
             StreamingSessionStore sessionStore
     ) {
+        this(
+                properties,
+                modelStreamClient,
+                contextAdapter,
+                outputParser,
+                resumePromptBuilder,
+                sessionStore,
+                SseEmitter::new
+        );
+    }
+
+    StreamingModelService(
+            OrchestratorStreamingModelProperties properties,
+            ModelStreamClient modelStreamClient,
+            ModelContextAdapter contextAdapter,
+            ModelOutputParser outputParser,
+            StreamingResumePromptBuilder resumePromptBuilder,
+            StreamingSessionStore sessionStore,
+            Function<Long, SseEmitter> emitterFactory
+    ) {
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.modelStreamClient = Objects.requireNonNull(modelStreamClient, "modelStreamClient must not be null");
         this.contextAdapter = Objects.requireNonNull(contextAdapter, "contextAdapter must not be null");
         this.outputParser = Objects.requireNonNull(outputParser, "outputParser must not be null");
         this.resumePromptBuilder = Objects.requireNonNull(resumePromptBuilder, "resumePromptBuilder must not be null");
         this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore must not be null");
+        this.emitterFactory = Objects.requireNonNull(emitterFactory, "emitterFactory must not be null");
     }
 
     /**
-     * Opens an MVC SSE stream for the model proof path.
+     * Opens an MVC SSE stream for model output.
      *
      * @param request business streaming request
      * @param context Header-derived request context
-     * @return SSE emitter that publishes stream events
+     * @return SSE emitter that publishes stream events as model tokens arrive
      */
     public SseEmitter stream(StreamingModelRequest request, StreamingRequestContext context) {
         StreamingModelRequest validatedRequest = requireRequest(request);
-        SseEmitter emitter = new SseEmitter(properties.getFallback().getTtfbTimeout().toMillis());
-        CompletableFuture.runAsync(() -> sendEvents(emitter, streamEvents(validatedRequest, context)));
+        Objects.requireNonNull(context, "context must not be null");
+        SseEmitter emitter = emitterFactory.apply(properties.getResponseTimeout().toMillis());
+        CompletableFuture.runAsync(() -> streamToEmitter(validatedRequest, context, emitter));
         return emitter;
     }
 
     /**
-     * Executes the streaming proof path and returns deterministic events for tests.
+     * Executes the streaming path synchronously for contract tests.
      *
      * @param request business streaming request
      * @param context Header-derived request context
@@ -98,20 +121,47 @@ public class StreamingModelService {
     public List<ModelStreamEvent> streamEvents(StreamingModelRequest request, StreamingRequestContext context) {
         StreamingModelRequest validatedRequest = requireRequest(request);
         Objects.requireNonNull(context, "context must not be null");
+        List<ModelStreamEvent> events = new ArrayList<>();
+        streamToSink(validatedRequest, context, events::add);
+        return events;
+    }
+
+    private void streamToEmitter(
+            StreamingModelRequest request,
+            StreamingRequestContext context,
+            SseEmitter emitter
+    ) {
+        try {
+            streamToSink(request, context, event -> sendEvent(emitter, event));
+            emitter.complete();
+        } catch (EventDeliveryException exception) {
+            LOGGER.warn("SSE client disconnected before stream completion");
+            emitter.completeWithError(exception.getCause());
+        } catch (RuntimeException exception) {
+            LOGGER.warn("SSE stream failed with sanitized error type={}", exception.getClass().getName());
+            emitter.completeWithError(exception);
+        }
+    }
+
+    private void streamToSink(
+            StreamingModelRequest request,
+            StreamingRequestContext context,
+            EventSink eventSink
+    ) {
         Optional<Long> lastEventId = context.getLastEventId();
         if (lastEventId.isPresent()) {
-            return replayEvents(context, lastEventId.get());
+            emitReplayEvents(context, lastEventId.get(), eventSink);
+            return;
         }
 
         sessionStore.start(context);
-        List<ModelStreamEvent> events = new ArrayList<>();
-        ModelType primaryModelType = properties.getProofClient().getPrimaryModelType();
-        ContextAdaptationStatus primaryContext = contextAdapter.adapt(validatedRequest.getQuery(), primaryModelType);
+        ModelType primaryModelType = properties.getRouting().getPrimaryModelType();
+        ContextAdaptationStatus primaryContext = contextAdapter.adapt(request.getQuery(), primaryModelType);
         if (primaryContext.isRejected()) {
-            events.add(appendFailure(context, ErrorCode.MODEL_CONTEXT_TOO_LARGE, CONTEXT_TOO_LARGE_CONTENT));
-            return events;
+            emitEvent(eventSink, appendFailure(context, ErrorCode.MODEL_CONTEXT_TOO_LARGE, CONTEXT_TOO_LARGE_CONTENT));
+            return;
         }
-        recordAdaptationIfNeeded(context, events, primaryContext);
+        recordAdaptationIfNeeded(context, eventSink, primaryContext);
 
         StringBuilder emittedContent = new StringBuilder();
         AtomicBoolean emittedAnyContent = new AtomicBoolean(false);
@@ -119,24 +169,31 @@ public class StreamingModelService {
             modelStreamClient.stream(
                     primaryModelType,
                     primaryContext.getContent(),
-                    validatedRequest,
+                    request,
                     context,
-                    token -> emitVisibleToken(context, events, emittedContent, emittedAnyContent, primaryModelType, token)
+                    token -> emitVisibleToken(context, eventSink, emittedContent, emittedAnyContent, primaryModelType, token)
             );
             if (!emittedAnyContent.get()) {
-                events.add(appendFailure(context, ErrorCode.MODEL_OUTPUT_PARSER_FAILURE, PARSER_FAILURE_CONTENT));
-                return events;
+                emitEvent(eventSink, appendFailure(context, ErrorCode.MODEL_OUTPUT_PARSER_FAILURE, PARSER_FAILURE_CONTENT));
+                return;
             }
-            events.add(appendEvent(
+            emitEvent(eventSink, appendEvent(
                     context,
                     ModelStreamEvent.EVENT_COMPLETE,
                     STREAM_COMPLETED_CONTENT,
                     primaryModelType,
                     STATUS_COMPLETED
             ));
-            return events;
         } catch (ModelStreamClient.ModelStreamException exception) {
-            return continueWithFallback(validatedRequest, context, events, emittedContent, exception, emittedAnyContent);
+            continueWithFallback(request, context, eventSink, emittedContent, exception, emittedAnyContent);
+        } catch (BusinessException exception) {
+            emitEvent(eventSink, appendFailure(context, exception.getErrorCode(), exception.getErrorCode().getMessage()));
+        }
+    }
+
+    private void emitReplayEvents(StreamingRequestContext context, long lastEventId, EventSink eventSink) {
+        for (ModelStreamEvent event : replayEvents(context, lastEventId)) {
+            emitEvent(eventSink, event);
         }
     }
 
@@ -159,59 +216,76 @@ public class StreamingModelService {
         }
     }
 
-    private List<ModelStreamEvent> continueWithFallback(
+    private void continueWithFallback(
             StreamingModelRequest request,
             StreamingRequestContext context,
-            List<ModelStreamEvent> events,
+            EventSink eventSink,
             StringBuilder emittedContent,
             ModelStreamClient.ModelStreamException exception,
             AtomicBoolean emittedAnyContent
     ) {
-        ModelType primaryModelType = properties.getProofClient().getPrimaryModelType();
+        ModelType primaryModelType = properties.getRouting().getPrimaryModelType();
         if (!properties.getFallback().isResumeEnabled()) {
-            events.add(appendEvent(
+            emitEvent(eventSink, appendEvent(
                     context,
                     ModelStreamEvent.EVENT_FAILURE,
                     RESUME_DISABLED_CONTENT,
                     primaryModelType,
                     STATUS_RESUME_DISABLED
             ));
-            return events;
+            return;
         }
-        events.add(appendEvent(
+        ModelType fallbackModelType = properties.getRouting().getFallbackModelType();
+        emitEvent(eventSink, appendEvent(
                 context,
                 ModelStreamEvent.EVENT_FALLBACK_START,
                 FALLBACK_STARTED_CONTENT,
-                properties.getProofClient().getFallbackModelType(),
+                fallbackModelType,
                 fallbackStartStatus(exception)
         ));
         String resumePrompt = buildFallbackPrompt(request, context, emittedContent);
-        ModelType fallbackModelType = properties.getProofClient().getFallbackModelType();
         ContextAdaptationStatus fallbackContext = contextAdapter.adapt(resumePrompt, fallbackModelType);
         if (fallbackContext.isRejected()) {
-            events.add(appendFailure(context, ErrorCode.MODEL_CONTEXT_TOO_LARGE, CONTEXT_TOO_LARGE_CONTENT));
-            return events;
+            emitEvent(eventSink, appendFailure(context, ErrorCode.MODEL_CONTEXT_TOO_LARGE, CONTEXT_TOO_LARGE_CONTENT));
+            return;
         }
-        recordAdaptationIfNeeded(context, events, fallbackContext);
-        modelStreamClient.stream(
-                fallbackModelType,
-                fallbackContext.getContent(),
-                request,
-                context,
-                token -> emitFallbackToken(context, events, emittedContent, emittedAnyContent, fallbackModelType, token)
-        );
+        recordAdaptationIfNeeded(context, eventSink, fallbackContext);
+        try {
+            modelStreamClient.stream(
+                    fallbackModelType,
+                    fallbackContext.getContent(),
+                    request,
+                    context,
+                    token -> emitFallbackToken(context, eventSink, emittedContent, emittedAnyContent, fallbackModelType, token)
+            );
+        } catch (EventDeliveryException exceptionDuringDelivery) {
+            throw exceptionDuringDelivery;
+        } catch (BusinessException businessException) {
+            emitEvent(eventSink, appendFailure(
+                    context,
+                    businessException.getErrorCode(),
+                    businessException.getErrorCode().getMessage()
+            ));
+            return;
+        } catch (RuntimeException runtimeException) {
+            emitEvent(eventSink, appendFailure(
+                    context,
+                    ErrorCode.DOWNSTREAM_SERVICE_UNAVAILABLE,
+                    FALLBACK_FAILURE_CONTENT
+            ));
+            return;
+        }
         if (!emittedAnyContent.get()) {
-            events.add(appendFailure(context, ErrorCode.MODEL_OUTPUT_PARSER_FAILURE, PARSER_FAILURE_CONTENT));
-            return events;
+            emitEvent(eventSink, appendFailure(context, ErrorCode.MODEL_OUTPUT_PARSER_FAILURE, PARSER_FAILURE_CONTENT));
+            return;
         }
-        events.add(appendEvent(
+        emitEvent(eventSink, appendEvent(
                 context,
                 ModelStreamEvent.EVENT_COMPLETE,
                 STREAM_COMPLETED_CONTENT,
                 fallbackModelType,
                 STATUS_COMPLETED
         ));
-        return events;
     }
 
     private String buildFallbackPrompt(
@@ -227,7 +301,7 @@ public class StreamingModelService {
 
     private void emitVisibleToken(
             StreamingRequestContext context,
-            List<ModelStreamEvent> events,
+            EventSink eventSink,
             StringBuilder emittedContent,
             AtomicBoolean emittedAnyContent,
             ModelType modelType,
@@ -241,14 +315,14 @@ public class StreamingModelService {
         if (visibleContent.isBlank()) {
             return;
         }
-        events.add(appendEvent(context, ModelStreamEvent.EVENT_TOKEN, visibleContent, modelType, STATUS_OK));
+        emitEvent(eventSink, appendEvent(context, ModelStreamEvent.EVENT_TOKEN, visibleContent, modelType, STATUS_OK));
         emittedContent.append(visibleContent);
         emittedAnyContent.set(true);
     }
 
     private void emitFallbackToken(
             StreamingRequestContext context,
-            List<ModelStreamEvent> events,
+            EventSink eventSink,
             StringBuilder emittedContent,
             AtomicBoolean emittedAnyContent,
             ModelType modelType,
@@ -262,20 +336,20 @@ public class StreamingModelService {
         if (visibleContent.isBlank()) {
             return;
         }
-        events.add(appendEvent(context, ModelStreamEvent.EVENT_TOKEN, visibleContent, modelType, STATUS_OK));
+        emitEvent(eventSink, appendEvent(context, ModelStreamEvent.EVENT_TOKEN, visibleContent, modelType, STATUS_OK));
         emittedContent.append(visibleContent);
         emittedAnyContent.set(true);
     }
 
     private void recordAdaptationIfNeeded(
             StreamingRequestContext context,
-            List<ModelStreamEvent> events,
+            EventSink eventSink,
             ContextAdaptationStatus adaptationStatus
     ) {
         if (!adaptationStatus.isAdapted()) {
             return;
         }
-        events.add(appendEvent(
+        emitEvent(eventSink, appendEvent(
                 context,
                 ModelStreamEvent.EVENT_ADAPTATION,
                 adaptationStatus.getOutcome(),
@@ -302,18 +376,18 @@ public class StreamingModelService {
         return sessionStore.append(context, eventName, content, modelType, statusCode);
     }
 
-    private void sendEvents(SseEmitter emitter, List<ModelStreamEvent> events) {
+    private static void sendEvent(SseEmitter emitter, ModelStreamEvent event) throws IOException {
+        emitter.send(SseEmitter.event()
+                .id(String.valueOf(event.getEventId()))
+                .name(event.getEventName())
+                .data(event));
+    }
+
+    private static void emitEvent(EventSink eventSink, ModelStreamEvent event) {
         try {
-            for (ModelStreamEvent event : events) {
-                emitter.send(SseEmitter.event()
-                        .id(String.valueOf(event.getEventId()))
-                        .name(event.getEventName())
-                        .data(event));
-            }
-            emitter.complete();
+            eventSink.accept(event);
         } catch (IOException exception) {
-            LOGGER.warn("SSE client disconnected before stream completion");
-            emitter.completeWithError(exception);
+            throw new EventDeliveryException(exception);
         }
     }
 
@@ -336,5 +410,18 @@ public class StreamingModelService {
             throw new BusinessException(ErrorCode.INVALID_REQUEST, "request body is required");
         }
         return request;
+    }
+
+    @FunctionalInterface
+    private interface EventSink {
+
+        void accept(ModelStreamEvent event) throws IOException;
+    }
+
+    private static final class EventDeliveryException extends RuntimeException {
+
+        private EventDeliveryException(IOException cause) {
+            super(cause);
+        }
     }
 }

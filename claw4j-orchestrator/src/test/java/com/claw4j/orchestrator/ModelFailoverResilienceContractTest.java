@@ -8,14 +8,10 @@ import com.claw4j.common.exception.BusinessException;
 import com.claw4j.common.exception.ErrorCode;
 import com.claw4j.orchestrator.client.ModelProviderClient;
 import com.claw4j.orchestrator.client.SpringAiModelProviderClient;
-import com.claw4j.orchestrator.config.OrchestratorModelClientProperties;
-import com.claw4j.orchestrator.config.OrchestratorModelClientProperties.ClientMode;
-import com.claw4j.orchestrator.config.OrchestratorModelResilienceProperties;
 import com.claw4j.orchestrator.config.OrchestratorStreamingModelProperties;
 import com.claw4j.orchestrator.dto.ModelStreamEvent;
 import com.claw4j.orchestrator.dto.ModelType;
 import com.claw4j.orchestrator.dto.StreamingRequestContext;
-import com.claw4j.orchestrator.service.DeterministicModelStreamClient;
 import com.claw4j.orchestrator.service.ModelContextAdapter;
 import com.claw4j.orchestrator.service.ModelOutputParser;
 import com.claw4j.orchestrator.service.ModelStreamClient;
@@ -23,6 +19,11 @@ import com.claw4j.orchestrator.service.ResilientModelStreamClient;
 import com.claw4j.orchestrator.service.StreamingModelService;
 import com.claw4j.orchestrator.service.StreamingResumePromptBuilder;
 import com.claw4j.orchestrator.service.StreamingSessionStore;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.timelimiter.TimeLimiterConfig;
+import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,7 +36,6 @@ import org.springframework.ai.deepseek.DeepSeekChatModel;
 import org.springframework.ai.model.deepseek.autoconfigure.DeepSeekChatProperties;
 import org.springframework.ai.model.deepseek.autoconfigure.DeepSeekConnectionProperties;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,40 +48,44 @@ class ModelFailoverResilienceContractTest {
     private static final Path ORCHESTRATOR_POM_PATH = Path.of("pom.xml");
     private static final Path APPLICATION_YML_PATH = Path.of("src/main/resources/application.yml");
     private static final Path README_PATH = Path.of("../README.md");
-    private static final Path SMOKE_TEST_PATH = Path.of("../MODEL_FAILOVER_SMOKE_TESTS.md");
-    private static final Path MODEL_CLIENT_PROPERTIES_PATH = Path.of(
-            "src/main/java/com/claw4j/orchestrator/config/OrchestratorModelClientProperties.java"
-    );
+    private static final Path SMOKE_TEST_PATH = Path.of("../MODEL_STREAMING_CHAIN_SMOKE_TESTS.md");
     private static final Path SPRING_AI_PROVIDER_CLIENT_PATH = Path.of(
             "src/main/java/com/claw4j/orchestrator/client/SpringAiModelProviderClient.java"
     );
     private static final List<Path> FAILOVER_SOURCE_PATHS = List.of(
-            Path.of("src/main/java/com/claw4j/orchestrator/config/OrchestratorModelClientProperties.java"),
-            Path.of("src/main/java/com/claw4j/orchestrator/config/OrchestratorModelResilienceProperties.java"),
             Path.of("src/main/java/com/claw4j/orchestrator/client/ModelProviderClient.java"),
             Path.of("src/main/java/com/claw4j/orchestrator/client/SpringAiModelProviderClient.java"),
-            Path.of("src/main/java/com/claw4j/orchestrator/service/ResilientModelStreamClient.java")
+            Path.of("src/main/java/com/claw4j/orchestrator/config/OrchestratorStreamingModelProperties.java"),
+            Path.of("src/main/java/com/claw4j/orchestrator/service/ResilientModelStreamClient.java"),
+            Path.of("src/main/java/com/claw4j/orchestrator/service/StreamingModelService.java")
     );
     private static final Pattern EMPTY_CATCH_PATTERN = Pattern.compile("catch\\s*\\([^)]*\\)\\s*\\{\\s*}");
+    private static final String PRIMARY_CIRCUIT_NAME = "deepseek-primary-model";
     private static final String REQUEST_ID = "req-failover";
     private static final String TENANT_ID = "tenant-a";
     private static final String USER_ID = "user-a";
     private static final String IDEMPOTENCY_KEY = "idem-failover";
-    private static final String SESSION_ID = "session-failover";
     private static final String PRIMARY_CONTENT = "deepseek answer";
     private static final String FALLBACK_CONTENT = "qwen answer";
     private static final String PARTIAL_PRIMARY_CONTENT = "deepseek partial ";
     private static final Duration SHORT_TIMEOUT = Duration.ofMillis(25);
     private static final Duration SHORT_OPEN_WAIT = Duration.ofMillis(80);
     private static final int TWO_CALLS = 2;
+    private static final String FORMER_PROOF_CLIENT_KEY = "proof" + "-client";
+    private static final String FORMER_DETERMINISTIC_CLIENT = "Deterministic" + "ModelStreamClient.java";
+    private static final String FORBIDDEN_RETURN_NULL = "return " + "null";
+    private static final String FORBIDDEN_SYSTEM_OUT = "System.out" + ".println";
 
     @Test
-    void moduleDeclaresModelProviderAndResilienceDependencies() throws IOException {
+    void moduleDeclaresModelProviderAndResilienceDependenciesWithoutSentinel() throws IOException {
         String pom = Files.readString(ORCHESTRATOR_POM_PATH);
 
         assertThat(pom).contains("<artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>");
         assertThat(pom).contains("<artifactId>spring-ai-starter-model-deepseek</artifactId>");
         assertThat(pom).contains("<artifactId>spring-ai-alibaba-starter-dashscope</artifactId>");
+        assertThat(pom).doesNotContain("spring-cloud-starter-alibaba-sentinel");
+        assertThat(pom).doesNotContain("sentinel-datasource-nacos");
+        assertThat(pom).doesNotContain("spring-cloud-circuitbreaker-sentinel");
     }
 
     @Test
@@ -102,78 +106,53 @@ class ModelFailoverResilienceContractTest {
     }
 
     @Test
-    void springAiProviderClientRequiresOfficialCredentialsInRealMode() {
+    void springAiProviderClientRequiresOfficialCredentialsWhenInvoked() {
+        SpringAiModelProviderClient client = new SpringAiModelProviderClient(
+                emptyProvider(),
+                emptyProvider(),
+                new DeepSeekConnectionProperties(),
+                new DeepSeekChatProperties(),
+                new DashScopeConnectionProperties(),
+                new DashScopeChatProperties()
+        );
+
         assertBusinessError(
-                () -> new SpringAiModelProviderClient(
-                        emptyProvider(),
-                        emptyProvider(),
-                        new DeepSeekConnectionProperties(),
-                        new DeepSeekChatProperties(),
-                        new DashScopeConnectionProperties(),
-                        new DashScopeChatProperties()
+                () -> client.stream(
+                        ModelType.DEEPSEEK,
+                        "prompt",
+                        StreamingModelRequest.of("hello"),
+                        initialContext("missing-credential"),
+                        token -> {
+                        }
                 ),
                 ErrorCode.MODEL_PROVIDER_CONFIGURATION_INVALID
         );
     }
 
     @Test
-    void modelClientPropertiesOnlySelectClientMode() throws IOException {
-        ConfigurationProperties configurationProperties = OrchestratorModelClientProperties.class
-                .getAnnotation(ConfigurationProperties.class);
-        OrchestratorModelClientProperties properties = new OrchestratorModelClientProperties();
-        String source = Files.readString(MODEL_CLIENT_PROPERTIES_PATH);
-
-        assertThat(configurationProperties).isNotNull();
-        assertThat(configurationProperties.prefix()).isEqualTo("claw4j.model.client");
-        assertThat(properties.getMode()).isEqualTo(ClientMode.DETERMINISTIC);
-        properties.setMode(ClientMode.REAL);
-        assertThat(properties.isRealMode()).isTrue();
-        properties.setMode(null);
-        assertThat(properties.getMode()).isEqualTo(ClientMode.REAL);
-        assertThat(source).doesNotContain("apiKey");
-        assertThat(source).doesNotContain("modelName");
-        assertThat(source).doesNotContain("getDeepseek");
-        assertThat(source).doesNotContain("getQwen");
-    }
-
-    @Test
-    void modelResiliencePropertiesNormalizeInvalidValues() {
-        ConfigurationProperties configurationProperties = OrchestratorModelResilienceProperties.class
-                .getAnnotation(ConfigurationProperties.class);
-        OrchestratorModelResilienceProperties properties = new OrchestratorModelResilienceProperties();
-
-        properties.setPrimaryTimeout(Duration.ZERO);
-        properties.setFailureRateThreshold(0.0F);
-        properties.setSlidingWindowSize(0);
-        properties.setMinimumNumberOfCalls(0);
-        properties.setWaitDurationInOpenState(Duration.ZERO);
-        properties.setPermittedCallsInHalfOpenState(0);
-
-        assertThat(configurationProperties).isNotNull();
-        assertThat(configurationProperties.prefix()).isEqualTo("claw4j.model.resilience");
-        assertThat(properties.getPrimaryTimeout()).isEqualTo(Duration.ofSeconds(30));
-        assertThat(properties.getFailureRateThreshold()).isEqualTo(50.0F);
-        assertThat(properties.getSlidingWindowSize()).isEqualTo(10);
-        assertThat(properties.getMinimumNumberOfCalls()).isEqualTo(4);
-        assertThat(properties.getWaitDurationInOpenState()).isEqualTo(Duration.ofSeconds(30));
-        assertThat(properties.getPermittedCallsInHalfOpenState()).isEqualTo(1);
-    }
-
-    @Test
-    void applicationConfigurationExposesModelFailoverSettingsWithoutSecretLiterals() throws IOException {
+    void applicationConfigurationUsesOfficialProviderAndResilience4jSettings() throws IOException {
         String applicationYaml = Files.readString(APPLICATION_YML_PATH);
 
-        assertThat(applicationYaml).contains("client:");
-        assertThat(applicationYaml).contains("mode: ${CLAW4J_MODEL_CLIENT_MODE:deterministic}");
+        assertThat(applicationYaml).contains("model:");
+        assertThat(applicationYaml).contains("chat: none");
         assertThat(applicationYaml).contains("deepseek:");
         assertThat(applicationYaml).contains("api-key: ${CLAW4J_DEEPSEEK_API_KEY:}");
-        assertThat(applicationYaml).contains("model: ${CLAW4J_DEEPSEEK_MODEL_NAME:deepseek-reasoner}");
+        assertThat(applicationYaml).contains("model: deepseek-reasoner");
         assertThat(applicationYaml).contains("dashscope:");
         assertThat(applicationYaml).contains("api-key: ${CLAW4J_DASHSCOPE_API_KEY:}");
-        assertThat(applicationYaml).contains("model: ${CLAW4J_QWEN_MODEL_NAME:qwen-plus}");
+        assertThat(applicationYaml).contains("model: qwen-plus");
         assertThat(applicationYaml).contains("incremental-output: true");
-        assertThat(applicationYaml).contains("fallback-model-type: ${CLAW4J_MODEL_STREAMING_FALLBACK_MODEL_TYPE:qwen}");
-        assertThat(applicationYaml).contains("primary-timeout: ${CLAW4J_MODEL_PRIMARY_TIMEOUT:30s}");
+        assertThat(applicationYaml).contains("fallback-model-type: qwen");
+        assertThat(applicationYaml).contains("resilience4j:");
+        assertThat(applicationYaml).contains("deepseek-primary-model:");
+        assertThat(applicationYaml).contains("timeout-duration: 30s");
+        assertThat(applicationYaml).doesNotContain(FORMER_PROOF_CLIENT_KEY);
+        assertThat(applicationYaml).doesNotContain("CLAW4J_MODEL_CLIENT_MODE");
+        assertThat(applicationYaml).doesNotContain("CLAW4J_DEEPSEEK_MODEL_NAME");
+        assertThat(applicationYaml).doesNotContain("CLAW4J_QWEN_MODEL_NAME");
+        assertThat(applicationYaml).doesNotContain("CLAW4J_MODEL_");
+        assertThat(applicationYaml).doesNotContain("claw4j.model.client");
+        assertThat(applicationYaml).doesNotContain("claw4j.model.resilience");
         assertThat(applicationYaml).doesNotContain("model-name: ${CLAW4J_DEEPSEEK_MODEL_NAME");
         assertThat(applicationYaml).doesNotContain("model-name: ${CLAW4J_QWEN_MODEL_NAME");
         assertThat(applicationYaml).doesNotContain("sk-");
@@ -182,7 +161,7 @@ class ModelFailoverResilienceContractTest {
     @Test
     void primarySuccessDoesNotInvokeFallback() {
         RecordingProviderClient providerClient = RecordingProviderClient.primarySuccess(PRIMARY_CONTENT);
-        StreamingModelService service = service(resilientClient(realProperties(), fastResilience(), providerClient));
+        StreamingModelService service = service(resilientClient(fastResilience(), providerClient));
 
         List<ModelStreamEvent> events = service.streamEvents(StreamingModelRequest.of("hello"), initialContext("success"));
 
@@ -198,7 +177,7 @@ class ModelFailoverResilienceContractTest {
                 Duration.ofMillis(150),
                 FALLBACK_CONTENT
         );
-        StreamingModelService service = service(resilientClient(realProperties(), fastResilience(), providerClient));
+        StreamingModelService service = service(resilientClient(fastResilience(), providerClient));
 
         List<ModelStreamEvent> events = service.streamEvents(
                 StreamingModelRequest.of("timeout"),
@@ -220,7 +199,7 @@ class ModelFailoverResilienceContractTest {
                 PARTIAL_PRIMARY_CONTENT,
                 PARTIAL_PRIMARY_CONTENT + FALLBACK_CONTENT
         );
-        StreamingModelService service = service(resilientClient(realProperties(), fastResilience(), providerClient));
+        StreamingModelService service = service(resilientClient(fastResilience(), providerClient));
 
         List<ModelStreamEvent> events = service.streamEvents(
                 StreamingModelRequest.of("partial"),
@@ -228,6 +207,10 @@ class ModelFailoverResilienceContractTest {
         );
 
         assertThat(tokenContent(events)).isEqualTo(PARTIAL_PRIMARY_CONTENT + FALLBACK_CONTENT);
+        assertThat(providerClient.getFallbackPrompts()).anySatisfy(prompt -> {
+            assertThat(prompt).contains("<user_query><![CDATA[partial]]></user_query>");
+            assertThat(prompt).contains("<cached_output><![CDATA[" + PARTIAL_PRIMARY_CONTENT + "]]></cached_output>");
+        });
         assertThat(events).anySatisfy(event -> {
             assertThat(event.getEventName()).isEqualTo(ModelStreamEvent.EVENT_FALLBACK_START);
             assertThat(event.getStatusCode()).isEqualTo(ModelStreamClient.STATUS_PRIMARY_INTERRUPTED);
@@ -237,7 +220,7 @@ class ModelFailoverResilienceContractTest {
     @Test
     void errorRatioOpensPrimaryCircuitAndShortCircuitsToFallback() {
         RecordingProviderClient providerClient = RecordingProviderClient.primaryFailureThenFallback(FALLBACK_CONTENT);
-        StreamingModelService service = service(resilientClient(realProperties(), circuitResilience(), providerClient));
+        StreamingModelService service = service(resilientClient(circuitResilience(), providerClient));
 
         service.streamEvents(StreamingModelRequest.of("failure-1"), initialContext("failure-1"));
         service.streamEvents(StreamingModelRequest.of("failure-2"), initialContext("failure-2"));
@@ -258,7 +241,7 @@ class ModelFailoverResilienceContractTest {
     @Test
     void halfOpenSuccessfulProbeRestoresPrimaryRouting() throws InterruptedException {
         RecordingProviderClient providerClient = RecordingProviderClient.primaryFailureThenFallback(FALLBACK_CONTENT);
-        StreamingModelService service = service(resilientClient(realProperties(), circuitResilience(), providerClient));
+        StreamingModelService service = service(resilientClient(circuitResilience(), providerClient));
 
         service.streamEvents(StreamingModelRequest.of("failure-1"), initialContext("recover-1"));
         service.streamEvents(StreamingModelRequest.of("failure-2"), initialContext("recover-2"));
@@ -278,7 +261,7 @@ class ModelFailoverResilienceContractTest {
     @Test
     void halfOpenFailedProbeReopensPrimaryCircuit() throws InterruptedException {
         RecordingProviderClient providerClient = RecordingProviderClient.primaryFailureThenFallback(FALLBACK_CONTENT);
-        StreamingModelService service = service(resilientClient(realProperties(), circuitResilience(), providerClient));
+        StreamingModelService service = service(resilientClient(circuitResilience(), providerClient));
 
         service.streamEvents(StreamingModelRequest.of("failure-1"), initialContext("failed-probe-1"));
         service.streamEvents(StreamingModelRequest.of("failure-2"), initialContext("failed-probe-2"));
@@ -302,7 +285,7 @@ class ModelFailoverResilienceContractTest {
     @Test
     void invalidContextIsRejectedBeforeProviderInvocation() {
         RecordingProviderClient providerClient = RecordingProviderClient.primarySuccess(PRIMARY_CONTENT);
-        StreamingModelService service = service(resilientClient(realProperties(), fastResilience(), providerClient));
+        StreamingModelService service = service(resilientClient(fastResilience(), providerClient));
 
         assertBusinessError(
                 () -> service.streamEvents(StreamingModelRequest.of("invalid"), initialContext(" ")),
@@ -314,33 +297,29 @@ class ModelFailoverResilienceContractTest {
     }
 
     @Test
-    void deterministicModeDoesNotRequireProviderCredentials() {
-        OrchestratorModelClientProperties properties = new OrchestratorModelClientProperties();
-        StreamingModelService service = service(new ResilientModelStreamClient(
-                properties,
-                fastResilience(),
-                new DeterministicModelStreamClient(streamingProperties()),
-                RecordingProviderClient.primarySuccess(PRIMARY_CONTENT)
-        ));
+    void testDoublesStayOutOfProductionConfiguration() throws IOException {
+        String applicationYaml = Files.readString(APPLICATION_YML_PATH);
 
-        List<ModelStreamEvent> events = service.streamEvents(
-                StreamingModelRequest.of("deterministic"),
-                initialContext("deterministic")
-        );
-
-        assertThat(tokenContent(events)).isEqualTo("primary model response");
+        assertThat(Files.exists(Path.of("src/main/java/com/claw4j/orchestrator/service/" + FORMER_DETERMINISTIC_CLIENT)))
+                .isFalse();
+        assertThat(Files.exists(Path.of("src/main/java/com/claw4j/orchestrator/config/OrchestratorModelClientProperties.java")))
+                .isFalse();
+        assertThat(Files.exists(Path.of("src/main/java/com/claw4j/orchestrator/config/OrchestratorModelResilienceProperties.java")))
+                .isFalse();
+        assertThat(applicationYaml).doesNotContain("deterministic");
+        assertThat(applicationYaml).doesNotContain(FORMER_PROOF_CLIENT_KEY);
     }
 
     @Test
-    void documentationLinksModelFailoverSmokeTests() throws IOException {
+    void documentationLinksIntegratedGatewayStreamingSmokeTests() throws IOException {
         String readme = Files.readString(README_PATH);
         String smokeTests = Files.readString(SMOKE_TEST_PATH);
 
-        assertThat(readme).contains("MODEL_FAILOVER_SMOKE_TESTS.md");
-        assertThat(smokeTests).contains("curl -N -sS");
-        assertThat(smokeTests).contains("CLAW4J_MODEL_CLIENT_MODE=real");
+        assertThat(readme).contains("MODEL_STREAMING_CHAIN_SMOKE_TESTS.md");
+        assertThat(smokeTests).contains("http://127.0.0.1:8080/ai/chat?query=");
         assertThat(smokeTests).contains("CLAW4J_DEEPSEEK_API_KEY");
         assertThat(smokeTests).contains("CLAW4J_DASHSCOPE_API_KEY");
+        assertThat(smokeTests).contains("resilience4j.circuitbreaker.instances.deepseek-primary-model");
     }
 
     @Test
@@ -352,28 +331,42 @@ class ModelFailoverResilienceContractTest {
             String source = Files.readString(sourcePath);
 
             assertThat(source).doesNotContain("Flux<ServerSentEvent>");
-            assertThat(source).doesNotContain("System.out.println");
-            assertThat(source).doesNotContain("return null");
+            assertThat(source).doesNotContain(FORBIDDEN_SYSTEM_OUT);
+            assertThat(source).doesNotContain(FORBIDDEN_RETURN_NULL);
             assertThat(source).doesNotContain("sk-");
             assertThat(EMPTY_CATCH_PATTERN.matcher(source).find()).isFalse();
         }
     }
 
     private static ResilientModelStreamClient resilientClient(
-            OrchestratorModelClientProperties clientProperties,
-            OrchestratorModelResilienceProperties resilienceProperties,
+            ResilienceSettings resilienceSettings,
             ModelProviderClient providerClient
     ) {
+        CircuitBreakerConfig circuitBreakerConfig = CircuitBreakerConfig.custom()
+                .failureRateThreshold(resilienceSettings.failureRateThreshold())
+                .slidingWindowSize(resilienceSettings.slidingWindowSize())
+                .minimumNumberOfCalls(resilienceSettings.minimumNumberOfCalls())
+                .waitDurationInOpenState(resilienceSettings.waitDurationInOpenState())
+                .permittedNumberOfCallsInHalfOpenState(resilienceSettings.permittedCallsInHalfOpenState())
+                .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
+                .automaticTransitionFromOpenToHalfOpenEnabled(false)
+                .build();
+        TimeLimiterConfig timeLimiterConfig = TimeLimiterConfig.custom()
+                .timeoutDuration(resilienceSettings.primaryTimeout())
+                .cancelRunningFuture(true)
+                .build();
+        CircuitBreaker circuitBreaker = CircuitBreakerRegistry.of(circuitBreakerConfig)
+                .circuitBreaker(PRIMARY_CIRCUIT_NAME);
+
         return new ResilientModelStreamClient(
-                clientProperties,
-                resilienceProperties,
-                new DeterministicModelStreamClient(streamingProperties()),
-                providerClient
+                providerClient,
+                circuitBreaker,
+                TimeLimiterRegistry.of(timeLimiterConfig).timeLimiter(PRIMARY_CIRCUIT_NAME)
         );
     }
 
     private static StreamingModelService service(ModelStreamClient modelStreamClient) {
-        OrchestratorStreamingModelProperties properties = streamingProperties();
+        OrchestratorStreamingModelProperties properties = new OrchestratorStreamingModelProperties();
         return new StreamingModelService(
                 properties,
                 modelStreamClient,
@@ -384,33 +377,12 @@ class ModelFailoverResilienceContractTest {
         );
     }
 
-    private static OrchestratorStreamingModelProperties streamingProperties() {
-        return new OrchestratorStreamingModelProperties();
+    private static ResilienceSettings fastResilience() {
+        return new ResilienceSettings(SHORT_TIMEOUT, 50.0F, 4, 2, SHORT_OPEN_WAIT, 1);
     }
 
-    private static OrchestratorModelClientProperties realProperties() {
-        OrchestratorModelClientProperties properties = new OrchestratorModelClientProperties();
-        properties.setMode(ClientMode.REAL);
-        return properties;
-    }
-
-    private static OrchestratorModelResilienceProperties fastResilience() {
-        OrchestratorModelResilienceProperties properties = new OrchestratorModelResilienceProperties();
-        properties.setPrimaryTimeout(SHORT_TIMEOUT);
-        properties.setFailureRateThreshold(50.0F);
-        properties.setSlidingWindowSize(4);
-        properties.setMinimumNumberOfCalls(2);
-        properties.setWaitDurationInOpenState(SHORT_OPEN_WAIT);
-        properties.setPermittedCallsInHalfOpenState(1);
-        return properties;
-    }
-
-    private static OrchestratorModelResilienceProperties circuitResilience() {
-        OrchestratorModelResilienceProperties properties = fastResilience();
-        properties.setPrimaryTimeout(Duration.ofMillis(250));
-        properties.setSlidingWindowSize(TWO_CALLS);
-        properties.setMinimumNumberOfCalls(TWO_CALLS);
-        return properties;
+    private static ResilienceSettings circuitResilience() {
+        return new ResilienceSettings(Duration.ofMillis(250), 50.0F, TWO_CALLS, TWO_CALLS, SHORT_OPEN_WAIT, 1);
     }
 
     private static StreamingRequestContext initialContext(String sessionId) {
@@ -443,6 +415,16 @@ class ModelFailoverResilienceContractTest {
     private static <T> ObjectProvider<T> emptyProvider() {
         return new ObjectProvider<>() {
         };
+    }
+
+    private record ResilienceSettings(
+            Duration primaryTimeout,
+            float failureRateThreshold,
+            int slidingWindowSize,
+            int minimumNumberOfCalls,
+            Duration waitDurationInOpenState,
+            int permittedCallsInHalfOpenState
+    ) {
     }
 
     private static final class RecordingProviderClient implements ModelProviderClient {
@@ -505,7 +487,7 @@ class ModelFailoverResilienceContractTest {
                 tokenConsumer.accept(partialContent);
             }
             if (primaryFails) {
-                throw new ModelProviderClient.ModelProviderException("provider 5xx");
+                throw new ModelProviderException("provider failure");
             }
             tokenConsumer.accept(primaryContent);
         }
@@ -524,7 +506,7 @@ class ModelFailoverResilienceContractTest {
                 Thread.sleep(primaryDelay.toMillis());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                throw new ModelProviderClient.ModelProviderException("provider interrupted");
+                throw new ModelProviderException("provider interrupted");
             }
         }
 
@@ -540,6 +522,10 @@ class ModelFailoverResilienceContractTest {
 
         private int getFallbackCalls() {
             return fallbackCalls;
+        }
+
+        private List<String> getFallbackPrompts() {
+            return fallbackPrompts;
         }
     }
 }

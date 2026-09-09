@@ -3,109 +3,86 @@ spring:
     name: claw4j-orchestrator
   ai:
     model:
-      chat: ${CLAW4J_SPRING_AI_MODEL_CHAT:none}
+      chat: none
     deepseek:
       api-key: ${CLAW4J_DEEPSEEK_API_KEY:}
       chat:
         options:
-          model: ${CLAW4J_DEEPSEEK_MODEL_NAME:deepseek-reasoner}
+          model: deepseek-reasoner
     dashscope:
       api-key: ${CLAW4J_DASHSCOPE_API_KEY:}
       chat:
         options:
-          model: ${CLAW4J_QWEN_MODEL_NAME:qwen-plus}
+          model: qwen-plus
           stream: true
           incremental-output: true
   config:
     import:
-      - optional:nacos:${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:claw4j-shared.yaml}?group=${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}&refreshEnabled=${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
-      - optional:nacos:${CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID:${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}.${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}}?group=${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}&refreshEnabled=${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
+      - optional:nacos:claw4j-shared.yaml?group=CLAW4J_DEV_GROUP&refreshEnabled=true
+      - optional:nacos:${spring.application.name}.yaml?group=CLAW4J_DEV_GROUP&refreshEnabled=true
   cloud:
     openfeign:
       circuitbreaker:
-        enabled: ${CLAW4J_FEIGN_CIRCUITBREAKER_ENABLED:true}
+        enabled: true
       client:
         config:
           claw4j-a2a-broker:
-            connectTimeout: ${CLAW4J_A2A_BROKER_FEIGN_CONNECT_TIMEOUT_MS:1000}
-            readTimeout: ${CLAW4J_A2A_BROKER_FEIGN_READ_TIMEOUT_MS:3000}
-    sentinel:
-      eager: ${CLAW4J_SENTINEL_EAGER:true}
-      transport:
-        dashboard: ${CLAW4J_SENTINEL_DASHBOARD:127.0.0.1:8858}
-        port: ${CLAW4J_SENTINEL_ORCHESTRATOR_TRANSPORT_PORT:8720}
-      datasource:
-        orchestrator-degrade-rules:
-          nacos:
-            server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
-            namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
-            group-id: ${CLAW4J_SENTINEL_RULE_GROUP:${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}}
-            data-id: ${CLAW4J_SENTINEL_ORCHESTRATOR_DEGRADE_DATA_ID:claw4j-orchestrator-sentinel-degrade-rules.json}
-            data-type: json
-            rule-type: degrade
+            connectTimeout: 1000
+            readTimeout: 3000
     nacos:
       config:
-        server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
-        namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
-        group: ${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}
-        prefix: ${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}
-        file-extension: ${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}
-        refresh-enabled: ${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
-        timeout: ${CLAW4J_NACOS_CONFIG_TIMEOUT_MS:3000}
+        server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: public
+        group: CLAW4J_DEV_GROUP
+        prefix: ${spring.application.name}
+        file-extension: yaml
+        refresh-enabled: true
+        timeout: 3000
       discovery:
         server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}
-        namespace: ${CLAW4J_NACOS_NAMESPACE:public}
-        group: ${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}
+        namespace: public
+        group: CLAW4J_DEV_GROUP
         metadata:
           module: claw4j-orchestrator
           role: orchestrator
           port: ${server.port}
-          environment: ${CLAW4J_ENVIRONMENT:local}
+          environment: local
 
 claw4j:
-  dynamic-config:
-    nacos:
-      namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
-      group: ${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}
-      shared-data-id: ${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:claw4j-shared.yaml}
-      service-data-id: ${CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID:${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}.${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}}
-      refresh-enabled: ${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
-  sentinel:
-    orchestrator:
-      agent-call-resource-name: ${CLAW4J_SENTINEL_ORCHESTRATOR_AGENT_CALL_RESOURCE_NAME:claw4j-orchestrator-agent-call}
-      error-ratio-threshold: ${CLAW4J_SENTINEL_ORCHESTRATOR_ERROR_RATIO_THRESHOLD:0.5}
-      minimum-request-amount: ${CLAW4J_SENTINEL_ORCHESTRATOR_MIN_REQUEST_AMOUNT:2}
-      stat-interval-ms: ${CLAW4J_SENTINEL_ORCHESTRATOR_STAT_INTERVAL_MS:1000}
-      recovery-window-seconds: ${CLAW4J_SENTINEL_ORCHESTRATOR_RECOVERY_WINDOW_SECONDS:2}
   model:
-    client:
-      mode: ${CLAW4J_MODEL_CLIENT_MODE:deterministic}
-    resilience:
-      primary-timeout: ${CLAW4J_MODEL_PRIMARY_TIMEOUT:30s}
-      failure-rate-threshold: ${CLAW4J_MODEL_FAILURE_RATE_THRESHOLD:50}
-      sliding-window-size: ${CLAW4J_MODEL_SLIDING_WINDOW_SIZE:10}
-      minimum-number-of-calls: ${CLAW4J_MODEL_MIN_CALLS:4}
-      wait-duration-in-open-state: ${CLAW4J_MODEL_OPEN_WAIT:30s}
-      permitted-calls-in-half-open-state: ${CLAW4J_MODEL_HALF_OPEN_CALLS:1}
     streaming:
+      response-timeout: 5m
       fallback:
-        ttfb-timeout: ${CLAW4J_MODEL_STREAMING_TTFB_TIMEOUT:5s}
-        resume-enabled: ${CLAW4J_MODEL_STREAMING_RESUME_ENABLED:true}
-        resume-buffer-size: ${CLAW4J_MODEL_STREAMING_RESUME_BUFFER_SIZE:10000}
-        session-retention: ${CLAW4J_MODEL_STREAMING_SESSION_RETENTION:10m}
+        ttfb-timeout: 5s
+        resume-enabled: true
+        resume-buffer-size: 10000
+        session-retention: 10m
       context:
-        primary-max-tokens: ${CLAW4J_MODEL_STREAMING_PRIMARY_MAX_TOKENS:128000}
-        fallback-max-tokens: ${CLAW4J_MODEL_STREAMING_FALLBACK_MAX_TOKENS:32000}
-        truncation-strategy: ${CLAW4J_MODEL_STREAMING_TRUNCATION_STRATEGY:summary}
+        primary-max-tokens: 128000
+        fallback-max-tokens: 32000
+        truncation-strategy: summary
       parser:
-        reject-malformed-output: ${CLAW4J_MODEL_STREAMING_REJECT_MALFORMED_OUTPUT:true}
-      proof-client:
-        primary-model-type: ${CLAW4J_MODEL_STREAMING_PRIMARY_MODEL_TYPE:deepseek}
-        fallback-model-type: ${CLAW4J_MODEL_STREAMING_FALLBACK_MODEL_TYPE:qwen}
-        primary-success-content: ${CLAW4J_MODEL_STREAMING_PRIMARY_SUCCESS_CONTENT:primary model response}
-        primary-failure-prefix: ${CLAW4J_MODEL_STREAMING_PRIMARY_FAILURE_PREFIX:partial primary response }
-        fallback-continuation: ${CLAW4J_MODEL_STREAMING_FALLBACK_CONTINUATION:continued by fallback model}
-        malformed-output: ${CLAW4J_MODEL_STREAMING_MALFORMED_OUTPUT:<think>internal reasoning only</think>}
+        reject-malformed-output: true
+      routing:
+        primary-model-type: deepseek
+        fallback-model-type: qwen
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      deepseek-primary-model:
+        failure-rate-threshold: 50
+        sliding-window-size: 10
+        minimum-number-of-calls: 4
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 1
+        sliding-window-type: COUNT_BASED
+        automatic-transition-from-open-to-half-open-enabled: false
+  timelimiter:
+    instances:
+      deepseek-primary-model:
+        timeout-duration: 30s
+        cancel-running-future: true
 
 server:
   port: 8081

@@ -3,36 +3,27 @@ spring:
     name: claw4j-knowledge-memory
   config:
     import:
-      - optional:nacos:${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:claw4j-shared.yaml}?group=${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}&refreshEnabled=${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
-      - optional:nacos:${CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID:${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}.${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}}?group=${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}&refreshEnabled=${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
+      - optional:nacos:claw4j-shared.yaml?group=CLAW4J_DEV_GROUP&refreshEnabled=true
+      - optional:nacos:${spring.application.name}.yaml?group=CLAW4J_DEV_GROUP&refreshEnabled=true
   cloud:
     nacos:
       config:
-        server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
-        namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
-        group: ${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}
-        prefix: ${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}
-        file-extension: ${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}
-        refresh-enabled: ${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
-        timeout: ${CLAW4J_NACOS_CONFIG_TIMEOUT_MS:3000}
+        server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: public
+        group: CLAW4J_DEV_GROUP
+        prefix: ${spring.application.name}
+        file-extension: yaml
+        refresh-enabled: true
+        timeout: 3000
       discovery:
         server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}
-        namespace: ${CLAW4J_NACOS_NAMESPACE:public}
-        group: ${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}
+        namespace: public
+        group: CLAW4J_DEV_GROUP
         metadata:
           module: claw4j-knowledge-memory
           role: knowledge-memory
           port: ${server.port}
-          environment: ${CLAW4J_ENVIRONMENT:local}
-
-claw4j:
-  dynamic-config:
-    nacos:
-      namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
-      group: ${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}
-      shared-data-id: ${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:claw4j-shared.yaml}
-      service-data-id: ${CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID:${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}.${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}}
-      refresh-enabled: ${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
+          environment: local
 
 server:
   port: 8083

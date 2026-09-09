@@ -1,6 +1,6 @@
 # Local Deployment
 
-This guide covers local infrastructure and service startup for Claw4J. The runnable services default to `CLAW4J_NACOS_SERVER_ADDR=127.0.0.1:8848`, namespace `public`, group `CLAW4J_DEV_GROUP`, and environment `local`.
+This guide covers local infrastructure and service startup for Claw4J. The runnable services default to local Nacos at `127.0.0.1:8848`, namespace `public`, group `CLAW4J_DEV_GROUP`, and environment `local`. Only deployment-sensitive values, such as the Nacos address, Sentinel Dashboard address, and model provider API keys, need environment variables.
 
 ## Nacos
 
@@ -75,7 +75,7 @@ Use Docker to start a local Sentinel Dashboard aligned with the current Sentinel
 
 > This Docker setup is for local development and smoke testing only. The `bladex/sentinel-dashboard` image is a pinned community image that packages Sentinel Dashboard `1.8.9`; replace it with an internally reviewed image before production use.
 
-Keep Dashboard startup here, and keep service-call traffic checks in [Sentinel Smoke Tests](SENTINEL_SMOKE_TESTS.md).
+Keep Dashboard startup here, and keep Gateway ingress traffic checks in [Model Streaming Chain Smoke Tests](MODEL_STREAMING_CHAIN_SMOKE_TESTS.md).
 
 ### Start Sentinel Dashboard
 
@@ -108,7 +108,7 @@ The console is available at:
 http://127.0.0.1:8858/
 ```
 
-The default local Dashboard login is `sentinel` / `sentinel`. The container exposes the Dashboard HTTP port on `8858` and maps its internal Sentinel command port `8719` to host port `18719`, so Gateway and Orchestrator can keep their configured client ports.
+The default local Dashboard login is `sentinel` / `sentinel`. The container exposes the Dashboard HTTP port on `8858` and maps its internal Sentinel command port `8719` to host port `18719`, so Gateway can keep its configured client port for ingress observability.
 
 ## Services
 
@@ -126,23 +126,25 @@ java -Duser.home="$PWD/target/runtime-home/gateway" \
   -jar claw4j-api-gateway/target/claw4j-api-gateway-0.0.1-SNAPSHOT.jar
 
 java -Duser.home="$PWD/target/runtime-home/orchestrator" \
-  -Dcsp.sentinel.log.dir="$PWD/target/sentinel-logs/orchestrator" \
   -jar claw4j-orchestrator/target/claw4j-orchestrator-0.0.1-SNAPSHOT.jar
 
 java -Duser.home="$PWD/target/runtime-home/a2a-broker" \
   -jar claw4j-a2a-broker/target/claw4j-a2a-broker-0.0.1-SNAPSHOT.jar
 ```
 
-Optional explicit local overrides:
+For model streaming, export real provider keys before starting Orchestrator:
 
 ```bash
-CLAW4J_NACOS_SERVER_ADDR=127.0.0.1:8848 \
-CLAW4J_NACOS_NAMESPACE=public \
-CLAW4J_NACOS_GROUP=CLAW4J_DEV_GROUP \
-CLAW4J_ENVIRONMENT=local \
-java -Duser.home="$PWD/target/runtime-home/gateway" \
-  -Dcsp.sentinel.log.dir="$PWD/target/sentinel-logs/gateway" \
-  -jar claw4j-api-gateway/target/claw4j-api-gateway-0.0.1-SNAPSHOT.jar
+export CLAW4J_DEEPSEEK_API_KEY="replace-with-local-secret"
+export CLAW4J_DASHSCOPE_API_KEY="replace-with-local-secret"
+```
+
+Use command-line Spring properties for one-off local overrides instead of adding more environment-variable aliases to `application.yml`:
+
+```bash
+java -Duser.home="$PWD/target/runtime-home/orchestrator" \
+  -jar claw4j-orchestrator/target/claw4j-orchestrator-0.0.1-SNAPSHOT.jar \
+  --resilience4j.timelimiter.instances.deepseek-primary-model.timeout-duration=30s
 ```
 
 ### Verify Service Registration

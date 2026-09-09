@@ -14,6 +14,10 @@ public final class CommonConstants {
     public static final String STREAM_SESSION_ID_HEADER = "X-Session-Id";
     public static final String LAST_EVENT_ID_HEADER = "Last-Event-ID";
     public static final String REQUEST_ID_PREFIX = "req";
+    public static final String IDEMPOTENCY_KEY_PREFIX = "idem";
+    public static final String STREAM_SESSION_ID_PREFIX = "session";
+    public static final String LOCAL_BROWSER_TENANT_ID = "local-browser-tenant";
+    public static final String LOCAL_BROWSER_USER_ID = "local-browser-user";
     public static final String DEFAULT_ID_PREFIX = "id";
     public static final String ID_SEPARATOR = "-";
 

@@ -64,7 +64,7 @@ public class ModelContextAdapter {
     }
 
     /**
-     * Estimates token count deterministically for local proof tests.
+     * Estimates token count for model budget checks.
      *
      * @param content content to estimate
      * @return estimated token count
@@ -75,7 +75,7 @@ public class ModelContextAdapter {
     }
 
     private int maxTokensFor(ModelType modelType) {
-        if (properties.getProofClient().getFallbackModelType() == modelType) {
+        if (properties.getRouting().getFallbackModelType() == modelType) {
             return properties.getContext().getFallbackMaxTokens();
         }
         return properties.getContext().getPrimaryMaxTokens();

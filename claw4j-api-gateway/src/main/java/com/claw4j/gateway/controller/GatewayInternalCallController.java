@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Exposes Gateway internal endpoints for service-to-service proof calls.
+ * Exposes Gateway internal endpoints for service-to-service calls.
  */
 @RestController
 @RequestMapping("/internal/gateway")

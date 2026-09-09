@@ -4,15 +4,12 @@ import com.claw4j.common.dto.StreamingModelRequest;
 import com.claw4j.common.exception.BusinessException;
 import com.claw4j.common.exception.ErrorCode;
 import com.claw4j.orchestrator.client.ModelProviderClient;
-import com.claw4j.orchestrator.config.OrchestratorModelClientProperties;
-import com.claw4j.orchestrator.config.OrchestratorModelResilienceProperties;
 import com.claw4j.orchestrator.dto.ModelType;
 import com.claw4j.orchestrator.dto.StreamingRequestContext;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.SlidingWindowType;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.timelimiter.TimeLimiter;
-import io.github.resilience4j.timelimiter.TimeLimiterConfig;
+import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
 import jakarta.annotation.PreDestroy;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
@@ -30,7 +27,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 /**
- * Selects deterministic or provider-backed model streaming with primary-call resilience.
+ * Streams provider-backed model output with Resilience4j primary-call governance.
  */
 @Service
 @Primary
@@ -43,8 +40,6 @@ public class ResilientModelStreamClient implements ModelStreamClient {
     private static final String PROVIDER_CONFIG_MESSAGE = "real model provider client is not configured";
     private static final String EXECUTOR_THREAD_PREFIX = "claw4j-model-primary-";
 
-    private final OrchestratorModelClientProperties clientProperties;
-    private final DeterministicModelStreamClient deterministicClient;
     private final ModelProviderClient providerClient;
     private final CircuitBreaker primaryCircuitBreaker;
     private final TimeLimiter primaryTimeLimiter;
@@ -53,58 +48,50 @@ public class ResilientModelStreamClient implements ModelStreamClient {
     /**
      * Creates the resilient model stream client for Spring injection.
      *
-     * @param clientProperties model client selection properties
-     * @param resilienceProperties primary model resilience properties
-     * @param deterministicClient deterministic local model client
      * @param providerClientProvider optional provider-backed model client
+     * @param circuitBreakerRegistry official Resilience4j circuit-breaker registry
+     * @param timeLimiterRegistry official Resilience4j time-limiter registry
      */
     @Autowired
     public ResilientModelStreamClient(
-            OrchestratorModelClientProperties clientProperties,
-            OrchestratorModelResilienceProperties resilienceProperties,
-            DeterministicModelStreamClient deterministicClient,
-            ObjectProvider<ModelProviderClient> providerClientProvider
+            ObjectProvider<ModelProviderClient> providerClientProvider,
+            CircuitBreakerRegistry circuitBreakerRegistry,
+            TimeLimiterRegistry timeLimiterRegistry
     ) {
         this(
-                clientProperties,
-                resilienceProperties,
-                deterministicClient,
-                providerClientProvider.getIfAvailable()
+                providerClientProvider.getIfAvailable(),
+                circuitBreakerRegistry.circuitBreaker(PRIMARY_CIRCUIT_NAME),
+                timeLimiterRegistry.timeLimiter(PRIMARY_CIRCUIT_NAME)
         );
     }
 
     /**
      * Creates the resilient model stream client with an explicit provider client.
      *
-     * @param clientProperties model client selection properties
-     * @param resilienceProperties primary model resilience properties
-     * @param deterministicClient deterministic local model client
      * @param providerClient provider-backed model client
+     * @param primaryCircuitBreaker circuit breaker for the primary model
+     * @param primaryTimeLimiter time limiter for the primary model
      */
     public ResilientModelStreamClient(
-            OrchestratorModelClientProperties clientProperties,
-            OrchestratorModelResilienceProperties resilienceProperties,
-            DeterministicModelStreamClient deterministicClient,
-            ModelProviderClient providerClient
+            ModelProviderClient providerClient,
+            CircuitBreaker primaryCircuitBreaker,
+            TimeLimiter primaryTimeLimiter
     ) {
-        this.clientProperties = Objects.requireNonNull(clientProperties, "clientProperties must not be null");
-        OrchestratorModelResilienceProperties safeResilienceProperties = Objects.requireNonNull(
-                resilienceProperties,
-                "resilienceProperties must not be null"
-        );
-        this.deterministicClient = Objects.requireNonNull(deterministicClient, "deterministicClient must not be null");
         this.providerClient = providerClient;
-        this.primaryCircuitBreaker = createPrimaryCircuitBreaker(safeResilienceProperties);
-        this.primaryTimeLimiter = createPrimaryTimeLimiter(safeResilienceProperties);
+        this.primaryCircuitBreaker = Objects.requireNonNull(
+                primaryCircuitBreaker,
+                "primaryCircuitBreaker must not be null"
+        );
+        this.primaryTimeLimiter = Objects.requireNonNull(primaryTimeLimiter, "primaryTimeLimiter must not be null");
         this.primaryExecutorService = Executors.newCachedThreadPool(new ModelThreadFactory());
     }
 
     /**
-     * Streams model output using deterministic or resilient real-provider mode.
+     * Streams model output using provider-backed runtime behavior.
      *
      * @param modelType model family to invoke
      * @param prompt adapted prompt for model invocation
-     * @param request business request controls for the proof path
+     * @param request business request
      * @param context Header-derived request context
      * @param tokenConsumer consumer that receives raw model tokens
      */
@@ -122,10 +109,6 @@ public class ResilientModelStreamClient implements ModelStreamClient {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(tokenConsumer, "tokenConsumer must not be null");
 
-        if (!clientProperties.isRealMode()) {
-            deterministicClient.stream(modelType, prompt, request, context, tokenConsumer);
-            return;
-        }
         if (ModelType.DEEPSEEK == modelType) {
             streamPrimary(prompt, request, context, tokenConsumer);
             return;
@@ -192,6 +175,10 @@ public class ResilientModelStreamClient implements ModelStreamClient {
         } catch (ExecutionException exception) {
             acceptingTokens.set(false);
             Throwable cause = unwrapExecutionException(exception);
+            if (cause instanceof BusinessException businessException
+                    && ErrorCode.MODEL_PROVIDER_CONFIGURATION_INVALID == businessException.getErrorCode()) {
+                throw businessException;
+            }
             primaryCircuitBreaker.onError(elapsedNanos(startedAt), TimeUnit.NANOSECONDS, cause);
             throw new ModelStreamException(
                     PRIMARY_FAILURE_MESSAGE,
@@ -241,38 +228,6 @@ public class ResilientModelStreamClient implements ModelStreamClient {
             );
         }
         return providerClient;
-    }
-
-    private static CircuitBreaker createPrimaryCircuitBreaker(
-            OrchestratorModelResilienceProperties resilienceProperties
-    ) {
-        int slidingWindowSize = resilienceProperties.getSlidingWindowSize();
-        int minimumNumberOfCalls = Math.min(
-                resilienceProperties.getMinimumNumberOfCalls(),
-                slidingWindowSize
-        );
-        CircuitBreakerConfig config = CircuitBreakerConfig.custom()
-                .failureRateThreshold(resilienceProperties.getFailureRateThreshold())
-                .slidingWindowSize(slidingWindowSize)
-                .minimumNumberOfCalls(minimumNumberOfCalls)
-                .slidingWindowType(SlidingWindowType.COUNT_BASED)
-                .waitDurationInOpenState(resilienceProperties.getWaitDurationInOpenState())
-                .permittedNumberOfCallsInHalfOpenState(
-                        resilienceProperties.getPermittedCallsInHalfOpenState()
-                )
-                .automaticTransitionFromOpenToHalfOpenEnabled(false)
-                .build();
-        return CircuitBreaker.of(PRIMARY_CIRCUIT_NAME, config);
-    }
-
-    private static TimeLimiter createPrimaryTimeLimiter(
-            OrchestratorModelResilienceProperties resilienceProperties
-    ) {
-        TimeLimiterConfig config = TimeLimiterConfig.custom()
-                .timeoutDuration(resilienceProperties.getPrimaryTimeout())
-                .cancelRunningFuture(true)
-                .build();
-        return TimeLimiter.of(PRIMARY_CIRCUIT_NAME, config);
     }
 
     private static String statusForTimeout(AtomicBoolean emittedAnyToken) {

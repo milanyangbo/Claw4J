@@ -1,10 +1,12 @@
 package com.claw4j.gateway.service;
 
+import com.claw4j.common.constant.CommonConstants;
 import com.claw4j.common.dto.ApiResponse;
 import com.claw4j.common.dto.InternalServiceStatus;
 import com.claw4j.common.dto.StreamingModelRequest;
 import com.claw4j.common.exception.BusinessException;
 import com.claw4j.common.exception.ErrorCode;
+import com.claw4j.common.util.IdUtil;
 import com.claw4j.gateway.client.OrchestratorClient;
 import feign.Response;
 import java.io.IOException;
@@ -34,14 +36,23 @@ public class OrchestratorGatewayService {
     private static final int MAXIMUM_SUCCESS_STATUS_EXCLUSIVE = 300;
 
     private final OrchestratorClient orchestratorClient;
+    private final GatewaySentinelGuardService gatewaySentinelGuardService;
 
     /**
      * Creates the Gateway service for Orchestrator calls.
      *
      * @param orchestratorClient OpenFeign client for Orchestrator
+     * @param gatewaySentinelGuardService Gateway Sentinel guard for model stream ingress
      */
-    public OrchestratorGatewayService(OrchestratorClient orchestratorClient) {
+    public OrchestratorGatewayService(
+            OrchestratorClient orchestratorClient,
+            GatewaySentinelGuardService gatewaySentinelGuardService
+    ) {
         this.orchestratorClient = Objects.requireNonNull(orchestratorClient, "orchestratorClient must not be null");
+        this.gatewaySentinelGuardService = Objects.requireNonNull(
+                gatewaySentinelGuardService,
+                "gatewaySentinelGuardService must not be null"
+        );
     }
 
     /**
@@ -102,6 +113,51 @@ public class OrchestratorGatewayService {
         requireContext(userId, "userId");
         requireContext(idempotencyKey, "idempotencyKey");
         requireContext(sessionId, "sessionId");
+        return gatewaySentinelGuardService.guardModelStream(
+                requestId,
+                tenantId,
+                userId,
+                idempotencyKey,
+                () -> openOrchestratorStream(
+                        validatedRequest,
+                        requestId,
+                        tenantId,
+                        userId,
+                        idempotencyKey,
+                        sessionId,
+                        lastEventId
+                )
+        );
+    }
+
+    /**
+     * Opens a browser-friendly Gateway model stream with generated local context.
+     *
+     * @param query user query from a browser address bar
+     * @return Gateway response body that streams Orchestrator SSE bytes to the caller
+     */
+    public ResponseEntity<StreamingResponseBody> streamBrowserModel(String query) {
+        StreamingModelRequest request = StreamingModelRequest.of(query);
+        return streamModel(
+                request,
+                IdUtil.generate(CommonConstants.REQUEST_ID_PREFIX),
+                CommonConstants.LOCAL_BROWSER_TENANT_ID,
+                CommonConstants.LOCAL_BROWSER_USER_ID,
+                IdUtil.generate(CommonConstants.IDEMPOTENCY_KEY_PREFIX),
+                IdUtil.generate(CommonConstants.STREAM_SESSION_ID_PREFIX),
+                null
+        );
+    }
+
+    private ResponseEntity<StreamingResponseBody> openOrchestratorStream(
+            StreamingModelRequest validatedRequest,
+            String requestId,
+            String tenantId,
+            String userId,
+            String idempotencyKey,
+            String sessionId,
+            String lastEventId
+    ) {
         Response response = requireSuccessfulStream(orchestratorClient.streamModel(
                 requestId,
                 tenantId,

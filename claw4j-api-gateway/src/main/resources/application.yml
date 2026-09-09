@@ -3,68 +3,40 @@ spring:
     name: claw4j-api-gateway
   config:
     import:
-      - optional:nacos:${CLAW4J_NACOS_CONFIG_SHARED_DATA_ID:claw4j-shared.yaml}?group=${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}&refreshEnabled=${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
-      - optional:nacos:${CLAW4J_NACOS_CONFIG_SERVICE_DATA_ID:${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}.${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}}?group=${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}&refreshEnabled=${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
+      - optional:nacos:claw4j-shared.yaml?group=CLAW4J_DEV_GROUP&refreshEnabled=true
+      - optional:nacos:${spring.application.name}.yaml?group=CLAW4J_DEV_GROUP&refreshEnabled=true
   cloud:
     openfeign:
       circuitbreaker:
-        enabled: ${CLAW4J_FEIGN_CIRCUITBREAKER_ENABLED:true}
+        enabled: true
       client:
         config:
           claw4j-orchestrator:
-            connectTimeout: ${CLAW4J_ORCHESTRATOR_FEIGN_CONNECT_TIMEOUT_MS:1000}
-            readTimeout: ${CLAW4J_ORCHESTRATOR_FEIGN_READ_TIMEOUT_MS:3000}
+            connectTimeout: 1000
+            readTimeout: 300000
     sentinel:
-      eager: ${CLAW4J_SENTINEL_EAGER:true}
+      eager: true
       transport:
         dashboard: ${CLAW4J_SENTINEL_DASHBOARD:127.0.0.1:8858}
-        port: ${CLAW4J_SENTINEL_GATEWAY_TRANSPORT_PORT:8719}
-      datasource:
-        gateway-flow-rules:
-          nacos:
-            server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
-            namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
-            group-id: ${CLAW4J_SENTINEL_RULE_GROUP:${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}}
-            data-id: ${CLAW4J_SENTINEL_GATEWAY_FLOW_DATA_ID:claw4j-api-gateway-sentinel-flow-rules.json}
-            data-type: json
-            rule-type: flow
-        gateway-param-flow-rules:
-          nacos:
-            server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
-            namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
-            group-id: ${CLAW4J_SENTINEL_RULE_GROUP:${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}}
-            data-id: ${CLAW4J_SENTINEL_GATEWAY_PARAM_FLOW_DATA_ID:claw4j-api-gateway-sentinel-param-flow-rules.json}
-            data-type: json
-            rule-type: param-flow
+        port: 8719
     nacos:
       config:
-        server-addr: ${CLAW4J_NACOS_CONFIG_SERVER_ADDR:${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}}
-        namespace: ${CLAW4J_NACOS_CONFIG_NAMESPACE:${CLAW4J_NACOS_NAMESPACE:public}}
-        group: ${CLAW4J_NACOS_CONFIG_GROUP:${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}}
-        prefix: ${CLAW4J_NACOS_CONFIG_PREFIX:${spring.application.name}}
-        file-extension: ${CLAW4J_NACOS_CONFIG_FILE_EXTENSION:yaml}
-        refresh-enabled: ${CLAW4J_NACOS_CONFIG_REFRESH_ENABLED:true}
-        timeout: ${CLAW4J_NACOS_CONFIG_TIMEOUT_MS:3000}
+        server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: public
+        group: CLAW4J_DEV_GROUP
+        prefix: ${spring.application.name}
+        file-extension: yaml
+        refresh-enabled: true
+        timeout: 3000
       discovery:
         server-addr: ${CLAW4J_NACOS_SERVER_ADDR:127.0.0.1:8848}
-        namespace: ${CLAW4J_NACOS_NAMESPACE:public}
-        group: ${CLAW4J_NACOS_GROUP:CLAW4J_DEV_GROUP}
+        namespace: public
+        group: CLAW4J_DEV_GROUP
         metadata:
           module: claw4j-api-gateway
           role: gateway
           port: ${server.port}
-          environment: ${CLAW4J_ENVIRONMENT:local}
-
-claw4j:
-  dynamic-config:
-    gateway:
-      smoke-rate-limit-threshold: ${CLAW4J_GATEWAY_DYNAMIC_CONFIG_SMOKE_RATE_LIMIT_THRESHOLD:10}
-      demo-message: ${CLAW4J_GATEWAY_DYNAMIC_CONFIG_DEMO_MESSAGE:local-default}
-  sentinel:
-    gateway:
-      resource-name: ${CLAW4J_SENTINEL_GATEWAY_RESOURCE_NAME:claw4j-gateway-ingress}
-      global-qps-threshold: ${CLAW4J_SENTINEL_GATEWAY_GLOBAL_QPS:2}
-      tenant-qps-threshold: ${CLAW4J_SENTINEL_GATEWAY_TENANT_QPS:1}
+          environment: local
 
 server:
   port: 8080

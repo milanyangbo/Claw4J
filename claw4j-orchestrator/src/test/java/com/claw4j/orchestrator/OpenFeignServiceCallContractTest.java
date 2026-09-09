@@ -62,12 +62,13 @@ class OpenFeignServiceCallContractTest {
     }
 
     @Test
-    void pomDeclaresOpenFeignLoadBalancerAndSentinelWithoutSiblingServiceDependencies() throws IOException {
+    void pomDeclaresOpenFeignLoadBalancerAndResilience4jWithoutSiblingServiceDependencies() throws IOException {
         String pom = Files.readString(POM_PATH);
 
         assertThat(pom).contains("<artifactId>spring-cloud-starter-openfeign</artifactId>");
         assertThat(pom).contains("<artifactId>spring-cloud-starter-loadbalancer</artifactId>");
-        assertThat(pom).contains("<artifactId>spring-cloud-circuitbreaker-sentinel</artifactId>");
+        assertThat(pom).contains("<artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>");
+        assertThat(pom).doesNotContain("<artifactId>spring-cloud-circuitbreaker-sentinel</artifactId>");
         assertThat(pom).doesNotContain("<version>5.0.0</version>");
         assertThat(pom).doesNotContain("<artifactId>claw4j-a2a-broker</artifactId>");
     }
@@ -101,10 +102,11 @@ class OpenFeignServiceCallContractTest {
 
         assertThat(applicationYaml).contains("openfeign:");
         assertThat(applicationYaml).contains("circuitbreaker:");
-        assertThat(applicationYaml).contains("enabled: ${CLAW4J_FEIGN_CIRCUITBREAKER_ENABLED:true}");
+        assertThat(applicationYaml).contains("enabled: true");
         assertThat(applicationYaml).contains("claw4j-a2a-broker:");
-        assertThat(applicationYaml).contains("connectTimeout: ${CLAW4J_A2A_BROKER_FEIGN_CONNECT_TIMEOUT_MS:1000}");
-        assertThat(applicationYaml).contains("readTimeout: ${CLAW4J_A2A_BROKER_FEIGN_READ_TIMEOUT_MS:3000}");
+        assertThat(applicationYaml).contains("connectTimeout: 1000");
+        assertThat(applicationYaml).contains("readTimeout: 3000");
+        assertThat(applicationYaml).doesNotContain("CLAW4J_A2A_BROKER_FEIGN");
     }
 
     @Test

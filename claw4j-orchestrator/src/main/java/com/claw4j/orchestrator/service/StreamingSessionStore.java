@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentMap;
 import org.springframework.stereotype.Service;
 
 /**
- * Bounded in-memory stream state store for single-instance resume proof paths.
+ * Bounded in-memory stream state store for single-instance resume paths.
  */
 @Service
 public class StreamingSessionStore {

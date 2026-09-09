@@ -6,26 +6,42 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 /**
- * Holds Orchestrator streaming model proof-path configuration.
+ * Holds Orchestrator streaming model governance configuration.
  */
 @Component
 @ConfigurationProperties(prefix = "claw4j.model.streaming")
 public class OrchestratorStreamingModelProperties {
 
+    private static final Duration DEFAULT_RESPONSE_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration DEFAULT_TTFB_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration DEFAULT_SESSION_RETENTION = Duration.ofMinutes(10);
     private static final int DEFAULT_RESUME_BUFFER_SIZE = 10_000;
     private static final int DEFAULT_PRIMARY_MAX_TOKENS = 128_000;
     private static final int DEFAULT_FALLBACK_MAX_TOKENS = 32_000;
-    private static final String DEFAULT_PRIMARY_SUCCESS_CONTENT = "primary model response";
-    private static final String DEFAULT_PRIMARY_FAILURE_PREFIX = "partial primary response ";
-    private static final String DEFAULT_FALLBACK_CONTINUATION = "continued by fallback model";
-    private static final String DEFAULT_MALFORMED_OUTPUT = "<think>internal reasoning only</think>";
 
+    private Duration responseTimeout = DEFAULT_RESPONSE_TIMEOUT;
     private final Fallback fallback = new Fallback();
     private final Context context = new Context();
     private final Parser parser = new Parser();
-    private final ProofClient proofClient = new ProofClient();
+    private final Routing routing = new Routing();
+
+    /**
+     * Returns the MVC SSE response timeout.
+     *
+     * @return response timeout
+     */
+    public Duration getResponseTimeout() {
+        return responseTimeout;
+    }
+
+    /**
+     * Updates the MVC SSE response timeout.
+     *
+     * @param responseTimeout response timeout
+     */
+    public void setResponseTimeout(Duration responseTimeout) {
+        this.responseTimeout = positiveDurationOrDefault(responseTimeout, DEFAULT_RESPONSE_TIMEOUT);
+    }
 
     /**
      * Returns fallback and resume configuration.
@@ -55,16 +71,16 @@ public class OrchestratorStreamingModelProperties {
     }
 
     /**
-     * Returns deterministic proof client configuration.
+     * Returns primary and fallback model routing configuration.
      *
-     * @return proof client configuration
+     * @return model routing configuration
      */
-    public ProofClient getProofClient() {
-        return proofClient;
+    public Routing getRouting() {
+        return routing;
     }
 
     /**
-     * Context adaptation strategies supported by the proof path.
+     * Context adaptation strategies supported by the streaming path.
      */
     public enum TruncationStrategy {
         SUMMARY,
@@ -248,19 +264,15 @@ public class OrchestratorStreamingModelProperties {
     }
 
     /**
-     * Deterministic proof client behavior configuration.
+     * Primary and fallback model family routing.
      */
-    public static final class ProofClient {
+    public static final class Routing {
 
         private ModelType primaryModelType = ModelType.DEEPSEEK;
         private ModelType fallbackModelType = ModelType.QWEN;
-        private String primarySuccessContent = DEFAULT_PRIMARY_SUCCESS_CONTENT;
-        private String primaryFailurePrefix = DEFAULT_PRIMARY_FAILURE_PREFIX;
-        private String fallbackContinuation = DEFAULT_FALLBACK_CONTINUATION;
-        private String malformedOutput = DEFAULT_MALFORMED_OUTPUT;
 
         /**
-         * Returns the deterministic primary model type.
+         * Returns the primary model type.
          *
          * @return primary model type
          */
@@ -269,7 +281,7 @@ public class OrchestratorStreamingModelProperties {
         }
 
         /**
-         * Updates the deterministic primary model type.
+         * Updates the primary model type.
          *
          * @param primaryModelType primary model type
          */
@@ -280,7 +292,7 @@ public class OrchestratorStreamingModelProperties {
         }
 
         /**
-         * Returns the deterministic fallback model type.
+         * Returns the fallback model type.
          *
          * @return fallback model type
          */
@@ -289,7 +301,7 @@ public class OrchestratorStreamingModelProperties {
         }
 
         /**
-         * Updates the deterministic fallback model type.
+         * Updates the fallback model type.
          *
          * @param fallbackModelType fallback model type
          */
@@ -297,78 +309,6 @@ public class OrchestratorStreamingModelProperties {
             if (fallbackModelType != null) {
                 this.fallbackModelType = fallbackModelType;
             }
-        }
-
-        /**
-         * Returns the primary success content used by the proof client.
-         *
-         * @return primary success content
-         */
-        public String getPrimarySuccessContent() {
-            return primarySuccessContent;
-        }
-
-        /**
-         * Updates the primary success content used by the proof client.
-         *
-         * @param primarySuccessContent primary success content
-         */
-        public void setPrimarySuccessContent(String primarySuccessContent) {
-            this.primarySuccessContent = defaultIfBlank(primarySuccessContent, DEFAULT_PRIMARY_SUCCESS_CONTENT);
-        }
-
-        /**
-         * Returns the partial primary output emitted before a simulated failure.
-         *
-         * @return partial primary output
-         */
-        public String getPrimaryFailurePrefix() {
-            return primaryFailurePrefix;
-        }
-
-        /**
-         * Updates the partial primary output emitted before a simulated failure.
-         *
-         * @param primaryFailurePrefix partial primary output
-         */
-        public void setPrimaryFailurePrefix(String primaryFailurePrefix) {
-            this.primaryFailurePrefix = defaultIfBlank(primaryFailurePrefix, DEFAULT_PRIMARY_FAILURE_PREFIX);
-        }
-
-        /**
-         * Returns the fallback continuation text used by the proof client.
-         *
-         * @return fallback continuation text
-         */
-        public String getFallbackContinuation() {
-            return fallbackContinuation;
-        }
-
-        /**
-         * Updates the fallback continuation text used by the proof client.
-         *
-         * @param fallbackContinuation fallback continuation text
-         */
-        public void setFallbackContinuation(String fallbackContinuation) {
-            this.fallbackContinuation = defaultIfBlank(fallbackContinuation, DEFAULT_FALLBACK_CONTINUATION);
-        }
-
-        /**
-         * Returns the malformed output used by the proof client.
-         *
-         * @return malformed output
-         */
-        public String getMalformedOutput() {
-            return malformedOutput;
-        }
-
-        /**
-         * Updates the malformed output used by the proof client.
-         *
-         * @param malformedOutput malformed output
-         */
-        public void setMalformedOutput(String malformedOutput) {
-            this.malformedOutput = defaultIfBlank(malformedOutput, DEFAULT_MALFORMED_OUTPUT);
         }
     }
 
@@ -386,10 +326,4 @@ public class OrchestratorStreamingModelProperties {
         return value;
     }
 
-    private static String defaultIfBlank(String value, String defaultValue) {
-        if (value == null || value.isBlank()) {
-            return defaultValue;
-        }
-        return value;
-    }
 }

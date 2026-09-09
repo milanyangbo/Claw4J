@@ -7,7 +7,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Objects;
 
 /**
- * Event payload emitted by the Orchestrator streaming model proof path.
+ * Event payload emitted by the Orchestrator streaming model path.
  */
 public final class ModelStreamEvent {
 
