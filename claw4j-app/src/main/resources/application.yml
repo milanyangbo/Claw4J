@@ -23,6 +23,17 @@ spring:
 # 模型凭据一律走环境变量，不写进仓库（ADR-0002、ADR-0006）。
 # 没有 key 时自动降级到 mock 模型，应用仍能启动并跑通全链路。
 claw4j:
+  channel:
+    http:
+      enabled: ${CLAW4J_HTTP_ENABLED:true}
+      # 角色 → 授权。认人由通道做，授权从这里查表，Agent 不参与（ADR-0007）。
+      roles:
+        read-only:
+          tables: ["*"]
+          actions: []
+        admin:
+          tables: ["*"]
+          actions: ["*"]
   model:
     # 三态：留空 = 有 key 就用真实模型、没 key 自动降级 mock；
     # true = 强制 mock（CI 与本地演示）；false = 强制真实模型（没 key 时启动失败，便于发现配置漏了）。

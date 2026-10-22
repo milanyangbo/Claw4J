@@ -2,7 +2,9 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.domain.port.AgentPort;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -30,9 +32,11 @@ public class AgentAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(ChatClient.class)
-    public ChatClient chatClient(ChatModel chatModel) {
+    public ChatClient chatClient(ChatModel chatModel, ObjectProvider<Advisor> advisors) {
         return ChatClient.builder(chatModel)
                 .defaultSystem(SYSTEM_PROMPT)
+                // 容器里所有 Advisor 按 order 挂上来。鉴权、脱敏、记忆后续都只是加一个 bean（ADR-0007）。
+                .defaultAdvisors(advisors.orderedStream().toList())
                 .build();
     }
 

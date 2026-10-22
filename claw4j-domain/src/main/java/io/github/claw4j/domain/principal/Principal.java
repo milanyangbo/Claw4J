@@ -36,6 +36,6 @@ public record Principal(String userId, String role, Set<String> accessibleTables
     }
 
     public boolean canPerform(String action) {
-        return allowedActions.contains(action);
+        return allowedActions.contains(WILDCARD) || allowedActions.contains(action);
     }
 }

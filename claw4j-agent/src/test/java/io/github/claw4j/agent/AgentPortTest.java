@@ -38,11 +38,13 @@ class AgentPortTest {
     void 流式回答逐块回调并以结尾块收尾() {
         List<OutboundMessage> chunks = new ArrayList<>();
 
-        port.stream(inbound("ping"), chunks::add);
+        port.stream(inbound("上周华东区成交额多少"), chunks::add);
 
-        assertEquals(2, chunks.size(), "一块内容加一个结尾块");
-        assertEquals(MockChatModel.PREFIX + "ping", chunks.get(0).text());
-        assertEquals("session-1", chunks.get(1).sessionKey());
-        assertTrue(chunks.get(1).finalChunk(), "最后一块必须标记为结尾");
+        var last = chunks.get(chunks.size() - 1);
+        assertTrue(last.finalChunk(), "最后一块必须标记为结尾");
+        assertEquals("session-1", last.sessionKey());
+        assertEquals(MockChatModel.PREFIX + "上周华东区成交额多少",
+                chunks.stream().map(OutboundMessage::text).reduce("", String::concat));
+        assertTrue(chunks.size() > 2, "内容必须切成多块；只剩一块说明流式被降级了");
     }
 }

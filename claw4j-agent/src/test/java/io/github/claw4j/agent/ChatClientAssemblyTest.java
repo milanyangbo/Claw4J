@@ -28,14 +28,15 @@ class ChatClientAssemblyTest {
     }
 
     @Test
-    void 流式路径同样能拿到完整回答() {
-        List<String> chunks = chatClient.prompt("ping")
+    void 流式路径逐块返回且拼接后与同步结果一致() {
+        List<String> chunks = chatClient.prompt("上周华东区成交额多少")
                 .stream()
                 .content()
                 .collectList()
                 .block(Duration.ofSeconds(5));
 
-        assertEquals(List.of(MockChatModel.PREFIX + "ping"), chunks);
+        assertEquals(MockChatModel.PREFIX + "上周华东区成交额多少", String.join("", chunks));
+        assertTrue(chunks.size() > 1, "必须真是多块；只有一块说明流式被降级成了一次性响应");
     }
 
     @Test
