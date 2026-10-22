@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: claw4j
+
+# 模型凭据一律走环境变量，不写进仓库（ADR-0002、ADR-0006）。
+# 没有 key 时应用仍应能启动，靠 mock 模型跑通全链路。
+claw4j:
+  model:
+    primary: ${CLAW4J_MODEL_PRIMARY:deepseek}
+    deepseek:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: ${DEEPSEEK_MODEL:deepseek-chat}
+    qwen:
+      base-url: ${QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      api-key: ${QWEN_API_KEY:}
+      model: ${QWEN_MODEL:qwen-plus}
