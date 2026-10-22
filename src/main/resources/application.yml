@@ -1,0 +1,60 @@
+server:
+  port: 8900
+
+spring:
+  application:
+    name: openclaw4j-server
+  data:
+    redis:
+      host: ${redis.ip}
+      port: ${redis.port}
+      password: ${redis.password}
+      username: ${redis.user}
+      database: ${redis.db}
+      timeout: 5000ms
+      connect-timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
+  ai:
+    openai:
+      api-key: your-ai-api-key<Deepseek is used as the large model in the example>
+      base-url: your-ai-api-url<Example:https://api.deepseek.com>
+      embedding:
+        enabled: false
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.7
+          max-tokens: 2000
+    transformers:
+      embedding:
+        enabled: true
+        model: sentence-transformers/all-MiniLM-L6-v2
+
+
+teammors:
+  token: <TEAMMORS_TOKEN> # 原为真实 token，冻结前已移除，避免进入 git 历史
+telegram:
+  id: your-telegram-bot-id
+  token: your-telegram-bot-token
+  name: your-bot-username
+
+redis:
+  ip: localhost
+  port: 6379
+  password: your-redis-password
+  user: default
+  db: 2
+  cluster: 0
+
+skills:
+  dir: /Volumes/Data/XTeammors/ServerCodes/OpenClaw4J/skills
+
+volcengine:
+  base-url: https://ark.cn-beijing.volces.com/api/v3
+  api-key: <VOLCENGINE_API_KEY>
+  model: doubao-seed-2-0-pro-260215
