@@ -1,0 +1,26 @@
+# 授权模型：内置极简 Principal，鉴权做在 Advisor 链上、不做登录系统
+
+---
+status: accepted
+date: 2026-10-22
+---
+
+一次工具调用能不能发生，由 Principal 决定，不由模型决定。Principal 是内置在进程里的极简身份（`user_id` + `role` + 可访问的表/动作集合），M1 阶段由配置化的静态映射给出，HTTP 通道从请求头取用户标识后查表得出。**本项目不做登录、注册、会话鉴权体系**——那不是考点，篇幅留给 Advisor 链本身。
+
+## Considered Options
+
+**先做一套登录系统再谈鉴权**
+否决。登录是通用工程，做了也不能证明 Agent 工程能力，反而会把 M1 拖长一倍。
+
+**鉴权写在每个 `@Tool` 方法内部**
+否决。散落在方法里的判断无法保证一致，也无法覆盖第三方/脚本层工具；更重要的是它无法在工具调用循环的**每一次迭代**上都生效。
+
+**在 Advisor 链上统一鉴权（采纳）**
+工具调用循环在 2.x 里是 `ToolCallingAdvisor`，它按 order 位于链上。把鉴权 Advisor 的 order 排在工具循环**内部**（小于 `HIGHEST_PRECEDENCE + 300`），就能在模型的每一次工具迭代上都校验一次；不通过则不调用 `chain.next()`，直接短路返回。
+
+## Consequences
+
+- 鉴权 Advisor 必须**同时实现 `CallAdvisor` 与 `StreamAdvisor`**。只实现 `CallAdvisor` 时，`.stream()` 路径上该 Advisor 被静默跳过且不报错——这是 2.x 最经典的坑，因此每个自定义 Advisor 的测试都必须覆盖流式路径。
+- 鉴权粒度：一层 Java `@Tool` 做到**表级与动作级**（能不能查 `orders`、能不能发邮件）；二层 MCP 工具按工具名授权；三层 Script Package **不授予任何业务权限**，只能访问自己的沙箱目录。
+- 同期配一个 PII 脱敏 Advisor，同样双接口实现。行级/列级脱敏**不做**，表级白名单已足够讲清设计。
+- Principal 的来源随 Channel 走：`claw4j-channel` 负责从入站消息解析出用户标识，`claw4j-agent` 只接受已经解析好的 Principal，不自己去认人。这条边界保证 domain 与 agent 模块不依赖任何具体通道协议。

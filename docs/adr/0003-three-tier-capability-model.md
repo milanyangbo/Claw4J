@@ -21,7 +21,18 @@ Agent 可用的能力不统一实现，按"是否需要鉴权、是否有外部�
 ## Consequences
 
 - Agent 侧不感知层级：三层都注册为工具，名字与参数 Schema 是唯一契约。
-- 鉴权只对第一层做表级/动作级校验（在 Advisor 链上，见 Q10）。脚本层不授予任何业务权限，它只能访问自己的沙箱目录。
-- 脚本层的执行环境必须收口：应用整体跑在容器内，脚本层限制工作目录、超时与非 root 用户。这是官方给出的建议做法，不是我们自己发明的约束。
+- **1.x 的 29 个场景只保留 8 个**，其余 21 个不迁移（`blogwatcher`、`crypto-price`、`keno-winning-numbers`、`trello`、`notion` 等与主线场景无关的）。保留清单：
+
+  | 层 | 场景 | 迁移后的形态 |
+  |---|---|---|
+  | 一层 Java `@Tool` | `chat-summary` | Text-to-SQL：`JdbcTemplate` + `validateSchema()` 自纠错 |
+  | | `system-status` | JVM/容器指标读取 |
+  | 二层 MCP `@McpTool` | `github` | Python MCP server 包 `gh` CLI |
+  | | `unread-mail` / `send-email` | Python MCP server 包 `himalaya` |
+  | 三层 Script Package | `weather-forecast` / `summarize` / `xurl` | 保留脚本本体，只收口执行环境 |
+
+  保留 8 个之外的，即使是可用脚本也一并删除：留在仓库里只会稀释主线，而面试时没有时间逐个讲。
+- 鉴权只对第一层做表级/动作级校验，做在 Advisor 链上、且双接口实现（见 ADR-0007）。脚本层不授予任何业务权限，它只能访问自己的沙箱目录。
+- **脚本执行有两个位置，必须分清**：① 既有 Script Package 在**应用容器**内执行，限制工作目录、超时与非 root 用户（官方给出的建议做法，不是我们自己发明的约束）；② Skill Generator 产出的脚本在**独立隔离沙箱**内自测，网络受限、资源有上限。① 的容器里跑着应用本身，所以不给它任何业务凭据；② 的沙箱里跑着未审核代码，所以它拿不到任何凭据。
 - MCP 层是唯一跨进程边界的层，连接建立时要 `listTools()` 探测为空即 fail-fast，会话丢失要重新初始化而不是重试。
-- 模型生成的脚本只落盘不执行，等人审；这条不为敏捷性让路。
+- Skill Generator 产出的脚本可以执行，但只在上述第 ② 类沙箱内执行并留审计，人审通过后才注册为 Script Package（见 ADR-0002 修订记录）。本条与 ADR-0002 保持一致。
