@@ -16,6 +16,10 @@ _Avoid_: Adapter（旧代码里的含义）、Manager、Handler
 由 Orchestrator 委派、在独立上下文窗口中运行的专职 Agent，只把结论回传父 Agent。
 _Avoid_: 子任务、Task
 
+**Skill Generator**:
+由 Agent 产出新 Script Package 的能力：生成、静态检查、隔离环境自测、审计留痕，通过后才能成为可被编排的 Script Package。它是本项目的核心能力，不是附属功能。
+_Avoid_: 自动写技能、自进化、代码生成
+
 **Skill**:
 文件化的可复用"做法"，由一个 `SKILL.md` 描述何时用、按什么流程用，附带可选的脚本与参考资料。启动时只加载元数据，命中时才加载全文。Skill 不提供动作，它编排动作。
 _Avoid_: 技能包（旧代码里指 Python 脚本包）、Prompt 模板
@@ -41,6 +45,10 @@ _Avoid_: 轮次对话、Message window
 **Chat ID**:
 通道侧对会话的标识，由具体 Channel 定义。它只是 Session 的寻址方式之一，不等于 Session。
 _Avoid_: conversationId、userId
+
+**Principal**:
+发起请求的人，携带角色与可访问的资源集合。一次工具调用能不能发生，由它决定，而不是由模型决定。
+_Avoid_: 用户、账号、User（除非特指通道侧账号）
 
 ## 能力单元
 

@@ -7,6 +7,8 @@ date: 2026-10-22
 
 1.x 中 Agent 执行脚本的路径是：`GenericSkill` 用 `listFiles()[0]` 取一个 `.py`，把用户自然语言当 argv 传进去，经 `sh -c` 或 `ProcessBuilder` 执行；`ShellUtils` 另有硬编码 root、关闭主机校验的 SSH 通道；`SkillGeneratorSkill` 还会让模型写出 Python 落盘执行，并允许脚本自行 `pip install --break-system-packages`。这条链路把宿主机 shell 交给了模型。新架构中 Java 侧不再直接调用任何脚本进程。
 
+> 修订记录（2026-10-22）：初版结论是"模型生成的脚本只落盘不执行"。确认 skill-generator 是本项目核心能力后，改为"可以执行，但只在一个隔离沙箱里执行，且全程留审计"。执行位置的约束没有放宽，放宽的是能不能跑。
+
 ## Considered Options
 
 **保留进程调用，只做参数白名单**
@@ -22,5 +24,6 @@ date: 2026-10-22
 
 - Java 侧不再出现 `Runtime.exec` / `ProcessBuilder` / `sh -c`。
 - 敏感配置（数据库连接串、API key）从 `SKILL.md` 的 YAML 块移回 Spring 配置，走环境变量与 profile。
-- 模型生成的脚本只落盘、不执行，等人审；"AI 自动创建并执行技能"这条能力在新版本中不再自动闭环。
+- **skill-generator 保留，但换执行位置**：模型生成的脚本仍可被执行自测，只是执行发生在隔离沙箱（容器，非 root、网络受限、有超时与资源上限），不在应用进程、不在宿主机。自测结果写入审计，脚本成为正式 Script Package 前默认需要人工确认。这条是项目核心能力，不能因为原实现危险就整体砍掉，正确的做法是把它关进笼子。
+- 模型生成脚本的自测链路固定为：生成 → 静态检查（禁止危险 import 与越权文件操作）→ 沙箱内自测 → 审计留痕 → 人审通过后才注册。
 - MCP 会话丢失（`McpTransportSessionNotFoundException`）必须重新初始化连接而非重试死会话，这是连接层要处理的第一个故障。
