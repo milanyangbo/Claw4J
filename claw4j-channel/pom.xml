@@ -10,24 +10,41 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>claw4j-channel-feishu</artifactId>
-    <name>Claw4J :: Channel :: Feishu</name>
-    <description>飞书长连接通道。平台 SDK 只留在本模块，见 ADR-0009</description>
+    <artifactId>claw4j-channel</artifactId>
+    <name>Claw4J :: Channel</name>
+    <description>入站与出站的通道实现：HTTP+SSE、飞书长连接、A2A。SPI 在 channel.spi 包，各实现分包隔离</description>
 
     <dependencies>
         <dependency>
             <groupId>io.github.claw4j</groupId>
-            <artifactId>claw4j-channel-api</artifactId>
+            <artifactId>claw4j-domain</artifactId>
             <version>${project.version}</version>
         </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!--
+          飞书 SDK 设为 optional：它不随 claw4j-channel 传递给下游模块。
+          需要飞书的部署（app 模块）必须自己显式声明，否则打出的产物不带飞书能力。
+          这样"只要 HTTP 通道"的部署不会被 SDK 及其传递依赖污染。
+        -->
         <dependency>
             <groupId>com.larksuite.oapi</groupId>
             <artifactId>oapi-sdk</artifactId>
+            <optional>true</optional>
         </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -1,6 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.model.MockChatModel;
+import io.github.claw4j.domain.port.AgentPort;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -44,5 +45,15 @@ public class AgentAutoConfiguration {
         return ChatClient.builder(chatModel)
                 .defaultSystem(SYSTEM_PROMPT)
                 .build();
+    }
+
+    /**
+     * Agent 对外的门，通道只认这个类型（ADR-0010）。
+     * 注册在这里意味着任何模块只要拿到 AgentPort 就能驱动 Agent，不需要知道 ChatClient 的存在。
+     */
+    @Bean
+    @ConditionalOnMissingBean(AgentPort.class)
+    public AgentPort agentPort(ChatClient chatClient) {
+        return new ChatClientAgentPort(chatClient);
     }
 }
