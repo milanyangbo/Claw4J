@@ -34,6 +34,7 @@
 
         <lark-oapi.version>2.8.7</lark-oapi.version>
         <archunit.version>1.5.1</archunit.version>
+        <maven-enforcer.version>3.6.3</maven-enforcer.version>
     </properties>
 
     <dependencyManagement>
@@ -97,7 +98,44 @@
                     <artifactId>spring-boot-maven-plugin</artifactId>
                     <version>${spring-boot.version}</version>
                 </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-enforcer-plugin</artifactId>
+                    <version>${maven-enforcer.version}</version>
+                </plugin>
             </plugins>
         </pluginManagement>
+
+        <plugins>
+            <!--
+              版本基线。JDK 与 Maven 版本不对时，报的错经常指向完全无关的地方
+              （比如"找不到某个 plugin goal"），所以这里先拦一道，给出明确信息。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>baseline</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[21,)</version>
+                                    <message>JDK 21 起步（ADR-0001）</message>
+                                </requireJavaVersion>
+                                <requireMavenVersion>
+                                    <version>[3.9.0,)</version>
+                                    <message>Maven 3.9.0 起步；仓库自带 wrapper，用 ./mvnw 就不用自己装</message>
+                                </requireMavenVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
     </build>
 </project>

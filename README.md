@@ -1,392 +1,160 @@
-# OpenClaw4J
+# Claw4J
 
-<p align="center">
-  <img src="jadimages.png" alt="OpenClaw4J Logo" width="60%">
-</p>
+[![CI](https://github.com/milanyangbo/Claw4J/actions/workflows/ci.yml/badge.svg)](https://github.com/milanyangbo/Claw4J/actions/workflows/ci.yml)
 
-<p align="center">
-    <img src="https://img.shields.io/badge/JDK-21-007396" alt="JDK 21">
-    <img src="https://img.shields.io/badge/Spring%20Boot-3.3.4-6DB33F" alt="Spring Boot 3.3.4">
-    <img src="https://img.shields.io/badge/Spring%20AI-1.0.0--M6-6DB33F" alt="Spring AI 1.0.0-M6">
-    <img src="https://img.shields.io/badge/Redis-5.0+-DC382D" alt="Redis">
-    <img src="https://img.shields.io/badge/MySQL-8.0+-4479A1" alt="MySQL">
-    <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
-    <img src="https://img.shields.io/badge/Build-Passing-brightgreen" alt="Build Status">
-</p>
+企业 IM 上的业务数据助手。主场景是 **Text-to-SQL 销售域问答**：业务同学在群里问"上周华东区成交额多少"，Agent 自己查库、自己答。
 
-[中文](#中文) | [English](#english)
+整个项目是 **基于 Spring AI 2.x 从零重建** 的（1.x 版本已冻结进 `legacy/`，见 [legacy/README.md](legacy/README.md)）。重建的全部设计决策都留了 ADR，见 [`docs/adr/`](docs/adr/)。
 
----
+> **当前进度：M0 骨架完成。** HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1 接工具与鉴权，M2 接飞书长连接与 Skill 引擎。
 
-<a name="中文"></a>
-## 🇨🇳 中文介绍
+## 技术栈
 
-**OpenClaw4J** 是一个基于 Java 21 和 **Spring AI** 构建的现代智能 Agent 框架。受到 OpenClaw 项目（开源精神与经典重构）的启发，本项目的目标是为 Java 开发者提供一个灵活、可扩展且功能强大的 AI 机器人/Agent 开发底座。
+| | 版本 | 说明 |
+| --- | --- | --- |
+| JDK | 21 | Spring Boot 4 的底线 |
+| Spring Boot | 4.1.2 | |
+| Spring AI | 2.0.2 | Advisor 链是 2.x 的统一抽象，鉴权/脱敏/记忆都挂在上面 |
+| Maven | 3.9+ | 仓库自带 wrapper，用 `./mvnw` 不用自己装 |
+| Postgres + pgvector | 16 | 业务数据、会话、向量共用一个库（ADR-0005） |
+| Redis | 7 | 只做语义缓存 |
 
-它不仅集成了先进的 LLM（如 DeepSeek），**还通过 **RAG（检索增强生成）**** 和 **混合技能系统（Java + Python）** 赋予了 Agent 真实的行动能力，支持多平台（Telegram、Teammors）接入。
+这四个版本是架构决策而不是随手选的，改它们要在 ADR 里留痕（ADR-0001）。
 
-### ✨ 主要特点 (Features)
+## 模块结构
 
-*   **多平台支持**：内置 Telegram Bot 和 Teammors 机器人适配器，一套核心逻辑，多端服务。
-*   **AI 核心驱动**：基于 **Spring AI** 框架，默认集成 **DeepSeek** 和 **火山引擎豆包** 大模型，支持流式对话与上下文理解。
-*   **RAG 知识库**：
-    *   内置 `SimpleVectorStore`（基于文件的向量存储），无需复杂的向量数据库部署即可实现轻量级 RAG。
-    *   支持本地知识检索，增强回答准确性。
-    *   **Token 优化**：引入 RAG 技术可极大地降低 Token 的使用数量，避免类似 OpenClaw 那样消耗大量的 Token。
-*   **混合技能系统 (Hybrid Skill System)**：
-    *   创新性地结合 Java 的稳健性与 Python 的生态丰富性。
-    *   支持 Java 调用 Python 脚本作为 "Skill"（技能），轻松扩展各种能力。
-*   **丰富的技能生态**：
-    *   **浏览器自动化** (Browser Automation)：自动搜索和爬取网页内容
-    *   **博客监控** (Blog Watcher)：监控博客更新
-    *   **聊天摘要** (Chat Summary)：生成聊天记录摘要
-    *   **加密货币价格查询** (Crypto Price)：实时查询加密货币价格
-    *   **Gemini**：集成 Google Gemini 模型
-    *   **GitHub**：GitHub 仓库操作和信息查询
-    *   **Go Places**：位置信息查询和导航
-    *   **Himalaya**：喜马拉雅音频内容访问
-    *   **彩票开奖号码** (Keno Winning Numbers)：获取彩票开奖结果
-    *   **Nano PDF**：轻量级 PDF 处理
-    *   **Notion**：Notion 文档操作
-    *   **OpenAI Whisper**：语音转文本
-    *   **OpenAI Whisper API**：使用 OpenAI Whisper API 进行语音转文本
-    *   **Oracle**：Oracle 数据库操作
-    *   **PDF 生成** (PDF Generator)：根据内容生成 PDF 文件
-    *   **PPT 生成** (PPT Generator)：自动生成演示文稿
-    *   **SAG**：智能对话生成
-    *   **定时任务** (Scheduled Task)：设置和管理定时任务
-    *   **邮件发送** (Send Email)：发送电子邮件
-    *   **Sherpa ONNX TTS**：文本转语音
-    *   **技能生成器** (Skill Generator)：自动生成新技能
-    *   **摘要生成** (Summarize)：生成文本摘要
-    *   **系统状态监控** (System Status)：监控系统运行状态
-    *   **头条新闻** (Toutiao News)：获取头条新闻
-    *   **Trello**：Trello 项目管理
-    *   **未读邮件查询** (Unread Mail)：查询未读邮件
-    *   **视频帧处理** (Video Frames)：视频帧提取和处理
-    *   **天气预报** (Weather Forecast)：获取天气预报
-    *   **XURL**：URL 处理和短链接生成
-*   **企业级架构**：基于 Spring Boot 3.3，集成 Redis 缓存和 MySQL 数据库，具备良好的扩展性和维护性。
-*   **模块化设计**：清晰的包结构，包括 adapter、comm、context、manager、property、proxy、rag、skills、utils、wssdk 等模块。
-
-### 📸 运行截图 (Screenshots)
-
-以下展示了通过 Teammors 和 Telegram 客户端调用 Agent 技能的实际效果：
-
-<p align="center">
-  <img src="screenshot1.png" alt="Screenshot 1" width="45%">
-  <img src="screenshot2.png" alt="Screenshot 2" width="45%">
-</p>
-
-### 🎯 项目目标 (Goals)
-
-参考 **OpenClaw** 的精神，本项目致力于：
-1.  **开箱即用**：提供一个配置简单、依赖清晰的 Java AI Agent 启动模板。
-2.  **能力扩展**：通过标准化的 Skill 接口，让开发者可以轻松接入各种外部工具（Tools/Plugins）。
-3.  **连接现实**：不仅是聊天机器人，更是能执行任务（查邮件、看网页、监控系统）的智能助手。
-4.  **生态丰富**：提供丰富的技能库，满足各种场景需求。
-
-### 🚀 快速开始 (Getting Started)
-
-#### 1. 环境要求
-*   **Java**: JDK 21+
-*   **Maven**: 3.6+
-*   **Redis**: 用于缓存和数据存储
-*   **MySQL**: 用于数据持久化
-*   **Python**: 3.8+ (用于运行 Python 技能脚本)
-
-#### 2. 配置应用
-修改 `src/main/resources/application.yml` 文件，填入你的配置信息：
-
-> 💡 **获取 Token**: 关于如何获取 `Teammorsbot Token` 和 `Telegrambot Token`，请访问帮助文档：[https://www.teammors.top/openclaw4j/](https://www.teammors.top/openclaw4j/)
->
-> 📧 **邮件技能配置**: 如果需要使用发送邮件功能，请阅读 [skills/send-email/SKILL.md](skills/send-email/SKILL.md) 并配置相应的邮箱账号信息。
-
-```yaml
-spring:
-  ai:
-    openai:
-      api-key: your-deepseek-api-key # DeepSeek API Key
-      base-url: https://api.deepseek.com
-
-telegram:
-  id: your-telegram-bot-id
-  token: your-telegram-bot-token
-  name: your-bot-username
-
-redis:
-  ip: localhost
-  port: 6379
-  password: your-redis-password
-
-# MySQL 配置（可选）
-datasource:
-  url: jdbc:mysql://localhost:3306/openclaw4j
-  username: your-username
-  password: your-password
+```
+      channel ──► domain ◄── agent
+                     ▲          ▲
+                     │          │
+                     └── tools ─┘
+                     ▲
+                     │
+                    app（唯一知道所有模块的地方，负责接线）
 ```
 
-#### 3. 安装 Python 依赖
-项目中的技能位于 `skills/` 目录下。请确保你的环境安装了相关 Python 库（视具体使用的技能而定）：
+| 模块 | 职责 |
+| --- | --- |
+| `claw4j-domain` | 领域模型与端口。**零框架依赖**，是唯一被承诺能脱离框架复用的模块 |
+| `claw4j-agent` | ChatClient 装配、模型选择、Advisor 链。不认识任何通道 |
+| `claw4j-channel` | 入站出站适配：HTTP+SSE（M0）、飞书长连接（M2）、A2A（M3）。按平台分包，不按平台分模块 |
+| `claw4j-tools` | 三层能力里的工具层 |
+| `claw4j-app` | 启动与装配，唯一打 fat jar 的模块 |
+| `legacy/` | 1.x 冻结代码，**不参与构建** |
+
+两条最关键的方向：`channel → domain ← agent`，两边互不依赖；接线只发生在 `app`。加一个通道不需要碰 agent，换一个 Agent 实现不需要碰 channel（ADR-0010）。
+
+## 本地怎么起
+
+### 最省事：什么都不装
 
 ```bash
-pip install requests beautifulsoup4 selenium psutil fpdf python-pptx
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 47 个测试
+./mvnw -pl claw4j-app spring-boot:run
 ```
 
-#### 4. 运行项目
-```bash
-# 编译打包
-mvn clean package
+没有 Docker、没有 API key 也能跑完 —— 模型会自动降级到 mock（`[mock]` 前缀），数据源是懒连接不会在启动时真连（ADR-0006）。
 
-# 运行
-java -jar target/xmessage-openclaw4j-1.0.0.jar
-```
-或者直接使用 IDE (IntelliJ IDEA) 运行 `OpenClaw4JApplication.java`。
-
-### 📁 项目结构
-
-```
-OpenClaw4J/
-├── skills/              # 技能目录
-│   ├── blogwatcher/           # 博客监控
-│   ├── browser-automation/    # 浏览器自动化
-│   ├── chat-summary/          # 聊天摘要
-│   ├── crypto-price/          # 加密货币价格查询
-│   ├── gemini/                # Gemini 集成
-│   ├── github/                # GitHub 操作
-│   ├── goplaces/              # 位置信息
-│   ├── himalaya/              # 喜马拉雅
-│   ├── keno-winning-numbers/  # 彩票开奖号码
-│   ├── nano-pdf/              # 轻量级 PDF 处理
-│   ├── notion/                # Notion 集成
-│   ├── openai-whisper/        # OpenAI Whisper
-│   ├── openai-whisper-api/    # OpenAI Whisper API
-│   ├── oracle/                # Oracle 数据库
-│   ├── pdf-generator/         # PDF 生成
-│   ├── ppt-generator/         # PPT 生成
-│   ├── sag/                   # 智能对话生成
-│   ├── scheduled-task/        # 定时任务
-│   ├── send-email/            # 邮件发送
-│   ├── sherpa-onnx-tts/       # Sherpa ONNX TTS
-│   ├── skill-generator/       # 技能生成器
-│   ├── summarize/             # 摘要生成
-│   ├── system-status/         # 系统状态监控
-│   ├── toutiao-news/          # 头条新闻
-│   ├── trello/                # Trello 集成
-│   ├── unread-mail/           # 未读邮件查询
-│   ├── video-frames/          # 视频帧处理
-│   ├── weather-forecast/      # 天气预报
-│   └── xurl/                  # URL 处理
-├── src/
-│   ├── main/java/com/xteammors/openclaw/
-│   │   ├── adapter/           # 消息适配器
-│   │   ├── comm/              # 通用参数
-│   │   ├── context/           # 上下文管理
-│   │   ├── manager/           # 管理器
-│   │   ├── property/          # 属性配置
-│   │   ├── proxy/             # 消息代理
-│   │   ├── rag/               # RAG 相关
-│   │   ├── skills/            # 技能系统
-│   │   ├── utils/             # 工具类
-│   │   ├── wssdk/             # WebSocket SDK
-│   │   └── OpenClaw4JApplication.java  # 应用入口
-│   └── main/resources/
-│       └── application.yml    # 应用配置
-├── LICENSE
-├── README.md
-├── jadimages.png
-├── pom.xml
-├── screenshot1.png
-└── screenshot2.png
-```
-
----
-
-<a name="english"></a>
-## 🇺🇸 English Introduction
-
-**OpenClaw4J** is a modern intelligent Agent framework built on Java 21 and **Spring AI**. Inspired by the OpenClaw project (with its spirit of open source and classic reimplementation), this project aims to provide a flexible, extensible, and powerful foundation for Java developers to build AI Bots and Agents.
-
-It integrates advanced LLMs (like DeepSeek and Volcano Engine Doubao) and empowers agents with real-world capabilities through **RAG (Retrieval-Augmented Generation)** and a **Hybrid Skill System (Java + Python)**, supporting multi-platform (Telegram, Teammors) connectivity.
-
-### ✨ Key Features
-
-*   **Multi-Platform Support**: Built-in adapters for Telegram Bot and Teammors, serving multiple endpoints with a single core logic.
-*   **AI-Driven Core**: Powered by **Spring AI**, integrated with **DeepSeek** LLM by default, supporting streaming conversation and context understanding.
-*   **RAG (Retrieval-Augmented Generation)**: 
-    *   Includes `SimpleVectorStore` (file-based vector storage) for lightweight RAG without complex vector database deployment.
-    *   Supports local knowledge retrieval to enhance answer accuracy.
-    *   **Token Optimization**: Introducing RAG significantly reduces Token usage, avoiding the high Token consumption issues often seen in similar projects like OpenClaw.
-*   **Hybrid Skill System**:
-    *   Innovatively combines the robustness of Java with the rich ecosystem of Python.
-    *   Supports Java invoking Python scripts as "Skills", easily extending various capabilities.
-*   **Rich Skill Ecosystem**:
-    *   **Browser Automation**: Automatically search and crawl web content
-    *   **Blog Watcher**: Monitor blog updates
-    *   **Chat Summary**: Generate chat history summaries
-    *   **Crypto Price**: Real-time cryptocurrency price query
-    *   **Gemini**: Integrate Google Gemini model
-    *   **GitHub**: GitHub repository operations and information query
-    *   **Go Places**: Location information query and navigation
-    *   **Himalaya**: Himalaya audio content access
-    *   **Keno Winning Numbers**: Get lottery results
-    *   **Nano PDF**: Lightweight PDF processing
-    *   **Notion**: Notion document operations
-    *   **OpenAI Whisper**: Speech-to-text conversion
-    *   **OpenAI Whisper API**: Speech-to-text using OpenAI Whisper API
-    *   **Oracle**: Oracle database operations
-    *   **PDF Generator**: Generate PDF files from content
-    *   **PPT Generator**: Automatically create presentations
-    *   **SAG**: Intelligent dialogue generation
-    *   **Scheduled Task**: Set and manage scheduled tasks
-    *   **Send Email**: Send email messages
-    *   **Sherpa ONNX TTS**: Text-to-speech conversion
-    *   **Skill Generator**: Automatically generate new skills
-    *   **Summarize**: Generate text summaries
-    *   **System Status**: Monitor system running status
-    *   **Toutiao News**: Get headline news
-    *   **Trello**: Trello project management
-    *   **Unread Mail**: Check unread emails
-    *   **Video Frames**: Video frame extraction and processing
-    *   **Weather Forecast**: Get weather forecasts
-    *   **XURL**: URL processing and short link generation
-*   **Enterprise Architecture**: Built on Spring Boot 3.3, integrated with Redis cache and MySQL database, ensuring scalability and maintainability.
-*   **Modular Design**: Clear package structure including adapter, comm, context, manager, property, proxy, rag, skills, utils, wssdk modules.
-
-### 📸 Screenshots
-
-Demonstration of invoking Agent skills via Teammors and Telegram clients:
-
-<p align="center">
-  <img src="screenshot1.png" alt="Screenshot 1" width="45%">
-  <img src="screenshot2.png" alt="Screenshot 2" width="45%">
-</p>
-
-### 🎯 Goals
-
-Referencing the spirit of **OpenClaw**, this project aims to:
-1.  **Out-of-the-Box**: Provide a Java AI Agent template that is simple to configure and easy to start.
-2.  **Extensibility**: Enable developers to easily integrate various external tools/plugins via a standardized Skill interface.
-3.  **Real-World Connection**: Go beyond a chatbot to create an intelligent assistant capable of executing tasks (checking emails, browsing the web, monitoring systems).
-4.  **Rich Ecosystem**: Provide a rich skill library to meet various scenario needs.
-
-### 🚀 Getting Started
-
-#### 1. Prerequisites
-*   **Java**: JDK 21+
-*   **Maven**: 3.6+
-*   **Redis**: For caching and data storage
-*   **MySQL**: For data persistence
-*   **Python**: 3.8+ (For running Python skill scripts)
-
-#### 2. Configuration
-Update `src/main/resources/application.yml` with your credentials:
-
-> 💡 **Get Tokens**: For instructions on how to obtain `Teammorsbot Token` and `Telegrambot Token`, please visit the help documentation: [https://www.teammors.top/openclaw4j/](https://www.teammors.top/openclaw4j/)
->
-> 📧 **Email Skill Configuration**: If you need to use the email sending capability, please refer to [skills/send-email/SKILL.md](skills/send-email/SKILL.md) and configure the corresponding email account credentials.
-
-```yaml
-spring:
-  ai:
-    openai:
-      api-key: your-deepseek-api-key # DeepSeek API Key
-      base-url: https://api.deepseek.com
-
-telegram:
-  id: your-telegram-bot-id
-  token: your-telegram-bot-token
-  name: your-bot-username
-
-redis:
-  ip: localhost
-  port: 6379
-  password: your-redis-password
-
-# MySQL configuration (optional)
-datasource:
-  url: jdbc:mysql://localhost:3306/openclaw4j
-  username: your-username
-  password: your-password
-```
-
-#### 3. Install Python Dependencies
-Skills are located in the `skills/` directory. Ensure your environment has the necessary Python libraries installed (depending on the skills you use):
+### 要数据库：让 Boot 自己拉容器
 
 ```bash
-pip install requests beautifulsoup4 selenium psutil fpdf python-pptx
+cp claw4j-app/src/main/resources/application-local.yml.example \
+   claw4j-app/src/main/resources/application-local.yml
+./mvnw -pl claw4j-app spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
-#### 4. Run the Application
+`local` profile 会用 `compose.yaml` 拉起 Postgres(pgvector) 与 Redis，退出时回收。国内拉不到官方镜像时用环境变量换镜像源：
+
 ```bash
-# Build
-mvn clean package
-
-# Run
-java -jar target/xmessage-openclaw4j-1.0.0.jar
-```
-Or run `OpenClaw4JApplication.java` directly from your IDE (IntelliJ IDEA).
-
-### 📁 Project Structure
-
-```
-OpenClaw4J/
-├── skills/              # Skills directory
-│   ├── blogwatcher/           # Blog watcher
-│   ├── browser-automation/    # Browser automation
-│   ├── chat-summary/          # Chat summary
-│   ├── crypto-price/          # Cryptocurrency price
-│   ├── gemini/                # Gemini integration
-│   ├── github/                # GitHub operations
-│   ├── goplaces/              # Location information
-│   ├── himalaya/              # Himalaya
-│   ├── keno-winning-numbers/  # Keno winning numbers
-│   ├── nano-pdf/              # Lightweight PDF processing
-│   ├── notion/                # Notion integration
-│   ├── openai-whisper/        # OpenAI Whisper
-│   ├── openai-whisper-api/    # OpenAI Whisper API
-│   ├── oracle/                # Oracle database
-│   ├── pdf-generator/         # PDF generator
-│   ├── ppt-generator/         # PPT generator
-│   ├── sag/                   # Intelligent dialogue generation
-│   ├── scheduled-task/        # Scheduled task
-│   ├── send-email/            # Send email
-│   ├── sherpa-onnx-tts/       # Sherpa ONNX TTS
-│   ├── skill-generator/       # Skill generator
-│   ├── summarize/             # Summarize
-│   ├── system-status/         # System status
-│   ├── toutiao-news/          # Toutiao news
-│   ├── trello/                # Trello integration
-│   ├── unread-mail/           # Unread mail
-│   ├── video-frames/          # Video frames
-│   ├── weather-forecast/      # Weather forecast
-│   └── xurl/                  # URL processing
-├── src/
-│   ├── main/java/com/xteammors/openclaw/
-│   │   ├── adapter/           # Message adapters
-│   │   ├── comm/              # Common parameters
-│   │   ├── context/           # Context management
-│   │   ├── manager/           # Managers
-│   │   ├── property/          # Property configurations
-│   │   ├── proxy/             # Message proxies
-│   │   ├── rag/               # RAG related
-│   │   ├── skills/            # Skill system
-│   │   ├── utils/             # Utility classes
-│   │   ├── wssdk/             # WebSocket SDK
-│   │   └── OpenClaw4JApplication.java  # Application entry
-│   └── main/resources/
-│       └── application.yml    # Application configuration
-├── LICENSE
-├── README.md
-├── jadimages.png
-├── pom.xml
-├── screenshot1.png
-└── screenshot2.png
+CLAW4J_POSTGRES_IMAGE=你的镜像 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
----
+`application-local.yml` 被 `.gitignore` 忽略（它可能放真实 key），仓库里只有 `.example` 模板。
 
-## 📄 License
+### 要真实模型
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+见下一节。
 
+## key 怎么配
+
+凭据一律走环境变量，不写进仓库（ADR-0002、ADR-0006）。仓库根目录放一个 `.env`（已被忽略）：
+
+```bash
+DEEPSEEK_API_KEY=sk-xxxxxxxx
+# QWEN_API_KEY=sk-xxxxxxxx   # 备用模型
+```
+
+`application-local.yml` 里有一行 `spring.config.import: optional:file:.env[.properties]` —— Spring Boot 默认**不**读 `.env`（那是 docker compose 的约定），这行把它接进来。也可以直接 `export DEEPSEEK_API_KEY=...`。
+
+`claw4j.model.mock` 是三态的：
+
+| 值 | 行为 |
+| --- | --- |
+| 留空（默认） | 有 key 就用真实模型，没 key 自动降级 mock |
+| `true` | 强制 mock，有 key 也不用（CI 与本机演示用这个） |
+| `false` | 强制真实模型，没 key 直接启动失败 —— 用来发现"配置漏了"，而不是让它悄悄降级 |
+
+主模型 DeepSeek，备用通义（OpenAI 兼容端点）。**测试与 CI 全 mock，从不烧 token** —— CI 上不会因为没有 key 而变红。
+
+## 亲手试一下
+
+起应用后：
+
+```bash
+# 同步问答
+curl -s -X POST http://localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"上周华东区成交额多少"}'
+# {"sessionKey":"http:ethan","text":"[mock] 上周华东区成交额多少"}
+
+# 流式问答（SSE，事件名 chunk / done）
+curl -N -X POST http://localhost:8080/api/chat/stream \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: ethan' \
+  -d '{"text":"上周华东区成交额多少"}'
+
+# 匿名请求进不来
+curl -s -w ' [%{http_code}]' -X POST http://localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -d '{"text":"你好"}'
+# {"error":"缺少 X-Claw4j-User 请求头"} [401]
+```
+
+请求头：`X-Claw4j-User`（必填）、`X-Claw4j-Role`（缺省 `read-only`）、`X-Claw4j-Session`（缺省回落到用户标识）。角色 → 可访问的表/动作在 `claw4j.channel.http.roles` 里配置，改权限不用发版。
+
+现实里的前置条件是由网关在边缘完成认证、把结果写成请求头；**本项目不做登录体系**，那不是考点（ADR-0007）。
+
+## 质量门禁
+
+四条检查层层收紧，都不靠口头约定：
+
+| 门禁 | 拦什么 | 什么时候跑 |
+| --- | --- | --- |
+| `./mvnw verify` | 编译、47 个测试、打包 | CI 每次 push/PR；本地随时 |
+| ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
+| maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
+| pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
+
+启用 hook（一次）：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+CI 上同样只跑 `./mvnw -B -ntp verify`，另外有一条检查专门拦住"有人把 `legacy` 加回根 POM 的 modules"。
+
+**为什么 Advisor 那条值得单独立规则**：`BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，只认 `StreamAdvisor`。只写 `CallAdvisor` 的鉴权 Advisor 在 `.stream()` 上**既不报错也不生效**，客户端照常拿到回答——鉴权等于没做，而且从日志上看不出来。这种"能编译、能跑、但悄悄不生效"的缺陷只能靠机器拦（ADR-0007）。
+
+## legacy/ 是什么
+
+1.x 的冻结代码：Spring Boot 3.3.4 / Spring AI 1.0.0-M6，40 个类 / 6793 行 / 零测试，根包名 `com.xteammors.openclaw`。**不参与任何构建，不再修改**，只作为 before/after 对照保留，冻结位置是 `v1.x-legacy` tag。
+
+它里面那些"教科书级反例"（字符串协议的工具调用、把 shell 交给模型、反射 hack 私有字段的向量库）是这次重建的动机，详见 [legacy/README.md](legacy/README.md)。新代码的包名是 `io.github.claw4j`，与它不共用任何类名。
+
+## 文档
+
+- [`docs/adr/`](docs/adr/) —— 11 条架构决策记录，每条都写了 Considered Options 与被否决的原因
+- [`GLOSSARY.md`](GLOSSARY.md) —— 术语表
+
+## License
+
+见 [LICENSE](LICENSE)。

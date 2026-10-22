@@ -26,4 +26,48 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              ArchUnit 拦的是"源码里 import 了框架"，这条拦的是"POM 里声明了框架依赖"。
+              两者缺一不可：前者管不住有人在 domain 里 import 一个没用到的 Spring 类型
+              （编译不过所以其实也拦得住），后者管不住有人先把依赖加进来、再慢慢写代码。
+              放在 validate 阶段，加错依赖当场就红，不用等到测试阶段。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>domain-must-stay-framework-free</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <searchTransitive>true</searchTransitive>
+                                    <excludes>
+                                        <exclude>org.springframework</exclude>
+                                        <exclude>org.springframework.ai</exclude>
+                                        <exclude>org.springaicommunity</exclude>
+                                        <exclude>com.larksuite.oapi</exclude>
+                                        <exclude>io.micrometer</exclude>
+                                        <exclude>io.projectreactor</exclude>
+                                    </excludes>
+                                    <message>
+                                        domain 模块不得引入 Spring / Spring AI / 厂商 SDK / 响应式库。
+                                        它是唯一被承诺"能脱离框架独立复用"的模块，见 ADR-0004 与 ADR-0010。
+                                        需要框架能力就把它放到 agent 或 channel，由 app 接线。
+                                    </message>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

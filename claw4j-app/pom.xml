@@ -59,11 +59,16 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- 只在本地开发时生效，不进产物，见 ADR-0005 -->
+        <!--
+          只在本地开发时生效，不进产物，见 ADR-0005。
+          用 provided 而不是 Gradle 那套 developmentOnly：Maven 不认这个 scope，
+          每次构建都会打一条"项目格式不合法"的警告，未来版本还可能直接报错。
+          provided 在编译与测试时可见、打包时被 spring-boot-maven-plugin 排除，正好是想要的。
+        -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-docker-compose</artifactId>
-            <scope>developmentOnly</scope>
+            <scope>provided</scope>
             <optional>true</optional>
         </dependency>
 
