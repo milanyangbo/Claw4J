@@ -24,6 +24,16 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-client-chat</artifactId>
         </dependency>
+        <!--
+          主模型供应商（ADR-0006）。故意用纯模型包而不是 starter：
+          starter 带来的自动配置条件是 spring.ai.model.chat=deepseek 且 matchIfMissing=true，
+          跟 api key 无关，缺 key 时照样激活并抛异常。这里由 ModelConfiguration 自己按
+          key 有无装配（ADR-0006），不需要厂商自动配置参与。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-deepseek</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>

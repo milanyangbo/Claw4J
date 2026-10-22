@@ -71,21 +71,6 @@
 
     <profiles>
         <!--
-          真实供应商不放进默认依赖：DeepSeek 的自动配置在缺 key 时会直接抛异常，
-          那样"没有 key 也要能启动"（ADR-0006）就守不住。拿到 key 后：
-              mvn -Preal-model ...
-              CLAW4J_MODEL_MOCK=false DEEPSEEK_API_KEY=sk-xxx
-        -->
-        <profile>
-            <id>real-model</id>
-            <dependencies>
-                <dependency>
-                    <groupId>org.springframework.ai</groupId>
-                    <artifactId>spring-ai-starter-model-deepseek</artifactId>
-                </dependency>
-            </dependencies>
-        </profile>
-        <!--
           飞书 SDK 在 claw4j-channel 里是 optional，不会传递到这里。
           要飞书通道就必须显式声明，否则打出的产物不含飞书能力（也就不会白白带上它的传递依赖）。
           M2 做飞书长连接时启用：-Pchannel-feishu

@@ -1,1 +1,3 @@
+io.github.claw4j.agent.ModelConfiguration
+io.github.claw4j.agent.MockModelConfiguration
 io.github.claw4j.agent.AgentAutoConfiguration

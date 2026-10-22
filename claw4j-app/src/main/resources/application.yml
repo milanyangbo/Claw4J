@@ -24,8 +24,9 @@ spring:
 # 没有 key 时自动降级到 mock 模型，应用仍能启动并跑通全链路。
 claw4j:
   model:
-    # 默认走 mock：没有 key 也能跑通全链路。拿到 key 后设 CLAW4J_MODEL_MOCK=false。
-    mock: ${CLAW4J_MODEL_MOCK:true}
+    # 三态：留空 = 有 key 就用真实模型、没 key 自动降级 mock；
+    # true = 强制 mock（CI 与本地演示）；false = 强制真实模型（没 key 时启动失败，便于发现配置漏了）。
+    mock: ${CLAW4J_MODEL_MOCK:}
     primary: ${CLAW4J_MODEL_PRIMARY:deepseek}
     deepseek:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}

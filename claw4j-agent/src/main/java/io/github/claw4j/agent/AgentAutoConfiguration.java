@@ -1,14 +1,11 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.model.MockChatModel;
 import io.github.claw4j.domain.port.AgentPort;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
 
 /**
  * Agent 的最小装配：一个系统提示词加一条（当前还为空的）Advisor 链。
@@ -28,17 +25,9 @@ public class AgentAutoConfiguration {
             """;
 
     /**
-     * 默认生效，拿到真实 key 后把 claw4j.model.mock 置为 false 即切换。
-     * 标记为 @Primary 是为了在真实模型也存在时不产生歧义：测试与本地演示一律走 mock。
+     * 具体用哪个 ChatModel 由 ModelConfiguration 与 MockModelConfiguration 决定：
+     * 有 key 装真实模型，没 key 兜底 mock。这里只管装配，不关心模型从哪来。
      */
-    @Bean
-    @Primary
-    @ConditionalOnProperty(prefix = "claw4j.model", name = "mock", havingValue = "true", matchIfMissing = true)
-    @ConditionalOnMissingBean(MockChatModel.class)
-    public MockChatModel mockChatModel() {
-        return new MockChatModel();
-    }
-
     @Bean
     @ConditionalOnMissingBean(ChatClient.class)
     public ChatClient chatClient(ChatModel chatModel) {

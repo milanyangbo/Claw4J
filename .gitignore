@@ -17,3 +17,7 @@ scheduled_tasks.json
 # 本地环境变量
 .env
 *.local
+
+# 本地配置覆盖：可能放真实 API key，绝不能入库
+application-local.yml
+application-local.yaml
