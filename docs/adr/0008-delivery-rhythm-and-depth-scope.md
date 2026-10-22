@@ -23,14 +23,16 @@ date: 2026-10-22
 |---|---|---|
 | **M0** | 多模块骨架（ADR-0004）、Boot 4.1.2 + JDK 21、`docker compose` 起 Postgres(pgvector) + Redis、一次真实 `ChatClient` 调用、CI 绿 | 问一句话能拿到回答 |
 | **M1** | Channel(HTTP+SSE) + Session 记忆 + 业务库 `@Tool`（Text-to-SQL）+ Advisor 链鉴权（ADR-0007）+ 测试覆盖 | 能在 IM 里问"上周华东区成交额"并拿到数 |
-| **M2** | Agent Skills（渐进式披露）+ Subagent 编排 + MCP server + 三层能力打通 + Skill Generator 沙箱自测 | 模型能自己选技能、委派子 Agent、跑通 MCP |
+| **M2** | Agent Skills（渐进式披露）+ Subagent 编排 + MCP server + 三层能力打通 + Skill Generator 沙箱自测 + 飞书长连接通道（含异步 ACK 与事件去重） | 模型能自己选技能、委派子 Agent、跑通 MCP，且能在飞书里发消息问答 |
 | **M3** | A2A 端点 + 可观测（token 计量、Micrometer）+ 评估器进 CI + 语义缓存 | 能被别的 Agent 通过 AgentCard 发现并调用 |
 
 M0 结束就必须能演示，不等 M2。
 
 ### 通道优先级
 
-`ChatChannel` 接口按三个实现设计，**交付顺序：HTTP+SSE（M1）→ A2A（M3）→ Teammors WebSocket（最后）**。1.x 那套私有加密 WebSocket（`XMessageClient`，685 行）排在最后，因为它的加解密与心跳协议讲不出通用价值，而维护成本与缺陷密度（每请求 `new OkHttpClient()`、跨线程 `ArrayList`、public 可变字段）都是实打实的。它的 ECDH/AES 代码**保留在 `legacy/` 里作为对照**，用来讲"我们如何把通道抽象掉了"。时间不够就不做，不影响叙事。
+真实 IM 通道的选型（飞书长连接为主、企业微信个人不可行）见 **ADR-0009**。交付顺序更新为：**HTTP+SSE（M1）→ 飞书长连接（M2）→ A2A（M3）→ Teammors WebSocket（最后，可不做）**；Telegram 作为可选的第二 Channel 实现，用于证明 SPI 可替换。
+
+1.x 那套私有加密 WebSocket（`XMessageClient`，685 行）排在最后，因为它的加解密与心跳协议讲不出通用价值，而维护成本与缺陷密度（每请求 `new OkHttpClient()`、跨线程 `ArrayList`、public 可变字段）都是实打实的。它的 ECDH/AES 代码**保留在 `legacy/` 里作为对照**，用来讲"我们如何把通道抽象掉了"。时间不够就不做，不影响叙事。
 
 ### 测试策略
 
