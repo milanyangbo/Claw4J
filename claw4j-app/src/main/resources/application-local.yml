@@ -1,0 +1,16 @@
+# 本地开发：让 Boot 拉起 compose.yaml 里的 Postgres(pgvector) 与 Redis。
+# 连接信息默认值已在 application.yml，这里只负责把容器拉起来。
+#
+# 启动方式（工作目录要能找到 compose.yaml）：
+#   mvn -pl claw4j-app spring-boot:run -Dspring-boot.run.profiles=local
+
+spring:
+  docker:
+    compose:
+      enabled: true
+      file: compose.yaml
+      lifecycle-management: start-and-stop
+
+logging:
+  level:
+    io.github.claw4j: DEBUG
