@@ -6,9 +6,12 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -138,6 +141,33 @@ public class RoutingChatModel implements ChatModel {
                 .presencePenalty(incoming.getPresencePenalty())
                 .stopSequences(incoming.getStopSequences())
                 .model(own.getModel());
+        copyTools(builder, incoming);
         return new Prompt(prompt.getInstructions(), builder.build());
+    }
+
+    /**
+     * 工具回调与工具上下文必须跟着一起搬。
+     *
+     * <p>上面那段只搬"厂商无关"的标量，工具不在其中 —— 而工具恰恰是这一条链路的全部意义。
+     * 漏掉它的表现不是报错，是<b>降级后模型看不到工具</b>：真实联调时把主的 base-url
+     * 指到没人听的端口，备模型（通义）接住请求后答的是"我无法直接访问数据库"，
+     * 然后反过来跟用户核对口径。它没崩、没报异常，只是再也查不到数——
+     * 主备降级这条救命路径因此只剩下"还能说话"，而不再是"还能干活"。
+     *
+     * <p>只在两边都支持工具时才搬：不支持工具的那一家本来也用不上。
+     */
+    private static void copyTools(ChatOptions.Builder<?> builder, ChatOptions incoming) {
+        if (!(builder instanceof ToolCallingChatOptions.Builder<?> target)
+                || !(incoming instanceof ToolCallingChatOptions source)) {
+            return;
+        }
+        List<ToolCallback> callbacks = source.getToolCallbacks();
+        if (callbacks != null && !callbacks.isEmpty()) {
+            target.toolCallbacks(callbacks);
+        }
+        Map<String, Object> context = source.getToolContext();
+        if (context != null && !context.isEmpty()) {
+            target.toolContext(context);
+        }
     }
 }

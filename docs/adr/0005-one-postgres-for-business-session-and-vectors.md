@@ -40,6 +40,37 @@ date: 2026-10-22
 会话表落哪个 schema 由连接的 `currentSchema` 决定——这一点不能靠它的自动配置，
 它默认拿容器里那个主 `DataSource`，表会落到 public。
 
+**2026-10-23：M1-05 / M1-07 定下的两条"库怎么用"的规则**，原先只在票与代码注释里，
+这里补上——它们不是实现的副作用，是决策。
+
+**schema 怎么演进：Flyway 版本化，只有一个入口。**
+迁移脚本放在 `claw4j-tools` 的 `db/migration`（`V1` 业务表、`V2` 种子、`V3` 会话表），
+改字段是加一个新版本文件，**不改已提交的版本**——本地常驻库已经记过账，改历史版本会让校验和不匹配。
+三条随之而来的约束值得记：
+
+- **建表由 Flyway 做，官方 initializer 关掉**（`spring.ai.session.repository.jdbc.initialize-schema=never`）。
+  两套初始化并存时谁先谁后是笔糊涂账，而官方那份默认只在嵌入式库上跑，在 Postgres 上它什么都不做，
+  靠它就等于"以为建了其实没建"；更要命的是它在 bean 创建时就要连库探测驱动类型，
+  于是"库挂了"会变成"应用起不来"。
+- **Boot 4 要显式引 `spring-boot-flyway`**。它把 Flyway 的自动配置拆成了独立 artifact，
+  只有 `flyway-core` 在 classpath 上时，`spring.flyway.enabled=true` 是一句没有东西在执行的配置：
+  不报错、不警告、日志里不出现 Flyway 三个字，只是表一直不建，而业务侧报的是"连不上库"
+  （M1-07 第一次真实联调就是这么挂的）。这条由 `SchemaMigrationOnStartupTest` 盯着。
+- **Flyway 建的语句写全限定名，运行时的查询不带前缀**。Flyway 连的是默认 `search_path`，
+  不写前缀表就落到 public；而运行时那条连接带着 `currentSchema=claw4j_session`。
+  建的时候限定、查的时候不限定，两边落点一致且都不依赖"当前 schema 是什么"。
+
+**业务查询只能只读，而且要有两层，因为一层不够。**
+第一层是语句校验（`SalesSqlGuard`）：去注释与字符串字面量后单语句、首关键字是 select/with、
+不含写操作关键字、外面包一层子查询加行上限。第二层是只读事务
+（`TransactionTemplate(readOnly=true)`），写操作由**数据库**拒绝。
+
+只做第一层不够的理由很具体：**PostgreSQL 有可写 CTE**，
+`with x as (insert into ... returning *) select * from x` 是一条语句且以 `with` 开头，
+任何"首关键字是 select/with 就放行"的规则都会放过它。所以校验漏了，数据也不会没。
+反过来只做第二层也不行：脏 SQL 会在数据库里报错再回滚，模型拿不到能改的信息，
+自纠错链路就断了——自纠错的前提是工具把数据库的原话返回给模型（ADR-0008）。
+
 **同一次落地还定了另外两条**，都属于"会话存在库里"这件事的直接后果：
 
 - **记忆不可用就降级，不拖垮整条链**。会话是增强能力不是安全边界：库挂了的时候，

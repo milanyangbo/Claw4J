@@ -5,6 +5,7 @@ import io.github.claw4j.agent.model.RoutingChatModel;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
+import org.springframework.ai.retry.RetryUtils;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
@@ -77,6 +78,28 @@ class ModelSelectionTest {
                             .getOptions().getModel()).isEqualTo("deepseek-chat");
                     assertThat(context.getBean(ModelConfiguration.QWEN_BEAN, ChatModel.class)
                             .getOptions().getModel()).isEqualTo("qwen-plus");
+                });
+    }
+
+    /**
+     * 模型内部只留短重试。
+     *
+     * <p>默认的 {@code RetryUtils.DEFAULT_RETRY_TEMPLATE} 是 10 次、2 秒起、×5 递增、上限 180 秒；
+     * 上层还有 {@code RoutingChatModel} 在"换一家"，两层相乘的结果实测是
+     * 4 分 40 秒还没轮到备（主的 base-url 指到没人听的端口）。降级写出来等于没写，
+     * 所以这里钉死：内部用 {@code SHORT_RETRY_TEMPLATE}（10 次 × 100ms，合计约 1 秒），
+     * 超时预算花在换供应商上，而不是在同一家身上等。
+     *
+     * <p>断言用引用相等而不是"看它重试几次"，是因为这个坑的形状就是"不知不觉用了默认模板"。
+     */
+    @Test
+    void 模型内部只留短重试_不叠默认的指数退避() {
+        contextRunner.withPropertyValues(BOTH_KEYS)
+                .run(context -> {
+                    DeepSeekChatModel deepSeek = context.getBean(
+                            ModelConfiguration.DEEPSEEK_BEAN, DeepSeekChatModel.class);
+                    assertThat(deepSeek.retryTemplate).isSameAs(RetryUtils.SHORT_RETRY_TEMPLATE);
+                    assertThat(deepSeek.retryTemplate).isNotSameAs(RetryUtils.DEFAULT_RETRY_TEMPLATE);
                 });
     }
 

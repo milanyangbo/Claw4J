@@ -6,7 +6,7 @@
 
 整个项目是 **基于 Spring AI 2.x 从零重建** 的（1.x 版本已冻结进 `legacy/`，见 [legacy/README.md](legacy/README.md)）。重建的全部设计决策都留了 ADR，见 [`docs/adr/`](docs/adr/)。
 
-> **当前进度：M1 进行中。** M0 骨架已完成：HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1 已完成业务库与种子、工具调用闭环、鉴权与脱敏 Advisor、Text-to-SQL 闭环、会话记忆（落 Postgres）；待办是真实模型联调。M2 接飞书长连接与 Skill 引擎。
+> **当前进度：M1 已完成。** M0 骨架：HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1：业务库与种子、工具调用闭环、鉴权与脱敏 Advisor、Text-to-SQL 闭环、会话记忆（落 Postgres）、**真实模型联调（DeepSeek 与通义各跑一遍，主备降级在真实链路上复现）**。M2 接飞书长连接与 Skill 引擎。
 
 ## 技术栈
 
@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 171 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 175 个测试
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -86,6 +86,12 @@ CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 \
 由 Flyway 执行。**改字段是加一个 `V4__xxx.sql`，不要回头改已提交的版本** —— 本地常驻库已经记过账了，
 改历史版本会让它的校验和不匹配，而删库重建正是这套迁移要替你免掉的事。
 
+"应用起来就迁到最新版"这件事由测试盯着（`SchemaMigrationOnStartupTest`）。它值得单独立一条，
+是因为 Boot 4 把 Flyway 的自动配置拆成了独立 artifact：只有 `flyway-core` 在 classpath 上时，
+`spring.flyway.enabled=true` 是一句**没有任何东西在执行**的配置——不报错、不警告、日志里不出现
+Flyway 三个字，只是表一直不建，而业务侧报的是"连不上库"，看的人会去查网络（07 号票第一次
+真实联调就是这么挂的）。所以要显式引 `spring-boot-flyway`，它跟着迁移脚本一起放在 tools 模块。
+
 种子里的日期是相对的（按"本周一"推算），所以**每次重建的库**里，"上周"永远落在同一批订单上。
 注意这个"相对"只在迁移那一刻求值：常驻的本地库建好之后，它里面的"上周"是**建库那天**的上周，
 放久了照样会漂。演示时发现数字对不上，重建一次库就好——这也是测试不肯复用常驻库的一个理由。
@@ -114,7 +120,18 @@ CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 ./mvnw verify
 
 ### 要真实模型
 
-见下一节。
+配好 key 起应用即可，见下一节。想让机器把真实闭环跑一遍（而不是自己 curl）：
+
+```bash
+docker compose up -d           # 真实模型那条链路要真库：工具要查得到数
+set -a && . ./.env && set +a   # 把 key 导进当前 shell（.env 已被 git 忽略）
+./mvnw -Preal-model verify     # 只跑 *IT.java，烧 token，默认不跑
+CLAW4J_MODEL_PRIMARY=qwen ./mvnw -Preal-model verify   # 换另一家当主模型
+```
+
+真实调用**不进 CI**（ADR-0006、ADR-0008）：它烧钱、依赖外网、还依赖本机起着的库，
+三条里断一条就红。放进回归基线，基线就从"改坏了会红"变成"供应商抖一下也会红"，
+人很快学会无视它——那等于没有基线。回归基线是那 175 个 mock 测试。
 
 ## key 怎么配
 
@@ -156,27 +173,108 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 两家都配了 key 才有备可用；只配一家也能跑，只是没有备。主模型那家没配 key 会**直接启动失败**，
 不会悄悄拿备用的顶上（ADR-0006）。
 
+### 降级这条路径上踩到的两个坑
+
+它们都是真实联调才暴露的——**在任何一张假模型测试里都不会红**，因为假模型既不会真的失败、
+也不会真的需要工具。
+
+**一、换供应商时工具会丢。** 各家的 `ChatOptions` 互不兼容，降级时必须把参数翻译成备模型那一型
+（否则强转当场 `ClassCastException`）；而翻译时只搬温度、topP 这类标量是不够的——
+工具回调不在标量里。漏掉它的表现不是报错，是**备模型看不到 `querySales`**：
+真实链路上的回答变成"我无法直接访问数据库，请确认口径"。没崩、没超时，只是再也查不到数，
+主备降级因此只剩"还能说话"而不再是"还能干活"。工具回调与工具上下文现在跟着一起搬，
+`RoutingChatModelTest` 里钉着。
+
+**二、模型内部的重试会把降级拖成分钟级。** Spring AI 默认给 `DeepSeekChatModel` 套的重试模板是
+10 次、2 秒起、×5 递增、上限 180 秒；上层还有路由在"换一家"，两层相乘的结果是
+真实联调时**等了 4 分 40 秒还没轮到备**，用户看到的是一直转圈。现在模型内部只留短重试
+（`RetryUtils.SHORT_RETRY_TEMPLATE`：10 次 × 100ms，合计约 1 秒），
+超时预算花在换供应商上，而不是在同一家身上等。通义那侧的 SDK 重试同样关掉（`maxRetries(0)`），
+理由一样。
+
 ## 亲手试一下
 
-起应用后：
+下面是**真实模型（DeepSeek 主）+ 真库**跑出来的原样输出，不是 mock。没配 key 时同样的请求
+回的是 `{"text":"[mock] 上周华东区成交额多少"}`——那条路径 CI 每次都在跑。
 
 ```bash
-# 同步问答
+# 同步问答：模型自己写了 SQL、自己查了库
 curl -s -X POST http://localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
   -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
   -d '{"text":"上周华东区成交额多少"}'
-# {"chatId":"http:ethan","text":"[mock] 上周华东区成交额多少"}
+```
+```json
+{"chatId":"http:ethan","text":"**上周华东区成交额：￥128,400.00**\n\n计算标准：按订单所属区域（region_code = east）统计，`sum(order_item.amount)`，已排除状态为 CANCELLED 的订单；时间窗口为上周一 00:00 到本周一 00:00（左闭右开）。"}
+```
 
+```bash
+# 换一个角色头问同一句话：拿不到就是拿不到
+curl -s -X POST http://localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: guest01' -H 'X-Claw4j-Role: guest' \
+  -d '{"text":"上周华东区成交额多少"}'
+```
+```json
+{"chatId":"http:guest01","text":"没有权限：角色 guest 不允许访问表 customer、order_item、sales_order（工具 querySales）。"}
+```
+
+```bash
+# 第二轮什么都不复述（会话记忆，华北那次是流式）
+curl -s -X POST http://localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"那华南呢"}'
+```
+```json
+{"chatId":"http:ethan","text":"我查了一下，华南区上周成交额是 **￥26,000.00**。\n\n需要说明的是：前面那条华东的数字（￥128,400.00）是上一轮对话里给出的……"}
+```
+
+```bash
 # 流式问答（SSE，事件名 chunk / done）
 curl -N -X POST http://localhost:8080/api/chat/stream \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: ethan' \
-  -d '{"text":"上周华东区成交额多少"}'
+  -d '{"text":"上周华北区成交额多少"}'
+```
+```
+event:chunk
+data:**
 
+event:chunk
+data:上周华北区成交额：￥31,500.00**
+...
+event:done
+data:
+```
+
+```bash
 # 匿名请求进不来
 curl -s -w ' [%{http_code}]' -X POST http://localhost:8080/api/chat \
   -H 'Content-Type: application/json' -d '{"text":"你好"}'
 # {"error":"缺少 X-Claw4j-User 请求头"} [401]
+```
+
+**换一家当主模型**（通义，走它的 OpenAI 兼容端点）：
+
+```bash
+CLAW4J_MODEL_PRIMARY=qwen ./mvnw -pl claw4j-app spring-boot:run
+```
+```json
+{"chatId":"http:qwen01","text":"上周华东区成交额为 128,400.00 元。"}
+```
+
+**主备降级**：把主的 base-url 指到没人听的端口，问同一句话，请求落到备（通义）上：
+
+```bash
+DEEPSEEK_BASE_URL=http://127.0.0.1:9/v1 ./mvnw -pl claw4j-app spring-boot:run
+curl -s -X POST http://localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: ops9' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"上周华东区成交额多少"}'
+# {"chatId":"http:ops9","text":"上周华东区成交额为 128,400.00 元。"}   ← 6.4 秒
+```
+```
+WARN  i.g.c.agent.model.RoutingChatModel : 模型 deepseek 调用失败，降级到下一个（若有）
 ```
 
 请求头：`X-Claw4j-User`（必填）、`X-Claw4j-Role`（缺省 `read-only`）、`X-Claw4j-Chat-Id`（缺省回落到用户标识）。角色 → 可访问的表/动作在 `claw4j.channel.http.roles` 里配置，改权限不用发版。
@@ -315,7 +413,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、171 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、175 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |

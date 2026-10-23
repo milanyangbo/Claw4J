@@ -48,6 +48,18 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
+        <!--
+          Boot 4 把 Flyway 的自动配置拆成了独立 artifact：flyway-core 在 classpath 上
+          并不足以让 spring.flyway.enabled 生效，FlywayAutoConfiguration 在 spring-boot-flyway 里。
+          少了这一条的表现是本项目至今最阴的一种：配置写着 enabled=true、启动日志一个字不提、
+          表一直不建，而业务侧报的是"连不上库"——根因在迁移没跑，看的人只会去查网络。
+          （07 号票第一次真实联调就是这么挂的。）
+          它跟迁移脚本放在一起，是因为"启动即迁移"这件事只有这两个东西同时在才成立。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
         <!-- 驱动只要运行时，编译期不该有人 import 它 -->
         <dependency>
             <groupId>org.postgresql</groupId>

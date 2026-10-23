@@ -9,10 +9,14 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -125,6 +129,38 @@ class RoutingChatModelTest {
         assertThat(used.getModel()).isEqualTo("deepseek-chat");
         // 厂商无关的参数要跟着过去，否则调用方设的温度在降级后悄悄失效
         assertThat(used.getTemperature()).isEqualTo(0.2);
+    }
+
+    /**
+     * 这条钉的是第二个真 bug，而且比类型转换那个更阴：那一个是降级时直接崩，
+     * 这一个降级后<b>照常返回，只是再也没有工具可用</b>。
+     *
+     * <p>跨厂商换参数时只搬温度、topP 那几个标量是不够的——工具回调不在标量里。
+     * 真实链路上的表现是：主的端点指死后备模型接住请求，回答变成
+     * "我无法直接访问数据库，请确认口径"。不报错、不超时，只是查不到数了。
+     * 所以断言钉在"备模型收到的参数里有没有工具"，而不是"它有没有回答"。
+     */
+    @Test
+    void 降级时工具回调与工具上下文跟着过去() {
+        ToolCallback tool = new FakeToolCallback("querySales");
+        FakeChatModel primary = FakeChatModel
+                .broken("deepseek", new IllegalStateException("连接被拒"))
+                .withOptions(DeepSeekChatOptions.builder()
+                        .model("deepseek-chat")
+                        .toolCallbacks(List.of(tool))
+                        .toolContext(Map.of("tenant", "acme"))
+                        .build());
+        FakeChatModel secondary = FakeChatModel
+                .ok("qwen", "来自备模型")
+                .withOptions(OpenAiChatOptions.builder().model("qwen-plus").build());
+
+        Prompt incoming = new Prompt(new UserMessage("上周华东区成交额多少"), primary.getOptions());
+        assertThat(text(routing(primary, secondary).call(incoming))).isEqualTo("来自备模型");
+
+        ChatOptions used = secondary.lastPrompt().getOptions();
+        assertThat(used).isInstanceOf(ToolCallingChatOptions.class);
+        assertThat(((ToolCallingChatOptions) used).getToolCallbacks()).containsExactly(tool);
+        assertThat(((ToolCallingChatOptions) used).getToolContext()).containsEntry("tenant", "acme");
     }
 
     @Test
@@ -247,6 +283,27 @@ class RoutingChatModelTest {
             return ChatResponse.builder()
                     .generations(List.of(new Generation(new AssistantMessage(text))))
                     .build();
+        }
+    }
+
+    /**
+     * 最小可用的工具回调：只要能报出自己的名字就够了 ——
+     * 这里要验的是"它有没有被搬到备模型那一侧"，不是它能不能真的执行。
+     */
+    private record FakeToolCallback(String name) implements ToolCallback {
+
+        @Override
+        public ToolDefinition getToolDefinition() {
+            return ToolDefinition.builder()
+                    .name(name)
+                    .description("假工具，只为验参数搬运")
+                    .inputSchema("{\"type\":\"object\"}")
+                    .build();
+        }
+
+        @Override
+        public String call(String input) {
+            return "{}";
         }
     }
 }

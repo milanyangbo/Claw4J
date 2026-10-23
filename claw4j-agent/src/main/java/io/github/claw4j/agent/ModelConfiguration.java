@@ -13,6 +13,7 @@ import org.springframework.ai.deepseek.DeepSeekChatModel;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.retry.RetryUtils;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.http.okhttp.SpringAiOpenAiHttpClient;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -89,6 +90,13 @@ public class ModelConfiguration {
                 .options(DeepSeekChatOptions.builder()
                         .model(config.getModel())
                         .build())
+                // 模型内部只留短重试（10 次 × 100ms，合计约 1 秒），不用默认的
+                // RetryUtils.DEFAULT_RETRY_TEMPLATE（10 次、2s 起、×5 递增、上限 180s）。
+                // 上层 RoutingChatModel 已经在做"换一家"，这里再叠一层指数退避就是乘法：
+                // 真实联调时把主的 base-url 指到没人听的端口，等了 4 分 40 秒还没轮到备，
+                // 用户看到的是一直转圈——降级写出来等于没写。短重试足够扛一次抖，
+                // 真出问题让路由去换供应商，两边职责不重叠。
+                .retryTemplate(RetryUtils.SHORT_RETRY_TEMPLATE)
                 .build();
     }
 

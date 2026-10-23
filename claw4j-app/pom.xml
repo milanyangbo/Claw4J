@@ -48,6 +48,10 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
+        <!--
+          Boot 4 把 Flyway 的自动配置拆成了独立 artifact，而那条依赖跟着迁移脚本走，
+          声明在 tools 模块（见那里的注释），这里靠依赖传递拿到。
+        -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
@@ -80,6 +84,32 @@
     </dependencies>
 
     <profiles>
+        <!--
+          真实模型联调。默认不开，因为它烧 token、依赖外网、还要本机 docker compose 起来的库。
+          回归基线是 mock 那批测试（ADR-0006、ADR-0008）：它们不烧钱也不会因为供应商抖动而红。
+          用法：docker compose up -d && ./mvnw -Preal-model verify
+        -->
+        <profile>
+            <id>real-model</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <!-- 只跑 IT：这一趟不看回归基线，只证明"真实供应商接得上" -->
+                            <includes>
+                                <include>**/*IT.java</include>
+                            </includes>
+                            <excludes>
+                                <exclude>**/*Test.java</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!--
           飞书 SDK 在 claw4j-channel 里是 optional，不会传递到这里。
           要飞书通道就必须显式声明，否则打出的产物不含飞书能力（也就不会白白带上它的传递依赖）。
