@@ -1,6 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import org.springframework.ai.chat.client.ChatClient;
@@ -59,6 +60,16 @@ public class AgentAutoConfiguration {
     @ConditionalOnMissingBean(AuthorizationAdvisor.class)
     public AuthorizationAdvisor authorizationAdvisor(ObjectProvider<ToolPermissionRegistry> registries) {
         return new AuthorizationAdvisor(registries.orderedStream().toList());
+    }
+
+    /**
+     * 出站脱敏：order 排在工具循环**外面**（见 {@link PiiRedactionAdvisor#ORDER}），
+     * 整通对话只在出站前做一次。它不认识任何具体通道，也不改调用方——只是多加一个 bean。
+     */
+    @Bean
+    @ConditionalOnMissingBean(PiiRedactionAdvisor.class)
+    public PiiRedactionAdvisor piiRedactionAdvisor() {
+        return new PiiRedactionAdvisor();
     }
 
     /**

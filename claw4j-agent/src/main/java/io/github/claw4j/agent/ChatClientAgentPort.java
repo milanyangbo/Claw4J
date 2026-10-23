@@ -4,6 +4,8 @@ import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 
 import java.util.Objects;
@@ -25,16 +27,24 @@ import java.util.function.Consumer;
  */
 public class ChatClientAgentPort implements AgentPort {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatClientAgentPort.class);
+
     private final ChatClient chatClient;
 
     public ChatClientAgentPort(ChatClient chatClient) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
     }
 
+    /**
+     * 出站日志敢打**全文**，是因为脱敏已经在 Advisor 链上做完了。
+     * 反过来：这条日志也是"脱敏发生在出站之前而不是事后替换"的证据——
+     * 哪天有人在链路之外打日志，这里会立刻出现原始值。
+     */
     @Override
     public OutboundMessage reply(InboundMessage message) {
         Objects.requireNonNull(message, "message");
         String text = promptOf(message).call().content();
+        log.debug("出站回答 chatId={} text={}", message.chatId(), text);
         return OutboundMessage.of(message.chatId(), text);
     }
 
@@ -46,7 +56,10 @@ public class ChatClientAgentPort implements AgentPort {
         promptOf(message)
                 .stream()
                 .content()
-                .doOnNext(chunk -> onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk)))
+                .doOnNext(chunk -> {
+                    log.debug("出站分块 chatId={} chunk={}", message.chatId(), chunk);
+                    onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk));
+                })
                 .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "")))
                 .blockLast();
     }
