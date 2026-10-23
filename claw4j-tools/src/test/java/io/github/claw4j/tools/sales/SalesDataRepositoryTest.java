@@ -113,13 +113,16 @@ class SalesDataRepositoryTest {
     @DisplayName("重启一次不会重放已执行过的迁移")
     void 迁移不会被重放() {
         // 第二次 migrate 是 Flyway 的 no-op，所以它自己证明不了什么——
-        // 真要证明的是"没有多出一条执行记录"：把 V2 写成 repeatable（R__ 前缀）
-        // 或者版本号改了，这里就会变成 3 条，种子被插两遍（撞 unique 或金额翻倍）。
+        // 真要证明的是"种子那条只执行过一次"：把 V2 写成 repeatable（R__ 前缀）
+        // 或者版本号改了，这里就会变成 2 条，种子被插两遍（撞 unique 或金额翻倍）。
+        // 断言钉在 V2 这一条上而不是总数：总数会随新增迁移变化（会话 schema 那条 V3
+        // 就让它是 3），改一次迁移就红一次，红的原因却跟"重放"毫无关系。
         PostgresTestSupport.migrate(POSTGRES);
-        Long applied = jdbc.sql("select count(*) from flyway_schema_history where success")
+        Long seedRuns = jdbc.sql("select count(*) from flyway_schema_history "
+                        + "where success and script = 'V2__business_seed.sql'")
                 .query(Long.class)
                 .single();
-        assertThat(applied).isEqualTo(2L);
+        assertThat(seedRuns).isEqualTo(1L);
         assertThat(repository.sumAmount("east", lastMonday(), thisMonday)).isEqualTo(LAST_WEEK_EAST);
     }
 

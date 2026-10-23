@@ -6,7 +6,6 @@ import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.tools.ToolsAutoConfiguration;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -16,13 +15,10 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import javax.sql.DataSource;
 import java.util.ArrayList;
@@ -63,24 +59,14 @@ class SalesQueryEndToEndTest {
               and o.order_date < date_trunc('week', current_date)""";
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(image())
-            .withDatabaseName("claw4j")
-            .withUsername("claw4j")
-            .withPassword("claw4j");
+    static final PostgreSQLContainer<?> POSTGRES = PostgresSupport.container();
 
     private static DataSource dataSource;
 
     @BeforeAll
     static void migrate() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
-        DriverManagerDataSource ds = new DriverManagerDataSource();
-        ds.setUrl(POSTGRES.getJdbcUrl());
-        ds.setUsername(POSTGRES.getUsername());
-        ds.setPassword(POSTGRES.getPassword());
-        dataSource = ds;
+        PostgresSupport.migrate(POSTGRES);
+        dataSource = PostgresSupport.dataSource(POSTGRES);
     }
 
     @Test
@@ -157,32 +143,8 @@ class SalesQueryEndToEndTest {
                 .withBean(PlatformTransactionManager.class, () -> new DataSourceTransactionManager(dataSource));
     }
 
-    private static String imageName() {
-        String configured = System.getenv("CLAW4J_POSTGRES_IMAGE");
-        return configured == null || configured.isBlank() ? "pgvector/pgvector:pg16" : configured;
-    }
-
-    /** 镜像站的名字不像 postgres，不声明兼容会被 Testcontainers 在启动前拒绝。 */
-    private static DockerImageName image() {
-        DockerImageName parsed = DockerImageName.parse(imageName());
-        return parsed.getRepository().endsWith("postgres")
-                ? parsed
-                : parsed.asCompatibleSubstituteFor("postgres");
-    }
-
     @SuppressWarnings("unused")
     static boolean postgresImageIsAvailable() {
-        try {
-            DockerClientFactory.instance().client().inspectImageCmd(imageName()).exec();
-            return true;
-        }
-        catch (RuntimeException notAvailable) {
-            if ("required".equals(System.getProperty("claw4j.dbTests"))) {
-                throw new IllegalStateException("数据库测试跑不起来（" + notAvailable.getMessage()
-                        + "）。当前 claw4j.dbTests=required，所以这里不跳过。");
-            }
-            System.err.println("[SalesQueryEndToEndTest] 镜像不可用，本次跳过：" + notAvailable.getMessage());
-            return false;
-        }
+        return PostgresSupport.imageAvailable("SalesQueryEndToEndTest");
     }
 }

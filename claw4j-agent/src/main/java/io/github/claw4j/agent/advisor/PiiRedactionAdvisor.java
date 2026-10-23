@@ -38,8 +38,13 @@ public class PiiRedactionAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 工具循环之外、整通对话只跑一次。比 {@link ToolCallingAdvisor#DEFAULT_ORDER} 小，
      * 也就是排在它前面（链按 order 升序）。
+     *
+     * <p><b>这个值的下限由会话记忆定</b>：链的 after 按 order 降序跑，order 越大越先收尾。
+     * 脱敏必须比 {@link io.github.claw4j.agent.session.SessionMemoryConfiguration#ADVISOR_ORDER}
+     * <b>先</b>收尾，记忆写进库里的才是掩码后的文本，而不是原始号码。
+     * 否则"出站脱敏了"是真的，会话表里躺着的仍是明文——那才是更持久的一份泄露。
      */
-    public static final int ORDER = Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER - 100;
+    public static final int ORDER = Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER;
 
     @Override
     public String getName() {

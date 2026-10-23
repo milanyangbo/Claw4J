@@ -53,4 +53,19 @@ class AgentArchitectureTest {
             classes().that().areAssignableTo(Advisor.class)
                     .should().beAssignableTo(StreamAdvisor.class)
                     .because("Advisor 必须双实现，否则流式路径会静默跳过它（ADR-0007）");
+
+    /**
+     * 内存版会话被禁用（ADR-0005、M1-06）。
+     *
+     * <p>值得单独立一条规则的理由和 Advisor 那条一样：内存版能编译、能跑、单实例下表现完美，
+     * 只在**多实例**下失忆——而本地演示永远只有一个实例，所以这个缺陷只会暴露在生产。
+     * 装配测试断言的是"现在装的是 JDBC 版"，这条断言的是"没有人能把内存版接回来"：
+     * 前者看当前状态，后者看可能性，两个都要有。
+     */
+    @ArchTest
+    static final ArchRule session_must_not_use_in_memory_repository =
+            noClasses().that().resideInAPackage("io.github.claw4j.agent..")
+                    .should().dependOnClassesThat()
+                    .haveFullyQualifiedName("org.springframework.ai.session.InMemorySessionRepository")
+                    .because("内存会话在多实例下必然失忆，ADR-0005 要求会话落 Postgres");
 }

@@ -16,6 +16,7 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 /**
  * 按脚本吐响应的假模型（测试夹具，ADR-0006：单测不烧 token、不依赖网络）。
@@ -40,13 +41,22 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class ScriptedChatModel implements ChatModel {
 
-    private final Queue<ChatResponse> script = new ConcurrentLinkedQueue<>();
+    /**
+     * 每一步是一条"收到什么 → 吐什么"的函数，而不是一条写死的响应。
+     *
+     * <p>为什么从写死升级成函数：会话记忆的判据是"第二轮能不能接上第一轮"，
+     * 而"接上了"这件事只能由**模型看到的东西**决定。写死的脚本无论历史在不在，
+     * 都会吐同一句话，于是"有记忆"和"没记忆"拿到的是同一个答案——断言无从分辨。
+     * 有了函数，就能写出"历史里没有上一轮，就反问一句"这种分支，
+     * 无记忆的实现会落在反问那一支上，测试立刻红。
+     */
+    private final Queue<Function<Prompt, ChatResponse>> script = new ConcurrentLinkedQueue<>();
 
     private final List<Prompt> received = new CopyOnWriteArrayList<>();
 
     private final AtomicInteger taken = new AtomicInteger();
 
-    private ScriptedChatModel(List<ChatResponse> responses) {
+    private ScriptedChatModel(List<Function<Prompt, ChatResponse>> responses) {
         script.addAll(responses);
     }
 
@@ -63,7 +73,7 @@ public final class ScriptedChatModel implements ChatModel {
     public ChatResponse call(Prompt prompt) {
         received.add(prompt);
         taken.incrementAndGet();
-        return next();
+        return next(prompt);
     }
 
     /**
@@ -77,7 +87,7 @@ public final class ScriptedChatModel implements ChatModel {
         return Flux.defer(() -> {
             received.add(prompt);
             taken.incrementAndGet();
-            ChatResponse response = next();
+            ChatResponse response = next(prompt);
             if (response.getResult().getOutput().hasToolCalls()) {
                 return Flux.just(response);
             }
@@ -117,11 +127,14 @@ public final class ScriptedChatModel implements ChatModel {
      * 于是"工具没执行"和"执行了"看起来一模一样。
      */
     public List<String> promptTexts() {
-        return received.stream()
-                .map(prompt -> prompt.getInstructions().stream()
-                        .map(ScriptedChatModel::messageText)
-                        .reduce("", String::concat))
-                .toList();
+        return received.stream().map(ScriptedChatModel::promptText).toList();
+    }
+
+    /** 一次调用收到的提示词全文。{@link #thenAnswer} 拿到的就是它。 */
+    private static String promptText(Prompt prompt) {
+        return prompt.getInstructions().stream()
+                .map(ScriptedChatModel::messageText)
+                .reduce("", String::concat);
     }
 
     /**
@@ -138,14 +151,14 @@ public final class ScriptedChatModel implements ChatModel {
         return message.getText() == null ? "" : message.getText();
     }
 
-    private ChatResponse next() {
-        ChatResponse response = script.poll();
-        if (response == null) {
+    private ChatResponse next(Prompt prompt) {
+        Function<Prompt, ChatResponse> step = script.poll();
+        if (step == null) {
             throw new IllegalStateException("脚本已耗尽：模型被调用了比脚本更多的次数。"
                     + "通常是工具循环没有按预期结束（比如工具一直被调用），"
                     + "或者脚本少写了一条响应。已调用 " + taken.get() + " 次。");
         }
-        return response;
+        return step.apply(prompt);
     }
 
     private static ChatResponse text(String content) {
@@ -154,13 +167,22 @@ public final class ScriptedChatModel implements ChatModel {
 
     public static final class Builder {
 
-        private final List<ChatResponse> responses = new ArrayList<>();
+        private final List<Function<Prompt, ChatResponse>> responses = new ArrayList<>();
 
         private int toolCallSequence;
 
         /** 追加一条纯文本响应。 */
         public Builder thenText(String content) {
-            responses.add(text(content));
+            responses.add(prompt -> text(content));
+            return this;
+        }
+
+        /**
+         * 追加一条"看菜下饭"的文本响应：拿到的参数是这一轮提示词的全部内容，
+         * 包含历史消息与工具结果。用来表达"模型只有在看见上一轮时才答得出来"。
+         */
+        public Builder thenAnswer(Function<String, String> answer) {
+            responses.add(prompt -> text(answer.apply(promptText(prompt))));
             return this;
         }
 
@@ -171,7 +193,7 @@ public final class ScriptedChatModel implements ChatModel {
         public Builder thenToolCall(String name, String arguments) {
             var toolCall = new AssistantMessage.ToolCall(
                     "call-" + (++toolCallSequence), "function", name, arguments);
-            responses.add(response(AssistantMessage.builder()
+            responses.add(prompt -> response(AssistantMessage.builder()
                     .content("")
                     .toolCalls(List.of(toolCall))
                     .build()));

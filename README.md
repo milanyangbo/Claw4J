@@ -6,7 +6,7 @@
 
 整个项目是 **基于 Spring AI 2.x 从零重建** 的（1.x 版本已冻结进 `legacy/`，见 [legacy/README.md](legacy/README.md)）。重建的全部设计决策都留了 ADR，见 [`docs/adr/`](docs/adr/)。
 
-> **当前进度：M1 进行中。** M0 骨架已完成：HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1 已完成业务库与种子、工具调用闭环、鉴权与脱敏 Advisor、Text-to-SQL 闭环；待办是会话记忆与真实模型联调。M2 接飞书长连接与 Skill 引擎。
+> **当前进度：M1 进行中。** M0 骨架已完成：HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1 已完成业务库与种子、工具调用闭环、鉴权与脱敏 Advisor、Text-to-SQL 闭环、会话记忆（落 Postgres）；待办是真实模型联调。M2 接飞书长连接与 Skill 引擎。
 
 ## 技术栈
 
@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 142 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 171 个测试
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -82,8 +82,8 @@ CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 \
 不给测试复用常驻库，是因为常驻库会串数据：一个测试写进去的东西让下一个测试变红或变绿，
 排查时看到的是"刚才明明能跑"。一次性实例慢一些，但每次都是确定的。
 
-业务 schema 与种子在 `claw4j-tools/src/main/resources/db/migration/`（`V1` 建表、`V2` 放种子），
-由 Flyway 执行。**改字段是加一个 `V3__xxx.sql`，不要回头改已提交的版本** —— 本地常驻库已经记过账了，
+业务 schema 与种子在 `claw4j-tools/src/main/resources/db/migration/`（`V1` 建表、`V2` 放种子、`V3` 会话表），
+由 Flyway 执行。**改字段是加一个 `V4__xxx.sql`，不要回头改已提交的版本** —— 本地常驻库已经记过账了，
 改历史版本会让它的校验和不匹配，而删库重建正是这套迁移要替你免掉的事。
 
 种子里的日期是相对的（按"本周一"推算），所以**每次重建的库**里，"上周"永远落在同一批订单上。
@@ -281,13 +281,41 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 自动配置那个只有在使用 Boot 注入的 `ChatClient.Builder` bean 时才会被用上。
 哪天改成注入 bean，这两个数字会静默退回 40/150，所以有单测钉着。
 
+## 会话记忆：记得住上一轮，而且换条通道也记得住
+
+第一轮问"上周华东区成交额多少"，第二轮问"那华南呢"——第二轮不该要求把"上周""成交额"重讲一遍。
+记忆挂在链的最外层（`SessionMemoryAdvisor`，order 全链最小），用
+**`org.springaicommunity:spring-ai-starter-session-jdbc`**（groupId 不是 `org.springframework.ai`，
+它是 spring-ai-community 的独立项目，ADR-0005 里记了这个坑）落在 Postgres，
+会话表在 `claw4j_session` schema，业务表在 `business`，同库不同 schema。
+
+三点值得留意：
+
+1. **会话属于人，不属于通道**。会话 id 只由 `Principal.userId()` 派生，**不掺 `chatId`**：
+   `chatId` 是通道侧的寻址键（HTTP 的请求头、飞书的 chat_id），换条通道它就变了。
+   把它编进会话主键，"换通道"和"换会话"就成了同一件事——存储明明是共享的，人却要重讲一遍。
+   代价是同一个人在两段对话里问两件事，记忆会混在一起；多话题并行是产品问题，等有真实数据再定。
+2. **会话有自己的连接池，URL 上带 `currentSchema`**。`spring-ai-session` 的 SQL 里表名不带前缀，
+   表落到哪由连接的 `search_path` 决定；而它的自动配置拿的是主 `DataSource`，表会落到 public。
+   所以这里自己声明了 `SessionRepository`（官方那份带 `@ConditionalOnMissingBean`，会退让），
+   指向会话 schema。会话池**不注册成 bean**——容器里有两个 `DataSource` 时，
+   那些 `@ConditionalOnSingleCandidate(DataSource.class)` 的自动配置会整套安静地不装配。
+3. **记忆的收尾排在脱敏之后**。链的收尾按 order 降序，order 越小越晚收尾，
+   于是写进会话表的是**掩码后**的文本。反过来写，出站是干净的、会话表里躺的是明文——
+   一份比出站更持久的泄露，而且没人会去看。
+
+**记不住不等于答不了。** 会话库挂了的时候，记忆降级成"这一轮没有历史"并打一条 WARN，
+而不是让整条链 500：鉴权是安全边界，它不能因为"记不住"就连"没权限"这句话也说不出来
+（`SessionMemoryDegradationTest` 钉着）。三个 Advisor 的失败姿势不一样——
+鉴权失败只能拒绝、脱敏失败只能拒绝、记忆失败只能降级。
+
 ## 质量门禁
 
 四条检查层层收紧，都不靠口头约定：
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、142 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、171 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |

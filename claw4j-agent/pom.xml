@@ -54,6 +54,28 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-openai</artifactId>
         </dependency>
+        <!--
+          会话记忆（ADR-0005，M1-06）。注意 groupId 是 org.springaicommunity 而不是
+          org.springframework.ai：spring-ai-session 是 spring-ai-community 的独立项目，
+          在 Spring AI 官方的 2.0.2 BOM 里查不到它。版本由根 pom import 的
+          spring-ai-session-bom 管着。
+          它自带两个自动配置：SessionRepository（JDBC）与 SessionService。
+          SessionRepository 那个会被本模块的 SessionMemoryConfiguration 顶掉
+          ——它默认拿主 DataSource，会话表会落到 public，而我们要的是独立 schema。
+        -->
+        <dependency>
+            <groupId>org.springaicommunity</groupId>
+            <artifactId>spring-ai-starter-session-jdbc</artifactId>
+        </dependency>
+        <!--
+          显式声明而不是靠 tools 传递：会话存储（M1-06）在这里直接用了
+          DataSource / JdbcTemplate / Hikari，用到什么就声明什么，
+          免得哪天 tools 不再需要 JDBC 时这里静悄悄跟着变。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>

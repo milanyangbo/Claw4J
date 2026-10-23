@@ -25,6 +25,17 @@ spring:
       host: ${CLAW4J_REDIS_HOST:localhost}
       port: ${CLAW4J_REDIS_PORT:6379}
 
+  # 会话建表由 Flyway 负责（tools 模块 db/migration 下的 V3）。
+  # 这里把 spring-ai-session 自带的 initializer 关掉，两个理由：
+  # 一是它默认只在嵌入式数据库上跑（在 Postgres 上什么都不做），
+  #   于是"以为建了其实没建"，而两套初始化并存时谁先谁后又是一笔糊涂账；
+  # 二是它在 bean 创建时就要连库探测驱动类型，不关掉的话"库挂了"会变成"应用起不来"。
+  ai:
+    session:
+      repository:
+        jdbc:
+          initialize-schema: never
+
 # 模型凭据一律走环境变量，不写进仓库（ADR-0002、ADR-0006）。
 # 没有 key 时自动降级到 mock 模型，应用仍能启动并跑通全链路。
 claw4j:

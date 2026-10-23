@@ -83,7 +83,7 @@ M0 结束时能演示的是"问一句话、拿一句回答"。这个回答要么
 - **Text-to-SQL 走 `@Tool`**，只做 SELECT，结果带行数上限。生成失败时走自纠错链路并用固定 schema 跑通（ADR-0008 列为必测项）。只读约束的落法（只读库用户 / 语句校验 / 两者都要）由 03 号票定。
 - **鉴权 Advisor 的 order 排在工具循环内部**（小于 `HIGHEST_PRECEDENCE + 300`，ADR-0007），于是模型的每一次工具迭代都会过一遍；不通过就短路，不调 `chain.next()`。粒度是表级与动作级。
 - **两个 Advisor 都同时实现 `CallAdvisor` 与 `StreamAdvisor`**，且必须覆写 `getName()`——匿名 Advisor 的 `getClass().getSimpleName()` 是空串，会让观测上下文抛 `advisorName cannot be null or empty`（M0 踩过）。
-- **会话用 `spring-ai-session` 的 JDBC starter**，与业务数据共用同一 Postgres、靠 schema 分开，`InMemorySessionRepository` 明确禁用。**这一条是硬要求，不回退到"自己写个 Map 存着"**——自己写的版本讲不出多实例与事务，且偏离 ADR-0005。
+- **会话用 `spring-ai-session` 的 JDBC starter**（`org.springaicommunity:spring-ai-starter-session-jdbc`，groupId 不是 `org.springframework.ai`，见 ADR-0005 修订记录），与业务数据共用同一 Postgres、靠 schema 分开，`InMemorySessionRepository` 明确禁用。**这一条是硬要求，不回退到"自己写个 Map 存着"**——自己写的版本讲不出多实例与事务，且偏离 ADR-0005。
 - **`chatId` 与会话 id 是两件事**：`chatId` 是 M0 定的通道侧会话**寻址键**（`X-Claw4j-Chat-Id`，缺省回落用户标识），不等于 Session 本身。M0 专门把 `sessionKey` 改名就是为了 M1 接 `spring-ai-session` 时不撞名、不混用。接线时不要把 `chatId` 直接当会话主键用。
 - **模型侧不新增能力**：沿用已完成的主备路由（`RoutingChatModel`，`claw4j.model.primary` 切主），M1 只在假模型上加脚本化能力。
 - **脚本化假模型**：按序吐出预设响应（先一次工具调用请求，再最终回答）。没有它，Text-to-SQL 那两步——模型先要调工具、再据此作答——在 CI 里根本测不出来。

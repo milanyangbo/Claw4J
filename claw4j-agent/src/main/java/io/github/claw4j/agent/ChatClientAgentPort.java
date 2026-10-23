@@ -1,12 +1,14 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
 
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -65,14 +67,22 @@ public class ChatClientAgentPort implements AgentPort {
     }
 
     /**
-     * 把 Principal 交给 Advisor 链：走 Advisor 的上下文，不走 ThreadLocal。
+     * 把 Principal 与会话 id 交给 Advisor 链：走 Advisor 的上下文，不走 ThreadLocal。
      *
      * <p>上下文会跟着 {@code ChatClientRequest} 走完工具循环的每一轮（{@code ToolCallingAdvisor}
      * 每轮都把 {@code context} 原样带下去），也跟着 Reactor 的订阅走；
      * ThreadLocal 在"流式 + 换线程"的组合下会掉，而掉身份的失败姿势是放行。
+     *
+     * <p>会话 id 由 {@link SessionKeys} 从 Principal 派生，不是 {@link InboundMessage#chatId()}：
+     * 后者只是通道侧的寻址键，拿它当会话主键会让"换通道"变成"换会话"。
+     * 这里设的是 Advisor 上下文里的参数，链上没有记忆 Advisor 时它安静地被忽略。
      */
     private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message) {
         return chatClient.prompt(message.text())
-                .advisors(spec -> spec.param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, message.principal()));
+                .advisors(spec -> spec
+                        .param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, message.principal())
+                        .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY,
+                                SessionKeys.sessionIdOf(message.principal()))
+                        .param(SessionMemoryAdvisor.USER_ID_CONTEXT_KEY, message.principal().userId()));
     }
 }
