@@ -38,6 +38,8 @@ claw4j:
     # 三态：留空 = 有 key 就用真实模型、没 key 自动降级 mock；
     # true = 强制 mock（CI 与本地演示）；false = 强制真实模型（没 key 时启动失败，便于发现配置漏了）。
     mock: ${CLAW4J_MODEL_MOCK:}
+    # 主模型供应商（deepseek / qwen），另一家是备：主调用失败才退到备。
+    # 主模型那家没配 key 会启动失败，不会悄悄拿备用的顶上（ADR-0006）。
     primary: ${CLAW4J_MODEL_PRIMARY:deepseek}
     deepseek:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}

@@ -38,7 +38,7 @@ public class MockChatModel implements ChatModel {
     }
 
     @Override
-    public ChatOptions getDefaultOptions() {
+    public ChatOptions getOptions() {
         return ChatOptions.builder().model("mock").build();
     }
 

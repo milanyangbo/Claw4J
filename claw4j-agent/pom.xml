@@ -34,6 +34,16 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-deepseek</artifactId>
         </dependency>
+        <!--
+          备用供应商（ADR-0006）：通义没有官方适配器，走它自己的 OpenAI 兼容端点。
+          同样只用纯模型包，装配权在我们手里。
+          代价要记账：它把 openai-java-core 与 okhttp 带进来了 —— 不是我们想引第二套 HTTP 客户端，
+          而是厂商 SDK 自带；DeepSeek 一侧仍用 JDK HttpClient，两侧互不影响。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-openai</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>

@@ -9,6 +9,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,17 +47,17 @@ class HttpChatControllerTest {
         mockMvc.perform(post("/api/chat")
                         .header(HttpPrincipalResolver.USER_HEADER, "u-1")
                         .header(HttpPrincipalResolver.ROLE_HEADER, "admin")
-                        .header(HttpPrincipalResolver.SESSION_HEADER, "sess-1")
+                        .header(HttpPrincipalResolver.CHAT_ID_HEADER, "chat-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"text\":\"华东区上周成交额\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.sessionKey").value("http:sess-1"))
+                .andExpect(jsonPath("$.chatId").value("http:chat-1"))
                 .andExpect(jsonPath("$.text").value("回答:华东区上周成交额"));
 
         InboundMessage delivered = agentPort.last;
         assertEquals("u-1", delivered.principal().userId());
         assertEquals("admin", delivered.principal().role());
-        assertEquals("http:sess-1", delivered.sessionKey());
+        assertEquals("http:chat-1", delivered.chatId());
         assertEquals("华东区上周成交额", delivered.text());
     }
 
@@ -68,7 +70,30 @@ class HttpChatControllerTest {
                 .andExpect(status().isOk());
 
         assertEquals("read-only", agentPort.last.principal().role());
-        assertEquals("http:u-1", agentPort.last.sessionKey(), "没带会话头时回落到用户标识");
+        assertEquals("http:u-1", agentPort.last.chatId(), "没带 Chat ID 头时回落到用户标识");
+    }
+
+    /**
+     * 流式线程池满时提交被同步拒绝——这必须是 503（过载）而不是 500（服务器错），
+     * 因为调用方重试是有意义的。之前这里直接裸抛 RejectedExecutionException 变 500。
+     */
+    @Test
+    void 线程池满时返回503而不是500() throws Exception {
+        Executor rejecting = task -> {
+            throw new RejectedExecutionException("pool exhausted");
+        };
+        var properties = new HttpChannelProperties();
+        var channel = new HttpChatChannel(agentPort, rejecting);
+        var mockMvc = MockMvcBuilders
+                .standaloneSetup(new HttpChatController(channel, new HttpPrincipalResolver(properties), properties))
+                .build();
+
+        mockMvc.perform(post("/api/chat/stream")
+                        .header(HttpPrincipalResolver.USER_HEADER, "u-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"text\":\"你好\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error").exists());
     }
 
     @Test
@@ -107,13 +132,13 @@ class HttpChatControllerTest {
         @Override
         public OutboundMessage reply(InboundMessage message) {
             this.last = message;
-            return OutboundMessage.of(message.sessionKey(), "回答:" + message.text());
+            return OutboundMessage.of(message.chatId(), "回答:" + message.text());
         }
 
         @Override
         public void stream(InboundMessage message, Consumer<OutboundMessage> onChunk) {
             this.last = message;
-            onChunk.accept(OutboundMessage.of(message.sessionKey(), "回答:" + message.text()));
+            onChunk.accept(OutboundMessage.of(message.chatId(), "回答:" + message.text()));
         }
     }
 }

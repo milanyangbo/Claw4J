@@ -10,6 +10,8 @@ import org.slf4j.LoggerFactory;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -62,14 +64,52 @@ public class HttpChatChannel implements ChatChannel {
     /**
      * 流式问答：提交到业务线程池，立刻返回。
      *
-     * <p>返回的 future 有两个用途：正常结束时调用方发结束事件；
+     * <p>返回的 future 有两个用途：正常结束时调用方收尾连接；
      * 出错时 future 异常完成，调用方据此报错而不是让异常消失在线程池里——
      * 这是"静默失败"最容易发生的地方，一次工具调用抛异常如果不接住，
      * 客户端只会看到 SSE 连接挂起直到超时。
+     *
+     * <p><b>取消语义</b>：{@code CompletableFuture.cancel(true)} 的
+     * {@code mayInterruptIfRunning} 在 JDK 里不生效（文档原话：此值无效果），
+     * 所以中断由这里自己送——记录执行线程，future 一旦被取消就打断它，
+     * 让 {@code AgentPort.stream} 里阻塞的模型调用立刻结束。
+     * 客户端都断开了还把整条流烧完，是白烧 token 加钉死线程。
      */
     public CompletableFuture<Void> stream(InboundMessage message, Consumer<OutboundMessage> onChunk) {
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(onChunk, "onChunk");
-        return CompletableFuture.runAsync(() -> agentPort.stream(message, onChunk), streamExecutor);
+
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        AtomicReference<Thread> worker = new AtomicReference<>();
+        future.whenComplete((ignored, error) -> {
+            if (future.isCancelled()) {
+                Thread thread = worker.get();
+                if (thread != null) {
+                    thread.interrupt();
+                }
+            }
+        });
+
+        try {
+            streamExecutor.execute(() -> {
+                worker.set(Thread.currentThread());
+                if (future.isCancelled()) {
+                    return; // 提交之后、开跑之前就被取消
+                }
+                try {
+                    agentPort.stream(message, onChunk);
+                    future.complete(null);
+                } catch (Throwable error) {
+                    if (!future.isCancelled()) {
+                        future.completeExceptionally(error);
+                    }
+                }
+            });
+        } catch (RejectedExecutionException exception) {
+            // 池满是同步拒绝：抛给调用方转 503，future 作废
+            future.cancel(false);
+            throw exception;
+        }
+        return future;
     }
 }

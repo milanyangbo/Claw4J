@@ -29,7 +29,7 @@ class AgentPortTest {
     void 同步回答携带同一个会话标识() {
         OutboundMessage out = port.reply(inbound("你好"));
 
-        assertEquals("session-1", out.sessionKey());
+        assertEquals("session-1", out.chatId());
         assertEquals(MockChatModel.PREFIX + "你好", out.text());
         assertTrue(out.finalChunk());
     }
@@ -42,7 +42,7 @@ class AgentPortTest {
 
         var last = chunks.get(chunks.size() - 1);
         assertTrue(last.finalChunk(), "最后一块必须标记为结尾");
-        assertEquals("session-1", last.sessionKey());
+        assertEquals("session-1", last.chatId());
         assertEquals(MockChatModel.PREFIX + "上周华东区成交额多少",
                 chunks.stream().map(OutboundMessage::text).reduce("", String::concat));
         assertTrue(chunks.size() > 2, "内容必须切成多块；只剩一块说明流式被降级了");

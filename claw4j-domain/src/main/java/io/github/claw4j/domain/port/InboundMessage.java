@@ -12,26 +12,26 @@ import java.util.Objects;
  * 这也是 ADR-0007 的边界：认人由通道负责，授权由 Agent 侧负责。
  *
  * @param principal  发起者，由通道从自身凭据解析而来
- * @param sessionKey 通道侧的会话标识（飞书是 chat_id + 用户，HTTP 是 header）。
- *                   它只是 Session 的寻址方式，不等于 Session 本身
+ * @param chatId     Chat ID，即通道侧对这条会话的标识（飞书是 chat_id + 用户，HTTP 是请求头）。
+ *                   它只是 Session 的寻址方式之一，不等于 Session 本身
  * @param text       用户说的话
  * @param receivedAt 通道收到消息的时间，用于超时与去重
  * @param eventId    通道侧的事件标识，用于幂等。飞书超时重推会送两次同一个 eventId
  */
 public record InboundMessage(Principal principal,
-                             String sessionKey,
+                             String chatId,
                              String text,
                              Instant receivedAt,
                              String eventId) {
 
     public InboundMessage {
         Objects.requireNonNull(principal, "principal");
-        Objects.requireNonNull(sessionKey, "sessionKey");
+        Objects.requireNonNull(chatId, "chatId");
         Objects.requireNonNull(text, "text");
         Objects.requireNonNull(receivedAt, "receivedAt");
     }
 
-    public InboundMessage(Principal principal, String sessionKey, String text) {
-        this(principal, sessionKey, text, Instant.now(), null);
+    public InboundMessage(Principal principal, String chatId, String text) {
+        this(principal, chatId, text, Instant.now(), null);
     }
 }

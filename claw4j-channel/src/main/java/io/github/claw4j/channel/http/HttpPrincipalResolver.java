@@ -20,7 +20,7 @@ public class HttpPrincipalResolver {
 
     public static final String USER_HEADER = "X-Claw4j-User";
     public static final String ROLE_HEADER = "X-Claw4j-Role";
-    public static final String SESSION_HEADER = "X-Claw4j-Session";
+    public static final String CHAT_ID_HEADER = "X-Claw4j-Chat-Id";
 
     private final HttpChannelProperties properties;
 
@@ -46,11 +46,12 @@ public class HttpPrincipalResolver {
     }
 
     /**
-     * 会话寻址键。通道只负责"回哪条会话"，Session 本身是什么由 Agent 侧决定（ADR-0005）。
-     * 没带会话头时回落到用户标识，于是一个人一条对话，本机演示够用。
+     * Chat ID：通道侧对会话的标识（GLOSSARY）。它只是 Session 的寻址方式，
+     * Session 本身（记忆、压缩、追踪的作用域）是什么样子由 Agent 侧决定，这里不预判（ADR-0005）。
+     * 没带该头时回落到用户标识，于是一个人一条对话，本机演示够用。
      */
-    public String sessionKey(String userId, String sessionId) {
-        String id = (sessionId == null || sessionId.isBlank()) ? userId : sessionId;
+    public String chatId(String userId, String explicitChatId) {
+        String id = (explicitChatId == null || explicitChatId.isBlank()) ? userId : explicitChatId;
         return "http:" + id;
     }
 }

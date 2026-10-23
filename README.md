@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 47 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 64 个测试
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -94,7 +94,26 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 | `true` | 强制 mock，有 key 也不用（CI 与本机演示用这个） |
 | `false` | 强制真实模型，没 key 直接启动失败 —— 用来发现"配置漏了"，而不是让它悄悄降级 |
 
-主模型 DeepSeek，备用通义（OpenAI 兼容端点）。**测试与 CI 全 mock，从不烧 token** —— CI 上不会因为没有 key 而变红。
+**测试与 CI 全 mock，从不烧 token** —— CI 上不会因为没有 key 而变红。
+
+### 两家模型怎么切
+
+`claw4j.model.primary` 决定主模型（`deepseek` / `qwen`），另一家是备。装配出来的
+`RoutingChatModel` 才是业务看到的那个模型（`@Primary`），启动日志会写明主备顺序：
+
+```
+模型路由：主=deepseek，备=[qwen]
+```
+
+降级规则：
+
+| 路径 | 行为 |
+| --- | --- |
+| 同步 | 主模型调用失败就换备；两家都挂了抛异常，每一次失败的原因都挂在 `getSuppressed()` 上 |
+| 流式 | 只在**第一个字吐出去之前**降级 —— 吐过之后再换会把同一条回答发两遍 |
+
+两家都配了 key 才有备可用；只配一家也能跑，只是没有备。主模型那家没配 key 会**直接启动失败**，
+不会悄悄拿备用的顶上（ADR-0006）。
 
 ## 亲手试一下
 
@@ -106,7 +125,7 @@ curl -s -X POST http://localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
   -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
   -d '{"text":"上周华东区成交额多少"}'
-# {"sessionKey":"http:ethan","text":"[mock] 上周华东区成交额多少"}
+# {"chatId":"http:ethan","text":"[mock] 上周华东区成交额多少"}
 
 # 流式问答（SSE，事件名 chunk / done）
 curl -N -X POST http://localhost:8080/api/chat/stream \
@@ -119,7 +138,7 @@ curl -s -w ' [%{http_code}]' -X POST http://localhost:8080/api/chat \
 # {"error":"缺少 X-Claw4j-User 请求头"} [401]
 ```
 
-请求头：`X-Claw4j-User`（必填）、`X-Claw4j-Role`（缺省 `read-only`）、`X-Claw4j-Session`（缺省回落到用户标识）。角色 → 可访问的表/动作在 `claw4j.channel.http.roles` 里配置，改权限不用发版。
+请求头：`X-Claw4j-User`（必填）、`X-Claw4j-Role`（缺省 `read-only`）、`X-Claw4j-Chat-Id`（缺省回落到用户标识）。角色 → 可访问的表/动作在 `claw4j.channel.http.roles` 里配置，改权限不用发版。
 
 现实里的前置条件是由网关在边缘完成认证、把结果写成请求头；**本项目不做登录体系**，那不是考点（ADR-0007）。
 
@@ -129,7 +148,7 @@ curl -s -w ' [%{http_code}]' -X POST http://localhost:8080/api/chat \
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、47 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、50 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
@@ -152,7 +171,7 @@ CI 上同样只跑 `./mvnw -B -ntp verify`，另外有一条检查专门拦住"�
 
 ## 文档
 
-- [`docs/adr/`](docs/adr/) —— 11 条架构决策记录，每条都写了 Considered Options 与被否决的原因
+- [`docs/adr/`](docs/adr/) —— 10 条架构决策记录，每条都写了 Considered Options 与被否决的原因
 - [`GLOSSARY.md`](GLOSSARY.md) —— 术语表
 
 ## License

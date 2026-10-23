@@ -57,8 +57,8 @@ class HttpPrincipalResolverTest {
 
     @Test
     void 会话键带上通道前缀且缺省回落到用户标识() {
-        assertEquals("http:sess-1", resolver.sessionKey("u-1", "sess-1"));
-        assertEquals("http:u-1", resolver.sessionKey("u-1", null));
-        assertEquals("http:u-1", resolver.sessionKey("u-1", "  "));
+        assertEquals("http:sess-1", resolver.chatId("u-1", "sess-1"));
+        assertEquals("http:u-1", resolver.chatId("u-1", null));
+        assertEquals("http:u-1", resolver.chatId("u-1", "  "));
     }
 }

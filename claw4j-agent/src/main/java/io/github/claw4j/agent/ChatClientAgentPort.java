@@ -17,6 +17,10 @@ import java.util.function.Consumer;
  * <p>{@link #stream} 会阻塞到流结束才返回。调用方（通道）自己决定在哪个线程调用它——
  * 飞书那种「立刻 ACK 再异步回推」的场景就靠这个：通道收到事件后立刻返回，
  * 把 stream 丢给业务线程池，结果再通过主动推送接口发回去（ADR-0009）。
+ *
+ * <p>中断契约（见 {@link AgentPort#stream}）靠 {@code blockLast()} 天然满足：
+ * 它在等待流时响应中断。客户端断开后通道 {@code cancel(true)}，
+ * 这里会立刻以异常结束，而不是把整条模型流烧完。
  */
 public class ChatClientAgentPort implements AgentPort {
 
@@ -30,7 +34,7 @@ public class ChatClientAgentPort implements AgentPort {
     public OutboundMessage reply(InboundMessage message) {
         Objects.requireNonNull(message, "message");
         String text = chatClient.prompt(message.text()).call().content();
-        return OutboundMessage.of(message.sessionKey(), text);
+        return OutboundMessage.of(message.chatId(), text);
     }
 
     @Override
@@ -41,8 +45,8 @@ public class ChatClientAgentPort implements AgentPort {
         chatClient.prompt(message.text())
                 .stream()
                 .content()
-                .doOnNext(chunk -> onChunk.accept(OutboundMessage.chunk(message.sessionKey(), chunk)))
-                .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.sessionKey(), "")))
+                .doOnNext(chunk -> onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk)))
+                .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "")))
                 .blockLast();
     }
 }

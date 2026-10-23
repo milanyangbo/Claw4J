@@ -93,6 +93,54 @@ class HttpChatChannelTest {
         assertTrue(collected.get(collected.size() - 1).finalChunk(), "结尾块必须带标记，通道据此结束 SSE");
     }
 
+    /**
+     * 客户端消失时，上游必须能被切断：{@code cancel(true)} 要一路传到
+     * 正在执行 {@code AgentPort.stream} 的线程。否则 emitter 死了模型还在跑，
+     * 白烧 token 还钉死线程——32 个线程的池子，挂住几个就废了。
+     *
+     * <p>契约（{@code AgentPort#stream}）要求实现响应中断，本测试钉住的是
+     * 通道这一半：future 的中断确实传到了执行线程。
+     */
+    @Test
+    void 客户端断开后取消能中断正在执行的Agent() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+
+        try {
+            AgentPort interruptible = new AgentPort() {
+                @Override
+                public OutboundMessage reply(InboundMessage message) {
+                    return OutboundMessage.of(message.chatId(), "");
+                }
+
+                @Override
+                public void stream(InboundMessage message, Consumer<OutboundMessage> onChunk) {
+                    started.countDown();
+                    try {
+                        // 模拟一次长模型调用：睡到被中断为止
+                        Thread.sleep(30_000);
+                    } catch (InterruptedException exception) {
+                        interrupted.countDown();
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            };
+            HttpChatChannel channel = new HttpChatChannel(interruptible, pool);
+
+            CompletableFuture<Void> streaming = channel.stream(inbound(), message -> {
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS), "Agent 应该已经跑起来了");
+
+            streaming.cancel(true);
+
+            assertTrue(interrupted.await(2, TimeUnit.SECONDS), "取消必须中断执行线程，而不是让模型跑完");
+            assertTrue(streaming.isCancelled());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
     private record StubAgentPort(OutboundMessage reply, List<String> chunks) implements AgentPort {
 
         @Override
@@ -102,8 +150,8 @@ class HttpChatChannelTest {
 
         @Override
         public void stream(InboundMessage message, Consumer<OutboundMessage> onChunk) {
-            chunks.forEach(chunk -> onChunk.accept(OutboundMessage.chunk(message.sessionKey(), chunk)));
-            onChunk.accept(OutboundMessage.of(message.sessionKey(), ""));
+            chunks.forEach(chunk -> onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk)));
+            onChunk.accept(OutboundMessage.of(message.chatId(), ""));
         }
     }
 
@@ -111,7 +159,7 @@ class HttpChatChannelTest {
 
         @Override
         public OutboundMessage reply(InboundMessage message) {
-            return OutboundMessage.of(message.sessionKey(), "");
+            return OutboundMessage.of(message.chatId(), "");
         }
 
         @Override
@@ -122,7 +170,7 @@ class HttpChatChannelTest {
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
             }
-            onChunk.accept(OutboundMessage.of(message.sessionKey(), "完成"));
+            onChunk.accept(OutboundMessage.of(message.chatId(), "完成"));
         }
     }
 

@@ -28,7 +28,16 @@ public interface AgentPort {
     /**
      * 流式回答，每生成一块就回调一次，最后回调一个 {@code finalChunk} 为 true 的块。
      *
-     * @param onChunk 逐块消费，实现必须保证最后一次调用带 finalChunk
+     * <p>{@code finalChunk} 那一块是<strong>唯一</strong>的正常结束信号，它的文本可以是空的。
+     * 实现必须保证这条回调最终发生一次且仅一次——哪怕模型一块都没吐出来。
+     * 通道据此收尾，不需要另设超时去猜"是不是说完了"。
+     *
+     * <p>实现必须响应中断：调用方会在客户端消失时中断正在执行本方法的线程。
+     * Reactor 的 {@code blockLast()} 天然满足；将来换成别的实现（例如裸 HTTP 客户端）
+     * 必须显式处理 {@code InterruptedException}，否则取消传不进来——
+     * 客户端已经走了，背后的线程却还在把整个模型调用烧完。
+     *
+     * @param onChunk 逐块消费，保证最后一次调用带 finalChunk
      */
     void stream(InboundMessage message, Consumer<OutboundMessage> onChunk);
 }

@@ -39,7 +39,7 @@ public class HttpChannelAutoConfiguration {
 
     /**
      * 流式请求专用的线程池。有界：{@code stream()} 是阻塞调用，一条流式回答占一个线程，
-     * 无限池会在流量上来时把整个进程拖垮。满了就拒绝，由控制器转成连接错误，
+     * 无限池会在流量上来时把整个进程拖垮。满了就地拒绝，控制器转成 503，
      * 好过让请求无声排队。
      */
     @Bean(STREAM_EXECUTOR)
