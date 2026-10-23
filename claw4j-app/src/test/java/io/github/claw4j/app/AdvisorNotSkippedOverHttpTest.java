@@ -4,6 +4,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
 import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -14,6 +17,7 @@ import org.springframework.core.Ordered;
 
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.util.List;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -30,8 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>为什么值得单独端到端测一遍：跳过是静默的——不报错、不告警、客户端照常拿到回答，
  * 只有"内容里应当有而实际没有某个标记"这种断言才抓得到。
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = {"claw4j.model.mock=true"})
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class AdvisorNotSkippedOverHttpTest {
 
     private static final String STAMP = "[ADVISOR]";
@@ -100,9 +103,29 @@ class AdvisorNotSkippedOverHttpTest {
                             .build();
                 }
 
+                /**
+                 * 留痕放在 **after**（出站）而不是 before（入站）：
+                 * 换真模型之前（ADR-0011）标记加在用户消息上、靠回声模型把它念回客户端——
+                 * 真模型不会复述用户消息，那条判据就废了。标记打在出站响应上则不依赖模型行为，
+                 * 而"两条路径都出现过这个标记"仍然证明两条路径都走过了 Advisor。
+                 */
                 @Override
                 public ChatClientResponse after(ChatClientResponse response, AdvisorChain chain) {
-                    return response;
+                    ChatResponse chatResponse = response.chatResponse();
+                    if (chatResponse == null || chatResponse.getResults() == null
+                            || chatResponse.getResults().isEmpty()) {
+                        return response;
+                    }
+                    String text = chatResponse.getResults().get(0).getOutput().getText();
+                    if (text == null || text.isBlank()) {
+                        return response;
+                    }
+                    ChatResponse stamped = ChatResponse.builder()
+                            .from(chatResponse)
+                            .generations(List.of(new Generation(
+                                    new AssistantMessage(STAMP + text))))
+                            .build();
+                    return response.mutate().chatResponse(stamped).build();
                 }
 
                 /**

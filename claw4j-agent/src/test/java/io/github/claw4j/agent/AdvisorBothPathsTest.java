@@ -1,6 +1,6 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.model.MockChatModel;
+import io.github.claw4j.agent.model.RealModelSupport;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientRequest;
@@ -11,11 +11,10 @@ import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 import org.springframework.core.Ordered;
 
-import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 把"流式路径会静默跳过 Advisor"这个坑钉死在测试里。
@@ -27,6 +26,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>所以 ADR-0007 要求每个 Advisor 都双实现，并且由 {@code AgentArchitectureTest}
  * 里的 ArchUnit 规则在编译期拦住漏写的。这里的两条测试负责说明为什么要有那条规则。
+ *
+ * <p><b>判据是"Advisor 被调用了几次"，不是"回答里有什么"。</b>
+ * 换真模型之前（ADR-0011）这里断言的是回答里带一个标记串——那只有在模型是回声时才成立。
+ * 真模型不会复述用户消息，所以改成数 Advisor 自己的调用次数：
+ * 既不受措辞影响，也更直接地指向"这条路径有没有经过 Advisor"。
  */
 class AdvisorBothPathsTest {
 
@@ -34,15 +38,23 @@ class AdvisorBothPathsTest {
 
     @Test
     void 双实现的Advisor在两条路径上都生效() {
-        ChatClient chatClient = ChatClient.builder(new MockChatModel())
-                .defaultAdvisors(new BothPathsAdvisor())
-                .build();
+        BothPathsAdvisor onCall = new BothPathsAdvisor();
+        BothPathsAdvisor onStream = new BothPathsAdvisor();
 
-        String call = chatClient.prompt("ping").call().content();
-        List<String> stream = chatClient.prompt("ping").stream().content().collectList().block(Duration.ofSeconds(5));
+        RealModelSupport.eventually(2, "同步路径经过 Advisor", () -> {
+            ChatClient.builder(RealModelSupport.chatModel()).defaultAdvisors(onCall).build()
+                    .prompt("只回答一个字：好").call().content();
+            assertThat(onCall.beforeCalls().get()).as("同步路径应当经过 Advisor").isEqualTo(1);
+            return null;
+        });
 
-        assertTrue(call.contains(STAMP), "同步路径应当经过 Advisor");
-        assertTrue(String.join("", stream).contains(STAMP), "流式路径同样应当经过 Advisor");
+        RealModelSupport.eventually(2, "流式路径经过 Advisor", () -> {
+            ChatClient.builder(RealModelSupport.chatModel()).defaultAdvisors(onStream).build()
+                    .prompt("只回答一个字：好").stream().content().collectList()
+                    .block(RealModelSupport.generousTimeout());
+            assertThat(onStream.beforeCalls().get()).as("流式路径同样应当经过 Advisor").isEqualTo(1);
+            return null;
+        });
     }
 
     /**
@@ -52,16 +64,31 @@ class AdvisorBothPathsTest {
      */
     @Test
     void 只实现同步接口的Advisor在流式路径上被静默跳过() {
-        ChatClient chatClient = ChatClient.builder(new MockChatModel())
-                .defaultAdvisors(new CallOnlyAdvisor())
-                .build();
+        CallOnlyAdvisor advisor = new CallOnlyAdvisor();
 
-        String call = chatClient.prompt("ping").call().content();
-        List<String> stream = chatClient.prompt("ping").stream().content().collectList().block(Duration.ofSeconds(5));
+        RealModelSupport.eventually(2, "同步路径经过只实现 call 的 Advisor", () -> {
+            ChatClient.builder(RealModelSupport.chatModel()).defaultAdvisors(advisor).build()
+                    .prompt("只回答一个字：好").call().content();
+            assertThat(advisor.calls().get()).as("同步路径确实生效").isEqualTo(1);
+            return null;
+        });
 
-        assertTrue(call.contains(STAMP), "同步路径确实生效");
-        assertFalse(String.join("", stream).contains(STAMP), "流式路径被跳过了，且不报错——这正是坑");
-        assertTrue(String.join("", stream).contains("ping"), "被跳过后模型照常回答，所以只看输出看不出问题");
+        CallOnlyAdvisor streamAdvisor = new CallOnlyAdvisor();
+        List<String> stream = ChatClient.builder(RealModelSupport.chatModel())
+                .defaultAdvisors(streamAdvisor)
+                .build()
+                .prompt("只回答一个字：好")
+                .stream()
+                .content()
+                .collectList()
+                .block(RealModelSupport.generousTimeout());
+
+        assertThat(streamAdvisor.calls().get())
+                .as("流式路径把它跳过了，而且不报错——这正是坑")
+                .isZero();
+        assertThat(String.join("", stream))
+                .as("被跳过后模型照常回答，所以只看输出看不出问题")
+                .isNotBlank();
     }
 
     private static ChatClientRequest stamp(ChatClientRequest request) {
@@ -74,8 +101,11 @@ class AdvisorBothPathsTest {
     /** 正确写法：{@code BaseAdvisor} 同时覆盖 call 与 stream。 */
     static final class BothPathsAdvisor implements BaseAdvisor {
 
+        private final AtomicInteger beforeCalls = new AtomicInteger();
+
         @Override
         public ChatClientRequest before(ChatClientRequest request, AdvisorChain chain) {
+            beforeCalls.incrementAndGet();
             return stamp(request);
         }
 
@@ -88,13 +118,20 @@ class AdvisorBothPathsTest {
         public int getOrder() {
             return Ordered.HIGHEST_PRECEDENCE;
         }
+
+        AtomicInteger beforeCalls() {
+            return beforeCalls;
+        }
     }
 
     /** 错误写法：流式路径拿不到它。保留在测试里是为了演示后果，不是范例。 */
     static final class CallOnlyAdvisor implements CallAdvisor {
 
+        private final AtomicInteger calls = new AtomicInteger();
+
         @Override
         public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
+            calls.incrementAndGet();
             return chain.nextCall(stamp(request));
         }
 
@@ -106,6 +143,10 @@ class AdvisorBothPathsTest {
         @Override
         public int getOrder() {
             return Ordered.HIGHEST_PRECEDENCE;
+        }
+
+        AtomicInteger calls() {
+            return calls;
         }
     }
 }

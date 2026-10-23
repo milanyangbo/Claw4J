@@ -39,13 +39,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>模型用一个两轮的假模型替掉 mock（mock 是回声，永远不会要求调工具，
  * 于是鉴权根本不会被触发——那正是"看起来绿其实没测到"的典型）。
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = {"claw4j.model.mock=true"})
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class AuthorizationOverHttpTest {
 
     private static final String QUESTION = "上周华东区成交额多少";
-
-    private static final String FINAL_ANSWER = "已按你的口径查到了。";
 
     @LocalServerPort
     private int port;
@@ -63,9 +60,10 @@ class AuthorizationOverHttpTest {
         int before = CountingSqlExecutor.calls();
         String body = ask("guest", "/api/chat");
 
-        assertThat(body)
-                .contains(AuthorizationAdvisor.DENIAL_PREFIX)
-                .doesNotContain(FINAL_ANSWER);
+        // 换真模型之后（ADR-0011）不能再断言"回答里出现那句原话"：
+        // 拒绝文本回到模型之后会被它自己组织一遍，原话不保真。
+        // 判据因此落在两件确定的事上——工具一次都没被执行、回答里没有那个数。
+        assertThat(body).doesNotContainPattern("128,?400");
         assertThat(CountingSqlExecutor.calls())
                 .as("越权的那一次，工具一次都没被执行：拦截发生在执行之前")
                 .isEqualTo(before);
@@ -80,8 +78,10 @@ class AuthorizationOverHttpTest {
         int before = CountingSqlExecutor.calls();
         String body = ask("read-only", "/api/chat");
 
-        assertThat(body).contains(FINAL_ANSWER);
-        assertThat(CountingSqlExecutor.calls()).isEqualTo(before + 1);
+        // 真模型（ADR-0011）不再复述写死的那一句，它自己组织的回答里带着替身执行器
+        // 返回的数。128,400 与 128400 都算——千分位是模型自己加的，不是我们要抓的东西。
+        assertThat(body).containsPattern("128,?400");
+        assertThat(CountingSqlExecutor.calls()).isGreaterThan(before);
     }
 
     @Test
@@ -89,16 +89,19 @@ class AuthorizationOverHttpTest {
         int before = CountingSqlExecutor.calls();
         String streamed = ask("guest", "/api/chat/stream");
 
-        assertThat(streamed)
-                .contains(AuthorizationAdvisor.DENIAL_PREFIX)
-                .doesNotContain(FINAL_ANSWER);
+        assertThat(streamed).doesNotContainPattern("128,?400");
         assertThat(CountingSqlExecutor.calls()).isEqualTo(before);
     }
 
+    /**
+     * 每条用例换一个用户：三条用例共用一个 Spring 容器，而会话是按人切分的。
+     * 假模型时代共用同一个 user 看不出问题（它不看历史），真模型会把上一轮的
+     * "没权限"带进下一轮，于是"有权限"那条也答成没权限——测试之间互相污染。
+     */
     private String ask(String role, String path) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
                 .header("Content-Type", "application/json")
-                .header("X-Claw4j-User", "e2e-tester")
+                .header("X-Claw4j-User", "e2e-" + role + "-" + System.nanoTime())
                 .header("X-Claw4j-Role", role)
                 .POST(HttpRequest.BodyPublishers.ofString("{\"text\":\"" + QUESTION + "\"}"))
                 .build();
@@ -116,58 +119,8 @@ class AuthorizationOverHttpTest {
                 .reduce("", String::concat);
     }
 
-    /**
-     * 两轮假模型：第一轮要调工具，第二轮作答。
-     *
-     * <p>按"提示词里有没有工具结果"来分轮，而不是按调用计数器分：
-     * 计数器是共享状态，几条测试共用一个 Spring 容器会互相串。
-     */
-    static final class TwoRoundModel implements ChatModel {
-
-        @Override
-        public ChatResponse call(Prompt prompt) {
-            boolean toolAlreadyRan = prompt.getInstructions()
-                    .stream()
-                    .anyMatch(ToolResponseMessage.class::isInstance);
-            return toolAlreadyRan ? answer() : toolCall();
-        }
-
-        @Override
-        public Flux<ChatResponse> stream(Prompt prompt) {
-            return Flux.just(call(prompt));
-        }
-
-        /**
-         * 必须是 {@code ToolCallingChatOptions}：不是的话 {@code ToolCallingAdvisor}
-         * 会整段跳过工具循环，鉴权就永远没机会被调用，测试会假绿。
-         */
-        @Override
-        public ChatOptions getOptions() {
-            return DefaultToolCallingChatOptions.builder().model("two-round-stub").build();
-        }
-
-        private static ChatResponse toolCall() {
-            var call = new AssistantMessage.ToolCall("call-1", "function", "querySales",
-                    "{\"sql\":\"select coalesce(sum(amount), 0) as amount from business.order_item\"}");
-            return ChatResponse.builder()
-                    .generations(List.of(new Generation(AssistantMessage.builder().toolCalls(List.of(call)).build())))
-                    .build();
-        }
-
-        private static ChatResponse answer() {
-            return ChatResponse.builder()
-                    .generations(List.of(new Generation(new AssistantMessage(FINAL_ANSWER))))
-                    .build();
-        }
-    }
-
     @TestConfiguration
     static class StubModelConfiguration {
-
-        @Bean
-        public ChatModel twoRoundModel() {
-            return new TwoRoundModel();
-        }
 
         /**
          * 数据源用替身，但<b>要计数</b>：03 号票要的是"用调用计数证明工具一次都没被调用"，

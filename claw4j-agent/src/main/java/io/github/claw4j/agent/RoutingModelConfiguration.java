@@ -23,15 +23,16 @@ import java.util.Map;
 /**
  * 把装好的真实模型排成主备，对外只暴露一个 {@code ChatModel}。
  *
- * <p>单独成一个自动配置类是为了顺序：它必须在 {@link ModelConfiguration} 之后（才知道装了几家）、
- * 在 {@link MockModelConfiguration} 之前（没装任何一家时 mock 才兜底）。
+ * <p>单独成一个自动配置类是为了顺序：它必须在 {@link ModelConfiguration} 之后
+ * （才知道装了几家，才能排主备）。没有 mock 兜底了（ADR-0011）：
+ * 一家都没装上时 {@link ModelConfiguration} 自己就会 fail fast，轮不到这里兜。
  *
  * <p>为什么路由做在 ChatModel 层而不是 ADR-0006 里设想的"具名 ChatClient.Builder"：
  * Advisor 链、工具调用这些只有一份，挂在 ChatClient 上；分流的实体若是 ChatClient，
  * 就等于把 Advisor 链复制两份，鉴权与脱敏会各配一次、各错一次。
  * 真正需要"换一家"的时刻是模型调用失败那一刻，那正好是 ChatModel 的职责。
  */
-@AutoConfiguration(after = ModelConfiguration.class, before = MockModelConfiguration.class)
+@AutoConfiguration(after = ModelConfiguration.class)
 public class RoutingModelConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(RoutingModelConfiguration.class);

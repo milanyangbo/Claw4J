@@ -1,25 +1,27 @@
 package io.github.claw4j.agent.advisor;
 
-import io.github.claw4j.agent.AgentAutoConfiguration;
-import io.github.claw4j.agent.model.ScriptedChatModel;
-import io.github.claw4j.domain.port.AgentPort;
-import io.github.claw4j.domain.port.InboundMessage;
-import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.micrometer.observation.ObservationRegistry;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.model.tool.ToolCallingManager;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
-import org.springframework.boot.autoconfigure.AutoConfigurations;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.core.Ordered;
+import reactor.core.publisher.Flux;
 
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,14 +30,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 鉴权 Advisor 的行为断言。
+ * 鉴权 Advisor：一次工具调用能不能发生由 Principal 决定，不由模型决定（ADR-0007）。
  *
- * <p>每条断言都钉在**外部可观测的事实**上：工具被调用了几次、模型被调了几轮、
- * 客户端拿到的是不是那句拒绝。刻意不去断言"Advisor 内部是怎么判的"——
- * 内部实现换掉而行为不变时，测试不该红。
+ * <p><b>这一批是不经过模型的组件级测试（ADR-0011）。</b>原来这些用例靠脚本化假模型
+ * "让模型声明要调某个工具"，换真模型之后那件事做不到了——真模型不会配合去调一个
+ * 它没权限的工具，更不会精确地只调一次。所以模型那一环由测试直接构造：
+ * 一个带 {@code toolCalls} 的 {@code AssistantMessage}，等价于"模型这一轮说要调这些工具"。
  *
- * <p>为什么要数工具调用次数而不是看回答里有没有数字：无权限时"工具没跑"与
- * "跑了但返回空"在客户端看起来几乎一样（都是没有业务数据）。只有调用计数能分开这两者。
+ * <p>**丢掉的只是"模型会自己发起调用"这一层，组件全是真的**：
+ * 真的 {@code AuthorizationAdvisor}、真的 {@link ToolCallingManager}、真的计数工具。
+ * "工具到底跑没跑"由计数工具回答，不是由 Advisor 自己声明。
+ *
+ * <p>两条路径都测：只实现同步接口的 Advisor 在流式路径上会被静默跳过
+ * （ADR-0007 那个坑，判据见 {@code AdvisorBothPathsTest}）。
  */
 class AuthorizationAdvisorTest {
 
@@ -48,144 +55,134 @@ class AuthorizationAdvisorTest {
     private static final String EXPORT_TOOL = "exportData";
 
     @Test
-    void 无权限时工具一次都没被调用且回答是明确的拒绝() {
+    @DisplayName("越权时这一轮被换成拒绝，而且工具一次都没跑")
+    void 越权时工具调用被换成拒绝() {
         CountingTools tools = new CountingTools();
-        ScriptedChatModel model = ScriptedChatModel.builder()
-                .thenToolCall(SALES_TOOL, "{\"region\":\"华东\",\"period\":\"上周\"}")
-                .thenText("上周华东区成交额是 128400.00 元。")
-                .build();
+        ChatClientResponse out = advise(guest(), tools, SALES_TOOL);
 
-        runner(model, tools).run(context -> {
-            OutboundMessage out = context.getBean(AgentPort.class).reply(ask(guest()));
-
-            // 工具一次都没被调用——不是"调用了但没数据"
-            assertThat(tools.salesCalls()).isZero();
-            // 循环在第一轮就结束了：模型没拿到工具结果，也就没有第二轮的作答
-            assertThat(model.taken()).isEqualTo(1);
-            // 客户端拿到的是明确的拒绝，不是"查出来是空的"
-            assertThat(out.text())
-                    .startsWith(AuthorizationAdvisor.DENIAL_PREFIX)
-                    .doesNotContain("128400");
-        });
+        assertThat(textOf(out)).startsWith(AuthorizationAdvisor.DENIAL_PREFIX);
+        assertThat(out.chatResponse().getResults().get(0).getOutput().getToolCalls()).isEmpty();
+        // 真凭实据：替身工具一次都没被调用（不是"调用了但结果被丢掉"）
+        assertThat(tools.salesCalls()).isZero();
     }
 
     @Test
-    void 流式路径同样拦住且输出里没有工具结果() {
+    @DisplayName("有权限时放行，工具真的被执行了一次")
+    void 有权限时工具真的跑了() {
         CountingTools tools = new CountingTools();
-        ScriptedChatModel model = ScriptedChatModel.builder()
-                .thenToolCall(SALES_TOOL, "{\"region\":\"华东\",\"period\":\"上周\"}")
-                .thenText("上周华东区成交额是 128400.00 元。")
-                .build();
+        ChatClientResponse out = advise(Principal.readOnly("u-readonly"), tools, SALES_TOOL);
 
-        runner(model, tools).run(context -> {
-            List<OutboundMessage> chunks = new ArrayList<>();
-            context.getBean(AgentPort.class).stream(ask(guest()), chunks::add);
-
-            assertThat(tools.salesCalls()).isZero();
-            assertThat(model.taken()).isEqualTo(1);
-            // 必须拼接后再断言：分块边界会落在词中间
-            assertThat(chunks.stream().map(OutboundMessage::text).reduce("", String::concat))
-                    .startsWith(AuthorizationAdvisor.DENIAL_PREFIX)
-                    .doesNotContain("128400");
-            assertThat(chunks.getLast().finalChunk()).isTrue();
-        });
+        assertThat(textOf(out)).doesNotStartWith(AuthorizationAdvisor.DENIAL_PREFIX);
+        assertThat(out.chatResponse().getResults().get(0).getOutput().getToolCalls()).isNotEmpty();
+        assertThat(tools.salesCalls()).isEqualTo(1);
+        // 有副作用那个没被带到这一轮里
+        assertThat(tools.mailCalls()).isZero();
     }
 
     /**
-     * order 位置的意义：模型在**第二轮**才去调越权工具，一样要被拦。
-     *
-     * <p>这条同时是"Advisor 排在工具循环内部"的行为证明。摆错了（排到循环外面）
-     * 它只在整通对话里走一次，第二轮那个 sendMail 就漏过去了。
+     * 拒绝话术要说清是哪一条不满足（动作还是表），否则运营只能直接给个 "*"。
+     * guest 能读 region、读不到 sales_order，所以拒绝里必须点名那张表。
      */
     @Test
-    void 第二轮才出现的越权工具同样被拦() {
+    @DisplayName("拒绝话术说清是动作还是表不满足")
+    void 拒绝话术点名是哪一条不满足() {
         CountingTools tools = new CountingTools();
-        ScriptedChatModel model = ScriptedChatModel.builder()
-                .thenToolCall(SALES_TOOL, "{\"region\":\"华东\",\"period\":\"上周\"}")
-                .thenToolCall(MAIL_TOOL, "{\"to\":\"boss\",\"body\":\"本周成交额\"}")
-                .thenText("邮件已发送。")
-                .build();
+        ChatClientResponse out = advise(guest(), tools, SALES_TOOL);
 
-        runner(model, tools).run(context -> {
-            // 只读身份：能查 sales_order（read + 全表），但发不了邮件
-            OutboundMessage out = context.getBean(AgentPort.class).reply(ask(Principal.readOnly("u-readonly")));
-
-            assertThat(tools.salesCalls()).isEqualTo(1);
-            assertThat(tools.mailCalls()).isZero();
-            assertThat(model.taken()).isEqualTo(2);
-            assertThat(out.text())
-                    .startsWith(AuthorizationAdvisor.DENIAL_PREFIX)
-                    .doesNotContain("邮件已发送");
-        });
+        assertThat(textOf(out))
+                .contains("guest")
+                .contains("sales_order");
+        assertThat(tools.salesCalls()).isZero();
     }
 
-    /** 对照：有权限时一切照旧。没有这条，"一律拒绝"的实现也能全绿。 */
     @Test
-    void 有权限时工具照常被调用() {
+    @DisplayName("没登记过权限的工具按越权处理")
+    void 没登记权限的工具一律拒绝() {
         CountingTools tools = new CountingTools();
-        ScriptedChatModel model = ScriptedChatModel.builder()
-                .thenToolCall(SALES_TOOL, "{\"region\":\"华东\",\"period\":\"上周\"}")
-                .thenText("已查到。")
-                .build();
+        // exportData 从没在 registry 里登记过：没人评估过它会碰到什么
+        ChatClientResponse out = advise(Principal.readOnly("u-readonly"), tools, EXPORT_TOOL);
 
-        runner(model, tools).run(context -> {
-            OutboundMessage out = context.getBean(AgentPort.class).reply(ask(Principal.readOnly("u-readonly")));
-
-            assertThat(tools.salesCalls()).isEqualTo(1);
-            assertThat(model.taken()).isEqualTo(2);
-            assertThat(out.text()).isEqualTo("已查到。");
-        });
+        assertThat(textOf(out))
+                .startsWith(AuthorizationAdvisor.DENIAL_PREFIX)
+                .contains(EXPORT_TOOL);
+        assertThat(tools.exportCalls()).isZero();
     }
 
-    /** 权限表里没登记的工具：没人评估过它会碰到什么，按越权处理而不是放行。 */
     @Test
-    void 未登记权限的工具默认被拒绝() {
+    @DisplayName("只读角色用不了有副作用的动作")
+    void 只读角色发不出邮件() {
         CountingTools tools = new CountingTools();
-        ScriptedChatModel model = ScriptedChatModel.builder()
-                .thenToolCall(EXPORT_TOOL, "{\"target\":\"全量订单\"}")
-                .thenText("导出完成。")
-                .build();
+        ChatClientResponse out = advise(Principal.readOnly("u-readonly"), tools, MAIL_TOOL);
 
-        runner(model, tools).run(context -> {
-            OutboundMessage out = context.getBean(AgentPort.class)
-                    .reply(ask(Principal.of("u-admin", "admin", Set.of("*"), Set.of("*"))));
-
-            assertThat(tools.exportCalls()).isZero();
-            assertThat(out.text())
-                    .startsWith(AuthorizationAdvisor.DENIAL_PREFIX)
-                    .contains(EXPORT_TOOL);
-        });
+        assertThat(textOf(out))
+                .startsWith(AuthorizationAdvisor.DENIAL_PREFIX)
+                .contains("sendMail");
+        assertThat(tools.mailCalls()).isZero();
     }
 
-    /** 没有身份就没有权限：直接拿 ChatClient 说话且不带 Principal 时，工具一律不放行。 */
     @Test
-    void 没有身份时工具调用被拒绝() {
+    @DisplayName("流式路径上越权被当场掐断，且工具没跑")
+    void 流式路径同样拦得住() {
         CountingTools tools = new CountingTools();
-        ScriptedChatModel model = ScriptedChatModel.builder()
-                .thenToolCall(SALES_TOOL, "{\"region\":\"华东\",\"period\":\"上周\"}")
-                .thenText("已查到。")
-                .build();
 
-        runner(model, tools).run(context -> {
-            String content = context.getBean(ChatClient.class).prompt(QUESTION).call().content();
+        ChatClientResponse single = AuthorizationAdvisorHolder.advisor()
+                .adviseStream(request(guest()), ChainStubs.streamReturning(
+                        List.of(ChainStubs.responseRequesting(SALES_TOOL))))
+                .blockLast();
 
-            assertThat(tools.salesCalls()).isZero();
-            assertThat(content).startsWith(AuthorizationAdvisor.DENIAL_PREFIX);
-        });
+        assertThat(textOf(single)).startsWith(AuthorizationAdvisor.DENIAL_PREFIX);
+        assertThat(single.chatResponse().getResults().get(0).getOutput().getToolCalls()).isEmpty();
+        assertThat(tools.salesCalls()).isZero();
     }
 
-    /**
-     * 钉住摆位的方向：{@code ToolCallingAdvisor} **之后**的 Advisor 才会被每一次迭代走到，
-     * 而链按 order 升序排，所以"循环内部"是 **大于** {@link ToolCallingAdvisor#DEFAULT_ORDER}。
-     *
-     * <p>写反成"小于"也能编译、也能跑，只是悄悄退化成"整通对话只查一次"。
-     * 行为测试（第二轮那条）会红，但红得远且看不出是 order 写反了，所以这条断言单独留着。
-     */
     @Test
-    void order落在工具循环内部() {
+    @DisplayName("摆在工具循环内部：每次迭代都要过一遍")
+    void order排在工具循环内部() {
         assertThat(new AuthorizationAdvisor(List.of()).getOrder())
-                .isGreaterThan(ToolCallingAdvisor.DEFAULT_ORDER)
-                .isLessThan(Ordered.LOWEST_PRECEDENCE);
+                .isGreaterThan(ToolCallingAdvisor.DEFAULT_ORDER);
+    }
+
+    // ------------------------------------------------------------------ 装配辅助
+
+    /**
+     * 走一次真实链路：Advisor 判定 → 判定结果交给真的 {@code ToolCallingManager} 去执行。
+     *
+     * <p>这两步拼起来才是"判据成立"：Advisor 只负责换掉这一轮，
+     * 工具跑没跑由 {@code ToolCallingManager} 与计数工具回答。
+     */
+    private static ChatClientResponse advise(Principal principal, CountingTools tools, String... wanted) {
+        ChatClientResponse decided = AuthorizationAdvisorHolder.advisor()
+                .adviseCall(request(principal), ChainStubs.callReturning(ChainStubs.responseRequesting(wanted)));
+
+        ToolCallingManager manager = ToolCallingManager.builder()
+                .observationRegistry(ObservationRegistry.NOOP)
+                .build();
+        try {
+            manager.executeToolCalls(promptWith(tools), decided.chatResponse());
+        } catch (IllegalStateException noToolCall) {
+            // 被拒绝的那一轮里已经没有工具调用了，ToolCallingManager 自己也这么说
+            // ——这正是"越权时工具一次都没跑"的判据：不是"跑了但结果被丢掉"。
+            // 放行时不会走到这里。
+        }
+        return decided;
+    }
+
+    private static ChatClientRequest request(Principal principal) {
+        return ChatClientRequest.builder()
+                .prompt(new Prompt(List.of(new UserMessage(QUESTION))))
+                .context(Map.of(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal))
+                .build();
+    }
+
+    private static Prompt promptWith(CountingTools tools) {
+        ToolCallback[] callbacks = MethodToolCallbackProvider.builder().toolObjects(tools).build()
+                .getToolCallbacks();
+        return new Prompt(List.of(new UserMessage(QUESTION)),
+                ToolCallingChatOptions.builder().toolCallbacks(callbacks).build());
+    }
+
+    private static String textOf(ChatClientResponse response) {
+        return ChainStubs.textOf(response);
     }
 
     /** 一个只能看 region 表的身份：会读，但读不到 sales_order。 */
@@ -193,28 +190,25 @@ class AuthorizationAdvisorTest {
         return Principal.of("u-guest", "guest", Set.of("region"), Set.of(ToolPermission.READ));
     }
 
-    private static InboundMessage ask(Principal principal) {
-        return new InboundMessage(principal, "http:auth-test", QUESTION);
-    }
-
-    /**
-     * 只装配 Agent 侧：模型是脚本化的假模型，工具与权限都是这一条测试自己的实例，
-     * 于是调用计数能读到。走 {@code AgentPort} 这个接缝，与生产路径是同一条。
-     */
-    private static ApplicationContextRunner runner(ScriptedChatModel model, CountingTools tools) {
-        return new ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(AgentAutoConfiguration.class))
-                .withBean("chatModel", ChatModel.class, () -> model)
-                .withBean("toolCallbacks", ToolCallbackProvider.class,
-                        () -> MethodToolCallbackProvider.builder().toolObjects(tools).build())
-                .withBean("permissions", ToolPermissionRegistry.class, AuthorizationAdvisorTest::permissions);
-    }
-
+    /** 权限登记：一个可查、一个有副作用；{@code exportData} 压根不登记。 */
     private static ToolPermissionRegistry permissions() {
         return ToolPermissionRegistry.of(Map.of(
                 SALES_TOOL, ToolPermission.read("sales_order"),
-                // 发邮件是有副作用的动作，用独立的动作名登记，不在"只读"的能力范围内
                 MAIL_TOOL, ToolPermission.of("sendMail")));
+    }
+
+    /** Advisor 实例按测试共享：它自己是无状态的，权限表也只有一份。 */
+    private static final class AuthorizationAdvisorHolder {
+
+        private static final AuthorizationAdvisor ADVISOR =
+                new AuthorizationAdvisor(List.of(permissions()));
+
+        private AuthorizationAdvisorHolder() {
+        }
+
+        static AuthorizationAdvisor advisor() {
+            return ADVISOR;
+        }
     }
 
     /** 三个工具：一个可查、一个有副作用、一个压根没登记权限。 */
@@ -226,19 +220,19 @@ class AuthorizationAdvisorTest {
 
         private final AtomicInteger exportCalls = new AtomicInteger();
 
-        @Tool(description = "查询指定区域与时间窗内的成交额")
+        @org.springframework.ai.tool.annotation.Tool(description = "查询指定区域与时间窗内的成交额")
         public String querySales(String region, String period) {
             salesCalls.incrementAndGet();
             return "stub:sales-result";
         }
 
-        @Tool(description = "给指定的人发一封邮件")
+        @org.springframework.ai.tool.annotation.Tool(description = "给指定的人发一封邮件")
         public String sendMail(String to, String body) {
             mailCalls.incrementAndGet();
             return "stub:mail-sent";
         }
 
-        @Tool(description = "导出数据")
+        @org.springframework.ai.tool.annotation.Tool(description = "导出数据")
         public String exportData(String target) {
             exportCalls.incrementAndGet();
             return "stub:exported";

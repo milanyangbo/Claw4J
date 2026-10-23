@@ -1,6 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
@@ -78,7 +79,15 @@ public class ChatClientAgentPort implements AgentPort {
      * 这里设的是 Advisor 上下文里的参数，链上没有记忆 Advisor 时它安静地被忽略。
      */
     private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message) {
-        return chatClient.prompt(message.text())
+        // 入站就脱敏（ADR-0011 里真模型测试抓到的那个缺陷）：
+        // 会话记忆是在 Advisor 链的 before 阶段最早那一步把用户消息写进库的，
+        // 而出站脱敏发生在 after——它改得到模型的回答，改不到已经落库的那条用户消息。
+        // 于是"出站是掩码、会话表里躺着明文"这种更持久的泄露就出现了，
+        // 而且没有任何一条假模型的测试会发现它：假模型时代的用例从不往用户消息里放号码。
+        //
+        // 代价要记账：模型从此看不到用户写的原始号码。当前没有"按手机号查订单"这类工具，
+        // 掩码不影响任何能力；哪天有了，得给那个工具开一条白名单，而不是把入站脱敏撤掉。
+        return chatClient.prompt(PiiRedactor.mask(message.text()))
                 .advisors(spec -> spec
                         .param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, message.principal())
                         .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY,

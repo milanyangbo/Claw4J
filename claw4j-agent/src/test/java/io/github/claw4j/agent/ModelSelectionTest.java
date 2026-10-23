@@ -1,6 +1,5 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.model.MockChatModel;
 import io.github.claw4j.agent.model.RoutingChatModel;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
@@ -13,10 +12,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 模型选择的各种情形。用 ApplicationContextRunner 而不是 @SpringBootTest，
- * 因为它能在同一个 JVM 里反复换配置跑条件装配，又快又不联网。
+ * 因为它能在同一个 JVM 里反复换配置跑条件装配，又快又不联网
+ * （这里装配的是真实模型对象，但一个请求都不发）。
  *
- * <p>装配结果现在有两种形态：装了真实模型时是"各家模型 + 一个路由"，
- * 一家都没有时是"一个 mock"。路由才是业务侧看到的那一个（@Primary）。
+ * <p>装配结果只有一种形态：**真实模型 + 一个路由**。没有 mock 兜底了（ADR-0011）：
+ * 一家 key 都没配时是**启动失败**，不再退到回声模型——那正是"本地跑着 mock
+ * 却以为在跑真模型"的来源。所以这个测试类里有一半在钉"各种缺 key 的姿势都必须红"。
  */
 class ModelSelectionTest {
 
@@ -33,8 +34,7 @@ class ModelSelectionTest {
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(
                     ModelConfiguration.class,
-                    RoutingModelConfiguration.class,
-                    MockModelConfiguration.class));
+                    RoutingModelConfiguration.class));
 
     @Test
     void 有key时装配真实模型并包进路由() {
@@ -49,7 +49,6 @@ class ModelSelectionTest {
                             .containsExactly("deepseek");
                     assertThat(context.getBean(ModelConfiguration.DEEPSEEK_BEAN))
                             .isInstanceOf(DeepSeekChatModel.class);
-                    assertThat(context).doesNotHaveBean(MockChatModel.class);
                 });
     }
 
@@ -82,6 +81,24 @@ class ModelSelectionTest {
     }
 
     /**
+     * 温度默认 0（ADR-0011）。
+     *
+     * <p>测试连了真模型之后，非零温度等于给每条断言都掺一份随机；
+     * 而这是个查数、调工具的 Agent，同一个问题两次问出两个不同的数是故障，不是个性。
+     * 这条断言钉的是"默认"——有人为了演示效果把它调高了，这里会红，提醒他测试也会跟着飘。
+     */
+    @Test
+    void 温度默认为零_否则每条断言都掺一份随机() {
+        contextRunner.withPropertyValues(BOTH_KEYS)
+                .run(context -> {
+                    assertThat(context.getBean(ModelConfiguration.DEEPSEEK_BEAN, ChatModel.class)
+                            .getOptions().getTemperature()).isEqualTo(0.0);
+                    assertThat(context.getBean(ModelConfiguration.QWEN_BEAN, ChatModel.class)
+                            .getOptions().getTemperature()).isEqualTo(0.0);
+                });
+    }
+
+    /**
      * 模型内部只留短重试。
      *
      * <p>默认的 {@code RetryUtils.DEFAULT_RETRY_TEMPLATE} 是 10 次、2 秒起、×5 递增、上限 180 秒；
@@ -103,9 +120,7 @@ class ModelSelectionTest {
                 });
     }
 
-    /**
-     * 只给备用的 key 也算"有真实模型"：路由里就它一个，没有备可用，但总好过退回 mock。
-     */
+    /** 只给备用的 key 也算"有真实模型"：路由里就它一个，没有备可用。 */
     @Test
     void 只有千问有key时路由里只有千问() {
         contextRunner.withPropertyValues(
@@ -113,11 +128,8 @@ class ModelSelectionTest {
                         "claw4j.model.qwen.base-url=https://dashscope.aliyuncs.com/compatible-mode/v1",
                         "claw4j.model.qwen.model=qwen-plus",
                         "claw4j.model.primary=qwen")
-                .run(context -> {
-                    assertThat(context.getBean(RoutingChatModel.class).routeOrder())
-                            .containsExactly("qwen");
-                    assertThat(context).doesNotHaveBean(MockChatModel.class);
-                });
+                .run(context -> assertThat(context.getBean(RoutingChatModel.class).routeOrder())
+                        .containsExactly("qwen"));
     }
 
     /**
@@ -162,46 +174,39 @@ class ModelSelectionTest {
                 });
     }
 
+    /**
+     * <b>没有 key 就是启动失败（ADR-0011）。</b>
+     *
+     * <p>改真模型之前这里断言的是"降级到 mock 且容器里只有一个 ChatModel"。
+     * 那条现在反过来了：没有任何 key 时 {@code ModelConfiguration} 会 fail fast，
+     * 而不是装一个回声模型让应用假装能跑。失败消息里必须点名去哪个环境变量配。
+     */
     @Test
-    void 没有key时降级到mock() {
+    void 没有key时启动失败并说清去哪配() {
         contextRunner.run(context -> {
-            assertThat(context).hasSingleBean(ChatModel.class);
-            assertThat(context.getBean(ChatModel.class)).isInstanceOf(MockChatModel.class);
-            assertThat(context).doesNotHaveBean(RoutingChatModel.class);
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure().getMessage())
+                    .contains("DEEPSEEK_API_KEY", "QWEN_API_KEY");
         });
     }
 
+    /**
+     * 空字符串与空白都算"没给 key"——这个判断正是当初要自定义 Condition 的原因：
+     * {@code @ConditionalOnProperty} 只判"属性等于某值"，空字符串也会算属性存在。
+     * 现在这两种姿势的表现是启动失败，而不是装出一个带空 key 的模型。
+     */
     @Test
-    void 显式要求mock时即使有key也走mock() {
-        contextRunner
-                .withPropertyValues(BOTH_KEYS)
-                .withPropertyValues("claw4j.model.mock=true")
-                .run(context -> {
-                    assertThat(context).hasSingleBean(ChatModel.class);
-                    assertThat(context.getBean(ChatModel.class)).isInstanceOf(MockChatModel.class);
-                    assertThat(context).doesNotHaveBean(RoutingChatModel.class);
-                });
-    }
-
-    @Test
-    void 显式要求真实模型却没给key时启动失败并说清原因() {
-        contextRunner.withPropertyValues("claw4j.model.mock=false")
+    void 空字符串或空白的key等同于没给key() {
+        contextRunner.withPropertyValues("claw4j.model.deepseek.api-key=")
                 .run(context -> {
                     assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure().getMessage())
-                            .contains("DEEPSEEK_API_KEY");
+                    assertThat(context.getStartupFailure().getMessage()).contains("DEEPSEEK_API_KEY");
                 });
-    }
 
-    @Test
-    void 空字符串的key等同于没给key() {
-        contextRunner.withPropertyValues("claw4j.model.deepseek.api-key=")
-                .run(context -> assertThat(context.getBean(ChatModel.class)).isInstanceOf(MockChatModel.class));
-    }
-
-    @Test
-    void 只有空白字符的key不算提供了key() {
         contextRunner.withPropertyValues("claw4j.model.deepseek.api-key=   ")
-                .run(context -> assertThat(context.getBean(ChatModel.class)).isInstanceOf(MockChatModel.class));
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure().getMessage()).contains("DEEPSEEK_API_KEY");
+                });
     }
 }

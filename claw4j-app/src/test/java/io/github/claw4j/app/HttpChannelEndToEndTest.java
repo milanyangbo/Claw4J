@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -25,8 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>模型强制 mock：CI 上没有 API key，也不该为了跑测试烧 token（ADR-0006）。
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = {"claw4j.model.mock=true"})
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class HttpChannelEndToEndTest {
 
     private static final String QUESTION = "上周华东区成交额多少";
@@ -43,9 +43,10 @@ class HttpChannelEndToEndTest {
         HttpResponse<byte[]> response = http.send(ask("/api/chat"), HttpResponse.BodyHandlers.ofByteArray());
 
         assertEquals(200, response.statusCode());
+        // 换真模型之后（ADR-0011）不能再断言"回答里回着问题原话"——那是回声模型才有的行为。
+        // 真模型的回答是它自己写的，所以这里钉的是"这一趟真的走到了模型并拿到了非空回答"。
         String body = text(response);
-        assertTrue(body.contains(QUESTION), "回答应当把问题走完全链路回声出来，实际：" + body);
-        assertTrue(body.contains("[mock]"), "这条链路用的是 mock 模型，实际：" + body);
+        assertFalse(body.isBlank(), "回答不该是空的，实际：" + body);
     }
 
     @Test
@@ -68,7 +69,7 @@ class HttpChannelEndToEndTest {
         List<String> chunks = events.stream().filter(event -> "chunk".equals(event.name())).map(SseEvent::data).toList();
         assertTrue(chunks.size() > 1,
                 "必须收到多块；只有一块说明流式被降级成了一次性响应，实际块数：" + chunks.size());
-        assertTrue(String.join("", chunks).contains(QUESTION), "分块之后拼回来应当是完整回答，实际：" + chunks);
+        assertFalse(String.join("", chunks).isBlank(), "分块拼回来不该是空的，实际：" + chunks);
         assertEquals("done", events.get(events.size() - 1).name(), "最后一个事件必须是 done，否则客户端不知道什么时候停");
     }
 
@@ -81,8 +82,11 @@ class HttpChannelEndToEndTest {
                 .map(SseEvent::data)
                 .reduce("", String::concat);
 
-        assertTrue(sync.contains(streamed.trim()),
-                "流式拼接结果应当是同步结果的全部或一部分，实际 sync=" + sync + " streamed=" + streamed);
+        // 真模型不保证两条路径逐字一致（温度 0 只是压低随机，不是消除），
+        // 所以这条从"内容相同"放宽成"两条路都拿到了回答"——
+        // 它要抓的是某一条路径根本没走通，不是措辞差异。
+        assertFalse(sync.isBlank(), "同步路径没拿到回答");
+        assertFalse(streamed.isBlank(), "流式路径没拿到回答");
     }
 
     private HttpRequest ask(String path) {

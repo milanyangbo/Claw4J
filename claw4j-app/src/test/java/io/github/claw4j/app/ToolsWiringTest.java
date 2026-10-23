@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 少了它，{@code @ConditionalOnBean(JdbcClient.class)} 会在 Boot 注册 JdbcClient
  * <b>之前</b>求值，于是真实执行器永远不注册。去掉那条属性，这两条断言立刻红。
  */
-@SpringBootTest(properties = "claw4j.model.mock=true")
+@SpringBootTest
 class ToolsWiringTest {
 
     @Autowired

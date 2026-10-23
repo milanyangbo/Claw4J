@@ -92,6 +92,14 @@ public class ModelProperties {
          */
         private Duration readTimeout = Duration.ofSeconds(60);
 
+        /**
+         * 采样温度。默认 {@code 0.0}：这是个查数、调工具的 Agent，
+         * 不是写诗的——同一个问题两次问出两个不同的数是故障，不是个性。
+         * 而且温度是测试可复现的前提：ADR-0011 让测试连真实模型之后，
+         * 非零温度等于给每一条断言都掺一份随机。想让它发散时按环境变量调。
+         */
+        private Double temperature = 0.0;
+
         /** 路由键，与 {@code claw4j.model.primary} 的取值对应。 */
         public abstract String name();
 
@@ -136,6 +144,14 @@ public class ModelProperties {
 
         public void setReadTimeout(Duration readTimeout) {
             this.readTimeout = readTimeout;
+        }
+
+        public Double getTemperature() {
+            return temperature;
+        }
+
+        public void setTemperature(Double temperature) {
+            this.temperature = temperature;
         }
     }
 

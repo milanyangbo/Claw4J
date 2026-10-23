@@ -18,9 +18,10 @@ jobs:
     timeout-minutes: 25
 
     env:
-      # 兜底：CI 上没有也不该有模型 key。测试自己也会强制 mock，
-      # 这里再设一次是为了让"忘了在测试里写 properties"也不至于烧到真实额度。
-      CLAW4J_MODEL_MOCK: 'true'
+      # ADR-0011：测试连真实 DeepSeek，CI 上由 secret 提供 key。
+      # 没有 key 时测试是**失败**而不是跳过——被跳过的测试会被跳过闸放过，
+      # 那等于"没验过却显示成绿"，正是 M1 那个 P0 的形状。
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 
     steps:
       - uses: actions/checkout@v5

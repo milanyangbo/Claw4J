@@ -38,7 +38,11 @@ M0 结束就必须能演示，不等 M2。
 
 - 开发期用 `spring-boot-docker-compose` 拉起 pgvector + Redis（`@ServiceConnection` 自动注入连接信息）；集成测试用 **Testcontainers** 起干净实例。两者连的都是本机 Docker，分工不同：compose 常驻会给测试带来脏数据串扰，Testcontainers 每次销毁重建。
 - 三条必测：① 每个自定义 Advisor 的单测，**含流式路径**（防 ADR-0007 那个静默跳过的坑）；② Text-to-SQL 自纠错链路用固定 schema 跑通；③ MCP 连接的 fail-fast 探测与会话丢失重连。
-- 单元测试**全部 mock 模型调用**，不烧 token、不依赖网络（ADR-0006）。集成测试走真实端点，用 profile 隔离且默认不进 CI。
+- 单元测试与集成测试**一律连真实模型**（ADR-0011，取代本条原来的"全部 mock 模型调用"）。
+  需要模型的测试默认打真实 DeepSeek，没有 key 时测试失败而不是跳过；断言只写方向性，
+  关键断言给有限重试。依赖"精确编排模型行为"的那几条（调用预算、鉴权计数、脱敏）
+  降级为不经过模型的组件级测试——仍是真组件，只是工具调用指令由测试构造。
+  `RealModelIT` 那套 `-Preal-model` 隔离随之取消。
 - Spring AI 评估器（`RelevancyEvaluator` / `FactCheckingEvaluator`）挂进 CI 当质量门禁。
 
 ### 工具调用预算：用框架的上限，但不是它的默认值

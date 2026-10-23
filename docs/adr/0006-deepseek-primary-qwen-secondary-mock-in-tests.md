@@ -7,6 +7,10 @@ date: 2026-10-22
 
 真实调用接两家国内供应商：DeepSeek 用 Spring AI 2.x 的一等公民适配器，通义（Qwen）走 OpenAI 兼容端点配置，两者在同一套多模型路由下按用途分流。所有单元测试与 CI 一律 mock 模型调用，不烧 token、不依赖网络。
 
+> **2026-10-23 取代**：上面这条已作废，见 **ADR-0011**（测试连真实模型，`MockChatModel` 已删除）。
+> 各节里凡涉及 mock 兜底与 `claw4j.model.mock` 三态的部分，只有"厂商适配与降级规则"仍然有效；
+> "按 API key 有无自动降级到 mock"那一节整体失效——没 key 现在是启动失败，不再静默降级。
+
 ## Considered Options
 
 **只接一家供应商**

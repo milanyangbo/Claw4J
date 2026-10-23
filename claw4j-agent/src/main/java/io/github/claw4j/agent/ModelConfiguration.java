@@ -89,6 +89,7 @@ public class ModelConfiguration {
                 // 请求不带 model 时 DeepSeek 会返回空内容，而且不报错——很难排查。
                 .options(DeepSeekChatOptions.builder()
                         .model(config.getModel())
+                        .temperature(config.getTemperature())
                         .build())
                 // 模型内部只留短重试（10 次 × 100ms，合计约 1 秒），不用默认的
                 // RetryUtils.DEFAULT_RETRY_TEMPLATE（10 次、2s 起、×5 递增、上限 180s）。
@@ -142,6 +143,7 @@ public class ModelConfiguration {
                 .openAiClientAsync(client.async())
                 .options(OpenAiChatOptions.builder()
                         .model(config.getModel())
+                        .temperature(config.getTemperature())
                         .build())
                 .build();
     }
@@ -154,9 +156,8 @@ public class ModelConfiguration {
         if (config.getApiKey().isEmpty()) {
             // 走到这里说明显式设了 mock=false 却一个 key 都没给。
             throw new IllegalStateException(
-                    "claw4j.model.mock=false 要求使用真实模型，但没有配置任何 API key。"
-                            + "请设置环境变量 DEEPSEEK_API_KEY 或 QWEN_API_KEY 中的至少一个，"
-                            + "或把 claw4j.model.mock 置为 true。");
+                    "没有配置任何 API key，应用拒绝启动（ADR-0011 起不再降级到 mock 模型）。"
+                            + "请设置环境变量 DEEPSEEK_API_KEY 或 QWEN_API_KEY 中的至少一个。");
         }
         if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()
                 || config.getModel() == null || config.getModel().isBlank()) {

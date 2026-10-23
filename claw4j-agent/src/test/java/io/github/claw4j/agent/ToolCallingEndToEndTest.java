@@ -1,7 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.model.FakeSqlExecutor;
-import io.github.claw4j.agent.model.ScriptedChatModel;
+import io.github.claw4j.agent.model.RealModelSupport;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
@@ -21,71 +21,65 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 工具调用闭环，从 {@code AgentPort} 接缝进、从 {@code AgentPort} 接缝出。
  *
- * <p>证明的不是"模型说了什么"，而是三件事：工具**真的被调用了**、
- * 工具的返回值**回到了模型**（进了第二轮的提示词）、循环**走完了第二轮**。
- * 断言钉在这三点上，而不是钉在某个具体金额上——金额是数据库的事（05 号票
- * 的端到端测试），这里只关心循环本身。
+ * <p><b>现在是真模型自己去调工具。</b>改真模型之前（ADR-0011）这三件事靠脚本喂进去：
+ * 脚本先吐一个 tool call、再吐一句固定回答，于是"工具被调用了""结果回到了模型"
+ * 都是脚本保证的，模型侧唯一没被验的就是"它会不会自己去调"。
+ * 现在唯一的前提只留下"这个问题该调工具"，其余全交给模型。
+ *
+ * <p>证明的仍然是三件事：工具**真的被调用了**（替身执行器计数）、
+ * 工具的返回值**回到了模型**（那个数出现在最终回答里）、循环**走完了第二轮**。
+ * 数据源接缝仍是替身 —— 这里测的是循环，不是 SQL。
  */
 class ToolCallingEndToEndTest {
 
-    /** 第二轮脚本的最终回答。 */
-    private static final String FINAL_ANSWER = "已按你的口径查到了。";
-
-    /** 数据源接缝用替身：这里测的是循环，不是 SQL。真库那条断言在 app 模块。 */
     private static final String SQL_RESULT = "128400.00";
+
+    /** 替身执行器返回的那个数，去掉小数好按各种写法去匹配。 */
+    private static final String SQL_RESULT_DIGITS = "128400";
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AgentAutoConfiguration.class, ToolsAutoConfiguration.class))
-            .withBean("sqlExecutor", ReadOnlySqlExecutor.class,
-                    () -> FakeSqlExecutor.returning("amount", SQL_RESULT));
-
-    /** 工具调用那一轮：正文为空 + 一次 querySales 调用请求；第二轮才是最终回答。 */
-    private static ScriptedChatModel scriptedModel() {
-        return ScriptedChatModel.builder()
-                .thenToolCall("querySales", "{\"sql\":\"select sum(amount) from business.order_item\"}")
-                .thenText(FINAL_ANSWER)
-                .build();
-    }
+            .withBean("chatModel", ChatModel.class, RealModelSupport::chatModel);
 
     private static InboundMessage ask() {
         return new InboundMessage(Principal.readOnly("ethan"), "http:t1", "上周华东区成交额多少");
     }
 
     @Test
-    void 同步路径_工具被调用_结果回到模型_最终回答是第二轮那句() {
-        ScriptedChatModel model = scriptedModel();
+    void 同步路径_工具被调用_结果回到模型() {
+        FakeSqlExecutor executor = FakeSqlExecutor.returning("amount", SQL_RESULT);
 
-        contextRunner.withBean("chatModel", ChatModel.class, () -> model).run(context -> {
-            AgentPort port = context.getBean(AgentPort.class);
+        runner(executor).run(context -> RealModelSupport.eventually(2, "同步走完工具循环", () -> {
+            OutboundMessage out = context.getBean(AgentPort.class).reply(ask());
 
-            OutboundMessage out = port.reply(ask());
-
-            // 循环走了两轮：第一轮决定调工具，第二轮才作答
-            assertThat(model.taken()).isEqualTo(2);
-            // 工具的返回值进了第二轮的提示词 —— 这是"工具真的执行过"的外部证据
-            assertThat(model.promptTexts().get(1)).contains(SQL_RESULT);
-            // 最终回答是第二轮那句，不是工具调用那轮的空正文
-            assertThat(out.text()).isEqualTo(FINAL_ANSWER);
-        });
+            // 工具真的被执行了：替身计数从 0 变成非 0，这是"调用发生过"的外部证据
+            assertThat(executor.calls()).isGreaterThanOrEqualTo(1);
+            // 工具的返回值回到了模型：那个数出现在它给客户端的回答里。
+            // 这是比"读第二轮提示词"更强的判据——提示词里有不等于模型真的用了它。
+            RealModelSupport.assertContainsAmount(out.text(), SQL_RESULT_DIGITS);
+            return out.text();
+        }));
     }
 
     @Test
     void 流式路径同样走完工具循环() {
-        ScriptedChatModel model = scriptedModel();
+        FakeSqlExecutor executor = FakeSqlExecutor.returning("amount", SQL_RESULT);
 
-        contextRunner.withBean("chatModel", ChatModel.class, () -> model).run(context -> {
-            AgentPort port = context.getBean(AgentPort.class);
+        runner(executor).run(context -> RealModelSupport.eventually(2, "流式走完工具循环", () -> {
             List<OutboundMessage> chunks = new ArrayList<>();
+            context.getBean(AgentPort.class).stream(ask(), chunks::add);
 
-            port.stream(ask(), chunks::add);
-
-            assertThat(model.taken()).isEqualTo(2);
-            assertThat(model.promptTexts().get(1)).contains(SQL_RESULT);
+            assertThat(executor.calls()).isGreaterThanOrEqualTo(1);
             // 拼接所有块再断言：分块边界会落在词中间，逐块查会误判
-            assertThat(chunks.stream().map(OutboundMessage::text).reduce("", String::concat))
-                    .isEqualTo(FINAL_ANSWER);
+            String streamed = chunks.stream().map(OutboundMessage::text).reduce("", String::concat);
+            RealModelSupport.assertContainsAmount(streamed, SQL_RESULT_DIGITS);
             // 结尾块是唯一的正常结束信号
             assertThat(chunks.getLast().finalChunk()).isTrue();
-        });
+            return streamed;
+        }));
+    }
+
+    private ApplicationContextRunner runner(ReadOnlySqlExecutor executor) {
+        return contextRunner.withBean("sqlExecutor", ReadOnlySqlExecutor.class, () -> executor);
     }
 }

@@ -49,11 +49,13 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 177 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 175 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
-没有 API key 也能跑完 —— 模型会自动降级到 mock（`[mock]` 前缀），数据源是懒连接不会在启动时真连（ADR-0006）。
+要先有 `DEEPSEEK_API_KEY`：没有 key 应用**起不来**（ADR-0011 起不再有 mock 兜底——
+留着兜底就会出现"本地跑着回声模型却以为在跑真模型"这种更贵的困惑）。
+数据源是懒连接，不会在启动时真连（ADR-0006）。
 
 **没有 Docker 时数据库那一类会整类跳过**，而最硬的几条判据（只读约束、会话记忆继承、启动迁移）
 恰好都在里面。它们跳过时构建照样绿，只在终端里打一行 `本次跳过`。要确认自己跑的是完整版：
@@ -144,9 +146,13 @@ set -a && . ./.env && set +a   # 把 key 导进当前 shell（.env 已被 git �
 CLAW4J_MODEL_PRIMARY=qwen ./mvnw -Preal-model verify   # 换另一家当主模型
 ```
 
-真实调用**不进 CI**（ADR-0006、ADR-0008）：它烧钱、依赖外网、还依赖本机起着的库，
-三条里断一条就红。放进回归基线，基线就从"改坏了会红"变成"供应商抖一下也会红"，
-人很快学会无视它——那等于没有基线。回归基线是那 177 个 mock 测试。
+回归基线是那 175 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
+关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
+M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
+
+`RealModelIT` 仍留在 `-Preal-model` 里：它需要本机 `docker compose` 起的常驻库，
+不是 Testcontainers 能临时拉起来的那种。
 
 ## key 怎么配
 
@@ -159,15 +165,11 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 
 `application-local.yml` 里有一行 `spring.config.import: optional:file:.env[.properties]` —— Spring Boot 默认**不**读 `.env`（那是 docker compose 的约定），这行把它接进来。也可以直接 `export DEEPSEEK_API_KEY=...`。
 
-`claw4j.model.mock` 是三态的：
+没有配置任何 key 时**启动失败**，不降级（ADR-0011）。失败消息会点名 `DEEPSEEK_API_KEY` /
+`QWEN_API_KEY`，免得拿着空端点去发第一个请求才炸。
 
-| 值 | 行为 |
-| --- | --- |
-| 留空（默认） | 有 key 就用真实模型，没 key 自动降级 mock |
-| `true` | 强制 mock，有 key 也不用（CI 与本机演示用这个） |
-| `false` | 强制真实模型，没 key 直接启动失败 —— 用来发现"配置漏了"，而不是让它悄悄降级 |
-
-**测试与 CI 全 mock，从不烧 token** —— CI 上不会因为没有 key 而变红。
+测试与 CI 同样连真实模型，所以 CI 上要配 `secrets.DEEPSEEK_API_KEY`。**没有 key 时测试是红的，
+不是跳过**——被跳过的测试会被 `assert-no-skipped-tests.sh` 放过，那等于没验。
 
 ### 两家模型怎么切
 
@@ -209,8 +211,8 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 
 ## 亲手试一下
 
-下面是**真实模型（DeepSeek 主）+ 真库**跑出来的原样输出，不是 mock。没配 key 时同样的请求
-回的是 `{"text":"[mock] 上周华东区成交额多少"}`——那条路径 CI 每次都在跑。
+下面是**真实模型（DeepSeek 主）+ 真库**跑出来的原样输出。没有 key 时应用起不来
+（ADR-0011），所以本地要先把 `DEEPSEEK_API_KEY` 配上——这也是测试跑的那条路径。
 
 ```bash
 # 同步问答：模型自己写了 SQL、自己查了库

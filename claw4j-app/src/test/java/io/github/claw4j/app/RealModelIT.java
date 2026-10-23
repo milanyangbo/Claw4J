@@ -36,8 +36,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 钉死整句只会让它在措辞变化时假红，而这里要抓的是"查不到数""说没权限"这类方向性错误。
  */
 @SpringBootTest(properties = {
-        // 逼出"没配 key 就别跑"：留空会悄悄降级到 mock，那这一趟就白跑了
-        "claw4j.model.mock=false",
         // 默认 profile 关着迁移（为了没 Docker 也能启动），这一趟要有库
         "spring.flyway.enabled=true",
         // 主模型走运行时同一个开关：CLAW4J_MODEL_PRIMARY=qwen 就能用另一家跑同一批断言
