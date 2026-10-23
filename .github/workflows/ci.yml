@@ -44,8 +44,10 @@ jobs:
           echo "modules: $(grep -oE '<module>[^<]+</module>' pom.xml | tr -d '\n')"
 
       # 用 wrapper：CI 上的 Maven 版本不由 runner 镜像决定
+      # -Dclaw4j.dbTests=required：runner 上没有 Docker 镜像时让数据库测试直接失败，
+      # 而不是静默跳过。跳过的绿和通过的绿长得一样，CI 上不能要那种绿。
       - name: 构建与测试
-        run: ./mvnw -B -ntp verify
+        run: ./mvnw -B -ntp verify -Dclaw4j.dbTests=required
 
       - name: 测试报告
         if: always()

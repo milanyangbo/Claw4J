@@ -50,14 +50,14 @@ class SalesDataRepositoryTest {
             .withPassword("claw4j");
 
     private static SalesDataRepository repository;
+    private static JdbcClient jdbc;
     /** 本周一（数据库口径）。上周一 = 它减一周，见 {@link #lastMonday()}。 */
     private static LocalDate thisMonday;
 
     @BeforeAll
     static void migrateAndWire() {
         migrate();
-        DataSource dataSource = dataSource();
-        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc = JdbcClient.create(dataSource());
         repository = new SalesDataRepository(jdbc);
         thisMonday = jdbc.sql("select date_trunc('week', current_date)::date")
                 .query(LocalDate.class)
@@ -109,9 +109,23 @@ class SalesDataRepositoryTest {
     }
 
     @Test
-    @DisplayName("迁移可以重复执行，金额不会翻倍")
-    void 迁移可重复执行() {
+    @DisplayName("上周华北区成交额等于种子算出的那个数")
+    void 上周华北区成交额() {
+        assertThat(repository.sumAmount("north", lastMonday(), thisMonday))
+                .isEqualTo(new BigDecimal("31500.00"));
+    }
+
+    @Test
+    @DisplayName("重启一次不会重放已执行过的迁移")
+    void 迁移不会被重放() {
+        // 第二次 migrate 是 Flyway 的 no-op，所以它自己证明不了什么——
+        // 真要证明的是"没有多出一条执行记录"：把 V2 写成 repeatable（R__ 前缀）
+        // 或者版本号改了，这里就会变成 3 条，种子被插两遍（撞 unique 或金额翻倍）。
         migrate();
+        Long applied = jdbc.sql("select count(*) from flyway_schema_history where success")
+                .query(Long.class)
+                .single();
+        assertThat(applied).isEqualTo(2L);
         assertThat(repository.sumAmount("east", lastMonday(), thisMonday)).isEqualTo(LAST_WEEK_EAST);
     }
 
@@ -157,22 +171,28 @@ class SalesDataRepositoryTest {
     }
 
     /**
-     * 拉不到镜像就把整类跳过，而不是让 {@code mvn verify} 卡在下载上然后变红。
-     * 代价是 CI 上如果同样拉不到也会静默跳过——所以每次跳过都往 stderr 打一行，
-     * 免得"数据库测试全绿"其实是"一条都没跑"。
+     * 镜像不在本地就整类跳过——拉不动 Docker Hub 的时候，让 {@code mvn verify}
+     * 卡在下载上再变红，只会让人学会绕开这条命令。
+     *
+     * <p>但"跳过的绿"和"通过的绿"在构建结果里长得一模一样，这是个真风险。
+     * 所以留了一个开关：{@code -Dclaw4j.dbTests=required}（CI 上就是这么跑的）
+     * 会把跳过改成失败。本机默认宽容，CI 上必须有库。
      */
     @SuppressWarnings("unused")
     static boolean postgresImageIsAvailable() {
-        if (!DockerClientFactory.instance().isDockerAvailable()) {
-            return false;
-        }
         try {
             DockerClientFactory.instance().client().inspectImageCmd(imageName()).exec();
             return true;
-        } catch (RuntimeException notPulled) {
-            System.err.println("[SalesDataRepositoryTest] 本地没有镜像 " + imageName()
-                    + "，跳过数据库测试。要跑起来：docker pull " + imageName()
-                    + "，或用 CLAW4J_POSTGRES_IMAGE 指定一个本地已有的镜像。");
+        } catch (RuntimeException notAvailable) {
+            String reason = "数据库测试跑不起来（" + notAvailable.getMessage() + "）。"
+                    + "本机可以 docker pull " + imageName()
+                    + "，或用 CLAW4J_POSTGRES_IMAGE 指向一个本地已有的镜像。";
+            if ("required".equals(System.getProperty("claw4j.dbTests"))) {
+                // 抛出去而不是返回 false：条件方法抛异常会让整个类变成 error，构建就红了。
+                throw new IllegalStateException(reason + " 当前 claw4j.dbTests=required，"
+                        + "所以这里不跳过——跳过的绿会让人以为数据库测试真的跑过。");
+            }
+            System.err.println("[SalesDataRepositoryTest] " + reason + " 本次跳过。");
             return false;
         }
     }
