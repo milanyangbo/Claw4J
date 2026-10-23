@@ -69,5 +69,25 @@
             <artifactId>archunit-junit5</artifactId>
             <scope>test</scope>
         </dependency>
+        <!--
+          Text-to-SQL 的端到端断言要在真库上跑（05 号票）：循环行为用替身测，
+          "算出来的数对不对"只能对着真库说。于是 agent 的测试也要能起一次性 Postgres。
+          与 tools 模块里那套是同一个约定：镜像可用才跑，CI 上是 -Dclaw4j.dbTests=required。
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

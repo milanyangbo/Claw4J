@@ -1,19 +1,16 @@
 package io.github.claw4j.tools.sales;
 
-import org.flywaydb.core.Flyway;
+import io.github.claw4j.tools.PostgresTestSupport;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
-import javax.sql.DataSource;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
@@ -44,10 +41,7 @@ class SalesDataRepositoryTest {
     private static final BigDecimal ALL_TIME_EAST = new BigDecimal("306176.00");
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(image())
-            .withDatabaseName("claw4j")
-            .withUsername("claw4j")
-            .withPassword("claw4j");
+    static final PostgreSQLContainer<?> POSTGRES = PostgresTestSupport.container();
 
     private static SalesDataRepository repository;
     private static JdbcClient jdbc;
@@ -56,8 +50,8 @@ class SalesDataRepositoryTest {
 
     @BeforeAll
     static void migrateAndWire() {
-        migrate();
-        jdbc = JdbcClient.create(dataSource());
+        PostgresTestSupport.migrate(POSTGRES);
+        jdbc = JdbcClient.create(PostgresTestSupport.dataSource(POSTGRES));
         repository = new SalesDataRepository(jdbc);
         thisMonday = jdbc.sql("select date_trunc('week', current_date)::date")
                 .query(LocalDate.class)
@@ -121,7 +115,7 @@ class SalesDataRepositoryTest {
         // 第二次 migrate 是 Flyway 的 no-op，所以它自己证明不了什么——
         // 真要证明的是"没有多出一条执行记录"：把 V2 写成 repeatable（R__ 前缀）
         // 或者版本号改了，这里就会变成 3 条，种子被插两遍（撞 unique 或金额翻倍）。
-        migrate();
+        PostgresTestSupport.migrate(POSTGRES);
         Long applied = jdbc.sql("select count(*) from flyway_schema_history where success")
                 .query(Long.class)
                 .single();
@@ -133,67 +127,9 @@ class SalesDataRepositoryTest {
         return thisMonday.minusWeeks(1);
     }
 
-    private static void migrate() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
-    }
-
-    private static DataSource dataSource() {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource();
-        dataSource.setUrl(POSTGRES.getJdbcUrl());
-        dataSource.setUsername(POSTGRES.getUsername());
-        dataSource.setPassword(POSTGRES.getPassword());
-        return dataSource;
-    }
-
-    /**
-     * 镜像名可被环境变量覆盖，跟 {@code compose.yaml} 用的是同一个变量。
-     * 国内网络拉不动 Docker Hub 时设成镜像站即可，不必改代码。
-     */
-    private static String imageName() {
-        String configured = System.getenv("CLAW4J_POSTGRES_IMAGE");
-        return configured == null || configured.isBlank() ? "pgvector/pgvector:pg16" : configured;
-    }
-
-    /**
-     * 镜像站的名字（{@code docker.m.daocloud.io/pgvector/pgvector}）长得不像 postgres，
-     * Testcontainers 会在启动前就拒绝它。名字里不带 postgres 的都得显式声明
-     * "这就是 postgres"，否则换了个拉取来源就跑不起来——这个坑只在换源时出现，
-     * 用官方镜像的人永远撞不到。
-     */
-    private static DockerImageName image() {
-        DockerImageName parsed = DockerImageName.parse(imageName());
-        return parsed.getRepository().endsWith("postgres")
-                ? parsed
-                : parsed.asCompatibleSubstituteFor("postgres");
-    }
-
-    /**
-     * 镜像不在本地就整类跳过——拉不动 Docker Hub 的时候，让 {@code mvn verify}
-     * 卡在下载上再变红，只会让人学会绕开这条命令。
-     *
-     * <p>但"跳过的绿"和"通过的绿"在构建结果里长得一模一样，这是个真风险。
-     * 所以留了一个开关：{@code -Dclaw4j.dbTests=required}（CI 上就是这么跑的）
-     * 会把跳过改成失败。本机默认宽容，CI 上必须有库。
-     */
+    /** 镜像与"拉不到就跳过"的策略都在 {@link PostgresTestSupport} 里，与别的数据库测试共用一份。 */
     @SuppressWarnings("unused")
     static boolean postgresImageIsAvailable() {
-        try {
-            DockerClientFactory.instance().client().inspectImageCmd(imageName()).exec();
-            return true;
-        } catch (RuntimeException notAvailable) {
-            String reason = "数据库测试跑不起来（" + notAvailable.getMessage() + "）。"
-                    + "本机可以 docker pull " + imageName()
-                    + "，或用 CLAW4J_POSTGRES_IMAGE 指向一个本地已有的镜像。";
-            if ("required".equals(System.getProperty("claw4j.dbTests"))) {
-                // 抛出去而不是返回 false：条件方法抛异常会让整个类变成 error，构建就红了。
-                throw new IllegalStateException(reason + " 当前 claw4j.dbTests=required，"
-                        + "所以这里不跳过——跳过的绿会让人以为数据库测试真的跑过。");
-            }
-            System.err.println("[SalesDataRepositoryTest] " + reason + " 本次跳过。");
-            return false;
-        }
+        return PostgresTestSupport.imageAvailable("SalesDataRepositoryTest");
     }
 }

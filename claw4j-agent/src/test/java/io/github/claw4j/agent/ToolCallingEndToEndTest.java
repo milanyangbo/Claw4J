@@ -1,12 +1,13 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.model.FakeSqlExecutor;
 import io.github.claw4j.agent.model.ScriptedChatModel;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.tools.SalesTools;
 import io.github.claw4j.tools.ToolsAutoConfiguration;
+import io.github.claw4j.tools.sales.ReadOnlySqlExecutor;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -22,24 +23,26 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>证明的不是"模型说了什么"，而是三件事：工具**真的被调用了**、
  * 工具的返回值**回到了模型**（进了第二轮的提示词）、循环**走完了第二轮**。
- * 断言钉在这三点上，而不是钉在桩工具返回的具体内容上——05 号票把桩换成真实
- * Text-to-SQL 时，这三条都不需要改。
+ * 断言钉在这三点上，而不是钉在某个具体金额上——金额是数据库的事（05 号票
+ * 的端到端测试），这里只关心循环本身。
  */
 class ToolCallingEndToEndTest {
 
-    /**
-     * 第二轮脚本的最终回答。刻意不写具体金额——那个数属于 05 号票（真实 Text-to-SQL
-     * 对上 02 号票的种子数据）。这里只关心"循环走完了第二轮并给出了这一句"。
-     */
+    /** 第二轮脚本的最终回答。 */
     private static final String FINAL_ANSWER = "已按你的口径查到了。";
 
+    /** 数据源接缝用替身：这里测的是循环，不是 SQL。真库那条断言在 app 模块。 */
+    private static final String SQL_RESULT = "128400.00";
+
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(AgentAutoConfiguration.class, ToolsAutoConfiguration.class));
+            .withConfiguration(AutoConfigurations.of(AgentAutoConfiguration.class, ToolsAutoConfiguration.class))
+            .withBean("sqlExecutor", ReadOnlySqlExecutor.class,
+                    () -> FakeSqlExecutor.returning("amount", SQL_RESULT));
 
     /** 工具调用那一轮：正文为空 + 一次 querySales 调用请求；第二轮才是最终回答。 */
     private static ScriptedChatModel scriptedModel() {
         return ScriptedChatModel.builder()
-                .thenToolCall("querySales", "{\"region\":\"华东\",\"period\":\"上周\"}")
+                .thenToolCall("querySales", "{\"sql\":\"select sum(amount) from business.order_item\"}")
                 .thenText(FINAL_ANSWER)
                 .build();
     }
@@ -60,7 +63,7 @@ class ToolCallingEndToEndTest {
             // 循环走了两轮：第一轮决定调工具，第二轮才作答
             assertThat(model.taken()).isEqualTo(2);
             // 工具的返回值进了第二轮的提示词 —— 这是"工具真的执行过"的外部证据
-            assertThat(model.promptTexts().get(1)).contains(SalesTools.STUB_RESULT);
+            assertThat(model.promptTexts().get(1)).contains(SQL_RESULT);
             // 最终回答是第二轮那句，不是工具调用那轮的空正文
             assertThat(out.text()).isEqualTo(FINAL_ANSWER);
         });
@@ -77,7 +80,7 @@ class ToolCallingEndToEndTest {
             port.stream(ask(), chunks::add);
 
             assertThat(model.taken()).isEqualTo(2);
-            assertThat(model.promptTexts().get(1)).contains(SalesTools.STUB_RESULT);
+            assertThat(model.promptTexts().get(1)).contains(SQL_RESULT);
             // 拼接所有块再断言：分块边界会落在词中间，逐块查会误判
             assertThat(chunks.stream().map(OutboundMessage::text).reduce("", String::concat))
                     .isEqualTo(FINAL_ANSWER);

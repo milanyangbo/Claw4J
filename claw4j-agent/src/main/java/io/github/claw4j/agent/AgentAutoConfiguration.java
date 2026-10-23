@@ -4,7 +4,9 @@ import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -38,8 +40,15 @@ public class AgentAutoConfiguration {
     @ConditionalOnMissingBean(ChatClient.class)
     public ChatClient chatClient(ChatModel chatModel,
                                  ObjectProvider<Advisor> advisors,
-                                 ObjectProvider<ToolCallbackProvider> toolCallbackProviders) {
-        return ChatClient.builder(chatModel)
+                                 ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
+                                 ObjectProvider<ObservationRegistry> observationRegistry) {
+        ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
+        // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
+        // 拿到的是框架内建的那个，用的是 40/150 的默认值，这里定的预算根本不生效
+        // （细节见 ToolCallBudget 的类注释）。
+        var toolCallingAdvisor = ToolCallingAdvisor.builder()
+                .toolCallingManager(ToolCallBudget.toolCallingManager(observations));
+        return ChatClient.builder(chatModel, observations, null, null, toolCallingAdvisor)
                 .defaultSystem(SYSTEM_PROMPT)
                 // 容器里所有 Advisor 按 order 挂上来。脱敏、记忆后续都只是加一个 bean（ADR-0007）。
                 // 顺序由各自的 order 决定，这里不排：鉴权要落在工具循环内部，那条约束写在它自己身上。

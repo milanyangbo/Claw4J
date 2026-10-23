@@ -1,6 +1,8 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.tools.sales.QueryResult;
+import io.github.claw4j.tools.sales.ReadOnlySqlExecutor;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -127,7 +129,7 @@ class AuthorizationOverHttpTest {
 
         private static ChatResponse toolCall() {
             var call = new AssistantMessage.ToolCall("call-1", "function", "querySales",
-                    "{\"region\":\"华东\",\"period\":\"上周\"}");
+                    "{\"sql\":\"select coalesce(sum(amount), 0) as amount from business.order_item\"}");
             return ChatResponse.builder()
                     .generations(List.of(new Generation(AssistantMessage.builder().toolCalls(List.of(call)).build())))
                     .build();
@@ -146,6 +148,19 @@ class AuthorizationOverHttpTest {
         @Bean
         public ChatModel twoRoundModel() {
             return new TwoRoundModel();
+        }
+
+        /**
+         * 数据源用替身：这条测试关心的是"角色有没有被拦住"，不是 SQL 查出了什么。
+         *
+         * <p>不用真库还有一个实际理由：默认配置里的 DataSource 指向本机 5432，
+         * 没有 Docker 时工具会走"连接失败"那条路，最终回答照样是 FINAL_ANSWER——
+         * 测试会绿，但绿的原因是"工具失败了"，而不是"工具被放行了"。
+         * 这种假绿比红更难发现。
+         */
+        @Bean
+        public ReadOnlySqlExecutor stubSqlExecutor() {
+            return sql -> new QueryResult(List.of("amount"), List.of(List.of("128400.00")), false);
         }
     }
 }
