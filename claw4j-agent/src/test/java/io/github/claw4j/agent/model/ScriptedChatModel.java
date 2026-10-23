@@ -126,6 +126,16 @@ public final class ScriptedChatModel implements ChatModel {
      * 只拼各条消息的 {@code getText()} 会把工具结果整个漏掉，
      * 于是"工具没执行"和"执行了"看起来一模一样。
      */
+    /**
+     * 每一次调用收到的完整 {@code Prompt}（按调用顺序）。
+     *
+     * <p>与 {@link #promptTexts()} 的区别：那个只给内容，这个连 {@code ChatOptions} 一起给。
+     * "模型这一轮看得见哪些工具"只能从 options 上读——清单里没有的工具，模型根本不会去调。
+     */
+    public List<Prompt> prompts() {
+        return List.copyOf(received);
+    }
+
     public List<String> promptTexts() {
         return received.stream().map(ScriptedChatModel::promptText).toList();
     }

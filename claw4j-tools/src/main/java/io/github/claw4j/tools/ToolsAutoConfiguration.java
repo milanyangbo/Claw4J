@@ -4,8 +4,10 @@ import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.tools.sales.JdbcReadOnlySqlExecutor;
 import io.github.claw4j.tools.sales.ReadOnlySqlExecutor;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -21,10 +23,9 @@ import java.util.Map;
  * <p>为什么走这一层：Agent 侧装配只需要"容器里有哪些工具回调"，
  * 不需要知道工具类的名字，改 Agent 装配的代码动不到。
  *
- * <p><b>当前只有一个 provider，条件是按"整个 provider 缺失"来判的</b>：
- * 再加第二个工具类时，要么把它们塞进同一个 provider（改这里一行），
- * 要么把条件改成按 {@code ToolCallback} 收集——否则第二个 provider bean 会
- * 因为"已有 provider"而让位，工具静默消失。这个坑留给加工具那天，不要等到那天才发现。
+ * <p><b>每种来源各出一个 provider，谁都不让位</b>（M2-01 修掉的坑）：
+ * 条件早先是"整个 provider 缺失才注册"，于是第二个来源进来时第一个会静默消失。
+ * 现在的条件是"有没有可用的执行器"，加来源只是再加一个 bean，不碰这里。
  *
  * <p>注册为自动配置，是为了让任何模块引入依赖即可生效，不必要求调用方把
  * {@code io.github.claw4j.tools} 加进组件扫描路径。
@@ -54,10 +55,28 @@ public class ToolsAutoConfiguration {
         return new JdbcReadOnlySqlExecutor(jdbc, transactionManager);
     }
 
+    /**
+     * 工具来源：一个 provider 就是"这一层有哪些工具"。
+     *
+     * <p><b>这里曾经写着 {@code @ConditionalOnMissingBean(ToolCallbackProvider.class)}，
+     * 那条条件是错的</b>：它的语义是"容器里已经有 provider 了就让位"，
+     * 于是第二个工具来源（M2 的 MCP 与 Script Package）一旦先注册，
+     * {@code querySales} 就静默消失——不报错、不告警，只是模型手上没这个工具，
+     * 于是它开始编答案。M2 要在同一个容器里放三种来源，让位等于随机少一种。
+     *
+     * <p>条件改成"有没有可用的执行器"：没有数据源就注册一个空来源，
+     * 表现是"没有工具可调"而不是启动失败——这与上面那条
+     * {@code @ConditionalOnBean(JdbcClient.class)} 是同一个取向。
+     *
+     * <p>多个来源并存时，谁的工具都会被收走（收集发生在 Agent 侧装配），
+     * 所以这里只管把自己这一层交出去，不猜容器里还有谁。
+     */
     @Bean
-    @ConditionalOnMissingBean(ToolCallbackProvider.class)
-    public ToolCallbackProvider salesToolCallbackProvider(ReadOnlySqlExecutor executor) {
-        return MethodToolCallbackProvider.builder().toolObjects(new SalesTools(executor)).build();
+    public ToolCallbackProvider salesToolCallbackProvider(ObjectProvider<ReadOnlySqlExecutor> executors) {
+        ReadOnlySqlExecutor executor = executors.getIfAvailable();
+        return executor == null
+                ? () -> new ToolCallback[0]
+                : MethodToolCallbackProvider.builder().toolObjects(new SalesTools(executor)).build();
     }
 
     /**

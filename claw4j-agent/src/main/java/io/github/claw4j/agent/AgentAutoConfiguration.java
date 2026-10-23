@@ -9,11 +9,15 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Agent 的最小装配：一个系统提示词加一条 Advisor 链。
@@ -40,6 +44,7 @@ public class AgentAutoConfiguration {
     @ConditionalOnMissingBean(ChatClient.class)
     public ChatClient chatClient(ChatModel chatModel,
                                  ObjectProvider<Advisor> advisors,
+                                 ObjectProvider<ToolCallback> toolCallbacks,
                                  ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                  ObjectProvider<ObservationRegistry> observationRegistry) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
@@ -53,10 +58,32 @@ public class AgentAutoConfiguration {
                 // 容器里所有 Advisor 按 order 挂上来。脱敏、记忆后续都只是加一个 bean（ADR-0007）。
                 // 顺序由各自的 order 决定，这里不排：鉴权要落在工具循环内部，那条约束写在它自己身上。
                 .defaultAdvisors(advisors.orderedStream().toList())
-                // 工具同理：容器里所有 ToolCallbackProvider 都挂上，这里不点名任何工具类。
+                // 工具同理：容器里所有来源都挂上，这里不点名任何工具类。
                 // 没有工具时是空数组，工具循环照常工作（只是无工具可调）。
-                .defaultToolCallbacks(toolCallbackProviders.orderedStream().toArray(ToolCallbackProvider[]::new))
+                .defaultToolCallbacks(collectToolCallbacks(toolCallbacks, toolCallbackProviders))
                 .build();
+    }
+
+    /**
+     * 把容器里所有工具来源收成一个 {@code ToolCallback} 列表。
+     *
+     * <p><b>两种形态都要收</b>：{@code ToolCallbackProvider} 是"一组工具"，
+     * 而单个 {@code ToolCallback} 是"一个工具"——M2 三层的形态并不统一
+     * （社区包的 Skill 工具就是一个回调，不是一个 provider）。
+     * 只收 provider 的那版会让单个回调**静默不进清单**：不报错、不告警，
+     * 只是模型看不见那个工具，直到有人问"为什么它不知道有这个能力"。
+     *
+     * <p>顺序不影响行为：工具是按名字被模型和鉴权认领的，清单里谁先谁后都一样。
+     * 重复的名字不在这里去重——两个来源导出同名工具是配置错误，
+     * 该在清单断言上红，而不是被这里悄悄吞掉一个。
+     */
+    private static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
+                                                           ObjectProvider<ToolCallbackProvider> providers) {
+        List<ToolCallback> collected = new ArrayList<>();
+        callbacks.orderedStream().forEach(collected::add);
+        providers.orderedStream()
+                .forEach(provider -> collected.addAll(List.of(provider.getToolCallbacks())));
+        return List.copyOf(collected);
     }
 
     /**
