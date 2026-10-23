@@ -37,19 +37,20 @@ class AgentArchitectureTest {
      * 取 Advisor，只认 {@code StreamAdvisor}。只写 {@code CallAdvisor} 的鉴权 Advisor
      * 在流式路径上会**静默失效**——不报错、不告警，鉴权等于没做。后果见
      * {@code AdvisorBothPathsTest}。这种"能编译、能跑、但悄悄不生效"的缺陷只能靠机器拦。
+     *
+     * <p>这里不再 {@code allowEmptyShould}：M1-03 之后主代码里已经有
+     * {@code AuthorizationAdvisor}，规则有东西可拦。留着它的话，
+     * "有人把唯一的 Advisor 删了"会是一条绿的空规则。
      */
     @ArchTest
     static final ArchRule advisors_must_implement_call_side =
             classes().that().areAssignableTo(Advisor.class)
                     .should().beAssignableTo(CallAdvisor.class)
-                    .because("Advisor 必须双实现，否则同步路径会漏掉它（ADR-0007）")
-                    // M0 还没有 Advisor，规则暂时匹配不到任何类；等鉴权 Advisor 进来它就有东西拦了
-                    .allowEmptyShould(true);
+                    .because("Advisor 必须双实现，否则同步路径会漏掉它（ADR-0007）");
 
     @ArchTest
     static final ArchRule advisors_must_implement_stream_side =
             classes().that().areAssignableTo(Advisor.class)
                     .should().beAssignableTo(StreamAdvisor.class)
-                    .because("Advisor 必须双实现，否则流式路径会静默跳过它（ADR-0007）")
-                    .allowEmptyShould(true);
+                    .because("Advisor 必须双实现，否则流式路径会静默跳过它（ADR-0007）");
 }

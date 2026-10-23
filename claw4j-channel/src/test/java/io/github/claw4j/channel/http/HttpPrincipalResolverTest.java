@@ -1,6 +1,7 @@
 package io.github.claw4j.channel.http;
 
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.principal.ToolPermission;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -33,7 +34,18 @@ class HttpPrincipalResolverTest {
         assertEquals("u-1", principal.userId());
         assertEquals("read-only", principal.role());
         assertTrue(principal.canReadTable("orders"), "默认角色能看表");
-        assertFalse(principal.canPerform("anything"), "默认角色不能执行任何动作");
+        assertTrue(principal.canPerform("read"), "默认角色能读");
+        assertFalse(principal.canPerform("send_email"), "默认角色执行不了有副作用的动作");
+    }
+
+    /** 表级：角色会读，但读不到 sales_order，于是问成交额在它这里是没权限。 */
+    @Test
+    void 表级授权按白名单生效() {
+        Principal principal = resolver.resolve("u-4", "guest");
+
+        assertTrue(principal.canReadTable("region"));
+        assertFalse(principal.canReadTable("sales_order"), "表不在授权范围内");
+        assertFalse(principal.canUse(ToolPermission.read("sales_order")), "越表即越权");
     }
 
     @Test

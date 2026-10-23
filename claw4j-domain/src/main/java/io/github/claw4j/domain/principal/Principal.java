@@ -26,9 +26,14 @@ public record Principal(String userId, String role, Set<String> accessibleTables
         return new Principal(userId, role, tables, actions);
     }
 
-    /** 只读身份：能看全部表，但不能执行任何有副作用的动作。 */
+    /**
+     * 只读身份：能看全部表，也能执行读动作，但执行不了任何有副作用的动作。
+     *
+     * <p>注意它拿到的是 {@link ToolPermission#READ} 而不是空集合：空的动作集意味着
+     * "连查数都不行"，那这个身份在业务上就没有用途了，而"只读"的语义本来就是"能读不能写"。
+     */
     public static Principal readOnly(String userId) {
-        return new Principal(userId, "read-only", Set.of(WILDCARD), Set.of());
+        return new Principal(userId, "read-only", Set.of(WILDCARD), Set.of(ToolPermission.READ));
     }
 
     public boolean canReadTable(String table) {
@@ -37,5 +42,10 @@ public record Principal(String userId, String role, Set<String> accessibleTables
 
     public boolean canPerform(String action) {
         return allowedActions.contains(WILDCARD) || allowedActions.contains(action);
+    }
+
+    /** 一次工具调用所需的权限是否被授予。鉴权 Advisor 的判定入口（ADR-0007）。 */
+    public boolean canUse(ToolPermission permission) {
+        return permission.grantedTo(this);
     }
 }

@@ -17,11 +17,16 @@ import java.util.Set;
 public class HttpChannelProperties {
 
     /**
-     * 角色 → 授权表。默认两个角色够跑演示，生产上按需扩展。
+     * 角色 → 授权表。默认三个角色够跑演示，生产上按需扩展。
      * 表里没有的角色一律拒绝，不做"找不到就给个默认权限"这种兜底。
+     *
+     * <p>{@code read-only} 拿到的是读动作而不是空集：空集意味着连"上周成交额多少"都问不了，
+     * 默认角色就成了废角色。{@code guest} 演示的是表级——它会读，但读不到
+     * {@code sales_order}，于是同一个问题在它这里是明确的"没权限"（ADR-0007）。
      */
     private Map<String, RoleGrant> roles = new LinkedHashMap<>(Map.of(
-            "read-only", new RoleGrant(Set.of("*"), Set.of()),
+            "read-only", new RoleGrant(Set.of("*"), Set.of("read")),
+            "guest", new RoleGrant(Set.of("region"), Set.of("read")),
             "admin", new RoleGrant(Set.of("*"), Set.of("*"))));
 
     /**
@@ -62,7 +67,8 @@ public class HttpChannelProperties {
      * 一个角色的授权范围。
      *
      * @param tables  可访问的表，"*" 表示全部
-     * @param actions 可执行的动作名，"*" 表示全部
+     * @param actions 可执行的动作名，"*" 表示全部。取值与工具登记的动作名同一个口径
+     *                （读动作是 {@code read}，有副作用的动作用自己的名字，例如 {@code send_email}）
      */
     public record RoleGrant(Set<String> tables, Set<String> actions) {
     }

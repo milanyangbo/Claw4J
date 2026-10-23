@@ -1,10 +1,14 @@
 package io.github.claw4j.tools;
 
+import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
+
+import java.util.Map;
 
 /**
  * 把工具暴露成 {@code ToolCallbackProvider} bean，而不是让调用方去 new 工具类。
@@ -27,5 +31,23 @@ public class ToolsAutoConfiguration {
     @ConditionalOnMissingBean(ToolCallbackProvider.class)
     public ToolCallbackProvider salesToolCallbackProvider() {
         return MethodToolCallbackProvider.builder().toolObjects(new SalesTools()).build();
+    }
+
+    /**
+     * 这些工具各自需要什么权限。与工具放在同一个模块里，是刻意的：
+     * 只有写工具的人知道它要去碰哪张表（ADR-0007）。
+     *
+     * <p>Agent 侧的鉴权 Advisor 只认 {@link ToolPermissionRegistry} 这个接口，
+     * 它不认识 {@code querySales}。于是"新增一个工具"这件事只有一处要改，
+     * 而漏改的后果是拒绝而不是放行——工具没登记权限，鉴权一律按没权限处理。
+     *
+     * <p>这里登记的是工具**会碰到什么**（结构事实），不是"谁能用它"（运营口径）。
+     * 后者在角色的授权表里，改那个不用发版。
+     */
+    @Bean
+    @ConditionalOnMissingBean(ToolPermissionRegistry.class)
+    public ToolPermissionRegistry salesToolPermissionRegistry() {
+        return ToolPermissionRegistry.of(Map.of(
+                "querySales", ToolPermission.read("sales_order")));
     }
 }

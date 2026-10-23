@@ -35,12 +35,30 @@ class PrincipalTest {
         assertFalse(principal.canPerform("drop_table"));
     }
 
+    /**
+     * 只读身份**能读**：它能执行 read 动作，执行不了有副作用的动作。
+     *
+     * <p>反过来说：如果只读身份的动作集是空的，它在业务上就没有任何用途——
+     * 连"上周成交额多少"都问不了。空动作集看着更安全，实际会让默认角色变成废角色。
+     */
     @Test
-    void 只读身份不能执行任何动作() {
+    void 只读身份能读不能写() {
         var principal = Principal.readOnly("u-4");
 
         assertTrue(principal.canReadTable("orders"));
+        assertTrue(principal.canUse(ToolPermission.read("orders")), "读自己能看的表是允许的");
         assertFalse(principal.canPerform("send_email"));
+        assertFalse(principal.canUse(ToolPermission.of("send_email")), "有副作用的动作不在只读范围内");
+    }
+
+    @Test
+    void 表级不满足时读动作也不放行() {
+        var principal = Principal.of("u-7", "guest", Set.of("region"), Set.of(ToolPermission.READ));
+
+        assertTrue(principal.canUse(ToolPermission.read("region")));
+        assertFalse(principal.canUse(ToolPermission.read("sales_order")), "表不在白名单里，读也不行");
+        assertFalse(principal.canUse(ToolPermission.read("region", "sales_order")),
+                "工具会碰到的表只要有一张越权，整个调用就越权");
     }
 
     @Test

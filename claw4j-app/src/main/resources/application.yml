@@ -32,10 +32,16 @@ claw4j:
     http:
       enabled: ${CLAW4J_HTTP_ENABLED:true}
       # 角色 → 授权。认人由通道做，授权从这里查表，Agent 不参与（ADR-0007）。
+      # actions 的取值与工具登记的动作名同一个口径：读是 read，
+      # 有副作用的动作用自己的名字（例如 send_email），所以"只读"查得了数、发不了邮件。
       roles:
         read-only:
           tables: ["*"]
-          actions: []
+          actions: ["read"]
+        # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"
+        guest:
+          tables: ["region"]
+          actions: ["read"]
         admin:
           tables: ["*"]
           actions: ["*"]

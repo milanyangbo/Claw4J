@@ -1,5 +1,6 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
@@ -33,7 +34,7 @@ public class ChatClientAgentPort implements AgentPort {
     @Override
     public OutboundMessage reply(InboundMessage message) {
         Objects.requireNonNull(message, "message");
-        String text = chatClient.prompt(message.text()).call().content();
+        String text = promptOf(message).call().content();
         return OutboundMessage.of(message.chatId(), text);
     }
 
@@ -42,11 +43,23 @@ public class ChatClientAgentPort implements AgentPort {
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(onChunk, "onChunk");
 
-        chatClient.prompt(message.text())
+        promptOf(message)
                 .stream()
                 .content()
                 .doOnNext(chunk -> onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk)))
                 .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "")))
                 .blockLast();
+    }
+
+    /**
+     * 把 Principal 交给 Advisor 链：走 Advisor 的上下文，不走 ThreadLocal。
+     *
+     * <p>上下文会跟着 {@code ChatClientRequest} 走完工具循环的每一轮（{@code ToolCallingAdvisor}
+     * 每轮都把 {@code context} 原样带下去），也跟着 Reactor 的订阅走；
+     * ThreadLocal 在"流式 + 换线程"的组合下会掉，而掉身份的失败姿势是放行。
+     */
+    private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message) {
+        return chatClient.prompt(message.text())
+                .advisors(spec -> spec.param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, message.principal()));
     }
 }
