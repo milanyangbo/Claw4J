@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 97 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 111 个测试
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -219,13 +219,29 @@ curl -s -w ' [%{http_code}]' -X POST http://localhost:8080/api/chat \
 这条由 `AuthorizationOverHttpTest` 在真实 HTTP 上钉住：换一个角色头问同一句话，
 一个有答案、一个是明确的拒绝。
 
+### 脱敏是另一件事：查到了能不能原样说出去
+
+鉴权管"能不能查"，脱敏管"查到了能不能原样说出去"（ADR-0007）。脱敏 Advisor 认手机号与身份证号，
+手机号留头三尾四、身份证留头六尾四——全打码的话"尾号 5678 那位"这种话就说不出口了。
+
+三点值得留意：
+
+1. **order 在工具循环外面**（小于 `ToolCallingAdvisor.DEFAULT_ORDER`），整通对话只在出站前做一次。
+   放进去会把**工具结果**也一起打码，而模型要靠原始值判断"这个号码是哪一单的"。
+2. **流式不能逐块各自脱敏**：分块边界会正好落在一个手机号中间（8 字一块时是必然的），
+   两块都匹配不上，原始号码整个漏出去，而且漏不漏取决于模型那批吐了多少字。
+   做法是扣住"还可能是号码开头"的尾巴，等下一块来了再一起判，收尾时把剩下的全部吐出。
+3. **日志里也是脱敏后的**。只在响应里脱敏、日志里仍是明文，等于没脱；
+   `ChatClientAgentPort` 敢在 DEBUG 打出站全文，正是因为脱敏已经做完了——
+   哪天有人在链路之外打日志，那条断言会立刻出现原始值。
+
 ## 质量门禁
 
 四条检查层层收紧，都不靠口头约定：
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、97 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、111 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
