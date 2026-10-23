@@ -44,10 +44,16 @@ jobs:
           echo "modules: $(grep -oE '<module>[^<]+</module>' pom.xml | tr -d '\n')"
 
       # 用 wrapper：CI 上的 Maven 版本不由 runner 镜像决定
-      # -Dclaw4j.dbTests=required：runner 上没有 Docker 镜像时让数据库测试直接失败，
+      # -Dclaw4j.dbTests=required：runner 上没有 Docker 守护进程时让数据库测试直接失败，
       # 而不是静默跳过。跳过的绿和通过的绿长得一样，CI 上不能要那种绿。
       - name: 构建与测试
         run: ./mvnw -B -ntp verify -Dclaw4j.dbTests=required
+
+      # "跳过的绿"和"通过的绿"长得一样：claw4j.dbTests=required 只挡住"没有 Docker"这一种情形，
+      # 挡不住别的静默跳过路径。这一步把"有测试被跳过"直接判成失败——
+      # 数据库那一类（只读约束、会话继承、启动迁移）曾经整类静默跳过，而构建是绿的。
+      - name: 跳过的测试一律算失败
+        run: ./scripts/assert-no-skipped-tests.sh
 
       - name: 测试报告
         if: always()

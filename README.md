@@ -55,11 +55,12 @@
 
 没有 API key 也能跑完 —— 模型会自动降级到 mock（`[mock]` 前缀），数据源是懒连接不会在启动时真连（ADR-0006）。
 
-**没有 Docker 时会少跑 26 条**，而且这 26 条恰好是最硬的几条判据（只读约束、会话记忆继承、启动迁移）。
-它们整类跳过、构建照样绿，所以终端里会打一行 `本次跳过`。想确认自己跑的是完整版：
+**没有 Docker 时数据库那一类会整类跳过**，而最硬的几条判据（只读约束、会话记忆继承、启动迁移）
+恰好都在里面。它们跳过时构建照样绿，只在终端里打一行 `本次跳过`。要确认自己跑的是完整版：
 
 ```bash
 ./mvnw verify -Dclaw4j.dbTests=required   # 没有 Docker 就直接红，不给假绿
+./scripts/assert-no-skipped-tests.sh      # 跑完 verify 再跑：有跳过就红，并报出真实测试数
 ```
 
 反过来，**有 Docker 但拉不动 Docker Hub** 时，测试会真的去 pull 然后红——这是有意的：
@@ -145,7 +146,7 @@ CLAW4J_MODEL_PRIMARY=qwen ./mvnw -Preal-model verify   # 换另一家当主模�
 
 真实调用**不进 CI**（ADR-0006、ADR-0008）：它烧钱、依赖外网、还依赖本机起着的库，
 三条里断一条就红。放进回归基线，基线就从"改坏了会红"变成"供应商抖一下也会红"，
-人很快学会无视它——那等于没有基线。回归基线是那 175 个 mock 测试。
+人很快学会无视它——那等于没有基线。回归基线是那 177 个 mock 测试。
 
 ## key 怎么配
 
@@ -430,13 +431,14 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 
 ## 质量门禁
 
-四条检查层层收紧，都不靠口头约定：
+五条检查层层收紧，都不靠口头约定：
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
 | `./mvnw verify` | 编译、177 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
+| `./scripts/assert-no-skipped-tests.sh` | **有测试被跳过就红**：跳过的绿和通过的绿在构建输出里长得一样，而"数据库测试整类没跑"恰好藏在跳过里 | CI 每次；本地报数前 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
 
 启用 hook（一次）：
@@ -445,7 +447,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 git config core.hooksPath .githooks
 ```
 
-CI 上同样只跑 `./mvnw -B -ntp verify`，另外有一条检查专门拦住"有人把 `legacy` 加回根 POM 的 modules"。
+CI 上同样只跑 `./mvnw -B -ntp verify`，再跑一遍跳过闸；另外有一条检查专门拦住"有人把 `legacy` 加回根 POM 的 modules"。
 
 **为什么 Advisor 那条值得单独立规则**：`BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，只认 `StreamAdvisor`。只写 `CallAdvisor` 的鉴权 Advisor 在 `.stream()` 上**既不报错也不生效**，客户端照常拿到回答——鉴权等于没做，而且从日志上看不出来。这种"能编译、能跑、但悄悄不生效"的缺陷只能靠机器拦（ADR-0007）。
 
