@@ -20,6 +20,16 @@
             <artifactId>claw4j-domain</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!--
+          工具层（ADR-0003 第一层）。M0 时这条边没接上，工具无处可挂。
+          装配只依赖 ToolCallbackProvider 这个 Spring AI 接口，不点名具体工具类，
+          所以加工具是加一个 bean，改不到这里的装配代码。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-tools</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-client-chat</artifactId>

@@ -4,6 +4,7 @@ import io.github.claw4j.domain.port.AgentPort;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -32,11 +33,16 @@ public class AgentAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(ChatClient.class)
-    public ChatClient chatClient(ChatModel chatModel, ObjectProvider<Advisor> advisors) {
+    public ChatClient chatClient(ChatModel chatModel,
+                                 ObjectProvider<Advisor> advisors,
+                                 ObjectProvider<ToolCallbackProvider> toolCallbackProviders) {
         return ChatClient.builder(chatModel)
                 .defaultSystem(SYSTEM_PROMPT)
                 // 容器里所有 Advisor 按 order 挂上来。鉴权、脱敏、记忆后续都只是加一个 bean（ADR-0007）。
                 .defaultAdvisors(advisors.orderedStream().toList())
+                // 工具同理：容器里所有 ToolCallbackProvider 都挂上，这里不点名任何工具类。
+                // 没有工具时是空数组，工具循环照常工作（只是无工具可调）。
+                .defaultToolCallbacks(toolCallbackProviders.orderedStream().toArray(ToolCallbackProvider[]::new))
                 .build();
     }
 
