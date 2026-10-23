@@ -27,7 +27,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ToolCallingEndToEndTest {
 
-    private static final String FINAL_ANSWER = "上周华东区成交额是 128,400 元。";
+    /**
+     * 第二轮脚本的最终回答。刻意不写具体金额——那个数属于 05 号票（真实 Text-to-SQL
+     * 对上 02 号票的种子数据）。这里只关心"循环走完了第二轮并给出了这一句"。
+     */
+    private static final String FINAL_ANSWER = "已按你的口径查到了。";
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AgentAutoConfiguration.class, ToolsAutoConfiguration.class));

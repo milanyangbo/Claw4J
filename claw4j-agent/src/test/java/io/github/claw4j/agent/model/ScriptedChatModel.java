@@ -66,15 +66,23 @@ public final class ScriptedChatModel implements ChatModel {
         return next();
     }
 
+    /**
+     * 取脚本这一下必须放在 {@code defer} 里，让它在**订阅时**发生而不是在拼装流时发生。
+     * 提前取的话，脚本耗尽的异常会从"调用 stream() 的那一行"同步抛出，
+     * 而不是作为 {@code onError} 传下去——真实模型不会这么干，
+     * 于是"流上的错误"和"拼装流时的错误"会被混为一谈。
+     */
     @Override
     public Flux<ChatResponse> stream(Prompt prompt) {
-        received.add(prompt);
-        taken.incrementAndGet();
-        ChatResponse response = next();
-        if (response.getResult().getOutput().hasToolCalls()) {
-            return Flux.just(response);
-        }
-        return Flux.fromIterable(split(textOf(response))).map(ScriptedChatModel::text);
+        return Flux.defer(() -> {
+            received.add(prompt);
+            taken.incrementAndGet();
+            ChatResponse response = next();
+            if (response.getResult().getOutput().hasToolCalls()) {
+                return Flux.just(response);
+            }
+            return Flux.fromIterable(MockChatModel.split(textOf(response))).map(ScriptedChatModel::text);
+        });
     }
 
     /**
@@ -100,11 +108,6 @@ public final class ScriptedChatModel implements ChatModel {
         return script.size();
     }
 
-    /** 每一次调用收到的提示词原文（按调用顺序）。调试工具循环时用得着。 */
-    public List<Prompt> receivedPrompts() {
-        return List.copyOf(received);
-    }
-
     /**
      * 每一次调用收到的提示词内容（按调用顺序）。用来断言"工具真的执行过且结果回到了模型"。
      *
@@ -116,12 +119,16 @@ public final class ScriptedChatModel implements ChatModel {
     public List<String> promptTexts() {
         return received.stream()
                 .map(prompt -> prompt.getInstructions().stream()
-                        .map(ScriptedChatModel::textOf)
+                        .map(ScriptedChatModel::messageText)
                         .reduce("", String::concat))
                 .toList();
     }
 
-    private static String textOf(org.springframework.ai.chat.messages.Message message) {
+    /**
+     * 一条消息在"提示词内容"里算什么。与 {@link #textOf(ChatResponse)} 不是一回事，
+     * 所以刻意不同名：那个取模型的回答正文，这个要把工具结果也算进来。
+     */
+    private static String messageText(org.springframework.ai.chat.messages.Message message) {
         if (message instanceof ToolResponseMessage toolResponse) {
             return toolResponse.getResponses().stream()
                     .map(ToolResponseMessage.ToolResponse::responseData)
@@ -143,15 +150,6 @@ public final class ScriptedChatModel implements ChatModel {
 
     private static ChatResponse text(String content) {
         return response(AssistantMessage.builder().content(content).build());
-    }
-
-    private static List<String> split(String content) {
-        List<String> chunks = new ArrayList<>();
-        int size = MockChatModel.STREAM_CHUNK_SIZE;
-        for (int i = 0; i < content.length(); i += size) {
-            chunks.add(content.substring(i, Math.min(i + size, content.length())));
-        }
-        return chunks.isEmpty() ? List.of("") : chunks;
     }
 
     public static final class Builder {

@@ -65,6 +65,6 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
 
 - 五个模块，父 POM 的 `modules` 不再随通道数量增长。
 - 新增一个通道的成本变成：在 `claw4j-channel` 下加一个包 + 实现 `ChatChannel` + 平台 SDK 声明为 optional。不需要动父 POM 和 CI。
-- 边界规则落在三处 ArchUnit 测试里：`ArchitectureTest`（domain 零框架）、`AgentArchitectureTest`（agent 不认识 channel）、`ChannelArchitectureTest`（SPI 平台中立、飞书 SDK 只在 feishu 包）。它们会随 CI 一起跑，红了就是架构被破坏了。
+- 边界规则落在四处 ArchUnit 测试里：`ArchitectureTest`（domain 零框架）、`AgentArchitectureTest`（agent 不认识 channel）、`ChannelArchitectureTest`（SPI 平台中立、飞书 SDK 只在 feishu 包）、`ToolsArchitectureTest`（tools 不认识 agent 与 channel）。它们会随 CI 一起跑，红了就是架构被破坏了。
 - `oapi-sdk` 在 `claw4j-channel` 里是 optional，默认不进 fat jar；要用飞书必须 `-Pchannel-feishu`。这条也意味着：只用 HTTP 的部署不会被飞书的传递依赖污染。
 - `claw4j-tools` 尚未被 `claw4j-agent` 依赖（装配线还没接）。M1 补 `agent → tools`，方向不变。

@@ -6,6 +6,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.DefaultToolCallingChatOptions;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
@@ -37,9 +38,18 @@ public class MockChatModel implements ChatModel {
         return Flux.fromIterable(split(echo(prompt))).map(MockChatModel::response);
     }
 
+    /**
+     * 返回 {@code ToolCallingChatOptions} 而不是普通 {@code ChatOptions}：
+     * {@code ToolCallingAdvisor} 的开头是 {@code options instanceof ToolCallingChatOptions}，
+     * 不是就**跳过整个工具循环**——不报错、不告警。
+     *
+     * <p>真实的 {@code DeepSeekChatOptions} / {@code OpenAiChatOptions} 都实现了它，
+     * 所以生产路径天然正常；假模型不跟着实现的话，就会出现"接了真模型工具能调、
+     * 一退到 mock 工具就静默不调"这种只在本地演示时暴露的差异。
+     */
     @Override
     public ChatOptions getOptions() {
-        return ChatOptions.builder().model("mock").build();
+        return DefaultToolCallingChatOptions.builder().model("mock").build();
     }
 
     private static String echo(Prompt prompt) {
@@ -53,7 +63,11 @@ public class MockChatModel implements ChatModel {
                 .build();
     }
 
-    private static List<String> split(String text) {
+    /**
+     * 分块。包内可见是故意的：测试用的 {@code ScriptedChatModel} 也按同一口径切块，
+     * 否则"流式被降级成一次性响应"这件事在两个假模型上会有两种判据。
+     */
+    static List<String> split(String text) {
         List<String> chunks = new ArrayList<>();
         for (int i = 0; i < text.length(); i += STREAM_CHUNK_SIZE) {
             chunks.add(text.substring(i, Math.min(i + STREAM_CHUNK_SIZE, text.length())));

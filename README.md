@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 72 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 73 个测试
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -148,7 +148,7 @@ curl -s -w ' [%{http_code}]' -X POST http://localhost:8080/api/chat \
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、72 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、73 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |

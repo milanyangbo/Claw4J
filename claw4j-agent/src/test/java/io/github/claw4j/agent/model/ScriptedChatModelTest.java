@@ -1,9 +1,12 @@
 package io.github.claw4j.agent.model;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -57,9 +60,33 @@ class ScriptedChatModelTest {
                 .collectList()
                 .block();
 
-        assertThat(chunks).hasSizeGreaterThan(1);
-        assertThat(String.join("", chunks)).isEqualTo("这是一段足够长的内容用来验证分块");
+        // 断言确切的块边界，不是"多于一块"——后者在 17 字符切 2 块时也通过，
+        // 那样"流式被降级成一次性响应"就探测不出来了（这条保护是 M0 特意留下的）
+        assertThat(chunks).containsExactly("这是一段足够长的", "内容用来验证分块");
         assertThat(model.remaining()).isZero();
+    }
+
+    /**
+     * 脚本耗尽在流式上要以 {@code onError} 传出来，而不是在拼装流的那一行同步抛出。
+     * 真实模型不会在 stream() 里抛，混在一起会让"流上的失败"被误读成调用方的错。
+     */
+    @Test
+    void 脚本耗尽在流式上走onError而不是同步抛出() {
+        ScriptedChatModel model = ScriptedChatModel.builder().thenText("只有这一条").build();
+        model.stream(new Prompt("第一次")).blockLast();
+
+        // 前半句是关键：拼装流这一行不能抛。抛了就说明异常发生在订阅之前，
+        // 后面用 onErrorResume 根本接不到。
+        Flux<ChatResponse> exhausted = model.stream(new Prompt("第二次"));
+
+        AtomicReference<Throwable> signal = new AtomicReference<>();
+        exhausted.onErrorResume(error -> {
+            signal.set(error);
+            return Flux.empty();
+        }).blockLast();
+
+        assertThat(signal.get()).isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("脚本已耗尽");
     }
 
     /**
