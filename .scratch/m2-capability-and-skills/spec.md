@@ -151,4 +151,4 @@ M1 结束时能演示的是"问一句话、拿到业务库里的数"，但 Agent
 - **环境**：两个真实 key 都在本机 `.env`（已被 `.gitignore` 忽略）。本机 Docker Hub 拉不动，跑全量验证要带 `CLAW4J_POSTGRES_IMAGE`（镜像站），否则数据库那一类会红。
 - **由票内决定、本 spec 不预设**（避免在这里发明决策）：① MCP server 的承载形态（进程内 stdio vs 独立进程）② 沙箱的物理形态 ③ Skill 目录的位置与加载时机（启动扫描 vs 命中时读）④ Subagent 用哪个模型（沿用主模型还是走便宜模型）⑤ 静态检查危险清单的范围 ⑥ 8 个保留场景里本轮先迁哪几个。
 - **决策依据**：ADR-0002（脚本执行收口与沙箱）、0003（能力三层）、0006（模型与 mock）、0007（Principal 与鉴权）、0008（交付节奏、四项做深、三条必测、调用预算）、0010（模块分层与依赖方向）。术语以根 `GLOSSARY.md` 为准（Skill / Script Package / Tool / Subagent / Skill Generator / 调用预算）。
-- 本 spec 的实现票将落在同级 `issues/` 目录（由 `/to-tickets` 生成），编号从 `01` 起。
+- 本 spec 的实现票在同级 `issues/` 目录，共 7 张：`01` 工具装配（prefactor，无前置依赖，可立即开工）→ `02` MCP 跨进程 / `03` Script Package 沙箱 / `04` Skills 渐进式披露（都只依赖 01）→ `05` Subagent（01, 04）→ `06` Skill Generator 五步链路（03, 04）→ `07` 场景迁移与文档收尾（02–06）。
