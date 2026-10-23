@@ -6,7 +6,7 @@
 
 整个项目是 **基于 Spring AI 2.x 从零重建** 的（1.x 版本已冻结进 `legacy/`，见 [legacy/README.md](legacy/README.md)）。重建的全部设计决策都留了 ADR，见 [`docs/adr/`](docs/adr/)。
 
-> **当前进度：M0 骨架完成。** HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1 接工具与鉴权，M2 接飞书长连接与 Skill 引擎。
+> **当前进度：M1 进行中。** M0 骨架已完成：HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1 已完成业务库与种子、工具调用闭环、鉴权 Advisor；待办是 Text-to-SQL、PII 脱敏、会话记忆与真实模型联调。M2 接飞书长连接与 Skill 引擎。
 
 ## 技术栈
 
@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 81 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 97 个测试
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -66,7 +66,8 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 `local` profile 会用 `compose.yaml` 拉起 Postgres(pgvector) 与 Redis，退出时回收。国内拉不到官方镜像时用环境变量换镜像源：
 
 ```bash
-CLAW4J_POSTGRES_IMAGE=你的镜像 ./mvnw -pl claw4j-app spring-boot:run
+CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 \
+  ./mvnw -pl claw4j-app spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
 `application-local.yml` 被 `.gitignore` 忽略（它可能放真实 key），仓库里只有 `.example` 模板。
@@ -99,10 +100,17 @@ CLAW4J_POSTGRES_IMAGE=你的镜像 ./mvnw -pl claw4j-app spring-boot:run
 这三个数就是 05 号票"问一句话拿到数"的判据——两处必须是同一个数，否则会出现
 "库里算的是 A、Agent 答的是 B"这种谁都没错的假绿。
 
-数据库测试需要本机有 Postgres 镜像。拉不到 Docker Hub 时用 `CLAW4J_POSTGRES_IMAGE`
-指一个本地已有的（跟 compose 用的是同一个变量），否则整类跳过并往 stderr 打一行提示。
-本机宽容是因为不该逼人为了提交去拉镜像，但**"跳过的绿"和"通过的绿"长得一样**，
-所以 CI 上跑的是 `./mvnw verify -Dclaw4j.dbTests=required`——那边跑不起来就直接红。
+数据库测试需要本机有 Postgres 镜像。**本机跑全量验证要显式给镜像变量**——
+Docker Hub 在这台机器上连不到，用的是镜像站：
+
+```bash
+CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 ./mvnw verify
+```
+
+不设的话这一类测试会整类跳过，并往 stderr 打一行提示。本机宽容是因为不该逼人为了提交去拉镜像，
+但**"跳过的绿"和"通过的绿"长得一样**，所以 CI 上跑的是
+`./mvnw verify -Dclaw4j.dbTests=required`——那边跑不起来就直接红。
+（`CLAW4J_POSTGRES_IMAGE` 与 compose 用的是同一个变量，写进根目录 `.env` 也能生效。）
 
 ### 要真实模型
 
@@ -175,13 +183,49 @@ curl -s -w ' [%{http_code}]' -X POST http://localhost:8080/api/chat \
 
 现实里的前置条件是由网关在边缘完成认证、把结果写成请求头；**本项目不做登录体系**，那不是考点（ADR-0007）。
 
+## 鉴权：由 Principal 决定，不由模型决定
+
+问"上周华东区成交额多少"时，模型会要求调 `querySales`。**它要求了不等于它会发生**：
+
+```
+请求头 ──► 通道认人 ──► Principal ──► 鉴权 Advisor ──► 工具
+                                          │
+                                          └─ 不通过：这一轮整个换成"没有权限"，工具一次都不调用
+```
+
+三点是关键：
+
+1. **order 排在工具调用循环内部**（大于 `ToolCallingAdvisor.DEFAULT_ORDER`）。链按 order 升序排，
+   而 `ToolCallingAdvisor` 每轮递归的是排在它**后面**的那段，所以"内部"是 order 更大的一侧。
+   于是模型的**每一次**工具迭代都过一遍校验：第一轮放过、第二轮越权，照样拦。
+   写成更小也能编译能跑，只是悄悄退化成"整通对话只校验一次"。
+2. **判定在工具执行之前**。拦下来的那一轮连工具调用请求一起被换掉，
+   所以"工具没被调用"是真的没被调用，不是"调用了但返回空"——
+   这两者在客户端看起来几乎一样，测试里靠**调用计数**加**话术断言**分开。
+3. **权限跟着工具走**：工具所在的模块登记"这个工具要什么动作、会碰到哪些表"
+   （`querySales` → 读动作 + `sales_order`），Agent 只认 `ToolPermissionRegistry` 接口。
+   没登记的工具一律按拒绝处理——没人评估过它会碰到什么。
+
+粒度是**表级 + 动作级**，行级列级不做。默认三个角色：
+
+| 角色 | 表 | 动作 | 问成交额 |
+| --- | --- | --- | --- |
+| `read-only`（缺省） | `*` | `read` | 拿到数 |
+| `guest` | `region` | `read` | 明确的"没有权限"（读不到 `sales_order`） |
+| `admin` | `*` | `*` | 拿到数 |
+
+流式路径同样受保护：工具调用是分块发下来的（名字在头一块、参数在后面几块），
+所以流式必须逐块看，看到越权当场掐断上游——攒到最后再判的话，越权那一轮的内容已经吐出去了。
+这条由 `AuthorizationOverHttpTest` 在真实 HTTP 上钉住：换一个角色头问同一句话，
+一个有答案、一个是明确的拒绝。
+
 ## 质量门禁
 
 四条检查层层收紧，都不靠口头约定：
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、81 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、97 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
