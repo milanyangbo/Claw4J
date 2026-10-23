@@ -85,7 +85,7 @@ class SchemaMigrationOnStartupTest {
 
     @SuppressWarnings("unused")
     static boolean postgresImageIsAvailable() {
-        return PostgresTestSupport.imageAvailable(SchemaMigrationOnStartupTest.class.getSimpleName());
+        return PostgresTestSupport.databaseAvailable(SchemaMigrationOnStartupTest.class.getSimpleName());
     }
 
     /** 把容器的连接交给自动配置：这里不给 URL，逼它走"有 DataSource 就用它"这条真路径。 */

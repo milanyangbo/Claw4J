@@ -133,6 +133,6 @@ class SalesDataRepositoryTest {
     /** 镜像与"拉不到就跳过"的策略都在 {@link PostgresTestSupport} 里，与别的数据库测试共用一份。 */
     @SuppressWarnings("unused")
     static boolean postgresImageIsAvailable() {
-        return PostgresTestSupport.imageAvailable("SalesDataRepositoryTest");
+        return PostgresTestSupport.databaseAvailable("SalesDataRepositoryTest");
     }
 }

@@ -165,6 +165,6 @@ class ReadOnlySqlExecutorTest {
 
     @SuppressWarnings("unused")
     static boolean postgresImageIsAvailable() {
-        return PostgresTestSupport.imageAvailable("ReadOnlySqlExecutorTest");
+        return PostgresTestSupport.databaseAvailable("ReadOnlySqlExecutorTest");
     }
 }

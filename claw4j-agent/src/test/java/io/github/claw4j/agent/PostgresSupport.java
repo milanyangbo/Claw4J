@@ -57,24 +57,37 @@ final class PostgresSupport {
     }
 
     /**
-     * 镜像不在本地就整类跳过；CI 上（{@code -Dclaw4j.dbTests=required}）跳过改成失败，
-     * 因为跳过的绿和通过的绿在构建结果里长得一样。
+     * Docker 守护进程在，就真跑；不在，才整类跳过。
+     *
+     * <p>判据早先是"本地有没有这个镜像的缓存"（{@code inspectImageCmd}），那条是错的：
+     * 它把"没拉过"和"拉不到"当成一件事，于是机器没缓存过镜像时，
+     * 所有数据库测试整类静默跳过，而跳过的绿和通过的绿在构建结果里长得一样。
+     * 拉镜像是 Testcontainers 自己的事，不该由守卫代劳。
+     * 详细的失效经过写在 tools 模块那份 {@code PostgresTestSupport} 的同名方法上。
+     *
+     * <p>{@code -Dclaw4j.dbTests=required}（CI 上这么跑）把"没有 Docker"从跳过改成失败。
      */
-    static boolean imageAvailable(String testClassName) {
+    static boolean databaseAvailable(String testClassName) {
+        boolean dockerUp;
         try {
-            DockerClientFactory.instance().client().inspectImageCmd(imageName()).exec();
+            dockerUp = DockerClientFactory.instance().isDockerAvailable();
+        }
+        catch (RuntimeException | LinkageError broken) {
+            dockerUp = false;
+        }
+        if (dockerUp) {
+            System.err.println("[" + testClassName + "] 正在用镜像 " + imageName()
+                    + " 起数据库（需要时会现拉，第一次慢）。"
+                    + "拉取超时请用 CLAW4J_POSTGRES_IMAGE 换镜像源。");
             return true;
         }
-        catch (RuntimeException notAvailable) {
-            String reason = "数据库测试跑不起来（" + notAvailable.getMessage() + "）。"
-                    + "本机可以 docker pull " + imageName()
-                    + "，或用 CLAW4J_POSTGRES_IMAGE 指向一个本地已有的镜像。";
-            if ("required".equals(System.getProperty("claw4j.dbTests"))) {
-                throw new IllegalStateException("[" + testClassName + "] " + reason
-                        + " 当前 claw4j.dbTests=required，所以这里不跳过。");
-            }
-            System.err.println("[" + testClassName + "] " + reason + " 本次跳过。");
-            return false;
+        String reason = "数据库测试跑不起来：这台机器上没有可用的 Docker 守护进程。"
+                + "本机请启动 Docker，或用 CLAW4J_POSTGRES_IMAGE 指定镜像（当前是 " + imageName() + "）。";
+        if ("required".equals(System.getProperty("claw4j.dbTests"))) {
+            throw new IllegalStateException("[" + testClassName + "] " + reason
+                    + " 当前 claw4j.dbTests=required，所以这里不跳过。");
         }
+        System.err.println("[" + testClassName + "] " + reason + " 本次跳过。");
+        return false;
     }
 }

@@ -145,6 +145,6 @@ class SalesQueryEndToEndTest {
 
     @SuppressWarnings("unused")
     static boolean postgresImageIsAvailable() {
-        return PostgresSupport.imageAvailable("SalesQueryEndToEndTest");
+        return PostgresSupport.databaseAvailable("SalesQueryEndToEndTest");
     }
 }

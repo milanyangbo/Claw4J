@@ -66,29 +66,48 @@ public final class PostgresTestSupport {
     }
 
     /**
-     * 镜像不在本地就整类跳过——拉不动 Docker Hub 的时候，让 {@code mvn verify}
-     * 卡在下载上再变红，只会让人学会绕开这条命令。
+     * Docker 守护进程在，就真跑；不在，才整类跳过。
      *
-     * <p>但"跳过的绿"和"通过的绿"在构建结果里长得一模一样，这是个真风险。
-     * 所以留了一个开关：{@code -Dclaw4j.dbTests=required}（CI 上就是这么跑的）
-     * 会把跳过改成失败。本机默认宽容，CI 上必须有库。
+     * <p><b>这里早先判的是"本地有没有这个镜像的缓存"</b>（{@code inspectImageCmd}），
+     * 那条判据是错的，而且错在最要命的方向上：它让"没拉过镜像"和"拉不到镜像"
+     * 变成同一件事，于是只要这台机器没缓存过 {@code pgvector/pgvector:pg16}，
+     * 所有数据库测试整类静默跳过——而跳过的绿和通过的绿在构建结果里长得一模一样。
+     * 实测：本机没缓存时 26 条从未执行，其中正好包含只读约束、会话继承、
+     * 启动迁移这三条 M1 最硬的判据。CI 上更糟：{@code -Dclaw4j.dbTests=required}
+     * 会让守卫抛 {@code IllegalStateException}，整类变成 error，
+     * 而不是让 Testcontainers 去把镜像拉下来。
+     *
+     * <p>正确的问题是"这台机器能不能跑容器"，不是"这个镜像在不在本地"——
+     * 拉镜像本来就是 Testcontainers 自己的事（{@code PostgreSQLContainer} 启动时会 pull）。
+     * 拉不动是环境问题，那应该红，不应该沉默。
+     *
+     * <p>{@code -Dclaw4j.dbTests=required} 保留，语义收窄成"连 Docker 都没有就别装绿"：
+     * CI 上如果有机器没起 Docker，跳过会让人以为跑过了。
      */
-    public static boolean imageAvailable(String testClassName) {
+    public static boolean databaseAvailable(String testClassName) {
+        boolean dockerUp;
         try {
-            DockerClientFactory.instance().client().inspectImageCmd(imageName()).exec();
+            dockerUp = DockerClientFactory.instance().isDockerAvailable();
+        }
+        catch (RuntimeException | LinkageError broken) {
+            dockerUp = false;
+        }
+        if (dockerUp) {
+            // 拉镜像是 Testcontainers 的事，但卡住的时候得让人知道卡在哪个镜像上——
+            // 国内最常见的卡法就是 Docker Hub 超时，而换源只要一个环境变量。
+            System.err.println("[" + testClassName + "] 正在用镜像 " + imageName()
+                    + " 起数据库（需要时会现拉，第一次慢）。"
+                    + "拉取超时请用 CLAW4J_POSTGRES_IMAGE 换镜像源。");
             return true;
         }
-        catch (RuntimeException notAvailable) {
-            String reason = "数据库测试跑不起来（" + notAvailable.getMessage() + "）。"
-                    + "本机可以 docker pull " + imageName()
-                    + "，或用 CLAW4J_POSTGRES_IMAGE 指向一个本地已有的镜像。";
-            if ("required".equals(System.getProperty("claw4j.dbTests"))) {
-                // 抛出去而不是返回 false：条件方法抛异常会让整个类变成 error，构建就红了。
-                throw new IllegalStateException(reason + " 当前 claw4j.dbTests=required，"
-                        + "所以这里不跳过——跳过的绿会让人以为数据库测试真的跑过。");
-            }
-            System.err.println("[" + testClassName + "] " + reason + " 本次跳过。");
-            return false;
+        String reason = "数据库测试跑不起来：这台机器上没有可用的 Docker 守护进程。"
+                + "本机请启动 Docker，或用 CLAW4J_POSTGRES_IMAGE 指定镜像（当前是 " + imageName() + "）。";
+        if ("required".equals(System.getProperty("claw4j.dbTests"))) {
+            // 抛出去而不是返回 false：条件方法抛异常会让整个类变成 error，构建就红了。
+            throw new IllegalStateException(reason + " 当前 claw4j.dbTests=required，"
+                    + "所以这里不跳过——跳过的绿会让人以为数据库测试真的跑过。");
         }
+        System.err.println("[" + testClassName + "] " + reason + " 本次跳过。");
+        return false;
     }
 }

@@ -64,3 +64,59 @@
 烧 token、依赖外网、还依赖本机起着的库，三条里断一条就红，而那不是回归。
 
 **测试数**：175（domain 13 / tools 33 / agent 97 / channel 20 / app 12），全绿。
+
+## Code review（2026-10-23，固定点 `8c87eda`，覆盖 M1-03～07）
+
+两条轴各跑一个子代理：Standards（对照 ADR/GLOSSARY + Fowler 坏味道基线）、
+Spec（对照 spec.md 与 03～07 的验收清单）。**Standards 无硬违规**，
+Spec 抓到一条 P0，另有几条断言失真。
+
+### P0：26 条数据库测试从未执行，却被计进"175 全绿"
+
+守卫 `imageAvailable` 判的是**本地有没有这个镜像的缓存**（`inspectImageCmd`）：
+机器没缓存过 `pgvector/pgvector:pg16` 时，全部数据库测试整类静默跳过，
+而跳过的绿和通过的绿在构建结果里一模一样。实测（本机没缓存）：
+
+```
+claw4j-tools: 33，跳过 16   SchemaMigrationOnStartup 2 / ReadOnlySqlExecutor 6 / SalesDataRepository 8
+claw4j-agent: 97，跳过 10   SalesQueryEndToEnd 3 / SessionMemoryEndToEnd 7
+总计 175，其中从未执行 26，实际执行 149
+```
+
+被跳过的正好是 M1 最硬的三条判据：只读约束（DDL/DML 不可能通过提问发生）、
+会话记忆继承（第二轮追问接得上第一轮）、启动即迁移。
+CI 上更糟：`-Dclaw4j.dbTests=required` 会让守卫抛 `IllegalStateException`，
+整类 error，而不是让 Testcontainers 去把镜像拉下来——守卫把"没拉过"和"拉不到"当成了同一件事。
+
+**修法**：判据改成"Docker 守护进程在不在"（`DockerClientFactory.instance().isDockerAvailable()`），
+拉镜像交回 Testcontainers。拉不动就红——那是环境问题，该红；静默跳过才是要防的。
+`required` 的语义收窄成"连 Docker 都没有就别装绿"。
+Docker 在时往 stderr 打一行"正在用哪个镜像起库"，卡住的人知道该换哪个源。
+
+修完实测：`CLAW4J_POSTGRES_IMAGE=... ./mvnw verify` → **177 全绿、跳过 0**。
+
+### 其余三条
+
+- **`ToolCallBudget.MAX_TOTAL_CALLS`（6）没有任何断言，而且在当前工具集下不可达**：
+  单工具上限（3）比它小，M1 只注册了一个工具，6 永远撞不到。
+  按"不留测不出作用的代码"这条原则它该删，但它守的"多工具叠加"是真实风险，
+  所以新增 `ToolCallBudgetTest`：造三个假工具各调 2 次，第 7 次落在 gamma 上
+  （它才第 3 次，没撞单工具上限），于是只有总数上限能拦住它。
+  变异：去掉 `maxTotalToolCalls` → 2 条全红。
+- **HTTP 层鉴权退回成了"猜"**：票 03 要的是"用调用计数证明工具一次都没被调用"，
+  而 `AuthorizationOverHttpTest` 的替身执行器是无计数 lambda，三条断言只比对文本。
+  工具跑了但查出来是空的，文本里同样没有数字——那种情况它抓不到。
+  换成计数替身，并按"请求前后差值"断言（三条测试共用一个 Spring 容器）。
+  变异：拒绝时只换文本、保留 toolCalls → 文本断言仍绿、**计数断言红 2 条**。
+- 文档两处失真：`SalesSqlGuard` 的 `{@link JdbcSalesQueryExecutor}` 指向不存在的类；
+  README 把调用预算写成框架自带的 `ToolCallLimits`（实际是 `ToolCallingManager`
+  的 `maxCallsPerTool`/`maxTotalToolCalls`），并声称"有单测钉着"（只钉了一半）。
+
+### 未消除的两条（记录在案）
+
+- **测试夹具 `PostgresTestSupport`（tools）与 `PostgresSupport`（agent）仍是两份**：
+  合并要靠 tools 的 test-jar，而那会让 `./mvnw test`（不到 package 阶段）在 agent 上解析失败——
+  为了消一份重复去破坏一条更常用的命令，不划算。两份都加了互相指名的注释。
+- Standards 轴提的 `AuthorizationAdvisor#denialText` 重复判定、`Principal#canUse` 是 Middle Man：
+  前者是**归因**（已判定越权之后，为了说清"是动作还是表"再分项查一次），不是第二套判定；
+  后者是给 Advisor 留的单一入口。都不改。

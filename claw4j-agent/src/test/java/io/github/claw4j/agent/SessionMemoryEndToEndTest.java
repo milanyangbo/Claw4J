@@ -302,6 +302,6 @@ class SessionMemoryEndToEndTest {
 
     @SuppressWarnings("unused")
     static boolean postgresImageIsAvailable() {
-        return PostgresSupport.imageAvailable("SessionMemoryEndToEndTest");
+        return PostgresSupport.databaseAvailable("SessionMemoryEndToEndTest");
     }
 }

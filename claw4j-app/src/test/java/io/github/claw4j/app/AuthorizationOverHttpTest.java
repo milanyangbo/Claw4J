@@ -24,6 +24,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,29 +52,47 @@ class AuthorizationOverHttpTest {
 
     private final HttpClient http = HttpClient.newHttpClient();
 
-    @Test
-    void 有权限的角色问同一句话拿到答案() throws Exception {
-        String body = ask("read-only", "/api/chat");
-
-        assertThat(body).contains(FINAL_ANSWER);
-    }
-
+    /**
+     * 03 号票要的是"**用调用计数证明工具一次都没被调用**"，
+     * 而不是靠"回答里没出现数字"来猜——猜不出来一种情况：
+     * 工具其实跑了，只是查出来是空的，那回答里同样没有数字。
+     * 所以这里比的是请求前后的计数器差值。
+     */
     @Test
     void 换一个角色头问同一句话拿到的是明确的没权限() throws Exception {
+        int before = CountingSqlExecutor.calls();
         String body = ask("guest", "/api/chat");
 
         assertThat(body)
                 .contains(AuthorizationAdvisor.DENIAL_PREFIX)
                 .doesNotContain(FINAL_ANSWER);
+        assertThat(CountingSqlExecutor.calls())
+                .as("越权的那一次，工具一次都没被执行：拦截发生在执行之前")
+                .isEqualTo(before);
+    }
+
+    /**
+     * 有权限的那条同样要计数，否则"拒绝"与"放行"会变成同一件事：
+     * 两条都只断言文本的话，工具跑没跑根本看不出来。
+     */
+    @Test
+    void 有权限的角色问同一句话拿到答案且工具真的被调了一次() throws Exception {
+        int before = CountingSqlExecutor.calls();
+        String body = ask("read-only", "/api/chat");
+
+        assertThat(body).contains(FINAL_ANSWER);
+        assertThat(CountingSqlExecutor.calls()).isEqualTo(before + 1);
     }
 
     @Test
     void 流式路径同样按角色拦() throws Exception {
+        int before = CountingSqlExecutor.calls();
         String streamed = ask("guest", "/api/chat/stream");
 
         assertThat(streamed)
                 .contains(AuthorizationAdvisor.DENIAL_PREFIX)
                 .doesNotContain(FINAL_ANSWER);
+        assertThat(CountingSqlExecutor.calls()).isEqualTo(before);
     }
 
     private String ask(String role, String path) throws Exception {
@@ -151,7 +170,8 @@ class AuthorizationOverHttpTest {
         }
 
         /**
-         * 数据源用替身：这条测试关心的是"角色有没有被拦住"，不是 SQL 查出了什么。
+         * 数据源用替身，但<b>要计数</b>：03 号票要的是"用调用计数证明工具一次都没被调用"，
+         * 只比对响应文本等于在猜——工具跑了但查出来是空的，文本里同样没有数字。
          *
          * <p>不用真库还有一个实际理由：默认配置里的 DataSource 指向本机 5432，
          * 没有 Docker 时工具会走"连接失败"那条路，最终回答照样是 FINAL_ANSWER——
@@ -160,7 +180,26 @@ class AuthorizationOverHttpTest {
          */
         @Bean
         public ReadOnlySqlExecutor stubSqlExecutor() {
-            return sql -> new QueryResult(List.of("amount"), List.of(List.of("128400.00")), false);
+            return new CountingSqlExecutor();
+        }
+    }
+
+    /**
+     * 计数器是 static 的：这是个 {@code @Bean} 单例，而三条测试共用一个 Spring 容器，
+     * 实例级的计数会在测试之间串。断言一律用"请求前后的差值"，不看绝对值。
+     */
+    static final class CountingSqlExecutor implements ReadOnlySqlExecutor {
+
+        private static final AtomicInteger CALLS = new AtomicInteger();
+
+        static int calls() {
+            return CALLS.get();
+        }
+
+        @Override
+        public QueryResult execute(String sql) {
+            CALLS.incrementAndGet();
+            return new QueryResult(List.of("amount"), List.of(List.of("128400.00")), false);
         }
     }
 }

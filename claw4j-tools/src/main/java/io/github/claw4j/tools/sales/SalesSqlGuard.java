@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
  *
  * <p>这是<b>纯字符串校验</b>，不含任何数据库连接，所以它能在没有 Docker 的地方跑，
  * 也能被单测逐条钉住。它的定位是"快速失败并给出模型看得懂的拒绝理由"，
- * 不是"唯一的防线"——见 {@link JdbcSalesQueryExecutor} 的第二道。
+ * 不是"唯一的防线"——见 {@link JdbcReadOnlySqlExecutor} 的第二道。
  *
  * <p>为什么字符串校验本身不够、必须有第二道：PostgreSQL 有可写 CTE，
  * {@code with x as (insert into ... returning *) select * from x} 是<b>一条</b>语句，

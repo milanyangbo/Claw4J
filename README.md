@@ -49,11 +49,25 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 175 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 177 个测试
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
-没有 Docker、没有 API key 也能跑完 —— 模型会自动降级到 mock（`[mock]` 前缀），数据源是懒连接不会在启动时真连（ADR-0006）。
+没有 API key 也能跑完 —— 模型会自动降级到 mock（`[mock]` 前缀），数据源是懒连接不会在启动时真连（ADR-0006）。
+
+**没有 Docker 时会少跑 26 条**，而且这 26 条恰好是最硬的几条判据（只读约束、会话记忆继承、启动迁移）。
+它们整类跳过、构建照样绿，所以终端里会打一行 `本次跳过`。想确认自己跑的是完整版：
+
+```bash
+./mvnw verify -Dclaw4j.dbTests=required   # 没有 Docker 就直接红，不给假绿
+```
+
+反过来，**有 Docker 但拉不动 Docker Hub** 时，测试会真的去 pull 然后红——这是有意的：
+拉不动是环境问题，该红；静默跳过才是要防的事。国内换镜像源：
+
+```bash
+CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 ./mvnw verify
+```
 
 ### 要数据库：让 Boot 自己拉容器
 
@@ -369,7 +383,8 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 返回原因（含 `column "amout" does not exist` 这种具体信息）模型才有东西可改。
 这是自纠错链路能成立的前提。
 
-重试上限用框架自带的 `ToolCallLimits` 收紧到**每工具 3 次、整轮 6 次**
+重试上限由 `ToolCallBudget` 收紧到**每工具 3 次、整轮 6 次**——落在 `ToolCallingManager`
+的 `maxCallsPerTool` / `maxTotalToolCalls` 上，不是 yml 里那个 `spring.ai.tools.limits.*`
 （默认 40/150 是为分页取数设计的，放在自纠错上就是一次提问烧几百次往返）。
 超限的行为是 `THROW`：`ToolCallingAdvisor` 接住后直接变成一句回答给客户端，
 不再回头问模型——否则"超限"会被当成工具结果喂回模型，它还会再试一次。
@@ -377,7 +392,13 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 这里有个**静默失效**的坑值得单独记：`spring.ai.tools.limits.*` 配置到不了我们这条链。
 `ChatClient` 是我们自己建客户端的，五参重载里传进去的 `ToolCallingManager` 才是生效的那个，
 自动配置那个只有在使用 Boot 注入的 `ChatClient.Builder` bean 时才会被用上。
-哪天改成注入 bean，这两个数字会静默退回 40/150，所以有单测钉着。
+哪天改成注入 bean，这两个数字会静默退回 40/150，所以**两个数字各有一条测试钉着**：
+`TextToSqlLoopTest` 钉单工具上限，`ToolCallBudgetTest` 钉总数上限。
+
+总数那条值得一说：单工具上限（3）比总数上限（6）小，而 M1 只注册了一个工具，
+所以"整轮 6 次"在单工具场景下**永远撞不到**——它守的是"多工具叠加"这个还没发生的风险。
+与其留一个没人能证明它在生效的数字，测试里干脆造了三个假工具把它逼出来
+（三个各调 2 次，第 7 次落在还没调满的那个上）。
 
 ## 会话记忆：记得住上一轮，而且换条通道也记得住
 
@@ -413,7 +434,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、175 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、177 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
