@@ -40,3 +40,19 @@ M0 结束就必须能演示，不等 M2。
 - 三条必测：① 每个自定义 Advisor 的单测，**含流式路径**（防 ADR-0007 那个静默跳过的坑）；② Text-to-SQL 自纠错链路用固定 schema 跑通；③ MCP 连接的 fail-fast 探测与会话丢失重连。
 - 单元测试**全部 mock 模型调用**，不烧 token、不依赖网络（ADR-0006）。集成测试走真实端点，用 profile 隔离且默认不进 CI。
 - Spring AI 评估器（`RelevancyEvaluator` / `FactCheckingEvaluator`）挂进 CI 当质量门禁。
+
+### 工具调用预算：用框架的上限，但不是它的默认值
+
+`DefaultToolCallingManager.Builder` 自带每工具 40 次、整轮 150 次的上限
+（`DEFAULT_MAX_CALLS_PER_TOOL` / `DEFAULT_MAX_TOTAL_TOOL_CALLS`），
+默认行为是 `THROW`——`ToolCallingAdvisor` 接住 `ToolCallLimitExceededException` 后
+直接变成一代回答给客户端，不再回头问模型。Tool Calling 这一项做深要讲的就是这套机制。
+
+但 Text-to-SQL 的自纠错每多一次就是一次模型往返加一次数据库往返，
+40 次足够把一次提问烧到答不出来。所以 M1-05 把它收紧到每工具 3 次、整轮 6 次
+（见 `ToolCallBudget`）：正常一次查到，留两次给自纠错，第三次还错就不再给机会。
+
+**这个数不写在 `spring.ai.tools.limits.*` 里**，因为那条配置到不了这条链：
+`ChatClient` 由我们自己建，生效的是五参 `ChatClient.builder(...)` 里传进去的那个
+`ToolCallingManager`。哪天改成注入 Boot 的 `ChatClient.Builder` bean，
+数字会静默退回 40/150——所以 `TextToSqlLoopTest` 里有一条断言专门钉着它。
