@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 73 个测试
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 81 个测试
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -70,6 +70,36 @@ CLAW4J_POSTGRES_IMAGE=你的镜像 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
 `application-local.yml` 被 `.gitignore` 忽略（它可能放真实 key），仓库里只有 `.example` 模板。
+
+### 两套库：常驻的给你看，一次性的给测试跑
+
+| | 谁在用 | 怎么起 | 数据 |
+| --- | --- | --- | --- |
+| compose 常驻 | 本地开发、真模型联调 | `docker compose up -d`，或 `local` profile 让 Boot 拉 | 会攒数据，改 schema 靠 Flyway 叠加版本 |
+| Testcontainers | `./mvnw verify` 里的数据库测试 | 每个测试类起一个，跑完销毁 | 每次都是空的，只有种子 |
+
+不给测试复用常驻库，是因为常驻库会串数据：一个测试写进去的东西让下一个测试变红或变绿，
+排查时看到的是"刚才明明能跑"。一次性实例慢一些，但每次都是确定的。
+
+业务 schema 与种子在 `claw4j-tools/src/main/resources/db/migration/`（`V1` 建表、`V2` 放种子），
+由 Flyway 执行。**改字段是加一个 `V3__xxx.sql`，不要回头改已提交的版本** —— 本地常驻库已经记过账了，
+改历史版本会让它的校验和不匹配，而删库重建正是这套迁移要替你免掉的事。
+
+种子里的日期是相对的（按"本周一"推算），所以"上周"在任何一天跑都落在同一批订单上：
+
+| 问法 | 答案 |
+| --- | --- |
+| 上周华东区成交额 | 128,400.00 |
+| 上周华南区成交额 | 26,000.00 |
+| 本周华东区成交额 | 99,999.00 |
+
+**成交额只算未取消的订单**：上周华东还有一单 50,000 是取消状态，它不该出现在任何答案里。
+这三个数就是 05 号票"问一句话拿到数"的判据——两处必须是同一个数，否则会出现
+"库里算的是 A、Agent 答的是 B"这种谁都没错的假绿。
+
+数据库测试需要本机有 Postgres 镜像。拉不到 Docker Hub 时用 `CLAW4J_POSTGRES_IMAGE`
+指一个本地已有的（跟 compose 用的是同一个变量），否则整类跳过并往 stderr 打一行提示——
+别把"跳过"当成"通过"。
 
 ### 要真实模型
 
@@ -148,7 +178,7 @@ curl -s -w ' [%{http_code}]' -X POST http://localhost:8080/api/chat \
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、73 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、81 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |

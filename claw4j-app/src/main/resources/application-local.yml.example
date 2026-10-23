@@ -19,6 +19,11 @@ spring:
       file: compose.yaml
       lifecycle-management: start-and-stop
 
+  # 库起来了才做迁移（默认 profile 里是关的，免得没 Docker 时启动失败）。
+  # 迁移脚本在 claw4j-tools 的 classpath:db/migration 下，改 schema 是加一个新版本文件。
+  flyway:
+    enabled: true
+
 logging:
   level:
     io.github.claw4j: DEBUG

@@ -32,6 +32,11 @@
         <spring-ai-agent-utils.version>0.13.0</spring-ai-agent-utils.version>
         <spring-ai-session.version>0.10.0</spring-ai-session.version>
 
+        <!-- Boot 4.1.2 的 BOM 指向 testcontainers 2.0.5，但当前镜像源里这个 artifactId
+             只同步到 1.21.4，2.x 拉不下来（构建会红）。这里覆盖成 1.21.4，等源同步后
+             删掉这一行就回到 BOM 管理。换版本时记得 2.x 改过包名
+             （org.testcontainers.containers.* → org.testcontainers.<module>.*）。 -->
+        <testcontainers.version>1.21.4</testcontainers.version>
         <lark-oapi.version>2.8.7</lark-oapi.version>
         <archunit.version>1.5.1</archunit.version>
         <maven-enforcer.version>3.6.3</maven-enforcer.version>
@@ -52,6 +57,23 @@
                 <version>${spring-ai.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <!-- 放在 Boot BOM 之后，才能盖掉里面 import 的 testcontainers 版本：
+                 嵌套 import 的属性不会被外层 properties 覆盖，只能靠后声明的 BOM 赢。
+                 core 还得单独钉一次：BOM 管得住 postgresql / junit-jupiter 这些模块，
+                 但 junit-jupiter 传递引 core 时拿到的仍是 Boot BOM 里的 2.0.5，
+                 于是 1.21.4 的扩展配上 2.0.5 的 core，跑起来就是混着来的。 -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers</artifactId>
+                <version>${testcontainers.version}</version>
             </dependency>
             <!-- 事件溯源会话记忆，2.1 起计划接替内置 ChatMemory，见 ADR-0005 -->
             <dependency>

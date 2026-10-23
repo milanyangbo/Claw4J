@@ -15,6 +15,11 @@ spring:
     username: ${CLAW4J_DB_USER:claw4j}
     password: ${CLAW4J_DB_PASSWORD:claw4j}
     driver-class-name: org.postgresql.Driver
+  # 默认不做迁移：迁移要在启动时真连数据库，而没有 Docker 时应用照样能起来
+  # （Hikari 是懒连接，不连就不会失败）。Flyway 一开，没库就等于启动失败，
+  # 那条"本地不装依赖也能跑通"的承诺就没了。需要库时用 local profile 打开。
+  flyway:
+    enabled: false
   data:
     redis:
       host: ${CLAW4J_REDIS_HOST:localhost}

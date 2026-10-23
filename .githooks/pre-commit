@@ -17,6 +17,6 @@ if ! echo "$staged" | grep -qE '^claw4j-.+\.(java|xml)$'; then
     exit 0
 fi
 
-exec ./mvnw -B -ntp -pl claw4j-domain,claw4j-agent,claw4j-channel test \
+exec ./mvnw -B -ntp -pl claw4j-domain,claw4j-agent,claw4j-channel,claw4j-tools test \
     -Dtest='*ArchitectureTest' \
     -Dsurefire.failIfNoSpecifiedTests=false
