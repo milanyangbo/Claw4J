@@ -4,10 +4,8 @@ import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.tools.sales.JdbcReadOnlySqlExecutor;
 import io.github.claw4j.tools.sales.ReadOnlySqlExecutor;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -20,7 +18,7 @@ import java.util.Map;
 /**
  * 把工具暴露成 {@code ToolCallbackProvider} bean，而不是让调用方去 new 工具类。
  *
- * <p>为什么走这一层：Agent 侧装配只需要"容器里有哪些工具回调"，
+ * <p>为什么走这一层：Agent 侧装配只需要"容器里有哪些工具"，
  * 不需要知道工具类的名字，改 Agent 装配的代码动不到。
  *
  * <p><b>每种来源各出一个 provider，谁都不让位</b>（M2-01 修掉的坑）：
@@ -64,19 +62,23 @@ public class ToolsAutoConfiguration {
      * {@code querySales} 就静默消失——不报错、不告警，只是模型手上没这个工具，
      * 于是它开始编答案。M2 要在同一个容器里放三种来源，让位等于随机少一种。
      *
-     * <p>条件改成"有没有可用的执行器"：没有数据源就注册一个空来源，
-     * 表现是"没有工具可调"而不是启动失败——这与上面那条
-     * {@code @ConditionalOnBean(JdbcClient.class)} 是同一个取向。
+     * <p>条件改成"有没有可用的执行器"，与上面那条 {@code @ConditionalOnBean(JdbcClient.class)}
+     * 是同一个取向：没配数据库时是"没有工具可调"，而不是启动炸在一个没人看得懂的地方。
+     * 注意这与本票要防的那种静默不是一回事——那种是<b>有工具却被另一个来源挤掉</b>，
+     * 这里是整层能力本来就不存在，配了数据源立刻就有。
+     *
+     * <p>这条 {@code @ConditionalOnBean} 依赖本类里两个 @Bean 方法的<b>声明顺序</b>
+     * （执行器在前，来源在后）：同一个自动配置类里的条件按方法顺序求值，
+     * 顺序反了条件就永远为假，工具会静默消失——正是这个类一直在防的那种失效。
+     * 它被两条测试盯着：有数据源时 {@code querySales} 在清单里，没有时清单是空的。
      *
      * <p>多个来源并存时，谁的工具都会被收走（收集发生在 Agent 侧装配），
      * 所以这里只管把自己这一层交出去，不猜容器里还有谁。
      */
     @Bean
-    public ToolCallbackProvider salesToolCallbackProvider(ObjectProvider<ReadOnlySqlExecutor> executors) {
-        ReadOnlySqlExecutor executor = executors.getIfAvailable();
-        return executor == null
-                ? () -> new ToolCallback[0]
-                : MethodToolCallbackProvider.builder().toolObjects(new SalesTools(executor)).build();
+    @ConditionalOnBean(ReadOnlySqlExecutor.class)
+    public ToolCallbackProvider salesToolCallbackProvider(ReadOnlySqlExecutor executor) {
+        return MethodToolCallbackProvider.builder().toolObjects(new SalesTools(executor)).build();
     }
 
     /**

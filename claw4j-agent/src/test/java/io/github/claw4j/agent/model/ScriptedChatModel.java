@@ -119,14 +119,6 @@ public final class ScriptedChatModel implements ChatModel {
     }
 
     /**
-     * 每一次调用收到的提示词内容（按调用顺序）。用来断言"工具真的执行过且结果回到了模型"。
-     *
-     * <p>{@code ToolResponseMessage#getText()} 是空串——工具结果在
-     * {@code getResponses()} 的 {@code responseData()} 里，不在正文里。
-     * 只拼各条消息的 {@code getText()} 会把工具结果整个漏掉，
-     * 于是"工具没执行"和"执行了"看起来一模一样。
-     */
-    /**
      * 每一次调用收到的完整 {@code Prompt}（按调用顺序）。
      *
      * <p>与 {@link #promptTexts()} 的区别：那个只给内容，这个连 {@code ChatOptions} 一起给。
@@ -136,6 +128,14 @@ public final class ScriptedChatModel implements ChatModel {
         return List.copyOf(received);
     }
 
+    /**
+     * 每一次调用收到的提示词内容（按调用顺序）。用来断言"工具真的执行过且结果回到了模型"。
+     *
+     * <p>{@code ToolResponseMessage#getText()} 是空串——工具结果在
+     * {@code getResponses()} 的 {@code responseData()} 里，不在正文里。
+     * 只拼各条消息的 {@code getText()} 会把工具结果整个漏掉，
+     * 于是"工具没执行"和"执行了"看起来一模一样。
+     */
     public List<String> promptTexts() {
         return received.stream().map(ScriptedChatModel::promptText).toList();
     }

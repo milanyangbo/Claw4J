@@ -65,17 +65,16 @@ public class AgentAutoConfiguration {
     }
 
     /**
-     * 把容器里所有工具来源收成一个 {@code ToolCallback} 列表。
+     * 把容器里所有工具来源收成一个列表。
      *
-     * <p><b>两种形态都要收</b>：{@code ToolCallbackProvider} 是"一组工具"，
-     * 而单个 {@code ToolCallback} 是"一个工具"——M2 三层的形态并不统一
-     * （社区包的 Skill 工具就是一个回调，不是一个 provider）。
-     * 只收 provider 的那版会让单个回调**静默不进清单**：不报错、不告警，
-     * 只是模型看不见那个工具，直到有人问"为什么它不知道有这个能力"。
+     * <p><b>两种注册形态都要收</b>：{@code ToolCallbackProvider} 导出"一组工具"，
+     * 单个 {@code ToolCallback} 只导出"一个工具"。只收 provider 的那版会让
+     * 单工具形态**静默不进清单**——不报错、不告警，只是模型看不见那个工具，
+     * 直到有人问"为什么它不知道有这个能力"。
      *
      * <p>顺序不影响行为：工具是按名字被模型和鉴权认领的，清单里谁先谁后都一样。
-     * 重复的名字不在这里去重——两个来源导出同名工具是配置错误，
-     * 该在清单断言上红，而不是被这里悄悄吞掉一个。
+     * 重名不在这里去重——两个来源导出同名工具是配置错误，该在清单断言上红，
+     * 而不是被这里悄悄吞掉一个。
      */
     private static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
                                                            ObjectProvider<ToolCallbackProvider> providers) {
