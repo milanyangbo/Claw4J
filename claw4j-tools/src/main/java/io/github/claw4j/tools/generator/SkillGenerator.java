@@ -12,10 +12,12 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -145,6 +147,8 @@ public final class SkillGenerator {
 
     private final Path reviewDirectory;
 
+    private final Path publishedDirectory;
+
     private final ScriptPackageRegistry registry;
 
     private final GenerationAudit audit;
@@ -155,16 +159,19 @@ public final class SkillGenerator {
 
     private final Clock clock;
 
-    public SkillGenerator(Path stagingDirectory, Path reviewDirectory, ScriptPackageRegistry registry,
-                          GenerationAudit audit, IsolationSpec spec, Clock clock) {
-        this(stagingDirectory, reviewDirectory, registry, audit, spec, clock, new ScriptStaticCheck());
+    public SkillGenerator(Path stagingDirectory, Path reviewDirectory, Path publishedDirectory,
+                          ScriptPackageRegistry registry, GenerationAudit audit, IsolationSpec spec,
+                          Clock clock) {
+        this(stagingDirectory, reviewDirectory, publishedDirectory, registry, audit, spec, clock,
+                new ScriptStaticCheck());
     }
 
-    public SkillGenerator(Path stagingDirectory, Path reviewDirectory, ScriptPackageRegistry registry,
-                          GenerationAudit audit, IsolationSpec spec, Clock clock,
-                          ScriptStaticCheck staticCheck) {
+    public SkillGenerator(Path stagingDirectory, Path reviewDirectory, Path publishedDirectory,
+                          ScriptPackageRegistry registry, GenerationAudit audit, IsolationSpec spec,
+                          Clock clock, ScriptStaticCheck staticCheck) {
         this.stagingDirectory = Objects.requireNonNull(stagingDirectory, "stagingDirectory");
         this.reviewDirectory = Objects.requireNonNull(reviewDirectory, "reviewDirectory");
+        this.publishedDirectory = Objects.requireNonNull(publishedDirectory, "publishedDirectory");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.audit = Objects.requireNonNull(audit, "audit");
         this.spec = Objects.requireNonNull(spec, "spec");
@@ -223,6 +230,12 @@ public final class SkillGenerator {
      * <p>它只读签字，不做任何"看起来可以放行"的推断：没有标记、写得不合格、
      * 摘要对不上（脚本在签字之后被改过）——三种情形都是不放行。
      *
+     * <p><b>上线的是一份快照，不是候选目录本身。</b>候选目录是模型能反复重写的地方
+     * （同名再提一次就整份覆盖），把执行目录直接指向它，等于让"人审的是哪一版"
+     * 由文件系统回答——文件系统答不上来，跑的会是最后一版未审的脚本。
+     * 于是签字生效时把候选目录<b>复制</b>一份到发布目录，清单里的包指向那份副本；
+     * 之后再提新版，动的是暂存区，副本不动，跑的仍然是人审过的那一版。
+     *
      * <p>为什么是一个独立的方法而不是塞在 {@link #propose} 里：
      * 人签字通常发生在提交之后，链路需要一个"再看一眼有没有人签过"的动作，
      * 而那个动作不该依赖"再生成一次"。
@@ -234,12 +247,10 @@ public final class SkillGenerator {
         if (!Files.isDirectory(stagingDirectory)) {
             return published;
         }
+        ReviewGate gate = new ReviewGate();
         for (Path candidate : candidateDirectories()) {
             String name = candidate.getFileName().toString();
-            if (registry.contains(name)) {
-                continue;
-            }
-            Optional<ReviewGate.Decision> decision = new ReviewGate().read(reviewDirectory, name);
+            Optional<ReviewGate.Decision> decision = gate.read(reviewDirectory, name);
             if (decision.isEmpty()) {
                 continue;
             }
@@ -247,19 +258,31 @@ public final class SkillGenerator {
             if (script == null) {
                 continue;
             }
-            if (!new ReviewGate().matches(decision.get(), script)) {
+            if (!gate.matches(decision.get(), script)) {
                 audit.record(clock.instant(), null, GenerationAudit.Stage.APPROVED, name,
                         "签字与当前脚本不一致：审过的是 " + decision.get().sha256() + "，现在是 "
                                 + ReviewGate.digest(script) + "，这次签字自动作废", false);
                 continue;
             }
-            ScriptPackage pkg = ScriptPackage.of(name, candidate, entrypointNameOf(candidate),
-                    descriptionOf(candidate), ScriptPackage.DEFAULT_TIMEOUT_MILLIS);
-            registry.register(pkg);
+            Optional<ScriptPackage> registered = registeredPackage(name);
+            if (registered.isPresent() && !registered.get().root().equals(publishedRoot(name))) {
+                audit.record(clock.instant(), null, GenerationAudit.Stage.APPROVED, name,
+                        "名字 " + name + " 已被另一个来源的脚本包占用（" + registered.get().root()
+                                + "），这一版不覆盖它", false);
+                continue;
+            }
+            if (registered.isPresent() && ReviewGate.digest(script).equals(publishedDigest(registered.get()))) {
+                continue;
+            }
+            Path root = copyCandidate(candidate, publishedRoot(name));
+            if (registered.isEmpty()) {
+                registry.register(ScriptPackage.of(name, root, entrypointNameOf(root),
+                        descriptionOf(root), ScriptPackage.DEFAULT_TIMEOUT_MILLIS));
+            }
             audit.record(clock.instant(), decision.get().by(), GenerationAudit.Stage.APPROVED, name,
                     "由 " + decision.get().by() + " 于 " + decision.get().at() + " 签字通过", true);
             audit.record(clock.instant(), decision.get().by(), GenerationAudit.Stage.PUBLISHED, name,
-                    "已注册为脚本包，目录 " + candidate, true);
+                    "已注册为脚本包，目录 " + root + "（人审那一版的快照）", true);
             published.add(name);
         }
         return List.copyOf(published);
@@ -278,7 +301,65 @@ public final class SkillGenerator {
         return reviewDirectory;
     }
 
+    public Path publishedDirectory() {
+        return publishedDirectory;
+    }
+
     // ------------------------------------------------------------------ 五步的实现
+
+    /** 发布目录里这个包的副本在哪：清单里的包指向这里，不指向还能被重写的暂存区。 */
+    private Path publishedRoot(String name) {
+        return publishedDirectory.resolve(name);
+    }
+
+    private Optional<ScriptPackage> registeredPackage(String name) {
+        return registry.packages().stream().filter(pkg -> pkg.name().equals(name)).findFirst();
+    }
+
+    /** 已经上线那一版的摘要。读不出来（副本不在、入口缺失）时返回 null，按"需要重新发布"处理。 */
+    private String publishedDigest(ScriptPackage pkg) {
+        String script = readEntrypoint(pkg.root());
+        return script == null ? null : ReviewGate.digest(script);
+    }
+
+    /**
+     * 把候选目录整份复制到发布目录：上线的是一份<b>快照</b>。
+     *
+     * <p>复制而不是改指过去：暂存区那份还要留着，人下一版审的还是它。
+     * 整个目录一起复制，是因为入口脚本常常不是单文件（{@code run.sh} 旁边还有它调的脚本），
+     * 只复制入口的话"审过的是哪一版"又会变成两套文件对不上。
+     */
+    private static Path copyCandidate(Path candidate, Path target) {
+        try {
+            if (Files.exists(target)) {
+                deleteRecursively(target);
+            }
+            Files.createDirectories(target);
+            try (Stream<Path> walk = Files.walk(candidate)) {
+                for (Path source : walk.sorted().toList()) {
+                    Path destination = target.resolve(candidate.relativize(source).toString());
+                    if (Files.isDirectory(source)) {
+                        Files.createDirectories(destination);
+                    }
+                    else {
+                        Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES);
+                    }
+                }
+            }
+            return target;
+        }
+        catch (IOException failure) {
+            throw new UncheckedIOException("把候选包 " + candidate + " 复制到 " + target + " 失败", failure);
+        }
+    }
+
+    private static void deleteRecursively(Path root) throws IOException {
+        try (Stream<Path> walk = Files.walk(root)) {
+            for (Path path : walk.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
+    }
 
     private SelfTestResult selfTest(Path candidate, Request request) {
         GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, spec);

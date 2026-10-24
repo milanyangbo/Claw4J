@@ -127,6 +127,7 @@ class SkillGeneratorEndToEndTest {
         io.github.claw4j.tools.generator.SkillGenerator generator =
                 new io.github.claw4j.tools.generator.SkillGenerator(
                         parent.resolve("staging"), parent.resolve("reviews"),
+                        parent.resolve("published"),
                         registry, audit, IsolationSpec.local(), Clock.systemUTC());
         SkillGeneratorToolProvider generatorProvider = new SkillGeneratorToolProvider(generator);
         return new Fixture(registry, scriptProvider, generatorProvider, generator, audit);

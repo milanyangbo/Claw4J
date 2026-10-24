@@ -181,6 +181,54 @@ class SkillGeneratorTest {
                 .contains("ran-ok");
     }
 
+    /**
+     * 同名重提不能偷换掉已经上线的那一版。
+     *
+     * <p>这一条盯的是"人审闸门可以被绕过"那个形状：候选目录就是执行目录时，
+     * 模型就同一个名字再提一版（只需过静态检查）会就地覆盖脚本，
+     * 而在清单里已经注册过的名字会被 {@code publishApproved} 跳过——
+     * 于是跑的是一份没有人签过字的脚本，人看到的"我审过"指向的却是另一份。
+     * 所以断言盯的是<b>执行结果</b>（跑出来的到底是什么），不是"清单里有没有它"。
+     */
+    @Test
+    @DisplayName("已上线的包被同名重提：跑的仍然是人审过的那一版")
+    void 同名重提不会偷换已上线的版本() throws IOException {
+        Fixture fixture = fixture("swap");
+        String first = "#!/bin/sh\necho V1\n";
+        fixture.generator.propose(ETHAN, new SkillGenerator.Request("swap", "取个标记", first));
+        new ReviewGate().approve(fixture.reviews, "swap", "ethan", CLOCK.instant(), first);
+        assertThat(fixture.generator.publishApproved()).contains("swap");
+
+        String second = "#!/bin/sh\necho V2\n";
+        fixture.generator.propose(ETHAN, new SkillGenerator.Request("swap", "取个标记", second));
+        fixture.generator.publishApproved();
+
+        assertThat(run(fixture, "swap")).contains("V1").doesNotContain("V2");
+        assertThat(fixture.audit.replay("swap"))
+                .anySatisfy(entry -> assertThat(entry.detail()).contains("签字与当前脚本不一致"));
+    }
+
+    /**
+     * 上面那条的反面：快照不是永久冻结——新版重新签过字之后要能真的上线，
+     * 否则"改了就再也上不了"只是把闸门焊死的另一种写法。
+     */
+    @Test
+    @DisplayName("新版重新签字之后再发布：跑的是新版")
+    void 新版重新签字后能上线() throws IOException {
+        Fixture fixture = fixture("renew");
+        String first = "#!/bin/sh\necho V1\n";
+        fixture.generator.propose(ETHAN, new SkillGenerator.Request("renew", "取个标记", first));
+        new ReviewGate().approve(fixture.reviews, "renew", "ethan", CLOCK.instant(), first);
+        fixture.generator.publishApproved();
+
+        String second = "#!/bin/sh\necho V2\n";
+        fixture.generator.propose(ETHAN, new SkillGenerator.Request("renew", "取个标记", second));
+        new ReviewGate().approve(fixture.reviews, "renew", "ethan", CLOCK.instant(), second);
+
+        assertThat(fixture.generator.publishApproved()).contains("renew");
+        assertThat(run(fixture, "renew")).contains("V2").doesNotContain("V1");
+    }
+
     // ------------------------------------------------------------------ 输入校验
 
     @Test
@@ -229,19 +277,28 @@ class SkillGeneratorTest {
 
     // ------------------------------------------------------------------ 辅助
 
+    /** 把已注册的那个包真的跑一遍：这条边界的判据在执行结果上，不在清单上。 */
+    private static String run(Fixture fixture, String name) {
+        ScriptPackage pkg = fixture.registry.packages().stream()
+                .filter(candidate -> candidate.name().equals(name))
+                .findFirst().orElseThrow();
+        return new io.github.claw4j.tools.script.ScriptPackageRunner(List.of(pkg)).run(name, List.of());
+    }
+
     private Fixture fixture(String name) {
         Path staging = parent.resolve("staging-" + name);
         Path reviews = parent.resolve("reviews-" + name);
+        Path published = parent.resolve("published-" + name);
         ScriptPackageRegistry registry = ScriptPackageRegistry.empty();
         GenerationAudit audit = new GenerationAudit(parent.resolve("audit-" + name + ".tsv"));
-        SkillGenerator generator = new SkillGenerator(staging, reviews, registry, audit,
+        SkillGenerator generator = new SkillGenerator(staging, reviews, published, registry, audit,
                 IsolationSpec.local(), CLOCK);
-        return new Fixture(staging, reviews, registry, audit, generator,
+        return new Fixture(staging, reviews, published, registry, audit, generator,
                 new ScriptPackageToolProvider(registry,
                         new io.github.claw4j.tools.script.ScriptPackageRunner(List.of())));
     }
 
-    private record Fixture(Path staging, Path reviews, ScriptPackageRegistry registry, GenerationAudit audit,
-                           SkillGenerator generator, ScriptPackageToolProvider provider) {
+    private record Fixture(Path staging, Path reviews, Path published, ScriptPackageRegistry registry,
+                           GenerationAudit audit, SkillGenerator generator, ScriptPackageToolProvider provider) {
     }
 }

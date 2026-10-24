@@ -122,6 +122,27 @@ class SubagentDefinitionTest {
                 .containsExactly("run_report");
     }
 
+    /**
+     * "继承全部"这条路上，委派工具自己也要被减掉（GLOSSARY 的"委派不嵌套"）。
+     *
+     * <p>两个方向都要断言：只断言"委派工具不在里面"的话，一份把所有工具都减掉的实现
+     * 也是绿的；所以同一条用例里还要看到继承来的那些仍在。
+     */
+    @Test
+    @DisplayName("没写白名单时，委派工具自己不在继承来的那一份里")
+    void 继承全部时也没有委派工具() {
+        List<ToolCallback> available = List.of(
+                StubTool.returning("querySales", "amount"),
+                StubTool.returning(SubagentDelegation.TOOL_NAME, "又派了一层"),
+                StubTool.returning("run_report", "报告"));
+        SubagentDefinition definition = new SubagentDefinition(
+                "analyst", "查数。", BODY, List.of(), List.of());
+
+        assertThat(definition.selectTools(available))
+                .extracting(callback -> callback.getToolDefinition().name())
+                .containsExactly("querySales", "run_report");
+    }
+
     @Test
     @DisplayName("白名单点名了却没装上的工具：失败，而不是“少给一个”")
     void 白名单点名了没有的工具即失败() {

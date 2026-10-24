@@ -44,6 +44,7 @@ public class GeneratorAutoConfiguration {
     @Bean
     public SkillGenerator skillGenerator(@Value(STAGING) String stagingDirectory,
                                          @Value("${claw4j.generator.review-directory:}") String reviewDirectory,
+                                         @Value("${claw4j.generator.published-directory:}") String publishedDirectory,
                                          ScriptPackageRegistry scriptPackageRegistry,
                                          GenerationAudit generationAudit,
                                          Clock claw4jClock) {
@@ -51,7 +52,11 @@ public class GeneratorAutoConfiguration {
         Path reviews = reviewDirectory == null || reviewDirectory.isBlank()
                 ? staging.resolveSibling("reviews")
                 : Path.of(reviewDirectory).toAbsolutePath().normalize();
-        SkillGenerator generator = new SkillGenerator(staging, reviews, scriptPackageRegistry,
+        // 发布目录也落在暂存区旁边：上线的那份是快照，不能住在一个模型还能重写的地方。
+        Path published = publishedDirectory == null || publishedDirectory.isBlank()
+                ? staging.resolveSibling("published")
+                : Path.of(publishedDirectory).toAbsolutePath().normalize();
+        SkillGenerator generator = new SkillGenerator(staging, reviews, published, scriptPackageRegistry,
                 generationAudit, IsolationSpec.local(), claw4jClock);
         generator.publishApproved();
         return generator;

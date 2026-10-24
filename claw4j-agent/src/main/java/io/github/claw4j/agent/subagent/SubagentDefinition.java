@@ -95,6 +95,13 @@ public record SubagentDefinition(String name,
      * <p>三个失败点都是<b>拒绝执行</b>而不是"少给几个"：白名单点名了但没有、
      * 挑完之后一个都不剩。后者尤其要拦——一个没有工具的 Subagent 只能靠猜来回答，
      * 那正是委派最不该变成的东西（把幻觉搬进一个看起来更正式的流程里）。
+     *
+     * <p><b>委派工具自己在两条路上都被减掉</b>，这是"委派不嵌套"（GLOSSARY）落在代码里的位置：
+     * 白名单那条路由构造方法挡着（点名了它按定义错误失败），
+     * 而"继承全部"这条路走的是{@code 可用工具}这一整份，里面就有委派工具自己——
+     * 只靠黑名单挡的话，一份没有写 {@code disallowedTools} 的定义就能再派一层，
+     * 于是上下文隔离与 3/6 预算变成一串说不清的递归。
+     * 两条路都减，是为了让"子 Agent 能不能再派一个"的答案不依赖这份定义写了什么。
      */
     public List<ToolCallback> selectTools(List<ToolCallback> available) {
         Objects.requireNonNull(available, "available");
@@ -105,6 +112,7 @@ public record SubagentDefinition(String name,
                         .toList();
         List<ToolCallback> filtered = selected.stream()
                 .filter(callback -> !disallowedTools.contains(callback.getToolDefinition().name()))
+                .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(callback.getToolDefinition().name()))
                 .toList();
         if (filtered.isEmpty()) {
             throw new IllegalStateException("Subagent " + name + " 一个可用工具都没有："
