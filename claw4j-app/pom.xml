@@ -81,6 +81,13 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- app 是唯一能同时看见所有模块的地方，跨模块的架构规则只能放这里：
+             每个模块自己的架构测试只扫得见自己和它依赖的那些（ADR-0010）。 -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <profiles>

@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 192 个测试（连真实 DeepSeek）
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 229 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -153,7 +153,7 @@ app 模块那几条（含 `RealModelTest`）需要真库：本机由 `spring-boo
 （`RealModelSupport`），刻意不跟着这个开关走——它们要的是"同一家、温度 0"的确定性，
 换厂商该由 `RealModelTest`（走完整 `application.yml`）来验，而不是让每条端到端都变成多厂商矩阵。
 
-回归基线是那 192 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+回归基线是那 229 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
 烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
 关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
 M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
@@ -421,7 +421,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 | --- | --- | --- |
 | 一层 | Java `@Tool`（`SalesTools.querySales`） | M1 已落地 |
 | 二层 | MCP server 的 `@McpTool` | M2-02 已落地，见下 |
-| 三层 | Script Package（受限执行） | M2-03 |
+| 三层 | Script Package（受限执行） | M2-03 已落地，见下 |
 
 MCP 这一层的连接生命周期由 `claw4j-tools` 的 `io.github.claw4j.tools.mcp` 管，两条语义是硬要求：
 
@@ -438,6 +438,57 @@ MCP 这一层的连接生命周期由 `claw4j-tools` 的 `io.github.claw4j.tools
 
 MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没有，鉴权只看动作。
 没登记权限的工具一律按拒绝处理（ADR-0007）。
+
+### Script Package：脚本本体不进上下文，只有输出进
+
+脚本层这一层（`io.github.claw4j.tools.script`）的不是"能跑脚本"，而是**跑在什么里面**。
+模型看到的仍然只是"工具名 + 一个参数"，看不到脚本写了什么；它拿到的返回值只有标准输出。
+
+执行后端是社区包的 `ExecBackend` 接缝（`org.springaicommunity:spring-ai-agent-utils`），
+**换沙箱等于换一个实现，调用方一行不动**——这是这条边界唯一可测的地方：
+
+```java
+new ScriptPackageRunner(packages)                 // 默认：受限子进程
+new ScriptPackageRunner(packages, myFactory)      // 换沙箱：换的是这个
+```
+
+**沙箱的物理形态是"应用容器内的受限子进程"**，判据只有一条：**能不能在 CI 里跑起来**。
+跑不起来的沙箱等于没有测试，没有测试的边界不能写进 README 当承诺——
+CI 的 runner 上没有 Docker 守护进程，依赖容器的沙箱在那里就是一串红灯。
+（`LocalExecBackend` 自带 `workingDirectory` 与 `cleanEnvironment`，不需要 Docker 与 Python。）
+
+它真的挡住的五样，每样都有一条测试指着：
+
+| 约束 | 做法 | 盯它的测试 |
+| --- | --- | --- |
+| 工作目录 | 进程起在脚本包自己的目录里 | `SandboxedExecBackendTest` 用 `pwd` 验 |
+| 参数 | 每个参数都过路径校验：`..`、绝对路径、符号链接一律拒绝 | `ScriptPackageRunnerTest` |
+| 环境变量 | 环境从零开始，只给 `PATH`；调用方塞变量会被拒 | `SandboxedExecBackendTest` 用 `env` 验 |
+| 超时 | 上限 30 秒，不给超时或超上限就拒绝执行（不夹取） | `SandboxedExecBackendTest` |
+| 非 root | 账号是 root 时拒绝执行 | `SandboxPolicyTest` |
+
+它**挡不住**的，同样说清楚：脚本**体内**自己去读一个绝对路径、自己去连一次网。
+进程沙箱锁得住入口与参数，锁不住脚本自己的行为；那种越界要靠另一台容器
+（ADR-0003 的第 ② 类沙箱，给 Skill Generator 产出的未审核代码用，M2-06）。
+
+**Java 侧不自己拼命令行**（ADR-0002），这条由两台机器盯着，不靠 review 记：
+
+- ArchUnit：`io.github.claw4j..` 主代码不许调用 `Runtime.exec`、不许碰 `ProcessBuilder`；
+- 源码扫描：`claw4j-*/src/main/java` 里不许出现手写的 shell 调用字面量。
+  后者挡的是"把命令行当一个字符串传下去"——那种写法起进程的不是本项目，
+  于是 API 那条规则看不见它，而宿主机的命令行照样交出去了。
+
+脚本层**不授予任何业务表权限**，而且它要的动作不是 `read` 而是 **`run_script`**：
+只读角色能查数是"只读"的本意，能执行脚本就不是了——脚本能写文件、能往外连，
+那是比读一张表宽得多的口子。没登记权限的工具一律按拒绝（ADR-0007）。
+
+启用这一层要显式配目录（配了却不存在即启动失败，那是配置错误不是"这一层不存在"）：
+
+```yaml
+claw4j:
+  scripts:
+    directory: skills      # 每个子目录一个包，包里用 package.properties 说明自己
+```
 
 ## 会话记忆：记得住上一轮，而且换条通道也记得住
 
@@ -473,8 +524,9 @@ MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、192 个测试、打包 | CI 每次 push/PR；本地随时 |
-| ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
+| `./mvnw verify` | 编译、229 个测试、打包 | CI 每次 push/PR；本地随时 |
+| ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程（`Runtime.exec` / `ProcessBuilder`，ADR-0002）** | `mvn test`，以及提交前 |
+| `NoHandBuiltShellCommandTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | `./scripts/assert-no-skipped-tests.sh` | **有测试被跳过就红**：跳过的绿和通过的绿在构建输出里长得一样，而"数据库测试整类没跑"恰好藏在跳过里 | CI 每次；本地报数前 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
