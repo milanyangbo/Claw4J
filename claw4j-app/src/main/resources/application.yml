@@ -60,14 +60,16 @@ claw4j:
       # 执行脚本包要的是 run_script（ADR-0003 第三层）：它不是 read，
       # 因为脚本能写文件、能往外连，那是比读一张表宽得多的口子。admin 的 "*" 含它，
       # read-only 不含——只读角色跑不了脚本，这件事由这一行决定，不由工具自己决定。
+      # use_skill（M2-04 的 Skill 层）反过来给了能读的角色：加载一份做法既不读表也不写东西，
+      # Skill 只是把"先用哪个工具、再输出什么"写出来，真正碰表的那一步仍各自鉴权。
       roles:
         read-only:
           tables: ["*"]
-          actions: ["read"]
+          actions: ["read", "use_skill"]
         # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"
         guest:
           tables: ["region"]
-          actions: ["read"]
+          actions: ["read", "use_skill"]
         admin:
           tables: ["*"]
           actions: ["*"]

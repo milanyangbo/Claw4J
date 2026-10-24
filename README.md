@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 229 个测试（连真实 DeepSeek）
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 244 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -153,7 +153,7 @@ app 模块那几条（含 `RealModelTest`）需要真库：本机由 `spring-boo
 （`RealModelSupport`），刻意不跟着这个开关走——它们要的是"同一家、温度 0"的确定性，
 换厂商该由 `RealModelTest`（走完整 `application.yml`）来验，而不是让每条端到端都变成多厂商矩阵。
 
-回归基线是那 229 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+回归基线是那 244 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
 烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
 关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
 M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
@@ -490,6 +490,45 @@ claw4j:
     directory: skills      # 每个子目录一个包，包里用 package.properties 说明自己
 ```
 
+### Agent Skills：命中才加载全文，加载完自己编排工具
+
+前两节说的是"能力从哪来"，这一节说的是**模型怎么知道该按什么顺序用它们**。
+`SKILL.md` 写的是"什么时候用得上、按什么流程用"，它**不提供动作，只编排动作**
+（GLOSSARY 里 Skill 与 Script Package 的分工就在这里：一个是做法，一个是脚本）。
+
+关键设计是**渐进式披露**：
+
+| 时机 | 进上下文的是什么 | 判据 |
+| --- | --- | --- |
+| 启动 | 每个 Skill 的 `name` + `description`（几行 XML） | 模型靠这两行判断"有没有用得上的做法" |
+| 命中 | 只有被选中那一份的正文，作为那次调用的结果回来一次 | 有二十个 Skill 的代价是二十行描述，不是二十份正文 |
+
+这条边界两头都钉了断言——只钉"正文没进来"是不够的，"谁的正文都没进来"
+（比如这一层压根没生效）也能全绿，所以同一份转储上还有一条正向断言盯着观测通道本身：
+
+- `AgentSkillsTest`：工具描述里有元数据、**没有任何一份正文**；用名字调用才取回正文，且只取回那一份；
+- `AgentSkillsEndToEndTest`：整条链路里两个 Skill 的元数据都在，**没被选中那份的正文不在任何一轮请求里**。
+
+工具类型**没有自己再包一层**：社区包的 `SkillsTool.Builder.build()` 直接返回 `ToolCallback`，
+它的工具名、输入 Schema、"用名字取正文"都在那一个类里。再包一层只会多出一个要同步维护的
+描述字符串，而"描述里到底有什么"正是这里要盯的东西。
+
+权限登记的是 **`use_skill` 动作，业务表一张都没有**——Skill 自己不读库，它让模型去读，
+而那一步照样过鉴权。所以能读的角色（`read-only` / `guest`）也都给了 `use_skill`：
+加载一份做法既不读表也不写东西。把它与 `read` 分开列，是为了让"谁能用什么做法"
+成为一行配置能回答的问题，而不是"能读就顺便能用"。
+
+启用这一层同样是显式配目录（配了却一个 `SKILL.md` 都没有即启动失败）：
+
+```yaml
+claw4j:
+  skills:
+    directory: skills      # 每个含 SKILL.md 的子目录是一份 Skill
+```
+
+**这里没有的**：让模型自己产出一份做法。这份 SKILL.md 仍然是人写的；
+模型产出脚本包并关进五步链路是 M2-06 的事。
+
 ## 会话记忆：记得住上一轮，而且换条通道也记得住
 
 第一轮问"上周华东区成交额多少"，第二轮问"那华南呢"——第二轮不该要求把"上周""成交额"重讲一遍。
@@ -524,7 +563,7 @@ claw4j:
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、229 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、244 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程（`Runtime.exec` / `ProcessBuilder`，ADR-0002）** | `mvn test`，以及提交前 |
 | `NoHandBuiltShellCommandTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |

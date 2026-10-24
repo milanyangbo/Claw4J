@@ -23,10 +23,16 @@ public class HttpChannelProperties {
      * <p>{@code read-only} 拿到的是读动作而不是空集：空集意味着连"上周成交额多少"都问不了，
      * 默认角色就成了废角色。{@code guest} 演示的是表级——它会读，但读不到
      * {@code sales_order}，于是同一个问题在它这里是明确的"没权限"（ADR-0007）。
+     *
+     * <p>这两个能读的角色也都给了 {@code use_skill}：加载一份做法（M2-04）本身不读表、
+     * 不写东西，Skill 只是把"先用哪个工具、再输出什么"写出来，真正碰表的那一步
+     * 仍按表级与动作级各自鉴权。把 {@code use_skill} 与 {@code read} 分开列，
+     * 是为了让"谁能用什么做法"成为一行配置能回答的问题，而不是"能读就顺便能用"。
+     * {@code guest} 的受限仍然纯粹是表级——这是它要演示的那一件事。
      */
     private Map<String, RoleGrant> roles = new LinkedHashMap<>(Map.of(
-            "read-only", new RoleGrant(Set.of("*"), Set.of("read")),
-            "guest", new RoleGrant(Set.of("region"), Set.of("read")),
+            "read-only", new RoleGrant(Set.of("*"), Set.of("read", "use_skill")),
+            "guest", new RoleGrant(Set.of("region"), Set.of("read", "use_skill")),
             "admin", new RoleGrant(Set.of("*"), Set.of("*"))));
 
     /**
