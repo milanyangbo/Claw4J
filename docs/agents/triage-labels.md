@@ -21,3 +21,15 @@ Status: ready-for-agent
 ```
 
 Drop the line entirely (or leave it empty) for an untriaged issue. `Status: claimed` / `Status: resolved` are the `/wayfinder` lifecycle states and are not triage roles.
+
+## 本仓库实际在用哪套词（2026-10-25 数过 21 张票 + 4 份 spec）
+
+两套词各有归属，不要混着写：
+
+- **`spec.md` 头部的 `Status:`** 用上面那张表的 triage 角色。四份 spec 现在都是 `ready-for-agent`。
+- **`issues/NN-*.md` 的 `**Status:**`** 是 wayfinder 的票生命周期，只有 `claimed` 与 `resolved`。
+  21 张票现在全部是 `resolved`。
+
+`closed` 出现过一次（M2 的八张票），已经统一回 `resolved`。`/wayfinder` 只认 `resolved`，
+自造一个同义词会把"还有哪些票没做完"变成要人去辨形的判断题。
+收票时状态词只能从上面两行里挑一个。

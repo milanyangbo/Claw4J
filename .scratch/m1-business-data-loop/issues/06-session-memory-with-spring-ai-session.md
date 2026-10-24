@@ -24,7 +24,7 @@ ADR-0005 只补了 groupId 与这段修订说明，没有改决策。
 
 **Blocked by:** 01, 02
 
-**Status:** closed
+**Status:** resolved
 
 **Demo:** 同一个 `chatId` 连着问两轮，第二轮的"那华南呢"能答出华南的数，不需要把"上周""成交额"重讲一遍。
 

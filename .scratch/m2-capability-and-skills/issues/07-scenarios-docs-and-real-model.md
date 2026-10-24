@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 03, 04, 05, 06
 
-**Status:** closed
+**Status:** resolved
 
 **Demo:** 真实模型下，三层各调一次（Java `@Tool` / MCP / 脚本），一个 Skill 被选中，一个 Subagent 被委派；README 里录的是真实 curl 输出而不是占位符。
 

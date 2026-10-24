@@ -47,7 +47,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 391 个测试（连真实 DeepSeek）
+./scripts/verify-local.sh            # 一条命令：构建 + 架构检查 + 391 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -57,6 +57,10 @@
 
 **没有 Docker 时数据库那一类会整类跳过**，而最硬的几条判据（只读约束、会话记忆继承、启动迁移）
 恰好都在里面。它们跳过时构建照样绿，只在终端里打一行 `本次跳过`。要确认自己跑的是完整版：
+
+`verify-local.sh` 已经把这两件事串在里头了：它先加载 `.env`（Maven 不读 `.env`）、
+自己找 JDK 21（非交互 shell 里 `JAVA_HOME` 常常是空的），跑完 `verify` 再跑跳过闸，
+最后拿 README 里那个测试数和实际跑出来的对一次账。要分开跑时：
 
 ```bash
 ./mvnw verify -Dclaw4j.dbTests=required   # 没有 Docker 就直接红，不给假绿
@@ -779,7 +783,7 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
 
 ## 质量门禁
 
-五条检查层层收紧，都不靠口头约定：
+几条闸层层收紧，都不靠口头约定：
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
@@ -788,6 +792,7 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
 | `NoHandBuiltShellCommandTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | `./scripts/assert-no-skipped-tests.sh` | **有测试被跳过就红**：跳过的绿和通过的绿在构建输出里长得一样，而"数据库测试整类没跑"恰好藏在跳过里 | 本地报数前（verify 之后） |
+| `./scripts/verify-local.sh` | 上面几条串成一条命令：加载 `.env`、找 JDK 21、`verify`、跳过闸、README 测试数对账 | 本地报数前 |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
 | 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}` + `mcp-demo`，真模型走一遍三层与越权（见"一次把三层都接上"那节） | 改了装配或能力层之后 |
 

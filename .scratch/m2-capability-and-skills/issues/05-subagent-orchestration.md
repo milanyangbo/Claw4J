@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 04
 
-**Status:** closed
+**Status:** resolved
 
 **Demo:** 一个需要好几步的问题被委派给 Subagent：父 Agent 拿到的只有结论，它的上下文里看不到子 Agent 的工具调用轨迹；同时演示子 Agent 用不了它定义白名单之外的工具。
 

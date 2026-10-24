@@ -4,7 +4,7 @@
 
 **Blocked by:** 03（脚本层已存在）
 
-**Status:** closed
+**Status:** resolved
 
 **Why:** 这张票由 M2 全段的 code-review（基线 `552414f`）开出，不是新需求。事实已在 ADR-0002 的修订记录里记账，这里只重复结论：社区包的 `ExecSpec` 只有一个 `String command` 字段，没有 argv 形态；`LocalExecBackend` 起进程时在这个字符串前面拼自己的 shell 前缀，于是传给它的字符串会被 shell 解释。脚本层现在正是这么调的，唯一挡住注入的是 `ScriptPackageRunner` 里那处手写 `quote()`。`NoHandBuiltShellCommandTest` 扫的是源码里的 shell 字面量，这条路径一个字面量都不含，所以扫描扫不到它——机器闸是绿的，而它要挡的事正在发生。
 

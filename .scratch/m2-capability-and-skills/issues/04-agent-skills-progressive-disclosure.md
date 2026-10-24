@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** closed
+**Status:** resolved
 
 **Demo:** 问一个命中某 Skill 的问题，模型选中它、按它写的顺序调工具（先用现有的 `querySales` 就够）、给出回答。同时演示"没命中的那个 Skill 的全文没有进上下文"。
 

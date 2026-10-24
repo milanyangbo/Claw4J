@@ -10,7 +10,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** closed
+**Status:** resolved
 
 **Demo:** 拔掉网线和 API key 之外，随便跑一次 `./mvnw verify`——
 销售额问答、工具调用、会话记忆这三类测试打的都是真实 DeepSeek（启动日志写明用的是哪家），
