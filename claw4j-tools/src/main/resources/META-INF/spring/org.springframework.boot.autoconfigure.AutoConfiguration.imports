@@ -1,1 +1,2 @@
 io.github.claw4j.tools.ToolsAutoConfiguration
+io.github.claw4j.tools.mcp.McpToolAutoConfiguration

@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 180 个测试（连真实 DeepSeek）
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 192 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -153,7 +153,7 @@ app 模块那几条（含 `RealModelTest`）需要真库：本机由 `spring-boo
 （`RealModelSupport`），刻意不跟着这个开关走——它们要的是"同一家、温度 0"的确定性，
 换厂商该由 `RealModelTest`（走完整 `application.yml`）来验，而不是让每条端到端都变成多厂商矩阵。
 
-回归基线是那 180 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+回归基线是那 192 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
 烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
 关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
 M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
@@ -412,6 +412,33 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 与其留一个没人能证明它在生效的数字，测试里干脆造了三个假工具把它逼出来
 （三个各调 2 次，第 7 次落在还没调满的那个上）。
 
+## 能力三层：对 Agent 呈现为同一件事
+
+能力按"要不要鉴权、有没有外部副作用、依不依赖外部运行时"分三层（ADR-0003），
+**三层对 Agent 呈现为一回事——都是"工具名 + 参数 Schema"**，Agent 侧不出现"这是哪一层"的分支：
+
+| 层 | 形态 | 状态 |
+| --- | --- | --- |
+| 一层 | Java `@Tool`（`SalesTools.querySales`） | M1 已落地 |
+| 二层 | MCP server 的 `@McpTool` | M2-02 已落地，见下 |
+| 三层 | Script Package（受限执行） | M2-03 |
+
+MCP 这一层的连接生命周期由 `claw4j-tools` 的 `io.github.claw4j.tools.mcp` 管，两条语义是硬要求：
+
+- **连接建立时工具清单为空即失败**（ADR-0002）。连接是**通的**——协议握手成功、server 起来了——
+  只是它一件能力都没有。这种状态不报错的话，现场是"模型说它没这个能力"，
+  而真正的原因是命令写错或版本对不上。
+- **会话丢失（`McpTransportSessionNotFoundException`）重新初始化连接，而不是重试死会话**。
+  对一条已经不在的会话重试，会让一次断连变成永久不可用。
+
+这两条是 ADR-0008 的三条必测之一，所以测试里的 MCP server 是 **Java 自实现的进程内 stdio server**
+（`InProcessStdioMcpServer`）：不依赖 Docker、不依赖 Python，于是这两条进得了 CI。
+**它跨的是协议边界不是 OS 进程边界**——真实部署里换的是 `McpServerEndpoint.openTransport()`
+给出来的传输（`gh` / `himalaya` 那批 server 在 M2-07），上面的生命周期代码一行都不用改。
+
+MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没有，鉴权只看动作。
+没登记权限的工具一律按拒绝处理（ADR-0007）。
+
 ## 会话记忆：记得住上一轮，而且换条通道也记得住
 
 第一轮问"上周华东区成交额多少"，第二轮问"那华南呢"——第二轮不该要求把"上周""成交额"重讲一遍。
@@ -446,7 +473,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、180 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、192 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | `./scripts/assert-no-skipped-tests.sh` | **有测试被跳过就红**：跳过的绿和通过的绿在构建输出里长得一样，而"数据库测试整类没跑"恰好藏在跳过里 | CI 每次；本地报数前 |

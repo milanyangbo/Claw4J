@@ -35,6 +35,17 @@ spring:
       repository:
         jdbc:
           initialize-schema: never
+    # MCP 客户端由本项目的 McpToolAutoConfiguration（claw4j-tools）接管，框架那份关掉。
+    # 关掉的两个理由，都不是"用不上"这么轻：
+    # ① 它会在容器里注册一个空的 ToolCallbackProvider（mcpToolCallbacks），
+    #    于是"按类型注入那个 provider"的地方直接装配失败——M2 之前容器里只有一个来源，
+    #    这类注入是成立的，加了第二个才开始红。
+    # ② 两套机制各收集一遍 MCP 工具时，同一个工具会被注册两次。
+    # 我们要的是自己那一份：它带"工具清单为空即失败"与"会话丢失重新初始化"两条语义
+    # （ADR-0002 / ADR-0003/0008），框架那份只做"把 client 转成回调"，没有这两条。
+    mcp:
+      client:
+        enabled: false
 
 # 模型凭据一律走环境变量，不写进仓库（ADR-0002、ADR-0006）。
 # 一个 key 都没有时**启动失败**（ADR-0011）：不再有 mock 兜底，

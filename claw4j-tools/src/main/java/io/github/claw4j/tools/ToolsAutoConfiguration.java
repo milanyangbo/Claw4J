@@ -96,9 +96,19 @@ public class ToolsAutoConfiguration {
      * 它可能 join 到四张表里的任意一张。所以登记的是全部四张，
      * 而不是只写"主要那张"——少登记一张的后果是鉴权放行了本该拒绝的调用，
      * 而这里承担的失败方向必须是拒绝。
+     *
+     * <p><b>条件为什么不是 {@code @ConditionalOnMissingBean(ToolPermissionRegistry.class)}</b>：
+     * 那条条件的语义是"容器里已经有了就让位"，M2 有了第二个工具来源
+     * （{@code McpToolAutoConfiguration} 也登记一张表）之后，
+     * 两个条件互相让位的结果是<b>只有一张表被注册</b>——
+     * 让出去那一方的工具从此一律按"未登记权限"被拒。
+     * 症状是"某个工具忽然谁都用不了了"，离"多了一个来源"这件事隔了十万八千里，
+     * 与 01 号票修掉的"工具静默消失"是同一个形状。
+     * 改成按"本层能不能成立"判（有没有执行器），多个来源各登记各的：
+     * 鉴权 Advisor 消费的本来就是一张表的列表，不是唯一的那一张。
      */
     @Bean
-    @ConditionalOnMissingBean(ToolPermissionRegistry.class)
+    @ConditionalOnBean(ReadOnlySqlExecutor.class)
     public ToolPermissionRegistry salesToolPermissionRegistry() {
         return ToolPermissionRegistry.of(Map.of(
                 "querySales", ToolPermission.read(

@@ -24,6 +24,20 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-client-chat</artifactId>
         </dependency>
+        <!-- 能力三层里的第二层：MCP（ADR-0003）。坐标是从 spring-ai-bom:2.0.2 里
+             逐条核对过的（starter-mcp-client / spring-ai-mcp / spring-ai-mcp-annotations
+             都在 BOM 的 dependencyManagement 里），不是照文档抄的——
+             M1-06 在 groupId 上栽过一次。它传递引 mcp-core（MCP Java SDK 2.1.0）与
+             mcp-json-jackson3；spring-webflux / spring-webmvc 在链路里是 optional，不会带进来。
+
+             为什么 client 与 server 两侧都用这一条：本票的 MCP server 是 Java 自实现的
+             进程内 stdio server（测试替身兼演示），server 侧用到的
+             StdioServerTransportProvider 与 McpServer 来自传递引的 mcp-core，
+             @McpTool 扫描来自 spring-ai-mcp-annotations，都不需要再引 server starter。 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-client</artifactId>
+        </dependency>
         <!-- 自动配置注解（@AutoConfiguration / @ConditionalOnMissingBean）来自这里。
              工具层用自动配置把自己交给容器，调用方就不用点名工具类。 -->
         <dependency>
