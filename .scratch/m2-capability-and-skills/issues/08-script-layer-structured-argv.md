@@ -28,7 +28,7 @@
 
 ## 注意
 
-- **这张票要动红线。** `AppArchitectureTest` 有一条 `noClasses().that().resideInAPackage("io.github.claw4j..").should().dependOnClassesThat().haveFullyQualifiedName("java.lang.ProcessBuilder")`（外加 `Runtime.exec`）。改成自己起进程就必须收窄这条规则。按 `CODING_STANDARDS.md` 第一条的规矩：**放宽那一步不能混在别的改动里**，就在这张票里做，并在下面写清取舍。收窄的方向建议是"只在被点名的那一个'起进程的地方'允许"，而不是把规则删掉——删掉之后"Java 侧不起进程"这件事就没有任何机器证据了。
+- **这张票要动红线。** `AppArchitectureTest` 有一条 `noClasses().that().resideInAPackage("io.github.claw4j..").should().dependOnClassesThat().haveFullyQualifiedName("java.lang.ProcessBuilder")`（外加 `Runtime.exec`）。改成自己起进程就必须收窄这条规则。按 `docs/agents/guardrails.md` 的规矩：**放宽那一步不能混在别的改动里**，就在这张票里做，并在下面写清取舍。收窄的方向建议是"只在被点名的那一个'起进程的地方'允许"，而不是把规则删掉——删掉之后"Java 侧不起进程"这件事就没有任何机器证据了。
 - 备选方案（如果上面的代价不接受）：**不动代码，把现状如实写进 ADR-0002 与 README**。今天已经这么做了（修订记录里写了"唯一防线是 `quote()`"），可以停留在这个状态，只要 README 里那句"Java 侧不自己拼命令行"同时说清脚本层是例外。选这条就把本票关成 `wontfix`，并把判据（手写 `quote()` 的正确性）单独加一条测试盯着。
 - 入口脚本的可执行位与 shebang：今天交给 shell 执行，没有 shebang 也能跑；改成直接执行之后不能。三个 `examples/scripts/*/run.sh` 都有 `#!/bin/sh` 且有可执行位，生成器写出的脚本有可执行位但 shebang 取决于模型写了什么——这一处先定好，别等联调才发现。
 
