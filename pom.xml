@@ -40,6 +40,10 @@
         <lark-oapi.version>2.8.7</lark-oapi.version>
         <archunit.version>1.5.1</archunit.version>
         <maven-enforcer.version>3.6.3</maven-enforcer.version>
+        <!-- 显式写出来是因为下面要为它加配置：本项目不继承 spring-boot parent，
+             插件版本在 pluginManagement 里没有版本就解析不出来（构建直接失败）。
+             这个版本就是此前一直跑的那个（构建日志里那行 maven-surefire-plugin:3.5.4）。 -->
+        <maven-surefire.version>3.5.4</maven-surefire.version>
     </properties>
 
     <dependencyManagement>
@@ -125,6 +129,30 @@
                     <artifactId>maven-enforcer-plugin</artifactId>
                     <version>${maven-enforcer.version}</version>
                 </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire.version}</version>
+                    <!--
+                      real-cli 这一组默认不跑（M2-07）。
+
+                      为什么是"排除"而不是在测试里 assume：assume 出来的结果是 skipped，
+                      而跳过的绿和通过的绿在报表里长得一模一样——这条仓库有条闸专门
+                      把 skipped 判成失败（scripts/assert-no-skipped-tests.sh），
+                      用 assume 就等于给这条闸开一个口子。排除是"这次没选它"，
+                      报表里根本不会出现，也就没有"它到底跑了没有"这个疑问。
+
+                      这一组里跑的是真的外部 CLI：起 Python 子进程、包 gh 与 himalaya。
+                      它们依赖本机装了什么，不属于回归基线（票面：真实调用不进 CI）。
+
+                      本机想跑：./mvnw test -DexcludedGroups= -Dgroups=real-cli
+                    -->
+                    <configuration>
+                        <!-- 一个不存在的组名：profile 里要把它顶掉，而"空"在 surefire 里
+                             会被当成没设置（于是继承这一份，照样排除）。 -->
+                        <excludedGroups>real-cli</excludedGroups>
+                    </configuration>
+                </plugin>
             </plugins>
         </pluginManagement>
 
@@ -160,4 +188,32 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+          真实外部 CLI 那一组：默认不跑，加 -Preal-cli 才跑。
+
+          为什么不直接用 -DexcludedGroups= 顶掉：surefire 对空值的处理是"当作没设置"，
+          于是继承下来的排除照样生效，命令行顶不掉它（-Dgroups=real-cli 也一样：
+          groups 与 excludedGroups 同时给了同一组，结果是这一组被排除）。
+          用 profile 把两个参数一起换掉才是确定的。
+
+              ./mvnw -Preal-cli -pl claw4j-tools test -Dtest=RealCliMcpEndToEndTest
+        -->
+        <profile>
+            <id>real-cli</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>real-cli</groups>
+                            <excludedGroups>no-such-group</excludedGroups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

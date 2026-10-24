@@ -10,6 +10,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,6 +41,10 @@ class ToolsWiringTest {
     @Autowired
     private List<ToolCallbackProvider> toolCallbackProviders;
 
+    /** 同一批来源，带 bean 名：那条"框架那份不在容器里"的断言要按名字判，不按数量判。 */
+    @Autowired
+    private Map<String, ToolCallbackProvider> providersByName;
+
     @Test
     void 真实执行器而不是替身被注册() {
         assertThat(executor).isInstanceOf(JdbcReadOnlySqlExecutor.class);
@@ -67,18 +72,24 @@ class ToolsWiringTest {
     }
 
     /**
-     * 框架那份 MCP 工具来源（{@code mcpToolCallbacks}）是关掉的，容器里只有自己这一份。
+     * 框架那份 MCP 工具来源（{@code mcpToolCallbacks}）是关掉的，容器里没有它。
      *
      * <p>为什么要有一条断言盯着它：{@code spring.ai.mcp.client.enabled=false} 写在
      * {@code application.yml} 里，而"配置文件里少一行"是最容易在合并里丢掉的那种改动——
      * 丢了之后的表现是某些按类型注入的地方装配失败，看起来跟 MCP 毫无关系。
+     *
+     * <p><b>按 bean 名断言而不是按数量</b>：早先这条写的是"容器里只有一个来源"，
+     * M2 之后容器里会有 Java {@code @Tool} / MCP / 脚本 / Skill 好几份，
+     * 数量断言会在每次加一层时红一次——红的原因与它要防的事毫无关系，
+     * 于是它变成一条"顺手改成 2、3、4"的断言，那种断言守不住任何东西。
+     * 按名断言盯的是事实本身：框架那份不在容器里，别的来源加多少都不影响这一条。
      */
     @Test
     void 框架那份MCP工具来源是关掉的() {
-        assertThat(toolCallbackProviders)
-                .as("容器里只应有 claw4j 自己那一份工具来源；框架那份 mcpToolCallbacks 由 "
+        assertThat(providersByName)
+                .as("容器里不应有框架那份 mcpToolCallbacks；它由 "
                         + "spring.ai.mcp.client.enabled=false 关掉（见 application.yml）")
-                .hasSize(1);
+                .doesNotContainKey("mcpToolCallbacks");
     }
 
     private ToolCallback[] callbacks() {

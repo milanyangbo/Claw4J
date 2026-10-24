@@ -44,6 +44,8 @@ public final class McpConnection implements AutoCloseable {
 
     private final McpServerEndpoint endpoint;
 
+    private final Duration requestTimeout;
+
     private final AtomicInteger initializations = new AtomicInteger();
 
     private final Object lock = new Object();
@@ -51,7 +53,17 @@ public final class McpConnection implements AutoCloseable {
     private McpSyncClient client;
 
     public McpConnection(McpServerEndpoint endpoint) {
+        this(endpoint, REQUEST_TIMEOUT);
+    }
+
+    /**
+     * @param requestTimeout 一次 MCP 请求的等待上限。可注入是为了让"连不上"
+     *                      这类故障在测试里也能早点红——生产用 {@link #REQUEST_TIMEOUT}，
+     *                      测试给 2 秒，于是一条断言不必等满 30 秒才知道连不上。
+     */
+    public McpConnection(McpServerEndpoint endpoint, Duration requestTimeout) {
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
+        this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
     }
 
     public String name() {
@@ -124,7 +136,7 @@ public final class McpConnection implements AutoCloseable {
 
     private McpSyncClient open() {
         McpSyncClient opened = McpClient.sync(endpoint.openTransport())
-                .requestTimeout(REQUEST_TIMEOUT)
+                .requestTimeout(requestTimeout)
                 .build();
         opened.initialize();
         initializations.incrementAndGet();

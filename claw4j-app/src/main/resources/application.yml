@@ -65,13 +65,16 @@ claw4j:
       # delegate_task（M2-05 的 Subagent 层）同理：委派**不提权**——子 Agent 用的是
       # 父这个身份，它在自己的窗口里调工具时照样过一遍鉴权、照样看表。
       # 所以"父读不到的表，派个专职 Agent 去读"这条路在配置上就不存在。
+      # read_system（M2-07 的运行时状态）只给了 read-only，没给 guest：
+      # JVM 与容器的指标不是业务数据（所以它不带任何表），但也不是"能读一张表"的人
+      # 都该看的运维信息——这两件事分在两个轴上是刻意的。
       # draft_script（M2-06 的生成器）反过来**只给了 admin**：提交一份草稿不等于能跑脚本
       # （run_script 是另一个动作），合成一个就等于让"能提议的人"顺手拿到了执行权。
       # 于是 read-only / guest 的 actions 里没有它，而 admin 的 "*" 含它。
       roles:
         read-only:
           tables: ["*"]
-          actions: ["read", "use_skill", "delegate_task"]
+          actions: ["read", "use_skill", "delegate_task", "read_system"]
         # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"
         guest:
           tables: ["region"]
