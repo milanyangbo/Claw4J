@@ -1,6 +1,10 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.model.RealModelSupport;
+import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.port.InboundMessage;
+import io.github.claw4j.domain.port.OutboundMessage;
+import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientRequest;
@@ -11,30 +15,77 @@ import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 import org.springframework.core.Ordered;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 把"流式路径会静默跳过 Advisor"这个坑钉死在测试里。
+ * 同一个保证要在<b>两条路径</b>上各成立一次：{@code reply} 与 {@code stream}。
  *
- * <p>Spring AI 的 Advisor 链是分路径取的：{@code BaseAdvisorChain} 给流式路径的是
- * {@code getStreamAdvisors()}，只认 {@code StreamAdvisor}。于是一个只实现
- * {@code CallAdvisor} 的 Advisor 在 {@code .stream()} 上**既不报错也不生效**——
- * 鉴权 Advisor 写成这样就等于流式路径完全裸奔，而且从日志上根本看不出来。
+ * <p>这份文件盯的就是这件事本身，两个层次：
+ * <ul>
+ *   <li><b>端口包装</b>（前两条）：会话标识透传、结尾块标记、流式确实分了块。
+ *       它们与模型说什么无关，所以断言不碰具体内容——真正的判据是
+ *       {@code chatId} / {@code finalChunk} / 分块数，措辞怎么变都不失效。
+ *   <li><b>Advisor 派发</b>（后两条）：Spring AI 的 Advisor 链是分路径取的，
+ *       {@code BaseAdvisorChain} 给流式路径的是 {@code getStreamAdvisors()}，
+ *       只认 {@code StreamAdvisor}。于是一个只实现 {@code CallAdvisor} 的 Advisor
+ *       在 {@code .stream()} 上<b>既不报错也不生效</b>——鉴权 Advisor 写成这样
+ *       等于流式路径完全裸奔，而日志上根本看不出来。
+ * </ul>
  *
  * <p>所以 ADR-0007 要求每个 Advisor 都双实现，并且由 {@code AgentArchitectureTest}
- * 里的 ArchUnit 规则在编译期拦住漏写的。这里的两条测试负责说明为什么要有那条规则。
+ * 里的 ArchUnit 规则在编译期拦住漏写的；这里的后两条负责说明为什么要有那条规则。
  *
- * <p><b>判据是"Advisor 被调用了几次"，不是"回答里有什么"。</b>
- * 换真模型之前（ADR-0011）这里断言的是回答里带一个标记串——那只有在模型是回声时才成立。
- * 真模型不会复述用户消息，所以改成数 Advisor 自己的调用次数：
- * 既不受措辞影响，也更直接地指向"这条路径有没有经过 Advisor"。
+ * <p><b>Advisor 那条的判据是"被调用了几次"，不是"回答里有什么"。</b>
+ * 换真模型之前（ADR-0011）断言的是回答里带一个标记串——那只有在模型是回声时才成立。
+ * 真模型不会复述用户消息，所以改成数 Advisor 自己的调用次数：既不受措辞影响，
+ * 也更直接地指向"这条路径有没有经过 Advisor"。
  */
-class AdvisorBothPathsTest {
+class SyncAndStreamTest {
 
     private static final String STAMP = "[ADVISOR-RAN]";
+
+    private final AgentPort port =
+            new ChatClientAgentPort(ChatClient.builder(RealModelSupport.chatModel()).build());
+
+    // ------------------------------------------------------------------ 端口包装
+
+    private static InboundMessage inbound(String text) {
+        return new InboundMessage(Principal.readOnly("u-1"), "session-1", text);
+    }
+
+    @Test
+    void 同步回答携带同一个会话标识() {
+        OutboundMessage out = RealModelSupport.eventually(2, "同步回答非空",
+                () -> port.reply(inbound("你好")));
+
+        assertThat(out.chatId()).isEqualTo("session-1");
+        assertThat(out.text()).isNotBlank();
+        assertThat(out.finalChunk()).isTrue();
+    }
+
+    @Test
+    void 流式回答逐块回调并以结尾块收尾() {
+        List<OutboundMessage> chunks = new ArrayList<>();
+
+        RealModelSupport.eventually(2, "流式回答非空", () -> {
+            chunks.clear();
+            port.stream(inbound("用一句话介绍自己"), chunks::add);
+            assertThat(chunks).isNotEmpty();
+            return null;
+        });
+
+        var last = chunks.get(chunks.size() - 1);
+        assertThat(last.finalChunk()).as("最后一块必须标记为结尾").isTrue();
+        assertThat(last.chatId()).isEqualTo("session-1");
+        assertThat(chunks.stream().map(OutboundMessage::text).reduce("", String::concat)).isNotBlank();
+        assertThat(chunks.size()).isGreaterThan(1);
+    }
+
+    // ---------------------------------------------------------------- Advisor 派发
 
     @Test
     void 双实现的Advisor在两条路径上都生效() {
