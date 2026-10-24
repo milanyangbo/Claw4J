@@ -6,9 +6,8 @@
 
 ## 按你现在要做什么，选一处读
 
-- **动手写代码** → `CODING_STANDARDS.md`：机器查不了的编码判断项（断言怎么立）。
-- **评审，或判断"这是缺陷还是已知状态"** → `docs/agents/guardrails.md`：
-  闸的清单、红线怎么改、**已知偏差的清单**。第二件事不做的话，已记账的偏差会被当成缺陷报出来。
+- **评审，或判断"这是缺陷还是已知状态"** → `docs/agents/guardrails.md`：**已知偏差的清单**
+  与改红线怎么走。不看它，已记账的偏差会被当成缺陷报出来。
 - **确认一个说法对不对** → `GLOSSARY.md`，再看 `docs/adr/`。
 
 ## Agent skills
@@ -24,12 +23,6 @@ Five canonical triage roles with the default vocabulary (`needs-triage`, `needs-
 ### Domain docs
 
 Single-context layout: one `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
-
-### Coding standards
-
-本仓库没有 CONTRIBUTING.md。`CODING_STANDARDS.md` 只收机器查不了的**编码**判断项；
-流程那两条（闸在哪、偏差怎么记账）不在那儿，在 `docs/agents/guardrails.md`。
-查得了的都在架构测试与源码扫描里，那里是它们的唯一来源，两份文档都不重复。
 
 ### ADR：碰到哪儿读哪条
 
