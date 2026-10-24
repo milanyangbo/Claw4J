@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.advisor;
 
+import io.github.claw4j.domain.principal.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
@@ -42,8 +43,14 @@ import java.util.Optional;
  */
 public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
 
-    /** Principal 在 Advisor 上下文里的键。由 {@code ChatClientAgentPort} 放入，本 Advisor 取出。 */
-    public static final String PRINCIPAL_CONTEXT_KEY = "claw4j.principal";
+    /**
+     * Principal 在 Advisor 上下文里的键。由 {@code ChatClientAgentPort} 放入，本 Advisor 取出。
+     *
+     * <p>取值来自 domain 的 {@link ContextKeys#PRINCIPAL}：工具回调里读的是同一个键
+     * （委派与脚本执行都发生在工具内部，那里没有 Advisor 上下文），两边各写一份常量的话，
+     * 漂移的表现是"工具侧读到 null、一律按没身份拒绝"。
+     */
+    public static final String PRINCIPAL_CONTEXT_KEY = ContextKeys.PRINCIPAL;
 
     /** 拒绝话术的统一前缀。测试靠它区分"明确的拒绝"与"查出来是空的"。 */
     public static final String DENIAL_PREFIX = "没有权限";

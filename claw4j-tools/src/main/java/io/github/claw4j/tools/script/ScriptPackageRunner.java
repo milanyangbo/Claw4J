@@ -5,7 +5,6 @@ import org.springaicommunity.agent.common.exec.ExecResult;
 import org.springaicommunity.agent.common.exec.ExecSpec;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,11 +40,13 @@ public final class ScriptPackageRunner {
 
     private static final String EMPTY_OUTPUT = "（脚本没有输出）";
 
-    private final Map<String, ScriptPackage> packages;
+    private final Map<String, ScriptPackage> packages = new LinkedHashMap<>();
 
-    private final Map<String, ExecBackend> backends;
+    private final Map<String, ExecBackend> backends = new LinkedHashMap<>();
 
     private final SandboxPolicy policy;
+
+    private final ExecBackendFactory factory;
 
     public ScriptPackageRunner(List<ScriptPackage> packages) {
         this(packages, ExecBackendFactory.SANDBOXED);
@@ -61,21 +62,32 @@ public final class ScriptPackageRunner {
     public ScriptPackageRunner(List<ScriptPackage> packages, ExecBackendFactory factory, SandboxPolicy policy) {
         Objects.requireNonNull(packages, "packages");
         this.policy = Objects.requireNonNull(policy, "policy");
-        Map<String, ScriptPackage> byName = new LinkedHashMap<>();
-        Map<String, ExecBackend> backends = new LinkedHashMap<>();
+        this.factory = Objects.requireNonNull(factory, "factory");
         for (ScriptPackage pkg : packages) {
-            Objects.requireNonNull(pkg, "pkg");
-            if (byName.put(pkg.name(), pkg) != null) {
-                throw new IllegalStateException("两个脚本包叫同一个名字 " + pkg.name()
-                        + "：同名工具会让模型分不清该调哪个，这里不去重而是直接失败");
-            }
-            backends.put(pkg.name(), Objects.requireNonNull(factory, "factory").forPackage(pkg));
+            register(pkg);
         }
-        this.packages = Map.copyOf(byName);
-        this.backends = Map.copyOf(backends);
     }
 
-    public List<String> names() {
+    /**
+     * 运行时再加一个包：人审通过之后才轮到它（06 号票的第五步）。
+     *
+     * <p>为什么要能后加：脚本包的清单原本是启动时从目录读出来的，而"生成 → 人审 → 注册"
+     * 发生在应用已经跑起来之后。硬要它出现在清单里只有两条路——重启进程，
+     * 或者让清单可以被追加；前者把"人点了一下通过"变成一次发布，后者只是给清单一个入口。
+     *
+     * <p><b>重名仍然直接失败</b>，跟构造时一个口径：两个叫同一个名字的工具会让模型
+     * 分不清该调哪个，这里不去重也不覆盖——覆盖的话"人审通过的是这一版"就说不清了。
+     */
+    public synchronized void register(ScriptPackage pkg) {
+        Objects.requireNonNull(pkg, "pkg");
+        if (packages.putIfAbsent(pkg.name(), pkg) != null) {
+            throw new IllegalStateException("已经有一个叫 " + pkg.name() + " 的脚本包："
+                    + "同名工具会让模型分不清该调哪个，这里不去重而是直接失败");
+        }
+        backends.put(pkg.name(), factory.forPackage(pkg));
+    }
+
+    public synchronized List<String> names() {
         return List.copyOf(packages.keySet());
     }
 
@@ -159,7 +171,7 @@ public final class ScriptPackageRunner {
     }
 
     /** 给日志与装配断言：这些包各自会在哪个目录里跑。 */
-    public List<ScriptPackage> packages() {
-        return new ArrayList<>(packages.values());
+    public synchronized List<ScriptPackage> packages() {
+        return List.copyOf(packages.values());
     }
 }

@@ -45,15 +45,32 @@ public final class ScriptPackageToolCallback implements ToolCallback {
 
     private static final String ARGUMENT = "argument";
 
+    /** 判定结果的机器可读取值，审计回放时用。 */
+    private static final String OUTCOME_OK = "ok";
+
+    private static final String OUTCOME_NON_ZERO = "non-zero";
+
+    private static final String OUTCOME_REJECTED = "rejected";
+
+    private static final String OUTCOME_FAILED = "failed";
+
     private final ScriptPackage pkg;
 
     private final ScriptPackageRunner runner;
 
+    private final ScriptExecutionListener listener;
+
     private final ToolDefinition definition;
 
     public ScriptPackageToolCallback(ScriptPackage pkg, ScriptPackageRunner runner) {
+        this(pkg, runner, ScriptExecutionListener.NO_OP);
+    }
+
+    public ScriptPackageToolCallback(ScriptPackage pkg, ScriptPackageRunner runner,
+                                     ScriptExecutionListener listener) {
         this.pkg = Objects.requireNonNull(pkg, "pkg");
         this.runner = Objects.requireNonNull(runner, "runner");
+        this.listener = Objects.requireNonNull(listener, "listener");
         this.definition = ToolDefinition.builder()
                 .name(pkg.name())
                 .description(pkg.description())
@@ -71,16 +88,34 @@ public final class ScriptPackageToolCallback implements ToolCallback {
         return call(toolInput, null);
     }
 
+    /**
+     * 三种结局都留一条痕：成功、被沙箱拦下、跑了但没跑出结果。
+     *
+     * <p><b>被拦下也要记</b>，而且要在抛出之前记。留痕的意义是"回放时看得到有人试过"，
+     * 只记成功的那种审计回答不了"谁在用它捅边界"——而那正是这类记录唯一会被翻出来的场景。
+     */
     @Override
     public String call(String toolInput, ToolContext toolContext) {
         try {
             String argument = argumentOf(toolInput);
-            return runner.run(pkg.name(), argument == null ? List.of() : List.of(argument));
+            String output = runner.run(pkg.name(), argument == null ? List.of() : List.of(argument));
+            listener.executed(pkg.name(), toolContext, OUTCOME_OK, output);
+            return output;
+        }
+        catch (SandboxViolationException rejected) {
+            listener.executed(pkg.name(), toolContext, OUTCOME_REJECTED, rejected.getMessage());
+            throw new ToolExecutionException(definition, rejected);
+        }
+        catch (ScriptExecutionException nonZero) {
+            listener.executed(pkg.name(), toolContext, OUTCOME_NON_ZERO, nonZero.getMessage());
+            throw new ToolExecutionException(definition, nonZero);
         }
         catch (ToolExecutionException failure) {
+            listener.executed(pkg.name(), toolContext, OUTCOME_FAILED, failure.getMessage());
             throw failure;
         }
         catch (RuntimeException failure) {
+            listener.executed(pkg.name(), toolContext, OUTCOME_FAILED, failure.getMessage());
             throw new ToolExecutionException(definition, failure);
         }
     }

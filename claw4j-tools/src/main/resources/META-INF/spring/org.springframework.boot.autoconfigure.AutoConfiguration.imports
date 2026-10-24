@@ -2,3 +2,4 @@ io.github.claw4j.tools.ToolsAutoConfiguration
 io.github.claw4j.tools.mcp.McpToolAutoConfiguration
 io.github.claw4j.tools.script.ScriptPackageAutoConfiguration
 io.github.claw4j.tools.skill.SkillToolAutoConfiguration
+io.github.claw4j.tools.generator.GeneratorAutoConfiguration

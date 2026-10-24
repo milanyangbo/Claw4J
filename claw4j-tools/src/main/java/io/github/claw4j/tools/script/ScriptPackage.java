@@ -60,6 +60,17 @@ public record ScriptPackage(String name, Path root, String entrypoint, String de
         SandboxPolicy.defaults().requireTimeoutWithinCap(timeoutMillis);
     }
 
+    /**
+     * 名字是否合规格。
+     *
+     * <p>放在这里而不是让调用方各写一份正则，是因为"模型产出的包名"也要过同一道校验
+     * （06 号票的生成器）：包名会原样发给模型供应商当函数名，
+     * 两处校验不一致的表现是"生成时看着没问题、注册时启动失败"。
+     */
+    public static boolean isValidName(String name) {
+        return name != null && NAME_PATTERN.matcher(name).matches();
+    }
+
     public static ScriptPackage of(String name, Path root, String description) {
         return new ScriptPackage(name, root, DEFAULT_ENTRYPOINT, description, DEFAULT_TIMEOUT_MILLIS);
     }
