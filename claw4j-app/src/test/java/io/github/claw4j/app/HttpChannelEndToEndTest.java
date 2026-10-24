@@ -12,9 +12,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -24,12 +24,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * MockMvc 测不出这件事。这里从通道接缝进（HTTP 请求）、从通道接缝出（HTTP 响应），
  * 中间经过完整的 agent 与模型装配，是唯一一条覆盖全链路的测试。
  *
- * <p>模型强制 mock：CI 上没有 API key，也不该为了跑测试烧 token（ADR-0006）。
+ * <p>模型是真 DeepSeek（ADR-0011），库也是真的（app 侧由 {@code compose.yaml} 提供）。
+ * 所以断言可以钉到"回答里有没有库里那个数"上——比"回答非空"强得多，
+ * 后者无论中间哪一环断了（模型没调工具、SQL 报错、通道丢了内容）都照样绿。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class HttpChannelEndToEndTest {
 
     private static final String QUESTION = "上周华东区成交额多少";
+
+    /**
+     * 种子里华东区上周就是 128400 = 54000 + 74400。真模型会自己决定要不要加千分位、
+     * 带不带小数，所以按这几种写法匹配，而不是钉死一种措辞。
+     */
+    private static final Pattern EAST_AMOUNT = Pattern.compile("128,?400(\\.\\d+)?");
 
     @LocalServerPort
     private int port;
@@ -44,9 +52,10 @@ class HttpChannelEndToEndTest {
 
         assertEquals(200, response.statusCode());
         // 换真模型之后（ADR-0011）不能再断言"回答里回着问题原话"——那是回声模型才有的行为。
-        // 真模型的回答是它自己写的，所以这里钉的是"这一趟真的走到了模型并拿到了非空回答"。
+        // 但也不能退到"回答非空"：那等于没有判据，中间哪一环断了都照样绿。
+        // 真模型是自己去查库才拿得到这个数的，所以它同时证明模型、工具、SQL、通道都在。
         String body = text(response);
-        assertFalse(body.isBlank(), "回答不该是空的，实际：" + body);
+        assertMentionsEast(body);
     }
 
     @Test
@@ -69,7 +78,7 @@ class HttpChannelEndToEndTest {
         List<String> chunks = events.stream().filter(event -> "chunk".equals(event.name())).map(SseEvent::data).toList();
         assertTrue(chunks.size() > 1,
                 "必须收到多块；只有一块说明流式被降级成了一次性响应，实际块数：" + chunks.size());
-        assertFalse(String.join("", chunks).isBlank(), "分块拼回来不该是空的，实际：" + chunks);
+        assertMentionsEast(String.join("", chunks));
         assertEquals("done", events.get(events.size() - 1).name(), "最后一个事件必须是 done，否则客户端不知道什么时候停");
     }
 
@@ -83,16 +92,33 @@ class HttpChannelEndToEndTest {
                 .reduce("", String::concat);
 
         // 真模型不保证两条路径逐字一致（温度 0 只是压低随机，不是消除），
-        // 所以这条从"内容相同"放宽成"两条路都拿到了回答"——
-        // 它要抓的是某一条路径根本没走通，不是措辞差异。
-        assertFalse(sync.isBlank(), "同步路径没拿到回答");
-        assertFalse(streamed.isBlank(), "流式路径没拿到回答");
+        // 所以这条不再比对原文，而是"两条路都查到了那个数"——
+        // 它要抓的是某一条路径根本没走通（流式把内容丢了、同步少跑了一环），
+        // 而不是措辞差异。只断言"都非空"抓不到这个：空串之外的任何东西都会让它绿。
+        assertMentionsEast(sync);
+        assertMentionsEast(streamed);
     }
 
+    private static void assertMentionsEast(String answer) {
+        assertTrue(EAST_AMOUNT.matcher(answer).find(),
+                "回答里应当出现华东区上周成交额 128400（真查库才拿得到），实际是：" + answer);
+    }
+
+    /**
+     * 每条用例换一个用户，并显式带角色头。两个理由，都是换真模型之后才暴露的：
+     *
+     * <p>一是**会话会污染下一条**。会话落库，而 app 这一侧用的是常驻库，
+     * 固定用户下一次跑就会读到上一次的问答。假模型时代看不出来（它不看历史）；
+     * 真模型会，且它会顺着历史里的"没权限"继续答"没权限"——于是"能查到数"那条绿不了。
+     *
+     * <p>二是**默认角色是 read-only 而不是 admin**。这里要的是"真的查得到那个数"，
+     * 所以把角色显式写出来，别让断言的含义取决于 yml 里的默认值。
+     */
     private HttpRequest ask(String path) {
         return HttpRequest.newBuilder(uri(path))
                 .header("Content-Type", "application/json")
-                .header("X-Claw4j-User", "e2e-tester")
+                .header("X-Claw4j-User", "e2e-" + System.nanoTime())
+                .header("X-Claw4j-Role", "admin")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"text\":\"" + QUESTION + "\"}"))
                 .build();
     }

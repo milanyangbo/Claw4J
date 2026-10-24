@@ -141,5 +141,9 @@ M1-07 用真实 key + 真库把两家各跑了一遍。**两个 bug 都只在真
 直接反问口径的表现。这不改决策——降级只在"主失败"时发生，不在"主答得不好"时发生，
 但它意味着降级后的回答要能被看出"没拿到数"，而不是编一个像样的数字。
 
-**真实调用怎么隔离**：`RealModelIT` 以 IT 结尾（surefire 默认不收），只在 `-Preal-model` 下跑，
-主模型由 `CLAW4J_MODEL_PRIMARY` 决定，与运行时同一个开关。它不进 CI（ADR-0008）。
+**真实调用怎么隔离**：~~`RealModelIT` 以 IT 结尾（surefire 默认不收），只在 `-Preal-model` 下跑，
+主模型由 `CLAW4J_MODEL_PRIMARY` 决定，与运行时同一个开关。它不进 CI（ADR-0008）。~~
+
+> **2026-10-24 取代**：隔离已取消。ADR-0011 之后回归基线本身就是真模型，
+> `RealModelIT` 改名 `RealModelTest` 进常规回归，`-Preal-model` profile 一并删除。
+> 仍然有效的是"主模型由 `CLAW4J_MODEL_PRIMARY` 决定，与运行时同一个开关"这一句。

@@ -85,30 +85,10 @@
 
     <profiles>
         <!--
-          真实模型联调。默认不开，因为它烧 token、依赖外网、还要本机 docker compose 起来的库。
-          回归基线是 mock 那批测试（ADR-0006、ADR-0008）：它们不烧钱也不会因为供应商抖动而红。
-          用法：docker compose up -d && ./mvnw -Preal-model verify
+          真实模型联调曾经隔离在这个 profile 里（ADR-0006、ADR-0008），
+          ADR-0011 之后回归基线本身就是真模型，隔离的理由消失，profile 一并去掉。
+          现在唯一的 profile 是飞书通道。
         -->
-        <profile>
-            <id>real-model</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-surefire-plugin</artifactId>
-                        <configuration>
-                            <!-- 只跑 IT：这一趟不看回归基线，只证明"真实供应商接得上" -->
-                            <includes>
-                                <include>**/*IT.java</include>
-                            </includes>
-                            <excludes>
-                                <exclude>**/*Test.java</exclude>
-                            </excludes>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
 
         <!--
           飞书 SDK 在 claw4j-channel 里是 optional，不会传递到这里。

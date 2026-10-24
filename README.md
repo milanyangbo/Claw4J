@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 175 个测试（连真实 DeepSeek）
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 179 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -137,22 +137,27 @@ CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 ./mvnw verify
 
 ### 要真实模型
 
-配好 key 起应用即可，见下一节。想让机器把真实闭环跑一遍（而不是自己 curl）：
+配好 key 起应用即可，见下一节。回归基线**本身**就是真模型（ADR-0011），所以没有单独的
+"真实模型那一趟"要开：`./mvnw verify` 打的就是真实 DeepSeek。
 
 ```bash
-docker compose up -d           # 真实模型那条链路要真库：工具要查得到数
-set -a && . ./.env && set +a   # 把 key 导进当前 shell（.env 已被 git 忽略）
-./mvnw -Preal-model verify     # 只跑 *IT.java，烧 token，默认不跑
-CLAW4J_MODEL_PRIMARY=qwen ./mvnw -Preal-model verify   # 换另一家当主模型
+set -a && . ./.env && set +a   # 把 key 导进当前 shell（Maven 不读 .env）
+./mvnw verify
+CLAW4J_MODEL_PRIMARY=qwen ./mvnw verify   # 换另一家当主模型
 ```
 
-回归基线是那 175 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+app 模块那几条（含 `RealModelTest`）需要真库：本机由 `spring-boot-docker-compose` 按
+`compose.yaml` 自动起，不用手动 `docker compose up -d`。其余模块用 Testcontainers。
+
+回归基线是那 179 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
 烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
 关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
 M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
 
-`RealModelIT` 仍留在 `-Preal-model` 里：它需要本机 `docker compose` 起的常驻库，
-不是 Testcontainers 能临时拉起来的那种。
+`RealModelIT` 曾经隔离在 `-Preal-model` 里（那时回归基线是假模型），ADR-0011 之后
+隔离的理由消失，已改名 `RealModelTest` 并进常规回归——留着它就等于留一条
+"日常跑不到、想起来才跑"的裂缝。它多覆盖的是**完整装配**这一层（app 的 yml、
+真 Flyway 迁移、fat-jar 级接线），与 agent 侧模块级那批断的东西不同。
 
 ## key 怎么配
 

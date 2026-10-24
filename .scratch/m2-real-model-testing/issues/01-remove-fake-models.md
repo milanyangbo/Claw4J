@@ -10,23 +10,23 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** closed
 
 **Demo:** 拔掉网线和 API key 之外，随便跑一次 `./mvnw verify`——
 销售额问答、工具调用、会话记忆这三类测试打的都是真实 DeepSeek（启动日志写明用的是哪家），
 断言落在"拿到库里那个数 / 没权限时拿不到数"上；把 `DEEPSEEK_API_KEY` 从环境里去掉再跑，
 这些测试**红**并写明"需要 DEEPSEEK_API_KEY"，而不是安静地跳过。
 
-- [ ] 删除 `MockChatModel`（agent/main）与 `ScriptedChatModel`（agent/test）及其自身测试；
+- [x] 删除 `MockChatModel`（agent/main）与 `ScriptedChatModel`（agent/test）及其自身测试；
       连带删掉 `claw4j.model.mock` 三态与 `-Preal-model` profile
-- [ ] 新增真模型测试支撑：真实 `ModelConfiguration` 装配 + 温度 `0.0` + 有限重试（最多 2 次，打日志）
-- [ ] 端到端那批（销售额问答、工具调用、会话记忆、装配可见清单）改真模型 + 真库，断言方向性
-- [ ] 组件级那批（调用预算、鉴权计数、脱敏）改为不经过模型：真实 `ToolCallingManager` /
+- [x] 新增真模型测试支撑：真实 `ModelConfiguration` 装配 + 温度 `0.0` + 有限重试（最多 2 次，打日志）
+- [x] 端到端那批（销售额问答、工具调用、会话记忆、装配可见清单）改真模型 + 真库，断言方向性
+- [x] 组件级那批（调用预算、鉴权计数、脱敏）改为不经过模型：真实 `ToolCallingManager` /
       真实 Advisor / 计数执行器，工具调用指令由测试构造
-- [ ] `RealModelIT` 并入常规测试（去掉 `IT` 后缀与 profile 隔离），断言风格沿用其方向性写法
-- [ ] CI 接 `secrets.DEEPSEEK_API_KEY`；没有 key 时测试 **failure** 而不是 skip
-- [ ] `scripts/assert-no-skipped-tests.sh` 仍报 `skipped=0`，总数基线同步更新
-- [ ] README / GLOSSARY 里"全部 mock 模型调用"的说法同步改掉
+- [x] `RealModelIT` 并入常规测试（去掉 `IT` 后缀与 profile 隔离），断言风格沿用其方向性写法
+- [x] CI 接 `secrets.DEEPSEEK_API_KEY`；没有 key 时测试 **failure** 而不是 skip
+- [x] `scripts/assert-no-skipped-tests.sh` 仍报 `skipped=0`，总数基线同步更新
+- [x] README / GLOSSARY 里"全部 mock 模型调用"的说法同步改掉
 
 **注意:**
 
@@ -57,9 +57,10 @@
 
 ## Answer
 
-**175 个测试全绿、skipped 0**（`set -a; . ./.env; set +a; ./mvnw clean verify -Dclaw4j.dbTests=required`，
-再跑 `./scripts/assert-no-skipped-tests.sh`）。比原来的 183 少 8 条：删掉的是假模型自身的测试，
-以及几条在真模型下不再成立、又无法用别的方式表达的断言。
+**179 个测试全绿、skipped 0**（`set -a; . ./.env; set +a; ./mvnw clean verify -Dclaw4j.dbTests=required`，
+再跑 `./scripts/assert-no-skipped-tests.sh`）。比原来的 183 少 8 条、比第一版收尾时的 175 多 4 条：
+删掉的是假模型自身的测试与几条在真模型下不再成立、又无法用别的方式表达的断言；
+多出来的 4 条是 `RealModelIT` 并进常规回归带来的。
 
 ### 一、删了什么
 
@@ -72,6 +73,13 @@
 没 key 现在是**启动失败**（`RealChatModelCondition` 一家都没有时让装配方法 fail fast），
 不再是"降级到回声模型"。顺带把 `RoutingModelConfiguration` 上 `before = MockModelConfiguration`
 那个排序约束一起拆了。
+
+`RealModelIT` → `RealModelTest`：去掉 IT 后缀与 `claw4j-app/pom.xml` 里的 `real-model` profile，
+4 条用例进常规回归。**ADR-0011 明确否决过"真模型只跑 IT、profile 隔离"**——回归基线本身就是
+真模型之后，留着那个隔离等于留一条"日常跑不到、想起来才跑"的裂缝。
+它多覆盖的是**完整装配**这一层（app 的 yml、真 Flyway 迁移、fat-jar 级接线），
+与 agent 侧模块级那批断的东西不同：app 这层断了（迁移没跑、某个自动配置在完整装配下不生效），
+agent 那些测试一条都不会红。库的来源没变（本机由 `spring-boot-docker-compose` 按 `compose.yaml` 起）。
 
 ### 二、能端到端的改成真模型，改不了的降级为组件级
 
@@ -116,8 +124,37 @@ HTTP 鉴权 3 条、降级 2 条。
 | 去掉入站脱敏（`PiiRedactor.mask`） | 会话脱敏那条红 |
 | `ToolCallBudget` 去掉 `maxTotalToolCalls` | 预算 2 条红（第 7 次调用真的发生了） |
 | `AuthorizationAdvisor.denialFor` 一律放行 | 鉴权 5 条红（计数抓到"工具真的跑了"） |
+| 把端到端断言换成永真（"回答非空"） | **真做过一次，不是设想**：见下面第六条 |
+| 脱敏 `ORDER` 挪到工具循环内（改成 0） | 会话那 7 条**仍绿**；只有 `PiiRedactionAdvisorTest.order排在工具循环外面` 红。与票面预期不同，原因见下 |
 
-### 六、留给后面
+**"脱敏 order"这条变异为什么不红了——这是入站脱敏带来的防线前移，不是约束失效。**
+票面写这条时，会话里存的是原文还是掩码，唯一决定因素是"脱敏比记忆先收尾"（order 约束）；
+加了入站脱敏之后，用户消息在交给链之前就已经是掩码，于是 order 从**唯一防线**降级为
+**第二道防线**：动它，会话那 7 条不再红，但仍有一条专门钉着 order 的单测红。
+两道防线都在，坏法不同——去掉入站脱敏会红（主防线），挪 order 也会红（副防线，由单测盯着）。
+这个变化要记账，否则将来有人看到"挪 order 不红"会误以为那条约束已经没人管了。
+
+### 六、收尾：我自己写的永真断言，当场掩盖了一个真问题
+
+票面第一条变异检验是"把端到端断言换成永真（只断言回答非空）→ 需换成能证伪的对照断言"。
+第一轮收尾时我**真的这么写了**：`HttpChannelEndToEndTest` 三条断言全改成了
+`assertFalse(body.isBlank())`，理由是"真模型不会复述原话"。补做这条变异检验时（就是把断言
+从非空改回"回答里有没有那个数"）立刻红 3 条，而红的原因是真问题，不是措辞：
+
+- **这个测试一直在用没权限的默认账号**。它只发 `X-Claw4j-User`、不带角色头，
+  落到 `defaultRole = read-only`；而它问的是成交额。假模型时代这条测试是回声，
+  从来没真查过库，所以"有没有权限"这件事一直没人问过。
+- **它还在用固定用户名**，而 app 这一侧用的是**常驻库**、会话落库——上一次跑留下的
+  "没权限"对话会被真模型读进去，于是它顺着历史继续答"没权限"。
+
+改成"每条用例换一个用户 + 显式带 `X-Claw4j-Role: admin`"之后拿到数，绿。
+
+值得单独记一笔的是**因果顺序**：先有永真断言（"非空"），才有"这个测试其实一直没查到数"
+这件事能被藏住。换真模型不会自动改善判据——断言放宽得比模型更狠的话，
+真模型带来的那点真实性会被原样吃掉。这条与 ADR-0011 里"断言只写方向性"不冲突：
+方向性是"不钉死措辞"，不是"不钉结果"。
+
+### 七、留给后面
 
 - CI 需要配 `secrets.DEEPSEEK_API_KEY`（workflow 已接上）；没配就是红，不是跳过
 - 温度 0 只是压低随机、不是消除：`ModelSelectionTest` 有一条钉着这个默认值

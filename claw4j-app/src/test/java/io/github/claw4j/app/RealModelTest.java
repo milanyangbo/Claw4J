@@ -17,19 +17,20 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 真实模型的闭环证明：**默认不跑**，只在 {@code -Preal-model} 下跑（ADR-0006、ADR-0008）。
+ * 完整应用装配（app 模块那套接线）上的真实模型闭环。
  *
- * <p>它为什么不是普通的 {@code *Test}：这类用例烧 token、依赖外网、还依赖本机
- * {@code docker compose up} 起来的库，三条里断任何一条都会红。放进回归基线，
- * 基线就从"改坏了会红"变成"供应商抖一下也会红"，人很快学会无视它——那等于没有基线。
- * 所以类名以 IT 结尾（surefire 默认不收），只有 profile 把 includes 打开时才跑。
+ * <p>它为什么曾经叫 {@code RealModelIT}、只在 {@code -Preal-model} 下跑：那时候回归基线
+ * 全是假模型，真模型那趟烧 token、依赖外网、还依赖 {@code docker compose up} 起来的库，
+ * 断一条就红，所以被隔离出日常回归。ADR-0011 之后**回归基线本身就是真模型**，
+ * 这个隔离的理由就不成立了——留着它等于留一条"日常跑不到、想起来才跑"的裂缝，
+ * 于是并回常规测试，去掉 IT 后缀与 profile。
  *
- * <p>它证明的是前六张票没覆盖的那一层：脚本化假模型把工具调用、鉴权、脱敏、会话都验过了，
- * 但"真实供应商真的会按工具描述去调 {@code querySales}、真的算得出那个数"只有真跑一遍才知道。
- * 07 号票里两个 bug（降级丢工具、内部重试把降级拖成分钟级）都是这么发现的——
- * 它们在任何一张假模型的测试里都不会红。
+ * <p>它比 agent 侧那批真模型测试多覆盖的一层是**完整装配**：这里跑的是 app 的
+ * {@code application.yml}、真的 Flyway 迁移、真的 fat-jar 级接线，而不是模块级装配。
+ * 场景看着与 agent 侧重复，但断的东西不同——app 这一层断了（迁移没跑、某个自动配置
+ * 在完整装配下不生效），agent 侧那些测试一条都不会红。
  *
- * <p>入口选 {@code AgentPort} 而不是 HTTP：HTTP 与 SSE 那层由 mock 模型的测试覆盖，
+ * <p>入口选 {@code AgentPort} 而不是 HTTP：HTTP 与 SSE 那层另有端到端测试覆盖，
  * 这一趟唯一 expensive 的部分是真实模型，没必要再叠一层传输。
  *
  * <p>断言刻意写得宽松：数字可能写成"128,400.00"也可能写成"128400"，前后还会有解释性文字。
@@ -41,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         // 主模型走运行时同一个开关：CLAW4J_MODEL_PRIMARY=qwen 就能用另一家跑同一批断言
         "claw4j.model.primary=${CLAW4J_MODEL_PRIMARY:deepseek}"
 })
-class RealModelIT {
+class RealModelTest {
 
     /** 上周华东区成交额，种子里就是 128400 = 54000 + 74400。 */
     private static final String[] EAST = {"128,400.00", "128400.00", "128400"};
