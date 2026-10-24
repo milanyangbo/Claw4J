@@ -25,6 +25,6 @@ fi
 
 # NoHandBuiltShellCommandTest 要显式列出来：它的名字不以 ArchitectureTest 结尾，
 # 光靠 '*ArchitectureTest' 匹配不到——它是源码扫描，不是架构规则，名字就该不一样。
-exec ./mvnw -B -ntp -pl claw4j-domain,claw4j-agent,claw4j-channel,claw4j-tools,claw4j-app test \
+exec ./mvnw -B -ntp -pl claw4j-domain,claw4j-agent,claw4j-channel,claw4j-capability,claw4j-app test \
     -Dtest='*ArchitectureTest,NoHandBuiltShellCommandTest' \
     -Dsurefire.failIfNoSpecifiedTests=false

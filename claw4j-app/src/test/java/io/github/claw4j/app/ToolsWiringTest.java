@@ -1,7 +1,7 @@
 package io.github.claw4j.app;
 
-import io.github.claw4j.tools.sales.JdbcReadOnlySqlExecutor;
-import io.github.claw4j.tools.sales.ReadOnlySqlExecutor;
+import io.github.claw4j.capability.builtin.sales.JdbcReadOnlySqlExecutor;
+import io.github.claw4j.capability.builtin.sales.ReadOnlySqlExecutor;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;

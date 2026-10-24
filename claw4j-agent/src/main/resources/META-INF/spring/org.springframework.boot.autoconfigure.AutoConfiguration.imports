@@ -1,5 +1,5 @@
-io.github.claw4j.agent.ModelConfiguration
-io.github.claw4j.agent.RoutingModelConfiguration
+io.github.claw4j.agent.model.ModelConfiguration
+io.github.claw4j.agent.model.RoutingModelConfiguration
 io.github.claw4j.agent.AgentAutoConfiguration
 io.github.claw4j.agent.subagent.SubagentAutoConfiguration
 io.github.claw4j.agent.session.SessionMemoryConfiguration

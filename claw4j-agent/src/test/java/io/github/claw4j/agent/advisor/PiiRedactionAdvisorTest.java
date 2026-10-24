@@ -12,6 +12,7 @@ import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientRequest;
@@ -247,5 +248,59 @@ class PiiRedactionAdvisorTest {
         assertThat(messages).isNotEmpty();
         assertThat(messages).noneMatch(m -> m.contains(PHONE) || m.contains(ID_CARD));
         assertThat(messages).anyMatch(m -> m.contains(MASKED_PHONE));
+    }
+
+    // ------------------------------------------------------------------ 脱敏规则本身
+
+    @Test
+    @DisplayName("掩码形状：手机号留头三尾四，身份证留头六尾四，末位 X 同样命中")
+    void 掩码形状() {
+        assertThat(PiiRedactor.mask("联系他：" + PHONE + "。")).isEqualTo("联系他：" + MASKED_PHONE + "。");
+        assertThat(PiiRedactor.mask("证件号 " + ID_CARD + " 已核验")).isEqualTo("证件号 " + MASKED_ID_CARD + " 已核验");
+        assertThat(PiiRedactor.mask(ID_CARD.substring(0, 17) + "X")).isEqualTo("110101********123X");
+    }
+
+    /** 打码打错地方比不打更糟，因为它看着像真数据。 */
+    @Test
+    @DisplayName("金额与订单号不被误伤；没有号码时原文照旧")
+    void 不误伤普通数字() {
+        String text = "上周成交额 128400.00 元，订单 202401010001 号";
+
+        assertThat(PiiRedactor.mask(text)).isEqualTo(text);
+        assertThat(PiiRedactor.countHits(text)).isZero();
+    }
+
+    /**
+     * 流式安全吐出的边界：末尾还在"数字或 X"里就扣着；出现别的字符说明号码收尾了，可以放行。
+     * 号码后面还没出现别的字符时也要扣——还可能有下一位没送来。放行会把整个号码漏出去，两边不对称。
+     */
+    @Test
+    @DisplayName("流式安全前缀：没吐完扣住，收尾后放行，末尾继续扣住")
+    void 流式安全前缀() {
+        assertThat(PiiRedactor.safePrefix("138123")).isEmpty();
+        assertThat(PiiRedactor.safePrefix("手机 138123")).isEqualTo("手机 ");
+        assertThat(PiiRedactor.safePrefix("手机 " + PHONE + "。")).isEqualTo("手机 " + PHONE + "。");
+        assertThat(PiiRedactor.safePrefix("手机 " + PHONE)).isEqualTo("手机 ");
+    }
+
+    /** 一个号码被切成任意两块，逐块扣住再吐，结果必须与一次性脱敏整段完全相同。 */
+    @Test
+    @DisplayName("任意切分后拼接的结果与整体脱敏一致")
+    void 任意切分结果一致() {
+        String text = "联系他：" + PHONE + "，证件 " + ID_CARD + "。";
+
+        for (int cut = 1; cut < text.length(); cut++) {
+            StringBuilder streamed = new StringBuilder();
+            StringBuilder pending = new StringBuilder();
+            for (String piece : new String[] { text.substring(0, cut), text.substring(cut) }) {
+                pending.append(piece);
+                String safe = PiiRedactor.safePrefix(pending.toString());
+                pending.delete(0, safe.length());
+                streamed.append(PiiRedactor.mask(safe));
+            }
+            streamed.append(PiiRedactor.mask(pending.toString()));
+
+            assertThat(streamed.toString()).as("在第 %d 个字处切断", cut).isEqualTo(PiiRedactor.mask(text));
+        }
     }
 }

@@ -36,7 +36,7 @@
 | `claw4j-domain` | 领域模型与端口。**零框架依赖**，是唯一被承诺能脱离框架复用的模块 |
 | `claw4j-agent` | ChatClient 装配、模型选择、Advisor 链。不认识任何通道 |
 | `claw4j-channel` | 入站出站适配：HTTP+SSE（M0）、飞书长连接（M2）、A2A（M3）。按平台分包，不按平台分模块 |
-| `claw4j-tools` | 三层能力里的工具层 |
+| `claw4j-capability` | 三层能力里的工具层 |
 | `claw4j-app` | 启动与装配，唯一打 fat jar 的模块 |
 | `legacy/` | 1.x 冻结代码，**不参与构建** |
 
@@ -47,7 +47,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./scripts/verify-local.sh            # 一条命令：构建 + 架构检查 + 391 个测试（连真实 DeepSeek）
+./scripts/verify-local.sh            # 一条命令：构建 + 架构检查 + 246 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -101,7 +101,7 @@ CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 \
 不给测试复用常驻库，是因为常驻库会串数据：一个测试写进去的东西让下一个测试变红或变绿，
 排查时看到的是"刚才明明能跑"。一次性实例慢一些，但每次都是确定的。
 
-业务 schema 与种子在 `claw4j-tools/src/main/resources/db/migration/`（`V1` 建表、`V2` 放种子、`V3` 会话表），
+业务 schema 与种子在 `claw4j-capability/src/main/resources/db/migration/`（`V1` 建表、`V2` 放种子、`V3` 会话表），
 由 Flyway 执行。**改字段是加一个 `V4__xxx.sql`，不要回头改已提交的版本** —— 本地常驻库已经记过账了，
 改历史版本会让它的校验和不匹配，而删库重建正是这套迁移要替你免掉的事。
 
@@ -109,7 +109,7 @@ CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 \
 是因为 Boot 4 把 Flyway 的自动配置拆成了独立 artifact：只有 `flyway-core` 在 classpath 上时，
 `spring.flyway.enabled=true` 是一句**没有任何东西在执行**的配置——不报错、不警告、日志里不出现
 Flyway 三个字，只是表一直不建，而业务侧报的是"连不上库"，看的人会去查网络（07 号票第一次
-真实联调就是这么挂的）。所以要显式引 `spring-boot-flyway`，它跟着迁移脚本一起放在 tools 模块。
+真实联调就是这么挂的）。所以要显式引 `spring-boot-flyway`，它跟着迁移脚本一起放在 capability 模块。
 
 种子里的日期是相对的（按"本周一"推算），所以**每次重建的库**里，"上周"永远落在同一批订单上。
 注意这个"相对"只在迁移那一刻求值：常驻的本地库建好之后，它里面的"上周"是**建库那天**的上周，
@@ -155,7 +155,7 @@ app 模块那几条（含 `RealModelTest`）需要真库：本机由 `spring-boo
 （`RealModelSupport`），刻意不跟着这个开关走——它们要的是"同一家、温度 0"的确定性，
 换厂商该由 `RealModelTest`（走完整 `application.yml`）来验，而不是让每条端到端都变成多厂商矩阵。
 
-回归基线是那 391 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+回归基线是那 246 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
 烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
 关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
 M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
@@ -430,7 +430,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 **Subagent**（M2-05，派出去跑、只回结论），再加上 **Skill Generator**（M2-06，
 模型产出的脚本要走完五步才轮到人）。它们各自在下面有一节。
 
-MCP 这一层的连接生命周期由 `claw4j-tools` 的 `io.github.claw4j.tools.mcp` 管，两条语义是硬要求：
+MCP 这一层的连接生命周期由 `claw4j-capability` 的 `io.github.claw4j.capability.mcp` 管，两条语义是硬要求：
 
 - **连接建立时工具清单为空即失败**（ADR-0002）。连接是**通的**——协议握手成功、server 起来了——
   只是它一件能力都没有。这种状态不报错的话，现场是"模型说它没这个能力"，
@@ -459,7 +459,7 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 不是每台机器都有，所以不进默认构建）：
 
 ```bash
-./mvnw -Preal-cli -pl claw4j-tools test -Dtest=RealCliMcpEndToEndTest
+./mvnw -Preal-cli -pl claw4j-capability test -Dtest=RealCliMcpEndToEndTest
 ```
 
 MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没有，鉴权只看动作。
@@ -467,7 +467,7 @@ MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没
 
 ### Script Package：脚本本体不进上下文，只有输出进
 
-脚本层这一层（`io.github.claw4j.tools.script`）的不是"能跑脚本"，而是**跑在什么里面**。
+脚本层这一层（`io.github.claw4j.capability.script`）的不是"能跑脚本"，而是**跑在什么里面**。
 模型看到的仍然只是"工具名 + 一个参数"，看不到脚本写了什么；它拿到的返回值只有标准输出。
 
 执行后端是社区包的 `ExecBackend` 接缝（`org.springaicommunity:spring-ai-agent-utils`），
@@ -787,7 +787,7 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、391 个测试、打包 | 本地随时 |
+| `./mvnw verify` | 编译、246 个测试、打包 | 本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程（`Runtime.exec` / `ProcessBuilder`，例外只有 `LocalProcessRunner` 一个类，ADR-0002）** | `mvn test`，以及提交前 |
 | `NoHandBuiltShellCommandTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |

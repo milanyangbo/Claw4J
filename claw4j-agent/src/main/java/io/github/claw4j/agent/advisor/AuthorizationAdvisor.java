@@ -1,6 +1,6 @@
 package io.github.claw4j.agent.advisor;
 
-import io.github.claw4j.domain.principal.ContextKeys;
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;

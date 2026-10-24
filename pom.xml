@@ -16,7 +16,7 @@
         <module>claw4j-domain</module>
         <module>claw4j-agent</module>
         <module>claw4j-channel</module>
-        <module>claw4j-tools</module>
+        <module>claw4j-capability</module>
         <module>claw4j-app</module>
     </modules>
 
@@ -198,7 +198,7 @@
           groups 与 excludedGroups 同时给了同一组，结果是这一组被排除）。
           用 profile 把两个参数一起换掉才是确定的。
 
-              ./mvnw -Preal-cli -pl claw4j-tools test -Dtest=RealCliMcpEndToEndTest
+              ./mvnw -Preal-cli -pl claw4j-capability test -Dtest=RealCliMcpEndToEndTest
         -->
         <profile>
             <id>real-cli</id>

@@ -1,8 +1,8 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
-import io.github.claw4j.tools.sales.QueryResult;
-import io.github.claw4j.tools.sales.ReadOnlySqlExecutor;
+import io.github.claw4j.capability.builtin.sales.QueryResult;
+import io.github.claw4j.capability.builtin.sales.ReadOnlySqlExecutor;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;

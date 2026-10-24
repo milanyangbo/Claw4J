@@ -3,6 +3,7 @@ package io.github.claw4j.channel.http;
 import io.github.claw4j.domain.principal.Principal;
 
 import java.util.Objects;
+import io.github.claw4j.channel.spi.PrincipalRejectedException;
 
 /**
  * 从 HTTP 请求头里认出"这是谁"。

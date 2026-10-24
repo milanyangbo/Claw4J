@@ -1,7 +1,7 @@
 package io.github.claw4j.agent.model;
 
-import io.github.claw4j.tools.sales.QueryResult;
-import io.github.claw4j.tools.sales.ReadOnlySqlExecutor;
+import io.github.claw4j.capability.builtin.sales.QueryResult;
+import io.github.claw4j.capability.builtin.sales.ReadOnlySqlExecutor;
 import org.springframework.dao.DataAccessResourceFailureException;
 
 import java.util.ArrayList;

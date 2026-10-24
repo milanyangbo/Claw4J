@@ -35,7 +35,7 @@ spring:
       repository:
         jdbc:
           initialize-schema: never
-    # MCP 客户端由本项目的 McpToolAutoConfiguration（claw4j-tools）接管，框架那份关掉。
+    # MCP 客户端由本项目的 McpToolAutoConfiguration（claw4j-capability）接管，框架那份关掉。
     # 关掉的两个理由，都不是"用不上"这么轻：
     # ① 它会在容器里注册一个空的 ToolCallbackProvider（mcpToolCallbacks），
     #    于是"按类型注入那个 provider"的地方直接装配失败——M2 之前容器里只有一个来源，

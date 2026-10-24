@@ -1,0 +1,6 @@
+io.github.claw4j.capability.ToolsAutoConfiguration
+io.github.claw4j.capability.builtin.system.SystemStatusAutoConfiguration
+io.github.claw4j.capability.mcp.McpToolAutoConfiguration
+io.github.claw4j.capability.script.ScriptPackageAutoConfiguration
+io.github.claw4j.capability.skill.SkillToolAutoConfiguration
+io.github.claw4j.capability.generator.GeneratorAutoConfiguration

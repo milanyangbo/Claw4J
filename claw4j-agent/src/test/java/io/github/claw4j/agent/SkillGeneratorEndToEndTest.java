@@ -8,14 +8,14 @@ import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
-import io.github.claw4j.tools.ToolsAutoConfiguration;
-import io.github.claw4j.tools.generator.GenerationAudit;
-import io.github.claw4j.tools.generator.IsolationSpec;
-import io.github.claw4j.tools.generator.SkillGeneratorToolProvider;
-import io.github.claw4j.tools.sales.ReadOnlySqlExecutor;
-import io.github.claw4j.tools.script.ScriptPackageRegistry;
-import io.github.claw4j.tools.script.ScriptPackageRunner;
-import io.github.claw4j.tools.script.ScriptPackageToolProvider;
+import io.github.claw4j.capability.ToolsAutoConfiguration;
+import io.github.claw4j.capability.generator.GenerationAudit;
+import io.github.claw4j.capability.generator.IsolationSpec;
+import io.github.claw4j.capability.generator.SkillGeneratorToolProvider;
+import io.github.claw4j.capability.builtin.sales.ReadOnlySqlExecutor;
+import io.github.claw4j.capability.script.ScriptPackageRegistry;
+import io.github.claw4j.capability.script.ScriptPackageRunner;
+import io.github.claw4j.capability.script.ScriptPackageToolProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -124,8 +124,8 @@ class SkillGeneratorEndToEndTest {
         ScriptPackageRunner runner = new ScriptPackageRunner(List.of());
         ScriptPackageToolProvider scriptProvider = new ScriptPackageToolProvider(registry, runner);
         GenerationAudit audit = new GenerationAudit(parent.resolve("audit.tsv"));
-        io.github.claw4j.tools.generator.SkillGenerator generator =
-                new io.github.claw4j.tools.generator.SkillGenerator(
+        io.github.claw4j.capability.generator.SkillGenerator generator =
+                new io.github.claw4j.capability.generator.SkillGenerator(
                         parent.resolve("staging"), parent.resolve("reviews"),
                         parent.resolve("published"),
                         registry, audit, IsolationSpec.local(), Clock.systemUTC());
@@ -160,7 +160,7 @@ class SkillGeneratorEndToEndTest {
 
     private record Fixture(ScriptPackageRegistry registry, ScriptPackageToolProvider scriptProvider,
                            SkillGeneratorToolProvider generatorProvider,
-                           io.github.claw4j.tools.generator.SkillGenerator generator,
+                           io.github.claw4j.capability.generator.SkillGenerator generator,
                            GenerationAudit audit) {
     }
 
@@ -168,9 +168,9 @@ class SkillGeneratorEndToEndTest {
     private static final class SkillGeneratorToolCallbackName {
 
         private static final String TOOL_NAME =
-                io.github.claw4j.tools.generator.SkillGeneratorToolCallback.TOOL_NAME;
+                io.github.claw4j.capability.generator.SkillGeneratorToolCallback.TOOL_NAME;
 
         private static final String ACTION =
-                io.github.claw4j.tools.generator.SkillGeneratorToolCallback.GENERATOR_ACTION;
+                io.github.claw4j.capability.generator.SkillGeneratorToolCallback.GENERATOR_ACTION;
     }
 }

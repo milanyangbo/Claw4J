@@ -1,8 +1,8 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.tools.mcp.McpServerEndpoint;
-import io.github.claw4j.tools.mcp.stdio.ProcessStdioMcpEndpoint;
+import io.github.claw4j.capability.mcp.McpServerEndpoint;
+import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

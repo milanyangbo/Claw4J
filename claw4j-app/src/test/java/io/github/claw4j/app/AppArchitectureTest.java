@@ -52,7 +52,7 @@ class AppArchitectureTest {
                             && "java.lang.Runtime".equals(call.getTarget().getOwner().getName()));
 
     /** 全仓唯一被允许碰 {@code ProcessBuilder} 的类。加第二个之前先读票 08 里那段取舍。 */
-    private static final String PROCESS_SPAWNER = "io.github.claw4j.tools.process.LocalProcessRunner";
+    private static final String PROCESS_SPAWNER = "io.github.claw4j.capability.process.LocalProcessRunner";
 
     @ArchTest
     static final ArchRule java_side_must_not_spawn_processes =

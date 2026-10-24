@@ -18,6 +18,7 @@ import org.springframework.context.annotation.Bean;
 
 import java.util.ArrayList;
 import java.util.List;
+import io.github.claw4j.agent.model.ModelConfiguration;
 
 /**
  * Agent 的最小装配：一个系统提示词加一条 Advisor 链。

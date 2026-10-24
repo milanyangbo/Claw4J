@@ -5,7 +5,7 @@ import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.tools.ToolsAutoConfiguration;
+import io.github.claw4j.capability.ToolsAutoConfiguration;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

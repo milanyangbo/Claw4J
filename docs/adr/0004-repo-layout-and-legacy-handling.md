@@ -21,7 +21,7 @@ date: 2026-10-22
 ## Consequences
 
 - 新代码 group id 与根包名统一为 `io.github.claw4j`，与 1.x 的 `com.xteammors.openclaw` 彻底分开，避免同名类混淆。
-- 模块划分：`claw4j-domain`（不依赖 Spring AI / Spring Boot）、`claw4j-agent`（ChatClient 装配、Advisor 链、Session、鉴权）、`claw4j-channel`（Channel SPI + HTTP/SSE + A2A）、`claw4j-tools`（`@Tool`、`@McpTool`、Script Package 执行器）、`claw4j-app`（启动、配置、容器编排、测试）。
+- 模块划分：`claw4j-domain`（不依赖 Spring AI / Spring Boot）、`claw4j-agent`（ChatClient 装配、Advisor 链、Session、鉴权）、`claw4j-channel`（Channel SPI + HTTP/SSE + A2A）、`claw4j-capability`（`@Tool`、`@McpTool`、Script Package 执行器）、`claw4j-app`（启动、配置、容器编排、测试）。
 - 分支约定：`rebuild-spring-ai-2x` 为重建主线，`claw` 分支停在 `v1.x-legacy` 不再提交。
 - `legacy/` 不进任何新模块的依赖；CI 只构建 `claw4j-*`，不构建 `legacy/`。
 - 1.x 里的明文凭证（Teammors token、IMAP 测试账号）在冻结提交前已替换为占位符，避免进入 git 历史；`legacy/` 目录后续也不允许再放真实凭证。

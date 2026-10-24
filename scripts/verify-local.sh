@@ -47,7 +47,9 @@ if [ "$#" -eq 0 ]; then
 fi
 
 echo "verify-local: JAVA_HOME=$JAVA_HOME"
-echo "verify-local: ./mvnw verify $*"
-./mvnw -B -ntp verify "$@"
+echo "verify-local: ./mvnw clean verify $*"
+# 必须 clean：surefire 报告留在 target 里，改名、合并、删测试之后旧报告还在，
+# 后面的测试数对账会把上一代的数量一起算进去（M2 收尾时就报成 596）。
+./mvnw -B -ntp clean verify "$@"
 
 ./scripts/assert-no-skipped-tests.sh

@@ -52,7 +52,7 @@ Java 这边起的是**真的子进程**，用它的 stdin/stdout 说 MCP——�
 验证这条路真的通（默认不跑，见下）：
 
 ```bash
-./mvnw -Preal-cli -pl claw4j-tools test -Dtest=RealCliMcpEndToEndTest
+./mvnw -Preal-cli -pl claw4j-capability test -Dtest=RealCliMcpEndToEndTest
 ```
 
 ## 这一组不进 CI

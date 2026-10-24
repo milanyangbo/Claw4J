@@ -27,7 +27,7 @@
         -->
         <dependency>
             <groupId>io.github.claw4j</groupId>
-            <artifactId>claw4j-tools</artifactId>
+            <artifactId>claw4j-capability</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!--

@@ -5,7 +5,7 @@ status: accepted
 date: 2026-10-22
 ---
 
-模块数从七个收敛到五个：**`claw4j-domain` / `claw4j-agent` / `claw4j-channel` / `claw4j-tools` / `claw4j-app`**。通道按平台分包（`channel.spi` / `channel.http` / `channel.feishu` / `channel.a2a`），不再按平台分模块。模块之间的依赖方向单向，并且用 ArchUnit 写成会失败的测试，不靠口头约定。
+模块数从七个收敛到五个：**`claw4j-domain` / `claw4j-agent` / `claw4j-channel` / `claw4j-capability` / `claw4j-app`**。通道按平台分包（`channel.spi` / `channel.http` / `channel.feishu` / `channel.a2a`），不再按平台分模块。模块之间的依赖方向单向，并且用 ArchUnit 写成会失败的测试，不靠口头约定。
 
 ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离成 `channel-api` + `channel-http` + `channel-feishu` 三个。本条把口径改回来，并说明理由。
 
@@ -68,4 +68,4 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
 - 边界规则落在四处 ArchUnit 测试里：`ArchitectureTest`（domain 零框架）、`AgentArchitectureTest`（agent 不认识 channel）、`ChannelArchitectureTest`（SPI 平台中立、飞书 SDK 只在 feishu 包）、`ToolsArchitectureTest`（tools 不认识 agent 与 channel）。它们随 `mvn test` 跑、提交前 hook 也跑，
 红了就是架构被破坏了。
 - `oapi-sdk` 在 `claw4j-channel` 里是 optional，默认不进 fat jar；要用飞书必须 `-Pchannel-feishu`。这条也意味着：只用 HTTP 的部署不会被飞书的传递依赖污染。
-- `claw4j-tools` 尚未被 `claw4j-agent` 依赖（装配线还没接）。M1 补 `agent → tools`，方向不变。
+- `claw4j-capability` 尚未被 `claw4j-agent` 依赖（装配线还没接）。M1 补 `agent → tools`，方向不变。

@@ -19,6 +19,8 @@ import java.time.Instant;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
+import io.github.claw4j.channel.spi.PrincipalRejectedException;
+import io.github.claw4j.channel.spi.TooBusyException;
 
 /**
  * HTTP+SSE 的传输层。它只做三件事：读头部、认人、把消息交给 {@link HttpChatChannel}。
