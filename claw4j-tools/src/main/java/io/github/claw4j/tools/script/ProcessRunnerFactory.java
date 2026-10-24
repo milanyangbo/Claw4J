@@ -1,6 +1,6 @@
 package io.github.claw4j.tools.script;
 
-import org.springaicommunity.agent.common.exec.ExecBackend;
+import io.github.claw4j.tools.process.ProcessRunner;
 
 /**
  * 换沙箱的那条接缝：给一个脚本包配一个执行后端。
@@ -9,14 +9,14 @@ import org.springaicommunity.agent.common.exec.ExecBackend;
  * "应用容器内的受限子进程"，但它不是这一层唯一可能的形态——
  * 换容器、换远端执行器、换成测试里的记录器，改的都是这个实现
  * （ADR-0003 的第 ② 类沙箱是另一个执行位置，06 号票）。
- * 调用方 {@link ScriptPackageRunner} 只认 {@link ExecBackend}，
+ * 调用方 {@link ScriptPackageRunner} 只认 {@link ProcessRunner}，
  * 于是换形态这件事在代码里只有一处可改。
  */
 @FunctionalInterface
-public interface ExecBackendFactory {
+public interface ProcessRunnerFactory {
 
-    /** 默认实现：{@link SandboxedExecBackend}，工作目录锁在包目录上的受限子进程。 */
-    ExecBackendFactory SANDBOXED = SandboxedExecBackend::forPackage;
+    /** 默认实现：{@link SandboxedProcessBackend}，工作目录锁在包目录上的受限子进程。 */
+    ProcessRunnerFactory SANDBOXED = SandboxedProcessBackend::forPackage;
 
-    ExecBackend forPackage(ScriptPackage pkg);
+    ProcessRunner forPackage(ScriptPackage pkg);
 }

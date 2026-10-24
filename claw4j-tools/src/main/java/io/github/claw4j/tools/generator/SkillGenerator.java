@@ -3,9 +3,9 @@ package io.github.claw4j.tools.generator;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.tools.script.ScriptPackage;
 import io.github.claw4j.tools.script.ScriptPackageCatalog;
+import io.github.claw4j.tools.process.ProcessOutcome;
+import io.github.claw4j.tools.process.ProcessRequest;
 import io.github.claw4j.tools.script.ScriptPackageRegistry;
-import org.springaicommunity.agent.common.exec.ExecResult;
-import org.springaicommunity.agent.common.exec.ExecSpec;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -361,13 +361,21 @@ public final class SkillGenerator {
         }
     }
 
+    /**
+     * 自测：入口来自这次提交，参数一个都不给（模型产出的脚本先跑一次"什么都不给"）。
+     *
+     * <p>入口用的是<b>绝对路径</b>而不是 {@code ./run.sh}：不再经解释器，
+     * 就没人去 PATH 里找它，相对路径得靠工作目录去解释——
+     * 而"这次要跑的是哪一份脚本"应该由请求说死，不是由工作目录碰巧决定。
+     */
     private SelfTestResult selfTest(Path candidate, Request request) {
         GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, spec);
         try {
-            ExecResult result = sandbox.run(new ExecSpec(quote("./" + entrypointOf(request)),
-                    spec.timeoutMillis(), java.util.Map.of()));
-            return new SelfTestResult(result.exitCode(), clip(result.stdout()), clip(result.stderr()),
-                    result.status() == ExecResult.Status.COMPLETED);
+            Path entrypoint = sandbox.sandboxDirectory().resolve(entrypointOf(request));
+            ProcessOutcome outcome = sandbox.run(new ProcessRequest(List.of(entrypoint.toString()),
+                    spec.timeoutMillis()));
+            return new SelfTestResult(outcome.exitCode(), clip(outcome.stdout()), clip(outcome.stderr()),
+                    outcome.status() == ProcessOutcome.Status.COMPLETED);
         }
         catch (RuntimeException failure) {
             // 自测自己出问题（沙箱起不来、超时被杀）也要变成"脚本没跑出来"，
@@ -505,11 +513,6 @@ public final class SkillGenerator {
         }
         return stripped.substring(0, spec.maxOutputChars()) + "\n…（输出超过 " + spec.maxOutputChars()
                 + " 字符，已截断）";
-    }
-
-    /** 单引号包起来，内部的单引号按 POSIX 的写法断开再接上。 */
-    private static String quote(String raw) {
-        return "'" + raw.replace("'", "'\\''") + "'";
     }
 
     private static String block(String text) {

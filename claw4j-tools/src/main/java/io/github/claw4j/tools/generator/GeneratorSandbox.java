@@ -1,10 +1,9 @@
 package io.github.claw4j.tools.generator;
 
-import org.springaicommunity.agent.common.exec.ExecBackend;
-import org.springaicommunity.agent.common.exec.ExecHandle;
-import org.springaicommunity.agent.common.exec.ExecResult;
-import org.springaicommunity.agent.common.exec.ExecSpec;
-import org.springaicommunity.agent.exec.LocalExecBackend;
+import io.github.claw4j.tools.process.LocalProcessRunner;
+import io.github.claw4j.tools.process.ProcessOutcome;
+import io.github.claw4j.tools.process.ProcessRequest;
+import io.github.claw4j.tools.process.ProcessRunner;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -12,7 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -20,26 +18,28 @@ import java.util.stream.Stream;
 /**
  * 第 ② 类沙箱：<b>未审核代码</b>的自测位置（ADR-0003）。
  *
- * <p>与第 ① 类（{@code SandboxedExecBackend}）分清的那一条，在代码里是这样落地的：
+ * <p>与第 ① 类（{@code SandboxedProcessBackend}）分清的那一条，在代码里是这样落地的：
  * <b>自测跑在一份临时副本里，不跑在候选目录里</b>。
  * 候选目录里放着"等着被人审的"脚本与这次提交的元数据，
  * 而自测跑的是模型刚写出来的东西——让它写进自己待审的那份目录，
  * 等于允许它改自己将要被审的内容（甚至给自己写一个审批标记）。
  * 副本还有一个好处：脚本在自测里写下的任何东西，跑完即删，留不下来。
  *
- * <p>三条约束在这里落地：
+ * <p>两条约束在这里落地：
  * <ul>
  *   <li><b>位置</b>：临时目录，跑完递归删除。
- *   <li><b>环境</b>：只有 {@link IsolationSpec#environment()}，不继承应用进程任何一项。
- *   <li><b>预算</b>：{@link IsolationSpec#timeoutMillis()}，调用方给的环境一律拒（同 ①）。
+ *   <li><b>预算</b>：{@link IsolationSpec#timeoutMillis()} 是上限。
  * </ul>
+ * 环境那一条不由这里"拒绝注入"来保证：{@link ProcessRequest} 里没有环境变量这一项，
+ * 环境只在起进程时被给出一次（{@link LocalProcessRunner}），于是"调用方塞一个
+ * 变量进来"在类型上就不存在——结构上的保证比运行时再判一次更靠得住。
  *
  * <p><b>给不了的三样</b>，不拿去当承诺：网络隔离（{@link IsolationSpec.Network#NOT_ISOLATED}）、
  * 内存与 CPU 上限（纯 Java 对子进程没有可移植的限制手段）、
  * 脚本体内自己去读一个绝对路径（进程沙箱锁得住入口与参数，锁不住脚本自己的行为）。
  * 静态检查挡的是"明着写"的那部分，剩下的靠部署层。
  */
-public final class GeneratorSandbox implements ExecBackend {
+public final class GeneratorSandbox implements ProcessRunner {
 
     private final IsolationSpec spec;
 
@@ -47,10 +47,10 @@ public final class GeneratorSandbox implements ExecBackend {
 
     private final Path sandboxDirectory;
 
-    private final ExecBackend delegate;
+    private final ProcessRunner delegate;
 
     private GeneratorSandbox(IsolationSpec spec, Supplier<String> accountName,
-                             Path sandboxDirectory, ExecBackend delegate) {
+                             Path sandboxDirectory, ProcessRunner delegate) {
         this.spec = spec;
         this.accountName = accountName;
         this.sandboxDirectory = sandboxDirectory;
@@ -73,11 +73,7 @@ public final class GeneratorSandbox implements ExecBackend {
         Objects.requireNonNull(candidateDirectory, "candidateDirectory");
         Objects.requireNonNull(spec, "spec");
         Path copy = copyToTemporaryDirectory(candidateDirectory);
-        ExecBackend delegate = LocalExecBackend.builder()
-                .workingDirectory(copy)
-                .cleanEnvironment(true)
-                .environment(spec.environment())
-                .build();
+        ProcessRunner delegate = new LocalProcessRunner(copy, spec.environment());
         return new GeneratorSandbox(spec, accountName, copy, delegate);
     }
 
@@ -87,32 +83,23 @@ public final class GeneratorSandbox implements ExecBackend {
     }
 
     @Override
-    public ExecResult run(ExecSpec spec) {
-        Objects.requireNonNull(spec, "spec");
+    public ProcessOutcome run(ProcessRequest request) {
+        Objects.requireNonNull(request, "request");
         String account = accountName.get();
         if (account == null || account.isBlank() || "root".equals(account)) {
             throw new IllegalStateException("自测必须跑在非 root 账号下，当前是 " + account + "（ADR-0003 第 ② 类）");
         }
-        long timeout = spec.timeoutMillis();
-        if (timeout <= 0 || timeout > this.spec.timeoutMillis()) {
+        long timeout = request.timeoutMillis();
+        if (timeout > this.spec.timeoutMillis()) {
             throw new IllegalArgumentException("自测超时必须在 (0, " + this.spec.timeoutMillis()
                     + "] 内，拿到的是 " + timeout + "ms");
         }
-        if (spec.env() != null && !spec.env().isEmpty()) {
-            throw new IllegalArgumentException("自测环境由沙箱独占给出，调用方不能往里塞环境变量：" + spec.env().keySet());
-        }
         try {
-            return delegate.run(new ExecSpec(spec.command(), timeout, Map.of()));
+            return delegate.run(request);
         }
         finally {
             deleteRecursively(sandboxDirectory);
         }
-    }
-
-    /** 后台执行一律拒绝，理由与第 ① 类相同：句柄没有超时，等于把预算打开了。 */
-    @Override
-    public ExecHandle start(ExecSpec spec) {
-        throw new UnsupportedOperationException("自测只提供受超时约束的同步执行：后台句柄没有超时");
     }
 
     private static Path copyToTemporaryDirectory(Path source) {

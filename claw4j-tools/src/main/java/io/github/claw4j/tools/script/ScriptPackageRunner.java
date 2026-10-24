@@ -1,25 +1,27 @@
 package io.github.claw4j.tools.script;
 
-import org.springaicommunity.agent.common.exec.ExecBackend;
-import org.springaicommunity.agent.common.exec.ExecResult;
-import org.springaicommunity.agent.common.exec.ExecSpec;
+import io.github.claw4j.tools.process.ProcessOutcome;
+import io.github.claw4j.tools.process.ProcessRequest;
+import io.github.claw4j.tools.process.ProcessRunner;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 /**
- * 脚本包的调用入口：**换沙箱不动这里**（{@link ExecBackendFactory}）。
+ * 脚本包的调用入口：**换沙箱不动这里**（{@link ProcessRunnerFactory}）。
  *
- * <p>它做四件事，顺序就是"命令是怎么来的"：
+ * <p>它做四件事，顺序就是"进程是怎么起来的"：
  * <ol>
  *   <li>按名字找到包。找不到就把有哪些包一并说出来——模型拼错工具名时，
  *       这句话就是它能改的唯一依据。
- *   <li>把参数变成命令行上的**一个词**：看着像路径的先过沙箱路径校验，
- *       然后统一加引号。
- *   <li>命令 = 入口脚本 + 参数，交给执行后端。入口来自包清单，不由模型给。
+ *   <li>把参数变成 argv 里的**一个元素**：先过沙箱路径校验。
+ *       参数不再需要加引号（票 08）：加引号要挡的是"参数被解释器当成语法"，
+ *       而数组形态没有解释器这一步。
+ *   <li>argv = 入口脚本 + 参数，交给执行后端。入口来自包清单，不由模型给。
  *   <li>只把 stdout 交回去。
  * </ol>
  *
@@ -42,24 +44,24 @@ public final class ScriptPackageRunner {
 
     private final Map<String, ScriptPackage> packages = new LinkedHashMap<>();
 
-    private final Map<String, ExecBackend> backends = new LinkedHashMap<>();
+    private final Map<String, ProcessRunner> runners = new LinkedHashMap<>();
 
     private final SandboxPolicy policy;
 
-    private final ExecBackendFactory factory;
+    private final ProcessRunnerFactory factory;
 
     public ScriptPackageRunner(List<ScriptPackage> packages) {
-        this(packages, ExecBackendFactory.SANDBOXED);
+        this(packages, ProcessRunnerFactory.SANDBOXED);
     }
 
     /**
-     * @param factory 换沙箱的地方；默认 {@link ExecBackendFactory#SANDBOXED}
+     * @param factory 换沙箱的地方；默认 {@link ProcessRunnerFactory#SANDBOXED}
      */
-    public ScriptPackageRunner(List<ScriptPackage> packages, ExecBackendFactory factory) {
+    public ScriptPackageRunner(List<ScriptPackage> packages, ProcessRunnerFactory factory) {
         this(packages, factory, SandboxPolicy.defaults());
     }
 
-    public ScriptPackageRunner(List<ScriptPackage> packages, ExecBackendFactory factory, SandboxPolicy policy) {
+    public ScriptPackageRunner(List<ScriptPackage> packages, ProcessRunnerFactory factory, SandboxPolicy policy) {
         Objects.requireNonNull(packages, "packages");
         this.policy = Objects.requireNonNull(policy, "policy");
         this.factory = Objects.requireNonNull(factory, "factory");
@@ -84,7 +86,7 @@ public final class ScriptPackageRunner {
             throw new IllegalStateException("已经有一个叫 " + pkg.name() + " 的脚本包："
                     + "同名工具会让模型分不清该调哪个，这里不去重而是直接失败");
         }
-        backends.put(pkg.name(), factory.forPackage(pkg));
+        runners.put(pkg.name(), factory.forPackage(pkg));
     }
 
     public synchronized List<String> names() {
@@ -103,20 +105,19 @@ public final class ScriptPackageRunner {
         if (pkg == null) {
             throw new IllegalArgumentException("没有名为 " + name + " 的脚本包；现在有：" + packages.keySet());
         }
-        String command = commandOf(pkg, arguments == null ? List.of() : arguments);
-        ExecResult result = backends.get(name)
-                .run(new ExecSpec(command, pkg.timeoutMillis(), Map.of()));
-        if (result.status() != ExecResult.Status.COMPLETED) {
-            throw new ScriptExecutionException(result, "脚本包 " + name + " 的执行状态是 " + result.status());
+        ProcessRequest request = requestOf(pkg, arguments == null ? List.of() : arguments);
+        ProcessOutcome outcome = runners.get(name).run(request);
+        if (outcome.status() != ProcessOutcome.Status.COMPLETED) {
+            throw new ScriptExecutionException(outcome, "脚本包 " + name + " 的执行状态是 " + outcome.status());
         }
-        if (result.exitCode() != 0) {
-            throw new ScriptExecutionException(result, "脚本包 " + name + " 以非零退出");
+        if (outcome.exitCode() != 0) {
+            throw new ScriptExecutionException(outcome, "脚本包 " + name + " 以非零退出");
         }
-        return outputOf(result.stdout());
+        return outputOf(outcome.stdout());
     }
 
     /**
-     * 命令行只有一处拼装，且拼的东西是确定的：入口脚本来自包清单，参数全部过了沙箱又加了引号。
+     * argv 只有一处组装，且组装的东西是确定的：入口脚本来自包清单，参数全部过了沙箱。
      *
      * <p><b>每一个参数都要先过 {@link SandboxPolicy#resolveInside}，不做"像不像路径"的预判。</b>
      * 早先那版只对"看着像路径"的参数做校验，而"看着像"是个会漏的判据：
@@ -125,33 +126,31 @@ public final class ScriptPackageRunner {
      * 一律校验的代价是零：普通字符串（一个城市名、一句话）本来就落在包目录内，
      * 校验一定通过，只是多走一步。
      *
-     * <p>单引号同样一个都不能少：不加的话一个带空格或分号的参数就能在命令行上
-     * 变出第二条命令，而"命令行是谁拼的"这件 ADR-0002 要管的事就从后门回来了。
+     * <p><b>没有一处做引号转义，这也是有意的</b>（票 08）：转义要挡的是
+     * "参数被命令解释器当成语法"，而这里给的是数组，进程收到的就是这个元素本身，
+     * 一个带空格或分号的参数只是"一个带空格或分号的字符串"。
+     * 少了"有人会解释它"这一环，转义就从"必须"变成"无用"。
      */
-    private String commandOf(ScriptPackage pkg, List<String> arguments) {
-        // "./" 是必须的：命令由 shell 执行，而 shell 只在 PATH 里找命令、不在当前目录找。
-        // 少了它，"入口脚本就在包目录里"这件确定的事会变成一次 command not found。
-        StringBuilder command = new StringBuilder(quote("./" + Path.of(pkg.entrypoint()).normalize()));
+    private ProcessRequest requestOf(ScriptPackage pkg, List<String> arguments) {
+        List<String> argv = new ArrayList<>();
+        // 绝对路径而不是 "./run.sh"：不经解释器就没人去 PATH 里找，
+        // 而"入口脚本一定在包目录里"这件事由 ScriptPackage 构造时保证。
+        argv.add(pkg.entrypointPath().toString());
         for (String argument : arguments) {
             if (argument == null) {
                 continue;
             }
-            command.append(' ').append(tokenOf(pkg, argument));
+            argv.add(tokenOf(pkg, argument));
         }
-        return command.toString();
+        return new ProcessRequest(List.copyOf(argv), pkg.timeoutMillis());
     }
 
     private String tokenOf(ScriptPackage pkg, String argument) {
         if (argument.isBlank()) {
-            return quote("");
+            return "";
         }
         Path resolved = policy.resolveInside(pkg.root(), argument);
-        return quote(pkg.root().relativize(resolved).toString());
-    }
-
-    /** 单引号包起来，内部的单引号按 POSIX 的写法断开再接上。 */
-    private static String quote(String raw) {
-        return "'" + raw.replace("'", "'\\''") + "'";
+        return pkg.root().relativize(resolved).toString();
     }
 
     /**

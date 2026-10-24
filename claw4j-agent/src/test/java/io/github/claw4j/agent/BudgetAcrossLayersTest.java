@@ -12,10 +12,9 @@ import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springaicommunity.agent.common.exec.ExecBackend;
-import org.springaicommunity.agent.common.exec.ExecHandle;
-import org.springaicommunity.agent.common.exec.ExecResult;
-import org.springaicommunity.agent.common.exec.ExecSpec;
+import io.github.claw4j.tools.process.ProcessOutcome;
+import io.github.claw4j.tools.process.ProcessRequest;
+import io.github.claw4j.tools.process.ProcessRunner;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -215,17 +214,12 @@ class BudgetAcrossLayersTest {
     }
 
     /** 三层的执行后端：只计数，不起进程（预算这条要验的不是进程）。 */
-    private record RecordingBackend(AtomicInteger calls) implements ExecBackend {
+    private record RecordingBackend(AtomicInteger calls) implements ProcessRunner {
 
         @Override
-        public ExecResult run(ExecSpec spec) {
+        public ProcessOutcome run(ProcessRequest request) {
             calls.incrementAndGet();
-            return new ExecResult(ExecResult.Status.COMPLETED, 0, "script", "");
-        }
-
-        @Override
-        public ExecHandle start(ExecSpec spec) {
-            throw new UnsupportedOperationException("后台执行不在预算这条断言的范围内");
+            return ProcessOutcome.completed(0, "script", "");
         }
     }
 }

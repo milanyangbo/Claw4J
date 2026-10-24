@@ -4,10 +4,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import org.springaicommunity.agent.common.exec.ExecBackend;
-import org.springaicommunity.agent.common.exec.ExecHandle;
-import org.springaicommunity.agent.common.exec.ExecResult;
-import org.springaicommunity.agent.common.exec.ExecSpec;
+import io.github.claw4j.tools.process.ProcessOutcome;
+import io.github.claw4j.tools.process.ProcessRequest;
+import io.github.claw4j.tools.process.ProcessRunner;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -19,11 +18,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 调用方这一侧：命令怎么拼出来的、出去的只有什么。
+ * 调用方这一侧：argv 怎么组装出来的、出去的只有什么。
  *
- * <p>这一组盯的是 ADR-0002 剩下的那条缝——命令仍然是要拼的，
- * 能做的是把"拼什么"变成确定的：入口来自包清单，参数要么被判成路径过沙箱、
- * 要么被加引号。参数那条缝是模型唯一能把自由文本送进命令行的地方。
+ * <p>这一组盯的是模型唯一能把自由文本送进进程的那个位置——参数。
+ * 入口来自包清单，参数一律过沙箱路径校验；不再有转义这一步（票 08），
+ * 因为数组形态没有解释器，参数里带什么都不改变"它是第几个参数"这件事。
  */
 class ScriptPackageRunnerTest {
 
@@ -58,17 +57,65 @@ class ScriptPackageRunnerTest {
     }
 
     /**
-     * 参数里带引号和分号：这是"命令行是谁拼的"那条边界上最常被撞的地方。
-     * 少了引号转义，{@code ; rm -rf} 就会在命令行上变成第二条命令。
+     * 参数里的元字符只是"一个字符串"，不是语法（票 08 的正反对照之一）。
+     *
+     * <p>这条在换实现之前是靠手写引号挡住的，换之后靠的是"没有解释器"。
+     * 判据不变——输出里不能出现第二条命令的痕迹——
+     * 但"为什么它是绿的"从"有人转义对了"变成"没人会解释它"。
      */
     @Test
     @DisplayName("参数里的 shell 元字符不会变成第二条命令")
-    void 元字符被转义(@TempDir Path parent) throws IOException {
+    void 元字符不会被解释(@TempDir Path parent) throws IOException {
         ScriptPackage pkg = ScriptPackageFixtures.executable("quoter", parent,
                 ScriptPackageFixtures.script("echo \"got=$1\""));
 
         assertThat(new ScriptPackageRunner(List.of(pkg)).run("quoter", List.of("a; echo pwned")))
                 .isEqualTo("got=a; echo pwned");
+    }
+
+    /**
+     * 命令替换与反引号：同一件事的另一种写法。
+     *
+     * <p>{@code $(...)} 在解释器手里会先执行再代入；数组形态下它就是一个普通字符串，
+     * 于是"参数里写了命令替换"和"参数里写了句话"的待遇完全一样。
+     */
+    @Test
+    @DisplayName("参数里的命令替换不会被先执行")
+    void 命令替换不被执行(@TempDir Path parent) throws IOException {
+        ScriptPackage pkg = ScriptPackageFixtures.executable("subst", parent,
+                ScriptPackageFixtures.script("echo \"got=$1\""));
+
+        assertThat(new ScriptPackageRunner(List.of(pkg)).run("subst", List.of("$(echo pwned)")))
+                .isEqualTo("got=$(echo pwned)");
+        assertThat(new ScriptPackageRunner(List.of(pkg)).run("subst", List.of("`echo pwned`")))
+                .isEqualTo("got=`echo pwned`");
+    }
+
+    /**
+     * 正面对照：只断言"没被执行"的话，一个把所有参数都拒掉的实现也是绿的。
+     *
+     * <p>带空格、带中文的参数要原样到得了脚本——这是这条缝上"功能还在"的证据，
+     * 少了它，"元字符没被执行"可能只是因为参数根本没传进去。
+     */
+    @Test
+    @DisplayName("带空格与中文的参数原样传给脚本")
+    void 空格与中文传得进去(@TempDir Path parent) throws IOException {
+        ScriptPackage pkg = ScriptPackageFixtures.executable("args", parent,
+                ScriptPackageFixtures.script("echo \"1=[$1]\"", "echo \"2=[$2]\""));
+
+        assertThat(new ScriptPackageRunner(List.of(pkg)).run("args", List.of("深 圳", "a b")))
+                .contains("1=[深 圳]")
+                .contains("2=[a b]");
+    }
+
+    /** 入口脚本缺 shebang 时给的是一句指得出原因的话，不是操作系统的格式错误。 */
+    @Test
+    @DisplayName("入口没有 shebang 时报错指名缺第一行")
+    void 缺shebang时报得明白(@TempDir Path parent) throws IOException {
+        ScriptPackage pkg = ScriptPackageFixtures.executable("noshebang", parent, "echo hi\n");
+
+        assertThatThrownBy(() -> new ScriptPackageRunner(List.of(pkg)).run("noshebang", List.of()))
+                .hasMessageContaining("shebang");
     }
 
     /** 模型想让脚本读沙箱外的文件：这是"脚本想碰目录之外的东西"在参数上进来的形状。 */
@@ -166,41 +213,37 @@ class ScriptPackageRunnerTest {
     void 后端可替换(@TempDir Path parent) throws IOException {
         ScriptPackage pkg = ScriptPackageFixtures.executable("swapped", parent,
                 ScriptPackageFixtures.script("echo real"));
-        RecordingExecBackend recording = new RecordingExecBackend();
+        RecordingRunner recording = new RecordingRunner();
 
         String output = new ScriptPackageRunner(List.of(pkg), recording).run("swapped", List.of());
 
         assertThat(output).isEqualTo("recorded");
-        assertThat(recording.specs()).singleElement()
-                .satisfies(spec -> assertThat(spec.command()).contains("./run.sh"));
+        // 交给后端的是数组，不是一条命令行字符串——这一条就是票 08 的判据。
+        assertThat(recording.requests()).singleElement()
+                .satisfies(request -> {
+                    assertThat(request.argv()).hasSize(1);
+                    assertThat(request.argv().getFirst()).endsWith("run.sh");
+                });
     }
 
     /**
-     * 注入进来的记录器：只证明"调用方认 {@code ExecBackend} 这个接口"，
+     * 注入进来的记录器：只证明"调用方认 {@code ProcessRunner} 这个接口"，
      * 不碰任何进程——这条缝存在与否，就靠它。
      */
-    private static final class RecordingExecBackend implements ExecBackendFactory {
+    private static final class RecordingRunner implements ProcessRunnerFactory {
 
-        private final List<ExecSpec> specs = new ArrayList<>();
+        private final List<ProcessRequest> requests = new ArrayList<>();
 
         @Override
-        public ExecBackend forPackage(ScriptPackage pkg) {
-            return new ExecBackend() {
-                @Override
-                public ExecResult run(ExecSpec spec) {
-                    specs.add(spec);
-                    return ExecResult.completed(0, "recorded", "");
-                }
-
-                @Override
-                public ExecHandle start(ExecSpec spec) {
-                    throw new UnsupportedOperationException("这条用例不需要后台执行");
-                }
+        public ProcessRunner forPackage(ScriptPackage pkg) {
+            return request -> {
+                requests.add(request);
+                return ProcessOutcome.completed(0, "recorded", "");
             };
         }
 
-        List<ExecSpec> specs() {
-            return specs;
+        List<ProcessRequest> requests() {
+            return requests;
         }
     }
 }

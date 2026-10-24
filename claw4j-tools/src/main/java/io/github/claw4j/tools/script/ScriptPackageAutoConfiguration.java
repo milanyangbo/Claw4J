@@ -44,7 +44,7 @@ public class ScriptPackageAutoConfiguration {
     }
 
     /**
-     * 执行入口：换沙箱的地方是 {@link ExecBackendFactory}，装配时不写死。
+     * 执行入口：换沙箱的地方是 {@link ProcessRunnerFactory}，装配时不写死。
      *
      * <p><b>把"新包要建后端"这条挂上去的动作只做一次</b>，在
      * {@link ScriptPackageToolProvider} 的构造里。挂两次的话，

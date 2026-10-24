@@ -31,6 +31,16 @@ public final class ScriptStaticCheck {
     public static final String UNKNOWN_LANGUAGE = "UNKNOWN_LANGUAGE";
 
     /**
+     * 缺 shebang：脚本不再经命令解释器执行（票 08），第一行必须以 {@code #!} 给出解释器。
+     *
+     * <p>为什么这一条要在静态检查里而不是等执行时报错：
+     * 执行时那句错是操作系统给的（"格式不对"一类的话），它出现在自测的 stderr 里，
+     * 离"第一行少写了一行"隔着两层，模型多半会去改脚本做的事而不是补这一行。
+     * 挡在落盘之前，它拿到的就是一句可以直接改的话。
+     */
+    public static final String NO_SHEBANG = "NO_SHEBANG";
+
+    /**
      * 规则表：一条规则 = 一个规则号、适用语言、一个正则、一句为什么拒。
      *
      * <p>为什么是正则表而不是一个真的解析器：这份检查的职责是"挡住明着写的危险写法"，
@@ -170,6 +180,10 @@ public final class ScriptStaticCheck {
         }
         List<Finding> findings = new ArrayList<>();
         String[] lines = script.split("\n", -1);
+        if (!script.startsWith("#!")) {
+            findings.add(new Finding(NO_SHEBANG, 1, trim(lines[0]),
+                    "第一行必须是 shebang（#! 开头给出解释器）：脚本不经命令解释器执行，缺这一行进程起不来"));
+        }
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
             if (isComment(line)) {

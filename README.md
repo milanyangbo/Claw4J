@@ -47,7 +47,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 379 个测试（连真实 DeepSeek）
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 391 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -151,7 +151,7 @@ app 模块那几条（含 `RealModelTest`）需要真库：本机由 `spring-boo
 （`RealModelSupport`），刻意不跟着这个开关走——它们要的是"同一家、温度 0"的确定性，
 换厂商该由 `RealModelTest`（走完整 `application.yml`）来验，而不是让每条端到端都变成多厂商矩阵。
 
-回归基线是那 379 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+回归基线是那 391 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
 烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
 关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
 M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
@@ -495,20 +495,19 @@ new ScriptPackageRunner(packages, myFactory)      // 换沙箱：换的是这个
 
 **Java 侧不自己拼命令行**（ADR-0002），这条由两台机器盯着，不靠 review 记：
 
-- ArchUnit：`io.github.claw4j..` 主代码不许调用 `Runtime.exec`、不许碰 `ProcessBuilder`；
+- ArchUnit：`io.github.claw4j..` 主代码不许调用 `Runtime.exec`、不许碰 `ProcessBuilder`
+  ——**例外只有一个被点名的类**：`LocalProcessRunner`。加第二个之前先读票 08 里那段取舍；
 - 源码扫描：`claw4j-*/src/main/java` 里不许出现手写的 shell 调用字面量。
   后者挡的是"把命令行当一个字符串传下去"——那种写法起进程的不是本项目，
   于是 API 那条规则看不见它，而宿主机的命令行照样交出去了。
 
-**脚本层是这条界线上的一个例外**，写在这里是因为它不该靠读代码才知道：
-脚本层的执行接缝（社区包的 `ExecSpec`）形状就是**一条命令行**——只有一个 `String command`
-字段，没有 argv 形态，而它的本地实现会把这条字符串交给命令解释器去解释。
-于是脚本层拼的是"入口脚本 + 逐个加过单引号的参数"，挡住注入的只有那一处 `quote()`：
-每个参数先过沙箱的路径校验（越界即拒绝），再按 POSIX 单引号转义。
-上面两台机器都看不见这条路径（源码里一个 shell 字面量都没有），
-所以**这一处现在没有被任何自动检查覆盖**。要改掉它就得自己用 argv 起进程，
-也就必须收窄 ArchUnit 那条禁令——那是红线，按规矩单独开票，不在修缺陷的同一批里动：
-`.scratch/m2-capability-and-skills/issues/08-script-layer-structured-argv.md`。
+脚本层交给进程的是**一个 argv 数组**，不是一条命令行（票 08）：
+入口脚本来自包清单（绝对路径），参数一律先过沙箱的路径校验（越界即拒绝），
+然后作为数组里的元素原样交给进程。数组形态没有命令解释器这一步，
+所以参数里带 `; echo pwned` 或 `$(...)` 也只是"一个字符串"，不是语法——
+"挡住注入"不再依赖任何一处转义写得对不对。代价是入口脚本必须自己可执行、
+第一行给出解释器（缺了就在静态检查那一关被挡下，见 Skill Generator 那节）。
+起进程的全仓只有 `LocalProcessRunner` 一个地方，工作目录与环境变量由沙箱在构造它时给定。
 
 脚本层**不授予任何业务表权限**，而且它要的动作不是 `read` 而是 **`run_script`**：
 只读角色能查数是"只读"的本意，能执行脚本就不是了——脚本能写文件、能往外连，
@@ -632,7 +631,7 @@ claw4j:
 它是纯函数（不读文件、不看时间、不取随机数），于是"挡住了什么"能被一张表钉死——
 危险清单逐条一个用例，正常脚本另有一组用例（只测"危险被挡下"的话，全拒的实现也会绿）。
 
-它认的是**写法**（装包、提权、连网、读凭据、删东西、动态执行），认不出意图；
+它认的是**写法**（装包、提权、连网、读凭据、删东西、动态执行、缺 shebang），认不出意图；
 把危险动作藏在变量里它看不出来。挡的是明着写的那部分——
 而那部分在真实事故里占绝大多数（1.x 那次让脚本自行 `pip install --break-system-packages`
 就是明着写的）。
@@ -784,8 +783,8 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、379 个测试、打包 | 本地随时 |
-| ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程（`Runtime.exec` / `ProcessBuilder`，ADR-0002）** | `mvn test`，以及提交前 |
+| `./mvnw verify` | 编译、391 个测试、打包 | 本地随时 |
+| ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程（`Runtime.exec` / `ProcessBuilder`，例外只有 `LocalProcessRunner` 一个类，ADR-0002）** | `mvn test`，以及提交前 |
 | `NoHandBuiltShellCommandTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | `./scripts/assert-no-skipped-tests.sh` | **有测试被跳过就红**：跳过的绿和通过的绿在构建输出里长得一样，而"数据库测试整类没跑"恰好藏在跳过里 | 本地报数前（verify 之后） |

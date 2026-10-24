@@ -14,11 +14,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 沙箱四条约束里不依赖真实进程的那些：路径、超时、身份、环境。
+ * 沙箱几条约束里不依赖真实进程的那些：路径、超时、身份、环境。
  *
  * <p>这几条单独测是因为它们全是纯函数——不需要起进程就能证伪，
  * 而"起进程才能证伪"的那几条（工作目录、环境真的干净、超时真的生效）
- * 放在 {@code SandboxedExecBackendTest} 里用真进程证明。
+ * 放在 {@code SandboxedProcessBackendTest} 与 {@code LocalProcessRunnerTest} 里用真进程证明。
  * 分开放的好处是：这一组跑得极快，另一组红的时候能立刻知道是"约束没写"还是"没接上"。
  */
 class SandboxPolicyTest {
@@ -97,16 +97,6 @@ class SandboxPolicyTest {
         assertThatThrownBy(() -> policy.requireNonRoot(null))
                 .isInstanceOf(SandboxViolationException.class)
                 .hasMessageContaining("取不到");
-    }
-
-    @Test
-    @DisplayName("调用方不能往执行环境里塞变量")
-    void 注入环境变量被拒绝() {
-        assertThatCode(() -> policy.requireNoInjectedEnvironment(Map.of())).doesNotThrowAnyException();
-
-        assertThatThrownBy(() -> policy.requireNoInjectedEnvironment(Map.of("DB_PASSWORD", "x")))
-                .isInstanceOf(SandboxViolationException.class)
-                .hasMessageContaining("独占");
     }
 
     /**

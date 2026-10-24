@@ -1,6 +1,6 @@
 package io.github.claw4j.tools.script;
 
-import org.springaicommunity.agent.common.exec.ExecResult;
+import io.github.claw4j.tools.process.ProcessOutcome;
 
 /**
  * 脚本跑完了但没成功：超时、非零退出、起不来。
@@ -12,8 +12,8 @@ import org.springaicommunity.agent.common.exec.ExecResult;
  */
 public class ScriptExecutionException extends RuntimeException {
 
-    public ScriptExecutionException(ExecResult result, String summary) {
-        super(summary + "（退出码=" + result.exitCode() + "，stderr=" + oneLine(result.stderr()) + "）");
+    public ScriptExecutionException(ProcessOutcome outcome, String summary) {
+        super(summary + "（退出码=" + outcome.exitCode() + "，stderr=" + oneLine(outcome.stderr()) + "）");
     }
 
     /** stderr 可能很长也可能没有；只取第一行非空内容，够模型判断就够了。 */

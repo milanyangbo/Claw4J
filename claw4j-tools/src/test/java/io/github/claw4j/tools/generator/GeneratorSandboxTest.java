@@ -1,16 +1,16 @@
 package io.github.claw4j.tools.generator;
 
+import io.github.claw4j.tools.process.ProcessOutcome;
+import io.github.claw4j.tools.process.ProcessRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springaicommunity.agent.common.exec.ExecResult;
-import org.springaicommunity.agent.common.exec.ExecSpec;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 第 ② 类沙箱：跑的是未审核代码，它<b>不写候选目录</b>。
  *
- * <p>与第 ① 类（{@code SandboxedExecBackend}，包目录内执行）分清的那一条，
+ * <p>与第 ① 类（{@code SandboxedProcessBackend}，包目录内执行）分清的那一条，
  * 在这份测试里是一条具体的断言：沙箱目录不是候选目录。
  * 这两套代码长得越像，"为什么要有两个"就越需要一个说得出来的理由，
  * 而这个理由就是下面第一条用例。
@@ -38,10 +38,11 @@ class GeneratorSandboxTest {
         Path candidate = candidate("copy", "#!/bin/sh\npwd\n");
 
         GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local());
-        ExecResult result = sandbox.run(new ExecSpec("'./run.sh'", 1_000, Map.of()));
+        ProcessOutcome outcome = sandbox.run(new ProcessRequest(
+                List.of(sandbox.sandboxDirectory().resolve("run.sh").toString()), 1_000));
 
         assertThat(sandbox.sandboxDirectory()).isNotEqualTo(candidate);
-        assertThat(result.stdout()).contains(sandbox.sandboxDirectory().toString());
+        assertThat(outcome.stdout()).contains(sandbox.sandboxDirectory().toString());
         // 跑完即删：脚本写下的任何东西都不留在这个进程里。
         assertThat(Files.exists(sandbox.sandboxDirectory())).isFalse();
     }
@@ -52,10 +53,11 @@ class GeneratorSandboxTest {
     void 自测的写入落不回候选目录() throws IOException {
         Path candidate = candidate("writer", "#!/bin/sh\necho written > created.txt\npwd\n");
 
-        ExecResult result = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local())
-                .run(new ExecSpec("'./run.sh'", 1_000, Map.of()));
+        GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local());
+        ProcessOutcome outcome = sandbox.run(new ProcessRequest(
+                List.of(sandbox.sandboxDirectory().resolve("run.sh").toString()), 1_000));
 
-        assertThat(result.stdout()).isNotBlank();
+        assertThat(outcome.stdout()).isNotBlank();
         assertThat(candidate.resolve("created.txt")).doesNotExist();
     }
 
@@ -66,6 +68,10 @@ class GeneratorSandboxTest {
      *
      * <p>断言先确认"宿主机上确实有别的变量"，再确认沙箱里没有它——
      * 少了前一步的话，换一台一个多余变量都没有的机器，这条用例就变成永真。
+     *
+     * <p>"调用方往里塞变量"这一条不再有运行时检查：{@link ProcessRequest} 里
+     * 没有环境变量这一项，塞不进来。这条用例盯的是同一个事实的另一半——
+     * 环境只有沙箱给的那些。
      */
     @Test
     @DisplayName("沙箱环境里没有应用进程的任何环境变量")
@@ -79,25 +85,15 @@ class GeneratorSandboxTest {
                 .filter(key -> !shellGenerated.contains(key))
                 .collect(Collectors.toSet());
 
-        ExecResult result = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local())
-                .run(new ExecSpec("'./run.sh'", 1_000, Map.of()));
+        GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local());
+        ProcessOutcome outcome = sandbox.run(new ProcessRequest(
+                List.of(sandbox.sandboxDirectory().resolve("run.sh").toString()), 1_000));
 
         assertThat(hostKeys).as("宿主机上要有至少一个非 PATH 的环境变量，否则这条断言是永真的").isNotEmpty();
         for (String key : hostKeys) {
-            assertThat(result.stdout()).doesNotContain(key + "=");
+            assertThat(outcome.stdout()).doesNotContain(key + "=");
         }
-        assertThat(result.stdout()).contains("PATH=");
-    }
-
-    @Test
-    @DisplayName("调用方不能往沙箱环境里塞变量")
-    void 注入环境被拒() throws IOException {
-        Path candidate = candidate("inject", "#!/bin/sh\necho hi\n");
-
-        assertThatThrownBy(() -> GeneratorSandbox.forCandidate(candidate, IsolationSpec.local())
-                .run(new ExecSpec("'./run.sh'", 1_000, Map.of("DB_PASSWORD", "x"))))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("自测环境由沙箱独占给出");
+        assertThat(outcome.stdout()).contains("PATH=");
     }
 
     // ------------------------------------------------------------------ 预算与非 root
@@ -107,8 +103,11 @@ class GeneratorSandboxTest {
     void 超时超出上限被拒() throws IOException {
         Path candidate = candidate("timeout", "#!/bin/sh\nsleep 1\n");
 
-        assertThatThrownBy(() -> GeneratorSandbox.forCandidate(candidate, IsolationSpec.local())
-                .run(new ExecSpec("'./run.sh'", 60_000, Map.of())))
+        GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local());
+        ProcessRequest request = new ProcessRequest(
+                List.of(sandbox.sandboxDirectory().resolve("run.sh").toString()), 60_000);
+
+        assertThatThrownBy(() -> sandbox.run(request))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("自测超时");
     }
@@ -118,8 +117,10 @@ class GeneratorSandboxTest {
     void root身份拒绝自测() throws IOException {
         Path candidate = candidate("root", "#!/bin/sh\necho hi\n");
 
-        assertThatThrownBy(() -> GeneratorSandbox.forCandidate(candidate, IsolationSpec.local(), () -> "root")
-                .run(new ExecSpec("'./run.sh'", 1_000, Map.of())))
+        GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local(), () -> "root");
+
+        assertThatThrownBy(() -> sandbox.run(new ProcessRequest(
+                List.of(sandbox.sandboxDirectory().resolve("run.sh").toString()), 1_000)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("非 root");
     }
@@ -129,22 +130,30 @@ class GeneratorSandboxTest {
     void 失败退出码与错误输出() throws IOException {
         Path candidate = candidate("failing", "#!/bin/sh\necho bad 1>&2\nexit 3\n");
 
-        ExecResult result = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local())
-                .run(new ExecSpec("'./run.sh'", 2_000, Map.of()));
+        GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local());
+        ProcessOutcome outcome = sandbox.run(new ProcessRequest(
+                List.of(sandbox.sandboxDirectory().resolve("run.sh").toString()), 2_000));
 
-        assertThat(result.exitCode()).isEqualTo(3);
-        assertThat(result.stderr().strip()).isEqualTo("bad");
+        assertThat(outcome.exitCode()).isEqualTo(3);
+        assertThat(outcome.stderr().strip()).isEqualTo("bad");
     }
 
-    /** 后台执行一律拒绝：句柄没有超时，等于把这一层的预算打开了。 */
+    /**
+     * 入口缺 shebang 时自测给的是一句能改的话，不是操作系统的格式错误。
+     *
+     * <p>静态检查会先挡一道，这一条盯的是"漏过静态检查之后"（比如人手工改了暂存区）
+     * 执行侧也得说得明白。
+     */
     @Test
-    @DisplayName("后台执行被拒绝")
-    void 后台执行被拒() throws IOException {
-        Path candidate = candidate("bg", "#!/bin/sh\necho hi\n");
+    @DisplayName("入口缺 shebang 时报错指名缺第一行")
+    void 缺shebang时报得明白() throws IOException {
+        Path candidate = candidate("noshebang", "echo hi\n");
 
-        assertThatThrownBy(() -> GeneratorSandbox.forCandidate(candidate, IsolationSpec.local())
-                .start(new ExecSpec("'./run.sh'", 1_000, Map.of())))
-                .isInstanceOf(UnsupportedOperationException.class);
+        GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, IsolationSpec.local());
+        ProcessRequest request = new ProcessRequest(
+                List.of(sandbox.sandboxDirectory().resolve("run.sh").toString()), 1_000);
+
+        assertThatThrownBy(() -> sandbox.run(request)).hasMessageContaining("shebang");
     }
 
     // ------------------------------------------------------------------ 给不了的东西要写明

@@ -1,14 +1,14 @@
 package io.github.claw4j.tools.script;
 
+import io.github.claw4j.tools.process.ProcessOutcome;
+import io.github.claw4j.tools.process.ProcessRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springaicommunity.agent.common.exec.ExecResult;
-import org.springaicommunity.agent.common.exec.ExecSpec;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.Map;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -16,14 +16,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 起真进程验沙箱：工作目录、环境、超时、后台句柄。
+ * 起真进程验沙箱：工作目录、环境、超时、身份。
  *
  * <p>为什么说这四条必须起真进程：它们全都发生在"子进程被 fork 出来的那一刻"，
- * 换成假的 {@code ExecBackend} 就只能验到"我们有没有调用它"，
+ * 换成假的 {@code ProcessRunner} 就只能验到"我们有没有调用它"，
  * 验不到"它到底把进程起在了哪儿"。{@code SandboxPolicyTest} 里那组纯函数
  * 验的是约束本身，这一组验的是约束真的接到了进程上。
  */
-class SandboxedExecBackendTest {
+class SandboxedProcessBackendTest {
 
     @Test
     @DisplayName("进程的工作目录锁在脚本包自己的目录里")
@@ -31,12 +31,11 @@ class SandboxedExecBackendTest {
         ScriptPackage pkg = ScriptPackageFixtures.executable("cwd", parent,
                 ScriptPackageFixtures.script("pwd"));
 
-        ExecResult result = SandboxedExecBackend.forPackage(pkg)
-                .run(new ExecSpec("./run.sh", pkg.timeoutMillis(), Map.of()));
+        ProcessOutcome outcome = SandboxedProcessBackend.forPackage(pkg).run(requestFor(pkg));
 
-        assertThat(result.status()).isEqualTo(ExecResult.Status.COMPLETED);
+        assertThat(outcome.status()).isEqualTo(ProcessOutcome.Status.COMPLETED);
         // macOS 上 /var 是 /private/var 的软链，两边都要 realpath 才比得动
-        assertThat(Path.of(result.stdout().strip()).toRealPath()).isEqualTo(pkg.root().toRealPath());
+        assertThat(Path.of(outcome.stdout().strip()).toRealPath()).isEqualTo(pkg.root().toRealPath());
     }
 
     /**
@@ -53,10 +52,9 @@ class SandboxedExecBackendTest {
         ScriptPackage pkg = ScriptPackageFixtures.executable("envdump", parent,
                 ScriptPackageFixtures.script("env"));
 
-        ExecResult result = SandboxedExecBackend.forPackage(pkg)
-                .run(new ExecSpec("./run.sh", pkg.timeoutMillis(), Map.of()));
+        ProcessOutcome outcome = SandboxedProcessBackend.forPackage(pkg).run(requestFor(pkg));
 
-        String dumped = result.stdout();
+        String dumped = outcome.stdout();
         // 先证明 env 真的跑起来了：输出为空的话"什么都没漏"会是一条假绿
         assertThat(dumped).contains("PATH=");
 
@@ -69,12 +67,10 @@ class SandboxedExecBackendTest {
     }
 
     /**
-     * shell 在空环境下也会自己设这三个，它们不是从 JVM 继承来的。
+     * 命令解释器在空环境下也会自己设这三个，它们不是从 JVM 继承来的。
      *
      * <p>为什么值得写出来：不清空环境时它们也在，于是漏掉这份排除名单，
      * 这条用例会在"环境根本没洗"和"洗过了"两种情况下都红或都绿。
-     * 排除的是 shell 自己的规矩（PWD 是工作目录、SHLVL 从 1 开始），
-     * 不是任何一种凭据。
      */
     private static final Set<String> SHELL_GENERATED = Set.of("PWD", "SHLVL", "_", "OLDPWD");
 
@@ -84,33 +80,23 @@ class SandboxedExecBackendTest {
         ScriptPackage pkg = ScriptPackageFixtures.executable("slow", parent,
                 ScriptPackageFixtures.script("sleep 5"), 1_000);
 
-        ExecResult result = SandboxedExecBackend.forPackage(pkg)
-                .run(new ExecSpec("./run.sh", pkg.timeoutMillis(), Map.of()));
+        ProcessOutcome outcome = SandboxedProcessBackend.forPackage(pkg).run(requestFor(pkg));
 
-        assertThat(result.status()).isEqualTo(ExecResult.Status.TIMED_OUT);
+        assertThat(outcome.status()).isEqualTo(ProcessOutcome.Status.TIMED_OUT);
     }
 
-    /** {@code ExecSpec} 不给超时时是 120 秒的默认，那已经越过了沙箱的上限。 */
+    /** 超时没有默认值：{@link ProcessRequest} 构造时就要说清，越界由沙箱这一层判。 */
     @Test
-    @DisplayName("不给超时的调用被拒绝，而不是按默认值放行")
-    void 不给超时被拒绝(@TempDir Path parent) throws IOException {
-        ScriptPackage pkg = ScriptPackageFixtures.executable("notimeout", parent,
+    @DisplayName("超过沙箱上限的超时被拒绝，而不是夹取后照跑")
+    void 超时超出上限被拒(@TempDir Path parent) throws IOException {
+        ScriptPackage pkg = ScriptPackageFixtures.executable("overcap", parent,
                 ScriptPackageFixtures.script("echo hi"));
 
-        assertThatThrownBy(() -> SandboxedExecBackend.forPackage(pkg).run(ExecSpec.of("./run.sh")))
+        ProcessRequest request = new ProcessRequest(List.of(pkg.entrypointPath().toString()), 120_000);
+
+        assertThatThrownBy(() -> SandboxedProcessBackend.forPackage(pkg).run(request))
                 .isInstanceOf(SandboxViolationException.class)
                 .hasMessageContaining("超过上限");
-    }
-
-    @Test
-    @DisplayName("后台执行被拒绝：句柄没有超时，等于把预算打开")
-    void 后台执行被拒绝(@TempDir Path parent) throws IOException {
-        ScriptPackage pkg = ScriptPackageFixtures.executable("background", parent,
-                ScriptPackageFixtures.script("sleep 1"));
-
-        assertThatThrownBy(() -> SandboxedExecBackend.forPackage(pkg).start(ExecSpec.of("./run.sh")))
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("超时");
     }
 
     /** 这条红的那天说明有人在以 root 跑应用：脚本层拒绝跟着变成 root 执行。 */
@@ -120,11 +106,15 @@ class SandboxedExecBackendTest {
         ScriptPackage pkg = ScriptPackageFixtures.executable("asroot", parent,
                 ScriptPackageFixtures.script("echo hi"));
 
-        SandboxedExecBackend backend = SandboxedExecBackend.forPackage(pkg, SandboxPolicy.defaults(),
+        SandboxedProcessBackend backend = SandboxedProcessBackend.forPackage(pkg, SandboxPolicy.defaults(),
                 () -> SandboxPolicy.ROOT_ACCOUNT);
 
-        assertThatThrownBy(() -> backend.run(new ExecSpec("./run.sh", pkg.timeoutMillis(), Map.of())))
+        assertThatThrownBy(() -> backend.run(requestFor(pkg)))
                 .isInstanceOf(SandboxViolationException.class)
                 .hasMessageContaining("root");
+    }
+
+    private static ProcessRequest requestFor(ScriptPackage pkg) {
+        return new ProcessRequest(List.of(pkg.entrypointPath().toString()), pkg.timeoutMillis());
     }
 }

@@ -95,16 +95,15 @@ public final class SandboxPolicy {
     }
 
     /**
-     * 调用方不能往执行环境里塞环境变量。
+     * "调用方不能往执行环境里塞环境变量"这条约束，票 08 之后由<b>类型</b>保证：
+     * {@code ProcessRequest} 只有 argv 与超时两项，环境变量只在起进程时被给出一次
+     * （由沙箱给，不由调用方给），于是"塞一个变量进来"没有入口。
      *
-     * <p>"换个执行位置"不等于"换了个能拿到凭据的位置"——沙箱把环境整个接管，
-     * 于是"脚本能不能拿到数据库口令"这个问题的答案不取决于调用方写了什么。
+     * <p>原先这里是一条运行时检查（{@code requireNoInjectedEnvironment}），
+     * 那版接缝上请求里带着一个 env 字段，于是每次执行都得再判一遍。
+     * 结构上的保证比运行时再判一次更靠得住：它不会被人忘掉调用。
+     * 盯住这件事的现在是 {@code LocalProcessRunnerTest} 里那条"请求里没有环境变量这一项"。
      */
-    public void requireNoInjectedEnvironment(Map<String, String> environment) {
-        if (environment != null && !environment.isEmpty()) {
-            throw new SandboxViolationException("执行环境由沙箱独占给出，调用方不能往里塞环境变量：" + environment.keySet());
-        }
-    }
 
     /**
      * 把一个相对路径解析成沙箱内的绝对路径，越界即拒绝。
