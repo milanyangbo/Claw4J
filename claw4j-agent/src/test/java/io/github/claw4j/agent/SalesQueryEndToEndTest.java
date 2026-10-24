@@ -112,8 +112,8 @@ class SalesQueryEndToEndTest {
                 return answer;
             });
 
-            assertThat(east).doesNotContain("31500").doesNotContain("31,500");
-            assertThat(north).doesNotContain("128400").doesNotContain("128,400");
+            RealModelSupport.assertDoesNotContainAmount(east, NORTH);
+            RealModelSupport.assertDoesNotContainAmount(north, EAST);
         });
     }
 

@@ -96,6 +96,14 @@ public final class RealModelSupport {
      *
      * <p>只重试断言失败（{@link AssertionError}）。网络异常与配置错误<b>不重试</b>：
      * 那是真故障，重试只会把"供应商挂了"显示成"多花了几次调用之后还是挂了"。
+     *
+     * <p><b>与票面的偏差要记账</b>：票面要求"只在'这一轮没调工具'时重试"，
+     * 这里实际是"断言失败就重试"，比票面宽。收窄做不到：端到端那批用的是真执行器、
+     * 真库，测试手上没有"这一轮调没调工具"的计数可判（能拿到计数的那几条
+     * 已经是不经过模型的组件级，本来就不需要重试）。
+     * 为什么这样仍然安全：重试不会把红变绿，只是多花两次调用，
+     * 而且每一次失败都带着原因打进日志——"模型一直不调工具"这种真故障
+     * 最终照样红，只是日志里会先出现两行 warn，那是线索不是掩盖。
      */
     public static <T> T eventually(int attempts, String what, Supplier<T> action) {
         AssertionError last = null;
@@ -128,6 +136,18 @@ public final class RealModelSupport {
         List<String> forms = amountForms(digits);
         assertThat(forms.stream().anyMatch(answer::contains))
                 .as("回答里应当出现 %s 的某种写法 %s，实际拿到的是：%s", digits, forms, answer)
+                .isTrue();
+    }
+
+    /**
+     * 反面：这个数不该出现在回答里。四种写法都得不含——
+     * 只查一种（比如只查 {@code "128400"}）会在模型自己加了千分位时假绿，
+     * 那正是"越权了却看不出来"的形状。
+     */
+    public static void assertDoesNotContainAmount(String answer, String digits) {
+        List<String> forms = amountForms(digits);
+        assertThat(forms.stream().noneMatch(answer::contains))
+                .as("回答里不该出现 %s 的任何写法 %s，实际拿到的是：%s", digits, forms, answer)
                 .isTrue();
     }
 

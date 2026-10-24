@@ -36,13 +36,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 通道里测的是"头 → Principal"，两边都绿也不代表**接在一起**是通的。
  * 这条测试从请求头进、从响应体出，中间不跳任何一环。
  *
- * <p>模型用一个两轮的假模型替掉 mock（mock 是回声，永远不会要求调工具，
- * 于是鉴权根本不会被触发——那正是"看起来绿其实没测到"的典型）。
+ * <p>模型是真的（ADR-0011）：假模型时代这里用一个"两轮假模型"替掉回声模型，
+ * 因为回声永远不会要求调工具，鉴权根本不会被触发——那是"看起来绿其实没测到"的典型。
+ * 换真模型之后这个问题从根上没了：模型自己决定要不要调工具，调了才轮到鉴权拦。
+ * 代价是断言不能钉"它一定调了"，所以判据落在**工具执行次数**上（替身执行器计数），
+ * 而不是落在回答的措辞上。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class AuthorizationOverHttpTest {
 
     private static final String QUESTION = "上周华东区成交额多少";
+
+    /** 种子里华东区上周就是 128400 = 54000 + 74400。 */
+    private static final String EAST = "128400";
 
     @LocalServerPort
     private int port;
@@ -63,7 +69,7 @@ class AuthorizationOverHttpTest {
         // 换真模型之后（ADR-0011）不能再断言"回答里出现那句原话"：
         // 拒绝文本回到模型之后会被它自己组织一遍，原话不保真。
         // 判据因此落在两件确定的事上——工具一次都没被执行、回答里没有那个数。
-        assertThat(body).doesNotContainPattern("128,?400");
+        Amounts.assertOmits(body, EAST);
         assertThat(CountingSqlExecutor.calls())
                 .as("越权的那一次，工具一次都没被执行：拦截发生在执行之前")
                 .isEqualTo(before);
@@ -80,7 +86,7 @@ class AuthorizationOverHttpTest {
 
         // 真模型（ADR-0011）不再复述写死的那一句，它自己组织的回答里带着替身执行器
         // 返回的数。128,400 与 128400 都算——千分位是模型自己加的，不是我们要抓的东西。
-        assertThat(body).containsPattern("128,?400");
+        Amounts.assertMentions(body, EAST);
         assertThat(CountingSqlExecutor.calls()).isGreaterThan(before);
     }
 
@@ -89,7 +95,7 @@ class AuthorizationOverHttpTest {
         int before = CountingSqlExecutor.calls();
         String streamed = ask("guest", "/api/chat/stream");
 
-        assertThat(streamed).doesNotContainPattern("128,?400");
+        Amounts.assertOmits(streamed, EAST);
         assertThat(CountingSqlExecutor.calls()).isEqualTo(before);
     }
 

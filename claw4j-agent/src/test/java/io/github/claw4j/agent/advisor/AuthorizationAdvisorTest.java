@@ -130,8 +130,13 @@ class AuthorizationAdvisorTest {
                         List.of(ChainStubs.responseRequesting(SALES_TOOL))))
                 .blockLast();
 
+        // 这一步不能省：省了的话计数工具就从来没接进链路，salesCalls() 恒为 0，
+        // "工具没跑"这条断言也就永远绿——而它正是这条用例要说的事。
+        // 上一版就是这样，等于这条用例在流式路径上什么都没验。
+        execute(tools, single);
+
         assertThat(textOf(single)).startsWith(AuthorizationAdvisor.DENIAL_PREFIX);
-        assertThat(single.chatResponse().getResults().get(0).getOutput().getToolCalls()).isEmpty();
+        assertThat(ChainStubs.toolCallsOf(single)).isEmpty();
         assertThat(tools.salesCalls()).isZero();
     }
 
@@ -153,7 +158,17 @@ class AuthorizationAdvisorTest {
     private static ChatClientResponse advise(Principal principal, CountingTools tools, String... wanted) {
         ChatClientResponse decided = AuthorizationAdvisorHolder.advisor()
                 .adviseCall(request(principal), ChainStubs.callReturning(ChainStubs.responseRequesting(wanted)));
+        execute(tools, decided);
+        return decided;
+    }
 
+    /**
+     * 把 Advisor 的判定结果交给真的 {@code ToolCallingManager} 去执行，两条路径共用这一步。
+     *
+     * <p>共用的理由是怕走偏：同步与流式必须是同一套判据，否则"流式路径也拦得住"
+     * 会变成一句只在措辞上成立的保证（工具根本没接进链路，计数恒为 0）。
+     */
+    private static void execute(CountingTools tools, ChatClientResponse decided) {
         ToolCallingManager manager = ToolCallingManager.builder()
                 .observationRegistry(ObservationRegistry.NOOP)
                 .build();
@@ -164,7 +179,6 @@ class AuthorizationAdvisorTest {
             // ——这正是"越权时工具一次都没跑"的判据：不是"跑了但结果被丢掉"。
             // 放行时不会走到这里。
         }
-        return decided;
     }
 
     private static ChatClientRequest request(Principal principal) {

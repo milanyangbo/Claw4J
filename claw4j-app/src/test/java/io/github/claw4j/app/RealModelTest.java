@@ -45,13 +45,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RealModelTest {
 
     /** 上周华东区成交额，种子里就是 128400 = 54000 + 74400。 */
-    private static final String[] EAST = {"128,400.00", "128400.00", "128400"};
+    private static final String EAST = "128400";
 
     /** 上周华南区，06 号票"那华南呢"要拿到的那个。 */
-    private static final String[] SOUTH = {"26,000.00", "26000.00", "26000"};
+    private static final String SOUTH = "26000";
 
     /** 上周华北区。 */
-    private static final String[] NORTH = {"31,500.00", "31500.00", "31500"};
+    private static final String NORTH = "31500";
 
     @Autowired
     private AgentPort port;
@@ -68,7 +68,7 @@ class RealModelTest {
     @DisplayName("同步：问一句话拿到库里那个数")
     void 同步闭环() {
         assertThat(port.reply(inbound(freshUser(), "admin", "上周华东区成交额多少")).text())
-                .satisfies(answer -> containsOneOf(answer, EAST));
+                .satisfies(answer -> Amounts.assertMentions(answer, EAST));
     }
 
     @Test
@@ -79,7 +79,7 @@ class RealModelTest {
 
         assertThat(chunks.size()).isGreaterThan(1);
         String streamed = chunks.stream().map(OutboundMessage::text).reduce("", String::concat);
-        containsOneOf(streamed, NORTH);
+        Amounts.assertMentions(streamed, NORTH);
     }
 
     @Test
@@ -88,7 +88,7 @@ class RealModelTest {
         String answer = port.reply(inbound(freshUser(), "guest", "上周华东区成交额多少")).text();
 
         assertThat(answer).contains("没有权限");
-        assertThat(answer).doesNotContain("128400").doesNotContain("128,400");
+        Amounts.assertOmits(answer, EAST);
     }
 
     /**
@@ -100,24 +100,8 @@ class RealModelTest {
     @DisplayName("追问继承上一轮的口径")
     void 追问继承口径() {
         String user = freshUser();
-        containsOneOf(port.reply(inbound(user, "admin", "上周华东区成交额多少")).text(), EAST);
-        containsOneOf(port.reply(inbound(user, "admin", "那华南呢")).text(), SOUTH);
-    }
-
-    /**
-     * 数字有几种写法（千分位、带不带小数），断言"出现其中之一"就够了。
-     * 不用 AssertJ 的 containsAny 是因为它在这个版本上签名对不上数组，
-     * 而这里需要的语义很窄，写清楚比绕 API 省事。
-     */
-    private static void containsOneOf(String actual, String[] expected) {
-        for (String candidate : expected) {
-            if (actual.contains(candidate)) {
-                return;
-            }
-        }
-        assertThat(actual).as("回答里应当出现 %s 之一，实际是：%s",
-                        String.join(" / ", expected), actual)
-                .contains(expected[0]);
+        Amounts.assertMentions(port.reply(inbound(user, "admin", "上周华东区成交额多少")).text(), EAST);
+        Amounts.assertMentions(port.reply(inbound(user, "admin", "那华南呢")).text(), SOUTH);
     }
 
     private static InboundMessage inbound(String user, String role, String text) {

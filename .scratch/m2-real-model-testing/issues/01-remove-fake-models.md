@@ -154,8 +154,34 @@ HTTP 鉴权 3 条、降级 2 条。
 真模型带来的那点真实性会被原样吃掉。这条与 ADR-0011 里"断言只写方向性"不冲突：
 方向性是"不钉死措辞"，不是"不钉结果"。
 
-### 七、留给后面
+### 七、code-review 之后补的（两轴各抓到一条"假绿"）
+
+| 发现 | 处置 |
+| --- | --- |
+| `AuthorizationAdvisorTest.流式路径同样拦得住` 创建了 `CountingTools` 却**从未接进链路**，`tools.salesCalls()` 恒为 0，这条断言永远绿 | 抽 `execute(tools, decided)` 让两条路径共用"把判定结果交给真 `ToolCallingManager`"这一步。变异：流式上放行 → 这条红 |
+| `PiiRedactionAdvisorTest` 的"出站日志"那条，号码由用户消息提供，入站已掩码，于是断言被**入站**那一层满足，出站脱敏做没做都一样绿 | 原用例改名 `入站脱敏之后整条链路上都不落明文`（它验的本来就是入站）；新增 `出站脱敏在完整链路上生效`，号码改由"模型这一轮说了什么"提供（`FixedChatModel`）。变异：脱敏不生效 → 新用例红，入站那条仍绿（各司其职） |
+
+**新增 `FixedChatModel` 与"删掉假模型"不矛盾**，边界写在它的类注释里：它替换的是"模型这一轮说了什么"这一个输入，只用在"要验的东西不在模型身上"的用例里（与 `ChainStubs` 同性质）；
+被删掉的 `ScriptedChatModel` 是编排"第几轮调哪个工具"来**假装端到端**。凡是要验模型行为的用例一律走 `RealModelSupport`。
+
+另外修掉的一致性口径：README 门禁表 177 → 180、"10 条架构决策记录" → 11 条；
+`AuthorizationOverHttpTest` 注释里还写着已删除的"两轮假模型"；跳过闸脚本注释里的历史数字 177
+改成"当时报的是 177"；GLOSSARY 脱敏条目补"入站也要脱敏"；
+`CLAW4J_MODEL_PRIMARY=qwen ./mvnw verify` 那句**此前是假的**（agent 侧固定打 DeepSeek），
+已收窄为"只对 app 那几条生效"并写明理由。
+
+**重试条件的偏差记账**：票面要求"只在'这一轮没调工具'时重试"，
+`RealModelSupport.eventually` 实际是"断言失败就重试"，比票面宽。收窄做不到——
+端到端那批用真执行器真库，测试拿不到"调没调工具"的计数（能拿到计数的那几条
+本就是不经模型的组件级，不需要重试）。它不会把红变绿，只是多两次调用，且每次失败都打日志。
+
+### 八、留给后面
 
 - CI 需要配 `secrets.DEEPSEEK_API_KEY`（workflow 已接上）；没配就是红，不是跳过
 - 温度 0 只是压低随机、不是消除：`ModelSelectionTest` 有一条钉着这个默认值
 - flaky 与成本一旦失控，第一顺位是改成录制回放（cassette），不是退回 mock
+
+**review 留下、判断为不修的**：`AuthorizationAdvisorHolder` 这个单字段持有类（Middle Man）
+与 `CountingTools` / `ThreeTools` 的三计数器同形（Data Clumps）——都在测试代码里，
+拆开收益小于读起来多一层的成本；`ChainStubs` 放在 `advisor` 包但 agent 包也在用，
+挪包是纯整理，等它真出现第二个使用方再说。

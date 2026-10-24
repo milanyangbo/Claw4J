@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 179 个测试（连真实 DeepSeek）
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 180 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -143,13 +143,17 @@ CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 ./mvnw verify
 ```bash
 set -a && . ./.env && set +a   # 把 key 导进当前 shell（Maven 不读 .env）
 ./mvnw verify
-CLAW4J_MODEL_PRIMARY=qwen ./mvnw verify   # 换另一家当主模型
+CLAW4J_MODEL_PRIMARY=qwen ./mvnw verify   # 换另一家当主模型（只对 app 那几条生效，见下）
 ```
 
 app 模块那几条（含 `RealModelTest`）需要真库：本机由 `spring-boot-docker-compose` 按
 `compose.yaml` 自动起，不用手动 `docker compose up -d`。其余模块用 Testcontainers。
 
-回归基线是那 179 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+**`CLAW4J_MODEL_PRIMARY` 只对 app 那几条生效**：agent 侧那批测试装配的是固定的 DeepSeek
+（`RealModelSupport`），刻意不跟着这个开关走——它们要的是"同一家、温度 0"的确定性，
+换厂商该由 `RealModelTest`（走完整 `application.yml`）来验，而不是让每条端到端都变成多厂商矩阵。
+
+回归基线是那 180 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
 烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
 关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
 M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
@@ -442,7 +446,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、177 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、180 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream** | `mvn test`，以及提交前 |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
 | `./scripts/assert-no-skipped-tests.sh` | **有测试被跳过就红**：跳过的绿和通过的绿在构建输出里长得一样，而"数据库测试整类没跑"恰好藏在跳过里 | CI 每次；本地报数前 |
@@ -466,7 +470,7 @@ CI 上同样只跑 `./mvnw -B -ntp verify`，再跑一遍跳过闸；另外有�
 
 ## 文档
 
-- [`docs/adr/`](docs/adr/) —— 10 条架构决策记录，每条都写了 Considered Options 与被否决的原因
+- [`docs/adr/`](docs/adr/) —— 11 条架构决策记录，每条都写了 Considered Options 与被否决的原因
 - [`GLOSSARY.md`](GLOSSARY.md) —— 术语表
 
 ## License

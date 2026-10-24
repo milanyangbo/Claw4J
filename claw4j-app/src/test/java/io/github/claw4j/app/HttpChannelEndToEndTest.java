@@ -12,7 +12,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -33,11 +32,8 @@ class HttpChannelEndToEndTest {
 
     private static final String QUESTION = "上周华东区成交额多少";
 
-    /**
-     * 种子里华东区上周就是 128400 = 54000 + 74400。真模型会自己决定要不要加千分位、
-     * 带不带小数，所以按这几种写法匹配，而不是钉死一种措辞。
-     */
-    private static final Pattern EAST_AMOUNT = Pattern.compile("128,?400(\\.\\d+)?");
+    /** 种子里华东区上周就是 128400 = 54000 + 74400。 */
+    private static final String EAST = "128400";
 
     @LocalServerPort
     private int port;
@@ -100,8 +96,7 @@ class HttpChannelEndToEndTest {
     }
 
     private static void assertMentionsEast(String answer) {
-        assertTrue(EAST_AMOUNT.matcher(answer).find(),
-                "回答里应当出现华东区上周成交额 128400（真查库才拿得到），实际是：" + answer);
+        Amounts.assertMentions(answer, EAST);
     }
 
     /**

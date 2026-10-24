@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.ChatClientAgentPort;
+import io.github.claw4j.agent.model.FixedChatModel;
 import io.github.claw4j.agent.model.RealModelSupport;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
@@ -103,21 +104,25 @@ class PiiRedactionAdvisorTest {
     }
 
     /**
-     * 原始值不落日志。断言分两半才有意义：`不含原始值` 单独看是恒真的
-     * （什么都不打日志它也成立），所以同时断言 `含掩码后的值`——
-     * 证明这条日志真的打了、且打的是脱敏之后的内容。
+     * 请求里带着真实号码时，整条链路上都不该出现明文。
      *
-     * <p>用挂在 logger 上的 {@code ListAppender} 而不是抓 System.out：
-     * 后者抓不到"日志系统在替换 stdout 之前就已经初始化"的那些输出，
+     * <p><b>它验的是入站脱敏，不是出站脱敏</b>——这点必须说清楚，否则这条用例是骗人的：
+     * 号码由用户消息提供，而 {@code ChatClientAgentPort} 在交给链之前就已经把它掩码了，
+     * 模型拿到的是 {@code 138****5678}，它"复述"出来的本来就是掩码串。
+     * 于是下面三条断言全部由入站那一层满足，出站脱敏做没做都一样绿。
+     * 出站脱敏由 {@link #出站脱敏在完整链路上生效} 单独验。
+     *
+     * <p>它仍然值得跑真模型：这是唯一一条"号码真的走了一遍真实模型与真实链路"的用例，
+     * 验的是入站脱敏之后没有任何一环把明文带回来（会话、工具结果、日志）。
+     *
+     * <p>断言里"含掩码后的值"这一半不能省：`不含原始值` 单独看是恒真的
+     * （什么都不打日志它也成立）。用挂在 logger 上的 {@code ListAppender}
+     * 而不是抓 System.out：后者抓不到"日志系统在替换 stdout 之前就已经初始化"的那些输出，
      * 而且是否抓得到取决于同 JVM 里有没有别的测试先碰过日志——
      * 这种依赖测试执行顺序的断言，红了也不知道是真漏还是没抓到。
-     *
-     * <p>这一条走真模型：请求里带着真实号码，模型会在回答里复述它（温度 0 下稳定），
-     * 于是出站日志里那个号码必须是掩码形态。带了两次重试，因为"复述号码"这一环
-     * 终究是模型的行为，不是我们能强制的。
      */
     @Test
-    void 出站日志里也是掩码后的值() {
+    void 入站脱敏之后整条链路上都不落明文() {
         Logger logger = (Logger) LoggerFactory.getLogger(ChatClientAgentPort.class);
         Level originalLevel = logger.getLevel();
         ListAppender<ILoggingEvent> captured = new ListAppender<>();
@@ -126,18 +131,55 @@ class PiiRedactionAdvisorTest {
         logger.setLevel(Level.DEBUG);
 
         try {
-            runner().run(context -> RealModelSupport.eventually(2, "出站日志里是掩码", () -> {
+            runner().run(context -> RealModelSupport.eventually(2, "入站脱敏后不落明文", () -> {
                 OutboundMessage out = context.getBean(AgentPort.class)
                         .reply(new InboundMessage(Principal.readOnly("u-1"), "http:pii-test", ask()));
                 assertThat(out.text()).doesNotContain(PHONE);
 
-                List<String> messages = captured.list.stream()
-                        .map(ILoggingEvent::getFormattedMessage).toList();
-                assertThat(messages).isNotEmpty();
-                assertThat(messages).noneMatch(m -> m.contains(PHONE) || m.contains(ID_CARD));
-                assertThat(messages).anyMatch(m -> m.contains(MASKED_PHONE));
+                assertLogsAreMasked(captured);
                 return null;
             }));
+        } finally {
+            logger.detachAppender(captured);
+            logger.setLevel(originalLevel);
+        }
+    }
+
+    /**
+     * 出站脱敏在完整 {@code AgentPort} 链路上生效，且出站日志打在脱敏**之后**。
+     *
+     * <p>号码不经过用户消息，而是由"模型这一轮说了什么"提供（{@link FixedChatModel}），
+     * 这样入站脱敏对它无事可做，能把它变成掩码的只有出站那一次。
+     * 反过来，若号码由用户消息提供（上一条就是），断言会被入站那一层满足，
+     * 这条用例就退化成"什么都不做也绿"——曾经正是这样。
+     *
+     * <p>它抓的是两类真实故障：脱敏 Advisor 没挂上链（回答与日志都是明文），
+     * 以及有人在链路之外打日志（回答是掩码但日志是明文）。
+     * 后者尤其值得盯：{@code ChatClientAgentPort} 的出站日志敢打全文，
+     * 唯一的理由就是它打的是脱敏之后的内容。
+     */
+    @Test
+    void 出站脱敏在完整链路上生效() {
+        Logger logger = (Logger) LoggerFactory.getLogger(ChatClientAgentPort.class);
+        Level originalLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> captured = new ListAppender<>();
+        captured.start();
+        logger.addAppender(captured);
+        logger.setLevel(Level.DEBUG);
+
+        try {
+            runnerReplying(ANSWER).run(context -> {
+                OutboundMessage out = context.getBean(AgentPort.class)
+                        .reply(new InboundMessage(Principal.readOnly("u-pii-out"), "http:pii-out",
+                                "张三的手机号是多少"));
+
+                assertThat(out.text())
+                        .as("出站回答里必须是掩码，明文号码出现说明脱敏没挂上链")
+                        .contains(MASKED_PHONE)
+                        .doesNotContain(PHONE)
+                        .doesNotContain(ID_CARD);
+                assertLogsAreMasked(captured);
+            });
         } finally {
             logger.detachAppender(captured);
             logger.setLevel(originalLevel);
@@ -183,5 +225,27 @@ class PiiRedactionAdvisorTest {
         return new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(AgentAutoConfiguration.class))
                 .withBean("chatModel", ChatModel.class, RealModelSupport::chatModel);
+    }
+
+    /**
+     * 与 {@link #runner()} 唯一的区别是模型换成"按指定文本作答"的桩。
+     * 只在要验的东西不在模型身上时用（{@link FixedChatModel} 的注释写了边界）。
+     */
+    private static ApplicationContextRunner runnerReplying(String modelReply) {
+        return new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AgentAutoConfiguration.class))
+                .withBean("chatModel", ChatModel.class, () -> FixedChatModel.replying(modelReply));
+    }
+
+    /**
+     * 日志里没有明文、且确实打过掩码值。两半都要：`不含明文` 单独看是恒真的
+     * （不打日志它也成立），`含掩码` 才证明这条日志真的打了。
+     */
+    private static void assertLogsAreMasked(ListAppender<ILoggingEvent> captured) {
+        List<String> messages = captured.list.stream()
+                .map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(messages).isNotEmpty();
+        assertThat(messages).noneMatch(m -> m.contains(PHONE) || m.contains(ID_CARD));
+        assertThat(messages).anyMatch(m -> m.contains(MASKED_PHONE));
     }
 }
