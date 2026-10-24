@@ -91,6 +91,11 @@ M1 结束时能演示的是"问一句话、拿到业务库里的数"，但 Agent
 
 ### CI
 
+> **状态：本里程碑不接 CI**（2026-10-24 定）。功能先做完，CI 后期再加。
+> 下面三条**挂起**，不是验收项；接 CI 时按它们验收，在那之前门禁全在本地——
+> 提交前的 hook、报数前的 `./mvnw verify` 与跳过闸、改动能力层之后的本地冒烟，
+> 清单与跑法在 README「质量门禁」。`.github/workflows/ci.yml` 只是接线图，不声称在跑。
+
 39. As a CI，我想要所有单元测试不烧 token、不依赖网络，so that 我的结果不会因为供应商限流而随机变红
 40. As a CI，我想要 MCP 的 fail-fast 与会话重连**进 CI**（ADR-0008 三条必测之一），so that 连接层那两个故障不会只在生产第一次出现
 41. As a CI，我想要慢的（真实沙箱、真实 MCP 进程）与快测试分层，so that 提交门禁仍然在几秒内给出结论
@@ -125,10 +130,10 @@ M1 结束时能演示的是"问一句话、拿到业务库里的数"，但 Agent
 
 - **好测试 = 只测外部行为**：给什么进、得到什么出；不断言内部调用了哪个方法、不断言配置的值（M1 唯一破例的是调用预算那条——它失效的姿势是静默退回默认值，不钉就没人知道）。
 - **既有先例（照它们的样子写）**：`AgentPortTest`、`ScriptedChatModel`（脚本化假模型，按序吐响应）、`FakeSqlExecutor`（替身让真实实现让位）、`SalesQueryEndToEndTest`、`ToolCallBudgetTest`、`AuthorizationOverHttpTest`（计数差值而非比文本）、`*ArchitectureTest`（边界机器校验）。
-- **MCP 那两条必须进 CI**，所以测试用的 server 用 Java 进程内 stdio 实现，不依赖 Docker、不依赖 Python——否则 ADR-0008 的必测项会变成"只在有 Docker 的机器上测过"。
+- **MCP 那两条必须进默认构建**（`mvn test`，不挑机器），所以测试用的 server 用 Java 进程内 stdio 实现，不依赖 Docker、不依赖 Python——否则 ADR-0008 的必测项会变成"只在有 Docker 的机器上测过"。
 - **Skill 的渐进式披露不是接缝**，是加载策略，直接单测：未命中的 Skill 全文不进上下文（断言拼给模型的提示里没有它的 `content`）。
 - **静态检查用表驱动**：危险清单逐条一个用例，命中必须拒、正常脚本必须放行，两条都要有。
-- **沙箱类与真实调用类测试默认不进提交门禁**：pre-commit 仍只跑 `*ArchitectureTest`（秒级），慢测试留在 `mvn verify` 与 CI。
+- **沙箱类与真实调用类测试默认不进提交门禁**：pre-commit 仍只跑 `*ArchitectureTest`（秒级），慢测试留在 `mvn verify`。
 - **M1 的 177 个测试是回归基线**，M2 结束时必须仍全绿，且数据库那一类不能变成跳过（`./scripts/assert-no-skipped-tests.sh` 盯着）。
 - **每条边界都有一条测试指着**：第 37 条用户故事是这条约定的来源——没有对应测试的拦截等于没拦。
 

@@ -1,12 +1,10 @@
 # Claw4J
 
-[![CI](https://github.com/milanyangbo/Claw4J/actions/workflows/ci.yml/badge.svg)](https://github.com/milanyangbo/Claw4J/actions/workflows/ci.yml)
-
 企业 IM 上的业务数据助手。主场景是 **Text-to-SQL 销售域问答**：业务同学在群里问"上周华东区成交额多少"，Agent 自己查库、自己答。
 
 整个项目是 **基于 Spring AI 2.x 从零重建** 的（1.x 版本已冻结进 `legacy/`，见 [legacy/README.md](legacy/README.md)）。重建的全部设计决策都留了 ADR，见 [`docs/adr/`](docs/adr/)。
 
-> **当前进度：M1 已完成。** M0 骨架：HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1：业务库与种子、工具调用闭环、鉴权与脱敏 Advisor、Text-to-SQL 闭环、会话记忆（落 Postgres）、**真实模型联调（DeepSeek 与通义各跑一遍，主备降级在真实链路上复现）**。M2 接飞书长连接与 Skill 引擎。
+> **当前进度：M2 已完成。** M0 骨架：HTTP+SSE 通道端到端打通、模型按 key 有无自动装配、架构边界由机器校验。M1：业务库与种子、工具调用闭环、鉴权与脱敏 Advisor、Text-to-SQL 闭环、会话记忆（落 Postgres）、**真实模型联调**。M2：能力三层（MCP 跨进程、Script Package 沙箱执行、Agent Skills 渐进式披露）、Subagent 编排、Skill Generator 五步链路、真实外部 CLI 走 MCP。**CI 暂未接入**，门禁全在本地（见「质量门禁」）。
 
 ## 技术栈
 
@@ -131,8 +129,8 @@ CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16 ./mvnw verify
 ```
 
 不设的话这一类测试会整类跳过，并往 stderr 打一行提示。本机宽容是因为不该逼人为了提交去拉镜像，
-但**"跳过的绿"和"通过的绿"长得一样**，所以 CI 上跑的是
-`./mvnw verify -Dclaw4j.dbTests=required`——那边跑不起来就直接红。
+但**"跳过的绿"和"通过的绿"长得一样**，所以报数时要跑
+`./mvnw verify -Dclaw4j.dbTests=required`——跑不起来就直接红，而不是算绿。
 （`CLAW4J_POSTGRES_IMAGE` 与 compose 用的是同一个变量，写进根目录 `.env` 也能生效。）
 
 ### 要真实模型
@@ -177,8 +175,9 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 没有配置任何 key 时**启动失败**，不降级（ADR-0011）。失败消息会点名 `DEEPSEEK_API_KEY` /
 `QWEN_API_KEY`，免得拿着空端点去发第一个请求才炸。
 
-测试与 CI 同样连真实模型，所以 CI 上要配 `secrets.DEEPSEEK_API_KEY`。**没有 key 时测试是红的，
-不是跳过**——被跳过的测试会被 `assert-no-skipped-tests.sh` 放过，那等于没验。
+测试连的是真实模型，key 从环境里取（本机 `set -a; . ./.env; set +a`；将来接 CI 时要配
+`secrets.DEEPSEEK_API_KEY`）。**没有 key 时测试是红的，不是跳过**——被跳过的测试会被
+`assert-no-skipped-tests.sh` 放过，那等于没验。
 
 ### 两家模型怎么切
 
@@ -436,7 +435,7 @@ MCP 这一层的连接生命周期由 `claw4j-tools` 的 `io.github.claw4j.tools
   对一条已经不在的会话重试，会让一次断连变成永久不可用。
 
 这两条是 ADR-0008 的三条必测之一，所以测试里的 MCP server 是 **Java 自实现的进程内 stdio server**
-（`InProcessStdioMcpServer`）：不依赖 Docker、不依赖 Python，于是这两条进得了 CI。
+（`InProcessStdioMcpServer`）：不依赖 Docker、不依赖 Python，于是这两条进得了默认构建。
 **它跨的是协议边界不是 OS 进程边界**。真实部署换的是 `McpServerEndpoint.openTransport()`
 给出来的传输，上面的生命周期代码一行都不用改——M2-07 就是这么接上真的 OS 进程的：
 
@@ -453,7 +452,7 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 子进程的**环境默认为空**，需要 `PATH` 就显式写一行——应用的模型 key 与数据库口令不会漏过去。
 
 这条链路真跑一次的测试打的是 `real-cli` tag，默认不跑（它依赖本机装了 python3 与那些 CLI，
-CI 上没有）：
+不是每台机器都有，所以不进默认构建）：
 
 ```bash
 ./mvnw -Preal-cli -pl claw4j-tools test -Dtest=RealCliMcpEndToEndTest
@@ -475,9 +474,9 @@ new ScriptPackageRunner(packages)                 // 默认：受限子进程
 new ScriptPackageRunner(packages, myFactory)      // 换沙箱：换的是这个
 ```
 
-**沙箱的物理形态是"应用容器内的受限子进程"**，判据只有一条：**能不能在 CI 里跑起来**。
-跑不起来的沙箱等于没有测试，没有测试的边界不能写进 README 当承诺——
-CI 的 runner 上没有 Docker 守护进程，依赖容器的沙箱在那里就是一串红灯。
+**沙箱的物理形态是"应用容器内的受限子进程"**，判据只有一条：**能不能在一台干净的机器上跑起来**
+（不依赖 Docker 守护进程、不依赖 Python）。跑不起来的沙箱等于没有测试，
+没有测试的边界不能写进 README 当承诺。
 （`LocalExecBackend` 自带 `workingDirectory` 与 `cleanEnvironment`，不需要 Docker 与 Python。）
 
 它真的挡住的五样，每样都有一条测试指着：
@@ -656,7 +655,7 @@ claw4j:
 **网络隔离这一项它给不了**，规格里如实写成 `NOT_ISOLATED` 并写明原因——
 纯 Java 起的子进程没有可移植的网络限制手段，而为了限制脚本再去起一条命令
 正是 ADR-0002 禁止的那件事。真正的网络隔离由部署层的容器网络策略给；
-在 CI 上起不来的形态不写进 README 当承诺，所以联网的脚本在**静态检查**那一关就被挡了。
+在干净机器上跑不起来的形态不写进 README 当承诺，所以联网的脚本在**静态检查**那一关就被挡了。
 
 失败时回给模型的是**脚本的原话**（stderr），不做包装——与自纠错同一个道理：
 包装过的话里没有可改的信息，`syntax error near unexpected token` 指得出行，
@@ -785,12 +784,13 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、379 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、379 个测试、打包 | 本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程（`Runtime.exec` / `ProcessBuilder`，ADR-0002）** | `mvn test`，以及提交前 |
 | `NoHandBuiltShellCommandTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
-| `./scripts/assert-no-skipped-tests.sh` | **有测试被跳过就红**：跳过的绿和通过的绿在构建输出里长得一样，而"数据库测试整类没跑"恰好藏在跳过里 | CI 每次；本地报数前 |
+| `./scripts/assert-no-skipped-tests.sh` | **有测试被跳过就红**：跳过的绿和通过的绿在构建输出里长得一样，而"数据库测试整类没跑"恰好藏在跳过里 | 本地报数前（verify 之后） |
 | pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
+| 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}` + `mcp-demo`，真模型走一遍三层与越权（见"一次把三层都接上"那节） | 改了装配或能力层之后 |
 
 启用 hook（一次）：
 
@@ -798,7 +798,12 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
 git config core.hooksPath .githooks
 ```
 
-CI 上同样只跑 `./mvnw -B -ntp verify`，再跑一遍跳过闸；另外有一条检查专门拦住"有人把 `legacy` 加回根 POM 的 modules"。
+**CI 暂未接入。** `.github/workflows/ci.yml` 先留在仓库里当接线图（`verify` + 跳过闸 +
+"legacy 不得回到根 POM 的 modules"），但流水线并没有在跑，README 也不声称它是绿的。
+在那之前，门禁就靠上面这几条，全在本地：提交前 hook、报数前的 `verify` 与跳过闸、
+以及改动能力层之后的本地冒烟。接 CI 时有两件事得先备好：runner 上没有 Docker 守护进程
+（数据库那一类靠 `-Dclaw4j.dbTests=required` 直接判红），以及 `secrets.DEEPSEEK_API_KEY`
+（ADR-0011：没有 key 是红，不是跳过）。
 
 **为什么 Advisor 那条值得单独立规则**：`BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，只认 `StreamAdvisor`。只写 `CallAdvisor` 的鉴权 Advisor 在 `.stream()` 上**既不报错也不生效**，客户端照常拿到回答——鉴权等于没做，而且从日志上看不出来。这种"能编译、能跑、但悄悄不生效"的缺陷只能靠机器拦（ADR-0007）。
 

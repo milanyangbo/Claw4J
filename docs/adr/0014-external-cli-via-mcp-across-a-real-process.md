@@ -7,7 +7,7 @@ date: 2026-10-24
 
 ADR-0003 的二层保留场景（`github`、`unread-mail`、`send-email`）要包的是 **外部 CLI**：`gh` 与 `himalaya`。
 包法固定为"一个 MCP server 进程 + stdio"，Java 侧只见工具名与参数 Schema。
-M2-02 先把这条链路在**进程内**跑通（连接生命周期、fail-fast、会话丢失重连都进 CI），
+M2-02 先把这条链路在**进程内**跑通（连接生命周期、fail-fast、会话丢失重连都进默认构建），
 M2-07 把它接到**真的 OS 进程**上：换掉的是端点给出的传输实现，上面的连接代码一行未动。
 
 ## Considered Options
@@ -50,10 +50,10 @@ ADR-0002 禁的是**Java 侧构造一条命令行交给 shell 解释**（1.x 的
 `examples/scripts/summarize` 因此做成抽取式摘要而不是调大模型——
 不是不想做生成式，是这一层传不进凭据，也不该传进去。需要凭据的能力走 MCP。
 
-### 演示不进 CI
+### 演示不进默认构建
 
 真实外部 CLI 依赖本机装了什么（`python3` / `gh` / `himalaya` / `xurl`），
-CI 的 runner 上没有这些。`RealCliMcpEndToEndTest` 打 `real-cli` tag，
+不是每台机器都有。`RealCliMcpEndToEndTest` 打 `real-cli` tag，
 父 pom 的 surefire 默认排除，`-Preal-cli` 才跑。
 
 用 tag 排除而不是在测试里 `assumeTrue`：assume 的结果是 **skipped**，
@@ -61,7 +61,7 @@ CI 的 runner 上没有这些。`RealCliMcpEndToEndTest` 打 `real-cli` tag，
 （`scripts/assert-no-skipped-tests.sh`），用 assume 就是给那条闸开口子。
 排除是"这次没选它"，报表里根本不出现。
 
-能被 CI 拦住的那些仍然进 CI：命令为空、参数有空项、命令不存在时连接必须失败
+不依赖本机的那些仍然进默认构建：命令为空、参数有空项、命令不存在时连接必须失败
 而不是"连上了但工具清单为空"（后者正是 02 号票要挡的姿势）。
 
 ### 1.x 的 8 个保留场景全部落位
