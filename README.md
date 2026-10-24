@@ -49,7 +49,7 @@
 ### 最省事：什么都不装
 
 ```bash
-./mvnw verify                        # 一条命令：构建 + 架构检查 + 244 个测试（连真实 DeepSeek）
+./mvnw verify                        # 一条命令：构建 + 架构检查 + 277 个测试（连真实 DeepSeek）
 ./mvnw -pl claw4j-app spring-boot:run
 ```
 
@@ -153,7 +153,7 @@ app 模块那几条（含 `RealModelTest`）需要真库：本机由 `spring-boo
 （`RealModelSupport`），刻意不跟着这个开关走——它们要的是"同一家、温度 0"的确定性，
 换厂商该由 `RealModelTest`（走完整 `application.yml`）来验，而不是让每条端到端都变成多厂商矩阵。
 
-回归基线是那 244 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
+回归基线是那 277 个测试，它们**全都在连真实 DeepSeek**（ADR-0011）。这是有代价的：
 烧 token、变慢、且模型有随机性——所以温度一律设 0，断言只写方向性（拿到数 / 拿不到数），
 关键断言给两次重试。代价换来的东西也实在：只在真链路上才暴露的缺陷能被测到，
 M1 那两个（降级丢工具、内部重试把降级拖成分钟级）就是这样抓出来的。
@@ -529,6 +529,53 @@ claw4j:
 **这里没有的**：让模型自己产出一份做法。这份 SKILL.md 仍然是人写的；
 模型产出脚本包并关进五步链路是 M2-06 的事。
 
+### Subagent：派出去跑，只把结论带回来
+
+前两节说的是"能力从哪来、按什么顺序用"，这一节说的是**长任务别把中间过程摊在会话里**。
+委派本身是父 Agent 的一个工具（`Task`），执行时新开一个独立上下文窗口（ADR-0012）：
+
+```
+父这一轮：用户问 → 模型决定派出去 → Task(结果只有一个字符串：子的结论) → 组织成回答
+子那一轮：只拿到 task 这一句 → 自己调工具若干次 → 只把最后那句交回去
+```
+
+**做深的是上下文隔离，不是"起了第二个 Agent"**——后者配一个新 `ChatClient` 就有。
+隔离盯三样，每样都有断言：
+
+| 隔离 | 父那边看到什么 | 盯它的测试 |
+| --- | --- | --- |
+| 子的中间轨迹 | 不进父上下文（子的工具调用与结果留在子窗口） | `SubagentRunnerTest` 只回传结论；`SubagentEndToEndTest` 回传给父的只有结论 |
+| 子的系统提示词 | 只在子窗口出现一次；父的工具描述里只有名字与描述 | 同上（两条都带正向对照：那样东西在子侧确实出现过） |
+| 父的对话历史 | 子看不见，它只拿到委派时那段 `task` | 委派接口只有一个字符串入参 |
+
+委派**不等于把全部能力交出去**：子能碰哪些工具由定义文件里的 `tools` / `disallowedTools`
+决定，白名单点名了却没装上的工具按失败处理（不是"少给一个"）。
+`Task` 工具的描述里只有每个 Subagent 的名字与一句话它管什么——
+与 Skill 同一套渐进式披露，十份流程说明不会常驻在父的提示词里。
+
+两条安全口径值得单独说，因为它们都有测试指着：
+
+- **委派不提权**：子那一侧照样过 `AuthorizationAdvisor`，用的是**父那个身份本身**
+  （`PrincipalCapturingAdvisor` 断言是同一个对象）。guest 派出去的 Subagent 去查
+  `sales_order` 时被挡在**执行之前**——断言同时盯着"那个工具一次都没被调用"。
+- **子也吃 3 / 6 预算**：子链的 `ToolCallingManager` 与父同一个构造入口。
+  委派不能变成绕过预算的口子，否则一个坏掉的脚本在子里循环时父这边看起来毫无动静。
+
+`Task` 自己登记的权限是 **`delegate_task` 动作，业务表一张都没有**：
+委派这个动作不碰库，碰库的是子要调的那个工具，那一步按它自己的登记表鉴权。
+所以 `read-only` 与 `guest` 也都能委派——给不改变它们看得到什么。
+
+启用这一层同样是显式配目录（目录下每个 `*.md` 是一个专职 Agent，配了却读不出来即启动失败）：
+
+```yaml
+claw4j:
+  subagents:
+    directory: agents      # 每个 *.md 一份定义：name / description / tools / disallowedTools + 正文
+```
+
+**这里没有的**：嵌套委派（定义里写 `Task` 按定义错误失败）、并行多个 Subagent、
+跨进程 Subagent（A2A，M3）。子 Agent 沿用父的模型实例，不再引第二套 key。
+
 ## 会话记忆：记得住上一轮，而且换条通道也记得住
 
 第一轮问"上周华东区成交额多少"，第二轮问"那华南呢"——第二轮不该要求把"上周""成交额"重讲一遍。
@@ -563,7 +610,7 @@ claw4j:
 
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
-| `./mvnw verify` | 编译、244 个测试、打包 | CI 每次 push/PR；本地随时 |
+| `./mvnw verify` | 编译、277 个测试、打包 | CI 每次 push/PR；本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程（`Runtime.exec` / `ProcessBuilder`，ADR-0002）** | `mvn test`，以及提交前 |
 | `NoHandBuiltShellCommandTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段，加错依赖当场红 |
@@ -588,7 +635,7 @@ CI 上同样只跑 `./mvnw -B -ntp verify`，再跑一遍跳过闸；另外有�
 
 ## 文档
 
-- [`docs/adr/`](docs/adr/) —— 11 条架构决策记录，每条都写了 Considered Options 与被否决的原因
+- [`docs/adr/`](docs/adr/) —— 12 条架构决策记录，每条都写了 Considered Options 与被否决的原因
 - [`GLOSSARY.md`](GLOSSARY.md) —— 术语表
 
 ## License

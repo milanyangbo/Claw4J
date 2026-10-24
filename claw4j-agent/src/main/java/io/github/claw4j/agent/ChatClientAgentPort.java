@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
 
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -88,6 +89,11 @@ public class ChatClientAgentPort implements AgentPort {
         // 代价要记账：模型从此看不到用户写的原始号码。当前没有"按手机号查订单"这类工具，
         // 掩码不影响任何能力；哪天有了，得给那个工具开一条白名单，而不是把入站脱敏撤掉。
         return chatClient.prompt(PiiRedactor.mask(message.text()))
+                // 身份也放进工具上下文：委派（Subagent）发生在工具内部，
+                // 那里拿不到 Advisor 上下文，只能从 ToolContext 里取。
+                // 子 Agent 要用**父这个身份**继续鉴权——委派不提权，
+                // 而"子那边拿不到身份"的失败姿势必须是拒绝（见 SubagentDelegation）。
+                .toolContext(Map.of(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, message.principal()))
                 .advisors(spec -> spec
                         .param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, message.principal())
                         .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY,

@@ -72,12 +72,16 @@ public class AgentAutoConfiguration {
      * 单工具形态**静默不进清单**——不报错、不告警，只是模型看不见那个工具，
      * 直到有人问"为什么它不知道有这个能力"。
      *
+     * <p>委派那一层（{@code SubagentAutoConfiguration}）也用这一个方法
+     * 给子 Agent 凑工具集：那里漏收一种形态的表现是"子 Agent 白名单点名了却说没有这个工具"，
+     * 是同一个坑的第三次出现。收工具这件事只该有一处实现。
+     *
      * <p>顺序不影响行为：工具是按名字被模型和鉴权认领的，清单里谁先谁后都一样。
      * 重名不在这里去重——两个来源导出同名工具是配置错误，该在清单断言上红，
      * 而不是被这里悄悄吞掉一个。
      */
-    private static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
-                                                           ObjectProvider<ToolCallbackProvider> providers) {
+    public static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
+                                                          ObjectProvider<ToolCallbackProvider> providers) {
         List<ToolCallback> collected = new ArrayList<>();
         callbacks.orderedStream().forEach(collected::add);
         providers.orderedStream()

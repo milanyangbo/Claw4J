@@ -30,6 +30,24 @@
             <artifactId>claw4j-tools</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!--
+          Subagent 定义文件的解析（M2-05）：front matter（name / description / tools /
+          disallowedTools）与正文的分拆用这里的 MarkdownParser，与 Skill 那一层
+          读 SKILL.md 是同一个解析器——两份文件格式一致，"专职 Agent 与做法"
+          才是同一种东西。只取解析器这一个用法，不引它的 Task 执行器：
+          那个执行器用的是它自己的 ChatClient 装配（拿不到本项目的调用预算与鉴权 Advisor）。
+          排除 flexmark 的理由同 tools 模块。
+        -->
+        <dependency>
+            <groupId>org.springaicommunity</groupId>
+            <artifactId>spring-ai-agent-utils</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.vladsch.flexmark</groupId>
+                    <artifactId>flexmark-html2md-converter</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-client-chat</artifactId>
