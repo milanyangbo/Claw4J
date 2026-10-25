@@ -19,8 +19,7 @@ import java.util.List;
  *       作为那次调用的结果回来一次。
  * </ul>
  * 于是"有二十个 Skill"的代价是二十行描述，不是二十份正文。
- * 这条边界由 {@code AgentSkillsTest} 里"描述不含正文"与端到端里
- * "未命中的正文没进上下文"两条断言各盯一头。
+ * 这条边界由 {@code SkillCatalogTest} 里"描述不含正文"与"没点到的正文不回来"两条断言各盯一头。
  *
  * <p><b>为什么不再包一层自己的工具类型</b>：社区包的 {@code SkillsTool.Builder.build()}
  * 直接返回 {@code ToolCallback}，它的工具名、输入 Schema、以及"用名字取正文"的行为

@@ -44,6 +44,10 @@
              插件版本在 pluginManagement 里没有版本就解析不出来（构建直接失败）。
              这个版本就是此前一直跑的那个（构建日志里那行 maven-surefire-plugin:3.5.4）。 -->
         <maven-surefire.version>3.5.4</maven-surefire.version>
+        <!-- 覆盖率红线：docs/agents/testing.md 第二节的第三条界限。0.8.13 支持 JDK 21 的 class 文件版本。
+             换版本先确认它能读 21 的字节码，否则报的是"无法插桩"，看起来像测试全挂。 -->
+        <jacoco.version>0.8.13</jacoco.version>
+        <jacoco.line.minimum>0.60</jacoco.line.minimum>
     </properties>
 
     <dependencyManagement>
@@ -181,6 +185,72 @@
                                     <version>[3.9.0,)</version>
                                     <message>Maven 3.9.0 起步；仓库自带 wrapper，用 ./mvnw 就不用自己装</message>
                                 </requireMavenVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!--
+              行覆盖率红线，见 docs/agents/testing.md 第二节：文件数与方法数是上限，覆盖率是下限。
+              上限靠数文件，下限只能靠工具——少写几份很容易，少写到漏掉整块功能没人看得出来。
+
+              check 绑在 verify 而不是 test：单元测试阶段还没有 exec 数据，
+              绑 test 会永远读到"没有覆盖率"然后按 0 判红。
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <configuration>
+                    <!--
+                      不算进覆盖率的分母：
+                      - package-info：纯声明
+                      - *Application：启动类，方法体只是把控制权交给框架
+                      - *Configuration / *Properties：装配与配置绑定，没有分支；
+                        它们接得对不对由整机端到端那一份证明，不由"逐行覆盖"证明
+                      排除的是"测它等于复述框架注解"的那部分，不是难测的那部分。
+                      写在插件层而不是 check 的执行里：report 与 check 必须看同一批类，
+                      否则 csv 上的数字和闸门的判断会对不上（两份报告两套分母，谁也说不清哪个算数）。
+                    -->
+                    <excludes>
+                        <exclude>**/package-info.class</exclude>
+                        <exclude>**/*Application.class</exclude>
+                        <exclude>**/*Configuration.class</exclude>
+                        <exclude>**/*Properties.class</exclude>
+                    </excludes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>check-line-coverage</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.line.minimum}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
                             </rules>
                         </configuration>
                     </execution>

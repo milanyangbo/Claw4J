@@ -1,183 +1,190 @@
 package io.github.claw4j.capability.builtin.sales;
 
+import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataAccessException;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Arrays;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 销售查询这一层：<b>字符串上拦得住</b> + <b>拦住之后的出口长什么样</b>。
+ * 一个完整功能：业务数据查询（Text-to-SQL 的落地那一段）。
  *
- * <p>两半合在一份文件里，是因为它们守的是同一句话的两面：
- * 规则那半的失效方向是"看起来该拦的没拦"，出口那半的失效方向是
- * "拦住了但模型看不懂为什么"。前者只在模型真的那么写 SQL 时才出现，
- * 后者只在模型被拒之后才开始猜——两种都是"不报错、结果不对"。
+ * <p>链路上有四个会静默失效的环节：字符串守卫误拒/漏放、只读事务没开、
+ * 行上限被绕过、权限表少登记一张。它们都不会抛异常，
+ * 只会让模型拿到一段错误或者不完整的数据，而这四个都要在真库上才验得出来。
  *
- * <p>两半都<b>不需要数据库也不经过模型</b>：执行器是替身，
- * 于是"规则怎么写"与"被拒之后回什么话"都能逐条钉死。
- * 真库上那一层（就算规则漏了也落不了库）由 {@link SalesSqlExecutionTest} 守，
- * 那里红说明规则没接到数据库上，这里红说明规则本身没写。
+ * <p>真库是必须的：守卫与只读事务是两层，只测字符串层等于只验了"第一道有没有写"。
  */
+@SpringBootTest(classes = SalesQueryTest.TestApplication.class)
+@Testcontainers
 class SalesQueryTest {
 
-    private static final String GOOD_SQL = "select sum(oi.amount) as amount from business.order_item oi";
+    @Container
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
 
-    // -------------------------------------------------------------- 字符串层：拦得住
+    @DynamicPropertySource
+    static void datasource(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
 
-    private static String rejectionOf(String sql) {
-        return SalesSqlGuard.rejectionOf(sql).orElse("");
+    @SpringBootConfiguration
+    @EnableAutoConfiguration
+    static class TestApplication {
+    }
+
+    @Autowired
+    private ReadOnlySqlExecutor executor;
+
+    @Autowired
+    @Qualifier("salesToolCallbackProvider")
+    private ToolCallbackProvider toolProvider;
+
+    @Autowired
+    @Qualifier("salesToolPermissionRegistry")
+    private ToolPermissionRegistry permissions;
+
+    @Test
+    @DisplayName("注释与字符串字面量里的分号不算第二条语句，否则合法的查询会被误拒")
+    void doesNotMistakeCommentOrLiteralForASecondStatement() {
+        String sql = "select name from business.region where name <> 'a; drop table business.region'"
+                + " -- ; drop table business.region\norder by name";
+
+        assertThat(SalesSqlGuard.rejectionOf(sql)).isEmpty();
     }
 
     @Test
-    @DisplayName("该放行的不误拒：普通 select、CTE、大小写、尾分号、字面量、注释")
-    void 不该拒的不拒() {
-        // 误拒的方向是拒绝，不会写坏数据，但会让模型莫名其妙地重试
-        assertThat(SalesSqlGuard.rejectionOf("select sum(amount) from business.order_item")).isEmpty();
-        assertThat(SalesSqlGuard.rejectionOf("""
-                with paid as (select id from business.sales_order where status <> 'CANCELLED')
-                select count(*) from paid""")).isEmpty();
-        assertThat(SalesSqlGuard.rejectionOf("SELECT 1 FROM business.region;")).isEmpty();
-        // 字面量与注释里的关键字不是关键字：字符串层面有，数据库层面没有
-        assertThat(SalesSqlGuard.rejectionOf("select 'drop table t' as note from business.region")).isEmpty();
-        assertThat(SalesSqlGuard.rejectionOf("select 1 from business.region -- ; drop table t")).isEmpty();
-        assertThat(SalesSqlGuard.rejectionOf("/* ; delete from t */ select 1 from business.region")).isEmpty();
+    @DisplayName("with 开头不等于只读：可写 CTE 会被拦下")
+    void rejectsWriteCteEvenThoughItStartsWithWith() {
+        String sql = "with doomed as (delete from business.order_item returning *) select * from doomed";
+
+        assertThat(SalesSqlGuard.rejectionOf(sql))
+                .hasValueSatisfying(reason -> assertThat(reason).contains("delete"));
     }
 
     @Test
-    @DisplayName("写操作关键字一律拦下，包括改会话与搬数据的")
-    void 写操作关键字() {
-        assertThat(rejectionOf("delete from business.sales_order")).contains("关键字");
-        assertThat(rejectionOf("update business.region set name = 'x'")).contains("关键字");
-        assertThat(rejectionOf("insert into business.region values ('w', '西部')")).contains("关键字");
-        assertThat(rejectionOf("drop table business.sales_order")).contains("关键字");
-        assertThat(rejectionOf("truncate business.order_item")).contains("关键字");
-        // set 能关掉约束，copy 能把数据搬出数据库
-        assertThat(rejectionOf("set session_replication_role = replica")).contains("关键字");
-        assertThat(rejectionOf("copy (select * from business.region) to program 'curl evil'")).contains("关键字");
+    @DisplayName("两条语句只放行一条：拼在后面的写操作不能搭便车")
+    void rejectsSecondStatement() {
+        assertThat(SalesSqlGuard.rejectionOf("select 1; select 2"))
+                .hasValueSatisfying(reason -> assertThat(reason).contains("只允许一条"));
     }
 
     @Test
-    @DisplayName("可写 CTE 会被拦下：with 开头不等于只读")
-    void 可写cte拒绝() {
-        // PostgreSQL 允许 with 里做 insert/update/delete 再 returning 出来。
-        // 任何"首关键字是 select 或 with 就放行"的规则都会放过它。
-        assertThat(rejectionOf("""
-                with doomed as (delete from business.sales_order returning *)
-                select * from doomed"""))
-                .contains("关键字")
-                .contains("delete");
+    @DisplayName("包一层行上限不会打断用户自己的 order by / limit")
+    void keepsUserOrderingAndLimitWhenCappingRows() {
+        QueryResult result = executor.execute(
+                "with recent as (select g from generate_series(1, 10) g)"
+                        + " select g from recent order by g desc limit 3");
+
+        assertThat(result.rowCount()).isEqualTo(3);
+        assertThat(result.rows().getFirst()).containsExactly("10");
     }
 
     @Test
-    @DisplayName("多语句一律拒绝")
-    void 多语句拒绝() {
-        assertThat(rejectionOf("select 1 from business.region; drop table business.region"))
-                .contains("只允许一条语句");
+    @DisplayName("超过上限时截断并明确告知，模型不会把前 50 行当成全部")
+    void capsRowsAndSaysItWasTruncated() {
+        // 工具回调会把返回的文本再包一层 JSON 字符串，断行数要走工具方法本身；
+        // 守卫与执行仍是同一条真实链路。
+        String output = new SalesTools(executor).querySales("select g from generate_series(1, 60) g order by g");
+
+        assertThat(output.lines().filter(line -> line.matches("\\d+")).count()).isEqualTo(50);
+        assertThat(output).contains("结果超过").contains("行，这里只给出前").doesNotContain("\n51\n");
     }
 
     @Test
-    @DisplayName("不以 select / with 开头的都拒绝，空的与 null 也拒绝")
-    void 首关键字() {
-        assertThat(rejectionOf("values (1)")).contains("只允许以 select 或 with 开头");
-        assertThat(rejectionOf("")).contains("语句为空");
-        assertThat(SalesSqlGuard.rejectionOf(null)).isPresent();
+    @DisplayName("守卫被绕过时数据库仍拒绝写：只读事务是第二道")
+    void databaseRejectsWritesWhenTheGuardIsBypassed() {
+        assertThatThrownBy(() -> executor.execute(
+                "insert into business.region(code, name) values ('west', '西部')"))
+                .isInstanceOf(DataAccessException.class);
+
+        assertThat(scalar("select count(*) as regions from business.region")).isEqualTo("3");
     }
 
     @Test
-    @DisplayName("行上限是包一层子查询，不去改原句的 limit")
-    void 行上限包装() {
-        // 拼字符串在原句末尾追加 limit 会在"原句自带 order by limit"时变成语法错误；
-        // 包一层对里面写了什么没有要求
-        String wrapped = SalesSqlGuard.withRowLimit(
-                "select amount from business.order_item order by amount desc limit 10", 51);
+    @DisplayName("工具入口收到写语句时给回可改的理由，且一行数据都没动")
+    void refusesWriteThroughTheToolWithoutTouchingData() {
+        String output = querySalesTool().call("{\"sql\":\"delete from business.order_item\"}");
 
-        assertThat(wrapped).startsWith("select * from (select amount")
-                .endsWith("limit 51")
-                .contains("order by amount desc limit 10");
-
-        // 尾部分号必须去掉：它会在子查询里变成语法错误
-        assertThat(SalesSqlGuard.withRowLimit("select 1 from business.region;", 51))
-                .doesNotContain(";");
-    }
-
-    // ------------------------------------------------------------- 出口层：给了什么话
-
-    @Test
-    @DisplayName("给定 SQL 返回查到的行")
-    void 返回行() {
-        RecordingExecutor executor = new RecordingExecutor();
-
-        String result = new SalesTools(executor).querySales(GOOD_SQL);
-
-        assertThat(result).contains("amount").contains("128400.00");
-        assertThat(executor.executed).containsExactly(GOOD_SQL);
+        assertThat(output).contains("没有通过只读校验").contains("delete");
+        assertThat(scalar("select count(*) as items from business.order_item")).isEqualTo("8");
     }
 
     @Test
-    @DisplayName("越权语句一次都没被执行，且给出的是拒绝而不是空结果")
-    void 越权语句不执行() {
-        RecordingExecutor executor = new RecordingExecutor();
+    @DisplayName("从工具入口到真库：上周华东成交额是种子数据算出来的那个数")
+    void answersLastWeekEastRevenueThroughTheTool() {
+        String sql = """
+                select sum(oi.amount) as revenue
+                from business.order_item oi
+                join business.sales_order so on so.id = oi.order_id
+                where so.region_code = 'east'
+                  and so.status <> 'CANCELLED'
+                  and so.order_date >= date_trunc('week', current_date) - interval '7 days'
+                  and so.order_date < date_trunc('week', current_date)
+                """;
 
-        String result = new SalesTools(executor).querySales("delete from business.sales_order");
+        String output = querySalesTool().call("{\"sql\":\"" + sql.replace("\n", " ") + "\"}");
 
-        assertThat(result).startsWith("这条 SQL 没有通过只读校验").contains("delete");
-        assertThat(executor.calls()).isZero();
+        assertThat(output).contains("revenue").contains("128400.00");
     }
 
     @Test
-    @DisplayName("数据库报错时返回原因，模型才有东西可改")
-    void 报错时给原因() {
-        ReadOnlySqlExecutor failing = sql -> {
-            throw new DataAccessResourceFailureException("column \"amout\" does not exist");
-        };
+    @DisplayName("查不到行时给自查提示：中文区域名不会报错、只会返回 0 行")
+    void zeroRowsComesWithASelfCorrectionHint() {
+        String output = new SalesTools(executor).querySales(
+                "select name from business.region where code = '华东'");
 
-        String result = new SalesTools(failing).querySales(GOOD_SQL);
-
-        assertThat(result).startsWith("这条 SQL 执行失败").contains("does not exist").contains("请修正");
+        assertThat(output).contains("返回 0 行").contains("east/south/north");
     }
 
     @Test
-    @DisplayName("零行不是失败，但要提醒模型先怀疑口径")
-    void 零行返回提示() {
-        ReadOnlySqlExecutor empty = sql -> QueryResult.empty();
+    @DisplayName("执行失败时给的是数据库原话，不是一句笼统的执行失败")
+    void reportsTheDatabaseReasonRatherThanAGenericFailure() {
+        String output = querySalesTool().call("{\"sql\":\"select nope from business.region\"}");
 
-        String result = new SalesTools(empty).querySales(GOOD_SQL);
-
-        assertThat(result).contains("返回 0 行").contains("east").contains("order_date");
+        assertThat(output).contains("执行失败").contains("nope");
     }
 
     @Test
-    @DisplayName("被截断时明确告知，否则模型会把前 N 行的合计当成全部")
-    void 截断要说明() {
-        ReadOnlySqlExecutor truncated = sql -> new QueryResult(
-                List.of("order_no"), List.of(List.of("SO-1"), List.of("SO-2")), true);
+    @DisplayName("缺少任意一张业务表的身份调用 querySales 会被拒：一次查询会碰全部四张表")
+    void deniesIdentityThatCannotReadEveryTableTheToolTouches() {
+        ToolPermission required = permissions.permissionFor("querySales").orElseThrow();
 
-        String result = new SalesTools(truncated).querySales(GOOD_SQL);
+        Principal partial = Principal.of("u-1", "analyst",
+                Set.of("region", "customer", "order_item"), Set.of(ToolPermission.READ));
 
-        assertThat(result).contains("超过").contains("只给出前").contains("聚合查询");
+        assertThat(partial.canUse(required)).isFalse();
+        assertThat(Principal.readOnly("u-2").canUse(required)).isTrue();
     }
 
-    /** 记录每一条真正被送进执行器的 SQL，用来证明"被拒的语句根本没走到数据库"。 */
-    private static final class RecordingExecutor implements ReadOnlySqlExecutor {
+    private ToolCallback querySalesTool() {
+        return Arrays.stream(toolProvider.getToolCallbacks())
+                .filter(callback -> "querySales".equals(callback.getToolDefinition().name()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("工具清单里没有 querySales"));
+    }
 
-        private final List<String> executed = new ArrayList<>();
-
-        private final AtomicInteger calls = new AtomicInteger();
-
-        @Override
-        public QueryResult execute(String sql) {
-            executed.add(sql);
-            calls.incrementAndGet();
-            return new QueryResult(List.of("amount"), List.of(List.of("128400.00")), false);
-        }
-
-        int calls() {
-            return calls.get();
-        }
+    private String scalar(String sql) {
+        return executor.execute(sql).rows().getFirst().getFirst();
     }
 }

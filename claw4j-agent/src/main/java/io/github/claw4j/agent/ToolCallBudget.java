@@ -26,7 +26,7 @@ import org.springframework.ai.model.tool.ToolCallingManager;
  * 五参重载里传进去的 {@code ToolCallingManager} 才是生效的那个，
  * 而自动配置的那个 manager 只有在使用 Boot 注入的 {@code ChatClient.Builder} bean 时才会被用上。
  * 等到哪天改成注入 bean，这两个数字会静默退回 40/150——所以这处有单测钉着
- * （见 {@code TextToSqlLoopTest} 的"一直写错时在上限处截断"）。
+ * （见对话主链路那份测试的"一直写错时在上限处截断"）。
  */
 public final class ToolCallBudget {
 

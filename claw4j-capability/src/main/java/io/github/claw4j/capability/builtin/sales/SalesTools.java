@@ -34,7 +34,7 @@ import java.util.Objects;
  *
  * <p>它也不认识 Agent 与通道：只认参数、只给返回值。一旦工具里出现"查一下当前用户是谁"
  * 或者"回一条消息"，它就长进 Agent 里了，从此只能在 Agent 的上下文里测
- * （见 {@code ToolsArchitectureTest}）。
+ * （见能力模块的边界闸）。
  */
 public class SalesTools {
 

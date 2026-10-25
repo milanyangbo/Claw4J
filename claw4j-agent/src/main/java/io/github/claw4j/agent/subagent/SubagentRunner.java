@@ -27,7 +27,7 @@ import java.util.function.Supplier;
  *       它只拿到 {@link #delegate} 的 {@code task} 那一段。
  *   <li><b>回传的只有 {@code content()}</b>：子 Agent 中间调了几次工具、每次拿到什么，
  *       全留在子窗口的消息里，父那边只有"这次委派的结果"这一个字符串。
- *       这是"只回传结论"在代码里的样子，也是 {@code SubagentRunnerTest} 那条断言盯的地方。
+ *       这是"只回传结论"在代码里的样子，也是子 Agent 委派那份测试里那条断言盯的地方。
  *   <li><b>子链上不挂记忆与脱敏</b>：记忆会把子的中间过程写进会话，等于把刚隔离掉的东西
  *       从另一个门漏回去；脱敏在父链出站前还会做一次，子在中间打码只会让它认不出自己查到的值。
  * </ul>
@@ -35,7 +35,7 @@ import java.util.function.Supplier;
  * <p><b>委派不提权</b>：子的工具调用照样过 {@link AuthorizationAdvisor}，
  * 用的就是父那个 {@link Principal}——身份由委派时的入站请求给，不由 Subagent 定义给。
  * 于是"父看不到的表，派个 Subagent 就看得到"这条路从设计上不存在
- * （{@code SubagentRunnerTest} 里 guest 那条盯着它）。
+ * （子 Agent 委派那份测试里 guest 那条盯着它）。
  *
  * <p><b>子也吃同一份调用预算</b>（3 / 6，见 {@link ToolCallBudget}）：
  * manager 显式塞进 {@code ToolCallingAdvisor}，与父那一侧同一个构造入口。

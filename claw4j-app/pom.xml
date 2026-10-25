@@ -81,6 +81,18 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- 整机端到端要一个真库：迁移、种子数据、只读执行全在这上面验。
+             用一次性容器而不是 compose 里那个常驻库——测试不该依赖"本机恰好起着数据库"。 -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- app 是唯一能同时看见所有模块的地方，跨模块的架构规则只能放这里：
              每个模块自己的架构测试只扫得见自己和它依赖的那些（ADR-0010）。 -->
         <dependency>

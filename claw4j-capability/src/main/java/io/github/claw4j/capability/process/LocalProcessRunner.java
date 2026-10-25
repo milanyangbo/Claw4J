@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit;
  * 所以起进程这件事收回到本项目里，做成这一个被点名的类。
  *
  * <p><b>代价写清楚</b>：全仓禁 {@code ProcessBuilder} 的那条规则现在有一个例外，
- * 例外就是这个类的全限定名，写在 {@code AppArchitectureTest} 里。
+ * 例外就是这个类的全限定名，写在 {@code ProcessBoundaryTest} 里。
  * 规则从"任何地方都不许"收窄成"除了这一个被点名的类以外都不许"——
  * 收窄而不是删除，是因为删掉之后"Java 侧不起进程"就没有任何机器证据了。
  *

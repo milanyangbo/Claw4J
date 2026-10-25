@@ -8,7 +8,7 @@ date: 2026-10-23
 单元测试与集成测试**一律不再对 `ChatModel` 打桩**。需要模型的测试连真实 DeepSeek；
 `MockChatModel`（生产兜底）与 `ScriptedChatModel`（测试编排）两个假模型类一并删除。
 没有 API key 时测试**失败**，不跳过；key 从环境里取（本机 `set -a; . ./.env; set +a`）。
-CI 暂未接入（README「质量门禁」记了它的状态），将来接上时由 `secrets.DEEPSEEK_API_KEY` 提供。
+CI 暂未接入（`CONTRIBUTING.md`「质量门禁」记了它的状态），将来接上时由 `secrets.DEEPSEEK_API_KEY` 提供。
 
 本 ADR **取代** ADR-0006 的"所有单元测试与 CI 一律 mock 模型调用"与
 ADR-0008 测试策略里的"单元测试全部 mock 模型调用"。

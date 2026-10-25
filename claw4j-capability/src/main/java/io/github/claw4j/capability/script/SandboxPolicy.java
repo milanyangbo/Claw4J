@@ -102,7 +102,7 @@ public final class SandboxPolicy {
      * <p>原先这里是一条运行时检查（{@code requireNoInjectedEnvironment}），
      * 那版接缝上请求里带着一个 env 字段，于是每次执行都得再判一遍。
      * 结构上的保证比运行时再判一次更靠得住：它不会被人忘掉调用。
-     * 盯住这件事的现在是 {@code LocalProcessRunnerTest} 里那条"请求里没有环境变量这一项"。
+     * 盯住这件事的现在是脚本包执行那份测试里那条"请求里没有环境变量这一项"。
      */
 
     /**

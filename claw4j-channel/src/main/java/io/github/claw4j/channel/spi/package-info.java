@@ -1,7 +1,7 @@
 /**
  * 通道 SPI：任何一个通道实现都要遵守的契约。
  *
- * <p>本包的编译期边界（由 {@code ChannelArchitectureTest} 用 ArchUnit 校验）：
+ * <p>本包的编译期边界（由 {@code ChannelBoundaryTest} 用 ArchUnit 校验）：
  * <ul>
  *   <li>不允许出现任何具体平台 SDK 的 import（飞书 {@code com.lark..}、
  *       Telegram 等）。SPI 必须对所有平台中立，否则加一个通道就得改契约。</li>

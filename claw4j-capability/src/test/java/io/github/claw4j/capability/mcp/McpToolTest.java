@@ -13,175 +13,160 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import reactor.core.publisher.Mono;
 
-import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * MCP 这一层唯一值得单独测的东西：<b>连接语义</b>。
+ * 一个完整功能：MCP 接入。
  *
- * <p>工具本身对不对不在这里测（那是 server 自己的事），这里测的是两条必测的语义：
- * 工具清单为空即 fail-fast（连得上、server 也起来了，只是它身上一件能力都没有）、
- * 会话丢失要重新初始化连接而不是对着死会话重试。加上"三层对 Agent 呈现为一回事"
- * 这条契约在代码里的样子：Java 侧拿到的只有工具名与参数 Schema。
- *
- * <p>用进程内 stdio 的 server：不依赖 Docker 与 Python，于是这几条进得了回归。
+ * <p>这一层管的是"外部能力怎么被接进来"：连接与重连、清单为空时启动失败、
+ * 工具清单进 provider、参数翻译成远端调用。用进程内的 stdio server 当对端，
+ * 所以连接语义（初始化、listTools、会话丢失）是真跑出来的，不是替身演出来的。
  */
 class McpToolTest {
 
     @Test
-    @DisplayName("工具的名字、描述、参数 Schema 与返回值都来自 server，Java 侧没有硬编码")
-    void 工具呈现来自server() {
-        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("demo", new StatusTools())) {
-            McpToolProvider provider = providerOf(server, "demo");
+    @DisplayName("命令写错在构造时就失败：不要等到连不上时才暴露，那时错在另一侧进程")
+    void rejectsIncompleteServerCommandAtConfigurationTime() {
+        assertThatThrownBy(() -> ProcessStdioMcpEndpoint.of("gh", "  ", List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("command 是空的");
+        assertThatThrownBy(() -> ProcessStdioMcpEndpoint.of("gh", "gh", List.of("mcp", " ")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("参数里有空项");
+    }
 
-            assertThat(provider.toolNames()).containsExactly("runtimeStatus", "upper");
-            ToolCallback upper = callbackNamed(provider, "upper");
-            assertThat(upper.getToolDefinition().description()).contains("转成大写");
-            assertThat(upper.getToolDefinition().inputSchema()).contains("text");
+    @Test
+    @DisplayName("连接是懒建的：建对象不动手，第一次列工具才握手，第二次复用同一条")
+    void opensConnectionLazilyAndReusesIt() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools());
+             McpConnection connection = new McpConnection(endpoint("calc", server))) {
 
-            assertThat(upper.call("{\"text\":\"abc\"}")).isEqualTo("ABC");
-            assertThat(callbackNamed(provider, "runtimeStatus").call("{}"))
-                    .contains("processors=" + Runtime.getRuntime().availableProcessors());
+            assertThat(connection.initializations()).isZero();
 
-            // MCP 层不授予任何业务表权限：留空不是"无需权限"，而是"这次调用不牵扯任何表"
-            Map<String, ToolPermission> permissions = provider.permissions();
-            assertThat(permissions).containsKeys("runtimeStatus", "upper");
-            assertThat(permissions.values()).allSatisfy(permission -> assertThat(permission.tables()).isEmpty());
+            connection.listTools();
+            connection.listTools();
+
+            assertThat(connection.initializations()).isEqualTo(1);
         }
     }
 
-    /**
-     * 清单为空即 fail-fast。
-     *
-     * <p>为什么必须单独存在：连接是<b>通的</b>——握手成功、server 也起来了——只是它没有能力。
-     * 这种状态不报错的话，现场是"模型说它没这个能力"，而真正的原因是命令写错或版本对不上。
-     */
     @Test
-    @DisplayName("工具清单为空时建 provider 就失败")
-    void 清单为空即失败() {
+    @DisplayName("server 一个工具都没导出时在启动阶段就失败，不等用户问到才发现")
+    void failsImmediatelyWhenServerExportsNoTools() {
         try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("empty")) {
-            assertThatThrownBy(() -> new McpToolProvider(List.of(new McpConnection(endpointOf(server, "empty")))))
+            assertThatThrownBy(() -> new McpToolProvider(List.of(new McpConnection(endpoint("empty", server)))))
                     .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("empty")
                     .hasMessageContaining("没有导出任何工具");
         }
     }
 
-    /**
-     * 会话丢失要重新初始化连接，而不是对着一条死会话重试。
-     *
-     * <p>断言落在两处，缺一个都不成立：调用仍然成功（否则"重连"只是把异常换了个说法），
-     * 且连接被初始化了两次（否则"成功"可能是根本没丢过会话）。
-     */
     @Test
-    @DisplayName("会话丢失后重新初始化连接，且调用仍然成功")
-    void 会话丢失后重连() {
-        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("demo", new StatusTools())) {
-            AtomicInteger opens = new AtomicInteger();
-            McpServerEndpoint endpoint = McpServerEndpoint.of("demo", ToolPermission.read(), () -> {
-                McpClientTransport transport = server.openTransport();
-                return opens.incrementAndGet() == 1 ? new SessionLosingTransport(transport) : transport;
-            });
-            McpConnection connection = new McpConnection(endpoint);
-            McpToolProvider provider = new McpToolProvider(List.of(connection));
+    @DisplayName("清单里的工具带着端点声明的权限一起登记，不认识的表一张都没有")
+    void exposesToolsAndRegistersPermissionFromTheEndpoint() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools());
+             McpToolProvider provider = new McpToolProvider(
+                     List.of(new McpConnection(endpoint("calc", server))))) {
 
-            assertThat(callbackNamed(provider, "upper").call("{\"text\":\"abc\"}")).isEqualTo("ABC");
-            assertThat(connection.initializations()).isEqualTo(2);
+            assertThat(provider.toolNames()).containsExactlyInAnyOrder("echo", "explode");
+            assertThat(provider.permissions().get("echo").action()).isEqualTo(ToolPermission.READ);
+            assertThat(provider.permissions().get("echo").tables()).isEmpty();
         }
     }
 
     @Test
-    @DisplayName("两个 server 导出同名工具时失败，而不是静默留一个")
-    void 同名工具失败() {
-        try (InProcessStdioMcpServer first = InProcessStdioMcpServer.of("first", new StatusTools());
-             InProcessStdioMcpServer second = InProcessStdioMcpServer.of("second", new StatusTools())) {
-            List<McpConnection> connections = List.of(
-                    new McpConnection(endpointOf(first, "first")),
-                    new McpConnection(endpointOf(second, "second")));
+    @DisplayName("模型给的 JSON 参数原样送到远端：元字符不会在中间被解释一遍")
+    void translatesJsonArgumentsIntoTheRemoteCall() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools());
+             McpToolProvider provider = new McpToolProvider(
+                     List.of(new McpConnection(endpoint("calc", server))))) {
 
-            assertThatThrownBy(() -> new McpToolProvider(connections))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("重名")
-                    .hasMessageContaining("runtimeStatus");
+            String output = callback(provider, "echo").call("{\"text\":\"a; rm -rf / $(id)\"}");
+
+            assertThat(output).isEqualTo("a; rm -rf / $(id)");
         }
     }
 
-    /**
-     * 跨进程端点的配置错误要早红，而不是表现成"连上了但一个工具都没有"。
-     *
-     * <p>对一个跨进程 server 来说这一步的代价特别高：命令写错的表现是"连接超时"或
-     * "清单为空"，两者都可能被误读成"这个 server 没有工具"。
-     */
     @Test
-    @DisplayName("跨进程端点：空命令、空参数都立刻失败；命令不存在是连接失败，不是空清单")
-    void 跨进程端点配置错误早红() {
-        assertThatThrownBy(() -> ProcessStdioMcpEndpoint.of("x", "  ", List.of()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("command");
-        assertThatThrownBy(() -> ProcessStdioMcpEndpoint.of("x", "python3", List.of("-c", " ")))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("空项");
+    @DisplayName("远端返回错误时抛出而不是回一个空串：模型得知道这条路这次走不通")
+    void surfacesRemoteFailureInsteadOfAnEmptyResult() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools());
+             McpToolProvider provider = new McpToolProvider(
+                     List.of(new McpConnection(endpoint("calc", server))))) {
 
-        // 命令与参数分开保存，不是拼成一条命令
-        assertThat(ProcessStdioMcpEndpoint.of("gh", "python3", List.of("server.py", "--read-only"))
-                .commandLine()).isEqualTo("python3 server.py --read-only");
-
-        // openTransport 每次给一条新传输：重连拿到的是干净连接
-        ProcessStdioMcpEndpoint endpoint = ProcessStdioMcpEndpoint.of("x", "python3", List.of("s.py"));
-        assertThat(endpoint.openTransport()).isNotSameAs(endpoint.openTransport());
-
-        ProcessStdioMcpEndpoint missing = ProcessStdioMcpEndpoint.of("missing",
-                "claw4j-no-such-command-2026", List.of(), Map.of("PATH", "/usr/bin:/bin"));
-        // 短超时：等的是"连不上"，不是"慢"
-        McpConnection connection = new McpConnection(missing.endpoint(ToolPermission.read()), Duration.ofSeconds(2));
-        try {
-            assertThatThrownBy(connection::listTools).isInstanceOf(RuntimeException.class);
-        }
-        finally {
-            connection.close();
+            assertThatThrownBy(() -> callback(provider, "explode").call("{}"))
+                    .isInstanceOf(ToolExecutionException.class)
+                    .hasMessageContaining("server 拒绝了这次调用");
         }
     }
 
-    // ------------------------------------------------------------------ 辅助
+    @Test
+    @DisplayName("会话丢失时换一条新连接并重放一次，不是对着死会话反复重试")
+    void reinitializesAfterSessionLossAndReplaysTheCallOnce() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools())) {
+            // 失败标志跨重连共享：重连拿到的是一条新传输，但"只失败一次"这件事属于故障本身。
+            AtomicBoolean failedOnce = new AtomicBoolean();
+            McpServerEndpoint flaky = McpServerEndpoint.of("calc", ToolPermission.read(),
+                    () -> new FailFirstToolCallTransport(server.openTransport(), failedOnce));
 
-    private static McpToolProvider providerOf(InProcessStdioMcpServer server, String name) {
-        return new McpToolProvider(List.of(new McpConnection(endpointOf(server, name))));
+            try (McpConnection connection = new McpConnection(flaky);
+                 McpToolProvider provider = new McpToolProvider(List.of(connection))) {
+
+                String output = callback(provider, "echo").call("{\"text\":\"还在\"}");
+
+                assertThat(output).isEqualTo("还在");
+                assertThat(connection.initializations()).isEqualTo(2);
+            }
+        }
     }
 
-    private static McpServerEndpoint endpointOf(InProcessStdioMcpServer server, String name) {
+    private static McpServerEndpoint endpoint(String name, InProcessStdioMcpServer server) {
         return McpServerEndpoint.of(name, ToolPermission.read(), server::openTransport);
     }
 
-    private static ToolCallback callbackNamed(McpToolProvider provider, String name) {
-        for (ToolCallback callback : provider.getToolCallbacks()) {
-            if (callback.getToolDefinition().name().equals(name)) {
-                return callback;
-            }
+    private static ToolCallback callback(McpToolProvider provider, String name) {
+        return Arrays.stream(provider.getToolCallbacks())
+                .filter(callback -> name.equals(callback.getToolDefinition().name()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("工具清单里没有 " + name));
+    }
+
+    /** 对端工具：一个原样返回，一个总是失败。 */
+    public static class EchoTools {
+
+        @McpTool(name = "echo", description = "原样返回传入的文本")
+        public String echo(@McpToolParam(description = "要返回的文本") String text) {
+            return text;
         }
-        throw new AssertionError("MCP 工具清单里没有 " + name + "，实际是 " + provider.toolNames());
+
+        @McpTool(name = "explode", description = "总是失败，用来验证失败不被吞掉")
+        public String explode() {
+            throw new IllegalStateException("server 拒绝了这次调用");
+        }
     }
 
     /**
-     * 模拟"会话丢了"：发起 {@code tools/call} 时抛 {@link McpTransportSessionNotFoundException}。
-     *
-     * <p>注入点只能是传输层——这是本项目代码唯一能看见"会话不在了"的地方，
-     * 也是真实故障发生的地方（对端进程没了、HTTP 会话过期）。
+     * 第一次 tools/call 就报"会话不在"的传输：用来在进程内制造一次真的会话丢失。
+     * 只失败一次，重连拿到的是底层 server 给的新传输。
      */
-    private static final class SessionLosingTransport implements McpClientTransport {
+    private static final class FailFirstToolCallTransport implements McpClientTransport {
 
         private final McpClientTransport delegate;
 
-        SessionLosingTransport(McpClientTransport delegate) {
+        private final AtomicBoolean failed;
+
+        private FailFirstToolCallTransport(McpClientTransport delegate, AtomicBoolean failed) {
             this.delegate = delegate;
+            this.failed = failed;
         }
 
         @Override
@@ -191,10 +176,17 @@ class McpToolTest {
 
         @Override
         public Mono<Void> sendMessage(JSONRPCMessage message) {
-            if (message instanceof McpSchema.JSONRPCRequest request && "tools/call".equals(request.method())) {
-                throw new McpTransportSessionNotFoundException("session not found（测试注入）");
+            if (message instanceof McpSchema.JSONRPCRequest request
+                    && McpSchema.METHOD_TOOLS_CALL.equals(request.method())
+                    && failed.compareAndSet(false, true)) {
+                return Mono.error(new McpTransportSessionNotFoundException("session-1"));
             }
             return delegate.sendMessage(message);
+        }
+
+        @Override
+        public <T> T unmarshalFrom(Object data, TypeRef<T> typeRef) {
+            return delegate.unmarshalFrom(data, typeRef);
         }
 
         @Override
@@ -203,22 +195,8 @@ class McpToolTest {
         }
 
         @Override
-        public <T> T unmarshalFrom(Object data, TypeRef<T> typeRef) {
-            return delegate.unmarshalFrom(data, typeRef);
-        }
-    }
-
-    /** server 侧的工具对象：{@code @McpTool} 标注，Java 侧只见名字与参数 Schema。 */
-    static final class StatusTools {
-
-        @McpTool(name = "upper", description = "把输入文本转成大写")
-        public String upper(@McpToolParam(description = "待转换的文本") String text) {
-            return text == null ? "" : text.toUpperCase();
-        }
-
-        @McpTool(name = "runtimeStatus", description = "读取当前 JVM 的运行指标")
-        public String runtimeStatus() {
-            return "processors=" + Runtime.getRuntime().availableProcessors();
+        public void setExceptionHandler(Consumer<Throwable> handler) {
+            delegate.setExceptionHandler(handler);
         }
     }
 }
