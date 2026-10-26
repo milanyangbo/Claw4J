@@ -17,10 +17,11 @@
 ## 一条命令
 
 ```bash
-./scripts/verify-local.sh
+./scripts/verify.sh
 ```
 
-它串了三道闸：测试文件配额 → `clean verify`（含 JaCoCo 行覆盖率红线）→ 跳过数必须为 0。
+它先载入 `.env`，再跑 `./mvnw -o clean verify`（编译、全部测试、JaCoCo 行覆盖率 60% 红线），
+最后核对三个数：用例全过、**跳过数必须为 0**、每模块文件数与每文件方法数不超上限。
 
 为什么要包一层而不是直接敲 `./mvnw verify`：跑全量其实需要两句咒语——
 
@@ -35,8 +36,7 @@
 ```bash
 set -a && . ./.env && set +a     # 把 key 导进当前 shell
 export JAVA_HOME=~/soft/jdk-21.jdk/Contents/Home
-./mvnw clean verify              # 必须 clean：旧 surefire 报告会让后面的计数算上上一代
-./scripts/assert-no-skipped-tests.sh
+./mvnw -o clean verify           # 必须 clean：旧报告会让计数算上上一代
 ```
 
 ## 凭据
@@ -101,29 +101,18 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | --- | --- | --- |
 | `./mvnw verify` | 编译、测试、行覆盖率 ≥60%、打包 | 本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程**（例外只有 `LocalProcessRunner` 一个类，ADR-0002） | `mvn test`，以及提交前 |
-| `NoHandBuiltShellCommandTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
+| `ProcessBoundaryTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段 |
-| `assert-test-quota.sh` | 每模块测试文件 ≤10、每文件测试方法 ≤20 | `verify-local.sh` 第一步 |
-| `assert-no-skipped-tests.sh` | **有测试被跳过就红** | `verify` 之后 |
-| pre-commit hook | 改了 `claw4j-*` 下的 java/xml 就跑一遍架构规则（秒级） | 每次 `git commit` |
+| `./scripts/verify.sh` | 一条命令跑完上面几步：载入 `.env` → `clean verify`（含覆盖率红线）→ 用例数与**跳过数必须为 0** → 文件数/方法数上限（≤10 / ≤20） | 提交前 |
 | 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}` + `mcp-demo`，真模型走一遍三层与越权 | 改了装配或能力层之后 |
-
-启用 hook（一次）：
-
-```bash
-git config core.hooksPath .githooks
-```
 
 **为什么 Advisor 那条值得单独立规则**：`BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，
 只认 `StreamAdvisor`。只写 `CallAdvisor` 的鉴权 Advisor 在 `.stream()` 上**既不报错也不生效**，
 客户端照常拿到回答——鉴权等于没做，而且从日志上看不出来（ADR-0007）。
 
-### CI 暂未接入
-
-`.github/workflows/ci.yml` 先留在仓库里当接线图（`verify` + 跳过闸 +
-"legacy 不得回到根 POM 的 modules"），但流水线并没有在跑。在那之前门禁全在本地。
-接 CI 时有两件事得先备好：runner 上的 Docker 守护进程（数据库那一类没有 Docker 就直接红，
-不许判成跳过），以及 `secrets.DEEPSEEK_API_KEY`（ADR-0011：没有 key 是红，不是跳过）。
+门禁全在本地跑：仓库没有接 CI，也没有 pre-commit hook。`./scripts/verify.sh` 是唯一入口，
+它红了就是不能提交。接 CI 时有两件事得先备好：runner 上的 Docker 守护进程（数据库那一类没有
+Docker 就直接红，不许判成跳过），以及 `secrets.DEEPSEEK_API_KEY`（ADR-0011：没有 key 是红，不是跳过）。
 
 ## 写测试之前
 

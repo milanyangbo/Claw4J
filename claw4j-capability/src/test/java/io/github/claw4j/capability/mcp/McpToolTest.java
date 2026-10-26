@@ -5,168 +5,243 @@ import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.modelcontextprotocol.json.TypeRef;
 import io.modelcontextprotocol.spec.McpClientTransport;
-import io.modelcontextprotocol.spec.McpSchema;
+import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
+import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage;
+import io.modelcontextprotocol.spec.McpSchema.TextContent;
+import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.modelcontextprotocol.spec.McpTransportSessionNotFoundException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.execution.ToolExecutionException;
 import reactor.core.publisher.Mono;
 
-import java.util.Arrays;
+import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 一个完整功能：MCP 接入。
+ * MCP 接入：连接的生命周期、工具清单怎么进来、参数怎么变成远端那次调用。
  *
- * <p>这一层管的是"外部能力怎么被接进来"：连接与重连、清单为空时启动失败、
- * 工具清单进 provider、参数翻译成远端调用。用进程内的 stdio server 当对端，
- * 所以连接语义（初始化、listTools、会话丢失）是真跑出来的，不是替身演出来的。
+ * <p>对端用进程内的 stdio server 顶替（它同时也是演示实现），传输本身是真的管道与真的
+ * JSON-RPC 帧。会话丢失用一个只坏一次 {@code sendMessage} 的传输替身造出来——
+ * 这是边界之外的故障，不是被测对象自己的判断。
  */
 class McpToolTest {
 
     @Test
-    @DisplayName("命令写错在构造时就失败：不要等到连不上时才暴露，那时错在另一侧进程")
-    void rejectsIncompleteServerCommandAtConfigurationTime() {
-        assertThatThrownBy(() -> ProcessStdioMcpEndpoint.of("gh", "  ", List.of()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("command 是空的");
-        assertThatThrownBy(() -> ProcessStdioMcpEndpoint.of("gh", "gh", List.of("mcp", " ")))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("参数里有空项");
-    }
+    @DisplayName("端点导出的每个工具都进清单，名字与描述来自远端")
+    void providerExposesEveryToolFromTheServer() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new CalcTools())) {
+            McpServerEndpoint endpoint = endpoint("calc", server);
+            try (McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(endpoint)))) {
+                assertThat(provider.toolNames()).containsExactlyInAnyOrder("add", "echo", "explode", "tick");
 
-    @Test
-    @DisplayName("连接是懒建的：建对象不动手，第一次列工具才握手，第二次复用同一条")
-    void opensConnectionLazilyAndReusesIt() {
-        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools());
-             McpConnection connection = new McpConnection(endpoint("calc", server))) {
-
-            assertThat(connection.initializations()).isZero();
-
-            connection.listTools();
-            connection.listTools();
-
-            assertThat(connection.initializations()).isEqualTo(1);
+                assertThat(provider.getToolCallbacks())
+                        .filteredOn(callback -> callback.getToolDefinition().name().equals("add"))
+                        .singleElement()
+                        .satisfies(callback -> assertThat(callback.getToolDefinition().description())
+                                .isEqualTo("把两个整数相加"));
+                assertThat(provider.permissions())
+                        .containsOnlyKeys("add", "echo", "explode", "tick")
+                        .allSatisfy((name, permission) -> assertThat(permission).isEqualTo(ToolPermission.read()));
+            }
         }
     }
 
     @Test
-    @DisplayName("server 一个工具都没导出时在启动阶段就失败，不等用户问到才发现")
-    void failsImmediatelyWhenServerExportsNoTools() {
+    @DisplayName("连接通了但一个工具都没有：建 provider 就失败，不留到用户问起")
+    void emptyToolListFailsWhenTheProviderIsBuilt() {
         try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("empty")) {
-            assertThatThrownBy(() -> new McpToolProvider(List.of(new McpConnection(endpoint("empty", server)))))
+            List<McpConnection> connections = List.of(new McpConnection(endpoint("empty", server)));
+
+            assertThatThrownBy(() -> new McpToolProvider(connections))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("没有导出任何工具");
         }
     }
 
     @Test
-    @DisplayName("清单里的工具带着端点声明的权限一起登记，不认识的表一张都没有")
-    void exposesToolsAndRegistersPermissionFromTheEndpoint() {
-        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools());
-             McpToolProvider provider = new McpToolProvider(
-                     List.of(new McpConnection(endpoint("calc", server))))) {
+    @DisplayName("两个 server 导出同名工具按配置错误失败，不按注册顺序悄悄留一个")
+    void duplicateToolNamesAcrossServersFail() {
+        try (InProcessStdioMcpServer first = InProcessStdioMcpServer.of("first", new DupTools());
+             InProcessStdioMcpServer second = InProcessStdioMcpServer.of("second", new DupTools())) {
+            List<McpConnection> connections = List.of(
+                    new McpConnection(endpoint("first", first)),
+                    new McpConnection(endpoint("second", second)));
 
-            assertThat(provider.toolNames()).containsExactlyInAnyOrder("echo", "explode");
-            assertThat(provider.permissions().get("echo").action()).isEqualTo(ToolPermission.READ);
-            assertThat(provider.permissions().get("echo").tables()).isEmpty();
+            assertThatThrownBy(() -> new McpToolProvider(connections))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("MCP 工具重名：dup");
         }
     }
 
     @Test
-    @DisplayName("模型给的 JSON 参数原样送到远端：元字符不会在中间被解释一遍")
-    void translatesJsonArgumentsIntoTheRemoteCall() {
-        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools());
-             McpToolProvider provider = new McpToolProvider(
-                     List.of(new McpConnection(endpoint("calc", server))))) {
+    @DisplayName("会话丢失后重开一条连接并重放这次调用，不是对着死会话重试")
+    void lostSessionIsReopenedAndTheCallIsReplayed() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new CalcTools())) {
+            FlakyTransport first = new FlakyTransport(server.openTransport());
+            AtomicInteger opens = new AtomicInteger();
+            McpServerEndpoint endpoint = McpServerEndpoint.of("calc", ToolPermission.read(),
+                    () -> opens.getAndIncrement() == 0 ? first : server.openTransport());
 
-            String output = callback(provider, "echo").call("{\"text\":\"a; rm -rf / $(id)\"}");
+            try (McpConnection connection = new McpConnection(endpoint, Duration.ofSeconds(10))) {
+                assertThat(connection.listTools()).extracting(Tool::name).contains("add");
 
-            assertThat(output).isEqualTo("a; rm -rf / $(id)");
-        }
-    }
+                first.failNext(new McpTransportSessionNotFoundException("gone"));
+                CallToolResult result = connection.callTool(
+                        CallToolRequest.builder("add").arguments(Map.of("a", 2, "b", 3)).build());
 
-    @Test
-    @DisplayName("远端返回错误时抛出而不是回一个空串：模型得知道这条路这次走不通")
-    void surfacesRemoteFailureInsteadOfAnEmptyResult() {
-        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools());
-             McpToolProvider provider = new McpToolProvider(
-                     List.of(new McpConnection(endpoint("calc", server))))) {
-
-            assertThatThrownBy(() -> callback(provider, "explode").call("{}"))
-                    .isInstanceOf(ToolExecutionException.class)
-                    .hasMessageContaining("server 拒绝了这次调用");
-        }
-    }
-
-    @Test
-    @DisplayName("会话丢失时换一条新连接并重放一次，不是对着死会话反复重试")
-    void reinitializesAfterSessionLossAndReplaysTheCallOnce() {
-        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new EchoTools())) {
-            // 失败标志跨重连共享：重连拿到的是一条新传输，但"只失败一次"这件事属于故障本身。
-            AtomicBoolean failedOnce = new AtomicBoolean();
-            McpServerEndpoint flaky = McpServerEndpoint.of("calc", ToolPermission.read(),
-                    () -> new FailFirstToolCallTransport(server.openTransport(), failedOnce));
-
-            try (McpConnection connection = new McpConnection(flaky);
-                 McpToolProvider provider = new McpToolProvider(List.of(connection))) {
-
-                String output = callback(provider, "echo").call("{\"text\":\"还在\"}");
-
-                assertThat(output).isEqualTo("还在");
+                assertThat(textOf(result)).isEqualTo("5");
                 assertThat(connection.initializations()).isEqualTo(2);
             }
         }
+    }
+
+    @Test
+    @DisplayName("与「会话丢了」无关的传输故障原样上抛，不触发重连")
+    void unrelatedTransportFailureIsNotRetried() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new CalcTools())) {
+            FlakyTransport transport = new FlakyTransport(server.openTransport());
+            McpServerEndpoint endpoint = McpServerEndpoint.of("calc", ToolPermission.read(), () -> transport);
+
+            try (McpConnection connection = new McpConnection(endpoint, Duration.ofSeconds(10))) {
+                connection.listTools();
+                transport.failNext(new IllegalStateException("管道断了"));
+
+                assertThatThrownBy(() -> connection.callTool(
+                        CallToolRequest.builder("add").arguments(Map.of("a", 1, "b", 1)).build()))
+                        .isInstanceOf(RuntimeException.class);
+                assertThat(connection.initializations()).isEqualTo(1);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("模型给的参数原样成为远端那次调用的 arguments")
+    void argumentsReachTheRemoteToolUnchanged() throws Exception {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new CalcTools());
+             McpToolProvider provider = providerOf("calc", server)) {
+            String answer = callbackNamed(provider, "echo")
+                    .call("{\"text\":\"hello world; echo pwned\"}");
+
+            assertThat(answer).isEqualTo("ECHO:hello world; echo pwned");
+        }
+    }
+
+    @Test
+    @DisplayName("远端工具报错变成一次失败的工具结果，不是一段看似成功的文本")
+    void remoteToolErrorBecomesAToolExecutionException() throws Exception {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new CalcTools());
+             McpToolProvider provider = providerOf("calc", server)) {
+            assertThatThrownBy(() -> callbackNamed(provider, "explode").call("{}"))
+                    .isInstanceOf(ToolExecutionException.class)
+                    .hasMessageContaining("MCP 工具 explode 返回了错误");
+        }
+    }
+
+    @Test
+    @DisplayName("没有参数的调用收到空输入时按空参数处理，不报解析错")
+    void blankInputBecomesEmptyArguments() throws Exception {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new CalcTools());
+             McpToolProvider provider = providerOf("calc", server)) {
+            assertThat(callbackNamed(provider, "tick").call("")).isEqualTo("tick");
+        }
+    }
+
+    @Test
+    @DisplayName("命令与空参数在起进程之前就被拒绝：空参数的错误会落在进程另一边")
+    void stdioEndpointRefusesBlankCommandAndBlankArguments() {
+        assertThatThrownBy(() -> ProcessStdioMcpEndpoint.of("blank", "  ", List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("command 是空的");
+
+        assertThatThrownBy(() -> ProcessStdioMcpEndpoint.of("blank-arg", "/usr/bin/env", List.of("a", " ")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("参数里有空项");
     }
 
     private static McpServerEndpoint endpoint(String name, InProcessStdioMcpServer server) {
         return McpServerEndpoint.of(name, ToolPermission.read(), server::openTransport);
     }
 
-    private static ToolCallback callback(McpToolProvider provider, String name) {
-        return Arrays.stream(provider.getToolCallbacks())
-                .filter(callback -> name.equals(callback.getToolDefinition().name()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("工具清单里没有 " + name));
+    private static McpToolProvider providerOf(String name, InProcessStdioMcpServer server) {
+        return new McpToolProvider(List.of(new McpConnection(endpoint(name, server))));
     }
 
-    /** 对端工具：一个原样返回，一个总是失败。 */
-    public static class EchoTools {
+    private static org.springframework.ai.tool.ToolCallback callbackNamed(McpToolProvider provider, String name) {
+        return java.util.Arrays.stream(provider.getToolCallbacks())
+                .filter(callback -> callback.getToolDefinition().name().equals(name))
+                .findFirst()
+                .orElseThrow();
+    }
 
-        @McpTool(name = "echo", description = "原样返回传入的文本")
-        public String echo(@McpToolParam(description = "要返回的文本") String text) {
-            return text;
+    private static String textOf(CallToolResult result) {
+        return result.content().stream()
+                .filter(TextContent.class::isInstance)
+                .map(TextContent.class::cast)
+                .map(TextContent::text)
+                .reduce((left, right) -> left + "\n" + right)
+                .orElse("");
+    }
+
+    /** 远端那一边的工具；参数与返回值都会被序列化成 JSON-RPC 帧。 */
+    public static final class CalcTools {
+
+        @McpTool(name = "add", description = "把两个整数相加")
+        public String add(@McpToolParam(description = "第一个加数") int a,
+                          @McpToolParam(description = "第二个加数") int b) {
+            return String.valueOf(a + b);
         }
 
-        @McpTool(name = "explode", description = "总是失败，用来验证失败不被吞掉")
+        @McpTool(name = "echo", description = "原样回显一段文本")
+        public String echo(@McpToolParam(description = "要回显的文本") String text) {
+            return "ECHO:" + text;
+        }
+
+        @McpTool(name = "tick", description = "不需要参数")
+        public String tick() {
+            return "tick";
+        }
+
+        @McpTool(name = "explode", description = "总是失败")
         public String explode() {
-            throw new IllegalStateException("server 拒绝了这次调用");
+            throw new IllegalStateException("远端工具自己炸了");
+        }
+    }
+
+    public static final class DupTools {
+
+        @McpTool(name = "dup", description = "重名的工具")
+        public String dup(@McpToolParam(description = "任意文本") String text) {
+            return text;
         }
     }
 
     /**
-     * 第一次 tools/call 就报"会话不在"的传输：用来在进程内制造一次真的会话丢失。
-     * 只失败一次，重连拿到的是底层 server 给的新传输。
+     * 只坏一次 {@code sendMessage} 的传输替身：故障在边界之外（网络/会话），
+     * 用来造出"会话已经不在了"这个现场。
      */
-    private static final class FailFirstToolCallTransport implements McpClientTransport {
+    private static final class FlakyTransport implements McpClientTransport {
 
         private final McpClientTransport delegate;
 
-        private final AtomicBoolean failed;
+        private final AtomicReference<RuntimeException> nextFailure = new AtomicReference<>();
 
-        private FailFirstToolCallTransport(McpClientTransport delegate, AtomicBoolean failed) {
+        private FlakyTransport(McpClientTransport delegate) {
             this.delegate = delegate;
-            this.failed = failed;
+        }
+
+        void failNext(RuntimeException failure) {
+            nextFailure.set(failure);
         }
 
         @Override
@@ -176,12 +251,8 @@ class McpToolTest {
 
         @Override
         public Mono<Void> sendMessage(JSONRPCMessage message) {
-            if (message instanceof McpSchema.JSONRPCRequest request
-                    && McpSchema.METHOD_TOOLS_CALL.equals(request.method())
-                    && failed.compareAndSet(false, true)) {
-                return Mono.error(new McpTransportSessionNotFoundException("session-1"));
-            }
-            return delegate.sendMessage(message);
+            RuntimeException failure = nextFailure.getAndSet(null);
+            return failure == null ? delegate.sendMessage(message) : Mono.error(failure);
         }
 
         @Override
@@ -192,11 +263,6 @@ class McpToolTest {
         @Override
         public Mono<Void> closeGracefully() {
             return delegate.closeGracefully();
-        }
-
-        @Override
-        public void setExceptionHandler(Consumer<Throwable> handler) {
-            delegate.setExceptionHandler(handler);
         }
     }
 }

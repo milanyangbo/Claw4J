@@ -5,11 +5,8 @@
 # 绝不能入库。这个文件是模板，随仓库走。
 
 spring:
-  # .env 是 docker compose 的约定格式，Spring Boot 默认不读它。
-  # 这行按 properties 解析进来（KEY=VALUE 两种格式兼容），
-  # 于是根目录 .env 里的 DEEPSEEK_API_KEY 对应用也可见。
-  config:
-    import: optional:file:.env[.properties]
+  # .env 不在这里 import：application.yml 里已经读过（./.env 与 ../.env 两处都试），
+  # 所以本 profile 只负责"把依赖拉起来"，凭据来源只剩一条路，排查时不用两头看。
 
   # 让 Boot 自动拉起并回收 compose.yaml 里的 Postgres(pgvector) 与 Redis。
   # 工作目录要能找到 compose.yaml，也就是从仓库根目录启动。

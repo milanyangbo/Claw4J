@@ -4,10 +4,6 @@ import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -15,52 +11,56 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 一个完整功能：两端消息的契约。
+ * 出站消息的收尾契约：一次流式回答以「最后一块带 finalChunk」结束，没有第二个结束信号。
  *
- * <p>这不是"给两个 record 配一份测试"——它守的是一条会让整条流式链路静默坏掉的规则：
- * 通道靠 {@code finalChunk} 收尾，而 {@code finalChunk} 在构造器里是个普通 boolean。
- * 谁把 of 与 chunk 的默认值写反，编译过、单测里的其它断言也过，表现只有一个：
- * 客户端一直等结束信号，或者一句话被当成"还没说完"攒起来。
+ * <p>文本是空的仍然要收尾，文本非空也不代表还能继续——判定只看标记。写歪成「文本空了就是说完」，
+ * 表现是模型没吐字时通道一直等到超时；写歪成「有文本就不是结束」，最后几个字会被当成还有下文。
  */
 class MessageContractTest {
 
-    private static final Principal USER = Principal.readOnly("u-1");
+    private static final Principal READER = Principal.readOnly("u-1");
+
+    private static final String CHAT_ID = "http:u-1";
 
     @Test
-    @DisplayName("一次性回答是结束块")
-    void singleReplyIsTerminal() {
-        assertTrue(OutboundMessage.of("c-1", "答案").finalChunk());
+    @DisplayName("一次性回答自带结束标记：通道不必再猜什么时候说完")
+    void oneShotAnswerIsFinal() {
+        assertTrue(OutboundMessage.of(CHAT_ID, "整段回答").finalChunk());
     }
 
     @Test
-    @DisplayName("流式中间块不是结束块")
-    void streamChunkIsNotTerminal() {
-        assertFalse(OutboundMessage.chunk("c-1", "半句").finalChunk());
+    @DisplayName("流式块默认不是结束：标错的话第一块就把回答截断")
+    void streamChunkIsNotFinal() {
+        assertFalse(OutboundMessage.chunk(CHAT_ID, "第一块").finalChunk());
     }
 
     @Test
-    @DisplayName("一段流式回答有且只有一个结束块，且在最后")
-    void streamHasExactlyOneTerminalChunkAtTheEnd() {
-        List<OutboundMessage> chunks = new ArrayList<>();
-        chunks.add(OutboundMessage.chunk("c-1", "先说"));
-        chunks.add(OutboundMessage.chunk("c-1", "再说"));
-        chunks.add(OutboundMessage.of("c-1", ""));
+    @DisplayName("结束只看标记不看文本：空回答也要收尾，否则连接吊到超时")
+    void emptyTextIsAnEndingOnlyWhenTheFlagSaysSo() {
+        OutboundMessage ending = OutboundMessage.of(CHAT_ID, "");
 
-        assertEquals(1, chunks.stream().filter(OutboundMessage::finalChunk).count(),
-                "结束信号是通道收尾的唯一依据：多一个会提前收尾，少一个就永远不收尾");
-        assertTrue(chunks.getLast().finalChunk(), "结束块必须是最后一块");
+        assertTrue(ending.finalChunk());
+        assertTrue(ending.text().isEmpty());
+        // 同样一段空文本，作为流式中间块出现时不是结束
+        assertFalse(OutboundMessage.chunk(CHAT_ID, "").finalChunk());
     }
 
     @Test
-    @DisplayName("不带时间戳的构造用当前时间：超时与去重都靠它")
-    void inboundGetsCurrentTimestamp() {
-        Instant before = Instant.now();
-        InboundMessage message = new InboundMessage(USER, "c-1", "你好");
-        Instant after = Instant.now();
+    @DisplayName("结束块可以带文本：尾巴放在最后一块时不能被当成空收尾丢掉")
+    void endingChunkMayCarryText() {
+        OutboundMessage ending = OutboundMessage.of(CHAT_ID, "最后几个字");
+
+        assertTrue(ending.finalChunk());
+        assertEquals("最后几个字", ending.text());
+    }
+
+    @Test
+    @DisplayName("通道没给收到时间也要有一个：超时与去重都靠它计时")
+    void inboundAlwaysCarriesReceivedAt() {
+        InboundMessage message = new InboundMessage(READER, CHAT_ID, "问题");
 
         assertNotNull(message.receivedAt());
-        assertFalse(message.receivedAt().isBefore(before));
-        assertFalse(message.receivedAt().isAfter(after));
-        assertNull(message.eventId(), "没有幂等需求时 eventId 可以为空，它不是必填字段");
+        // HTTP 通道没有事件 id：留空表示「没有」，不编一个出来让幂等误判成重复投递
+        assertNull(message.eventId());
     }
 }

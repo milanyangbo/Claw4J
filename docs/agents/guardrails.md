@@ -3,16 +3,11 @@
 **这台仓库哪些事是强制的、哪些是有意不强制的。** 评审时判断"这是缺陷还是已知状态"，
 看这一份就够了。决策与判据在 `docs/adr/`。
 
-闸的清单不列在这里：本地那几条在 `CONTRIBUTING.md`「质量门禁」，`.githooks/pre-commit` 本身就是清单，
-在这里抄一份只会过期。唯一值得单独记住的一条已在 `pre-commit` 的注释里
-（它的模块清单必须带 `claw4j-app`，否则 ADR-0002 那两条检查在提交前跑不到）。
-**同一个 `-pl` 清单还有一个坑：模块改名后它不会自己跟着变**，而表现是提交直接被拦下、
-报的是 "Could not find the selected project in the reactor: <旧名字>"——
-第一次改 `claw4j-tools` → `claw4j-capability` 时就是这么卡住的。改名清单要连它一起改。
+闸的清单不列在这里：本地那几条在 `CONTRIBUTING.md`「质量门禁」，在这里抄一份只会过期。
 
-**CI 暂未接入**：`.github/workflows/ci.yml` 只是接线图，流水线没在跑，
-任何文档都不声称它是绿的。接的时候要补两样：runner 上没有 Docker 守护进程
-（数据库那一类靠 `-Dclaw4j.dbTests=required` 判红），以及 `secrets.DEEPSEEK_API_KEY`。
+**没有 CI，也没有 pre-commit hook**：门禁全在本地，入口只有一个——
+`./scripts/verify.sh`（载入 `.env` → `clean verify` 含覆盖率红线 → 跳过数必须为 0 → 文件/方法数上限）。
+接 CI 时要补两样：runner 上没有 Docker 守护进程（数据库那一类直接判红），以及 `secrets.DEEPSEEK_API_KEY`。
 
 ## 改一条红线，就新开一张票
 

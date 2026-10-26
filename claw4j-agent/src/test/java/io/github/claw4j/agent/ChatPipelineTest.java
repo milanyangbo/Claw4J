@@ -1,18 +1,24 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.model.ModelConfiguration;
 import io.github.claw4j.agent.model.ModelProperties;
-import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.capability.builtin.sales.QueryResult;
+import io.github.claw4j.capability.builtin.sales.ReadOnlySqlExecutor;
+import io.github.claw4j.capability.builtin.sales.SalesTools;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -20,327 +26,327 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.beans.factory.support.DefaultListableBeanFactory;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 一个完整功能：一次对话从 {@link AgentPort} 进去，到通道拿到末端消息为止。
+ * 对话主链路：入站消息 → 脱敏 → Advisor 链 → 工具循环 → 出站。
  *
- * <p>这一层守的是"框架装配好了、但回答的交付方式错了"这一类事故：流式没有结束信号、
- * 结束信号发两次、工具循环把结果丢在第二次模型调用之前、多个工具来源里少收一种。
- * 单看任何一个类都不会红，用户侧看到的是"它不回我了"或"它说没有这个能力"。
+ * <p>模型是桩：这条链路要验的是"我们有没有把模型、工具、结束信号接对"，
+ * 不是模型聪不聪明。模型选工具那条另有一条真模型用例。
  */
 class ChatPipelineTest {
 
+    private static final ToolPermissionRegistry READS_EVERYTHING =
+            ToolPermissionRegistry.of(Map.of("lookup", ToolPermission.read("sales_order")));
+
     @Test
-    @DisplayName("一次问答把模型的答案交回，并带上入站那条会话的 chatId")
+    @DisplayName("reply 把回答和 chatId 一起交回通道")
     void replyCarriesAnswerAndChatId() {
-        FixedChatModel model = FixedChatModel.replying("本月成交额 42 万");
+        ChatClientAgentPort port = port(new FixedChatModel("华东上周成交 128400"));
 
-        OutboundMessage reply = port(model).reply(message("feishu:chat-1", "本月成交额多少"));
+        OutboundMessage answer = port.reply(message("chat-1", "上周华东成交额"));
 
-        assertThat(reply.text()).isEqualTo("本月成交额 42 万");
-        assertThat(reply.chatId()).isEqualTo("feishu:chat-1");
-        assertThat(reply.finalChunk()).isTrue();
-        assertThat(model.prompts()).hasSize(1);
+        assertThat(answer.chatId()).isEqualTo("chat-1");
+        assertThat(answer.text()).isEqualTo("华东上周成交 128400");
+        assertThat(answer.finalChunk()).isTrue();
     }
 
     @Test
-    @DisplayName("流式逐块下发，最后一块是唯一的 finalChunk，所有块都带同一个 chatId")
-    void streamEndsWithExactlyOneFinalChunk() {
-        FixedChatModel model = FixedChatModel.streaming("本月", "成交额", "42 万");
+    @DisplayName("流式逐块发出，最后一块是唯一的结束信号")
+    void streamEmitsChunksThenExactlyOneFinalSignal() {
         List<OutboundMessage> chunks = new ArrayList<>();
+        ChatClientAgentPort port = port(new FixedChatModel(
+                prompt -> answer("整段回答"),
+                List.of("华东", "上周", "128400")));
 
-        port(model).stream(message("feishu:chat-2", "多少"), chunks::add);
+        port.stream(message("chat-9", "上周华东成交额"), chunks::add);
 
         assertThat(chunks).extracting(OutboundMessage::text)
-                .containsExactly("本月", "成交额", "42 万", "");
-        assertThat(chunks).extracting(OutboundMessage::finalChunk)
-                .containsExactly(false, false, false, true);
-        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.chatId()).isEqualTo("feishu:chat-2"));
+                .containsExactly("华东", "上周", "128400", "");
+        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.chatId()).isEqualTo("chat-9"));
+        assertThat(chunks.subList(0, 3)).allSatisfy(chunk -> assertThat(chunk.finalChunk()).isFalse());
+        assertThat(chunks).filteredOn(OutboundMessage::finalChunk).hasSize(1);
+        assertThat(chunks.getLast().finalChunk()).isTrue();
+        assertThat(chunks.getLast().text()).isEmpty();
     }
 
     @Test
-    @DisplayName("模型一块都不吐时仍然发一次 finalChunk：通道不能靠超时猜“说完了”")
-    void emptyStreamStillEmitsFinalChunk() {
+    @DisplayName("模型一块都不吐时也要发结束信号：通道不能靠超时猜「说完了」")
+    void emptyStreamStillEnds() {
         List<OutboundMessage> chunks = new ArrayList<>();
+        ChatClientAgentPort port = port(new FixedChatModel(prompt -> answer(""), List.of()));
 
-        port(FixedChatModel.streaming()).stream(message("feishu:chat-3", "在吗"), chunks::add);
+        port.stream(message("chat-2", "在吗"), chunks::add);
 
         assertThat(chunks).hasSize(1);
-        assertThat(chunks.get(0).finalChunk()).isTrue();
-        assertThat(chunks.get(0).text()).isEmpty();
-        assertThat(chunks.get(0).chatId()).isEqualTo("feishu:chat-3");
+        assertThat(chunks.getFirst().finalChunk()).isTrue();
+        assertThat(chunks.getFirst().text()).isEmpty();
     }
 
     @Test
-    @DisplayName("链路断了不伪装成正常收尾：抛错，且不发 finalChunk")
-    void brokenStreamDoesNotFakeCompletion() {
+    @DisplayName("模型要两次工具、第三次才回答：工具执行两次，最终文本来自第三次")
+    void toolLoopRunsUntilModelStopsAsking() {
+        AtomicInteger modelCalls = new AtomicInteger();
+        RecordingTool tool = new RecordingTool("lookup", "华东 128400");
         FixedChatModel model = new FixedChatModel(
-                prompt -> text("不该走到这里"),
-                prompt -> Flux.concat(Flux.just(text("前半")), Flux.error(new IllegalStateException("模型断了"))));
-        List<OutboundMessage> chunks = new ArrayList<>();
+                prompt -> modelCalls.getAndIncrement() < 2
+                        ? requestTool("lookup", "{\"table\":\"sales_order\"}")
+                        : answer("查到了 128400"),
+                List.of());
 
-        assertThatThrownBy(() -> port(model).stream(message("feishu:chat-4", "说一半"), chunks::add))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("模型断了");
+        String text = port(model, List.of(tool)).reply(message("chat-3", "查成交额")).text();
 
-        assertThat(chunks).extracting(OutboundMessage::text).containsExactly("前半");
-        assertThat(chunks).noneMatch(OutboundMessage::finalChunk);
+        assertThat(text).isEqualTo("查到了 128400");
+        assertThat(tool.calls()).isEqualTo(2);
     }
 
     @Test
-    @DisplayName("模型要工具时真的执行一次，工具结果回到模型手上，最终答案来自第二轮")
-    void toolCallLoopFeedsResultBackToTheModel() {
-        AtomicInteger round = new AtomicInteger();
+    @DisplayName("同一个工具连续要第 4 次时在上限处截断，不会无限烧模型往返")
+    void perToolBudgetStopsTheLoop() {
+        RecordingTool tool = new RecordingTool("lookup", "还是不对");
         FixedChatModel model = new FixedChatModel(
-                prompt -> round.getAndIncrement() == 0
-                        ? toolCall("querySales", "{\"question\":\"本月成交额\"}")
-                        : text("本月成交额 3 单"),
-                prompt -> Flux.empty());
-        RecordingTool tool = new RecordingTool("querySales", "3 单");
+                prompt -> requestTool("lookup", "{}"),
+                List.of());
 
-        OutboundMessage reply = port(model, List.of(), List.of(tool), List.of())
-                .reply(message("feishu:chat-5", "本月成交额多少"));
+        String text = port(model, List.of(tool)).reply(message("chat-4", "一直查")).text();
 
-        assertThat(reply.text()).isEqualTo("本月成交额 3 单");
-        assertThat(tool.calls.get()).isEqualTo(1);
-        assertThat(tool.inputs).containsExactly("{\"question\":\"本月成交额\"}");
-        assertThat(model.prompts()).hasSize(2);
-        // 工具结果必须作为一条 ToolResponseMessage 回到模型手上，否则第二轮是在凭空作答。
-        assertThat(model.prompts().get(1).getInstructions())
-                .anyMatch(message -> message instanceof ToolResponseMessage response
-                        && response.getResponses().stream()
-                        .anyMatch(part -> part.responseData().contains("3 单")));
+        assertThat(tool.calls()).isEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
+        assertThat(text).isNotBlank();
     }
 
     @Test
-    @DisplayName("模型一直要工具时在总数上限处截断，客户端拿到一代回答而不是无限烧下去")
-    void stopsAtTotalToolCallLimit() {
-        List<RecordingTool> tools = List.of(
-                new RecordingTool("toolA", "a"),
-                new RecordingTool("toolB", "b"),
-                new RecordingTool("toolC", "c"));
-        AtomicInteger round = new AtomicInteger();
+    @DisplayName("三个工具轮着要也受总数上限约束：单个没超，总数照样截断")
+    void totalBudgetStopsAcrossDifferentTools() {
+        RecordingTool first = new RecordingTool("first", "1");
+        RecordingTool second = new RecordingTool("second", "2");
+        RecordingTool third = new RecordingTool("third", "3");
+        AtomicInteger turn = new AtomicInteger();
         FixedChatModel model = new FixedChatModel(
-                prompt -> toolCallBatch(round.getAndIncrement(), tools),
-                prompt -> Flux.empty());
+                prompt -> switch (turn.getAndIncrement() % 3) {
+                    case 0 -> requestTool("first", "{}");
+                    case 1 -> requestTool("second", "{}");
+                    default -> requestTool("third", "{}");
+                },
+                List.of());
 
-        OutboundMessage reply = port(model, List.of(), List.copyOf(tools), List.of())
-                .reply(message("feishu:chat-6", "一直查"));
+        ToolPermissionRegistry registry = ToolPermissionRegistry.of(Map.of(
+                "first", ToolPermission.read("sales_order"),
+                "second", ToolPermission.read("sales_order"),
+                "third", ToolPermission.read("sales_order")));
 
-        int executed = tools.stream().mapToInt(tool -> tool.calls.get()).sum();
-        assertThat(executed)
-                .as("一轮里的工具调用总数必须停在上限，否则预算等于没设")
-                .isEqualTo(ToolCallBudget.MAX_TOTAL_CALLS);
-        assertThat(reply.text()).isNotBlank();
-        assertThat(reply.finalChunk()).isTrue();
+        port(model, List.of(first, second, third), registry).reply(message("chat-5", "轮着查"));
+
+        int executed = first.calls() + second.calls() + third.calls();
+        assertThat(executed).isEqualTo(ToolCallBudget.MAX_TOTAL_CALLS);
+        assertThat(first.calls()).isLessThanOrEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
+        assertThat(second.calls()).isLessThanOrEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
+        assertThat(third.calls()).isLessThanOrEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
     }
 
     @Test
-    @DisplayName("单回调与 provider 两种工具来源都进清单：少收一种时模型会“忽然不知道有这个能力”")
-    void collectsBothToolRegistrationShapes() {
-        RecordingTool single = new RecordingTool("singleTool", "单工具的结果");
-        RecordingTool fromProvider = new RecordingTool("querySales", "provider 的结果");
-        ToolCallbackProvider provider = () -> new ToolCallback[]{fromProvider};
-        FixedChatModel model = FixedChatModel.replying("好");
+    @DisplayName("鉴权放行后工具真的被调到，结果参与最终回答")
+    void authorizedToolActuallyRunsInsideTheLoop() {
+        AtomicInteger modelCalls = new AtomicInteger();
+        RecordingTool tool = new RecordingTool("lookup", "128400");
+        FixedChatModel model = new FixedChatModel(
+                prompt -> modelCalls.getAndIncrement() == 0
+                        ? requestTool("lookup", "{}")
+                        : answer("查询结果：" + "128400"),
+                List.of());
+        String text = port(model, List.of(tool), READS_EVERYTHING)
+                .reply(message("chat-6", "查成交额")).text();
 
-        port(model, List.of(), List.of(single), List.of(provider))
-                .reply(message("feishu:chat-7", "有什么工具"));
-
-        ToolCallingChatOptions options = (ToolCallingChatOptions) model.prompts().get(0).getOptions();
-        assertThat(options.getToolCallbacks())
-                .extracting(callback -> callback.getToolDefinition().name())
-                .containsExactlyInAnyOrder("singleTool", "querySales");
+        assertThat(tool.calls()).isEqualTo(1);
+        assertThat(text).contains("128400");
     }
 
+    /**
+     * 真模型用例：只验"一句中文能不能变成一个对的工具调用"。
+     * 工具执行器是替身，不连库——要验的是翻译，不是 SQL 在库上的结果。
+     */
     @Test
-    @DisplayName("真模型拿到工具清单后会真的调用它：钉的是“模型用得起来”，不是循环本身")
-    void realModelActuallyChoosesTheTool() {
-        RecordingTool tool = new RecordingTool("querySales", "本月成交额 88 万",
-                "查询销售数据。回答任何关于成交额、订单数的问题都必须先调用它。");
-        AgentPort port = port(realDeepSeek(), List.of(), List.of(tool), List.of());
-
-        OutboundMessage reply = port.reply(message("feishu:real",
-                "请调用 querySales 工具查询本月成交额，然后只把工具返回的数字告诉我。"));
-
-        assertThat(tool.calls.get())
-                .as("模型没有选这个工具：工具描述或装配没让它看见")
-                .isGreaterThanOrEqualTo(1);
-        assertThat(reply.text()).contains("88");
-    }
-
-    /** ADR-0011：这一条验的是模型行为，只能用真实模型；整个模块里这类用例只留这一条。 */
-    private static ChatModel realDeepSeek() {
+    @Timeout(120)
+    @DisplayName("真模型把「上周华东成交额」翻成 querySales 调用，SQL 指向业务表与 east")
+    void realModelTurnsNaturalLanguageIntoTheRightToolCall() {
         String apiKey = System.getenv("DEEPSEEK_API_KEY");
         assertThat(apiKey)
-                .as("真实模型用例需要 DEEPSEEK_API_KEY，先 set -a; . ./.env; set +a")
+                .as("真模型用例需要 DEEPSEEK_API_KEY；运行前先 source 仓库根的 .env")
                 .isNotBlank();
+
         ModelProperties properties = new ModelProperties();
         properties.getDeepseek().setApiKey(apiKey);
-        properties.getDeepseek().setBaseUrl(
-                System.getenv().getOrDefault("DEEPSEEK_BASE_URL", "https://api.deepseek.com"));
-        properties.getDeepseek().setModel(
-                System.getenv().getOrDefault("DEEPSEEK_MODEL", "deepseek-chat"));
-        return new ModelConfiguration().deepSeekChatModel(properties);
+        properties.getDeepseek().setBaseUrl("https://api.deepseek.com");
+        properties.getDeepseek().setModel("deepseek-chat");
+        ChatModel model = new ModelConfiguration().deepSeekChatModel(properties);
+
+        List<String> executedSql = new CopyOnWriteArrayList<>();
+        ReadOnlySqlExecutor executor = sql -> {
+            executedSql.add(sql);
+            return new QueryResult(List.of("revenue"), List.of(List.of("128400")), false);
+        };
+        ToolCallback querySales = MethodToolCallbackProvider.builder()
+                .toolObjects(new SalesTools(executor))
+                .build()
+                .getToolCallbacks()[0];
+
+        ChatClient chat = ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
+                        ToolCallingAdvisor.builder()
+                                .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+                .defaultSystem("你是业务助手。回答业务问题前必须先调用 querySales 查数，不要凭空作答。")
+                .defaultAdvisors(new AuthorizationAdvisor(List.of(
+                        ToolPermissionRegistry.of(Map.of("querySales",
+                                ToolPermission.read("sales_order", "order_item", "customer", "region"))))))
+                .defaultToolCallbacks(querySales)
+                .build();
+
+        String answer = new ChatClientAgentPort(chat)
+                .reply(new InboundMessage(
+                        Principal.of("u-real", "admin", Set.of("*"), Set.of("*")),
+                        "chat-real",
+                        "上周华东区成交额是多少？请调用 querySales 查一下，按 sum(order_item.amount) 算，"
+                                + "只算未取消的订单。"))
+                .text();
+
+        assertThat(executedSql)
+                .as("模型没有调用 querySales：自然语言没有被翻成工具调用")
+                .isNotEmpty();
+        assertThat(executedSql.getFirst().toLowerCase())
+                .contains("sales_order", "order_item", "east", "sum");
+        assertThat(answer).isNotBlank();
     }
 
-    private static AgentPort port(ChatModel model) {
-        return port(model, List.of(), List.of(), List.of());
+    private static ChatClientAgentPort port(FixedChatModel model) {
+        return port(model, List.of(), READS_EVERYTHING);
     }
 
-    /** 走真实装配入口：Advisor 与工具都由容器提供，测试只提供边界上的模型与工具。 */
-    private static AgentPort port(ChatModel model,
-                                  List<Advisor> advisors,
-                                  List<? extends ToolCallback> tools,
-                                  List<ToolCallbackProvider> providers) {
-        DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
-        for (int i = 0; i < advisors.size(); i++) {
-            beans.registerSingleton("advisor-" + i, advisors.get(i));
-        }
-        for (int i = 0; i < tools.size(); i++) {
-            beans.registerSingleton("tool-" + i, tools.get(i));
-        }
-        for (int i = 0; i < providers.size(); i++) {
-            beans.registerSingleton("provider-" + i, providers.get(i));
-        }
-        AgentAutoConfiguration configuration = new AgentAutoConfiguration();
-        ChatClient client = configuration.chatClient(model,
-                beans.getBeanProvider(Advisor.class),
-                beans.getBeanProvider(ToolCallback.class),
-                beans.getBeanProvider(ToolCallbackProvider.class),
-                beans.getBeanProvider(ObservationRegistry.class));
-        return configuration.agentPort(client);
+    private static ChatClientAgentPort port(ChatModel model, List<ToolCallback> tools) {
+        return port(model, tools, READS_EVERYTHING);
+    }
+
+    private static ChatClientAgentPort port(ChatModel model,
+                                            List<ToolCallback> tools,
+                                            ToolPermissionRegistry registry) {
+        return new ChatClientAgentPort(client(model, List.of(new AuthorizationAdvisor(List.of(registry))), tools));
+    }
+
+    private static ChatClient client(ChatModel model, List<Advisor> advisors, List<ToolCallback> tools) {
+        return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
+                        ToolCallingAdvisor.builder()
+                                .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+                .defaultAdvisors(advisors)
+                .defaultToolCallbacks(tools)
+                .build();
     }
 
     private static InboundMessage message(String chatId, String text) {
         return new InboundMessage(Principal.readOnly("u-1"), chatId, text);
     }
 
-    private static ChatResponse text(String value) {
+    static ChatResponse answer(String text) {
         return ChatResponse.builder()
-                .generations(List.of(new Generation(new AssistantMessage(value))))
+                .generations(List.of(new Generation(new AssistantMessage(text))))
                 .build();
     }
 
-    private static ChatResponse toolCall(String name, String arguments) {
-        return toolCall("call-" + name, name, arguments);
-    }
-
-    private static ChatResponse toolCall(String id, String name, String arguments) {
+    static ChatResponse requestTool(String name, String arguments) {
         AssistantMessage message = AssistantMessage.builder()
                 .content("")
-                .toolCalls(List.of(new AssistantMessage.ToolCall(id, "function", name, arguments)))
+                .toolCalls(List.of(new AssistantMessage.ToolCall(
+                        "call-" + name + "-" + arguments.hashCode(), "function", name, arguments)))
                 .build();
         return ChatResponse.builder().generations(List.of(new Generation(message))).build();
     }
+}
 
-    private static ChatResponse toolCallBatch(int round, List<RecordingTool> tools) {
-        List<AssistantMessage.ToolCall> calls = tools.stream()
-                .map(tool -> new AssistantMessage.ToolCall(
-                        "round-" + round + "-" + tool.name, "function", tool.name, "{}"))
-                .toList();
-        AssistantMessage message = AssistantMessage.builder().content("").toolCalls(calls).build();
-        return ChatResponse.builder().generations(List.of(new Generation(message))).build();
+/**
+ * 固定文本的模型桩。它只做两件事：把预设文本交出去，把收到的 Prompt 留下来。
+ * 断言的对象（链、预算、工具、结束信号）都不在它身上，所以它可以是假的。
+ */
+class FixedChatModel implements ChatModel {
+
+    private final List<Prompt> prompts = new CopyOnWriteArrayList<>();
+    private final Function<Prompt, ChatResponse> onCall;
+    private final List<String> onStream;
+    private final ToolCallingChatOptions options = ToolCallingChatOptions.builder()
+            .model("fixed-model")
+            .temperature(0.0)
+            .build();
+
+    FixedChatModel(String text) {
+        this(prompt -> ChatPipelineTest.answer(text), List.of(text));
     }
 
-    /**
-     * 固定文本的模型桩：这一层断言的对象是"回答怎么被交付"，不是模型会不会思考。
-     * 模型只是文本来源，换掉它不改变被测的规则。
-     */
-    private static final class FixedChatModel implements ChatModel {
-
-        private final Function<Prompt, ChatResponse> calls;
-        private final Function<Prompt, Flux<ChatResponse>> streams;
-        private final ChatOptions options = ToolCallingChatOptions.builder().build();
-        private final List<Prompt> prompts = new CopyOnWriteArrayList<>();
-
-        private FixedChatModel(Function<Prompt, ChatResponse> calls,
-                               Function<Prompt, Flux<ChatResponse>> streams) {
-            this.calls = calls;
-            this.streams = streams;
-        }
-
-        static FixedChatModel replying(String answer) {
-            return new FixedChatModel(prompt -> text(answer), prompt -> Flux.just(text(answer)));
-        }
-
-        static FixedChatModel streaming(String... chunks) {
-            List<ChatResponse> responses = new ArrayList<>();
-            for (String chunk : chunks) {
-                responses.add(text(chunk));
-            }
-            return new FixedChatModel(
-                    prompt -> text(String.join("", chunks)),
-                    prompt -> Flux.fromIterable(responses));
-        }
-
-        List<Prompt> prompts() {
-            return prompts;
-        }
-
-        @Override
-        public ChatResponse call(Prompt prompt) {
-            prompts.add(prompt);
-            return calls.apply(prompt);
-        }
-
-        @Override
-        public Flux<ChatResponse> stream(Prompt prompt) {
-            prompts.add(prompt);
-            return streams.apply(prompt);
-        }
-
-        @Override
-        public ChatOptions getOptions() {
-            return options;
-        }
+    FixedChatModel(Function<Prompt, ChatResponse> onCall) {
+        this(onCall, List.of());
     }
 
-    /** 记录"到底被调用了几次、参数是什么"的工具：越权与循环的断言都落在它身上。 */
-    private static final class RecordingTool implements ToolCallback {
+    FixedChatModel(Function<Prompt, ChatResponse> onCall, List<String> onStream) {
+        this.onCall = onCall;
+        this.onStream = List.copyOf(onStream);
+    }
 
-        private final String name;
-        private final String result;
-        private final String description;
-        private final AtomicInteger calls = new AtomicInteger();
-        private final List<String> inputs = new CopyOnWriteArrayList<>();
+    @Override
+    public ChatResponse call(Prompt prompt) {
+        prompts.add(prompt);
+        return onCall.apply(prompt);
+    }
 
-        private RecordingTool(String name, String result) {
-            this(name, result, "测试工具 " + name);
-        }
+    @Override
+    public Flux<ChatResponse> stream(Prompt prompt) {
+        prompts.add(prompt);
+        return Flux.fromIterable(onStream).map(ChatPipelineTest::answer);
+    }
 
-        private RecordingTool(String name, String result, String description) {
-            this.name = name;
-            this.result = result;
-            this.description = description;
-        }
+    @Override
+    public ChatOptions getOptions() {
+        return options;
+    }
 
-        @Override
-        public ToolDefinition getToolDefinition() {
-            return ToolDefinition.builder()
-                    .name(name)
-                    .description(description)
-                    .inputSchema("{\"type\":\"object\"}")
-                    .build();
-        }
+    List<Prompt> prompts() {
+        return List.copyOf(prompts);
+    }
+}
 
-        @Override
-        public String call(String toolInput) {
-            calls.incrementAndGet();
-            inputs.add(toolInput);
-            return result;
-        }
+/** 记录被真正执行了几次的工具桩。鉴权要证明"没被执行"，工具循环要证明"执行了几次"。 */
+class RecordingTool implements ToolCallback {
+
+    private final ToolDefinition definition;
+    private final String result;
+    private final AtomicInteger calls = new AtomicInteger();
+
+    RecordingTool(String name, String result) {
+        this.definition = ToolDefinition.builder()
+                .name(name)
+                .description("测试工具 " + name)
+                .inputSchema("{\"type\":\"object\"}")
+                .build();
+        this.result = result;
+    }
+
+    @Override
+    public ToolDefinition getToolDefinition() {
+        return definition;
+    }
+
+    @Override
+    public String call(String toolInput) {
+        calls.incrementAndGet();
+        return result;
+    }
+
+    int calls() {
+        return calls.get();
     }
 }

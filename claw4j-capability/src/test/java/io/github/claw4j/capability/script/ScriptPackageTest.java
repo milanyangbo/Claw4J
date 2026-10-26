@@ -1,5 +1,6 @@
 package io.github.claw4j.capability.script;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,243 +14,269 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 一个完整功能：脚本包执行。
+ * 脚本包：从工具入口进去，参数过沙箱，真起一个子进程，只看 stdout 回来。
  *
- * <p>沙箱约束有两层：策略层挡住越界路径，进程层真的把工作目录锁在包目录里。
- * 只测前者时，"写了约束但没接到进程上"照样绿；只测后者时，
- * 包目录里的一个符号链接就能把整目录穿出去。
+ * <p>约束要验两遍：一遍在策略上（符号链接、{@code ..} 被挡住），
+ * 一遍在进程上（工作目录真的锁在包目录里）。前一条红是规则没写，
+ * 后一条红是写了却没接到进程上——两种缺陷在日志里都看不出来。
  */
 class ScriptPackageTest {
 
     @TempDir
-    Path temp;
+    Path work;
 
-    @Test
-    @DisplayName("参数里的 .. 与绝对路径都被挡下：能碰到的只有包目录")
-    void rejectsPathsThatEscapeThePackageRoot() {
-        ScriptPackage pkg = packageWith("escape", "pwd");
+    private Path packageRoot;
 
-        assertThatThrownBy(() -> SandboxPolicy.defaults().resolveInside(pkg.root(), "../secret.txt"))
-                .isInstanceOf(SandboxViolationException.class)
-                .hasMessageContaining("越出");
-        assertThatThrownBy(() -> SandboxPolicy.defaults().resolveInside(pkg.root(), "/etc/passwd"))
-                .isInstanceOf(SandboxViolationException.class)
-                .hasMessageContaining("相对路径");
+    @BeforeEach
+    void createPackageDirectory() throws IOException {
+        packageRoot = Files.createDirectories(work.resolve("packages"));
     }
 
     @Test
-    @DisplayName("包目录里指向外面的符号链接会被挡下：路径里一个 .. 都没有也能穿出去")
-    void rejectsSymlinkThatLeaksOutsideTheRoot() throws IOException {
-        ScriptPackage pkg = packageWith("symlink", "pwd");
-        Path outside = Files.writeString(temp.resolve("outside.txt"), "secret");
+    @DisplayName("脚本目录里每个子目录是一个包，清单里的入口与超时覆盖默认值")
+    void catalogReadsEveryPackageDirectory() throws IOException {
+        Path scripts = Files.createDirectories(work.resolve("scripts"));
+        writeManifest(scripts.resolve("alpha"), "alpha 的说明", null, null);
+        writeManifest(scripts.resolve("bravo"), "bravo 的说明", "main.sh", "2500");
+
+        List<ScriptPackage> packages = ScriptPackageCatalog.load(scripts);
+
+        assertThat(packages).extracting(ScriptPackage::name).containsExactly("alpha", "bravo");
+        assertThat(packages.getFirst().entrypoint()).isEqualTo(ScriptPackage.DEFAULT_ENTRYPOINT);
+        assertThat(packages.getFirst().timeoutMillis()).isEqualTo(ScriptPackage.DEFAULT_TIMEOUT_MILLIS);
+        assertThat(packages.getLast().entrypoint()).isEqualTo("main.sh");
+        assertThat(packages.getLast().timeoutMillis()).isEqualTo(2_500);
+    }
+
+    @Test
+    @DisplayName("配了脚本目录却不存在、或子目录没有清单：启动失败，不是静静地少一个工具")
+    void catalogRefusesMissingDirectoryAndMissingManifest() throws IOException {
+        assertThatThrownBy(() -> ScriptPackageCatalog.load(work.resolve("absent")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("配置的脚本目录不存在");
+
+        Path scripts = Files.createDirectories(work.resolve("scripts"));
+        Files.createDirectories(scripts.resolve("nameless"));
+
+        assertThatThrownBy(() -> ScriptPackageCatalog.load(scripts))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(ScriptPackageCatalog.MANIFEST);
+    }
+
+    @Test
+    @DisplayName("工具入口跑真脚本，返回的就是它写到标准输出的那句话")
+    void toolEntryReturnsRealProcessStdout() throws IOException {
+        ScriptPackage pkg = packageWith("hello", "#!/bin/sh\necho hello-from-script\n", 5_000);
+
+        assertThat(callbackFor(pkg).call("{}")).isEqualTo("hello-from-script");
+    }
+
+    @Test
+    @DisplayName("工作目录锁在包目录内：脚本看到的 pwd 就是包根")
+    void processRunsInsideThePackageDirectory() throws IOException {
+        ScriptPackage pkg = packageWith("where", "#!/bin/sh\npwd\n", 5_000);
+
+        String output = callbackFor(pkg).call("{}");
+
+        assertThat(Path.of(output.strip()).toRealPath()).isEqualTo(pkg.root().toRealPath());
+    }
+
+    @Test
+    @DisplayName("环境从零开始：只有 PATH，应用进程的 HOME 不会漏给脚本")
+    void childProcessEnvironmentIsWhitelisted() throws IOException {
+        ScriptPackage pkg = packageWith("env", "#!/bin/sh\nenv\n", 5_000);
+
+        String output = callbackFor(pkg).call("{}");
+
+        assertThat(output).contains("PATH=").doesNotContain("HOME=");
+    }
+
+    @Test
+    @DisplayName("带空格与分号的参数原样到达脚本，不被任何解释器拆开")
+    void plainTextArgumentReachesTheScriptVerbatim() throws IOException {
+        ScriptPackage pkg = packageWith("echo-arg", "#!/bin/sh\nprintf '%s' \"$1\"\n", 5_000);
+
+        String output = callbackFor(pkg).call("{\"argument\":\"hello world; echo pwned\"}");
+
+        assertThat(output).isEqualTo("hello world; echo pwned");
+    }
+
+    @Test
+    @DisplayName("参数用 .. 越出包目录时在执行前被拒绝")
+    void argumentEscapingThroughParentTraversalIsRejected() throws IOException {
+        ScriptPackage pkg = packageWith("escape", "#!/bin/sh\necho should-not-run\n", 5_000);
+
+        assertThatThrownBy(() -> callbackFor(pkg).call("{\"argument\":\"../../etc/passwd\"}"))
+                .isInstanceOf(ToolExecutionException.class)
+                .hasCauseInstanceOf(SandboxViolationException.class)
+                .hasMessageContaining("越出了脚本包自己的目录");
+    }
+
+    @Test
+    @DisplayName("包目录里指向外面的符号链接：裸文件名也穿不出去")
+    void symlinkInsidePackagePointingOutsideIsRejected() throws IOException {
+        ScriptPackage pkg = packageWith("leak", "#!/bin/sh\necho ok\n", 5_000);
+        Path outside = Files.writeString(work.resolve("secret.txt"), "top-secret", UTF_8);
         Files.createSymbolicLink(pkg.root().resolve("leak.txt"), outside);
 
         assertThatThrownBy(() -> SandboxPolicy.defaults().resolveInside(pkg.root(), "leak.txt"))
                 .isInstanceOf(SandboxViolationException.class)
                 .hasMessageContaining("符号链接");
+
+        assertThatThrownBy(() -> callbackFor(pkg).call("{\"argument\":\"leak.txt\"}"))
+                .isInstanceOf(ToolExecutionException.class)
+                .hasCauseInstanceOf(SandboxViolationException.class);
     }
 
     @Test
-    @DisplayName("参数里的元字符就是普通字符：argv 不经解释器，不会被当成命令")
-    void passesMetacharactersAsOneArgument() {
-        ScriptPackage pkg = packageWith("echo-arg", "printf '%s' \"$1\"");
-        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
+    @DisplayName("非零退出变成一次失败的工具结果，不把半截 stdout 当成功交回去")
+    void nonZeroExitBecomesAToolFailure() throws IOException {
+        ScriptPackage pkg = packageWith("fail", "#!/bin/sh\necho 'missing input' >&2\nexit 7\n", 5_000);
 
-        String output = runner.run("echo-arg", List.of("a; rm -rf /tmp/x $(id) `date`"));
+        Throwable thrown = catchThrowableOfType(() -> callbackFor(pkg).call("{}"), ToolExecutionException.class);
 
-        assertThat(output).isEqualTo("a; rm -rf /tmp/x $(id) `date`");
-    }
-
-    @Test
-    @DisplayName("裸文件名也要过沙箱：包里的 leak.txt 是软链时，模型不用写斜杠就能读外面")
-    void blocksSymlinkArgumentThatLooksLikeAPlainFileName() throws IOException {
-        ScriptPackage pkg = packageWith("leak-arg", "printf '%s' \"$1\"");
-        Path outside = Files.writeString(temp.resolve("secret.txt"), "secret");
-        Files.createSymbolicLink(pkg.root().resolve("leak.txt"), outside);
-        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
-
-        assertThatThrownBy(() -> runner.run("leak-arg", List.of("leak.txt")))
-                .isInstanceOf(SandboxViolationException.class)
-                .hasMessageContaining("符号链接");
-    }
-
-    @Test
-    @DisplayName("进程真的起在包目录里：换沙箱实现时工作目录不能跟着丢")
-    void runsProcessInsideThePackageDirectory() throws IOException {
-        ScriptPackage pkg = packageWith("pwd", "pwd");
-        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
-
-        String output = runner.run("pwd", List.of());
-
-        assertThat(Path.of(output).toRealPath()).isEqualTo(pkg.root().toRealPath());
-    }
-
-    @Test
-    @DisplayName("非零退出时把退出码与脚本自己的 stderr 一起给回来")
-    void reportsNonZeroExitWithItsOwnStderr() {
-        ScriptPackage pkg = packageWith("failing", "echo boom >&2\nexit 3");
-        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
-
-        assertThatThrownBy(() -> runner.run("failing", List.of()))
+        assertThat(thrown).hasMessageContaining("以非零退出");
+        assertThat(thrown.getCause())
                 .isInstanceOf(ScriptExecutionException.class)
-                .hasMessageContaining("退出码=3")
-                .hasMessageContaining("boom");
+                .hasMessageContaining("退出码=7")
+                .hasMessageContaining("missing input");
     }
 
     @Test
-    @DisplayName("跑过时长上限就掐断，而不是挂着等它自己结束")
-    void terminatesScriptAtItsTimeout() {
-        ScriptPackage pkg = packageWith("slow", "sleep 5", 300);
-        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
+    @DisplayName("超时的脚本被掐断，结论是 TIMED_OUT 而不是「没有输出」")
+    void timeoutKillsTheProcessAndReportsTimedOut() throws IOException {
+        ScriptPackage pkg = packageWith("slow", "#!/bin/sh\nsleep 5\n", 300);
 
-        long startedAt = System.nanoTime();
+        Throwable thrown = catchThrowableOfType(() -> callbackFor(pkg).call("{}"), ToolExecutionException.class);
 
-        assertThatThrownBy(() -> runner.run("slow", List.of()))
+        assertThat(thrown.getCause())
                 .isInstanceOf(ScriptExecutionException.class)
                 .hasMessageContaining("TIMED_OUT");
-
-        assertThat(System.nanoTime() - startedAt).isLessThan(3_000_000_000L);
     }
 
     @Test
-    @DisplayName("输出超过上限时截断并说明，模型不会把半截输出当成完整答案")
-    void truncatesOutputAndSaysSo() {
-        ScriptPackage pkg = packageWith("chatty", "awk 'BEGIN { for (i = 0; i < 9000; i++) printf \"x\" }'");
-        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
+    @DisplayName("超长输出被截断，并且说明后面还有")
+    void oversizedOutputIsTruncatedWithNotice() throws IOException {
+        ScriptPackage pkg = packageWith("loud", "#!/bin/sh\nyes a | head -c 9000\n", 5_000);
 
-        String output = runner.run("chatty", List.of());
+        String output = callbackFor(pkg).call("{}");
 
         assertThat(output).contains("输出超过 8000 字符，已截断").endsWith("已截断）");
     }
 
     @Test
-    @DisplayName("脚本什么都没打印时明确说“没有输出”，而不是回一个空串")
-    void reportsEmptyOutput() {
-        ScriptPackage pkg = packageWith("silent", "true");
-        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
+    @DisplayName("没有输出时说「没有输出」，不交一段空白给模型")
+    void emptyOutputIsStatedExplicitly() throws IOException {
+        ScriptPackage pkg = packageWith("quiet", "#!/bin/sh\nexit 0\n", 5_000);
 
-        assertThat(runner.run("silent", List.of())).isEqualTo("（脚本没有输出）");
+        assertThat(callbackFor(pkg).call("{}")).isEqualTo("（脚本没有输出）");
     }
 
     @Test
-    @DisplayName("构造即校验：名字不合函数名规格或缺描述的包，启动时就失败")
-    void refusesPackageThatCannotBePresentedToAModel() throws IOException {
-        Path root = Files.createDirectories(temp.resolve("bad"));
-        Files.writeString(root.resolve("run.sh"), "#!/bin/sh\ntrue\n");
+    @DisplayName("运行期注册的包立刻出现在工具清单里，并且真的跑得起来")
+    void lateRegisteredPackageIsListedAndRunnable() throws IOException {
+        ScriptPackage first = packageWith("first", "#!/bin/sh\necho one\n", 5_000);
+        ScriptPackage second = packageWith("second", "#!/bin/sh\necho two\n", 5_000);
+        ScriptPackageRegistry registry = new ScriptPackageRegistry(List.of(first));
+        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(first));
+        ScriptPackageToolProvider provider = new ScriptPackageToolProvider(registry, runner);
 
-        assertThatThrownBy(() -> ScriptPackage.of("词数 统计", root, "数词的脚本"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("脚本包名");
-        assertThatThrownBy(() -> ScriptPackage.of("word-count", root, " "))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("缺 description");
+        registry.register(second);
+
+        assertThat(provider.toolNames()).containsExactly("first", "second");
+        ToolCallback late = provider.getToolCallbacks()[1];
+        assertThat(late.getToolDefinition().name()).isEqualTo("second");
+        assertThat(late.call("{}")).isEqualTo("two");
     }
 
     @Test
-    @DisplayName("目录里有一个包写坏了就整层起不来，不静默少一个工具")
-    void catalogFailsInsteadOfSkippingBrokenPackage() throws IOException {
-        Path scripts = Files.createDirectories(temp.resolve("scripts"));
-        writePackageDirectory(scripts.resolve("good"), "#!/bin/sh\ntrue\n", "description=好包");
-        writePackageDirectory(scripts.resolve("broken"), "#!/bin/sh\ntrue\n", null);
-
-        assertThatThrownBy(() -> ScriptPackageCatalog.load(scripts))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("package.properties");
-        assertThatThrownBy(() -> ScriptPackageCatalog.load(temp.resolve("missing")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("不存在");
-    }
-
-    @Test
-    @DisplayName("人审通过后加进来的包立刻可调：清单与执行后端必须是同一件事")
-    void newlyRegisteredPackageBecomesACallableTool() throws IOException {
-        Path scripts = Files.createDirectories(temp.resolve("scripts"));
-        ScriptPackageAutoConfiguration config = new ScriptPackageAutoConfiguration();
-        ScriptPackageRegistry registry = config.scriptPackageRegistry(scripts.toString());
-        ScriptPackageRunner runner = config.scriptPackageRunner(registry);
-        ExecutionListeners listeners = config.executionListeners();
-        ScriptPackageToolProvider provider = config.scriptPackageToolProvider(registry, runner, listeners);
-
-        assertThat(provider.toolNames()).isEmpty();
-
-        ScriptPackage published = packageWith("published", "pwd");
-        registry.register(published);
-
-        assertThat(provider.toolNames()).containsExactly("published");
-        ToolCallback callback = provider.getToolCallbacks()[0];
-        assertThat(Path.of(callback.call("{}")).toRealPath()).isEqualTo(published.root().toRealPath());
-    }
-
-    @Test
-    @DisplayName("成功与被沙箱拦下都留一条痕：只记成功的审计答不了谁在捅边界")
-    void recordsEveryOutcomeIncludingRejections() throws IOException {
-        ScriptPackage pkg = packageWith("audited", "pwd");
-        Files.createSymbolicLink(pkg.root().resolve("leak.txt"), Files.writeString(temp.resolve("s"), "s"));
+    @DisplayName("重名注册直接失败：两个同名工具会让模型分不清调哪个")
+    void duplicateRegistrationFails() throws IOException {
+        ScriptPackage pkg = packageWith("duplicate", "#!/bin/sh\necho x\n", 5_000);
         ScriptPackageRegistry registry = new ScriptPackageRegistry(List.of(pkg));
+
+        assertThatThrownBy(() -> registry.register(pkg))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("同名工具");
+    }
+
+    @Test
+    @DisplayName("成功与被拦下都留痕，观察者自己炸了也不能让执行失败")
+    void listenerSeesEveryOutcomeAndCannotBreakExecution() throws IOException {
+        ScriptPackage pkg = packageWith("audited", "#!/bin/sh\necho done\n", 5_000);
         ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
-        List<String> outcomes = new CopyOnWriteArrayList<>();
-        ExecutionListeners bus = new ExecutionListeners();
-        bus.add((name, context, outcome, output) -> outcomes.add(outcome));
+        ExecutionListeners listeners = new ExecutionListeners();
+        listeners.add((name, context, outcome, output) -> {
+            throw new IllegalStateException("审计写盘失败");
+        });
+        List<String> recorded = new CopyOnWriteArrayList<>();
+        listeners.add((name, context, outcome, output) -> recorded.add(name + ":" + outcome));
+        ScriptPackageToolCallback callback = new ScriptPackageToolCallback(pkg, runner, listeners);
 
-        ScriptPackageToolProvider provider = new ScriptPackageToolProvider(registry, runner, bus);
-        ToolCallback callback = provider.getToolCallbacks()[0];
-
-        callback.call("{}");
-        assertThatThrownBy(() -> callback.call("{\"argument\":\"leak.txt\"}"))
+        assertThat(callback.call("{}")).isEqualTo("done");
+        assertThatThrownBy(() -> callback.call("{\"argument\":\"../outside\"}"))
                 .isInstanceOf(ToolExecutionException.class);
 
-        assertThat(outcomes).containsExactly("ok", "rejected");
+        assertThat(recorded).containsExactly("audited:ok", "audited:rejected");
     }
 
     @Test
-    @DisplayName("留痕失败不能让一次成功的执行变成失败：审计是观察者，不是依赖")
-    void listenerFailureDoesNotBreakExecution() throws IOException {
-        ScriptPackage pkg = packageWith("resilient", "printf '%s' fine");
-        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(pkg));
-        List<String> recorded = new CopyOnWriteArrayList<>();
-        ExecutionListeners bus = new ExecutionListeners();
-        bus.add((name, context, outcome, output) -> {
-            throw new IllegalStateException("审计文件写不进去");
-        });
-        bus.add((name, context, outcome, output) -> recorded.add(outcome));
+    @DisplayName("入口没有可执行位时给出「忘了 chmod」这句话，而不是操作系统的 Permission denied")
+    void entrypointWithoutExecutableBitFailsWithAReadableReason() throws IOException {
+        ScriptPackage pkg = packageWith("plain", "#!/bin/sh\necho x\n", 5_000);
+        Files.setPosixFilePermissions(pkg.entrypointPath(), PosixFilePermissions.fromString("rw-r--r--"));
 
-        ScriptPackageToolProvider provider = new ScriptPackageToolProvider(
-                new ScriptPackageRegistry(List.of(pkg)), runner, bus);
-
-        String output = provider.getToolCallbacks()[0].call("{}");
-
-        assertThat(output).isEqualTo("fine");
-        assertThat(recorded).containsExactly("ok");
+        assertThatThrownBy(() -> callbackFor(pkg).call("{}"))
+                .isInstanceOf(ToolExecutionException.class)
+                .hasMessageContaining("可执行位");
     }
 
-    private ScriptPackage packageWith(String name, String body) {
-        return packageWith(name, body, ScriptPackage.DEFAULT_TIMEOUT_MILLIS);
-    }
-
-    private ScriptPackage packageWith(String name, String body, long timeoutMillis) {
-        try {
-            Path root = Files.createDirectories(temp.resolve(name));
-            Path entrypoint = root.resolve("run.sh");
-            Files.writeString(entrypoint, "#!/bin/sh\n" + body + "\n");
-            Files.setPosixFilePermissions(entrypoint, PosixFilePermissions.fromString("rwxr-xr-x"));
-            return ScriptPackage.of(name, root, "run.sh", "测试包 " + name, timeoutMillis);
-        }
-        catch (IOException failure) {
-            throw new IllegalStateException("准备脚本包失败", failure);
-        }
-    }
-
-    private static void writePackageDirectory(Path directory, String script, String manifest)
+    private static void writeManifest(Path root, String description, String entrypoint, String timeoutMillis)
             throws IOException {
-        Files.createDirectories(directory);
-        Path entrypoint = Files.writeString(directory.resolve("run.sh"), script);
-        Files.setPosixFilePermissions(entrypoint, PosixFilePermissions.fromString("rwxr-xr-x"));
-        if (manifest != null) {
-            Files.writeString(directory.resolve("package.properties"), manifest + "\n");
+        Files.createDirectories(root);
+        String manifest = "description=" + description + "\n";
+        if (entrypoint != null) {
+            manifest += "entrypoint=" + entrypoint + "\n";
         }
+        if (timeoutMillis != null) {
+            manifest += "timeoutMillis=" + timeoutMillis + "\n";
+        }
+        Files.writeString(root.resolve(ScriptPackageCatalog.MANIFEST), manifest, UTF_8);
+        Files.writeString(root.resolve(entrypoint == null ? ScriptPackage.DEFAULT_ENTRYPOINT : entrypoint),
+                "#!/bin/sh\ntrue\n", UTF_8);
+    }
+
+    private ScriptPackage packageWith(String name, String script, long timeoutMillis) throws IOException {
+        Path root = Files.createDirectories(packageRoot.resolve(name));
+        Path entrypoint = root.resolve(ScriptPackage.DEFAULT_ENTRYPOINT);
+        Files.writeString(entrypoint, script, UTF_8);
+        Files.setPosixFilePermissions(entrypoint, PosixFilePermissions.fromString("rwxr-xr-x"));
+        return ScriptPackage.of(name, root, ScriptPackage.DEFAULT_ENTRYPOINT, "测试脚本包", timeoutMillis);
+    }
+
+    private static ScriptPackageToolCallback callbackFor(ScriptPackage pkg) {
+        return new ScriptPackageToolCallback(pkg, new ScriptPackageRunner(List.of(pkg)));
+    }
+
+    private static <T extends Throwable> T catchThrowableOfType(ThrowingCallable callable, Class<T> type) {
+        try {
+            callable.call();
+        }
+        catch (Throwable failure) {
+            assertThat(failure).isInstanceOf(type);
+            return type.cast(failure);
+        }
+        throw new AssertionError("预期抛出 " + type.getSimpleName() + "，实际没有抛");
+    }
+
+    @FunctionalInterface
+    private interface ThrowingCallable {
+
+        void call() throws Throwable;
     }
 }

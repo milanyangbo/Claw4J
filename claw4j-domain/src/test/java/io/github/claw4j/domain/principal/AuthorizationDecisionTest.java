@@ -5,118 +5,117 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 一个完整功能：一次工具调用的权限判定。
+ * 一次工具调用的权限判定：工具名查登记表 → 动作轴 → 表轴。
  *
- * <p>从"角色配置变成 Principal"进来，到"这次调用放不放行"出去，中间不拆开测。
- * 这条链只有三站——登记表查权限、动作判定、表判定——但三站的失效姿势完全不同：
- * 动作漏判等于任何人可发邮件，表漏判等于任何人可查全部业务数据，而两者都不会抛异常。
+ * <p>判定错了不会抛异常、不会打日志，只是某次越权调用被放过去（或者某次该跑的查询被拦住），
+ * 所以这几条都得钉住。放行那一侧刻意不从「给定一个权限对象」开始，而是从工具名查起，
+ * 这样「根本没查登记表」的实现无法通过。
  */
 class AuthorizationDecisionTest {
 
-    /** 与 application.yml 的 roles 同形：admin 全通。 */
-    private static Principal admin() {
-        return Principal.of("u-admin", "admin", Set.of(Principal.WILDCARD), Set.of(Principal.WILDCARD));
+    /** 能读两张业务表，动作只有读。 */
+    private static Principal analyst() {
+        return Principal.of("u-analyst", "analyst", Set.of("sales_order", "region"), Set.of("read"));
     }
 
-    /** read-only 的语义是"能读不能写"，它的动作集里有 read、没有 run_script。 */
-    private static Principal readOnly() {
-        return Principal.readOnly("u-ro");
-    }
-
-    /** guest 只配了 region 一张表，动作里没有 draft_script。 */
-    private static Principal guest() {
-        return Principal.of("u-guest", "guest",
-                Set.of("region"), Set.of("read", "use_skill", "delegate_task", "read_system"));
+    /** 工具名 → 权限，与生产上「工具模块自己登记」的形状一致。 */
+    private static ToolPermissionRegistry registry() {
+        return ToolPermissionRegistry.of(Map.of(
+                "sales_query", ToolPermission.read("sales_order"),
+                "send_mail", ToolPermission.of("send_email"),
+                "two_table_export", ToolPermission.read("sales_order", "payroll")));
     }
 
     @Test
-    @DisplayName("通配符同时覆盖两个轴：动作 * 与表 * 各自生效")
-    void wildcardsCoverBothAxes() {
-        assertTrue(ToolPermission.read("sales_order").grantedTo(admin()));
-        assertTrue(ToolPermission.of("run_script").grantedTo(admin()));
-        assertTrue(ToolPermission.of("draft_script").grantedTo(admin()));
+    @DisplayName("登记过的工具按名字查到权限，范围内就放行")
+    void registeredToolInScopeIsAllowed() {
+        ToolPermissionRegistry registry = registry();
+
+        Optional<ToolPermission> permission = registry.permissionFor("sales_query");
+
+        assertTrue(permission.isPresent());
+        assertTrue(analyst().canUse(permission.orElseThrow()));
+        // 换个没登记的名字就查不到：上面那次放行确实按工具名查过表，
+        // 而不是随便拿一条权限来判定
+        assertTrue(registry.permissionFor("sales_query_v2").isEmpty());
     }
 
     @Test
-    @DisplayName("只读角色能读任意表：它的动作集不是空的")
-    void readOnlyCanReadAnyTable() {
-        assertTrue(ToolPermission.read("sales_order").grantedTo(readOnly()));
-        assertFalse(readOnly().allowedActions().isEmpty(), "空动作集等于连查数都不行，那就不是一个可用的身份");
+    @DisplayName("动作没授权就拒：表能读不代表能发邮件")
+    void actionNotGrantedIsRejected() {
+        ToolPermission sendMail = registry().permissionFor("send_mail").orElseThrow();
+
+        assertFalse(analyst().canUse(sendMail));
     }
 
     @Test
-    @DisplayName("只读角色跑不了脚本：表全通也拦得住")
-    void readOnlyCannotRunScript() {
-        assertFalse(ToolPermission.of("run_script").grantedTo(readOnly()));
-        assertFalse(ToolPermission.of("draft_script").grantedTo(readOnly()));
+    @DisplayName("表越权就拒：读动作被授权也不行")
+    void tableOutsideScopeIsRejected() {
+        assertFalse(analyst().canUse(ToolPermission.read("payroll")));
     }
 
     @Test
-    @DisplayName("表维度独立生效：guest 读得到 region")
-    void guestReadsItsOwnTable() {
-        assertTrue(ToolPermission.read("region").grantedTo(guest()));
+    @DisplayName("碰到多张表时一张越权整次调用就拒：按「任一可读」判会把数据带出去")
+    void oneOutOfScopeTableRejectsTheWholeCall() {
+        ToolPermission export = registry().permissionFor("two_table_export").orElseThrow();
+
+        assertFalse(analyst().canUse(export));
     }
 
     @Test
-    @DisplayName("表维度独立生效：guest 读不到 sales_order")
-    void guestCannotReadForeignTable() {
-        assertFalse(ToolPermission.read("sales_order").grantedTo(guest()));
+    @DisplayName("不碰表的动作只看动作：表清单为空不能被当成越权")
+    void tablelessActionIsDecidedByActionAlone() {
+        // 只有动作授权的身份：若把「每张表都可读」写成「至少一张可读」，空表清单会被误拒
+        Principal mailer = Principal.of("u-mailer", "mailer", Set.of(), Set.of("send_email"));
+
+        assertTrue(mailer.canUse(ToolPermission.of("send_email")));
     }
 
     @Test
-    @DisplayName("工具碰两张表而其中一张越权：整次调用拒绝，不是只挡那一张")
-    void oneForbiddenTableRejectsTheWholeCall() {
-        assertFalse(ToolPermission.read("region", "sales_order").grantedTo(guest()),
-                "任一表越权即拒绝，否则一个联表查询就成了只读部分数据的合法通道");
+    @DisplayName("通配授权覆盖任意表与任意动作")
+    void wildcardCoversAnyTableAndAnyAction() {
+        Principal admin = Principal.of("u-admin", "admin",
+                Set.of(Principal.WILDCARD), Set.of(Principal.WILDCARD));
+
+        assertTrue(admin.canUse(ToolPermission.read("any_table")));
+        assertTrue(admin.canUse(ToolPermission.of("drop_everything")));
     }
 
     @Test
-    @DisplayName("动作不通过时，表通不通都不放行")
-    void actionIsCheckedEvenWhenTablesAreOpen() {
-        Principal reader = Principal.of("u-read", "reader", Set.of(Principal.WILDCARD), Set.of("read"));
-        assertFalse(ToolPermission.of("send_email").grantedTo(reader),
-                "动作是独立的一轴：能读全部表不代表能发邮件");
+    @DisplayName("只读身份能读任意表，但执行不了有副作用的动作")
+    void readOnlyCanReadAnyTableButCannotWrite() {
+        Principal reader = Principal.readOnly("u-reader");
+
+        assertTrue(reader.canUse(ToolPermission.read("sales_order")));
+        assertTrue(reader.canUse(ToolPermission.read("never_heard_of")));
+        assertFalse(reader.canUse(ToolPermission.of("send_email")));
     }
 
     @Test
-    @DisplayName("没有任何动作的身份什么都不能做")
-    void identityWithoutActionsCanDoNothing() {
-        Principal nobody = Principal.of("u-none", "none", Set.of(Principal.WILDCARD), Set.of());
-        assertFalse(ToolPermission.read("region").grantedTo(nobody));
-        assertFalse(nobody.canPerform("read"));
+    @DisplayName("没登记的工具查不到权限：兜底成默认放行等于没人评估过也能跑")
+    void unregisteredToolHasNoPermission() {
+        assertTrue(registry().permissionFor("rm_rf").isEmpty());
     }
 
     @Test
-    @DisplayName("没登记的工具按拒绝处理")
-    void unregisteredToolIsDenied() {
-        ToolPermissionRegistry registry = ToolPermissionRegistry.of(
-                Map.of("querySales", ToolPermission.read("sales_order")));
+    @DisplayName("登记表建好后源映射再改也进不来：运行期塞一条授权不算数")
+    void registrationIsASnapshotOfTheGivenMap() {
+        Map<String, ToolPermission> source = new HashMap<>();
+        source.put("sales_query", ToolPermission.read("payroll"));
+        ToolPermissionRegistry registry = ToolPermissionRegistry.of(source);
 
-        // 消费方（鉴权 Advisor）的写法就是这一句：查不到即拒。
-        boolean allowed = registry.permissionFor("unknownTool")
-                .map(permission -> permission.grantedTo(admin()))
-                .orElse(false);
+        // 登记之后把已有工具放大成「全都能干」，再塞一条谁都没评估过的工具
+        source.put("sales_query", ToolPermission.of("*"));
+        source.put("rm_rf", ToolPermission.of("*"));
 
-        assertFalse(allowed, "没登记说明没人评估过它能碰到什么，放行比拒绝危险");
-        assertTrue(registry.permissionFor("querySales").isPresent());
-    }
-
-    @Test
-    @DisplayName("登记表在构造时就定格：改原 map 塞不进新工具")
-    void registrySnapshotIsImmutable() {
-        Map<String, ToolPermission> declared = new HashMap<>();
-        declared.put("querySales", ToolPermission.read("sales_order"));
-        ToolPermissionRegistry registry = ToolPermissionRegistry.of(declared);
-
-        declared.put("dropEverything", ToolPermission.of("run_script"));
-
-        assertTrue(registry.permissionFor("dropEverything").isEmpty(),
-                "运行期往登记表里塞一条权限，等于绕过评审就给自己开了口子");
+        assertFalse(analyst().canUse(registry.permissionFor("sales_query").orElseThrow()));
+        assertTrue(registry.permissionFor("rm_rf").isEmpty());
     }
 }

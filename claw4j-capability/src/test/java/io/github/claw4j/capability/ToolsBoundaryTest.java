@@ -8,18 +8,25 @@ import com.tngtech.archunit.lang.ArchRule;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 /**
- * 工具层的边界（ADR-0010）：不认识 Agent，也不认识通道。
+ * 能力层的两条边界。
  *
- * <p>工具一旦能读"当前用户是谁"或者"回一条消息"，就只能长在 Agent 的上下文里测，
- * 那时 {@code SalesTools} / MCP / 脚本包都不再能脱离对话单独验。
+ * <p>两条都是"代码照跑、日志干净、只是长错了地方"的那种失效：
+ * 工具开始认识 Agent 之后，它就只能在一个已经装配好的 Agent 里被测试与复用；
+ * 第二个起进程的地方出现之后，ADR-0002 那条"不经解释器"的保证就不再是全称的。
  */
 @AnalyzeClasses(packages = "io.github.claw4j.capability", importOptions = ImportOption.DoNotIncludeTests.class)
 class ToolsBoundaryTest {
 
     @ArchTest
-    static final ArchRule tools_must_not_depend_on_agent_or_channel =
+    static final ArchRule capabilityKnowsNeitherAgentNorChannel =
             noClasses().that().resideInAPackage("io.github.claw4j.capability..")
                     .should().dependOnClassesThat()
-                    .resideInAnyPackage("io.github.claw4j.agent..", "io.github.claw4j.channel..")
-                    .because("依赖方向是 capability → domain ← agent，接线只在 app 里发生，见 ADR-0010");
+                    .resideInAnyPackage("io.github.claw4j.agent..", "io.github.claw4j.channel..");
+
+    @ArchTest
+    static final ArchRule onlyLocalProcessRunnerStartsProcesses =
+            noClasses().that()
+                    .doNotHaveFullyQualifiedName("io.github.claw4j.capability.process.LocalProcessRunner")
+                    .should().accessClassesThat()
+                    .haveFullyQualifiedName("java.lang.ProcessBuilder");
 }

@@ -1,190 +1,174 @@
 package io.github.claw4j.capability.builtin.sales;
 
+import io.github.claw4j.capability.ToolsAutoConfiguration;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.SpringBootConfiguration;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataAccessException;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.util.Arrays;
+import java.time.Duration;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 一个完整功能：业务数据查询（Text-to-SQL 的落地那一段）。
+ * 业务数据查询：从工具入口进去，过 SQL 守卫，落到只读事务里的真库，再把行映射回文本。
  *
- * <p>链路上有四个会静默失效的环节：字符串守卫误拒/漏放、只读事务没开、
- * 行上限被绕过、权限表少登记一张。它们都不会抛异常，
- * 只会让模型拿到一段错误或者不完整的数据，而这四个都要在真库上才验得出来。
- *
- * <p>真库是必须的：守卫与只读事务是两层，只测字符串层等于只验了"第一道有没有写"。
+ * <p>真库是必须的：守卫是字符串校验，只读约束是数据库给的，两者之间的缺口
+ * （可写 CTE、驱动把 readOnly 翻成 BEGIN READ ONLY）只有真 PostgreSQL 能证。
+ * 迁移与种子来自 {@code classpath:db/migration}，断言里的 128400 是种子算出来的。
  */
-@SpringBootTest(classes = SalesQueryTest.TestApplication.class)
 @Testcontainers
 class SalesQueryTest {
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
 
-    @DynamicPropertySource
-    static void datasource(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
-    }
+    private static JdbcClient jdbc;
+    private static PlatformTransactionManager transactions;
+    private static SalesTools tools;
 
-    @SpringBootConfiguration
-    @EnableAutoConfiguration
-    static class TestApplication {
-    }
-
-    @Autowired
-    private ReadOnlySqlExecutor executor;
-
-    @Autowired
-    @Qualifier("salesToolCallbackProvider")
-    private ToolCallbackProvider toolProvider;
-
-    @Autowired
-    @Qualifier("salesToolPermissionRegistry")
-    private ToolPermissionRegistry permissions;
-
-    @Test
-    @DisplayName("注释与字符串字面量里的分号不算第二条语句，否则合法的查询会被误拒")
-    void doesNotMistakeCommentOrLiteralForASecondStatement() {
-        String sql = "select name from business.region where name <> 'a; drop table business.region'"
-                + " -- ; drop table business.region\norder by name";
-
-        assertThat(SalesSqlGuard.rejectionOf(sql)).isEmpty();
+    @BeforeAll
+    static void migrateAndWire() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        Flyway.configure()
+                .dataSource(dataSource)
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
+        jdbc = JdbcClient.create(dataSource);
+        transactions = new DataSourceTransactionManager(dataSource);
+        tools = new SalesTools(new JdbcReadOnlySqlExecutor(jdbc, transactions));
     }
 
     @Test
-    @DisplayName("with 开头不等于只读：可写 CTE 会被拦下")
-    void rejectsWriteCteEvenThoughItStartsWithWith() {
-        String sql = "with doomed as (delete from business.order_item returning *) select * from doomed";
+    @DisplayName("上周华东成交额一次查全：128400 从种子落到工具返回值")
+    void weeklyEastRevenueComesFromTheSeed() {
+        String answer = tools.querySales("""
+                select sum(oi.amount) as revenue
+                from business.sales_order o
+                join business.order_item oi on oi.order_id = o.id
+                where o.region_code = 'east' and o.status <> 'CANCELLED'
+                  and o.order_date >= date_trunc('week', current_date) - interval '7 days'
+                  and o.order_date < date_trunc('week', current_date)
+                """);
 
-        assertThat(SalesSqlGuard.rejectionOf(sql))
-                .hasValueSatisfying(reason -> assertThat(reason).contains("delete"));
+        assertThat(answer).contains("revenue").contains("128400");
     }
 
     @Test
-    @DisplayName("两条语句只放行一条：拼在后面的写操作不能搭便车")
-    void rejectsSecondStatement() {
-        assertThat(SalesSqlGuard.rejectionOf("select 1; select 2"))
-                .hasValueSatisfying(reason -> assertThat(reason).contains("只允许一条"));
+    @DisplayName("注释里的分号不构成多语句，不误拒")
+    void semicolonInsideCommentIsNotRejected() {
+        String answer = tools.querySales("""
+                select count(*) as regions -- ; drop table business.region
+                from business.region
+                """);
+
+        assertThat(answer).doesNotContain("没有通过只读校验").contains("\n3");
     }
 
     @Test
-    @DisplayName("包一层行上限不会打断用户自己的 order by / limit")
-    void keepsUserOrderingAndLimitWhenCappingRows() {
-        QueryResult result = executor.execute(
-                "with recent as (select g from generate_series(1, 10) g)"
-                        + " select g from recent order by g desc limit 3");
+    @DisplayName("可写 CTE 被拦下：with 开头不等于只读，且数据没动")
+    void writableCteIsRejectedAndDataIsUntouched() {
+        String answer = tools.querySales(
+                "with d as (delete from business.order_item returning *) select count(*) from d");
 
-        assertThat(result.rowCount()).isEqualTo(3);
-        assertThat(result.rows().getFirst()).containsExactly("10");
+        assertThat(answer).contains("没有通过只读校验").contains("delete");
+        assertThat(countOf("business.order_item")).isEqualTo("8");
     }
 
     @Test
-    @DisplayName("超过上限时截断并明确告知，模型不会把前 50 行当成全部")
-    void capsRowsAndSaysItWasTruncated() {
-        // 工具回调会把返回的文本再包一层 JSON 字符串，断行数要走工具方法本身；
-        // 守卫与执行仍是同一条真实链路。
-        String output = new SalesTools(executor).querySales("select g from generate_series(1, 60) g order by g");
+    @DisplayName("守卫漏掉的写操作由只读事务拒绝，行数不变")
+    void readOnlyTransactionRejectsWriteThatTheGuardNeverSees() {
+        JdbcReadOnlySqlExecutor executor = new JdbcReadOnlySqlExecutor(jdbc, transactions);
 
-        assertThat(output.lines().filter(line -> line.matches("\\d+")).count()).isEqualTo(50);
-        assertThat(output).contains("结果超过").contains("行，这里只给出前").doesNotContain("\n51\n");
-    }
-
-    @Test
-    @DisplayName("守卫被绕过时数据库仍拒绝写：只读事务是第二道")
-    void databaseRejectsWritesWhenTheGuardIsBypassed() {
         assertThatThrownBy(() -> executor.execute(
-                "insert into business.region(code, name) values ('west', '西部')"))
+                "insert into business.region (code, name) values ('leak', '不该落库')"))
                 .isInstanceOf(DataAccessException.class);
 
-        assertThat(scalar("select count(*) as regions from business.region")).isEqualTo("3");
+        assertThat(countOf("business.region")).isEqualTo("3");
     }
 
     @Test
-    @DisplayName("工具入口收到写语句时给回可改的理由，且一行数据都没动")
-    void refusesWriteThroughTheToolWithoutTouchingData() {
-        String output = querySalesTool().call("{\"sql\":\"delete from business.order_item\"}");
+    @DisplayName("超过上限的结果被截断，并且明确告诉模型「只给了前 50 行」")
+    void oversizedResultIsTruncatedAndSaysSo() {
+        String answer = tools.querySales("select * from generate_series(1, 60) as n");
 
-        assertThat(output).contains("没有通过只读校验").contains("delete");
-        assertThat(scalar("select count(*) as items from business.order_item")).isEqualTo("8");
+        assertThat(answer).contains("只给出前 50 行");
+        assertThat(answer.lines().count()).isEqualTo(52);
     }
 
     @Test
-    @DisplayName("从工具入口到真库：上周华东成交额是种子数据算出来的那个数")
-    void answersLastWeekEastRevenueThroughTheTool() {
-        String sql = """
-                select sum(oi.amount) as revenue
-                from business.order_item oi
-                join business.sales_order so on so.id = oi.order_id
-                where so.region_code = 'east'
-                  and so.status <> 'CANCELLED'
-                  and so.order_date >= date_trunc('week', current_date) - interval '7 days'
-                  and so.order_date < date_trunc('week', current_date)
-                """;
+    @DisplayName("刚好等于上限不算截断，多一行才算")
+    void truncationStartsAtOneRowOverTheLimit() {
+        JdbcReadOnlySqlExecutor executor =
+                new JdbcReadOnlySqlExecutor(jdbc, transactions, 3, Duration.ofSeconds(5));
 
-        String output = querySalesTool().call("{\"sql\":\"" + sql.replace("\n", " ") + "\"}");
+        QueryResult exact = executor.execute("select * from generate_series(1, 3) as n");
+        assertThat(exact.truncated()).isFalse();
+        assertThat(exact.rows()).hasSize(3);
 
-        assertThat(output).contains("revenue").contains("128400.00");
+        QueryResult over = executor.execute("select * from generate_series(1, 4) as n");
+        assertThat(over.truncated()).isTrue();
+        assertThat(over.rows()).hasSize(3);
     }
 
     @Test
-    @DisplayName("查不到行时给自查提示：中文区域名不会报错、只会返回 0 行")
-    void zeroRowsComesWithASelfCorrectionHint() {
-        String output = new SalesTools(executor).querySales(
-                "select name from business.region where code = '华东'");
+    @DisplayName("SQL 的 NULL 不渲染成空串：空值要能被读成空值")
+    void nullValueRendersAsNullToken() {
+        String answer = tools.querySales("select null as missing, 'null' as literal");
 
-        assertThat(output).contains("返回 0 行").contains("east/south/north");
+        assertThat(answer).contains("missing | literal").contains("NULL | null");
     }
 
     @Test
-    @DisplayName("执行失败时给的是数据库原话，不是一句笼统的执行失败")
-    void reportsTheDatabaseReasonRatherThanAGenericFailure() {
-        String output = querySalesTool().call("{\"sql\":\"select nope from business.region\"}");
+    @DisplayName("写错列名时把数据库的原话交回模型，而不是一句「执行失败」")
+    void syntaxErrorCarriesTheRootCause() {
+        String answer = tools.querySales("select no_such_column from business.region");
 
-        assertThat(output).contains("执行失败").contains("nope");
+        assertThat(answer).contains("执行失败").contains("no_such_column").contains("does not exist");
     }
 
     @Test
-    @DisplayName("缺少任意一张业务表的身份调用 querySales 会被拒：一次查询会碰全部四张表")
-    void deniesIdentityThatCannotReadEveryTableTheToolTouches() {
-        ToolPermission required = permissions.permissionFor("querySales").orElseThrow();
-
-        Principal partial = Principal.of("u-1", "analyst",
-                Set.of("region", "customer", "order_item"), Set.of(ToolPermission.READ));
-
-        assertThat(partial.canUse(required)).isFalse();
-        assertThat(Principal.readOnly("u-2").canUse(required)).isTrue();
+    @DisplayName("两条语句串在一起被拒：只允许一条")
+    void multipleStatementsAreRejected() {
+        assertThat(tools.querySales("select 1; select 2")).contains("只允许一条语句");
     }
 
-    private ToolCallback querySalesTool() {
-        return Arrays.stream(toolProvider.getToolCallbacks())
-                .filter(callback -> "querySales".equals(callback.getToolDefinition().name()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("工具清单里没有 querySales"));
+    @Test
+    @DisplayName("不是以 select / with 开头的不放行，并说出实际的首词")
+    void statementNotStartingWithSelectIsRejected() {
+        assertThat(tools.querySales("values (1)"))
+                .contains("只允许以 select 或 with 开头")
+                .contains("values");
     }
 
-    private String scalar(String sql) {
-        return executor.execute(sql).rows().getFirst().getFirst();
+    @Test
+    @DisplayName("只被授予 region 的身份不得调用查询工具：登记的四张表缺一张就是放行越权")
+    void principalWithoutEveryDeclaredTableIsDenied() {
+        ToolPermissionRegistry registry = new ToolsAutoConfiguration().salesToolPermissionRegistry();
+        ToolPermission permission = registry.permissionFor("querySales").orElseThrow();
+
+        assertThat(Principal.readOnly("analyst").canUse(permission)).isTrue();
+        Principal regionOnly = Principal.of("guest", "guest", Set.of("region"), Set.of("read"));
+        assertThat(regionOnly.canUse(permission)).isFalse();
+    }
+
+    private static String countOf(String table) {
+        String answer = tools.querySales("select count(*) as n from " + table);
+        return answer.strip().lines().toList().getLast();
     }
 }

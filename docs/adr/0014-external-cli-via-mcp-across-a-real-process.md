@@ -58,7 +58,7 @@ ADR-0002 禁的是**Java 侧构造一条命令行交给 shell 解释**（1.x 的
 
 用 tag 排除而不是在测试里 `assumeTrue`：assume 的结果是 **skipped**，
 而跳过的绿和通过的绿在报表里一模一样——本仓库有条闸把 skipped 判成失败
-（`scripts/assert-no-skipped-tests.sh`），用 assume 就是给那条闸开口子。
+（`scripts/verify.sh`），用 assume 就是给那条闸开口子。
 排除是"这次没选它"，报表里根本不出现。
 
 不依赖本机的那些仍然进默认构建：命令为空、参数有空项、命令不存在时连接必须失败
