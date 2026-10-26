@@ -32,17 +32,20 @@
 ## 演示
 
 ```text
-$ curl -s -X POST localhost:8080/api/chat -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
+$ curl -s -X POST localhost:8080/api/chat \
+    -H 'Content-Type: application/json' -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
     -d '{"text":"上周华东区成交额多少"}'
 {"chatId":"http:ethan","text":"**上周华东区成交额：￥128,400.00**｜计算标准：按订单所属区域统计 sum(order_item.amount)，已排除状态为 CANCELLED 的订单；时间窗口为上周一 00:00 到本周一 00:00。"}
 
 $ # 换个角色头问同一句话
-$ curl -s -X POST localhost:8080/api/chat -H 'X-Claw4j-User: guest01' -H 'X-Claw4j-Role: guest' \
+$ curl -s -X POST localhost:8080/api/chat \
+    -H 'Content-Type: application/json' -H 'X-Claw4j-User: guest01' -H 'X-Claw4j-Role: guest' \
     -d '{"text":"上周华东区成交额多少"}'
 {"chatId":"http:guest01","text":"没有权限：角色 guest 不允许访问表 customer、order_item、sales_order（工具 querySales）。"}
 
 $ # 第二轮什么都不复述
-$ curl -s -X POST localhost:8080/api/chat -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
+$ curl -s -X POST localhost:8080/api/chat \
+    -H 'Content-Type: application/json' -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
     -d '{"text":"那华南呢"}'
 {"chatId":"http:ethan","text":"我查了一下，华南区上周成交额是 **￥26,000.00**。"}
 ```
