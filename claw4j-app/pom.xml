@@ -48,15 +48,6 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
-        <!--
-          Boot 4 把 Flyway 的自动配置拆成了独立 artifact，而那条依赖跟着迁移脚本走，
-          声明在 tools 模块（见那里的注释），这里靠依赖传递拿到。
-        -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-redis</artifactId>
-        </dependency>
-
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

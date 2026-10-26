@@ -21,7 +21,7 @@ date: 2026-10-22
 
 | | 交付内容 | 完成判据 |
 |---|---|---|
-| **M0** | 多模块骨架（ADR-0004）、Boot 4.1.2 + JDK 21、`docker compose` 起 Postgres(pgvector) + Redis、一次真实 `ChatClient` 调用、CI 绿 | 问一句话能拿到回答 |
+| **M0** | 多模块骨架（ADR-0004）、Boot 4.1.2 + JDK 21、`docker compose` 起 Postgres(pgvector)（Redis 已于 2026-10-26 摘除，见 ADR-0005 修订记录）、一次真实 `ChatClient` 调用、CI 绿 | 问一句话能拿到回答 |
 | **M1** | Channel(HTTP+SSE) + Session 记忆 + 业务库 `@Tool`（Text-to-SQL）+ Advisor 链鉴权（ADR-0007）+ 测试覆盖 | 能在 IM 里问"上周华东区成交额"并拿到数 |
 | **M2** | Agent Skills（渐进式披露）+ Subagent 编排 + MCP server + 三层能力打通 + Skill Generator 沙箱自测 + 飞书长连接通道（含异步 ACK 与事件去重） | 模型能自己选技能、委派子 Agent、跑通 MCP，且能在飞书里发消息问答 |
 | **M3** | A2A 端点 + 可观测（token 计量、Micrometer）+ 评估器进 CI + 语义缓存 | 能被别的 Agent 通过 AgentCard 发现并调用 |
@@ -36,7 +36,7 @@ M0 结束就必须能演示，不等 M2。
 
 ### 测试策略
 
-- 开发期用 `spring-boot-docker-compose` 拉起 pgvector + Redis（`@ServiceConnection` 自动注入连接信息）；集成测试用 **Testcontainers** 起干净实例。两者连的都是本机 Docker，分工不同：compose 常驻会给测试带来脏数据串扰，Testcontainers 每次销毁重建。
+- 开发期用 `spring-boot-docker-compose` 拉起 pgvector（`@ServiceConnection` 自动注入连接信息；Redis 已于 2026-10-26 摘除，M3 语义缓存落地时按 ADR-0005 修订记录引回）；集成测试用 **Testcontainers** 起干净实例。两者连的都是本机 Docker，分工不同：compose 常驻会给测试带来脏数据串扰，Testcontainers 每次销毁重建。
 - 三条必测：① 每个自定义 Advisor 的单测，**含流式路径**（防 ADR-0007 那个静默跳过的坑）；② Text-to-SQL 自纠错链路用固定 schema 跑通；③ MCP 连接的 fail-fast 探测与会话丢失重连。
 - 单元测试与集成测试**一律连真实模型**（ADR-0011，取代本条原来的"全部 mock 模型调用"）。
   需要模型的测试默认打真实 DeepSeek，没有 key 时测试失败而不是跳过；断言只写方向性，

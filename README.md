@@ -64,7 +64,7 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 # application-local.yml 被 .gitignore 忽略（它可能放真实 key），仓库里只有模板
 
 ./mvnw -pl claw4j-app spring-boot:run -Dspring-boot.run.profiles=local
-# local profile 会按 compose.yaml 拉起 Postgres(pgvector) 与 Redis，退出时回收；
+# local profile 会按 compose.yaml 拉起 Postgres(pgvector)，退出时回收；
 # 它会找仓库根目录的 compose.yaml，所以要在根目录启动
 ```
 

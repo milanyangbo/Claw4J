@@ -1,4 +1,4 @@
-# 本地开发依赖。一个 Postgres 承担业务数据、会话与向量（ADR-0005），Redis 只做语义缓存。
+# 本地开发依赖。一个 Postgres 承担业务数据、会话与向量（ADR-0005）。
 #
 # 用法（仓库根目录）：
 #   docker compose up -d
@@ -9,7 +9,6 @@
 
 # 镜像名可被环境变量覆盖，方便在国内网络下改用镜像站而不必改这个文件：
 #   CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16
-#   CLAW4J_REDIS_IMAGE=docker.m.daocloud.io/library/redis:7-alpine
 # 也可以写进仓库根的 .env（已被 .gitignore 忽略）。
 
 services:
@@ -27,17 +26,6 @@ services:
       - claw4j-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U claw4j -d claw4j"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: ${CLAW4J_REDIS_IMAGE:-redis:7-alpine}
-    container_name: claw4j-redis
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10

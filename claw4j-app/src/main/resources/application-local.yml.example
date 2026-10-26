@@ -10,7 +10,7 @@ spring:
   config:
     import: optional:file:./.env[.properties],optional:file:../.env[.properties]
 
-  # 让 Boot 自动拉起并回收 compose.yaml 里的 Postgres(pgvector) 与 Redis。
+  # 让 Boot 自动拉起并回收 compose.yaml 里的 Postgres(pgvector)。
   # 工作目录要能找到 compose.yaml，也就是从仓库根目录启动。
   docker:
     compose:

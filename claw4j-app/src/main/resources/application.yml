@@ -20,10 +20,6 @@ spring:
   # 那条"本地不装依赖也能跑通"的承诺就没了。需要库时用 local profile 打开。
   flyway:
     enabled: false
-  data:
-    redis:
-      host: ${CLAW4J_REDIS_HOST:localhost}
-      port: ${CLAW4J_REDIS_PORT:6379}
 
   # 会话建表由 Flyway 负责（tools 模块 db/migration 下的 V3）。
   # 这里把 spring-ai-session 自带的 initializer 关掉，两个理由：

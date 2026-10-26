@@ -23,7 +23,8 @@ date: 2026-10-22
 - `spring-ai-session` 走 **`org.springaicommunity:spring-ai-starter-session-jdbc`**（版本见根 pom 的 `spring-ai-session.version`，当前 0.10.0），会话表与业务表同库不同 schema。生产禁止用 `InMemorySessionRepository`（多实例失忆）。
 - 向量检索用 pgvector，走 Spring AI 的 PgVectorStore；业务库用同一实例，`vector` 扩展只需装一次。
 - Redis 只留 Lettuce 一个客户端；1.x 的 Jedis、Redisson 依赖不再引入，扫描类命令（`KEYS`）一律替换为带游标的迭代。
-- docker compose 里只有三个服务：Postgres（含 pgvector）、Redis、应用本身。
+  （2026-10-26 修正：引回 Redis 做语义缓存时客户端要 **Jedis** 而不是 Lettuce，见修订记录。）
+- docker compose 里只有两个服务：Postgres（含 pgvector）与应用本身。Redis 在 M3 语义缓存落地前不引入。
 
 ## 修订记录
 
@@ -81,3 +82,21 @@ date: 2026-10-22
 - **`InMemorySessionRepository` 由架构测试禁止**，不只是"现在没用它"。
   它能编译、能跑、单实例下表现完美，只在多实例下失忆，
   而本地演示永远只有一个实例——这种缺陷只会暴露在生产。
+
+**2026-10-26：Redis 先摘除，M3 落地语义缓存时再按 Redis Stack 引回。**
+
+依赖（`spring-boot-starter-data-redis`）、`spring.data.redis` 配置、compose 的 `redis` 服务一起删掉。
+理由不是"暂时用不上"这么轻：它当时的状态是"引了、配了、代码零引用"，而会话记忆走的是 Postgres，
+于是每个读代码的人都要先问一句"记忆是不是存在 Redis 里"——这个误解在本项目已经发生过两次
+（一次 review，一次对话）。留个占位省下的那点事，抵不上它带来的反复误读。
+
+引回时有两个坑必须一起改，否则会白跑一遍：
+
+- **镜像换 Redis Stack**（`redis/redis-stack-server`，或 Redis 8 及以上）。普通 `redis:7-alpine`
+  没有 RediSearch 与 RedisJSON，`RedisVectorStore` 建索引时直接报
+  `ERR unknown command 'FT._LIST'`——那是"装了但用不了"，比没装更难查。
+- **客户端要 Jedis，不是 Lettuce**。`RedisVectorStore` 的构建器收的是 `JedisPooled`，
+  而 `spring-boot-starter-data-redis` 默认装配的是 Lettuce 连接工厂。要么用官方的
+  `spring-ai-starter-vector-store-redis`（自带 Jedis），要么把 Lettuce 显式排除。
+
+上面 Consequences 里"只留 Lettuce 一个客户端"那条随之作废，已在原处标注。
