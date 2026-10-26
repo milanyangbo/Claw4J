@@ -27,8 +27,10 @@ Drop the line entirely (or leave it empty) for an untriaged issue. `Status: clai
 两套词各有归属，不要混着写：
 
 - **`spec.md` 头部的 `Status:`** 用上面那张表的 triage 角色。四份 spec 现在都是 `ready-for-agent`。
-- **`issues/NN-*.md` 的 `**Status:**`** 是 wayfinder 的票生命周期，只有 `claimed` 与 `resolved`。
-  21 张票现在全部是 `resolved`。
+- **`issues/NN-*.md` 的 `**Status:**`** 走三个状态，够用就不要加第四个：
+  新票发布时 `ready-for-agent` → 被领取后 `claimed` → 收票时 `resolved`。
+  前两个之外的词（`open`、`todo`、`doing`）都不要用。（2026-10-26 起：新票发布即写 `ready-for-agent`，
+  在此之前票只有 `claimed` / `resolved` 两个状态，已完成的 21 张全是 `resolved`。）
 
 `closed` 出现过一次（M2 的八张票），已经统一回 `resolved`。`/wayfinder` 只认 `resolved`，
 自造一个同义词会把"还有哪些票没做完"变成要人去辨形的判断题。
