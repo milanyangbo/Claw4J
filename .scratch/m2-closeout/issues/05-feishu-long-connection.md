@@ -56,3 +56,71 @@
   离 60% 的闸只有 1 个点，属"如实记账"而不是达标——真链路补上之后会回到 80% 以上。
 - 未做（等凭据）：真连接一条、群里问答一条、`feishu-live` tag 与 `-Pfeishu-live` 排除规则。
   这三条**必须在有凭据的会话里边跑边写**：假事件能证明我们读对了 getter，证明不了飞书真会那样推。
+
+## 怎么拿到凭据（照这个走，个人账号就行）
+
+顺序照官方提示来：**先在控制台把应用建好、能力与权限配齐，再用凭据把本地长连接跑起来，
+最后回去切订阅方式并发布版本**。官方原文是"你需先运行示例代码建立长连接，再保存该订阅方式"
+——先连、后存，不要反过来。
+
+1. **建应用**：<https://open.feishu.cn> → 右上角「开发者后台」→「创建企业自建应用」。
+   个人账号可以直接建企业自建应用（ADR-0009 的事实核查结论），名称随便填。
+2. **拿凭证**：「基础信息 > 凭证与基础信息」，`App ID`（`cli_` 开头）与 `App Secret`。
+   Secret 只显示一次，抄下来。
+3. **加机器人能力**：「应用能力 > 添加应用能力」→「机器人」。不加这个，消息事件根本不会投递。
+4. **申请权限**：「开发配置 > 权限管理 > API 权限」，用「批量导入」贴：
+   ```json
+   {"scopes":{"tenant":[
+     "im:message.p2p_msg:readonly",
+     "im:message.group_at_msg:readonly",
+     "im:message:send_as_bot"
+   ]}}
+   ```
+   三条各自管一件事：私聊收（p2p）、群里 @ 收（group_at）、**以应用身份发**（send_as_bot，
+   我们的回推走 `tenant_access_token` + `im().message().create`）。少最后一条的典型现象是
+   "收得到、回不出去"，日志里一条 `code != 0`。
+5. **先用凭据把长连接跑起来**（这一步在切订阅方式之前）：
+   ```bash
+   printf 'FEISHU_APP_ID=cli_xxx\nFEISHU_APP_SECRET=xxx\n' >> .env
+   ./mvnw -o install -DskipTests          # 兄弟模块要先进本地仓库，-pl 单独跑才找得到
+   ./mvnw -o -pl claw4j-app spring-boot:run -Pchannel-feishu -Dspring-boot.run.profiles=local
+   ```
+   日志出现 `飞书通道就绪：长连接已建立` 就说明凭证与网络都对。**`-Pchannel-feishu` 不能省**：
+   `oapi-sdk` 在 `claw4j-channel` 里是 optional，不传递，少了它整个通道静默退让（只跑 HTTP）。
+6. **切订阅方式并加事件**：「开发配置 > 事件与回调 > 事件配置」→「订阅方式」→
+   「使用长连接接收事件」→ 保存 →「添加事件」→ `接收消息 im.message.receive_v1`。
+7. **设可用范围并发布**：「应用发布 > 版本管理与发布」→ 创建版本 → 可用范围里至少包含你自己
+   → 发布。**权限与事件的变更都必须走一次发布才生效**，漏了这步的现象是"应用起来了、群里 @ 了、
+   日志里什么都没有"。
+8. **把机器人拉进群**：群设置 → 群机器人 → 添加机器人；私聊则直接在飞书里搜应用名。
+
+### open_id 从哪来（填 `roles.*.users` 用）
+
+不用去后台找。**第一次 @ 机器人，然后看日志**——`InboundDispatcher` 会记一条 WARN：
+
+```
+飞书用户未登记，已拒绝：sender=ou_xxxxxxxxxxxxxxxx chatId=oc_xxxxxxxx
+```
+
+把它填进 `application-local.yml`（被 gitignore，别改仓库里那份 `application.yml`）：
+
+```yaml
+claw4j:
+  channel:
+    feishu:
+      roles:
+        read-only:
+          users: ["ou_xxxxxxxxxxxxxxxx"]
+```
+
+重启后再问一句，回答会带上库里的数与口径。注意 `open_id` 是**按应用**分配的，
+换个应用就变了，别把它抄进文档或示例。
+
+### 四个典型故障对应哪一步没做
+
+| 现象 | 卡在哪 |
+| --- | --- |
+| 启动直接失败，日志里 `ClientException` / `awaitReady` 超时 | 步骤 2 的 App Secret 抄错或已被重置（两个都非空才会装配，所以这一定是"配了但连不上"） |
+| 启动成功但群里 @ 没有任何反应 | 步骤 6（事件没加/订阅方式还是"请求地址"）或步骤 7（没发布） |
+| 日志里有"未登记"WARN，群里回"没有权限" | 正常，把 `sender=` 的 `ou_...` 填进下面那份 `application-local.yml` |
+| 收到事件但回推失败、日志里 `code != 0` | 步骤 4 少 `im:message:send_as_bot`，或机器人不在那个群里 |
