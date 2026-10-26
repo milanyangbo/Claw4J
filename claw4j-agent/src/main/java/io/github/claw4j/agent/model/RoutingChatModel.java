@@ -22,9 +22,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 它的路由是按用途分流（不同 ChatClient 挂不同模型），没有"这家挂了换那家"。
  * 而"主供应商限流或宕机时还能答"恰恰是企业场景最需要的一件事。
  *
- * <p>降级条件刻意做得粗暴：**任何异常都降级**。代价是 400 类参数错误也会白跑一次备用模型，
- * 换来的是不必在此处解析各家的异常类型（DeepSeek 与 OpenAI SDK 的异常体系完全不同）。
- * 真的被限流打疼了再收窄成"只对超时与 5xx 降级"，那时要按状态码判定，属于 M2 的事。
+ * <p><b>降级条件：只换"换一家可能好"的失败</b>（判断在 {@link ModelFailures}，只此一处）。
+ * 限流、5xx、连接失败、超时 → 退到下一家；401 / 403 / 400 / 422 与本地构造错误 → 直接报出。
+ * 早先这里 {@code catch (RuntimeException)} 一刀切，代价是 key 失效时要撞完所有供应商、
+ * 再把几个异常捆在一起抛：一次确定的错误被拖成 N 次网络往返，而用户看不出是哪一家的问题。
  *
  * <p>流式有额外一条规矩：**只在一个字节都还没吐出去时才降级**。
  * 一旦有块流给了客户端，再转投备用模型就会把同一条回答发两遍（前半截主 + 全文备），
@@ -65,7 +66,13 @@ public class RoutingChatModel implements ChatModel {
         for (Route route : routes) {
             try {
                 return route.model().call(optionsFor(prompt, route));
-            } catch (RuntimeException e) {
+            }
+            catch (RuntimeException e) {
+                if (!ModelFailures.worthTryingAnother(e)) {
+                    log.warn("模型 {} 调用失败，这类错误换一家也不会好，直接报出：{}", route.name(), e.toString());
+                    throw new ModelRoutingException(
+                            "模型 " + route.name() + " 调用失败，这类错误换一家也不会好，因此没有降级：" + e, e);
+                }
                 log.warn("模型 {} 调用失败，降级到下一个（若有）", route.name(), e);
                 failure.addSuppressed(e);
             }
@@ -86,12 +93,12 @@ public class RoutingChatModel implements ChatModel {
         return route.model().stream(optionsFor(prompt, route))
                 .doOnNext(chunk -> started.set(true))
                 .onErrorResume(error -> {
-                    log.warn("模型 {} 流式调用失败（已吐出内容={}）", route.name(), started.get(), error);
-                    if (started.get()) {
-                        return Flux.error(error);
-                    }
+                    boolean worthRetrying = ModelFailures.worthTryingAnother(error);
+                    log.warn("模型 {} 流式调用失败（已吐出内容={}，可重试={}）",
+                            route.name(), started.get(), worthRetrying, error);
                     int next = index + 1;
-                    if (next >= routes.size()) {
+                    // 吐过内容就不再换人（会重复）；不可重试的失败也不换（换一家同样失败）。
+                    if (started.get() || !worthRetrying || next >= routes.size()) {
                         return Flux.error(error);
                     }
                     return streamFrom(prompt, next);

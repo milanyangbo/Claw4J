@@ -105,8 +105,13 @@ public final class SalesSqlGuard {
      * 这两种情况返回的行数一样，模型会以为那就是全部。
      */
     public static String withRowLimit(String sql, int maxRows) {
-        String trimmed = sql == null ? "" : sql.trim();
-        return "select * from (" + stripTrailingSemicolon(trimmed) + ") as claw4j_limited limit " + maxRows;
+        String body = stripTrailingSemicolon(sql == null ? "" : sql.trim());
+        // 换行不是排版，是必须的：模型很常写以行注释结尾的语句（`-- 只看华东`），
+        // 紧跟着拼 `)` 会把 `as claw4j_limited limit N` 整段吞进注释里，
+        // 合法查询于是变成语法错误，而模型拿到的是一条与被问的问题无关的报错——
+        // 自纠错的前提是"工具把数据库的原话交回来"，这里交回来的原话是错的。
+        // 补一个换行既不改语义，也不需要认识 SQL 方言；剥注释会改掉模型写的文本条件，所以不剥。
+        return "select * from (" + body + "\n) as claw4j_limited limit " + maxRows;
     }
 
     /**

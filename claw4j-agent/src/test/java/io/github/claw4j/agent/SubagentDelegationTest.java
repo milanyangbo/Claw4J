@@ -282,6 +282,53 @@ class SubagentDelegationTest {
                 .isEmpty();
     }
 
+    @Test
+    @DisplayName("tools 写成逐行列表、逗号分隔、方括号三种形态，挑出来的工具集一致")
+    void toolListFormsParseToTheSameSelection() throws IOException {
+        Path asList = writeListDefinition("list.md", "tools:", List.of("- querySales", "- lookup"));
+        Path asComma = write("comma.md", definition("alpha", "管销售", "querySales, lookup", ""));
+        Path asFlow = write("flow.md", definition("alpha", "管销售", "[querySales, lookup]", ""));
+
+        List<String> expected = List.of("querySales", "lookup");
+        assertThat(SubagentDefinition.parse(asList).tools()).isEqualTo(expected);
+        assertThat(SubagentDefinition.parse(asComma).tools()).isEqualTo(expected);
+        assertThat(SubagentDefinition.parse(asFlow).tools()).isEqualTo(expected);
+    }
+
+    @Test
+    @DisplayName("写了 tools 却解析不出名字：按定义错误失败，绝不当成「继承全部」")
+    void declaredButEmptyToolSectionIsRejected() throws IOException {
+        Path emptyWhitelist = write("empty.md",
+                "---\nname: alpha\ndescription: 管销售\ntools:\n---\n\n" + BODY + "\n");
+        Path emptyBlacklist = write("empty-black.md",
+                "---\nname: alpha\ndescription: 管销售\ndisallowedTools:\n---\n\n" + BODY + "\n");
+
+        assertThatThrownBy(() -> SubagentDefinition.parse(emptyWhitelist))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("tools")
+                .hasMessageContaining("解析不出任何工具名");
+        assertThatThrownBy(() -> SubagentDefinition.parse(emptyBlacklist))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("disallowedTools")
+                .hasMessageContaining("解析不出任何工具名");
+    }
+
+    @Test
+    @DisplayName("示例里的复核员只拿得到 querySales：发邮件与跑脚本不在它的白名单里")
+    void exampleReviewerOnlySeesItsOwnWhitelist() {
+        SubagentDefinition definition = SubagentDefinition.parse(
+                repositoryFile("examples/subagents/sql-reviewer.md"));
+        List<ToolCallback> available = List.of(
+                new RecordingTool("querySales", "128400"),
+                new RecordingTool("mail_send", "发出去了"),
+                new RecordingTool("run_script", "跑了"));
+
+        assertThat(definition.tools()).containsExactly("querySales");
+        assertThat(definition.selectTools(available))
+                .extracting(callback -> callback.getToolDefinition().name())
+                .containsExactly("querySales");
+    }
+
     private SubagentRunner runner(ChatModel model, List<ToolCallback> tools, ToolPermissionRegistry registry) {
         return new SubagentRunner(model, ObservationRegistry.NOOP, () -> tools,
                 new AuthorizationAdvisor(List.of(registry)));
@@ -311,15 +358,35 @@ class SubagentDelegationTest {
     }
 
     private static String definition(String name, String description, String tools, String disallowed) {
-        return """
-                ---
-                name: %s
-                description: %s
-                tools: %s
-                disallowedTools: %s
-                ---
+        StringBuilder front = new StringBuilder("---\n")
+                .append("name: ").append(name).append('\n')
+                .append("description: ").append(description).append('\n');
+        if (!tools.isBlank()) {
+            front.append("tools: ").append(tools).append('\n');
+        }
+        if (!disallowed.isBlank()) {
+            front.append("disallowedTools: ").append(disallowed).append('\n');
+        }
+        return front.append("---\n\n").append(BODY).append('\n').toString();
+    }
 
-                %s
-                """.formatted(name, description, tools, disallowed, BODY);
+    private Path writeListDefinition(String fileName, String toolsHeader, List<String> itemLines) throws IOException {
+        StringBuilder front = new StringBuilder("---\nname: alpha\ndescription: 管销售\n")
+                .append(toolsHeader).append('\n');
+        itemLines.forEach(line -> front.append("  ").append(line).append('\n'));
+        return write(fileName, front.append("---\n\n").append(BODY).append('\n').toString());
+    }
+
+    /** 从模块目录往上找仓库里的文件：surefire 的工作目录是模块，IDEA 里可能是仓库根。 */
+    private static Path repositoryFile(String relative) {
+        Path directory = Path.of(System.getProperty("user.dir")).toAbsolutePath();
+        while (directory != null) {
+            Path candidate = directory.resolve(relative);
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+            directory = directory.getParent();
+        }
+        throw new IllegalStateException("从 " + System.getProperty("user.dir") + " 往上找不到 " + relative);
     }
 }

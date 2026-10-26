@@ -1,5 +1,6 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.model.ModelFailures;
 import io.github.claw4j.agent.model.ModelRoutingException;
 import io.github.claw4j.agent.model.RoutingChatModel;
 
@@ -14,6 +15,8 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.retry.NonTransientAiException;
+import org.springframework.ai.retry.TransientAiException;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 
@@ -67,9 +70,9 @@ class ModelRoutingTest {
                 new RoutingChatModel.Route("primary", model(
                         DeepSeekChatOptions.builder().model("deepseek-chat").build(),
                         prompt -> {
-                            throw new IllegalStateException("429 too many requests");
+                            throw statusFailure(429, "429 too many requests");
                         },
-                        prompt -> Flux.error(new IllegalStateException("429 too many requests")))),
+                        prompt -> Flux.error(statusFailure(429, "429 too many requests")))),
                 new RoutingChatModel.Route("backup", model(
                         OpenAiChatOptions.builder().model("qwen-plus").build(),
                         prompt -> {
@@ -110,23 +113,24 @@ class ModelRoutingTest {
                 new RoutingChatModel.Route("primary", model(
                         DeepSeekChatOptions.builder().build(),
                         prompt -> {
-                            throw new IllegalStateException("主挂了");
+                            throw statusFailure(500, "主挂了");
                         },
-                        prompt -> Flux.error(new IllegalStateException("主挂了")))),
+                        prompt -> Flux.error(statusFailure(500, "主挂了")))),
                 new RoutingChatModel.Route("backup", model(
                         OpenAiChatOptions.builder().build(),
                         prompt -> {
-                            throw new IllegalStateException("备也挂了");
+                            throw statusFailure(503, "备也挂了");
                         },
-                        prompt -> Flux.error(new IllegalStateException("备也挂了"))))));
+                        prompt -> Flux.error(statusFailure(503, "备也挂了"))))));
 
         assertThatThrownBy(() -> routing.call(prompt(DeepSeekChatOptions.builder().build())))
                 .isInstanceOf(ModelRoutingException.class)
                 .hasMessageContaining("primary")
                 .hasMessageContaining("backup")
                 .satisfies(failure -> assertThat(failure.getSuppressed())
-                        .extracting(Throwable::getMessage)
-                        .containsExactly("主挂了", "备也挂了"));
+                        .hasSize(2)
+                        .allSatisfy(suppressed -> assertThat(suppressed)
+                                .isInstanceOf(com.openai.errors.OpenAIServiceException.class)));
     }
 
     @Test
@@ -145,7 +149,7 @@ class ModelRoutingTest {
                 new RoutingChatModel.Route("primary", model(
                         DeepSeekChatOptions.builder().build(),
                         prompt -> answer(""),
-                        prompt -> Flux.error(new IllegalStateException("连接被重置")))),
+                        prompt -> Flux.error(new java.net.ConnectException("连接被重置")))),
                 new RoutingChatModel.Route("backup", model(
                         OpenAiChatOptions.builder().build(),
                         prompt -> answer(""),
@@ -173,7 +177,7 @@ class ModelRoutingTest {
                         prompt -> answer(""),
                         prompt -> Flux.concat(
                                 Flux.just(answer("前半截")),
-                                Flux.error(new IllegalStateException("流中断了"))))),
+                                Flux.error(new java.net.ConnectException("流中断了"))))),
                 new RoutingChatModel.Route("backup", model(
                         OpenAiChatOptions.builder().build(),
                         prompt -> answer(""),
@@ -186,8 +190,8 @@ class ModelRoutingTest {
                 .map(ModelRoutingTest::textOf)
                 .collectList()
                 .block())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("流中断了");
+                .as("流中断是可重试的失败，这里没换人只可能是因为「已经吐过一块」")
+                .hasCauseInstanceOf(java.net.ConnectException.class);
         assertThat(backupCalls).hasValue(0);
     }
 
@@ -211,7 +215,7 @@ class ModelRoutingTest {
                 new RoutingChatModel.Route("primary", model(
                         DeepSeekChatOptions.builder().build(),
                         prompt -> answer(""),
-                        prompt -> Flux.error(new IllegalStateException("首块前挂了")))),
+                        prompt -> Flux.error(new java.net.ConnectException("首块前挂了")))),
                 new RoutingChatModel.Route("backup", model(
                         OpenAiChatOptions.builder().build(),
                         prompt -> answer(""),
@@ -231,6 +235,70 @@ class ModelRoutingTest {
         var options = (org.springframework.ai.model.tool.ToolCallingChatOptions) backupPrompts.getFirst().getOptions();
         assertThat(options.getToolCallbacks()).hasSize(1);
         assertThat(options.getToolContext()).containsEntry("claw4j.principal", "guest");
+    }
+
+    @Test
+    @DisplayName("主模型 401 直接报出来并点名是哪一家，备模型一次都不碰")
+    void unauthorizedDoesNotFallBack() {
+        AtomicInteger backupCalls = new AtomicInteger();
+        RoutingChatModel routing = new RoutingChatModel(List.of(
+                new RoutingChatModel.Route("deepseek", model(
+                        DeepSeekChatOptions.builder().build(),
+                        prompt -> {
+                            throw statusFailure(401, "Incorrect API key provided");
+                        },
+                        prompt -> Flux.error(statusFailure(401, "Incorrect API key provided")))),
+                new RoutingChatModel.Route("qwen", model(
+                        OpenAiChatOptions.builder().build(),
+                        prompt -> {
+                            backupCalls.incrementAndGet();
+                            return answer("备模型的回答");
+                        },
+                        prompt -> Flux.just(answer("备模型的回答"))))));
+
+        assertThatThrownBy(() -> routing.call(prompt(DeepSeekChatOptions.builder().build())))
+                .isInstanceOf(ModelRoutingException.class)
+                .hasMessageContaining("deepseek")
+                .hasMessageContaining("401")
+                .hasMessageContaining("没有降级");
+        assertThat(backupCalls)
+                .as("key 失效时去撞第二家，只会把一次确定的错误拖成两次网络往返")
+                .hasValue(0);
+    }
+
+    @Test
+    @DisplayName("可重试与不可重试各一张表：这条判据只有一处，加供应商不用重新讨论")
+    void retryableClassificationTable() {
+        Map<Throwable, Boolean> table = new java.util.LinkedHashMap<>();
+        // 换一家可能好
+        table.put(statusFailure(429, "限流"), true);
+        table.put(statusFailure(500, "服务端错误"), true);
+        table.put(statusFailure(503, "服务不可用"), true);
+        table.put(new TransientAiException("限流"), true);
+        table.put(new java.net.ConnectException("连接被拒"), true);
+        table.put(new java.net.http.HttpTimeoutException("读超时"), true);
+        table.put(new RuntimeException("被框架包了一层", statusFailure(502, "网关错误")), true);
+        // 换一家也一样
+        table.put(statusFailure(401, "key 无效"), false);
+        table.put(statusFailure(403, "无权限"), false);
+        table.put(statusFailure(400, "参数错"), false);
+        table.put(statusFailure(422, "参数不可处理"), false);
+        table.put(new NonTransientAiException("key 无效"), false);
+        table.put(new IllegalArgumentException("空消息"), false);
+        table.put(new IllegalStateException("模型返回了不该有的东西"), false);
+        table.put(new RuntimeException("被框架包了一层", statusFailure(401, "key 无效")), false);
+
+        table.forEach((failure, retryable) -> assertThat(ModelFailures.worthTryingAnother(failure))
+                .as("%s 应%s降级", failure, retryable ? "该" : "不该")
+                .isEqualTo(retryable));
+    }
+
+    private static com.openai.errors.OpenAIServiceException statusFailure(int statusCode, String message) {
+        return com.openai.errors.UnexpectedStatusCodeException.builder()
+                .statusCode(statusCode)
+                .headers(com.openai.core.http.Headers.builder().build())
+                .cause(new IllegalStateException(message))
+                .build();
     }
 
     private static Prompt prompt(ChatOptions options) {

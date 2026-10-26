@@ -167,6 +167,29 @@ class SalesQueryTest {
         assertThat(regionOnly.canUse(permission)).isFalse();
     }
 
+    @Test
+    @DisplayName("以行注释结尾的语句照样查得出数：包装不会把 ) limit 吞进注释里")
+    void trailingLineCommentSurvivesTheRowLimitWrapper() {
+        String answer = tools.querySales("""
+                select sum(oi.amount) as revenue
+                from business.sales_order o
+                join business.order_item oi on oi.order_id = o.id
+                where o.region_code = 'east' and o.status <> 'CANCELLED'
+                  and o.order_date >= date_trunc('week', current_date) - interval '7 days'
+                  and o.order_date < date_trunc('week', current_date) -- 只看华东
+                """);
+
+        assertThat(answer).doesNotContain("执行失败").contains("128400");
+    }
+
+    @Test
+    @DisplayName("包装是「外面再包一层」：语句自带的 order by 与 limit 不被改坏")
+    void innerOrderByAndLimitSurviveTheWrapper() {
+        String answer = tools.querySales("select * from generate_series(1, 5) as n order by n desc limit 2");
+
+        assertThat(answer.strip().lines().toList()).containsExactly("n", "5", "4");
+    }
+
     private static String countOf(String table) {
         String answer = tools.querySales("select count(*) as n from " + table);
         return answer.strip().lines().toList().getLast();

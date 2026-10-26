@@ -1,13 +1,14 @@
 package io.github.claw4j.agent.subagent;
 
-import org.springaicommunity.agent.utils.MarkdownParser;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 一份 Subagent 定义：它是谁、什么时候该找它、以及它能碰哪些工具。
@@ -27,12 +28,21 @@ import java.util.Objects;
  * <p>白名单与 {@code disallowedTools} 同时点名同一个工具按<b>定义错误</b>处理：
  * 两条规则打架时，谁生效取决于实现里过滤的先后顺序，
  * 而"这个子 Agent 到底能不能用那个工具"不该是一个要读代码才知道的答案。
+ *
+ * <p><b>"没写"与"写了但解析不出"是两件事</b>：只有前者是"继承全部工具"；
+ * 后者是配置错误，按定义错误失败。这条区分是必要的——一个空名单如果被当成许可，
+ * 后果是权限变宽，而现象是"它怎么忽然能发邮件了"，要查很久。
  */
 public record SubagentDefinition(String name,
                                  String description,
                                  String systemPrompt,
                                  List<String> tools,
                                  List<String> disallowedTools) {
+
+    /** front matter 里允许逐行写列表项的两个键；其余键只认同行值。 */
+    private static final String TOOLS = "tools";
+    private static final String DISALLOWED_TOOLS = "disallowedTools";
+    private static final Set<String> LIST_KEYS = Set.of(TOOLS, DISALLOWED_TOOLS);
 
     public SubagentDefinition {
         Objects.requireNonNull(name, "name");
@@ -79,14 +89,14 @@ public record SubagentDefinition(String name,
         catch (IOException failure) {
             throw new IllegalStateException("读不了 Subagent 定义文件：" + file, failure);
         }
-        MarkdownParser parser = new MarkdownParser(markdown);
-        String name = text(parser, "name", file);
+        FrontMatter frontMatter = FrontMatter.parse(markdown, file, LIST_KEYS);
+        String name = text(frontMatter, "name", file);
         return new SubagentDefinition(
                 name,
-                text(parser, "description", file),
-                parser.getContent(),
-                names(parser, "tools"),
-                names(parser, "disallowedTools"));
+                text(frontMatter, "description", file),
+                frontMatter.body(),
+                names(frontMatter, TOOLS, file),
+                names(frontMatter, DISALLOWED_TOOLS, file));
     }
 
     /**
@@ -139,22 +149,48 @@ public record SubagentDefinition(String name,
                                 + "不是名字写错，就是提供它的那一层没启用。"));
     }
 
-    private static String text(MarkdownParser parser, String key, Path file) {
-        Object value = parser.getFrontMatter().get(key);
-        if (value == null || value.toString().isBlank()) {
+    private static String text(FrontMatter frontMatter, String key, Path file) {
+        String value = frontMatter.value(key);
+        if (value == null || value.isBlank()) {
             throw new IllegalStateException("Subagent 定义文件 " + file + " 缺少 " + key
                     + "：front matter 里必须有 name 与 description。");
         }
-        return value.toString().trim();
+        return value.trim();
     }
 
-    /** front matter 里的工具名是逗号分隔的一段（与 Claude Code 那份格式一致）。 */
-    private static List<String> names(MarkdownParser parser, String key) {
-        Object value = parser.getFrontMatter().get(key);
-        if (value == null || value.toString().isBlank()) {
+    /**
+     * 读一节的工具名。两种写法都收：{@code a, b} 与逐行的 {@code - a}。
+     *
+     * <p><b>没写这一节</b>返回空名单，含义是"继承全部"（合法路径，由 {@link #selectTools} 减掉委派工具）。
+     * <b>写了但一个名字都解析不出</b>是配置错误，当场失败——这是这一层的判据：
+     * 一个空结果不能被下游当成许可。症状上两者的差别很大：前者是设计如此，
+     * 后者会让一个只该看一条 SQL 的复核员拿到发邮件与跑脚本的权限，而且不报错。
+     */
+    private static List<String> names(FrontMatter frontMatter, String key, Path file) {
+        if (!frontMatter.has(key)) {
             return List.of();
         }
-        return List.of(value.toString().split(",")).stream()
+        LinkedHashSet<String> names = new LinkedHashSet<>(splitInline(frontMatter.value(key)));
+        names.addAll(frontMatter.items(key));
+        if (names.isEmpty()) {
+            throw new IllegalStateException("Subagent 定义文件 " + file + " 的 " + key
+                    + " 这节解析不出任何工具名。两种写法都行：写在一行（" + key + ": querySales, lookup），"
+                    + "或者每行一项（" + key + ": 下面写 - querySales）。"
+                    + "空名单不等于“继承全部工具”，所以这里按定义错误处理："
+                    + "要继承就别写这一节，要限制就写出工具名。");
+        }
+        return List.copyOf(names);
+    }
+
+    private static List<String> splitInline(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        String inline = value.trim();
+        if (inline.startsWith("[") && inline.endsWith("]")) {
+            inline = inline.substring(1, inline.length() - 1).trim();
+        }
+        return List.of(inline.split(",")).stream()
                 .map(String::trim)
                 .filter(name -> !name.isEmpty())
                 .toList();
