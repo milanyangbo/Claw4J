@@ -5,8 +5,10 @@
 # 绝不能入库。这个文件是模板，随仓库走。
 
 spring:
-  # .env 不在这里 import：application.yml 里已经读过（./.env 与 ../.env 两处都试），
-  # 所以本 profile 只负责"把依赖拉起来"，凭据来源只剩一条路，排查时不用两头看。
+  # Boot 默认不读 .env（那是 docker compose 的约定），这行按 properties 解析进来。
+  # 两个位置对应两种工作目录：仓库根目录（命令行）与 claw4j-app 模块（IDEA 默认）。
+  config:
+    import: optional:file:./.env[.properties],optional:file:../.env[.properties]
 
   # 让 Boot 自动拉起并回收 compose.yaml 里的 Postgres(pgvector) 与 Redis。
   # 工作目录要能找到 compose.yaml，也就是从仓库根目录启动。

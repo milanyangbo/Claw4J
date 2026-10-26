@@ -49,8 +49,12 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16   # 国内拉不到官方镜像时
 ```
 
-`application-local.yml` 里那行 `spring.config.import: optional:file:.env[.properties]` 是把
-`.env` 接进 Boot 的原因——Spring Boot 默认**不**读 `.env`，那是 docker compose 的约定。
+`application-local.yml` 里那行 `spring.config.import: optional:file:./.env[.properties],optional:file:../.env[.properties]`
+是把 `.env` 接进 Boot 的原因——Spring Boot 默认**不**读 `.env`，那是 docker compose 的约定。
+两个路径是为了命令行（工作目录是仓库根目录）与 IDEA（工作目录是 `claw4j-app` 模块）都能找到。
+
+IDEA 里跑：Run Configuration 的 **Active profiles** 填 `local`，工作目录设成仓库根目录
+（`compose.yaml` 在那）；不起 Docker 就只在 **Environment variables** 里填 key。
 
 **两家模型怎么切**：`claw4j.model.primary` 决定主模型（`deepseek` / `qwen`），另一家是备，
 装配出来的 `RoutingChatModel` 才是业务看到的那个（`@Primary`）。降级规则见

@@ -154,14 +154,12 @@ public class ModelConfiguration {
      */
     private static void requireConfigured(ModelProperties.Provider config) {
         if (config.getApiKey().isEmpty()) {
-            // 走到这里说明一个 key 都没读到。最常见的原因不是"没配"，而是"配了但没读进来"：
-            // .env 在工作目录之外、或在 IDEA 的运行配置里没设环境变量。
-            // 所以这里把两条路和"去哪看"一起写出来，别让人对着"没配 key"去翻配置文件。
+            // 一个 key 都没读到。最常见的原因不是"没配"，而是"配了但没读进来"：
+            // .env 只有在 local profile 下才被 import，而 IDEA 默认不激活它。
             throw new IllegalStateException(
                     "没有配置任何 API key，应用拒绝启动（ADR-0011 起不再降级到 mock 模型）。二选一："
-                            + "① 在仓库根目录放 .env（内容 DEEPSEEK_API_KEY=... / QWEN_API_KEY=...），"
-                            + "  启动时由 application.yml 的 spring.config.import 读取；"
-                            + "② 设环境变量 DEEPSEEK_API_KEY 或 QWEN_API_KEY"
+                            + "① 仓库根目录放 .env 并用 local profile 启动（.env 由它 import）；"
+                            + "② 直接设环境变量 DEEPSEEK_API_KEY 或 QWEN_API_KEY"
                             + "（IDEA：Run Configuration → Environment variables）。");
         }
         if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()
