@@ -41,6 +41,18 @@ class ChannelBoundaryTest {
                     .should().dependOnClassesThat().resideInAPackage("com.larksuite..");
 
     /**
+     * 调度层也不许反过来依赖自己那个 SDK 子包——这条比上一条更容易被绕过。
+     *
+     * <p>没人会把 {@code com.lark.oapi} 的 import 写进调度层，但"顺手用一下 sdk 包里的翻译类"很自然：
+     * 那样 {@code InboundDispatcher} 一编译就得有 SDK 在场，默认构建里那十几条用例先挂。
+     * 两条规则合起来才是真正的分界：调度层谁都不依赖自己人以外的 SDK 知识。
+     */
+    @ArchTest
+    static final ArchRule dispatchLayerDoesNotReachIntoItsSdkSubpackage =
+            noClasses().that().resideInAPackage("io.github.claw4j.channel.feishu")
+                    .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.feishu.sdk..");
+
+    /**
      * 平台中立的两个包不许反过来依赖某个平台。
      *
      * <p>反方向（{@code domain} 依赖 {@code channel}）改不出来：domain 的 pom 里没有 channel，

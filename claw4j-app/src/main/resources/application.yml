@@ -48,6 +48,24 @@ spring:
 # 免得出现"本地跑着回声模型却以为在跑真模型"这种更贵的困惑。
 claw4j:
   channel:
+    # 飞书长连接通道：凭据齐全才装配，缺一个就整个通道退让（HTTP 照常），
+    # 配了却连不上则启动失败——带着一个收不到消息的通道跑，比起不来难查得多（ADR-0009）。
+    # 两个环境变量都进 .env，不进仓库（ADR-0002）。
+    feishu:
+      enabled: ${CLAW4J_FEISHU_ENABLED:true}
+      app-id: ${FEISHU_APP_ID:}
+      app-secret: ${FEISHU_APP_SECRET:}
+      # 握手超时：等长连接就绪的上限，超时即启动失败。SDK 自己会重连，
+      # 不主动判一次的话，"还在连"与"连不上"在日志里长得一样。
+      ready-timeout: 15s
+      # 角色 → 授权，形状与 http 那份一致；users 里填飞书 open_id。
+      # 没有"默认角色"：没登记的人拿到的是明确的"没有权限"，不是某个兜底身份（ADR-0007）。
+      roles:
+        read-only:
+          tables: ["*"]
+          actions: ["read", "use_skill", "delegate_task", "read_system"]
+          # 例：users: ["ou_xxxxxxxxxxxxxxxx"]
+          users: []
     http:
       enabled: ${CLAW4J_HTTP_ENABLED:true}
       # 角色 → 授权。认人由通道做，授权从这里查表，Agent 不参与（ADR-0007）。

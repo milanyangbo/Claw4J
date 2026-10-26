@@ -1,1 +1,2 @@
 io.github.claw4j.channel.http.HttpChannelAutoConfiguration
+io.github.claw4j.channel.feishu.sdk.FeishuChannelAutoConfiguration
