@@ -34,7 +34,7 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
         channel ──► domain ◄── agent
                        ▲          ▲
                        │          │
-                       └── tools ─┘
+                       └─ capability ─┘
                        ▲
                        │
                       app（唯一知道所有模块的地方，负责接线）
@@ -65,7 +65,5 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
 
 - 五个模块，父 POM 的 `modules` 不再随通道数量增长。
 - 新增一个通道的成本变成：在 `claw4j-channel` 下加一个包 + 实现 `ChatChannel` + 平台 SDK 声明为 optional。不需要动父 POM 和 CI。
-- 边界规则落在四处 ArchUnit 测试里：`ArchitectureTest`（domain 零框架）、`AgentArchitectureTest`（agent 不认识 channel）、`ChannelArchitectureTest`（SPI 平台中立、飞书 SDK 只在 feishu 包）、`ToolsArchitectureTest`（tools 不认识 agent 与 channel）。它们随 `mvn test` 跑、提交前 hook 也跑，
-红了就是架构被破坏了。
+- 边界规则落在各模块自己的 ArchUnit 测试里：`DomainBoundaryTest`（domain 零框架）、`AgentBoundaryTest`（agent 不认识 channel）、`ChannelBoundaryTest`（不认识 agent 与 capability；SPI 包不依赖任何平台；`channel.feishu` 调度层不碰 `com.larksuite` 也不碰自己的 `sdk` 子包）、`ToolsBoundaryTest`（capability 不认识 agent 与 channel；只有 `LocalProcessRunner` 能碰 `ProcessBuilder`）。另有 `claw4j-app` 的 `ProcessBoundaryTest`——ADR-0002 那条红线要扫全仓才看得见，只能落在唯一同时看见所有模块的地方。它们随 `mvn test` 跑，本地入口是 `./scripts/verify.sh`（仓库没有 CI，也没有 pre-commit hook，见 `docs/agents/guardrails.md`），红了就是架构被破坏了。
 - `oapi-sdk` 在 `claw4j-channel` 里是 optional，默认不进 fat jar；要用飞书必须 `-Pchannel-feishu`。这条也意味着：只用 HTTP 的部署不会被飞书的传递依赖污染。
-- `claw4j-capability` 尚未被 `claw4j-agent` 依赖（装配线还没接）。M1 补 `agent → tools`，方向不变。

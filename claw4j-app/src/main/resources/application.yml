@@ -21,7 +21,7 @@ spring:
   flyway:
     enabled: false
 
-  # 会话建表由 Flyway 负责（tools 模块 db/migration 下的 V3）。
+  # 会话建表由 Flyway 负责（claw4j-capability 的 db/migration 下的 V3）。
   # 这里把 spring-ai-session 自带的 initializer 关掉，两个理由：
   # 一是它默认只在嵌入式数据库上跑（在 Postgres 上什么都不做），
   #   于是"以为建了其实没建"，而两套初始化并存时谁先谁后又是一笔糊涂账；

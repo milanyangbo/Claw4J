@@ -69,7 +69,7 @@
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
 
-        <!-- 迁移落在 tools 模块：schema 与种子是"业务数据"的一部分，跟着业务查询走，
+        <!-- 迁移落在本模块：schema 与种子是"业务数据"的一部分，跟着业务查询走，
              app 通过依赖传递拿到，启动时的自动迁移扫的是同一份 classpath:db/migration。
              Flyway 10+ 把各数据库的驱动拆成了独立 artifact，Postgres 要显式引。 -->
         <dependency>

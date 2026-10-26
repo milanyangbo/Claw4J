@@ -36,7 +36,7 @@
           读 SKILL.md 是同一个解析器——两份文件格式一致，"专职 Agent 与做法"
           才是同一种东西。只取解析器这一个用法，不引它的 Task 执行器：
           那个执行器用的是它自己的 ChatClient 装配（拿不到本项目的调用预算与鉴权 Advisor）。
-          排除 flexmark 的理由同 tools 模块。
+          排除 flexmark 的理由同 claw4j-capability。
         -->
         <dependency>
             <groupId>org.springaicommunity</groupId>
@@ -112,7 +112,7 @@
         <!--
           Text-to-SQL 的端到端断言要在真库上跑（05 号票）：循环行为用替身测，
           "算出来的数对不对"只能对着真库说。于是 agent 的测试也要能起一次性 Postgres。
-          与 tools 模块里那套是同一个约定：镜像可用才跑，CI 上是 -Dclaw4j.dbTests=required。
+          与 claw4j-capability 里那套是同一个约定：镜像可用才跑，CI 上是 -Dclaw4j.dbTests=required。
         -->
         <dependency>
             <groupId>org.testcontainers</groupId>

@@ -34,6 +34,7 @@
 | "非 root"取 `user.name` 而非 uid | uid 0 而 `user.name` 非 root 时会放行；macOS 与常见 runner 上恒非 root，等于从不触发 | 真正的保证是容器镜像的 `USER`；这一条只挡应用被跑成 root | 票 03 |
 | 入口脚本必须有可执行位与 shebang | 不再经命令解释器执行（票 08），这两件事从"能跑就行"变成硬要求 | 静态检查在落盘之前挡（`NO_SHEBANG`）；漏过去的执行侧给一句指名"第一行"的话 | 票 08、ADR-0002 修订 |
 | MCP 的"跨进程"在默认构建里是进程内 stdio | 进程内管道版（surefire 下拿子进程 classpath 太脆） | 真子进程的 server 打 `real-cli` tag，`-Preal-cli` 才跑 | 票 02、ADR-0014 |
+| 飞书 SDK 绑定层没有单测 | `channel.feishu.sdk` 那六个类只做"SDK 类型 ↔ 本项目类型"的翻译（翻译、发送、建连、条件装配），按票面约定不写单测；`claw4j-channel` 行覆盖率因此从 82.9% 掉到 61.0%，离 60% 的闸只剩 1 个点 | 装配那一层有 6 条钉着（凭据缺失/半配/SDK 不在 classpath/`enabled=false`/认人只看登记表/重复登记启动失败）。**真链路（真连接、群里问答）还没有用例**——假事件能证明我们读对了 getter，证明不了飞书真会那样推；补法是打 `feishu-live` tag 的用例，待有凭据的会话里写 | 票 05、票 06 |
 | 测试里有两个假 `ChatModel` | `FixedChatModel`、`SubagentModelStub`（ADR-0011 说不对 `ChatModel` 打桩） | 只在要验的东西不在模型身上时用 | M2-real 票 01 |
 
 最后一行本身就是例子：先例记在第一次决定的那张票里，第二处照着做却没补记，

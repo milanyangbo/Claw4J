@@ -41,3 +41,23 @@ ADR-0008 定的通道顺序里没有真实 IM。真实 IM 通道的价值不在�
 - **模块调整**：`claw4j-channel` 拆为 `claw4j-channel-api`（放 `ChatChannel` SPI，不依赖任何平台 SDK）+ `claw4j-channel-http` + `claw4j-channel-feishu`。重依赖（`oapi-sdk`）只留在飞书实现里，`claw4j-app` 按需引入，不想接 IM 的人不会被拖累。ADR-0004 的五模块由此变为七模块。**〔已过时〕**此条已被 ADR-0010 推翻：三个通道模块当时都是零 Java 文件的空壳，拆分没有收益；最终形态是单一 `claw4j-channel` 模块内按包分层（`spi` / `http` / `feishu`），边界由 ArchUnit 包级规则守卫。加渠道不再新建模块。
 - **凭据处理**：App ID / App Secret 走环境变量与 Spring 配置，不进 `SKILL.md`、不进仓库（延续 ADR-0002 的收口原则）。
 - 1.x 的 Teammors 私有加密协议仍排最后：它的 ECDH/AES 与自建心跳讲不出通用价值，代码留在 `legacy/` 作对照。
+
+## 实现记录（2026-10-26，M2 收尾落地）
+
+Consequences 里"3 秒超时重推"那条展开的几件事，各自落在哪个类、凭什么说它成立：
+
+| 约束 | 落点 | 证据 |
+| --- | --- | --- |
+| 收到事件立刻 ACK | `channel.feishu.sdk.FeishuLongConnectionChannel#onMessage` 只做"翻译 → 交给 `InboundDispatcher#accept`"；`accept` 只去重、认人、投任务，方法返回即 ACK | `InboundDispatchTest#ackReturnsBeforeTheAgentRuns`（`accept` 返回时 Agent 一次都没被调）、`#ackStillReturnsWhileTheAgentIsStuck`（Agent 卡住不放，`accept` 照样立刻返回——若它等 Agent，这条用例会挂到 20 秒超时） |
+| 异步编排、不拖住事件线程 | `InboundDispatcher` 注入的 `Executor`（装配里给它单独的 `feishuExecutor`） | `#twoEventsRunSideBySide`（两条事件都进到 Agent 里、谁也没被串行挡住）、`#overloadedPoolTellsTheUserInsteadOfDropping` |
+| 按 `eventId` 去重 | `InboundDispatcher` 内的 `SeenEventIds`：进程内 `ConcurrentHashMap`，TTL 10 分钟，**先记再跑** | `#duplicateDeliveryRunsOnceButStillAcks`（重推仍 ACK、Agent 只跑一次、群里一条回答）、`#redeliveryAfterTheWindowRunsAgain` |
+| 主动回推 | `channel.feishu.sdk.FeishuOpenApiReplySender`：`im().message().create`，`receive_id_type=chat_id`、`msg_type=text` | `#agentFailureStillPutsAReasonInTheChat`、`#blankAnswerIsNotSilentlyDropped` |
+| 超长回答分段 | `channel.feishu.MessageSplitter`：按 4000 字符切块，代码块每段重放围栏（带语言标记）、表格每段重放表头 | `#longAnswerIsDeliveredInOrderWithoutBreakingBlocks`、`#oversizedCodeBlockKeepsFencesBalanced`、`#oversizedTableRepeatsTheHeaderInEveryPart` |
+| 认人 | `FeishuChannelProperties#resolve`（`roles.*.users` 里填 `open_id`）；认不出回"没有权限" | `#unknownSenderGetsANoPermissionReply`、`FeishuChannelWiringTest` |
+
+三条实现上的取舍，写在这里免得下次重新讨论：
+
+- **去重表就在进程内，没有引入 Redis**：跨实例去重的前提是广播，而长连接是集群投递、不支持广播（见上"集群投递语义"）。单实例是既定形态，多实例去重在这个形态下没有意义；代价是重启后十分钟内的重推会被当成新事件——比"引入一个连不上就起不来的组件"便宜。
+- **"没有任务可跑"的两条分支必须当场回一句**：认不出人、线程池满。前者不回，用户会以为机器人坏了（ADR-0007：不设兜底身份）；后者已经 ACK 过、飞书不会重推，不回就永远没人应。这两次发送是事件线程上唯一的网络往返，几毫秒，且不涉及模型。
+- **事件回调里绝不抛异常**：抛出去平台会重推一条同样处理不了的消息。翻译失败、回推失败都收在回调内部记 ERROR；只有"连不上"在 `start()` 抛，让应用起不来（不带着一个收不到消息的通道跑）。
+
