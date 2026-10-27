@@ -5,20 +5,20 @@
 
 **Blocked by:** 01 —— 召回是"往提示词里再塞一段历史"，成本要看得见，否则没法判断它值不值。
 
-**Status:** ready
+**Status:** resolved
 
 **Demo:** 会话 A 里问"华东区的口径是什么"，得到答案；换一个会话 B 问"上次华东区的口径怎么定的"，
 回答里带上会话 A 的内容。
 
-- [ ] `userId` **按当前请求构造**，不是单例 bean。`CrossSessionRecallTools.builder(sessionService, userId)`
+- [x] `userId` **按当前请求构造**，不是单例 bean。`CrossSessionRecallTools.builder(sessionService, userId)`
       把 userId 绑在实例上，共享一个 bean 意味着**所有人召回的都是同一个人的历史**——
       这是这张票唯一真正的安全边界
-- [ ] 工具名 `recall_session`，动作 `recall_session`，`tables` 为空（它读的是会话，不是业务表）。
+- [x] 工具名 `recall_session`，动作 `recall_session`，`tables` 为空（它读的是会话，不是业务表）。
       只给 read-only 与 admin，guest 不给
-- [ ] 召回结果截断后再进提示词：`pageSize` 有上限，且**整段结果**也要按字符裁一次——
+- [x] 召回结果截断后再进提示词：`pageSize` 有上限，且**整段结果**也要按字符裁一次——
       召回十条长对话能一口气把上下文吃满
-- [ ] 断言两件事：另一个会话的内容能被这轮看到；**换一个 userId 就看不到**
-- [ ] 变异：把 userId 从"当前 principal"改成构造时写死的常量 → 第二条断言变红
+- [x] 断言两件事：另一个会话的内容能被这轮看到；**换一个 userId 就看不到**
+- [x] 变异：把 userId 从"当前 principal"改成构造时写死的常量 → 第二条断言变红
 
 **落点:** `claw4j-agent` 的 `session` 包（`CrossSessionRecallTools` 的包装与权限登记）。
 工具回调自己实现（`FunctionToolCallback`），不依赖它有没有 `@Tool` 注解——
@@ -30,6 +30,58 @@
 
 **不要做:** 向量召回；跨用户召回（管理员查别人的会话）；把召回结果写回当前会话。
 
-## 实现记录
+## 实现记录（2026-10-27）
 
-（未开始）
+- 新类 `agent.session.RecallSessionTool`：手写 `ToolDefinition` + `InputSchema`，工具名
+  `recall_session`，参数只暴露 `query` / `match_mode` / `since` / `page`（框架方法上的
+  `innerThought` 不给模型——它是模型的独白，只会变成日志噪音）。
+  框架的 `@Tool` 注解确实在（`cross_session_search`），但这里要改名、要去掉一个参数、
+  要在结果上做两层截断，自己写 schema 比反射改写省事。
+- 装配在 `SessionMemoryConfiguration`：`RecallSessionTool` 单例 + 一个
+  `ToolPermissionRegistry`（动作 `recall_session`，`tables` 空）。因为该配置上有
+  `@ConditionalOnSingleCandidate(DataSource.class)`，"没有会话存储就没有这个工具"是自动成立的。
+- **`userId` 在 `call` 里按当前 `Principal` 现造**：`CrossSessionRecallTools` 实例不缓存。
+  单参 `call(String)` 没有 `ToolContext` → 按"没身份"拒绝，不退化成查某个写死的人。
+- 截断两层：`pageSize=5`、整段 2000 字（超了补一句"怎么缩小范围"）。
+  没命中时把框架的 `No results found.` 翻成中文并附上"换个查法"——原样交出去，
+  模型下一句会用英文接着答。
+- `application.yml`（http 与 feishu 两份）的 `read-only` 都加了 `recall_session`；
+  `guest` 不加，`admin` 的 `*` 自然含。
+- 修正 M3-06 留下的一处失效：`ToolSearch.SYSTEM_SUFFIX` 原来写"用一句话描述你需要的能力"，
+  而 `RegexToolIndex` 不认中文分词——整句是一个 token，匹配不到任何工具。
+  实测（同一份索引）：`回忆 历史 会话` 命中，`回忆以前说过的话` 落空。
+  改成"用 2~4 个空格分隔的关键词"，并补一条用例用真索引钉住两种行为。
+  细节记进 `docs/design/pitfalls.md` 第十一条。
+
+**变异验证**（两条都做了）：
+
+1. 把 `recallToolsFor` 里的 `who.userId()` 换成写死的 `"u-1"` →
+   只有 `anotherUserSeesNothing` 变红，其余 6 条全绿。正好说明"换个人看不到"是唯一
+   能抓住这个缺陷的断言，其余用例对这个失效完全无感。
+2. 去掉 `truncate(...)` → `truncatesWhatItBringsBack` 变红（actual 是 1.7 万字）。
+
+**真链路验证**（起一次应用，端口 18080，飞书关）：
+
+```
+POST /api/chat  u-recall     "记一下：华东区成交口径按签约主体算，不按开票主体。只回一个字：好"
+  → ai_session_event 写入 2 条（USER / ASSISTANT）
+UPDATE ... SET archived=true  -- 等价于压缩归档，这一轮上下文里就没有它了
+POST /api/chat  u-recall     "我上次说过的华东区成交口径是什么？用你自己的历史记录回忆一下"
+  → "找到了。你在 2026-10-27 说过：华东区这批单子的成交口径按签约主体算，不按开票主体。"
+POST /api/chat  u-intruder   "帮我回忆一下：华东区成交口径按什么算？"
+  → "我查了历史记录，只找到你这条提问本身"（没有那段话）
+GET 9090/actuator/metrics/claw4j.tool.calls  → tool=recall_session, outcome=ok: 3 次
+```
+
+`u-recall` 那两轮之间打了 2 次工具调用：第一次关键词没命中，模型自己换了一组——描述里
+"换一组更贴近原文的词"那句话起了作用。
+
+**未做 / 记账**：
+
+- 语义召回（换个说法问同一件事）。那要 embedding 加向量表，属于票 05。
+- 跨用户召回（管理员查别人的会话）。没做，也不打算做。
+- **召回结果里会包含当前会话本轮刚发的那条提问**：入站消息在 Advisor 的 `before` 就落库，
+  所以"按 userId 查事件"必然查得到它。实测 `u-intruder` 那句"只找到你这条提问本身"就是它。
+  没有正确性问题，只是白占一点上下文。要修得有"排除当前 sessionId"的能力，
+  而当前一个用户只有一段会话，排掉就等于全排掉——等会话维度加上去再说。
+

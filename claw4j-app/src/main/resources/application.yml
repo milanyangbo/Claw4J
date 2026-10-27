@@ -101,7 +101,7 @@ claw4j:
       roles:
         read-only:
           tables: ["*"]
-          actions: ["read", "use_skill", "delegate_task", "read_system"]
+          actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session"]
           # 例：users: ["ou_xxxxxxxxxxxxxxxx"]
           users: []
     http:
@@ -123,10 +123,14 @@ claw4j:
       # draft_script（M2-06 的生成器）反过来**只给了 admin**：提交一份草稿不等于能跑脚本
       # （run_script 是另一个动作），合成一个就等于让"能提议的人"顺手拿到了执行权。
       # 于是 read-only / guest 的 actions 里没有它，而 admin 的 "*" 含它。
+      # recall_session（M3-03 的跨会话召回）**不复用 read**：read 的语义是"读业务表"，
+      # 拿它兜住"读自己的历史"会让"能不能回忆"和"能不能查销售单"变成同一件事。
+      # 给 read-only 与 admin，不给 guest：guest 能读的只有 region 表，
+      # 那与他"过去说过什么"没有关系。工具侧只搜当前身份的历史，所以这一行只管"能不能发起"。
       roles:
         read-only:
           tables: ["*"]
-          actions: ["read", "use_skill", "delegate_task", "read_system"]
+          actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session"]
         # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"
         guest:
           tables: ["region"]

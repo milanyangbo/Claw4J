@@ -1,6 +1,7 @@
 package io.github.claw4j.agent.session;
 
 import com.zaxxer.hikari.HikariDataSource;
+import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import org.slf4j.Logger;
@@ -31,6 +32,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import javax.sql.DataSource;
+import java.util.Map;
 
 /**
  * 会话记忆的装配：把 {@code spring-ai-session} 的 JDBC 存储接到业务库所在的同一个 Postgres 上，
@@ -177,6 +179,37 @@ public class SessionMemoryConfiguration implements DisposableBean {
                                          ObjectProvider<MeterRegistry> meterRegistry) {
         MeterRegistry registry = meterRegistry.getIfAvailable();
         return new SessionCleanup(sessionService, registry == null ? Metrics.globalRegistry : registry);
+    }
+
+    /**
+     * 跨会话召回工具（M3-03）。
+     *
+     * <p>注册成 {@code ToolCallback} 就会被 {@code AgentAutoConfiguration#chatClient} 收进清单，
+     * 调用方不需要知道有"回忆"这个能力。工具检索开着时它一样会先被索引、
+     * 模型检索到了才看得见——不影响这里的装配。
+     *
+     * <p><b>工具是单例，userId 不是</b>：这个 bean 上没有绑定任何人，每次调用都从
+     * {@code ToolContext} 里取当前身份再造一个召回器（见 {@link RecallSessionTool}）。
+     * 把身份绑在这个 bean 上，等于所有人的上下文里都装着第一个人的历史。
+     *
+     * <p>它拿到的是包了降级的 {@link FaultTolerantSessionService}：库挂的时候这里是
+     * "没找到"，不是整轮 500。召回失败与记忆失败是同一类——都只影响这一段附加信息。
+     */
+    @Bean
+    @ConditionalOnMissingBean(RecallSessionTool.class)
+    public RecallSessionTool recallSessionTool(SessionService sessionService) {
+        return new RecallSessionTool(sessionService);
+    }
+
+    /**
+     * 召回工具的权限。动作名与工具名同值，**不复用 read**：
+     * "能查销售单"与"能回忆自己说过什么"是两件事，合成一个动作名就等于
+     * 给所有能查数的人顺手开了历史回查（细节见 {@link RecallSessionTool#ACTION}）。
+     */
+    @Bean
+    public ToolPermissionRegistry recallSessionPermission() {
+        return ToolPermissionRegistry.of(
+                Map.of(RecallSessionTool.TOOL_NAME, RecallSessionTool.permission()));
     }
 
     /**

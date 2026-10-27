@@ -13,6 +13,8 @@ import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.tool.toolsearch.ToolReference;
+import org.springframework.ai.tool.toolsearch.ToolSearchRequest;
 import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -156,6 +158,35 @@ class ToolSearchTest {
                 .run(context -> assertThat(context.getBean(ToolSearchProperties.class).maxToolsInPrompt())
                         .as("显式写 0 才是「永远检索」")
                         .isZero());
+    }
+
+    @Test
+    @DisplayName("中文检索查询要空格分词：整句会被当成一个词，什么都匹配不到")
+    void chineseQueryNeedsSpaces() {
+        RegexToolIndex index = new RegexToolIndex();
+        index.indexTool("chat-1", ToolReference.builder()
+                .toolName("recall_session")
+                .summary("按关键词检索历史对话：回忆、说过什么、以前的结论")
+                .build());
+
+        assertThat(foundTools(index, "回忆 历史 会话"))
+                .as("空格分隔的关键词能命中")
+                .containsExactly("recall_session");
+        assertThat(foundTools(index, "回忆以前说过的话"))
+                .as("整句里没有任何一个 token 与描述相等，一个都匹配不到——"
+                        + "这就是系统提示词必须要求空格分词的原因，不是措辞偏好")
+                .isEmpty();
+        assertThat(ToolSearch.SYSTEM_SUFFIX)
+                .as("提示词里不写清楚，中文场景下模型会照着「一句话描述」去写，然后每次都检索不到")
+                .contains("空格");
+    }
+
+    private static List<String> foundTools(RegexToolIndex index, String query) {
+        return index.search(new ToolSearchRequest("chat-1", query, 5, null))
+                .toolReferences()
+                .stream()
+                .map(ToolReference::toolName)
+                .toList();
     }
 
     @Configuration(proxyBeanMethods = false)
