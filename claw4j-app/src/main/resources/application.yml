@@ -1,3 +1,24 @@
+# 可观测（M3-01）。指标记在 MeterRegistry 里，这里决定谁能看见。
+#
+# 为什么另开一个端口、且只绑本机：指标里有"谁被拒了几次""花了多少 token"，
+# 它和业务端口混在一起的话，"能发消息"就等于"能看运营数据"。
+# 本机绑定的代价是容器里看不到——单实例本地演示是既定形态，
+# 真要接 Prometheus 时，那时候再把地址改成可被采集的网段，并同时加上鉴权。
+management:
+  server:
+    port: 9090
+    address: 127.0.0.1
+  endpoints:
+    web:
+      exposure:
+        # 只开这两个。env / beans 那类会把配置与内部结构整份吐出来，
+        # 它们对排障有用，但那是"临时打开看一眼"的东西，不该是默认暴露面。
+        include: health,metrics
+  metrics:
+    tags:
+      # 每个指标都带这个标签：以后接了 Prometheus 或第二个服务，数据不会混在一起。
+      application: claw4j
+
 spring:
   application:
     name: claw4j

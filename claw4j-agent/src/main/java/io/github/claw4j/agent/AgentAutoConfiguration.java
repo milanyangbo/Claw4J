@@ -2,8 +2,10 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
+import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
@@ -18,6 +20,7 @@ import org.springframework.context.annotation.Bean;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import io.github.claw4j.agent.model.ModelConfiguration;
 
 /**
@@ -47,7 +50,8 @@ public class AgentAutoConfiguration {
                                  ObjectProvider<Advisor> advisors,
                                  ObjectProvider<ToolCallback> toolCallbacks,
                                  ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
-                                 ObjectProvider<ObservationRegistry> observationRegistry) {
+                                 ObjectProvider<ObservationRegistry> observationRegistry,
+                                 ObjectProvider<MeterRegistry> meterRegistry) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
         // 拿到的是框架内建的那个，用的是 40/150 的默认值，这里定的预算根本不生效
@@ -61,7 +65,8 @@ public class AgentAutoConfiguration {
                 .defaultAdvisors(advisors.orderedStream().toList())
                 // 工具同理：容器里所有来源都挂上，这里不点名任何工具类。
                 // 没有工具时是空数组，工具循环照常工作（只是无工具可调）。
-                .defaultToolCallbacks(collectToolCallbacks(toolCallbacks, toolCallbackProviders))
+                .defaultToolCallbacks(collectToolCallbacks(toolCallbacks, toolCallbackProviders,
+                        meterRegistry.getIfAvailable()))
                 .build();
     }
 
@@ -80,13 +85,21 @@ public class AgentAutoConfiguration {
      * <p>顺序不影响行为：工具是按名字被模型和鉴权认领的，清单里谁先谁后都一样。
      * 重名不在这里去重——两个来源导出同名工具是配置错误，该在清单断言上红，
      * 而不是被这里悄悄吞掉一个。
+     *
+     * <p><b>计量也在这里包</b>：这是所有工具的**唯一入口**（父 Agent 与子 Agent 都走它），
+     * 包在这一层就不会出现"某条路径上的工具调用没被记上"。{@code registry} 为空表示
+     * 调用方没装 actuator——这时候包一层也没地方导出，原样返回。
      */
     public static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
-                                                          ObjectProvider<ToolCallbackProvider> providers) {
+                                                          ObjectProvider<ToolCallbackProvider> providers,
+                                                          MeterRegistry registry) {
         List<ToolCallback> collected = new ArrayList<>();
-        callbacks.orderedStream().forEach(collected::add);
+        Consumer<ToolCallback> add = registry == null
+                ? collected::add
+                : callback -> collected.add(new MeteredToolCallback(callback, registry));
+        callbacks.orderedStream().forEach(add);
         providers.orderedStream()
-                .forEach(provider -> collected.addAll(List.of(provider.getToolCallbacks())));
+                .forEach(provider -> List.of(provider.getToolCallbacks()).forEach(add));
         return List.copyOf(collected);
     }
 
@@ -98,8 +111,9 @@ public class AgentAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(AuthorizationAdvisor.class)
-    public AuthorizationAdvisor authorizationAdvisor(ObjectProvider<ToolPermissionRegistry> registries) {
-        return new AuthorizationAdvisor(registries.orderedStream().toList());
+    public AuthorizationAdvisor authorizationAdvisor(ObjectProvider<ToolPermissionRegistry> registries,
+                                                     ObjectProvider<MeterRegistry> meterRegistry) {
+        return new AuthorizationAdvisor(registries.orderedStream().toList(), meterRegistry.getIfAvailable());
     }
 
     /**

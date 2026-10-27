@@ -3,6 +3,7 @@ package io.github.claw4j.agent.subagent;
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
@@ -54,6 +55,7 @@ public class SubagentAutoConfiguration {
                                              ObjectProvider<ToolCallback> toolCallbacks,
                                              ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                              ObjectProvider<ObservationRegistry> observationRegistry,
+                                             ObjectProvider<MeterRegistry> meterRegistry,
                                              AuthorizationAdvisor authorizationAdvisor) {
         var definitions = SubagentCatalog.load(Path.of(directory));
         var observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
@@ -61,7 +63,9 @@ public class SubagentAutoConfiguration {
                 // 与 Agent 装配用的是同一个收集方法：工具回调与 provider 两种形态都要收。
                 // 只收单回调形态时，querySales（来自 provider）在子那一侧就"没有这个工具"，
                 // 而它明明在父的清单里——症状与 01 号票那个一模一样。
-                () -> AgentAutoConfiguration.collectToolCallbacks(toolCallbacks, toolCallbackProviders)
+                // 计量也跟着一起来：子 Agent 调的工具同样是真实成本，不该只在父那一侧可见。
+                () -> AgentAutoConfiguration.collectToolCallbacks(toolCallbacks, toolCallbackProviders,
+                                meterRegistry.getIfAvailable())
                         .stream()
                         .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(
                                 callback.getToolDefinition().name()))

@@ -9,6 +9,7 @@ import io.github.claw4j.agent.subagent.SubagentRunner;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -261,6 +262,7 @@ class SubagentDelegationTest {
                 beans.getBeanProvider(ToolCallback.class),
                 beans.getBeanProvider(ToolCallbackProvider.class),
                 beans.getBeanProvider(ObservationRegistry.class),
+                beans.getBeanProvider(MeterRegistry.class),
                 new AuthorizationAdvisor(List.of()));
 
         assertThat(task.getToolDefinition().name()).isEqualTo(SubagentDelegation.TOOL_NAME);
@@ -269,7 +271,8 @@ class SubagentDelegationTest {
         beans.registerSingleton("task", task);
         assertThat(AgentAutoConfiguration.collectToolCallbacks(
                 beans.getBeanProvider(ToolCallback.class),
-                beans.getBeanProvider(ToolCallbackProvider.class)))
+                beans.getBeanProvider(ToolCallbackProvider.class),
+                beans.getBeanProvider(MeterRegistry.class).getIfAvailable()))
                 .extracting(callback -> callback.getToolDefinition().name())
                 .contains("lookup", SubagentDelegation.TOOL_NAME);
 

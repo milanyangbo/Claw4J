@@ -48,6 +48,16 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
+        <!--
+          可观测（M3-01）：token 计量、调用耗时、工具调用都进 Micrometer。
+          装 starter 而不是只装 micrometer-core，是因为指标要能被看见——
+          只记在内存里没有端点的指标，和没记的区别只是多占了一点内存。
+          micrometer-core 本来就在（Observation 用的就是它），这里补的是端点与出口。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

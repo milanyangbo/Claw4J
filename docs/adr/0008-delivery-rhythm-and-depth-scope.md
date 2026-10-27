@@ -24,7 +24,7 @@ date: 2026-10-22
 | **M0** | 多模块骨架（ADR-0004）、Boot 4.1.2 + JDK 21、`docker compose` 起 Postgres(pgvector)（Redis 已于 2026-10-26 摘除，见 ADR-0005 修订记录）、一次真实 `ChatClient` 调用、CI 绿 | 问一句话能拿到回答 |
 | **M1** | Channel(HTTP+SSE) + Session 记忆 + 业务库 `@Tool`（Text-to-SQL）+ Advisor 链鉴权（ADR-0007）+ 测试覆盖 | 能在 IM 里问"上周华东区成交额"并拿到数 |
 | **M2** | Agent Skills（渐进式披露）+ Subagent 编排 + MCP server + 三层能力打通 + Skill Generator 沙箱自测 + 飞书长连接通道（含异步 ACK 与事件去重） | 模型能自己选技能、委派子 Agent、跑通 MCP，且能在飞书里发消息问答 |
-| **M3** | A2A 端点 + 可观测（token 计量、Micrometer）+ 评估器进 CI + 语义缓存 | 能被别的 Agent 通过 AgentCard 发现并调用 |
+| **M3** | 可观测（token 计量、Micrometer）+ 会话记忆深化（压缩、跨会话召回、TTL）+ 语义缓存 + 工具检索（见下方修订） | 花掉多少 token 看得见；长对话塞得进提示词；同一个问题第二遍不再算 |
 
 M0 结束就必须能演示，不等 M2。
 
@@ -60,3 +60,23 @@ M0 结束就必须能演示，不等 M2。
 `ChatClient` 由我们自己建，生效的是五参 `ChatClient.builder(...)` 里传进去的那个
 `ToolCallingManager`。哪天改成注入 Boot 的 `ChatClient.Builder` bean，
 数字会静默退回 40/150——所以要有断言专门钉着它。
+
+### M3 范围修订（2026-10-27）
+
+原表里 M3 是「A2A 端点 + 可观测 + 评估器进 CI + 语义缓存」，验收判据是"能被别的 Agent
+通过 AgentCard 发现并调用"。这一版改了：
+
+**去掉 A2A 端点与评估器进 CI。** A2A 解决的是"别的 Agent 怎么找到我"，而这个项目要演示的是
+"一个企业 IM 里的助手能查真数据、能鉴权、能算清成本"——接一个 AgentCard 进来是给外部开一个
+新的入口，与已经做透的通道抽象没有关系，而它带来的安全面（外部 Agent 拿着自己的身份来调工具）
+反而是新的。评估器同理：`RelevancyEvaluator` 那类给的是"答得像不像"的分数，
+而这个项目更缺的是"花了多少、省了多少"这种硬数字——那是可观测这一项。
+
+**加上会话记忆的三项与工具检索。** 前者是 M1 就记账推迟的（压缩按 token 触发，
+而 token 计量正是这一项，分开做要返工一次）；后者是 ADR-0001 记下的、
+"工具多到塞不进提示词"这个场景的直接解法。
+
+代价要写清楚：**M3 结束时不能声称"能被别的 Agent 发现并调用"**。那件事没做，
+上面那张表的完成判据已经改成这一版实际做的事。
+
+落地清单见 `.scratch/m3-observability-and-memory/spec.md`。

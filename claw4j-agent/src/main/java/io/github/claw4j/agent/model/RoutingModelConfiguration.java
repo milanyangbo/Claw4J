@@ -2,9 +2,12 @@ package io.github.claw4j.agent.model;
 
 import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.agent.model.RoutingChatModel;
+import io.github.claw4j.agent.observability.MeteredChatModel;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionOutcome;
 import org.springframework.boot.autoconfigure.condition.SpringBootCondition;
@@ -46,7 +49,9 @@ public class RoutingModelConfiguration {
     @Bean(ROUTING_BEAN)
     @Primary
     @Conditional(AnyRealModelCondition.class)
-    public RoutingChatModel routingChatModel(ModelProperties properties, ApplicationContext context) {
+    public RoutingChatModel routingChatModel(ModelProperties properties, ApplicationContext context,
+                                            ObjectProvider<MeterRegistry> meterRegistry) {
+        MeterRegistry registry = meterRegistry.getIfAvailable();
         Map<String, ChatModel> available = new LinkedHashMap<>();
         putIfPresent(available, context, ModelProperties.DEEPSEEK, ModelConfiguration.DEEPSEEK_BEAN);
         putIfPresent(available, context, ModelProperties.QWEN, ModelConfiguration.QWEN_BEAN);
@@ -67,10 +72,12 @@ public class RoutingModelConfiguration {
         }
 
         List<RoutingChatModel.Route> routes = new ArrayList<>();
-        routes.add(new RoutingChatModel.Route(primary, available.get(primary)));
+        // 每条 route 各包一层计量：route 这个标签就是这里的 name，
+        // 于是"降级了几次"= 非主那条 route 的调用数，路由类里不需要再有第二个计数器。
+        routes.add(new RoutingChatModel.Route(primary, metered(available.get(primary), primary, registry)));
         available.forEach((name, model) -> {
             if (!name.equals(primary)) {
-                routes.add(new RoutingChatModel.Route(name, model));
+                routes.add(new RoutingChatModel.Route(name, metered(model, name, registry)));
             }
         });
 
@@ -80,6 +87,14 @@ public class RoutingModelConfiguration {
                         : List.of());
 
         return new RoutingChatModel(routes);
+    }
+
+    /**
+     * 有 registry 才包。没有 registry 表示调用方没装 actuator——包一层也没地方导出，
+     * 只是多一层调用，原样返回。
+     */
+    private static ChatModel metered(ChatModel model, String route, MeterRegistry registry) {
+        return registry == null ? model : new MeteredChatModel(model, route, registry);
     }
 
     private static void putIfPresent(Map<String, ChatModel> target,

@@ -4,6 +4,9 @@ import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Metrics;
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
@@ -64,8 +67,20 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
 
     private final List<ToolPermissionRegistry> registries;
 
+    /**
+     * 拒绝次数往哪记。默认 {@link Metrics#globalRegistry}：没装 actuator 的调用方
+     * （只把 {@code claw4j-agent} 当库使）也能拿到计数，装了则由容器注入真正的 registry。
+     * 不用 {@code null} 表示"不记"——那会让下面每个用法点都多一个判空分支。
+     */
+    private final MeterRegistry registry;
+
     public AuthorizationAdvisor(List<ToolPermissionRegistry> registries) {
+        this(registries, Metrics.globalRegistry);
+    }
+
+    public AuthorizationAdvisor(List<ToolPermissionRegistry> registries, MeterRegistry registry) {
         this.registries = List.copyOf(Objects.requireNonNull(registries, "registries"));
+        this.registry = registry == null ? Metrics.globalRegistry : registry;
     }
 
     @Override
@@ -98,9 +113,10 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
         Objects.requireNonNull(chain, "chain");
         Map<String, Object> context = request.context();
         return chain.nextStream(request).handle((chunk, sink) -> {
-            Optional<String> denial = denialFor(context, requestedTools(chunk.chatResponse()));
+            Optional<Denial> denial = denialFor(context, requestedTools(chunk.chatResponse()));
             if (denial.isPresent()) {
-                sink.next(replacedWith(chunk, denial.get()));
+                countDenied(denial.get().tool());
+                sink.next(replacedWith(chunk, denial.get().text()));
                 sink.complete();
                 return;
             }
@@ -110,30 +126,55 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
 
     /** 同步路径：模型这一轮要调的工具逐个过一遍，有一个越权就把整轮换成拒绝。 */
     private ChatClientResponse denyIfNecessary(Map<String, Object> context, ChatClientResponse response) {
-        Optional<String> denial = denialFor(context, requestedTools(response.chatResponse()));
-        return denial.<ChatClientResponse>map(text -> replacedWith(response, text)).orElse(response);
+        Optional<Denial> denial = denialFor(context, requestedTools(response.chatResponse()));
+        if (denial.isEmpty()) {
+            return response;
+        }
+        countDenied(denial.get().tool());
+        return replacedWith(response, denial.get().text());
     }
 
-    private Optional<String> denialFor(Map<String, Object> context, List<String> toolNames) {
+    /** 一条拒绝，带上是被哪个工具触发的——指标要按工具分，光有"拒绝了几次"查不到该改哪条权限。 */
+    private record Denial(String tool, String text) {
+    }
+
+    private Optional<Denial> denialFor(Map<String, Object> context, List<String> toolNames) {
         if (toolNames.isEmpty()) {
             return Optional.empty();
         }
         Principal principal = principalOf(context);
         if (principal == null) {
-            return Optional.of(DENIAL_PREFIX + "：本次请求没有携带身份，工具调用一律不放行。");
+            return Optional.of(new Denial(toolNames.getFirst(),
+                    DENIAL_PREFIX + "：本次请求没有携带身份，工具调用一律不放行。"));
         }
         for (String toolName : toolNames) {
             Optional<ToolPermission> permission = permissionFor(toolName);
             if (permission.isEmpty()) {
-                return Optional.of(DENIAL_PREFIX + "：工具 " + toolName
-                        + " 未登记权限（没人评估过它会碰到什么），按越权处理。");
+                return Optional.of(new Denial(toolName, DENIAL_PREFIX + "：工具 " + toolName
+                        + " 未登记权限（没人评估过它会碰到什么），按越权处理。"));
             }
             ToolPermission required = permission.get();
             if (!principal.canUse(required)) {
-                return Optional.of(denialText(principal, toolName, required));
+                return Optional.of(new Denial(toolName, denialText(principal, toolName, required)));
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * 拒绝计数。
+     *
+     * <p>这条指标是"谁能干什么"的运行时证据：yml 里写着 read-only 读不到 sales_order，
+     * 那只是声明；这个数才说明真的有人试过并且被拦下来了。工具侧的
+     * {@code MeteredToolCallback} 看不到被拒的调用——工具根本没被执行——所以只能在这里记。
+     */
+    private void countDenied(String toolName) {
+        Counter.builder("claw4j.tool.calls")
+                .description("工具调用次数")
+                .tag("tool", toolName)
+                .tag("outcome", "denied")
+                .register(registry)
+                .increment();
     }
 
     /**
