@@ -10,6 +10,7 @@ import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
@@ -163,6 +164,27 @@ public class AgentAutoConfiguration {
     @ConditionalOnMissingBean(PiiRedactionAdvisor.class)
     public PiiRedactionAdvisor piiRedactionAdvisor() {
         return new PiiRedactionAdvisor();
+    }
+
+    /**
+     * 请求与响应的整份 dump。**默认什么都不打**：框架实现里每个方法体都包在
+     * {@code logger.isDebugEnabled()} 里，INFO 级别下连字符串拼接都不发生。
+     *
+     * <p><b>order 用框架默认的 0</b>，也就是排在工具循环内部、紧贴模型调用。
+     * 官方参考文档里这个 Advisor 的实现示例就是 {@code getOrder() { return 0; }}，
+     * 按官方推荐的落点，它看到的是每一轮真正发给模型的东西（含工具返回的行）
+     * 与模型的原始回复。想改成"只看用户最终看到的那一份"，得排到脱敏外层
+     * （order 小于 {@link PiiRedactionAdvisor#ORDER}），代价是看不到工具往返。
+     *
+     * <p><b>打开它之前先想清楚 PII</b>：它 dump 的是模型入口与出口的原文，
+     * 而脱敏在它外层，所以日志里是**未脱敏**的手机号与原始数据行。
+     * 这也意味着它必须留在 DEBUG：{@code logging.level.org.springframework.ai.chat.client.advisor}
+     * 一旦在某个环境里被调到 DEBUG，会话明文就落在日志里了。
+     */
+    @Bean
+    @ConditionalOnMissingBean(SimpleLoggerAdvisor.class)
+    public SimpleLoggerAdvisor simpleLoggerAdvisor() {
+        return new SimpleLoggerAdvisor();
     }
 
     /**

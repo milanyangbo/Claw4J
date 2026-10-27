@@ -66,14 +66,19 @@ public class SessionMemoryConfiguration implements DisposableBean {
     private static final Logger log = LoggerFactory.getLogger(SessionMemoryConfiguration.class);
 
     /**
-     * 记忆 Advisor 的 order：全链最小，也就是 {@code before} 最先、{@code after} 最后。
+     * 记忆 Advisor 的 order：除入站拦截外全链最小，也就是 {@code before} 第二早、{@code after} 最后。
      *
      * <p>"after 最后"是这里的要害：链的收尾按 order 降序跑，谁 order 小谁最后收尾。
      * 它最后收尾，写进会话表的才是 {@link io.github.claw4j.agent.advisor.PiiRedactionAdvisor}
      * 已经打过码的文本。反过来写，出站是干净的、会话表里躺的是明文——
      * 一份比出站更持久的泄露，而且没人会去看。
+     *
+     * <p><b>为什么让出 {@code HIGHEST_PRECEDENCE} 这一个名额</b>：
+     * {@code SafeGuardAdvisor} 必须比它更外层，否则它拼上来的历史会被入站拦截一起检查，
+     * 历史里出现过的词会把这个会话永久锁死（判据在 {@code GuardAutoConfiguration#ORDER}）。
+     * 记忆往后挪一格不影响"after 最后"——它仍然比脱敏（{@code HIGHEST_PRECEDENCE + 200}）小。
      */
-    public static final int ADVISOR_ORDER = Ordered.HIGHEST_PRECEDENCE;
+    public static final int ADVISOR_ORDER = Ordered.HIGHEST_PRECEDENCE + 1;
 
     private volatile DataSource sessionDataSource;
 

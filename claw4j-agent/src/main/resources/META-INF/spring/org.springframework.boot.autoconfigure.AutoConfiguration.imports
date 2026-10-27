@@ -3,4 +3,5 @@ io.github.claw4j.agent.model.RoutingModelConfiguration
 io.github.claw4j.agent.AgentAutoConfiguration
 io.github.claw4j.agent.subagent.SubagentAutoConfiguration
 io.github.claw4j.agent.session.SessionMemoryConfiguration
+io.github.claw4j.agent.guard.GuardAutoConfiguration
 io.github.claw4j.agent.cache.CacheAutoConfiguration
