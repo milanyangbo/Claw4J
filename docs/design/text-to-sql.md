@@ -39,7 +39,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 重试上限由 `ToolCallBudget` 收紧到**每工具 3 次、整轮 6 次**——落在 `ToolCallingManager`
 的 `maxCallsPerTool` / `maxTotalToolCalls` 上，不是 yml 里那个 `spring.ai.tools.limits.*`
 （默认 40/150 是为分页取数设计的，放在自纠错上就是一次提问烧几百次往返）。
-超限的行为是 `THROW`：`ToolCallingAdvisor` 接住后直接变成一句回答给客户端，
+超限的行为是 `THROW`：工具循环（`ToolSearchToolCallingAdvisor`）接住后直接变成一句回答给客户端，
 不再回头问模型——否则"超限"会被当成工具结果喂回模型，它还会再试一次。
 
 这里有个**静默失效**的坑值得单独记：`spring.ai.tools.limits.*` 配置到不了我们这条链。

@@ -55,7 +55,8 @@ _Avoid_: Function（1.x 时期的叫法）、Callback、插件
 
 **Advisor**:
 Advisor 链上的一环，包在模型调用外面，能改写进出的消息。链按 order **升序**执行：
-order 比 `ToolCallingAdvisor.DEFAULT_ORDER` 大的那一侧在**工具循环内部**（每次迭代都过一遍），
+order 比工具循环（`ToolSearchToolCallingAdvisor`，它继承 `ToolCallingAdvisor`，order 就是父类那个）
+的 `DEFAULT_ORDER` 大的那一侧在**工具循环内部**（每次迭代都过一遍），
 小的那一侧在循环外（整通对话只跑一次）。自定义 Advisor 必须同时实现 `CallAdvisor` 与
 `StreamAdvisor`，否则流式路径会静默跳过它——既不报错也不生效。
 _Avoid_: 拦截器、Filter、Hook、Middleware

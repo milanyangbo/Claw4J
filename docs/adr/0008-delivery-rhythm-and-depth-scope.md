@@ -49,7 +49,7 @@ M0 结束就必须能演示，不等 M2。
 
 `DefaultToolCallingManager.Builder` 自带每工具 40 次、整轮 150 次的上限
 （`DEFAULT_MAX_CALLS_PER_TOOL` / `DEFAULT_MAX_TOTAL_TOOL_CALLS`），
-默认行为是 `THROW`——`ToolCallingAdvisor` 接住 `ToolCallLimitExceededException` 后
+默认行为是 `THROW`——工具循环（`ToolSearchToolCallingAdvisor`）接住 `ToolCallLimitExceededException` 后
 直接变成一代回答给客户端，不再回头问模型。Tool Calling 这一项做深要讲的就是这套机制。
 
 但 Text-to-SQL 的自纠错每多一次就是一次模型往返加一次数据库往返，

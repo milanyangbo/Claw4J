@@ -69,8 +69,8 @@ prompt 的 `toolContext`——委派发生在工具内部，那里拿不到 Advi
 
 ## 调用预算
 
-子那一侧用与父同一个构造入口：`ToolCallingAdvisor.builder().toolCallingManager(
-ToolCallBudget.toolCallingManager(observations))`，3 / 6 照旧。
+子那一侧用与父同一个构造入口：`ToolSearch.toolLoop(...)`（工具循环只有检索这一种），
+预算仍是 `ToolCallBudget` 的 3 / 6。
 委派不能变成绕过预算的口子，否则一个坏掉的脚本在子里循环时，
 父这一侧的预算看起来还一点没动。
 
