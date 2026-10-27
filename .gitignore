@@ -16,6 +16,9 @@ scheduled_tasks.json
 .env
 *.local
 
+# 工作日志与本地工具状态：是过程记录，不是项目产物
+.workbuddy/
+
 # 本地配置覆盖：可能放真实 API key，绝不能入库
 application-local.yml
 application-local.yaml

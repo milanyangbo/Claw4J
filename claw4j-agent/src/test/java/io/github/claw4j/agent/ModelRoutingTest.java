@@ -293,6 +293,64 @@ class ModelRoutingTest {
                 .isEqualTo(retryable));
     }
 
+    @Test
+    @DisplayName("降级后工具真的跑得起来：拿回的是库里的数，不是「我无法访问数据库」")
+    void toolsActuallyRunAfterFallback() {
+        List<Prompt> backupPrompts = new CopyOnWriteArrayList<>();
+        RecordingTool tool = new RecordingTool("querySales", "128400");
+
+        RoutingChatModel routing = new RoutingChatModel(List.of(
+                new RoutingChatModel.Route("primary", model(
+                        DeepSeekChatOptions.builder().build(),
+                        prompt -> {
+                            throw statusFailure(429, "429 too many requests");
+                        },
+                        prompt -> Flux.error(statusFailure(429, "429 too many requests")))),
+                new RoutingChatModel.Route("backup", model(
+                        OpenAiChatOptions.builder().build(),
+                        prompt -> {
+                            backupPrompts.add(prompt);
+                            return wantsTool("call-1", "querySales");
+                        },
+                        prompt -> Flux.just(wantsTool("call-1", "querySales"))))));
+
+        Prompt incoming = new Prompt(List.of(new UserMessage("上周华东成交额")),
+                DeepSeekChatOptions.builder()
+                        .toolCallbacks(List.of(tool))
+                        .toolContext(Map.of("claw4j.principal", "guest"))
+                        .build());
+
+        ChatResponse response = routing.call(incoming);
+        assertThat(response.getResult().getOutput().getToolCalls())
+                .as("降级之后备模型要得到工具，否则它只会反问口径")
+                .hasSize(1);
+
+        // 真正的一步：拿"备模型看到的那份参数"去跑工具。上面断言 callbacks 还在，
+        // 只说明参数里有；这里说明这套参数交回框架之后，工具能被找到、被执行、结果能回灌。
+        org.springframework.ai.model.tool.ToolExecutionResult executed =
+                org.springframework.ai.model.tool.ToolCallingManager.builder()
+                        .build()
+                        .executeToolCalls(backupPrompts.getFirst(), response);
+
+        assertThat(tool.calls()).as("工具被执行了一次").isEqualTo(1);
+        assertThat(executed.conversationHistory())
+                .filteredOn(org.springframework.ai.chat.messages.ToolResponseMessage.class::isInstance)
+                .singleElement()
+                .satisfies(message -> assertThat(
+                        ((org.springframework.ai.chat.messages.ToolResponseMessage) message).getResponses())
+                        .as("库里那个数要有机会回到模型面前")
+                        .anySatisfy(toolResponse -> assertThat(toolResponse.responseData()).contains("128400")));
+    }
+
+    private static ChatResponse wantsTool(String id, String name) {
+        return ChatResponse.builder()
+                .generations(List.of(new Generation(AssistantMessage.builder()
+                        .content("")
+                        .toolCalls(List.of(new AssistantMessage.ToolCall(id, "function", name, "{}")))
+                        .build())))
+                .build();
+    }
+
     private static com.openai.errors.OpenAIServiceException statusFailure(int statusCode, String message) {
         return com.openai.errors.UnexpectedStatusCodeException.builder()
                 .statusCode(statusCode)

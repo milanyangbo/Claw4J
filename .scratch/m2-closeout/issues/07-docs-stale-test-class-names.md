@@ -54,7 +54,7 @@ ADR-0007 说"Advisor 必须同时能走同步和流式"，实际既没有规则�
 
 | 文档说 | 实际情况 |
 | --- | --- |
-| ADR-0006：「换供应商时工具会丢」这条由测试钉着"备模型收到的参数里有没有工具" | `ModelRoutingTest` 里一次都没出现工具相关断言。这条 bug 只在真链路暴露，而现在没有任何回归拦它 |
+| ADR-0006：「换供应商时工具会丢」这条由测试钉着"备模型收到的参数里有没有工具" | **本行原来的结论是误判**（写的是"一次都没出现工具相关断言"）。参数层早就有两条：`fallbackKeepsToolsAndToolContext`、`streamingFallbackAlsoCarriesTools`。真正空着的是**下一层**——参数里有工具，不等于这套参数交回框架之后工具跑得起来。见下面的订正 |
 | ADR-0005：「只写 `spring.flyway.enabled=true` 却没有 `flyway-core` 时，这行配置没人执行」 | 没有用例模拟"依赖不在 classpath"。现有两处 flyway 相关（装配冒烟、真库测试）都假设它在 |
 
 ADR-0007 那三项已在本票补掉两项；第三项（装配层证明 Advisor 在两条入口上都生效）
@@ -67,3 +67,21 @@ ADR-0007 那三项已在本票补掉两项；第三项（装配层证明 Advisor
 - 代价是失去"顺着名字去仓库里找"的直接路径。补偿：每条都写清了断言内容，
   用 `@DisplayName` 的中文描述去搜就能定位。
 - `CONTRIBUTING.md` 的边界测试清单仍点类名，作为唯一例外：那张表就是测试清单本身。
+
+## 订正（2026-10-27）
+
+上面那张表的第一行是错的，这里留档，免得下次又照它去补一遍。
+
+`ModelRoutingTest` 从它被写出来那天起就有工具断言：`fallbackKeepsToolsAndToolContext`
+断言备模型收到的 `getToolCallbacks()` 里有 `querySales`、`getToolContext()` 里有 principal；
+`streamingFallbackAlsoCarriesTools` 是流式那一侧的同一件事。当时说"一次都没出现"是看漏了。
+
+漏掉的是再下一层，现在补上：`toolsActuallyRunAfterFallback`。它拿备模型实际收到的那份
+`Prompt` 交给 `ToolCallingManager` 真跑一遍，断言工具被执行一次、`128400` 回到对话里。
+
+三条口径的差别值得记住：**参数里有工具**（`getToolCallbacks()` 非空）→ **框架能解析出工具定义**
+→ **工具被执行且结果回灌**。前两层过了不等于第三层过，而 ADR-0006 要的是"还能干活"。
+
+变异验证：删掉 `RoutingChatModel` 里的 `copyTools(builder, incoming)` 一行，
+新用例报 `No ToolCallback found for tool name: querySales`，另两条断言 `getToolCallbacks()` 的
+同时变红。三条一起红，说明这条用例不是重复。
