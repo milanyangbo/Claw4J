@@ -3,6 +3,8 @@ package io.github.claw4j.app;
 import io.github.claw4j.agent.guard.GuardProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
+import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -30,8 +32,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 也**不验接口契约**——状态码、请求头、SSE 分帧是验收的活（README 里那几条 curl 跑一遍即可），
  * 写进回归只会每天多一个与业务无关的红灯。
  *
- * <p>模型是真的（ADR-0011 没有 mock 兜底：没 key 就起不来），因此只留两条、共两次调用：
- * 一条证明"问得到数"，一条证明"越权问不到数"。
+ * <p>模型是真的（ADR-0011 没有 mock 兜底：没 key 就起不来），所以这里一共五条用例，
+ * 只有两次请求真的走到模型：「问得到数」与「越权问不到数」各一次。守卫那条也发请求，
+ * 但它在模型之前就被挡下了；另外两条（词表绑定、日志 Advisor 的 order）根本不发请求。
+ * 判据是"接上了没有"，不是"规则对不对"，所以这些够用，不再往上加。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class ApplicationAssemblyTest {
@@ -67,6 +71,14 @@ class ApplicationAssemblyTest {
     @Autowired
     private GuardProperties guardProperties;
 
+    /**
+     * 注入它是一条守卫：那个 {@code @Bean} 哪天被删掉，链上就少一个 Advisor——
+     * 不报错、不告警，只是以后把日志调到 DEBUG 也什么都看不到。让它从容器里进来，
+     * 不在就整个类起不来。
+     */
+    @Autowired
+    private SimpleLoggerAdvisor simpleLoggerAdvisor;
+
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .build();
@@ -89,6 +101,15 @@ class ApplicationAssemblyTest {
                 .as("这条消息应当在模型之前被挡下，回答是配置里那句固定答复：%s", answer)
                 .contains(GuardProperties.DEFAULT_FAILURE_RESPONSE)
                 .doesNotContain(EAST_LAST_WEEK);
+    }
+
+    @Test
+    @DisplayName("日志 Advisor 的 order 落在工具循环内部：每轮都过一遍，也因此每轮都可能 dump 明文")
+    void loggerAdvisorSitsInsideTheToolLoop() {
+        assertThat(simpleLoggerAdvisor.getOrder())
+                .as("框架默认是 0（官方文档里那个示例实现就是 return 0），比工具循环大——"
+                        + "所以它看得到每次迭代真正发给模型的东西，也包括工具返回的原始数据行")
+                .isGreaterThan(ToolSearchToolCallingAdvisor.DEFAULT_ORDER);
     }
 
     @Test

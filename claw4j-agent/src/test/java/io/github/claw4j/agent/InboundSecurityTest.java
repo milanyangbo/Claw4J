@@ -20,7 +20,6 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.SafeGuardAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
-import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
@@ -300,7 +299,7 @@ class InboundSecurityTest {
     }
 
     @Test
-    @DisplayName("日志 Advisor 默认一条都不打：调到 DEBUG 才有输出，说明它在链上但不是常开")
+    @DisplayName("日志 Advisor 只有 DEBUG 才打：INFO 下一行都没有，这是写进设计文档的那句运维承诺")
     void loggerStaysSilentUntilDebugIsTurnedOn() {
         Logger logger = (Logger) LoggerFactory.getLogger(SimpleLoggerAdvisor.class);
         Level previous = logger.getLevel();
@@ -322,16 +321,6 @@ class InboundSecurityTest {
             logger.detachAppender(appender);
             logger.setLevel(previous);
         }
-    }
-
-    @Test
-    @DisplayName("日志 Advisor 落在工具循环内部：每轮都 dump，也因此每轮都可能把原始数据写进日志")
-    void loggerSitsInsideTheToolLoop() {
-        // 断言的是容器里那个 bean 的 order，不是 new 一个默认的：要守的是我们装配了什么
-        assertThat(new AgentAutoConfiguration().simpleLoggerAdvisor().getOrder())
-                .as("框架默认 order 是 0（官方文档里的示例实现就是 0），"
-                        + "比工具循环的 DEFAULT_ORDER 大，所以它在循环内部")
-                .isGreaterThan(ToolSearchToolCallingAdvisor.DEFAULT_ORDER);
     }
 
     private static SafeGuardAdvisor guard() {
