@@ -114,8 +114,9 @@ PG 的子查询里不能是 `insert` / `update` / `delete`。
 凭据对不代表角色表读到了。
 
 **现在**：
-- 启动两件都要带，缺一不可：`-Pchannel-feishu`（把 optional 的 SDK 放进 classpath，
-  否则整个通道静默退让、只跑 HTTP）+ `-Dspring-boot.run.profiles=local`（否则 local 那份整份不加载）。
+- 启动必须带 `-Dspring-boot.run.profiles=local`（否则 local 那份整份不加载）；
+  凭据则随模块传递，构建不需要任何额外开关。**"必须记得带个参数才能读到自己写的配置"
+  这种前提越少越好**——它只在 `mvn` 那一层存在，换个入口（`java -jar`、IDEA）就没了。
 - `spring-boot:run` 的工作目录是**模块目录** `claw4j-app`，而 `compose.yaml` 在仓库根；
   local 又会打开 `spring.docker.compose`，于是启动直接失败
   `IllegalArgumentException: 'files' content [compose.yaml] must exist`。

@@ -93,29 +93,6 @@
         </dependency>
     </dependencies>
 
-    <profiles>
-        <!--
-          真实模型联调曾经隔离在这个 profile 里（ADR-0006、ADR-0008），
-          ADR-0011 之后回归基线本身就是真模型，隔离的理由消失，profile 一并去掉。
-          现在唯一的 profile 是飞书通道。
-        -->
-
-        <!--
-          飞书 SDK 在 claw4j-channel 里是 optional，不会传递到这里。
-          要飞书通道就必须显式声明，否则打出的产物不含飞书能力（也就不会白白带上它的传递依赖）。
-          M2 做飞书长连接时启用：-Pchannel-feishu
-        -->
-        <profile>
-            <id>channel-feishu</id>
-            <dependencies>
-                <dependency>
-                    <groupId>com.larksuite.oapi</groupId>
-                    <artifactId>oapi-sdk</artifactId>
-                </dependency>
-            </dependencies>
-        </profile>
-    </profiles>
-
     <build>
         <plugins>
             <plugin>

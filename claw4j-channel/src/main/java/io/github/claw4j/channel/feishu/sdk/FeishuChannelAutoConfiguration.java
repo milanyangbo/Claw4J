@@ -21,7 +21,7 @@ import java.util.concurrent.Executor;
  * 飞书通道的装配。三条条件，各自对应一个真实的部署形态：
  *
  * <ol>
- *   <li><b>SDK 不在 classpath</b>（没带 {@code -Pchannel-feishu}）→ 整个配置类跳过。
+ *   <li><b>SDK 不在 classpath</b>（依赖被误删，或换了不含它的构建产物）→ 整个配置类跳过。
  *       条件写的是类名字符串而不是类引用：写成 {@code @ConditionalOnClass(Client.class)}
  *       虽然通常也能工作，但一旦哪天有人在方法签名里引了 SDK 类型，缺包时就会变成
  *       {@code NoClassDefFoundError} 而不是"安静地跳过"。</li>

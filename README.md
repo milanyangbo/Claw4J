@@ -90,7 +90,7 @@ curl -s -X POST http://localhost:8080/api/chat \
 | `QWEN_API_KEY` | 否 | 备用模型 key，配了才有主备降级 |
 | `CLAW4J_MODEL_PRIMARY` | 否 | `deepseek`（默认）/ `qwen`，决定谁是主模型 |
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用同一个变量 |
-| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 否 | 飞书自建应用凭据。两个都配才装配长连接通道，缺一个整个通道退让、HTTP 照常；打包成 fat jar 时要带 `-Pchannel-feishu`（默认包里没有 `oapi-sdk`） |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 否 | 飞书自建应用凭据。两个都配才装配长连接通道，缺一个整个通道退让、HTTP 照常 |
 
 角色到权限的映射在 `claw4j.channel.http.roles` 里配置；模型主备顺序启动时打在日志里。
 

@@ -17,15 +17,15 @@
 - [ ] 凭据齐全时启动建立长连接，群里 @ 机器人的提问拿到带数字与统计口径的回答
 - [x] 凭据缺失 → 该通道不装配，HTTP 通道照常工作，启动成功
 - [ ] 凭据配了但连不上 → 启动直接失败，不是带着一个收不到消息的通道继续跑
-- [x] SDK 不在 classpath（不带 `-Pchannel-feishu`）→ 整个包退让，不出现 `ClassNotFoundException`
-- [x] `-Pchannel-feishu` 打包后 fat jar 里含 SDK；默认包里没有
+- [x] SDK 不在 classpath（依赖被移走）→ 整个包退让，不出现 `ClassNotFoundException`
+- [x] fat jar 里含 SDK，且**不需要任何构建开关**（`oapi-sdk` 随 `claw4j-channel` 传递）
 - [x] 日志按"收到事件 → 已 ACK → 开始处理 → 已回推"四段可定位
 - [ ] `feishu-live` tag 的真链路用例在 `-Pfeishu-live` 下跑通（**不用 `assumeTrue`**：skipped 会被
       `verify.sh` 判红，做法照 `real-cli` 的先例）
 - [x] 凭据走环境变量（`FEISHU_APP_ID` / `FEISHU_APP_SECRET`，统一进 `.env`），不进仓库、不进示例定义
 
 **落点:** `channel.feishu` 内的 SDK 绑定层 + 条件装配；父 pom 的 `feishu-live` 排除规则与
-`-Pfeishu-live`；`-Pchannel-feishu` 在 `claw4j-app` 把 SDK 声明为 compile。
+`-Pfeishu-live`。依赖本身不做开关：`oapi-sdk` 在 `claw4j-channel` 里是普通依赖，随模块传递。
 
 **注意:** SDK 绑定层**不写单测**——它的全部内容就是"翻译 SDK 对象"与"发一条消息"，只有真凭据下才有意义。
 覆盖不到的部分如实记进 guardrails（见 06）。交付时要说清这一档：没有凭据时"假事件源下 ACK/去重/回推成立"
@@ -47,6 +47,10 @@
 - 打包实测（必须 `clean`，否则切 profile 后 jar 不体现依赖变化）：
   默认包 114,440,867 字节，`oapi|gson` 命中 **0**；`-Pchannel-feishu` 142,381,540 字节，
   含 `oapi-sdk-2.8.7.jar` / `gson-2.13.2.jar` / `larksuite-oapi-shaded-protobuf-2.4.6.jar`。
+  **〔2026-10-27 已取消这套开关〕**`oapi-sdk` 改成普通依赖随 `claw4j-channel` 传递，
+  `claw4j-app` 的 `channel-feishu` profile 删除。现在默认包就是 142MB 那一档，
+  构建不再需要 `-P`——把"记得带参数"这个隐式前提去掉了（`-P` 只在 `mvn` 层存在，
+  `java -jar` 没有它，漏了的现象是通道安静地不装配）。
 - 顺带查实两件事（写给下一个人）：
   ① Boot 4 的 JSON 是 **Jackson 3**（`tools.jackson.databind`，`com.fasterxml.jackson.databind` 不在
   classpath 上）；`readTree`/`writeValueAsString` 抛的是 unchecked 的 `JacksonException`。
@@ -83,13 +87,11 @@
    ```bash
    printf 'FEISHU_APP_ID=cli_xxx\nFEISHU_APP_SECRET=xxx\n' >> .env
    ./mvnw -o install -DskipTests          # 兄弟模块要先进本地仓库，-pl 单独跑才找得到
-   ./mvnw -o -pl claw4j-app spring-boot:run -Pchannel-feishu -Dspring-boot.run.profiles=local
+   ./mvnw -o -pl claw4j-app spring-boot:run -Dspring-boot.run.profiles=local
    ```
    日志出现 `飞书通道就绪：长连接已建立` 只说明**凭据与网络**都对。还要看到
    `The following 1 profile is active: "local"`，否则 `application-local.yml` 整份没加载、
    `roles.*.users` 等于没写（凭据可能来自环境变量，**"能连上"对两处都成立**，群里表现却一样）。
-   `-Pchannel-feishu` 也不能省：`oapi-sdk` 在 `claw4j-channel` 里是 optional、不传递，
-   少了它整个通道静默退让（只跑 HTTP）。
    库已在跑时再加 `SPRING_DOCKER_COMPOSE_ENABLED=false`：`spring-boot:run` 的工作目录是
    模块目录 `claw4j-app`，`compose.yaml` 在仓库根，local 打开 compose 后会直接失败
    `'files' content [compose.yaml] must exist`。

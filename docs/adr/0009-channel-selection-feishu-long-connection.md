@@ -38,7 +38,7 @@ ADR-0008 定的通道顺序里没有真实 IM。真实 IM 通道的价值不在�
 - **交付顺序更新为**：HTTP+SSE（M1）→ 飞书长连接（M2）→ A2A（M3）→ Teammors WebSocket（最后，可不做）。Telegram 作为可选的第二 Channel 实现，用于证明 SPI 可替换。
 - **3 秒超时重推是硬约束**：飞书长连接要求收到事件后 3 秒内处理完成且不抛异常，否则触发重推。而 Agent 跑一次 Text-to-SQL 可能十几秒。因此 `ChatChannel` 的入站路径必须做成**收到事件立刻 ACK → 交给异步编排 → 结果通过主动发消息接口回推**，而不是在事件线程里同步等 Agent。这条约束同时逼出**事件去重**（重推会导致同一条消息被处理两次），是真实的工程问题，正好落在 M2。
 - **集群投递语义**：长连接模式的推送是集群模式、不支持广播，同一应用多个客户端时只有随机一个收到。本地演示保持单实例；多实例场景要说明这条限制，不能假装它能负载均衡。
-- **模块调整**：`claw4j-channel` 拆为 `claw4j-channel-api`（放 `ChatChannel` SPI，不依赖任何平台 SDK）+ `claw4j-channel-http` + `claw4j-channel-feishu`。重依赖（`oapi-sdk`）只留在飞书实现里，`claw4j-app` 按需引入，不想接 IM 的人不会被拖累。ADR-0004 的五模块由此变为七模块。**〔已过时〕**此条已被 ADR-0010 推翻：三个通道模块当时都是零 Java 文件的空壳，拆分没有收益；最终形态是单一 `claw4j-channel` 模块内按包分层（`spi` / `http` / `feishu`），边界由 ArchUnit 包级规则守卫。加渠道不再新建模块。
+- **模块调整**：`claw4j-channel` 拆为 `claw4j-channel-api`（放 `ChatChannel` SPI，不依赖任何平台 SDK）+ `claw4j-channel-http` + `claw4j-channel-feishu`。重依赖（`oapi-sdk`）只留在飞书实现里，`claw4j-app` 按需引入，不想接 IM 的人不会被拖累。ADR-0004 的五模块由此变为七模块。**〔已过时〕**此条已被 ADR-0010 推翻：三个通道模块当时都是零 Java 文件的空壳，拆分没有收益；最终形态是单一 `claw4j-channel` 模块内按包分层（`spi` / `http` / `feishu`），边界由 ArchUnit 包级规则守卫。加渠道不再新建模块。**依赖也不再走 optional + `-P` 开关**：`oapi-sdk` 作为普通依赖随 `claw4j-channel` 传递，`claw4j-app` 不必声明、构建不必带参数（2026-10-27，见 ADR-0010）。
 - **凭据处理**：App ID / App Secret 走环境变量与 Spring 配置，不进 `SKILL.md`、不进仓库（延续 ADR-0002 的收口原则）。
 - 1.x 的 Teammors 私有加密协议仍排最后：它的 ECDH/AES 与自建心跳讲不出通用价值，代码留在 `legacy/` 作对照。
 

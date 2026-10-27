@@ -27,14 +27,13 @@
         </dependency>
 
         <!--
-          飞书 SDK 设为 optional：它不随 claw4j-channel 传递给下游模块。
-          需要飞书的部署（app 模块）必须自己显式声明，否则打出的产物不带飞书能力。
-          这样"只要 HTTP 通道"的部署不会被 SDK 及其传递依赖污染。
+          飞书 SDK 随本模块正常传递：app 依赖 channel 就自动拿到，不必额外声明、也不必额外开关。
+          绑定层（channel.feishu.sdk）用 @ConditionalOnClass 兜底，SDK 不在 classpath 时整包退让，
+          所以"误删依赖"不会变成 ClassNotFoundException，只会安静地只剩 HTTP。
         -->
         <dependency>
             <groupId>com.larksuite.oapi</groupId>
             <artifactId>oapi-sdk</artifactId>
-            <optional>true</optional>
         </dependency>
 
         <dependency>

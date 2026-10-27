@@ -23,8 +23,8 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
 **单模块、不加约束（否决）**
 `oapi-sdk` 随 `claw4j-channel` 传递给每个下游模块，只用 HTTP 的部署也带着飞书的传递依赖。
 
-**单模块 + optional 依赖 + 包级 ArchUnit 规则（采纳）**
-平台 SDK 以 `<optional>true</optional>` 引入，不传递给下游；需要它的部署在 `claw4j-app` 里显式声明（见 `channel-feishu` profile）。边界改由包级规则守住，粒度比模块更细。
+**单模块 + 包级 ArchUnit 规则（采纳）**
+平台 SDK 随模块正常传递，不做 optional、也不再套 Maven profile 开关：`claw4j-app` 依赖 `claw4j-channel` 就自动拿到 `oapi-sdk`。边界改由包级规则守住，粒度比模块更细。
 
 ## Decision
 
@@ -64,6 +64,6 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
 ## Consequences
 
 - 五个模块，父 POM 的 `modules` 不再随通道数量增长。
-- 新增一个通道的成本变成：在 `claw4j-channel` 下加一个包 + 实现 `ChatChannel` + 平台 SDK 声明为 optional。不需要动父 POM 和 CI。
+- 新增一个通道的成本变成：在 `claw4j-channel` 下加一个包 + 实现 `ChatChannel` + 在本模块声明平台 SDK 依赖。不需要动父 POM 和 CI。
 - 边界规则落在各模块自己的 ArchUnit 测试里：`DomainBoundaryTest`（domain 零框架）、`AgentBoundaryTest`（agent 不认识 channel）、`ChannelBoundaryTest`（不认识 agent 与 capability；SPI 包不依赖任何平台；`channel.feishu` 调度层不碰 `com.larksuite` 也不碰自己的 `sdk` 子包）、`ToolsBoundaryTest`（capability 不认识 agent 与 channel；只有 `LocalProcessRunner` 能碰 `ProcessBuilder`）。另有 `claw4j-app` 的 `ProcessBoundaryTest`——ADR-0002 那条红线要扫全仓才看得见，只能落在唯一同时看见所有模块的地方。它们随 `mvn test` 跑，本地入口是 `./scripts/verify.sh`（仓库没有 CI，也没有 pre-commit hook，见 `docs/agents/guardrails.md`），红了就是架构被破坏了。
-- `oapi-sdk` 在 `claw4j-channel` 里是 optional，默认不进 fat jar；要用飞书必须 `-Pchannel-feishu`。这条也意味着：只用 HTTP 的部署不会被飞书的传递依赖污染。
+- `oapi-sdk` 在 `claw4j-channel` 里是普通依赖，随模块传递，`claw4j-app` 不必再声明、构建也不必再加 `-P` 开关。代价是只用 HTTP 的部署也会带上它（含传递依赖约 28MB），换来的是"启动少一个必须记得的参数"——`-P` 只在 `mvn` 时存在，`java -jar` 根本没有它，漏了的现象是通道安静地不装配。`FeishuChannelAutoConfiguration` 上的 `@ConditionalOnClass` 仍然保留，所以依赖被误删时是退让而不是 `ClassNotFoundException`。
