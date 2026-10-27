@@ -91,7 +91,7 @@ class SemanticCacheTest {
     }
 
     @Test
-    @DisplayName("「上周」与「上上周」相似度 0.9950，靠词面守卫挡住")
+    @DisplayName("「上周」与「上上周」相似度 0.9950，但实体签名不同，不在一个上下文里")
     void differentTimeWordMissesEvenThoughItLooksSimilar() {
         Fixture fixture = new Fixture();
         fixture.port.reply(message("u-1", EAST_LAST_WEEK));
@@ -101,6 +101,27 @@ class SemanticCacheTest {
                 .as("0.9950 比同义改写的 0.9372 还高，任何单一阈值都挡不住这一对")
                 .hasSize(2);
         assertThat(fixture.misses("different-entities")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("实体签名只看时间词与数字：换个说法问同一段时间，签名相同")
+    void entitySignatureSeparatesTimeWindows() {
+        assertThat(CacheAdvisor.entitySignature(EAST_LAST_WEEK))
+                .as("同义改写不该换一个上下文，否则缓存永远命不中")
+                .isEqualTo(CacheAdvisor.entitySignature(EAST_LAST_WEEK_REWORDED))
+                .isNotEqualTo(CacheAdvisor.entitySignature(EAST_WEEK_BEFORE));
+
+        assertThat(CacheAdvisor.entitySignature("3 月华东成交额"))
+                .as("月份是数字，换月份就是换上下文")
+                .isNotEqualTo(CacheAdvisor.entitySignature("4 月华东成交额"));
+
+        assertThat(CacheAdvisor.entitySignature("华东成交额多少"))
+                .as("没写时间的问题自成一类，不会跟任何一个具体时间窗混在一起")
+                .isNotEqualTo(CacheAdvisor.entitySignature(EAST_LAST_WEEK));
+
+        assertThat(CacheAdvisor.entitySignature("你好，你能做什么"))
+                .as("闲聊也有签名：空集也是一种取值，不是 null")
+                .isEqualTo(CacheAdvisor.entitySignature("你能干什么"));
     }
 
     @Test
@@ -301,28 +322,38 @@ class SemanticCacheTest {
      */
     private static final class InMemorySemanticCache implements SemanticCache {
 
-        private final Map<String, List<Entry>> byFingerprint = new HashMap<>();
+        /** key = 权限指纹 + {@code |} + 实体签名，即一个完整的上下文。 */
+        private final Map<String, List<Entry>> byContext = new HashMap<>();
 
         private final List<String> stored = new ArrayList<>();
 
         private boolean failOnStore;
 
         @Override
-        public Optional<Candidate> nearest(String fingerprint, String question, float[] embedding) {
-            return best(byFingerprint.getOrDefault(fingerprint, List.of()), embedding);
+        public Optional<Candidate> nearest(String fingerprint, String entities, float[] embedding) {
+            return best(byContext.getOrDefault(context(fingerprint, entities), List.of()), embedding);
+        }
+
+        @Override
+        public Optional<Candidate> nearestInFingerprint(String fingerprint, float[] embedding) {
+            return best(byContext.entrySet().stream()
+                    .filter(entry -> entry.getKey().startsWith(fingerprint + "|"))
+                    .flatMap(entry -> entry.getValue().stream())
+                    .toList(), embedding);
         }
 
         @Override
         public Optional<Candidate> nearestAnyFingerprint(float[] embedding) {
-            return best(byFingerprint.values().stream().flatMap(List::stream).toList(), embedding);
+            return best(byContext.values().stream().flatMap(List::stream).toList(), embedding);
         }
 
         @Override
-        public void store(String fingerprint, String question, float[] embedding, String answer) {
+        public void store(String fingerprint, String entities, String question, float[] embedding,
+                          String answer) {
             if (failOnStore) {
                 throw new IllegalStateException("库连不上");
             }
-            byFingerprint.computeIfAbsent(fingerprint, key -> new ArrayList<>())
+            byContext.computeIfAbsent(context(fingerprint, entities), key -> new ArrayList<>())
                     .add(new Entry(question, answer, embedding));
             stored.add(question);
         }
@@ -330,6 +361,10 @@ class SemanticCacheTest {
         @Override
         public int deleteExpired() {
             return 0;
+        }
+
+        private static String context(String fingerprint, String entities) {
+            return fingerprint + "|" + entities;
         }
 
         private static Optional<Candidate> best(List<Entry> entries, float[] embedding) {

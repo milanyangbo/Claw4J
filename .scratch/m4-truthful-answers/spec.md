@@ -22,8 +22,25 @@ Status: draft（范围待定：本文件只记录"为什么会有这个阶段"�
 - ②（会话按权限隔离）已经做了：`claw4j-agent.PermissionFingerprint` + `SessionKeys.ownerOf`，
   会话 id 与 `ai_session.user_id` 都变成 `userId@权限指纹`。见
   `issues/01-permission-scoped-session.md`。
-- ①（不抄旧数字）待定做法，见 `issues/02-stale-numbers-from-session-memory.md`。
-- ③ 决定不处理，理由见 `issues/03-question-only-cache-entries.md`。
+- ①（不抄旧数字）**决定不做**：框架没有这个概念，而"带数字必须本轮查库"在真实对话里无法界定
+  （序号、历史对比、文档里的百分比都是数字）。已按已知偏差记进 `docs/agents/guardrails.md`。
+  见 `issues/02-stale-numbers-from-session-memory.md`。
+- ③（纯问答也进缓存）**决定不处理**：框架写缓存只判"响应非空"，没有"该不该缓存"的钩子。
+  见 `issues/03-question-only-cache-entries.md`。
+- 顺带把缓存命中判定里的"时间词/数字守卫"从"事后否决"改成**编进上下文键**——
+  占框架 `contextHash` 的位置，而不是在流程里多加一道 if。见
+  `issues/04-entity-scoped-cache-context.md`。
+
+## 一条贯穿这个阶段的原则
+
+**框架有这个位置，就用这个位置；框架没有，就不自己发明。** 具体到本阶段：
+
+- 权限隔离 → 框架的 `contextHash` 槽位（它自己填系统提示词，我们填权限与实体）。
+- 阈值与过期 → 存储层判定，与框架的 `DefaultSemanticCache` 分工一致。
+- "带数字必须查库" → 框架没有，不做。
+- "纯问答不缓存" → 框架没有，不做。
+- `sideEffectFree`（有副作用的一轮不缓存）→ 框架没有，但撤掉会产生**功能错误**
+  （`run_script` 的"已执行成功"被复用），所以保留，并在文档里点名它不是框架行为。
 
 ## 不在这个阶段
 

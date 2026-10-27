@@ -40,16 +40,21 @@ import java.util.regex.Pattern;
 /**
  * 语义缓存：同一个问题（或者换个说法问的同一个问题）第二次不再打模型、不再查库。
  *
- * <p><b>命中要同时满足四条</b>，少一条都可能把别人的答案或另一个问题的答案发出去：
+ * <p><b>命中要同时满足三条</b>，少一条都可能把别人的答案或另一个问题的答案发出去：
  *
  * <ol>
- *   <li><b>同一个授权范围</b>。这条是安全边界，不是优化：{@code guest} 读不到
- *       {@code sales_order}、{@code admin} 读得到，同一个问题在两个角色下答案不同。
- *       缓存 key 里不带权限指纹，就是把 admin 的答案发给 guest。
- *       指纹取 {@code tables + actions} 排序后的哈希，**不取 userId**（按人分等于完全不共享），
- *       也**不取角色名**（角色改一次配置，缓存全失效）。
+ *   <li><b>同一个上下文</b>。上下文是两段拼起来的：权限范围 + 问题里的实体（时间词与数字）。
+ *       <ul>
+ *         <li>权限那段是安全边界，不是优化：{@code guest} 读不到 {@code sales_order}、
+ *             {@code admin} 读得到，同一个问题在两个角色下答案不同。不带权限指纹，
+ *             就是把 admin 的答案发给 guest。指纹取 {@code tables + actions} 排序后的哈希，
+ *             **不取 userId**（按人分等于完全不共享），也**不取角色名**
+ *             （角色改一次配置，缓存全失效）。
+ *         <li>实体那段见 {@link #entitySignature}。
+ *       </ul>
+ *       两段合起来就是框架 {@code SemanticCache} 接口里那个 {@code contextHash} 的位置——
+ *       框架自己填的是系统提示词，我们填的是"这份权限下、这个时间窗的问题"。
  *   <li><b>相似度过阈值</b>（{@link CacheProperties#DEFAULT_SIMILARITY_THRESHOLD}）。
- *   <li><b>时间词与数字完全一致</b>。这条是补丁，理由见 {@link #sameEntities}。
  *   <li><b>没过期</b>。过期判定在存储里（SQL 的 {@code expires_at > now()}）。
  * </ol>
  *
@@ -180,23 +185,19 @@ public class CacheAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     /**
-     * 找一条能用的缓存。四个判定都在这一个方法里，因为它们互相依赖——
-     * "相似度过阈值但时间词不同"也是一种 miss，而且是**必须记下来**的那种：
-     * 它是"语义相似度分不清上周和上上周"的证据。
+     * 找一条能用的缓存。三个判定都在这一个方法里，因为它们互相依赖——
+     * "上下文对上了但相似度不够"和"上下文就没对上"是两种不同的 miss，
+     * 后者还要再分"换个时间窗问的"和"换个权限问的"。
      */
     private Optional<String> answerFor(Principal who, String question, float[] embedding) {
         if (embedding == null) {
             return miss(REASON_EMBEDDING_FAILED);
         }
         String fingerprint = fingerprintOf(who);
-        Optional<Candidate> candidate = cache.nearest(fingerprint, question, embedding);
+        String entities = entitySignature(question);
+        Optional<Candidate> candidate = cache.nearest(fingerprint, entities, embedding);
         if (candidate.isEmpty()) {
-            // 本权限范围内没有候选。再看一眼"别的权限范围里有没有很像的"——两个用户问同一句话，
-            // 一个命中一个 miss，日志上如果只写 no-candidate，会看起来像"缓存没生效"。
-            boolean elsewhere = cache.nearestAnyFingerprint(embedding)
-                    .filter(other -> other.similarity() >= properties.similarityThreshold())
-                    .isPresent();
-            return miss(elsewhere ? REASON_DIFFERENT_PERMISSION : REASON_NO_CANDIDATE);
+            return miss(reasonForEmpty(fingerprint, embedding));
         }
         Candidate found = candidate.get();
         if (found.similarity() < properties.similarityThreshold()) {
@@ -204,32 +205,60 @@ public class CacheAdvisor implements CallAdvisor, StreamAdvisor {
                     properties.similarityThreshold(), found.question());
             return miss(REASON_BELOW_THRESHOLD);
         }
-        if (!sameEntities(question, found.question())) {
-            log.debug("缓存候选相似度 {} 够高，但时间词或数字不同：{} vs {}",
-                    found.similarity(), found.question(), question);
-            return miss(REASON_DIFFERENT_ENTITIES);
-        }
         Counter.builder(HITS).description("语义缓存命中次数").register(registry).increment();
         return Optional.of(found.answer());
     }
 
     /**
-     * 时间词与数字必须完全一致。
+     * 上下文里没取到候选时，判断是哪一层把它挡住的。
      *
-     * <p><b>为什么阈值救不了这件事</b>：实测（{@code text-embedding-v3}，1024 维）
-     * "上周华东成交额多少" 与 "上上周华东成交额多少" 的余弦是 <b>0.9950</b>，
-     * 而真正的同义改写 "华东上周卖了多少" 只有 0.9372。也就是说：只差一个字、
-     * 意思却完全不同的两个问题，比换了说法的同一个问题还要"像"。
+     * <p>两次额外的查询都只在 miss 路径上——而 miss 意味着接下来要打一次模型，
+     * 两条 SQL 的代价可以忽略。换来的是"命中率为什么低"能被一个指标回答：
+     * 是缓存空的、是时间窗不同、还是权限不同。
+     *
+     * <p>顺序有意义：先看同权限（换个时间窗问的），再看全库。同一句话在别人那儿有、
+     * 在自己这儿没有，原因就是权限；而如果同权限里就有一条很像的，原因是实体。
+     */
+    private String reasonForEmpty(String fingerprint, float[] embedding) {
+        double threshold = properties.similarityThreshold();
+        boolean sameScope = cache.nearestInFingerprint(fingerprint, embedding)
+                .filter(found -> found.similarity() >= threshold)
+                .isPresent();
+        if (sameScope) {
+            return REASON_DIFFERENT_ENTITIES;
+        }
+        boolean elsewhere = cache.nearestAnyFingerprint(embedding)
+                .filter(found -> found.similarity() >= threshold)
+                .isPresent();
+        return elsewhere ? REASON_DIFFERENT_PERMISSION : REASON_NO_CANDIDATE;
+    }
+
+    /**
+     * 实体签名：问题里的相对时间词与数字，各排序后用 {@code ,} 拼起来再哈希。
+     *
+     * <p><b>为什么实体要进上下文键，而不是取到候选之后再否决</b>：实测
+     * （{@code text-embedding-v3}，1024 维）"上周华东成交额多少" 与 "上上周华东成交额多少"
+     * 的余弦是 <b>0.9950</b>，而真正的同义改写 "华东上周卖了多少" 只有 0.9372。
+     * 只差一个字、意思却完全不同的两个问题，比换了说法的同一个问题还要"像"——
      * 任何单一阈值都无法同时做到"命中 0.9372"和"挡住 0.9950"。
      *
-     * <p>所以加这一道词面守卫：两边的相对时间词集合、数字集合都相等才放行。
-     * 它挡得住"上周/上上周"、"3 月/4 月"，挡不住的是同义词层面上的细微差别——
-     * 这正是为什么要把它写成短小的正则而不是一个"语义实体抽取"框架：
-     * 它的职责是<b>兜住已知的那一类错</b>，不是把所有错都兜住。
+     * <p>把它们编进上下文，判断就从"取到最近邻再打个补丁否决"变成
+     * "上下文不同就不是同一条"——后者是框架自己的语义（{@code contextHash}），
+     * 我们只是选了一个更适合业务问题的取值。新增一类需要区分的东西时，
+     * 是往这个函数里加一个维度，不是在流程里再加一道 if。
+     *
+     * <p><b>它兜不住什么</b>：同义词层面的细微差别（"成交额"与"销售额"）不在时间词
+     * 和数字里，那一段仍然靠阈值 0.93 挡。这个函数只负责"问题里写没写清楚是哪段时间"，
+     * 不负责"这句话到底在问什么"。
+     *
+     * <p>公开是为了能单独测：它一旦算错，姿势是静默的——签名变了就永远命不中（缓存失效），
+     * 签名没变就该命中的命不中（也是失效），两种都不报错，只有命中率指标会慢慢往下掉。
      */
-    static boolean sameEntities(String left, String right) {
-        return tokens(TIME_WORDS, left).equals(tokens(TIME_WORDS, right))
-                && tokens(NUMBERS, left).equals(tokens(NUMBERS, right));
+    public static String entitySignature(String question) {
+        return PermissionFingerprint.sha256(
+                String.join(",", tokens(TIME_WORDS, question))
+                        + "#"
+                        + String.join(",", tokens(NUMBERS, question)));
     }
 
     private static Set<String> tokens(Pattern pattern, String text) {
@@ -296,7 +325,7 @@ public class CacheAdvisor implements CallAdvisor, StreamAdvisor {
         }
         try {
             // 末尾的脱敏还没跑，所以这里存的是原始回答——与"没命中时"的回答走同一条出站路径。
-            cache.store(fingerprintOf(who), question, embedding, answer);
+            cache.store(fingerprintOf(who), entitySignature(question), question, embedding, answer);
         }
         catch (RuntimeException failure) {
             // 缓存写不进去只是省不下成本，不能影响这一轮已经算出来的答案。

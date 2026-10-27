@@ -32,8 +32,40 @@ public class PgVectorSemanticCache implements SemanticCache {
      * <p>{@code order by embedding <=> ?::vector} 走的是全表精确扫描（没有建向量索引，
      * 理由见迁移文件末尾）。{@code expires_at > now()} 写在 where 里而不是取出后再过滤：
      * 过期行不应该参与"最相似"的竞争，否则一条过期的老问题会把新问题挡在外面。
+     *
+     * <p>{@code fingerprint + entities} 一起限定，等价于框架接口里的 {@code contextHash}：
+     * 换个权限、或者换段时间，就不在同一个上下文里，压根不互相检索。
      */
     private static final String NEAREST = """
+            select question, answer, 1 - (embedding <=> ?::vector) as similarity
+            from claw4j_cache.semantic
+            where fingerprint = ? and entities = ? and expires_at > now()
+            order by embedding <=> ?::vector
+            limit 1
+            """;
+
+    /**
+     * 存一条，同一个 {@code fingerprint + entities + question_key} 覆盖。
+     *
+     * <p>{@code make_interval(secs => ?)} 而不是把秒数拼进字符串：拼字符串是 SQL 注入的形状，
+     * 而且 `now() + '3600'` 这种写法在 Postgres 里会直接报类型错。
+     */
+    private static final String STORE = """
+            insert into claw4j_cache.semantic
+                (fingerprint, entities, question, question_key, embedding, answer, expires_at)
+            values (?, ?, ?, ?, ?::vector, ?, now() + make_interval(secs => ?))
+            on conflict (fingerprint, entities, question_key) do update
+                set embedding = excluded.embedding,
+                    answer = excluded.answer,
+                    created_at = now(),
+                    expires_at = excluded.expires_at
+            """;
+
+    /**
+     * 同权限、不限实体的最相似一条。**只给诊断用**（区分 "different-entities" 与
+     * "different-permission"），结果不参与命中判定。
+     */
+    private static final String NEAREST_IN_FINGERPRINT = """
             select question, answer, 1 - (embedding <=> ?::vector) as similarity
             from claw4j_cache.semantic
             where fingerprint = ? and expires_at > now()
@@ -41,22 +73,6 @@ public class PgVectorSemanticCache implements SemanticCache {
             limit 1
             """;
 
-    /**
-     * 存一条，同一个 {@code fingerprint + question_key} 覆盖。
-     *
-     * <p>{@code make_interval(secs => ?)} 而不是把秒数拼进字符串：拼字符串是 SQL 注入的形状，
-     * 而且 `now() + '3600'` 这种写法在 Postgres 里会直接报类型错。
-     */
-    private static final String STORE = """
-            insert into claw4j_cache.semantic
-                (fingerprint, question, question_key, embedding, answer, expires_at)
-            values (?, ?, ?, ?::vector, ?, now() + make_interval(secs => ?))
-            on conflict (fingerprint, question_key) do update
-                set embedding = excluded.embedding,
-                    answer = excluded.answer,
-                    created_at = now(),
-                    expires_at = excluded.expires_at
-            """;
 
     /**
      * 不分权限范围的最相似一条。**只给诊断用**（区分 "no-candidate" 与 "different-permission"），
@@ -86,15 +102,28 @@ public class PgVectorSemanticCache implements SemanticCache {
     }
 
     @Override
-    public Optional<Candidate> nearest(String fingerprint, String question, float[] embedding) {
+    public Optional<Candidate> nearest(String fingerprint, String entities, float[] embedding) {
         String vector = toVectorLiteral(embedding);
         List<Candidate> found = jdbc.query(NEAREST,
                 (rs, rowNum) -> new Candidate(
                         rs.getString("question"),
                         rs.getString("answer"),
                         rs.getDouble("similarity")),
-                vector, fingerprint, vector);
+                vector, fingerprint, entities, vector);
         return found.stream().findFirst();
+    }
+
+    @Override
+    public Optional<Candidate> nearestInFingerprint(String fingerprint, float[] embedding) {
+        String vector = toVectorLiteral(embedding);
+        return jdbc.query(NEAREST_IN_FINGERPRINT,
+                        (rs, rowNum) -> new Candidate(
+                                rs.getString("question"),
+                                rs.getString("answer"),
+                                rs.getDouble("similarity")),
+                        vector, fingerprint, vector)
+                .stream()
+                .findFirst();
     }
 
     @Override
@@ -111,8 +140,9 @@ public class PgVectorSemanticCache implements SemanticCache {
     }
 
     @Override
-    public void store(String fingerprint, String question, float[] embedding, String answer) {
-        jdbc.update(STORE, fingerprint, question, questionKey(question),
+    public void store(String fingerprint, String entities, String question, float[] embedding,
+                      String answer) {
+        jdbc.update(STORE, fingerprint, entities, question, questionKey(question),
                 toVectorLiteral(embedding), answer, timeToLiveSeconds);
     }
 

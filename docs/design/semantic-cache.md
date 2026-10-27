@@ -11,15 +11,19 @@
                                           └─ 命中：直接返回"（同上次）"，工具与模型都不动
 ```
 
-**命中要同时满足四条，少一条都可能把别人的答案或另一个问题的答案发出去：**
+**命中要同时满足三条，少一条都可能把别人的答案或另一个问题的答案发出去：**
 
-1. **同一个授权范围**。这是安全边界不是优化：`guest` 读不到 `sales_order`、`admin` 读得到，
-   同一个问题在两个角色下答案本来就不同。指纹取 `tables + actions` 排序后的哈希——
-   **不取 `userId`**（按人分等于同角色的人互相命中不了，缓存白做），
-   **也不取角色名**（角色改一次配置，缓存全失效，而改配置看起来跟缓存无关）。
+1. **同一个上下文**。上下文是两段拼的：
+   - **权限范围**。这是安全边界不是优化：`guest` 读不到 `sales_order`、`admin` 读得到，
+     同一个问题在两个角色下答案本来就不同。指纹取 `tables + actions` 排序后的哈希——
+     **不取 `userId`**（按人分等于同角色的人互相命中不了，缓存白做），
+     **也不取角色名**（角色改一次配置，缓存全失效，而改配置看起来跟缓存无关）。
+   - **问题里的实体**（时间词与数字）。"上周"与"上上周"余弦 0.9950，比同义改写还高，
+     阈值分不开它们，只能靠"这不是同一段时间"来分。理由见下一节。
+   
+   两段合起来就是框架 `SemanticCache` 接口里那个 `contextHash` 的位置。
 2. **相似度过阈值**（默认 0.93）。这个数是实测的，理由见下一节。
-3. **时间词与数字完全一致**。这是补丁，理由也见下一节。
-4. **没过期**（默认 1 小时）。
+3. **没过期**（默认 1 小时）。
 
 ## 阈值不是拍的：一张实测表
 
@@ -42,9 +46,8 @@
 - **票面原定的 0.95 太高**：连 0.9470 的同义说法都会落空。
 - **纯阈值救不了"换时间"**：0.995 比同义改写还高。任何单一阈值都无法同时做到
   "命中 0.9372"和"挡住 0.9956"——这不是调参能解决的，是语义相似度这件事本身的边界。
-  所以命中判定里多了一道**词面守卫**：两个问题的相对时间词集合、数字集合必须完全一致
-  （`上周` vs `上上周`、`3 月` vs `4 月`）。它挡的是这一类错，不是所有错，
-  所以它写成一小段正则而不是一个"语义实体抽取"框架。
+  所以"问题里的时间词与数字"必须**进上下文键**：`上周` 与 `上上周` 不是同一个上下文，
+  压根不互相检索。这一段的取值见 `CacheAdvisor.entitySignature`。
 - **"同义改写"与"换指标"的分数是交叠的**（0.9117~0.9501 vs 0.9154）。
   任何阈值都做不到"命中所有同义改写、同时挡住所有换指标"。于是问题变成：
   往哪一边错？
@@ -83,7 +86,7 @@
 | 向量服务挂了 | 这一轮当作没命中（`reason=embedding-failed`），照常回答 |
 | 缓存查询挂了 | 同上 |
 | 缓存写入失败 | 只影响省成本，这一轮的回答照常返回 |
-| 库里没有这个权限范围的候选 | 没命中；另查一次全局最相似的，用来区分 `no-candidate` 与 `different-permission` |
+| 这个上下文里没有候选 | 没命中；再查两次（先同权限不限实体、再全库），用来区分 `different-entities` / `different-permission` / `no-candidate` |
 
 最后一条只是**诊断**：那个全局候选绝不参与命中判定，否则就等于绕过了授权。
 
@@ -100,30 +103,40 @@
 
 ## 框架自己有 `SemanticCacheAdvisor`，为什么还是自己写
 
-Spring AI 2.0 起带了 `org.springframework.ai.chat.cache.semantic.SemanticCacheAdvisor` 与
-`SemanticCache` 接口（2.0.0-M2 加入，Redis 模块里给了一个 `DefaultSemanticCache`）。
-它有两件事正合我们需要：**TTL 是接口的一部分**（`set(query, response, Duration ttl)`），
-**上下文隔离也是**（`get/set(query, response, String contextHash)`）。
+Spring AI 2.0.2 带了这个 advisor，类在通用包
+`org.springframework.ai.chat.cache.semantic`，但**物理上只打在
+`spring-ai-redis-semantic-cache` 这一个 artifact 里**（连同 `DefaultSemanticCache`、
+`spring-ai-redis-store`、jedis 7.4.1）。反编译之后的实情比文档写的更硬：
 
-但它有两处对不上：
+| 事实 | 后果 |
+| --- | --- |
+| `adviseCall` 只有"取问题 → 算 ctx → `cache.get` → 命中就返回 → 否则 `nextCall` → 非空响应就 `cache.set`" | 没有"该不该缓存"的钩子，写缓存只判响应非空 |
+| `Builder` 只有 `cache` / `order` / `scheduler` | 网上传的 `timeToLive`、`similarityThreshold`、`isolateBySystemPrompt` 是 `pro.redisson` 第三方实现的，不是官方 API |
+| `extractContextHash` 是 private，硬编码 SHA-256(系统提示词) | 隔离维度**不可干预**。我们全员共用一份系统提示词 → 整体换过去等于零隔离，`different-permission` 直接失效 |
+| 接口里 `get(q, ctx)` / `set(q, r, ctx)` 是 **default 方法，默认实现直接忽略 ctx** | "隔离"不是框架替你做，是后端实现自己的事——它只给了一个字符串槽位 |
+| 接口还有 `VectorStore getStore()` | 实现它就得再提供一个 `VectorStore`，而我们的表结构不是 `VectorStore` 的 schema |
+| 命中后原样返回缓存响应，无标记、无指标 | 用户分不清"答得快"是因为缓存还是模型那天心情好；"命中率为什么低"也查不出来 |
 
-1. **隔离维度是系统提示词，不是权限。** 那个 `contextHash` 由请求里的 system prompt 算 SHA-256
-   （官方测试就叫 `sameSystemPromptProducesSameContextHash` / `differentSystemPromptsProduceDifferentContextHashes`），
-   调用方插不上手。我们全员共用一份系统提示词，于是所有角色会共享同一片缓存——
-   `different-permission` 那道守卫直接失效。要借官方 advisor 保住权限隔离，只能把权限指纹
-   掺进 system prompt，那是拿业务提示词去迁就缓存。
-2. **它没有"这一轮该不该缓存"的判断。** 只按相似度 + `contextHash` + TTL 命中，
-   不区分有没有副作用、有没有调过工具，`sideEffectFree` 在它那里没有挂点。
+所以这里的分工是"**占它的位置，不背它的实现**"：
 
-所以自建 advisor 不是重复造轮子，是框架那一层抽象正好缺了我们要的两件事。
-**退场条件是明确的**：哪天 `contextHash` 开放给调用方，这套就可以换成
-`SemanticCacheAdvisor` + 一个 pgvector 的 `SemanticCache` 实现，只留"权限指纹"与"副作用判定"两个钩子。
+- **上下文键**用的是框架的 `contextHash` 概念，只是取值换成"权限 + 实体"。
+  这不是自创机制——槽位是框架留的，填什么是应用的事（它自己填系统提示词）。
+- **相似度阈值与过期**在存储层判定，和 `DefaultSemanticCache` 的分工一致。
+- **advisor 自己写**，因为框架把 `contextHash` 的来源写死在 private 方法里。
+
+代价是两处"框架没有、我们加了"的东西，都在文档里点名，不是静默存在：
+`sideEffectFree`（有副作用的一轮不缓存）与命中标记/指标（可观测）。
+前者撤掉会产生功能错误（`run_script` 的"已执行成功"被复用），后者不改变行为正确性。
+
+**退场条件**：哪天 `contextHash` 开放给调用方，这套就可以换成
+`SemanticCacheAdvisor` + 一个 pgvector 的 `SemanticCache` 实现，只留"权限与实体"和"副作用判定"两个钩子。
 
 ## 纯问答也进缓存：知道，但不加判断
 
 "你好，你能做什么"这类一问一答也会进表（`sideEffectFree` 对空集合返回 true——
 没调工具就是没有外部状态参与）。它确实不是"查得到数的答案"，但**这一轮不额外加规则**：
 
-官方的 `SemanticCacheAdvisor` 同样只按相似度 + `contextHash` + TTL 判断，也没有"这轮调没调工具"的概念。
-自己加一条，等于把一个特例塞进框架将来可能统一解决的地方，而且它的收益只有"少存几行"。
+官方的 `SemanticCacheAdvisor` 写缓存只判"响应非空"，同样没有"这轮调没调工具"的概念。
+自己加一条，等于在一个框架明确留白的地方塞私有语义；
+下次框架加了官方钩子，这条就成了要拆的旧代码。而它的收益只有"少存几行"。
 真觉得碍事，调小 `claw4j.cache.time-to-live`（比如 10 分钟）比加判断直接。

@@ -191,3 +191,37 @@ PG 的子查询里不能是 `insert` / `update` / `delete`。
 改动本身语法正确、用例也写了，只是**前提是错的**——模型本来就会写口径。
 如果没去查落库的全文，这条要求会一直留在提示词里，白占 token 还让下一个人以为
 "不写这句模型就不给口径"。
+
+## 十三、"接口声明了这个参数"不等于"这个参数被用上了"
+
+**现象**：Spring AI 的 `SemanticCache` 接口有这两组方法，看起来天然支持上下文隔离：
+
+```java
+void set(String query, ChatResponse response);
+default void set(String query, ChatResponse response, String contextHash);
+Optional<ChatResponse> get(String query);
+default Optional<ChatResponse> get(String query, String contextHash);
+```
+
+反编译 default 实现：**它直接调两参版本，把 `contextHash` 丢掉了。**
+
+```java
+default void set(String query, ChatResponse response, String contextHash) {
+    this.set(query, response);       // contextHash 没用上
+}
+default Optional<ChatResponse> get(String query, String contextHash) {
+    return this.get(query);          // 同上
+}
+```
+
+**后果**：实现类如果只实现 `abstract` 方法就收工，上下文隔离**静默失效**——
+任何权限、任何时间窗的缓存互相命中，不报错、不缺功能，只是偶尔给出别人的答案。
+这个问题在 code review 里也看不出来：接口签名上那个参数明明白白写着。
+
+**现在**：`PgVectorSemanticCache` 显式 `override` 了带上下文的那两个方法，
+SQL 里 `where fingerprint = ? and entities = ?` 是唯一能保证生效的地方。
+
+**更普遍的一条**：`default` 方法常被用来"不给旧实现添负担"，代价就是新参数被静默忽略。
+读框架接口时看到 `default`，要去反编译它默认干了什么——
+尤其是那些"多了一个参数、多了一层安全语义"的方法。javadoc 通常不会写这个。
+
