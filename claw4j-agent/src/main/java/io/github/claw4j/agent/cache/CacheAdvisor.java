@@ -98,6 +98,8 @@ public class CacheAdvisor implements CallAdvisor, StreamAdvisor {
     static final String REASON_DIFFERENT_PERMISSION = "different-permission";
     static final String REASON_EMBEDDING_FAILED = "embedding-failed";
 
+    static final String REASON_CACHE_FAILED = "cache-failed";
+
     /**
      * 中文里的相对时间词。**顺序有意义**：{@code 上上周} 必须排在 {@code 上周} 前面，
      * 否则 find 会先从第二个字开始匹配到"上周"，把"上上周"当成"上周"。
@@ -189,7 +191,26 @@ public class CacheAdvisor implements CallAdvisor, StreamAdvisor {
      * "上下文对上了但相似度不够"和"上下文就没对上"是两种不同的 miss，
      * 后者还要再分"换个时间窗问的"和"换个权限问的"。
      */
+    /**
+     * 读缓存。**整条读路径都不允许把异常抛出去**：缓存是优化，它没有资格让一轮对话失败。
+     *
+     * <p>兜的是数据库那一侧——连不上、SQL 报错、连接池耗尽。它和"向量算不出来"是两件事，
+     * 所以有各自的 {@code reason}：混在一起的话，排查时无法区分"向量服务挂了"和"库挂了"。
+     *
+     * <p>{@link #reasonForEmpty} 那两次诊断查询也在这层 try 里。它们只为把 miss 的原因说准，
+     * 为它们栽掉一次回答不划算——诊断信息不值得用可用性去换。
+     */
     private Optional<String> answerFor(Principal who, String question, float[] embedding) {
+        try {
+            return answerForOrThrow(who, question, embedding);
+        }
+        catch (RuntimeException failure) {
+            log.warn("缓存查询失败，这一轮当作没命中：{}", failure.getMessage());
+            return miss(REASON_CACHE_FAILED);
+        }
+    }
+
+    private Optional<String> answerForOrThrow(Principal who, String question, float[] embedding) {
         if (embedding == null) {
             return miss(REASON_EMBEDDING_FAILED);
         }

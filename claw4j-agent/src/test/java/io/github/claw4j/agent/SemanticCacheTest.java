@@ -189,6 +189,23 @@ class SemanticCacheTest {
     }
 
     @Test
+    @DisplayName("缓存查询挂了也退化成没命中：缓存没资格让一轮对话失败")
+    void cacheReadFailureDegradesToMiss() {
+        Fixture fixture = new Fixture();
+        fixture.cache.failOnRead = true;
+
+        assertThat(fixture.port.reply(message("u-1", EAST_LAST_WEEK)).text())
+                .as("库连不上时用户仍然该拿到回答，哪怕这一轮多花一次模型调用")
+                .isEqualTo(ANSWER);
+        assertThat(fixture.model.prompts())
+                .as("读不到缓存就该照常打模型，一次")
+                .hasSize(1);
+        assertThat(fixture.misses("cache-failed"))
+                .as("和 embedding-failed 分开记：混在一起就分不清是向量服务还是库坏了")
+                .isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("缓存写不进去只影响省成本，不影响这一轮的回答")
     void storeFailureDoesNotBreakTheAnswer() {
         Fixture fixture = new Fixture();
@@ -329,8 +346,13 @@ class SemanticCacheTest {
 
         private boolean failOnStore;
 
+        private boolean failOnRead;
+
         @Override
         public Optional<Candidate> nearest(String fingerprint, String entities, float[] embedding) {
+            if (failOnRead) {
+                throw new IllegalStateException("库连不上");
+            }
             return best(byContext.getOrDefault(context(fingerprint, entities), List.of()), embedding);
         }
 
