@@ -54,3 +54,18 @@
 
 **未做**：`micrometer-registry-prometheus`。`/actuator/metrics` 能查到就够了，
 接一个 Prometheus 服务端是部署问题，不是代码问题。
+
+**真链路验证（起一次应用）**：`CLAW4J_FEISHU_ENABLED=false`、业务端口 18080、
+actuator 9090，问一句"你好，只回答两个字：收到"：
+
+```
+POST /api/chat  → {"chatId":"http:u-verify","text":"收到"}
+GET  9090/actuator/metrics/claw4j.model.tokens?tag=kind:prompt      → 731
+GET  9090/actuator/metrics/claw4j.model.tokens?tag=kind:completion  → 1
+GET  9090/actuator/metrics/claw4j.model.calls                       → 1 次，route=deepseek
+GET  18080/actuator/metrics                                        → 404
+```
+
+最后一行是这一票的另一半：指标确实**不在**业务端口上。
+prompt 731 vs completion 1 也说明这两项不能合并——把它们加成一个"总 token"
+会让人以为成本随回答长度走，而实际上提示词（系统提示 + 工具定义）才是大头。
