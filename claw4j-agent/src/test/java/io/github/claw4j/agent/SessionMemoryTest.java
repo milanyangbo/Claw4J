@@ -1,10 +1,13 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.session.FaultTolerantSessionService;
+import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -12,15 +15,19 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.session.CreateSessionRequest;
 import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.Session;
 import org.springframework.ai.session.SessionEvent;
 import org.springframework.ai.session.SessionService;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
+import org.springframework.ai.session.compaction.CompactionRequest;
 import org.springframework.ai.session.compaction.CompactionResult;
 import org.springframework.ai.session.compaction.CompactionStrategy;
 import org.springframework.ai.session.compaction.CompactionTrigger;
+import org.springframework.ai.session.compaction.RecursiveSummarizationCompactionStrategy;
+import org.springframework.ai.session.compaction.TokenCountTrigger;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.transaction.CannotCreateTransactionException;
 
@@ -35,6 +42,8 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -197,6 +206,73 @@ class SessionMemoryTest {
                 .hasMessageContaining("userId");
     }
 
+    @Test
+    @DisplayName("聊得久了历史被压成摘要：事件不再线性增长，省下的 token 记在指标里")
+    void longConversationGetsCompacted() {
+        MapSessionService sessions = new MapSessionService();
+        String sessionId = SessionKeys.sessionIdOf(Principal.readOnly("u-1"));
+        sessions.create(CreateSessionRequest.builder().id(sessionId).userId("u-1").build());
+        for (int i = 0; i < 200; i++) {
+            sessions.appendEvent(event(sessionId, i));
+        }
+        int before = sessions.getEvents(sessionId, EventFilter.active()).size();
+
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        compactor(sessions, registry).compactIfNeeded(sessionId);
+
+        assertThat(sessions.getEvents(sessionId, EventFilter.active()))
+                .as("压完事件条数必须下降，否则等于什么都没做")
+                .hasSizeLessThan(before);
+        assertThat(registry.get("claw4j.session.compaction.archived").counter().count())
+                .as("压掉几条要能看见")
+                .isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("会话还没建出来时不记失败：第一轮没有历史可压，那不是故障")
+    void missingSessionIsNotAFailure() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        compactor(new MapSessionService(), registry).compactIfNeeded("http:u-never-asked");
+
+        assertThat(registry.find("claw4j.session.compaction.failures").counter())
+                .as("把时序问题记成故障，这个数从第一天起就不是 0，从此没人看它")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("摘要模型挂了只留痕：压缩失败不能把这一轮回答拖垮")
+    void compactionFailureDoesNotBreakTheTurn() {
+        SessionService broken = mock(SessionService.class);
+        when(broken.compact(anyString(), any(CompactionTrigger.class), any(CompactionStrategy.class)))
+                .thenThrow(new IllegalStateException("摘要模型 503"));
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        assertThatCode(() -> compactor(broken, registry).compactIfNeeded("s-1"))
+                .as("压不成是成本问题，不是可用性问题")
+                .doesNotThrowAnyException();
+        assertThat(registry.get("claw4j.session.compaction.failures").counter().count()).isEqualTo(1);
+    }
+
+    private static SessionCompactor compactor(SessionService sessions, MeterRegistry registry) {
+        return new SessionCompactor(sessions,
+                TokenCountTrigger.builder().threshold(100).build(),
+                RecursiveSummarizationCompactionStrategy.builder(
+                                ChatClient.builder(new FixedChatModel("摘要：用户连问了多轮成交额")).build())
+                        .maxEventsToKeep(6)
+                        .build(),
+                registry);
+    }
+
+    private static SessionEvent event(String sessionId, int index) {
+        return SessionEvent.builder()
+                .id("e-" + index)
+                .sessionId(sessionId)
+                .timestamp(Instant.now().plusSeconds(index))
+                .message(new UserMessage("第 " + index + " 轮：" + "成交额是多少。".repeat(40)))
+                .build();
+    }
+
     private static ChatClientAgentPort port(ChatModel model, SessionService sessions) {
         ChatClient chat = ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
                         ToolCallingAdvisor.builder()
@@ -267,9 +343,25 @@ class SessionMemoryTest {
             return events.values().stream().flatMap(List::stream).toList();
         }
 
+        /**
+         * 与 {@code DefaultSessionService} 同形状：会话不存在就抛、先问 trigger 再压、
+         * 压完用新的事件集替换旧的。照抄这一段的理由是——压缩测试要验的正是"这套流程跑完
+         * 事件真的变少了"，如果这里返回 null 或者不替换，测的就是一个空壳。
+         */
         @Override
         public CompactionResult compact(String sessionId, CompactionTrigger trigger, CompactionStrategy strategy) {
-            return null;
+            Session session = sessions.get(sessionId);
+            if (session == null) {
+                throw new IllegalArgumentException("会话不存在：" + sessionId);
+            }
+            List<SessionEvent> current = events.getOrDefault(sessionId, List.of());
+            CompactionRequest request = CompactionRequest.of(session, current);
+            if (!trigger.shouldCompact(request)) {
+                return null;
+            }
+            CompactionResult result = strategy.compact(request);
+            events.put(sessionId, new ArrayList<>(result.compactedEvents()));
+            return result;
         }
 
         List<String> createdIds() {

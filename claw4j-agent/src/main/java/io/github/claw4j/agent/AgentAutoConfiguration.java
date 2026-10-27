@@ -3,6 +3,7 @@ package io.github.claw4j.agent;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -132,7 +133,7 @@ public class AgentAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(AgentPort.class)
-    public AgentPort agentPort(ChatClient chatClient) {
-        return new ChatClientAgentPort(chatClient);
+    public AgentPort agentPort(ChatClient chatClient, ObjectProvider<SessionCompactor> compactor) {
+        return new ChatClientAgentPort(chatClient, compactor.getIfAvailable());
     }
 }

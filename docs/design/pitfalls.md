@@ -125,3 +125,25 @@ PG 的子查询里不能是 `insert` / `update` / `delete`。
 - **判据是日志里那行 `The following 1 profile is active: "local"`**。没有它，
   "通道就绪"只能证明凭据对，不能证明角色表读到了；而这两种情况在群里长得完全一样。
 
+## 十、"参数配上了"不等于"有人会调它"
+
+**现象**：`SessionMemoryAdvisor.Builder` 上明明有 `compactionTrigger` 与 `compactionStrategy`
+两个参数，配上去、启动不报错、日志也没有异常——长对话却照样把整段历史拼进提示词，
+提示词一路涨到上下文上限。
+
+**根因**：`spring-ai-session` 0.10.0 的 `SessionMemoryAdvisor` **从不调用
+`SessionService.compact`**（`javap -c` 里一次都没有）。那两个字段只是被存进对象，
+没有任何一段代码读它们。`FaultTolerantSessionService.compact` 那条"压缩失败返回 null"
+的分支注释里其实已经写了"这条路径不会被走到"——当时把原因归给了 M1 没配 Trigger，
+真正的原因是这个 Advisor 根本不压。
+
+**判据**：判断一个框架参数有没有用，不能看 Builder 上有没有那个方法，
+要看**谁读它**。`javap -c` 搜一遍方法调用是最快的办法；其次看它文档写的触发时机
+与现有代码里有没有对应的调用点。这个仓库已经因为"看着像"踩过一次
+（`com.larksuite` 那条永不命中的 ArchUnit 规则）。
+
+**现在**：压缩走自己的 `SessionCompactor`，在 `ChatClientAgentPort` 进模型之前调一次。
+`SessionMemoryAdvisor` 上刻意**不配**那两个参数——配了只会让读代码的人以为压缩已经生效。
+顺手把 `RecursiveSummarizationCompactionStrategy` 的一个约束记下来：
+`overlapSize`（默认 2）必须小于 `maxEventsToKeep`，配成 1 或 2 会在 `build()` 抛异常，
+所以 `events-to-keep` 的下限是 3。

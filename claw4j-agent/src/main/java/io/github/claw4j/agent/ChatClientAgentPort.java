@@ -2,6 +2,7 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactor;
+import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
@@ -35,8 +36,19 @@ public class ChatClientAgentPort implements AgentPort {
 
     private final ChatClient chatClient;
 
+    /**
+     * 压缩器。可以为 null——没装配会话存储时就没有"历史"这回事，也就没有可压的。
+     * 这不是配置错误，是能力不在场，所以不在这里造一个空实现去假装它存在。
+     */
+    private final SessionCompactor compactor;
+
     public ChatClientAgentPort(ChatClient chatClient) {
+        this(chatClient, null);
+    }
+
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
+        this.compactor = compactor;
     }
 
     /**
@@ -80,6 +92,11 @@ public class ChatClientAgentPort implements AgentPort {
      * 这里设的是 Advisor 上下文里的参数，链上没有记忆 Advisor 时它安静地被忽略。
      */
     private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message) {
+        // 压缩必须发生在"这一轮拼提示词"之前：记忆 Advisor 在 before 阶段读事件，
+        // 压完紧接着就被读到。放在 after 里等于压给下一轮用，而下一轮可能已经超了。
+        if (compactor != null) {
+            compactor.compactIfNeeded(SessionKeys.sessionIdOf(message.principal()));
+        }
         // 入站就脱敏（ADR-0011 里真模型测试抓到的那个缺陷）：
         // 会话记忆是在 Advisor 链的 before 阶段最早那一步把用户消息写进库的，
         // 而出站脱敏发生在 after——它改得到模型的回答，改不到已经落库的那条用户消息。

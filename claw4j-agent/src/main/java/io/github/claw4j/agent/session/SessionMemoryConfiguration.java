@@ -1,14 +1,23 @@
 package io.github.claw4j.agent.session;
 
 import com.zaxxer.hikari.HikariDataSource;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Metrics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springaicommunity.session.autoconfigure.SessionServiceProperties;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.session.DefaultSessionService;
 import org.springframework.ai.session.SessionRepository;
 import org.springframework.ai.session.SessionService;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
+import org.springframework.ai.session.compaction.RecursiveSummarizationCompactionStrategy;
+import org.springframework.ai.session.compaction.TokenCountTrigger;
 import org.springframework.ai.session.jdbc.JdbcSessionRepository;
 import org.springframework.ai.session.jdbc.PostgresJdbcSessionRepositoryDialect;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -49,6 +58,8 @@ import javax.sql.DataSource;
 @EnableConfigurationProperties({DataSourceProperties.class, SessionMemoryProperties.class,
         SessionServiceProperties.class})
 public class SessionMemoryConfiguration implements DisposableBean {
+
+    private static final Logger log = LoggerFactory.getLogger(SessionMemoryConfiguration.class);
 
     /**
      * 记忆 Advisor 的 order：全链最小，也就是 {@code before} 最先、{@code after} 最后。
@@ -106,6 +117,11 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * 记忆 Advisor。它在容器的 Advisor 集合里，就会被
      * {@code AgentAutoConfiguration#chatClient} 的 {@code defaultAdvisors} 收走，
      * 调用方不需要知道有记忆这回事。
+     *
+     * <p><b>刻意不在这里配 {@code compactionTrigger} / {@code compactionStrategy}</b>：
+     * 那个 Builder 上确实有这两个参数，但 0.10.0 的 {@code SessionMemoryAdvisor} 从来不调
+     * {@code SessionService.compact}（字节码里一次都没有）。配上去只会让读代码的人以为
+     * 压缩已经生效，而实际上什么都没发生——这比不配更坏。压缩走 {@link SessionCompactor}。
      */
     @Bean
     @ConditionalOnMissingBean(SessionMemoryAdvisor.class)
@@ -113,6 +129,38 @@ public class SessionMemoryConfiguration implements DisposableBean {
         return SessionMemoryAdvisor.builder(sessionService)
                 .order(ADVISOR_ORDER)
                 .build();
+    }
+
+    /**
+     * 压缩器：进模型之前把历史收拾一遍（M3-02）。
+     *
+     * <p><b>摘要用一个单独建的 {@code ChatClient}</b>，不挂任何 Advisor：
+     * 挂上记忆 Advisor 就是"压缩时写事件 → 再次触发压缩"的环；挂上鉴权则摘要会因为没有
+     * Principal 被拒。它只做一件事——把一段事件变成一段摘要。
+     *
+     * <p>这个客户端用的是主模型。ADR-0006 的设想是"摘要走便宜那一路"，
+     * 那要先回答"哪一路算便宜"，是配置问题不是这张票的范围，记在票里。
+     */
+    @Bean
+    @ConditionalOnMissingBean(SessionCompactor.class)
+    public SessionCompactor sessionCompactor(SessionService sessionService,
+                                             SessionMemoryProperties properties,
+                                             ChatModel chatModel,
+                                             ObjectProvider<MeterRegistry> meterRegistry) {
+        ChatClient summaryClient = ChatClient.builder(chatModel).build();
+        var trigger = TokenCountTrigger.builder()
+                // 按窗口比例算出来的数：换模型只改 context-window 一个值。
+                .threshold(properties.compactionThreshold())
+                .build();
+        var strategy = RecursiveSummarizationCompactionStrategy.builder(summaryClient)
+                .maxEventsToKeep(properties.eventsToKeep())
+                .onSummarizationFailure(request -> log.warn(
+                        "摘要生成失败，会话 {} 这一轮不压：{}",
+                        request.session().id(), request.currentEventCount()))
+                .build();
+        MeterRegistry registry = meterRegistry.getIfAvailable();
+        return new SessionCompactor(sessionService, trigger, strategy,
+                registry == null ? Metrics.globalRegistry : registry);
     }
 
     /**
