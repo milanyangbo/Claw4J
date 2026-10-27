@@ -2,6 +2,7 @@ package io.github.claw4j.channel.feishu.sdk;
 
 import io.github.claw4j.channel.feishu.FeishuReplySender;
 import io.github.claw4j.channel.feishu.InboundDispatcher;
+import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.domain.port.AgentPort;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -30,15 +31,32 @@ import java.util.concurrent.Executor;
  *   <li><b>凭据齐了但连不上</b> → 不在这里判断，交给 {@link FeishuLongConnectionChannel#start()}：
  *       它等握手超时之后抛，启动失败。这是 ADR-0009 的既有约定——半死的通道比起不来更难排查。</li>
  * </ol>
+ *
+ * <p>另外这里同时绑定 {@link HttpChannelProperties}：它是<b>两个通道共用的那张授权表</b>。
+ * 飞书那边只登记"谁是谁"，表与动作按角色名去这张表里取（{@link FeishuPrincipalResolver}）。
  */
 @AutoConfiguration(afterName = "io.github.claw4j.agent.AgentAutoConfiguration")
 @ConditionalOnClass(name = "com.lark.oapi.ws.Client")
 @ConditionalOnProperty(prefix = "claw4j.channel.feishu", name = "enabled", havingValue = "true", matchIfMissing = true)
-@EnableConfigurationProperties(FeishuChannelProperties.class)
+@EnableConfigurationProperties({FeishuChannelProperties.class, HttpChannelProperties.class})
 public class FeishuChannelAutoConfiguration {
 
     /** 飞书回推专用的线程池名字：与 HTTP 的流式池分开，日志里一眼能看出是哪条通道在跑。 */
     public static final String FEISHU_EXECUTOR = "claw4jFeishuExecutor";
+
+    /**
+     * 认人：本通道的登记表 + 两个通道共用的授权表。角色名对不上时它自己让启动失败，
+     * 所以这里不加兜底——兜底就等于把"配置写错了"变成"那群人没有权限"。
+     *
+     * <p><b>放在 {@code ChannelConfiguration} 之外</b>：它不需要凭据，而角色名写错在凭据配齐
+     * 之前就该报出来。放在里面意味着"没配凭据时，写错的角色名一路无声"，等凭据配好那天才发现。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public FeishuPrincipalResolver feishuPrincipalResolver(FeishuChannelProperties properties,
+                                                           HttpChannelProperties authz) {
+        return new FeishuPrincipalResolver(properties, authz);
+    }
 
     @Configuration(proxyBeanMethods = false)
     @Conditional(FeishuConfiguredCondition.class)
@@ -78,8 +96,8 @@ public class FeishuChannelAutoConfiguration {
         public InboundDispatcher feishuInboundDispatcher(AgentPort agentPort,
                                                          @Qualifier(FEISHU_EXECUTOR) Executor feishuExecutor,
                                                          FeishuReplySender replySender,
-                                                         FeishuChannelProperties properties) {
-            return new InboundDispatcher(agentPort, feishuExecutor, properties::resolve, replySender);
+                                                         FeishuPrincipalResolver principalResolver) {
+            return new InboundDispatcher(agentPort, feishuExecutor, principalResolver, replySender);
         }
 
         @Bean(initMethod = "start", destroyMethod = "stop")

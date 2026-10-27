@@ -1,6 +1,6 @@
 package io.github.claw4j.channel.feishu.sdk;
 
-import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.channel.http.HttpChannelProperties;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,10 +17,14 @@ import java.util.TreeSet;
 /**
  * 飞书通道的配置：凭据、谁能进来、握手等多久。
  *
- * <p>认人的口径与 HTTP 通道同一个形状（角色 → 表 / 动作），差别在登记的粒度：
- * HTTP 是从请求头读角色（网关已经认证过），飞书是从事件里读 {@code open_id}，
- * 所以这里要有一张"谁是谁"的表。写在角色下面而不是单独一张 {@code users} 表，
- * 是为了让"这个人能看什么"仍然只有一个答案——两处写同一件事，早晚会不一致。
+ * <p><b>这里只登记"谁是谁"，不写"角色能看什么"</b>：授权表只有一份，在
+ * {@code claw4j.channel.http.roles}（由 {@link HttpChannelProperties} 绑定，
+ * 它是两个通道共用的那张表）。飞书按角色名去那边取 {@code tables} / {@code actions}，
+ * 取不到就在装配时启动失败（{@link FeishuPrincipalResolver}）。
+ *
+ * <p>为什么不让两个通道各写一份：{@code recall_session} 那一次加动作，同一张 actions 列表
+ * 要改两处（提交 3d099ee），漏一处不报错——只是那群人少一个能力。两个通道的差别本来就只在认人：
+ * HTTP 从请求头读角色（网关已经认证过），飞书从事件里读 {@code open_id}，所以这里要有一张"谁是谁"的表。
  *
  * <p><b>没有默认角色。</b>HTTP 有一个 {@code default-role}（为了本机 curl 演示时不用先配角色），
  * 这里刻意没有：飞书进来的是真人，认不出就必须拒绝（ADR-0007）。少一个兜底，少一条"匿名进来还拿到了数"的路。
@@ -48,12 +52,14 @@ public class FeishuChannelProperties {
     private Duration readyTimeout = Duration.ofSeconds(15);
 
     /**
-     * 角色 → 授权 + 登记在这个角色下的人。
+     * 角色 → 登记在这个角色下的人。
      *
-     * <p>默认空：授权只在配置文件里写一份（应用那份 {@code application.yml}），这里再写一遍就是两处说同一件事，
-     * 改一处忘一处。空表的效果是"谁都进不来"，正是要的方向——反过来（默认放行）意味着"忘了配置"等于"全员可见"。
+     * <p>默认空：空表的效果是"谁都进不来"，正是要的方向——反过来（默认放行）意味着"忘了配置"等于"全员可见"。
      * 于是装上飞书通道、凭据也齐了却一个人都没登记时，表现就是所有人拿到"没有权限"；
      * 这种情况启动时会在日志里说一声（{@link #warnIfNobodyIsRegistered()}）。
+     *
+     * <p>键是<b>角色名</b>，必须能在 {@code claw4j.channel.http.roles} 里找到同名角色：
+     * 这里只回答"这个人是谁"，不回答"他能看什么"。
      */
     private Map<String, RoleGrant> roles = new LinkedHashMap<>();
 
@@ -63,20 +69,20 @@ public class FeishuChannelProperties {
     }
 
     /**
-     * {@code open_id} → {@link Principal}。认不出返回 {@code Optional#empty()}，
-     * 绝不回落到某个默认角色。
+     * {@code open_id} → 角色名。认不出来返回 {@code Optional#empty()}，绝不回落到某个默认角色。
+     *
+     * <p>只到角色名为止：表与动作要拿这个名字去共用的那张授权表里取
+     * （{@link FeishuPrincipalResolver}）。"这个人是谁"与"这个角色能看什么"是两个问题，
+     * 答案也不该来自两份配置。
      */
-    public Optional<Principal> resolve(String openId) {
+    public Optional<String> roleOf(String openId) {
         if (isBlank(openId)) {
             return Optional.empty();
         }
-        for (Map.Entry<String, RoleGrant> entry : roles.entrySet()) {
-            if (entry.getValue().users().contains(openId)) {
-                RoleGrant grant = entry.getValue();
-                return Optional.of(Principal.of(openId, entry.getKey(), grant.tables(), grant.actions()));
-            }
-        }
-        return Optional.empty();
+        return roles.entrySet().stream()
+                .filter(entry -> entry.getValue().users().contains(openId))
+                .map(Map.Entry::getKey)
+                .findFirst();
     }
 
     /**
@@ -168,17 +174,13 @@ public class FeishuChannelProperties {
     }
 
     /**
-     * 一个角色的授权范围，以及登记在这个角色下的人。
+     * 一个角色下登记的人。
      *
-     * @param tables  可访问的表，"*" 表示全部
-     * @param actions 可执行的动作名，与工具登记的动作名同一个口径（{@code read} 是读）
-     * @param users   飞书 {@code open_id}。空集合意味着"这个角色暂时没人"
+     * @param users 飞书 {@code open_id}。空集合意味着"这个角色暂时没人"
      */
-    public record RoleGrant(Set<String> tables, Set<String> actions, Set<String> users) {
+    public record RoleGrant(Set<String> users) {
 
         public RoleGrant {
-            tables = tables == null ? Set.of() : Set.copyOf(tables);
-            actions = actions == null ? Set.of() : Set.copyOf(actions);
             users = users == null ? Set.of() : Set.copyOf(users);
         }
     }

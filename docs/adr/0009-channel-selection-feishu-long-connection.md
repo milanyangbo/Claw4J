@@ -53,7 +53,7 @@ Consequences 里"3 秒超时重推"那条展开的几件事，各自落在哪个
 | 按 `eventId` 去重 | `InboundDispatcher` 内的 `SeenEventIds`：进程内 `ConcurrentHashMap`，TTL 10 分钟，**先记再跑** | 有测试守着：重推仍然 ACK、Agent 只跑一次、群里只有一条回答；过了窗口同一个 `eventId` 会重新处理，表不会只增不减 |
 | 主动回推 | `channel.feishu.sdk.FeishuOpenApiReplySender`：`im().message().create`，`receive_id_type=chat_id`、`msg_type=text` | 有测试守着：Agent 抛异常时群里出现的是一条说清失败的消息；模型给空内容时也有占位，不静默丢弃 |
 | 超长回答分段 | `channel.feishu.MessageSplitter`：按 4000 字符切块，代码块每段重放围栏（带语言标记）、表格每段重放表头 | 有测试守着：段序不变、每段不超上限、围栏成对、表格每段都有表头、原文一行不少 |
-| 认人 | `FeishuChannelProperties#resolve`（`roles.*.users` 里填 `open_id`）；认不出回"没有权限" | 有测试守着：未登记的 `open_id` 回"没有权限"；同一个人登记两个角色在启动时就失败 |
+| 认人 | `FeishuChannelProperties#roleOf`（`roles.*.users` 里填 `open_id`）→ `FeishuPrincipalResolver` 拿角色名去共用的授权表 `claw4j.channel.http.roles` 取表与动作；认不出回"没有权限" | 有测试守着：未登记的 `open_id` 回"没有权限"；同一个人登记两个角色在启动时就失败；角色名在共用表里不存在时启动失败并点名 |
 
 三条实现上的取舍，写在这里免得下次重新讨论：
 
