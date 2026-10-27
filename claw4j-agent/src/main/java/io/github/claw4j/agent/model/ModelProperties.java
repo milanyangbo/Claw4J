@@ -9,8 +9,8 @@ import java.time.Duration;
  *
  * <p>凭据一律从环境变量来，yaml 里只写占位符 —— 真实 key 不进版本库（ADR-0006）。
  *
- * <p>{@code mock} 三态：留空是"有没有 key 就用不用真实模型"的自动判断；
- * 显式给 true/false 则是强制，用于本地演示和 CI。
+ * <p><b>没有"要不要 mock"的开关</b>：ADR-0011 取消了 mock 兜底，一个 key 都没有就启动失败，
+ * 于是那个三态字段没有存在的理由——留着它就是一处"配了也不生效"的入口。
  *
  * <p>{@code primary} 决定 {@code RoutingChatModel} 里谁先上：主模型调用失败才退到备。
  * 它是"主备降级"而不是"按用途分流"——按用途分流（摘要、子 Agent 走便宜模型）是 M2 的事，
@@ -25,12 +25,6 @@ public class ModelProperties {
     public static final String QWEN = "qwen";
 
     /**
-     * 空 = 自动（有 key 走真实模型，无 key 降级 mock）；
-     * {@code true} = 强制 mock；{@code false} = 强制真实模型（此时若一个 key 都没有直接启动失败）。
-     */
-    private String mock = "";
-
-    /**
      * 主模型供应商。配了不存在的名字时启动失败并列出可选值 —— 静默忽略会让
      * "我以为在用千问、其实还在用 DeepSeek" 这种事查半天。
      */
@@ -39,14 +33,6 @@ public class ModelProperties {
     private final DeepSeek deepseek = new DeepSeek();
 
     private final Qwen qwen = new Qwen();
-
-    public String getMock() {
-        return mock;
-    }
-
-    public void setMock(String mock) {
-        this.mock = mock == null ? "" : mock.trim();
-    }
 
     public String getPrimary() {
         return primary;

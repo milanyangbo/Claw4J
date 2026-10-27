@@ -2,10 +2,12 @@ package io.github.claw4j.agent.session;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
  * 会话存储的可调项。
  *
- * <p>前两项是部署相关（schema 落哪、连接池多大），后三项是压缩相关。
+ * <p>前两项是部署相关（schema 落哪、连接池多大），中间三项是压缩相关，最后一项是清理间隔。
  * 没有什么"要不要用记忆"这个选项（ADR-0005），也没有"换实现"这个选项
  * （{@code InMemorySessionRepository} 被架构测试挡住）。
  *
@@ -17,10 +19,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param triggerRatio  到窗口的百分之多少就压。默认 0.5：留一半给"压完之后的这一轮"，
  *                      压到 0.9 时下一轮又会超，等于每轮都压一次
  * @param eventsToKeep  压缩时保留最近多少条事件不压。全压掉的话"刚才说的那件事"也会没
+ * @param cleanupInterval 过期会话的清理间隔。<b>我们不读它，读它的是
+ *                      {@code SessionCleanup} 上 {@code @Scheduled} 的占位符原文</b>；
+ *                      它出现在这里只为了在绑定期把坏值挡下来——{@code PT0S} 会让
+ *                      {@code fixedDelay} 变成 0，清理任务退化成一个热循环在打库。
+ *                      同 {@code CacheProperties#cleanupInterval}，那边的注释写了完整理由
  */
 @ConfigurationProperties("claw4j.session")
 public record SessionMemoryProperties(String schema, int poolSize,
-                                      int contextWindow, double triggerRatio, int eventsToKeep) {
+                                      int contextWindow, double triggerRatio, int eventsToKeep,
+                                      Duration cleanupInterval) {
 
     /** 连接池的默认值。 */
     public static final int DEFAULT_POOL_SIZE = 2;
@@ -40,6 +48,9 @@ public record SessionMemoryProperties(String schema, int poolSize,
      */
     public static final int MIN_EVENTS_TO_KEEP = 3;
 
+    /** 与 {@code SessionCleanup} 占位符里的 {@code PT1H} 同一个数：那边是"没配时的兜底"，这里是"归一后的值"。 */
+    public static final Duration DEFAULT_CLEANUP_INTERVAL = Duration.ofHours(1);
+
     public SessionMemoryProperties {
         schema = (schema == null || schema.isBlank()) ? SessionSchema.DEFAULT_SCHEMA : schema.trim();
         poolSize = poolSize <= 0 ? DEFAULT_POOL_SIZE : poolSize;
@@ -47,6 +58,15 @@ public record SessionMemoryProperties(String schema, int poolSize,
         // 1.0 与 0 一样是错的：等于"永远压"或者"窗口满了才压"，两种都退化成没有压缩。
         triggerRatio = (triggerRatio <= 0 || triggerRatio >= 1) ? DEFAULT_TRIGGER_RATIO : triggerRatio;
         eventsToKeep = eventsToKeep <= 0 ? DEFAULT_EVENTS_TO_KEEP : Math.max(eventsToKeep, MIN_EVENTS_TO_KEEP);
+        // 这一项不能归一，只能拒绝：调度器读的是占位符里的原文，这里悄悄改成 1 小时
+        // 并不会改变它拿到的值，只会让"配置写的是 0"这件事查不出来。
+        if (cleanupInterval == null) {
+            cleanupInterval = DEFAULT_CLEANUP_INTERVAL;
+        } else if (cleanupInterval.isNegative() || cleanupInterval.isZero()) {
+            throw new IllegalArgumentException(
+                    "claw4j.session.cleanup-interval 必须为正：" + cleanupInterval
+                            + "。它由 @Scheduled 直接读取原文，归一回默认只会让调度器与配置对不上");
+        }
     }
 
     /** 压缩阈值：按窗口比例算，不是一个写死的绝对数。 */
@@ -55,6 +75,6 @@ public record SessionMemoryProperties(String schema, int poolSize,
     }
 
     public static SessionMemoryProperties defaults() {
-        return new SessionMemoryProperties(null, 0, 0, 0, 0);
+        return new SessionMemoryProperties(null, 0, 0, 0, 0, null);
     }
 }

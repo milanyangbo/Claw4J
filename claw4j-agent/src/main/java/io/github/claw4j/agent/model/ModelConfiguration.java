@@ -35,8 +35,8 @@ import org.springframework.web.reactive.function.client.WebClient;
  *
  * <p>本模块因此只依赖纯模型包 {@code spring-ai-deepseek} / {@code spring-ai-openai}（不带 starter），
  * 自动配置压根不在 classpath 上，用不着去关。每家装不装由对应的 Condition
- * 按 key 有无决定；一家都没装上时，由 {@link MockModelConfiguration} 兜底。
- * 于是"没有 key 也要能启动"和"拿到 key 不用改代码"同时成立，且不需要 Maven profile 重新构建。
+ * 按 key 有无决定；一家都没装上时，装配方法自己抛异常让启动失败并说清去哪配（ADR-0011）。
+ * 于是"一个 key 都没有就只能启动失败"与"拿到 key 不用改代码"同时成立，且不需要 Maven profile 重新构建。
  *
  * <p>这些 bean 不该被业务直接使用 —— 业务拿到的 {@code ChatModel} 是
  * {@link RoutingModelConfiguration} 里那个带主备降级的 {@code routingChatModel}。

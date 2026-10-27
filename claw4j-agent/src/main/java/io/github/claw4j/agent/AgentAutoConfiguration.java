@@ -48,8 +48,8 @@ public class AgentAutoConfiguration {
             """;
 
     /**
-     * 具体用哪个 ChatModel 由 ModelConfiguration 与 MockModelConfiguration 决定：
-     * 有 key 装真实模型，没 key 兜底 mock。这里只管装配，不关心模型从哪来。
+     * 具体用哪个 ChatModel 由 ModelConfiguration 决定：有 key 装真实模型，
+     * 一个都没有就启动失败（ADR-0011，没有 mock 兜底）。这里只管装配，不关心模型从哪来。
      */
     @Bean
     @ConditionalOnMissingBean(ChatClient.class)

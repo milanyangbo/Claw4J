@@ -4,6 +4,7 @@ import io.github.claw4j.agent.session.FaultTolerantSessionService;
 import io.github.claw4j.agent.session.SessionCleanup;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
@@ -318,6 +319,21 @@ class SessionMemoryTest {
         assertThat(sessions.findById("old")).as("过期的那条该没了").isNull();
         assertThat(sessions.findById("fresh")).as("没过期的一条都不该动").isNotNull();
         assertThat(registry.get("claw4j.session.expired").counter().count()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("清理间隔配成 0 或负数直接拒绝启动：调度器读的是占位符原文，归一不会改它拿到的值")
+    void cleanupIntervalMustBePositive() {
+        assertThatThrownBy(() -> new SessionMemoryProperties(null, 0, 0, 0, 0, Duration.ZERO))
+                .as("fixedDelay=0 是「上一轮结束立刻下一轮」，一个热循环在打库；"
+                        + "而这里悄悄改成 1 小时，调度器照样拿到 0")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cleanup-interval");
+        assertThatThrownBy(() -> new SessionMemoryProperties(null, 0, 0, 0, 0, Duration.ofMinutes(-5)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(SessionMemoryProperties.defaults().cleanupInterval())
+                .as("键缺失才落默认值——「没配」有合理默认，「写 0」是写错了，两件事不能混")
+                .isEqualTo(SessionMemoryProperties.DEFAULT_CLEANUP_INTERVAL);
     }
 
     @Test

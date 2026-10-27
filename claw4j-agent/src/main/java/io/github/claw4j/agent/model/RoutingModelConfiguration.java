@@ -109,8 +109,8 @@ public class RoutingModelConfiguration {
     }
 
     /**
-     * 至少装了一家真实模型才需要路由；一家都没有时这里不注册，
-     * 让 {@link MockModelConfiguration} 的 {@code @ConditionalOnMissingBean} 接手。
+     * 至少装了一家真实模型才需要路由；一家都没有时这里不注册——
+     * 而那种情况在 {@link ModelConfiguration} 装配那几个模型 bean 时就已经启动失败了（ADR-0011）。
      *
      * <p>用自定义 Condition 而不是 {@code @ConditionalOnBean}：后者给多个名字时是"全都存在"，
      * 而这里要的是"任一存在"。
@@ -124,7 +124,7 @@ public class RoutingModelConfiguration {
                     || context.getBeanFactory().containsBeanDefinition(ModelConfiguration.QWEN_BEAN));
             return any
                     ? ConditionOutcome.match("至少装配了一家真实模型，需要路由")
-                    : ConditionOutcome.noMatch("没有任何真实模型，交给 mock 兜底");
+                    : ConditionOutcome.noMatch("没有任何真实模型，装配阶段就会启动失败");
         }
     }
 }
