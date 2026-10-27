@@ -218,8 +218,13 @@ default Optional<ChatResponse> get(String query, String contextHash) {
 任何权限、任何时间窗的缓存互相命中，不报错、不缺功能，只是偶尔给出别人的答案。
 这个问题在 code review 里也看不出来：接口签名上那个参数明明白白写着。
 
-**现在**：`PgVectorSemanticCache` 显式 `override` 了带上下文的那两个方法，
+**现在**：我们**没有实现框架这个接口**，而是自己定了一个 `SemanticCache`
+（`nearest` / `store`），上下文是**必填入参**，签名上就没有"不带上下文"的版本可选：
 SQL 里 `where fingerprint = ? and entities = ?` 是唯一能保证生效的地方。
+
+这不是"记得 override"，是让"忘记传上下文"这件事**编译不过**——从第一版起就是自有接口，
+没有走过"实现框架接口"那条路。差别在守不守得住：靠"每个方法都别忘写那个参数"的实现，
+今天对，明天加一个方法就漏，而漏了之后什么都不报。
 
 **更普遍的一条**：`default` 方法常被用来"不给旧实现添负担"，代价就是新参数被静默忽略。
 读框架接口时看到 `default`，要去反编译它默认干了什么——

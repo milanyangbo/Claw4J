@@ -126,8 +126,7 @@ public class AgentAutoConfiguration {
      * 而不是被这里悄悄吞掉一个。
      *
      * <p><b>计量也在这里包</b>：这是所有工具的**唯一入口**（父 Agent 与子 Agent 都走它），
-     * 包在这一层就不会出现"某条路径上的工具调用没被记上"。{@code registry} 为空表示
-     * 调用方没装 actuator——这时候包一层也没地方导出，原样返回。
+     * 包在这一层就不会出现"某条路径上的工具调用没被记上"。
      */
     public static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
                                                           ObjectProvider<ToolCallbackProvider> providers,

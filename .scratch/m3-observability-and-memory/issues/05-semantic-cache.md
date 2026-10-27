@@ -31,12 +31,16 @@
       这类动作，不是看问题文本
 - [x] 相似度阈值与过期时间都可配，默认 ~~0.95 / 24 小时~~ **0.93 / 1 小时**（实测推翻了票面的两个数，
       见实现记录）：阈值调低会开始把"华东"和"华南"当成一回事
-- [x] 指标：`claw4j.cache.hits` / `misses`（带 `reason`：无向量、低于阈值、权限不同、已过期）
+- [x] 指标：`claw4j.cache.hits` / `misses`（带 `reason`：无向量、低于阈值、权限不同）
+      票面还列了「已过期」，**这一条没做**：过期判定写在 SQL 的 `where` 里（连诊断那两次查询也带着它），
+      所以「从没写过」与「写过但过期了」都落成 `no-candidate`。要分开就得再查一次不带过期条件的，
+      而这一层只为把 miss 的原因说准。偏离记在 `docs/design/semantic-cache.md` 的偏离表里
 - [x] 断言：同一问题第二次 `model.calls` 不增加；**换一个角色问同样的话，miss 且 reason=权限不同**
 - [x] 变异：把权限指纹从 key 里去掉 → 第二条断言变红；把阈值改成 0 → "华南"那条红
 
 **落点:** 新模块还是新包？**新包** `io.github.claw4j.agent.cache`（放 `claw4j-agent` 里）：
-它是一个 Advisor（`CacheAdvisor`），挂在链上、order 比记忆小，逻辑上属于 Agent 而不是能力。
+它是一个 Advisor（`CacheAdvisor`），挂在链上、order 落在**记忆之后**（`DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER + 50`，
+比记忆大，命中时记忆的 after 仍会把这条回答写回去），逻辑上属于 Agent 而不是能力。
 DDL 跟其他迁移一起放 `claw4j-capability/src/main/resources/db/migration`。
 
 **注意:** 这一票**推翻 ADR-0005 修订记录里"引回 Redis Stack"的说法**，要改那份文档并写清理由：
@@ -54,8 +58,8 @@ DDL 跟其他迁移一起放 `claw4j-capability/src/main/resources/db/migration`
 
 | 类 | 干什么 |
 | --- | --- |
-| `CacheAdvisor` | 查/存，四条命中判定都在这一个方法里 |
-| `SemanticCache` | 接口：`nearest` / `nearestAnyFingerprint` / `store` / `deleteExpired` |
+| `CacheAdvisor` | 查/存，三条命中判定与两段上下文键（权限 + 实体）都在这一个类里 |
+| `SemanticCache` | 接口：`nearest` / `nearestInFingerprint` / `nearestAnyFingerprint` / `store` / `deleteExpired` |
 | `PgVectorSemanticCache` | pgvector 实现，SQL 里表名写全限定，借主连接池 |
 | `CacheProperties` | 阈值 / TTL / 清理间隔 / 向量模型名与维度 |
 | `CacheAutoConfiguration` | 向量模型（复用 qwen 凭据）、缓存、清理任务、Advisor |
@@ -95,8 +99,11 @@ DDL：`claw4j-capability/src/main/resources/db/migration/V4__semantic_cache.sql`
   只能选往哪边错——选的是"宁漏不误"：漏只是没省到钱，误是给出另一个问题的答案。
 
 于是命中判定里加了一道词面守卫：两个问题的**相对时间词集合与数字集合必须完全一致**
-（`CacheAdvisor.sameEntities`，一小段正则）。它挡的是"上周/上上周"这一类，不挡所有错——
-写成正则而不是实体抽取框架，是因为它的职责是兜住已知那一类，不是当语义理解的替代品。
+（当时的 `CacheAdvisor.sameEntities`，一小段正则）。
+
+**后来它没有留在判定流程里**（见票头「后续修订」）：那种"取到最近邻再否决"的写法，
+框架里没有对应物，等于在链上多插一道自己的判断。现在这段正则算的是**上下文键**的一半
+（`entitySignature`）：集合同与不同，决定的是"这两句在不在一个上下文"，而不是"取出来之后要不要否决"。
 
 **这个结论要照实说**：语义缓存的真实收益是"同一个人几分钟内几乎原样再问一遍"（1.0 与 0.99 那一档），
 不是"随便换个说法都能命中"。0.93 下「华东上周卖了多少」（0.9117）就是不命中的，这不是 bug。
