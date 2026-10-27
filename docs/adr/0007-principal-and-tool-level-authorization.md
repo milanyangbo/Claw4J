@@ -23,7 +23,7 @@ date: 2026-10-22
 ## Consequences
 
 - 鉴权 Advisor 必须**同时实现 `CallAdvisor` 与 `StreamAdvisor`**。只实现 `CallAdvisor` 时，`.stream()` 路径上该 Advisor 被静默跳过且不报错——这是 2.x 最经典的坑，因此每个自定义 Advisor 的测试都必须覆盖流式路径。
-- 上面那条不再只是口头约定，由三条机制共同兜住：`AgentArchitectureTest` 里的 ArchUnit 规则（Advisor 必须同时可赋值给 `CallAdvisor` 与 `StreamAdvisor`，漏写即编译期失败）；`AdvisorBothPathsTest` 用一个只实现同步接口的 Advisor 把"被静默跳过"的事实钉住；`AdvisorNotSkippedOverHttpTest` 在整条 HTTP→Agent→模型链路上证明挂进容器的 Advisor 在 SSE 上真的生效。根因是 `BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，只认 `StreamAdvisor`。
+- 上面那条不再只是口头约定，由三层守着：① 一条架构规则要求本仓库自己的 Advisor **同时**实现 `CallAdvisor` 与 `StreamAdvisor`——漏写一个不会有编译错误、也不会有启动报错，只有这条规则能拦；② 一条用例断言越权的工具调用在**流式路径上同样被拦**，SSE 不能成为绕开鉴权的旁路；③ 装配层证明挂进容器的 Advisor 在两条入口上都生效。根因是 `BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，只认 `StreamAdvisor`——只实现同步接口的 Advisor 在 SSE 上会被静默跳过。
 - 另外三个已踩过的实现坑：匿名 Advisor 的 `getClass().getSimpleName()` 是空串，不覆写 `getName()` 会让观测上下文抛 `advisorName cannot be null or empty`；`Prompt.augmentUserMessage(String)` 是**替换**用户消息而不是追加，要追加必须走 `Function` 版本；**流式路径上不能用 `BaseAdvisor` 的默认实现**——它只在 `AdvisorUtils.onFinishReason()` 命中的那一块上调 `after()`，而工具调用是分块发下来的（名字在头一块、参数在后面几块），带 finish reason 的收尾块里通常已经没有工具调用了，鉴权会在流式上完全看不见它。所以流式必须逐块看，看到越权当场掐断上游。
 - 拒绝必须是**一句话**而不是一段空数据。"没有权限"和"查出来是空的"在客户端看起来一样，测试上要靠调用计数（工具一次都没被调用）加话术断言（以"没有权限"开头）分开这两者。
 - 权限的登记跟着工具走：工具所在的模块声明"这个工具需要什么权限"（动作 + 会碰到哪些表），Agent 侧只认 `ToolPermissionRegistry` 这个接口。**没登记的工具一律按拒绝处理**——没人评估过它会碰到什么，放行的风险比拒绝大。

@@ -46,7 +46,7 @@ Spring 把它翻译成 `Connection.setReadOnly(true)`，PostgreSQL 驱动再翻�
 `ChatClient` 是我们自己建客户端的，五参重载里传进去的 `ToolCallingManager` 才是生效的那个，
 自动配置那个只有在使用 Boot 注入的 `ChatClient.Builder` bean 时才会被用上。
 哪天改成注入 bean，这两个数字会静默退回 40/150，所以**两个数字各有一条测试钉着**：
-`TextToSqlLoopTest` 钉单工具上限，`ToolCallBudgetTest` 钉总数上限。
+一条断言钉单工具上限，另一条钉总数上限。
 
 总数那条值得一说：单工具上限（3）比总数上限（6）小，而 M1 只注册了一个工具，
 所以"整轮 6 次"在单工具场景下**永远撞不到**——它守的是"多工具叠加"这个还没发生的风险。

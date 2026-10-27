@@ -53,7 +53,7 @@ ADR-0002 禁的是**Java 侧构造一条命令行交给 shell 解释**（1.x 的
 ### 演示不进默认构建
 
 真实外部 CLI 依赖本机装了什么（`python3` / `gh` / `himalaya` / `xurl`），
-不是每台机器都有。`RealCliMcpEndToEndTest` 打 `real-cli` tag，
+不是每台机器都有。这条端到端用例打 `real-cli` tag，
 父 pom 的 surefire 默认排除，`-Preal-cli` 才跑。
 
 用 tag 排除而不是在测试里 `assumeTrue`：assume 的结果是 **skipped**，
@@ -82,9 +82,9 @@ ADR-0002 禁的是**Java 侧构造一条命令行交给 shell 解释**（1.x 的
 
 ## 复核（M2 加完三层之后）
 
-- **预算**：`BudgetAcrossLayersTest` 把一层（provider 与单回调两种形态）、
+- **预算**：有测试把一层（provider 与单回调两种形态）、
   二层（真协议连接）、三层（脚本包）的工具放进同一份清单，第 7 次调用仍被总数上限拦住。
   变异（去掉 `maxTotalToolCalls`）让它红。
-- **鉴权**：`PermissionsAcrossLayersTest` 在装配出来的容器上验"每个工具都已登记"，
+- **鉴权**：有测试在装配出来的容器上验"每个工具都已登记"，
   漏登记的后果是拒绝。变异（给某一层的权限表加 `@ConditionalOnMissingBean`，
   即 01 号票那个坑的形状）让它红。

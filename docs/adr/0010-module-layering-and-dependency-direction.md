@@ -59,11 +59,11 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
 - 一个模块需要**独立的持久化 schema 或独立团队**时拆。
 - 一个模块内出现**两个以上互不相干的变化原因**且都超过千行时拆。
 
-当前不满足任何一条：全仓库 Java 不到 400 行，五个模块已经偏多。M2 引入 Skill 引擎与 MCP client 后如果 `claw4j-agent` 明显膨胀，再按判据评估拆 `claw4j-skills`，不预先拆。
+现在不预先拆；哪条判据真的成立时再拆，结论由当时的代码规模与变化原因决定，不预先猜。
 
 ## Consequences
 
 - 五个模块，父 POM 的 `modules` 不再随通道数量增长。
 - 新增一个通道的成本变成：在 `claw4j-channel` 下加一个包 + 实现 `ChatChannel` + 在本模块声明平台 SDK 依赖。不需要动父 POM 和 CI。
-- 边界规则落在各模块自己的 ArchUnit 测试里：`DomainBoundaryTest`（domain 零框架）、`AgentBoundaryTest`（agent 不认识 channel）、`ChannelBoundaryTest`（不认识 agent 与 capability；SPI 包不依赖任何平台；`channel.feishu` 调度层不碰 `com.larksuite` 也不碰自己的 `sdk` 子包）、`ToolsBoundaryTest`（capability 不认识 agent 与 channel；只有 `LocalProcessRunner` 能碰 `ProcessBuilder`）。另有 `claw4j-app` 的 `ProcessBoundaryTest`——ADR-0002 那条红线要扫全仓才看得见，只能落在唯一同时看见所有模块的地方。它们随 `mvn test` 跑，本地入口是 `./scripts/verify.sh`（仓库没有 CI，也没有 pre-commit hook，见 `docs/agents/guardrails.md`），红了就是架构被破坏了。
+- 边界规则落在各模块自己的 ArchUnit 测试里：domain 零框架；agent 不认识 channel；channel 不认识 agent 与 capability（SPI 包不依赖任何平台，`channel.feishu` 的调度层不碰 `com.larksuite`、也不碰自己的 `sdk` 子包）；capability 不认识 agent 与 channel，且只有 `LocalProcessRunner` 能碰 `ProcessBuilder`。另有一条扫全仓的规则落在 `claw4j-app`——ADR-0002 那条红线要扫全仓才看得见，只能放在唯一同时看见所有模块的地方。它们随 `mvn test` 跑，本地入口是 `./scripts/verify.sh`（仓库没有 CI，也没有 pre-commit hook，见 `docs/agents/guardrails.md`），红了就是架构被破坏了。
 - `oapi-sdk` 在 `claw4j-channel` 里是普通依赖，随模块传递，`claw4j-app` 不必再声明、构建也不必再加 `-P` 开关。代价是只用 HTTP 的部署也会带上它（含传递依赖约 28MB），换来的是"启动少一个必须记得的参数"——`-P` 只在 `mvn` 时存在，`java -jar` 根本没有它，漏了的现象是通道安静地不装配。`FeishuChannelAutoConfiguration` 上的 `@ConditionalOnClass` 仍然保留，所以依赖被误删时是退让而不是 `ClassNotFoundException`。

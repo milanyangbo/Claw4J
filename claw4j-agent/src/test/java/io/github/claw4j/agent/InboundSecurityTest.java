@@ -20,6 +20,7 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
+import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -200,6 +201,47 @@ class InboundSecurityTest {
             logger.detachAppender(appender);
             logger.setLevel(previous);
         }
+    }
+
+    @Test
+    @DisplayName("流式路径上越权同样被拦：SSE 不能成为绕过鉴权的旁路")
+    void overreachIsDeniedOnTheStreamPathToo() {
+        RecordingTool tool = new RecordingTool("lookup", "128400");
+        FixedChatModel model = new FixedChatModel(
+                prompt -> ChatPipelineTest.requestTool("lookup", "{}"),
+                prompt -> Flux.just(ChatPipelineTest.requestTool("lookup", "{}")));
+        ChatClientAgentPort port = port(model, List.of(tool),
+                ToolPermissionRegistry.of(Map.of("lookup", ToolPermission.read("sales_order"))));
+
+        Principal guest = Principal.of("guest-2", "guest", Set.of("region"), Set.of("read"));
+        List<io.github.claw4j.domain.port.OutboundMessage> chunks = new ArrayList<>();
+        port.stream(new InboundMessage(guest, "chat-10", "查上周成交额"), chunks::add);
+
+        assertThat(joinText(chunks))
+                .contains(AuthorizationAdvisor.DENIAL_PREFIX)
+                .contains("sales_order");
+        assertThat(tool.calls()).isZero();
+    }
+
+    @Test
+    @DisplayName("流式路径上没有工具调用时不误判：拒绝只在真要碰工具时发生")
+    void streamWithoutToolCallsIsNotDenied() {
+        FixedChatModel model = new FixedChatModel(
+                prompt -> ChatPipelineTest.answer("上周 99999"),
+                prompt -> Flux.just(ChatPipelineTest.answer("上周 99999")));
+        ChatClientAgentPort port = port(model, List.of(), ToolPermissionRegistry.of(Map.of()));
+
+        Principal nobody = Principal.of("nobody-1", "guest", Set.of(), Set.of());
+        List<io.github.claw4j.domain.port.OutboundMessage> chunks = new ArrayList<>();
+        port.stream(new InboundMessage(nobody, "chat-11", "你好"), chunks::add);
+
+        assertThat(joinText(chunks))
+                .contains("99999")
+                .doesNotContain(AuthorizationAdvisor.DENIAL_PREFIX);
+    }
+
+    private static String joinText(List<io.github.claw4j.domain.port.OutboundMessage> chunks) {
+        return chunks.stream().map(chunk -> chunk.text()).reduce("", String::concat);
     }
 
     private static String textsOf(List<Message> messages) {

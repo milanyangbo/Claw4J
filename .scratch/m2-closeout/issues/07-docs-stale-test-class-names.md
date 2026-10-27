@@ -1,51 +1,69 @@
-# 07: 文档里的测试类名已经普遍失效
+# 07: 文档不该点测试类名，只该说"这条要有测试守着"
 
-**What to build:** `docs/` 里指"证据在哪"的测试类名，有 25 个已经不存在了（现存测试类 22 个）。
-把它们改到"现在承载那段行为的类与方法"，或者改成描述行为而不点类名。ADR 与设计文档里
-"这条由 `XxxTest` 盯着"是本仓库最常用的一句论证——读者照着它去仓库里找，找不到，那句话就退化成口号。
+**What to build:** `docs/` 里有 32 处"这条由 `XxxTest` 盯着"，而那个类早就不存在了
+（现存测试类 22 个）。这类指针一旦断掉，"由某测试盯着"就从论据退化成口号——读者照着去找，
+找不到，也就没法判断这条约束到底有没有人守。
 
 **Blocked by:** 无
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-**实测（2026-10-26，扫 `docs/**/*.md` + 根目录 md 里的 `*Test` 记号，与
-`claw4j-*/src/test/**/*.java` 的文件名比对）：**
+**方向（2026-10-27 定，取代原来的"改成现在承载它的类名"）：文档不点任何测试类名。**
 
-| 失效类名 | 出现在 |
+类名会漂：合并、改名、拆文件，任何一次重构都让指针失效，而失效是**静默**的——文档不会报错。
+所以改的目标不是"换成今天的正确类名"，而是换掉这种写法本身：**写"这条要有测试守着"，
+后面直接跟断言内容**。读者拿到的是一句可验证的要求，不是一个会过期的地址。
+
+同一条理由也适用到现存的类名上：本次把 docs 里所有测试类名一并清掉（40 处 → 0 处），
+包括那些今天还正确的。判断依据：ADR 与设计文档的职责是讲"为什么这么设计、这条靠什么守住"，
+类名只是实现细节；而 `CONTRIBUTING.md` 的边界测试清单是唯一例外——那张表的用途就是
+列举这些测试，改名时本来就该同步改表。
+
+- [x] 32 处失效指针改成"要有测试守着 + 断言内容"，一个类名不留
+- [x] 今天还正确的 8 处测试类名一并清掉（ADR-0010 的边界规则清单）；CONTRIBUTING 的门禁表除外
+- [x] 复扫归零：`docs/` + 根目录 md 里 `*Test` / `*IT` 记号 0 处（`MIT` 不算）
+- [x] ADR-0010「什么时候该拆模块」里"全仓库 Java 不到 400 行"删掉——实测 main 10,140 行 /
+      test 4,357 行，这个数字既不对、也不构成任何一条判据。判据三条保留，当前状态改成
+      "不预先拆，哪条真成立时再拆"，不猜
+- [x] ADR-0007 那条"由三条机制共同兜住"里，三项证据全都查无此物。**补了两条**（见下），
+      写法改成"三层守着 ①②③"，不点类名
+- [x] 查无测试的，就地写清"要有测试守着"并在票尾列出来，不编一个相近的名字顶上去
+
+## 顺带补的测试（用户点名要的）
+
+ADR-0007 说"Advisor 必须同时能走同步和流式"，实际既没有规则也没有用例。补两层：
+
+1. **架构规则**（`AgentBoundaryTest` 新增一条）：`io.github.claw4j.agent.advisor` 包里
+   任何实现 `Advisor` 的类必须同时实现 `CallAdvisor` 与 `StreamAdvisor`。
+   理由：漏写一个接口不会有编译错误、不会有启动报错、日志里一句没有，只有规则能拦。
+2. **流式鉴权用例**（`InboundSecurityTest` 新增两条）：
+   - 越权的工具调用在**流式路径**上同样被拦，工具一次都不执行（SSE 不能成为绕开鉴权的旁路）；
+   - 流上没有工具调用时不误判为越权（拒绝只在真要碰工具时发生）。
+
+变异检验（各做一次，验完还原）：
+- 加一个只实现 `CallAdvisor` 的类 → 架构规则红，报 `advisorsCoverBothPaths` 违规 1 次；
+- 把 `AuthorizationAdvisor.adviseStream` 改成 `return chain.nextStream(request)`（透传）→
+  流式鉴权那条用例红。
+
+`FixedChatModel` 加了一个重载：流式块改由调用方给（原来只能流纯文本，
+"流式路径上看见工具调用"这条路根本走不到）。
+
+## 查无测试（文档说有人守，实际没有）
+
+**没有在本票里补**——它们是行为缺口，不是文档问题，按票面约定单独列出来：
+
+| 文档说 | 实际情况 |
 | --- | --- |
-| `TextToSqlLoopTest`、`ToolCallBudgetTest` | ADR-0008、`design/text-to-sql.md` |
-| `AuthorizationOverHttpTest` | ADR-0011、`design/authorization.md` |
-| `SalesQueryEndToEndTest`、`HttpChannelEndToEndTest` | ADR-0011 |
-| `SubagentRunnerTest`、`SubagentEndToEndTest` | ADR-0012、`design/capability-layers.md` |
-| `AgentSkillsTest`、`AgentSkillsEndToEndTest`、`ScriptPackageRunnerTest`、`SandboxPolicyTest`、`SandboxedExecBackendTest`、`RealCliMcpEndToEndTest` | `design/capability-layers.md` |
-| `BudgetAcrossLayersTest`、`PermissionsAcrossLayersTest`、`RealCliMcpEndToEndTest` | ADR-0014 |
-| `AppArchitectureTest`、`LocalProcessRunnerTest`、`NoHandBuiltShellCommandTest` | ADR-0002 |
-| `AdvisorBothPathsTest`、`AdvisorNotSkippedOverHttpTest`、`AgentArchitectureTest` | ADR-0007 |
-| `RoutingChatModelTest`、`RealModelTest` | ADR-0006 |
-| `SchemaMigrationOnStartupTest` | ADR-0005 |
-| `SessionMemoryDegradationTest` | `design/session-memory.md` |
+| ADR-0006：「换供应商时工具会丢」这条由测试钉着"备模型收到的参数里有没有工具" | `ModelRoutingTest` 里一次都没出现工具相关断言。这条 bug 只在真链路暴露，而现在没有任何回归拦它 |
+| ADR-0005：「只写 `spring.flyway.enabled=true` 却没有 `flyway-core` 时，这行配置没人执行」 | 没有用例模拟"依赖不在 classpath"。现有两处 flyway 相关（装配冒烟、真库测试）都假设它在 |
 
-**方向定死：文档跟代码走，不是代码跟文档走。** 这些类多半是 M1/M2 里被合并进更大测试文件的
-（现在是"一个功能一个文件、一个文件多个方法"，见 `CONTRIBUTING.md`）。所以改的是文档里的指针；
-**不许为了对上文档去把方法拆回成类**——那会让票面记录与 git 历史对不上，也违反"拆功能，别拆文件"。
+ADR-0007 那三项已在本票补掉两项；第三项（装配层证明 Advisor 在两条入口上都生效）
+目前只有同步入口那一条（`ApplicationAssemblyTest` 里"鉴权 Advisor 真的挂进了链"），
+流式入口由本票新增的那条用例覆盖。
 
-- [ ] 逐个失效类名，先按它描述的**断言**在现存测试里定位承载者（例：ADR-0011 说的"第二轮提示词里带着
-      `128400.00`"在 `SalesQueryTest`；ADR-0007 说的"只实现 `CallAdvisor` 会被流式跳过"在
-      `ChatPipelineTest`），改字段落里的类名
-- [ ] 定位不到承载者的，**不许改成相近的名字**：那说明那段行为根本没有测试。就地标 `⚠ 无测试`，
-      并在票尾列出来——这种情况下是行为缺证据，不是文档写错，另开票
-- [ ] 一个类名承载多段行为、改完读起来别扭的地方，改成描述行为（"由 `XxxTest` 里那条『…』用例盯着"）
-      或直接去掉类名，不新增段落
-- [ ] ADR-0010「什么时候该拆模块」那句"全仓库 Java 不到 400 行"：实测 main 10,140 行、
-      test 4,357 行，**只改数字**。数字一改，"当前不满足任何一条"就不再自明了——
-      要不要拆 `claw4j-capability`（5,092 行、四个变化原因：工具 / 脚本 / 技能 / MCP）是决策，
-      **本票不做**，在票尾写"结论待重新评估"交给人
-- [ ] 收尾时把"失效类名数"再跑一遍，归零（或只剩写清 `⚠ 无测试` 的那几条）
+## Consequences
 
-**落点:** `docs/adr/0002,0005,0006,0007,0008,0010,0011,0012,0014`、`docs/design/{text-to-sql,authorization,capability-layers,session-memory}.md`。
-
-**注意:** 只换"去哪找"的指针。判断与论证一个字不改——"为什么这么设计"是 ADR 的主体，
-本票不碰。改完读一遍：**换了名字之后那句话还得成立**（承载者真的在验这件事，而不是名字像）。
-
-**不要做:** 重命名/拆分测试类去迎合文档；把没有测试的行为写成"由某测试盯着"；顺手改论证段落；
-在本票里决定 `claw4j-capability` 拆不拆。
+- 文档从此不会因为改测试文件而失效——它不再提任何测试类名。
+- 代价是失去"顺着名字去仓库里找"的直接路径。补偿：每条都写清了断言内容，
+  用 `@DisplayName` 的中文描述去搜就能定位。
+- `CONTRIBUTING.md` 的边界测试清单仍点类名，作为唯一例外：那张表就是测试清单本身。

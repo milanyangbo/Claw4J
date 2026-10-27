@@ -56,7 +56,7 @@ date: 2026-10-22
 - **Boot 4 要显式引 `spring-boot-flyway`**。它把 Flyway 的自动配置拆成了独立 artifact，
   只有 `flyway-core` 在 classpath 上时，`spring.flyway.enabled=true` 是一句没有东西在执行的配置：
   不报错、不警告、日志里不出现 Flyway 三个字，只是表一直不建，而业务侧报的是"连不上库"
-  （M1-07 第一次真实联调就是这么挂的）。这条由 `SchemaMigrationOnStartupTest` 盯着。
+  （M1-07 第一次真实联调就是这么挂的）。这一条要有测试守着：classpath 上没有 `flyway-core` 时启动必须失败，而不是安静地不建表。
 - **Flyway 建的语句写全限定名，运行时的查询不带前缀**。Flyway 连的是默认 `search_path`，
   不写前缀表就落到 public；而运行时那条连接带着 `currentSchema=claw4j_session`。
   建的时候限定、查的时候不限定，两边落点一致且都不依赖"当前 schema 是什么"。

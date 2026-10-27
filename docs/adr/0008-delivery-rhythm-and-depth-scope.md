@@ -42,7 +42,7 @@ M0 结束就必须能演示，不等 M2。
   需要模型的测试默认打真实 DeepSeek，没有 key 时测试失败而不是跳过；断言只写方向性，
   关键断言给有限重试。依赖"精确编排模型行为"的那几条（调用预算、鉴权计数、脱敏）
   降级为不经过模型的组件级测试——仍是真组件，只是工具调用指令由测试构造。
-  `RealModelIT` 那套 `-Preal-model` 隔离随之取消。
+  那套靠 IT 后缀加 `-Preal-model` 的隔离随之取消。
 - Spring AI 评估器（`RelevancyEvaluator` / `FactCheckingEvaluator`）挂进 CI 当质量门禁。
 
 ### 工具调用预算：用框架的上限，但不是它的默认值
@@ -59,4 +59,4 @@ M0 结束就必须能演示，不等 M2。
 **这个数不写在 `spring.ai.tools.limits.*` 里**，因为那条配置到不了这条链：
 `ChatClient` 由我们自己建，生效的是五参 `ChatClient.builder(...)` 里传进去的那个
 `ToolCallingManager`。哪天改成注入 Boot 的 `ChatClient.Builder` bean，
-数字会静默退回 40/150——所以 `TextToSqlLoopTest` 里有一条断言专门钉着它。
+数字会静默退回 40/150——所以要有断言专门钉着它。

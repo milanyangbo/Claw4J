@@ -278,7 +278,7 @@ class FixedChatModel implements ChatModel {
 
     private final List<Prompt> prompts = new CopyOnWriteArrayList<>();
     private final Function<Prompt, ChatResponse> onCall;
-    private final List<String> onStream;
+    private final Function<Prompt, Flux<ChatResponse>> onStream;
     private final ToolCallingChatOptions options = ToolCallingChatOptions.builder()
             .model("fixed-model")
             .temperature(0.0)
@@ -294,7 +294,16 @@ class FixedChatModel implements ChatModel {
 
     FixedChatModel(Function<Prompt, ChatResponse> onCall, List<String> onStream) {
         this.onCall = onCall;
-        this.onStream = List.copyOf(onStream);
+        this.onStream = prompt -> Flux.fromIterable(onStream).map(ChatPipelineTest::answer);
+    }
+
+    /**
+     * 流式块由调用方决定。鉴权要验"流式路径上看到工具调用怎么办"，
+     * 而 {@link #FixedChatModel(Function, List)} 只会流纯文本，看见工具调用这条路根本走不到。
+     */
+    FixedChatModel(Function<Prompt, ChatResponse> onCall, Function<Prompt, Flux<ChatResponse>> onStream) {
+        this.onCall = onCall;
+        this.onStream = onStream;
     }
 
     @Override
@@ -306,7 +315,7 @@ class FixedChatModel implements ChatModel {
     @Override
     public Flux<ChatResponse> stream(Prompt prompt) {
         prompts.add(prompt);
-        return Flux.fromIterable(onStream).map(ChatPipelineTest::answer);
+        return onStream.apply(prompt);
     }
 
     @Override
