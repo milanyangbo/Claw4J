@@ -20,13 +20,8 @@ class DomainBoundaryTest {
     @ArchTest
     static final ArchRule domainStaysFrameworkFree =
             noClasses().that().resideInAPackage("io.github.claw4j.domain..")
-                    .should().dependOnClassesThat().resideInAnyPackage(
-                            "org.springframework..",
-                            "org.springaicommunity..",
-                            "com.larksuite..",
-                            "io.micrometer..",
-                            "io.projectreactor..",
-                            "jakarta..");
+                    .should().dependOnClassesThat()
+                    .resideOutsideOfPackages("java..", "io.github.claw4j.domain..");
 
     @ArchTest
     static final ArchRule portPackageHoldsOnlyContracts =

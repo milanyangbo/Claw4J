@@ -2,6 +2,8 @@ package io.github.claw4j.channel.feishu.sdk;
 
 import io.github.claw4j.domain.principal.Principal;
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
@@ -26,6 +28,8 @@ import java.util.TreeSet;
 @ConfigurationProperties(prefix = "claw4j.channel.feishu")
 public class FeishuChannelProperties {
 
+    private static final Logger log = LoggerFactory.getLogger(FeishuChannelProperties.class);
+
     /** 关掉整个通道。默认为开，但凭据不全时装配条件本来就不成立。 */
     private boolean enabled = true;
 
@@ -46,13 +50,12 @@ public class FeishuChannelProperties {
     /**
      * 角色 → 授权 + 登记在这个角色下的人。
      *
-     * <p>默认只有 {@code read-only} 且 {@code users} 为空：装上飞书通道之后，
-     * 任何人问话都会先拿到"没有权限"，直到有人把 {@code open_id} 填进来。这是对的默认值——
-     * 反过来（默认放行）意味着"忘了配置"等于"全员可见"。
+     * <p>默认空：授权只在配置文件里写一份（应用那份 {@code application.yml}），这里再写一遍就是两处说同一件事，
+     * 改一处忘一处。空表的效果是"谁都进不来"，正是要的方向——反过来（默认放行）意味着"忘了配置"等于"全员可见"。
+     * 于是装上飞书通道、凭据也齐了却一个人都没登记时，表现就是所有人拿到"没有权限"；
+     * 这种情况启动时会在日志里说一声（{@link #warnIfNobodyIsRegistered()}）。
      */
-    private Map<String, RoleGrant> roles = new LinkedHashMap<>(Map.of(
-            "read-only", new RoleGrant(Set.of("*"), Set.of("read", "use_skill", "delegate_task", "read_system"),
-                    Set.of())));
+    private Map<String, RoleGrant> roles = new LinkedHashMap<>();
 
     /** 凭据是否齐全。半配（只给了 app-id）等同于没配：装配条件不成立。 */
     public boolean configured() {
@@ -97,6 +100,26 @@ public class FeishuChannelProperties {
             throw new IllegalStateException(
                     "claw4j.channel.feishu.roles 里同一个人登记了多个角色：" + String.join(", ", duplicated)
                             + "。一个人只能有一个身份，请删掉多余的那几处。");
+        }
+        warnIfNobodyIsRegistered();
+    }
+
+    /**
+     * 凭据齐了、一个人都没登记 → 启动日志里必须有句话。
+     *
+     * <p>这种状态最难查：通道连得上、事件收得到、日志干净，而每个提问的人拿到的都是"没有权限"——
+     * 与"服务根本没起来"在现象上长得一样。责任不在提问的人，所以不能只在群里回一句就完事，
+     * 启动的时候就得说（同 {@code docs/design/pitfalls.md} 第九条那类"看起来在跑"的坑）。
+     */
+    private void warnIfNobodyIsRegistered() {
+        if (!enabled || !configured()) {
+            return;
+        }
+        boolean anyoneRegistered = roles.values().stream().anyMatch(grant -> !grant.users().isEmpty());
+        if (!anyoneRegistered) {
+            log.warn("飞书通道已启用、凭据齐全，但 claw4j.channel.feishu.roles.*.users 一个人都没登记："
+                    + "通道会正常连上，而群里任何人提问都只会收到“没有权限”。"
+                    + "把提问者的 open_id 填进 application-local.yml（那条“未登记”的 WARN 里带着 sender=ou_...）。");
         }
     }
 

@@ -105,7 +105,7 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | --- | --- | --- |
 | `./mvnw verify` | 编译、测试、行覆盖率 ≥60%、打包 | 本地随时 |
 | ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程**（例外只有 `LocalProcessRunner` 一个类，ADR-0002） | `mvn test` |
-| 扫全仓的进程边界规则 | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
+| `ProcessBoundaryTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段 |
 | `./scripts/verify.sh` | 一条命令跑完上面几步：载入 `.env` → `clean verify`（含覆盖率红线）→ 用例数与**跳过数必须为 0** → 文件数/方法数上限（≤10 / ≤20） | 提交前 |
 | 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}` + `mcp-demo`，真模型走一遍三层与越权 | 改了装配或能力层之后 |

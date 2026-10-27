@@ -26,3 +26,14 @@ spring:
 logging:
   level:
     io.github.claw4j: DEBUG
+
+claw4j:
+  channel:
+    feishu:
+      # 谁能用飞书通道：把提问那个人的 open_id 填在这里。角色（可看哪些表、能做哪些动作）
+      # 仍然只在 application.yml 里写一份，这里只补"人"——两处写同一份授权，早晚不一致。
+      # 必须写在本文件而不是仓库那份 application.yml：open_id 是真实的人，不该入库。
+      # 没填时通道照样连得上，但任何人提问都只会收到"没有权限"（日志里有带 sender=ou_... 的 WARN）。
+      roles:
+        read-only:
+          users: ["ou_xxxxxxxxxxxxxxxx"]

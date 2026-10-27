@@ -11,7 +11,7 @@
 - [x] ADR-0010 里引用的架构测试类名与现存类一致（`ChannelArchitectureTest` / `ToolsArchitectureTest`
       这类旧名按现状改正）
 - [x] ADR-0009 补一条实现记录：3 秒 ACK、按 `eventId` 去重、主动回推各落在哪个类，附实测证据
-- [x] `guardrails.md` 的偏差表加一行：飞书 SDK 绑定层没有单测，覆盖靠 `feishu-live`，
+- [x] `guardrails.md` 的偏差表加一行：飞书 SDK 绑定层没有单测，覆盖只能靠起一次应用手验，
       并写明补偿是什么、记在哪张票（照"两类沙箱都没有网络隔离"那几行的写法）
 - [x] 若 README 里有通道清单，同步加一行；**不新增解释性段落**（README 是给外部用户的）
 
@@ -39,11 +39,11 @@
 回调里绝不抛异常）。
 
 **guardrails**：偏差表新增一行——`channel.feishu.sdk` 六个类不写单测，channel 行覆盖率
-82.9% → 61.0%；补偿只有装配层 6 条，**真链路用例还没有**，补法打 `feishu-live` tag。
+82.9% → 61.0%；补偿只有装配层那几条，**真链路没有自动化守着**，只能带凭据起一次应用手验。
 
 **README**：通道清单那一行原本就有（模块表里 `claw4j-channel` 写着"HTTP+SSE、飞书长连接"），
-真正缺的是配置表——新增 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 一行，写清"两个都配才装配、缺一个退让"
-与"打 fat jar 要带 `-Pchannel-feishu`"。没有新增解释性段落。
+真正缺的是配置表——新增 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 一行，写清"两个都配才装配、缺一个退让"，
+不写构建参数（`oapi-sdk` 是普通依赖，打 fat jar 不必带任何开关）。没有新增解释性段落。
 
 ### 顺带修掉的同类漂移（一句话能说清、不涉及判断的那种）
 

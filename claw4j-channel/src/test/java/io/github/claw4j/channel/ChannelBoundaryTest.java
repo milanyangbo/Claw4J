@@ -28,17 +28,21 @@ class ChannelBoundaryTest {
                     .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.capability..");
 
     /**
-     * 入站调度那一层不许碰 SDK。
+     * 入站调度那一层不依赖任何外部实现，飞书 SDK 自然也在内。
      *
-     * <p>包名写的是 {@code channel.feishu} 而不是 {@code channel.feishu..}：SDK 绑定放在子包
-     * {@code channel.feishu.sdk}，它当然要用 {@code com.larksuite} 的类型。分界线就是这条规则——
-     * 一旦有人图省事把 SDK 的 {@code Event} 直接传进调度层，默认构建里那十几条用例会先编译不过，
-     * 而那时他改的方向通常是"给测试也塞 SDK"——那样"入站不等 Agent"就再也测不了了。
+     * <p>这里刻意<b>不写厂商包名</b>。写具体包名有两种静默失效：名字写错一位，规则永远匹配不到任何类，
+     * 绿的；SDK 哪天换了包名，同一句话又变回空规则。而这类规则失效不会报错，只会让人以为"有东西守着"。
+     * 反过来写成"除了 JDK、日志、自家代码，谁也不许依赖"，就不必跟着谁的包名走。
+     *
+     * <p>范围写的是 {@code channel.feishu} 而不是 {@code channel.feishu..}：SDK 绑定放在子包
+     * {@code channel.feishu.sdk}，它当然要用 SDK 的类型。子包由下一条规则单独拦，两条合起来才是分界——
+     * 调度层既碰不到 SDK，也拿不到自己那个 sdk 子包里的翻译类。
      */
     @ArchTest
-    static final ArchRule dispatchLayerDoesNotTouchTheSdk =
+    static final ArchRule dispatchLayerDependsOnNothingButItsOwnContracts =
             noClasses().that().resideInAPackage("io.github.claw4j.channel.feishu")
-                    .should().dependOnClassesThat().resideInAPackage("com.larksuite..");
+                    .should().dependOnClassesThat().resideOutsideOfPackages(
+                            "java..", "org.slf4j..", "io.github.claw4j..");
 
     /**
      * 调度层也不许反过来依赖自己那个 SDK 子包——这条比上一条更容易被绕过。

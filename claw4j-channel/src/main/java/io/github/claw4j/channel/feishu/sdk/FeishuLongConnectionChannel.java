@@ -32,9 +32,15 @@ public class FeishuLongConnectionChannel implements ChatChannel {
 
     private static final Logger log = LoggerFactory.getLogger(FeishuLongConnectionChannel.class);
 
-    /** 认不出消息时的答复。说清"能怎么问"，比回一句"不支持"有用。 */
-    static final String UNSUPPORTED_REPLY =
-            "我目前只认文字提问：直接把问题打在消息里就行（例如「上周华东区成交额多少」）。";
+    /**
+     * 翻不出来的消息回什么。
+     *
+     * <p>刻意不点具体原因：翻不出来的情形有三种（图片/富文本、只有 @ 没有正文、事件里缺发送者），
+     * 而这一层只知道"翻不出来"。写死一个原因会在另外两种情形上说错话——说错原因比只说"处理不了"更糟，
+     * 用户会照着错的原因去改自己的操作。
+     */
+    static final String CANNOT_HANDLE_REPLY =
+            "这条消息我没法处理：把问题直接打成文字发给我就行（例如「上周华东区成交额多少」）。";
 
     private final FeishuChannelProperties properties;
 
@@ -107,7 +113,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         try {
             Optional<FeishuInboundEvent> inbound = translator.translate(event);
             if (inbound.isEmpty()) {
-                replyUnsupported(event);
+                replyCannotHandle(event);
                 return;
             }
             dispatcher.accept(inbound.get());
@@ -116,17 +122,17 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         }
     }
 
-    /** 翻不出来的消息（图片、富文本、或只有 @ 没有正文）也要回一句，群里的沉默分不清"没收到"和"不会"。 */
-    private void replyUnsupported(P2MessageReceiveV1 event) {
+    /** 翻不出来的消息也要回一句：群里的沉默分不清"没收到"和"不会"。 */
+    private void replyCannotHandle(P2MessageReceiveV1 event) {
         String chatId = chatIdOf(event);
         if (chatId == null) {
             log.warn("翻不出来的飞书事件里连 chat_id 都没有，只能记日志");
             return;
         }
         try {
-            replySender.send(chatId, UNSUPPORTED_REPLY);
+            replySender.send(chatId, CANNOT_HANDLE_REPLY);
         } catch (RuntimeException failure) {
-            log.error("回推'只认文字'失败：chatId={}", chatId, failure);
+            log.error("回推'处理不了'失败：chatId={}", chatId, failure);
         }
     }
 

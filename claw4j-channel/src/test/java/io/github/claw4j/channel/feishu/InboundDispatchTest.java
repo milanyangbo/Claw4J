@@ -301,6 +301,20 @@ class InboundDispatchTest {
         assertEquals(300, rows, "切的是显示方式，不能少掉任何一行");
     }
 
+    @Test
+    @DisplayName("表头自己就超了、块里又没有数据行：切不出更小的段也要发出去，不能让整段回答变成一句“处理失败”")
+    void oversizedHeaderWithoutRowsIsStillDelivered() {
+        String header = "| " + "列".repeat(4100) + " |";
+        String divider = "| --- |";
+        agent.answeringWith(header + "\n" + divider);
+
+        dispatcher(Runnable::run).accept(event(EVENT_ID, "问题"));
+
+        List<String> texts = sender.texts();
+        assertEquals(1, texts.size(), "切不出更小的段，就整块发一条，不该凭空多出一条或变成失败提示");
+        assertTrue(texts.get(0).contains(header), "整段内容被丢了：" + texts.get(0).length());
+    }
+
     // ---------------------------------------------------------------- 装配
     private InboundDispatcher dispatcher(Executor executor) {
         return new InboundDispatcher(agent, executor, this::lookup, sender);

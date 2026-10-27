@@ -8,9 +8,12 @@ import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.util.function.Consumer;
 
@@ -26,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>唯一的正例（凭据齐全 → 真连上）不写在这里：它会在跑测试时去连飞书，
  * 让回归依赖网络与一个真实应用的状态。
  */
+@ExtendWith(OutputCaptureExtension.class)
 class FeishuChannelWiringTest {
 
     private static final String APP_ID = "claw4j.channel.feishu.app-id";
@@ -108,8 +112,27 @@ class FeishuChannelWiringTest {
                         .getFailure().hasRootCauseMessage(DUPLICATE_MESSAGE));
     }
 
-    /** 通道只需要一个 AgentPort 在场；这一份用例不验它做什么。 */
-    private static final class NoopAgent implements AgentPort {
+    @Test
+    @DisplayName("凭据齐了、roles 里一个人都没登记：启动日志里就要说，别让“全员没有权限”看起来像服务没起来")
+    void nobodyRegisteredIsCalledOutAtStartup(CapturedOutput output) {
+        FeishuChannelProperties properties = new FeishuChannelProperties();
+        properties.setAppId("cli_x");
+        properties.setAppSecret("secret");
+
+        properties.validate();
+
+        assertThat(output).contains("一个人都没登记");
+    }
+
+    @Test
+    @DisplayName("没配凭据时不吵：只跑 HTTP 的部署不该看到飞书通道的告警")
+    void unconfiguredChannelSaysNothing(CapturedOutput output) {
+        new FeishuChannelProperties().validate();
+
+        assertThat(output).doesNotContain("一个人都没登记");
+    }
+
+    /** 通道只需要一个 AgentPort 在场；这一份用例不验它做什么。 */    private static final class NoopAgent implements AgentPort {
 
         @Override
         public OutboundMessage reply(InboundMessage message) {

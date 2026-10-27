@@ -49,10 +49,10 @@ Consequences 里"3 秒超时重推"那条展开的几件事，各自落在哪个
 | 约束 | 落点 | 证据 |
 | --- | --- | --- |
 | 收到事件立刻 ACK | `channel.feishu.sdk.FeishuLongConnectionChannel#onMessage` 只做"翻译 → 交给 `InboundDispatcher#accept`"；`accept` 只去重、认人、投任务，方法返回即 ACK | 有测试守着：`accept` 返回时 Agent 一次都没被调；Agent 卡住不放时 `accept` 照样立刻返回（若它等 Agent，这条用例会挂在超时上） |
-| 异步编排、不拖住事件线程 | `InboundDispatcher` 注入的 `Executor`（装配里给它单独的 `feishuExecutor`） | `#twoEventsRunSideBySide`（两条事件都进到 Agent 里、谁也没被串行挡住）、`#overloadedPoolTellsTheUserInsteadOfDropping` |
-| 按 `eventId` 去重 | `InboundDispatcher` 内的 `SeenEventIds`：进程内 `ConcurrentHashMap`，TTL 10 分钟，**先记再跑** | `#duplicateDeliveryRunsOnceButStillAcks`（重推仍 ACK、Agent 只跑一次、群里一条回答）、`#redeliveryAfterTheWindowRunsAgain` |
-| 主动回推 | `channel.feishu.sdk.FeishuOpenApiReplySender`：`im().message().create`，`receive_id_type=chat_id`、`msg_type=text` | `#agentFailureStillPutsAReasonInTheChat`、`#blankAnswerIsNotSilentlyDropped` |
-| 超长回答分段 | `channel.feishu.MessageSplitter`：按 4000 字符切块，代码块每段重放围栏（带语言标记）、表格每段重放表头 | `#longAnswerIsDeliveredInOrderWithoutBreakingBlocks`、`#oversizedCodeBlockKeepsFencesBalanced`、`#oversizedTableRepeatsTheHeaderInEveryPart` |
+| 异步编排、不拖住事件线程 | `InboundDispatcher` 注入的 `Executor`（装配里给它单独的 `feishuExecutor`） | 有测试守着：两条事件都进到 Agent 里、谁也没被串行挡住；池满时用户当场收到一句"稍后再试"，而不是干等 |
+| 按 `eventId` 去重 | `InboundDispatcher` 内的 `SeenEventIds`：进程内 `ConcurrentHashMap`，TTL 10 分钟，**先记再跑** | 有测试守着：重推仍然 ACK、Agent 只跑一次、群里只有一条回答；过了窗口同一个 `eventId` 会重新处理，表不会只增不减 |
+| 主动回推 | `channel.feishu.sdk.FeishuOpenApiReplySender`：`im().message().create`，`receive_id_type=chat_id`、`msg_type=text` | 有测试守着：Agent 抛异常时群里出现的是一条说清失败的消息；模型给空内容时也有占位，不静默丢弃 |
+| 超长回答分段 | `channel.feishu.MessageSplitter`：按 4000 字符切块，代码块每段重放围栏（带语言标记）、表格每段重放表头 | 有测试守着：段序不变、每段不超上限、围栏成对、表格每段都有表头、原文一行不少 |
 | 认人 | `FeishuChannelProperties#resolve`（`roles.*.users` 里填 `open_id`）；认不出回"没有权限" | 有测试守着：未登记的 `open_id` 回"没有权限"；同一个人登记两个角色在启动时就失败 |
 
 三条实现上的取舍，写在这里免得下次重新讨论：

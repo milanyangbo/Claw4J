@@ -77,6 +77,13 @@ final class MessageSplitter {
                 current.setLength(0);
             }
             List<String> pieces = splitOversized(block, limit);
+            if (pieces.isEmpty()) {
+                // 块里没有正文可切（只有表头与分隔线、或只有一对围栏），却自己超了上限。
+                // 这时没有"更小的切点"，原样发这一段：平台会拒收这一条，但别的段照常送达。
+                // 反过来在这里抛出去，调用方只会回一句"处理失败"，整段回答全军覆没。
+                parts.add(rendered);
+                continue;
+            }
             parts.addAll(pieces.subList(0, pieces.size() - 1));
             current.append(pieces.get(pieces.size() - 1));
         }
