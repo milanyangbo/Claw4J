@@ -93,7 +93,10 @@ curl -s -X POST http://localhost:8080/api/chat \
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用同一个变量 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 否 | 飞书自建应用凭据。两个都配才装配长连接通道，缺一个整个通道退让、HTTP 照常 |
 
-角色到权限的映射在 `claw4j.channel.http.roles` 里配置；模型主备顺序启动时打在日志里。
+角色到权限的映射在 `claw4j.channel.http.roles` 里配置；飞书那边只登记"谁是谁"
+（`claw4j.channel.feishu.roles.*.users`），授权共用这一份，角色名必须与它同名。
+模型主备顺序启动时打在日志里。其余可选的覆盖项（数据库地址、缓存开关与阈值、两个通道的开关）
+见仓库根的 `.env.example`。
 
 ## 用法
 
