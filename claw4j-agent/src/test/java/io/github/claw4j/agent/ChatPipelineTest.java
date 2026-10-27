@@ -336,9 +336,16 @@ class RecordingTool implements ToolCallback {
     private final AtomicInteger calls = new AtomicInteger();
 
     RecordingTool(String name, String result) {
+        this(name, result, "测试工具 " + name);
+    }
+
+    /**
+     * 描述由调用方给：工具检索就是按描述匹配的，描述一样的话"检索选中了谁"根本无从验证。
+     */
+    RecordingTool(String name, String result, String description) {
         this.definition = ToolDefinition.builder()
                 .name(name)
-                .description("测试工具 " + name)
+                .description(description)
                 .inputSchema("{\"type\":\"object\"}")
                 .build();
         this.result = result;

@@ -5,22 +5,26 @@ import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import io.github.claw4j.agent.model.ModelConfiguration;
 
@@ -34,6 +38,7 @@ import io.github.claw4j.agent.model.ModelConfiguration;
  * 不必要求调用方把 io.github.claw4j.agent 加进组件扫描路径。
  */
 @AutoConfiguration
+@EnableConfigurationProperties(ToolSearchProperties.class)
 public class AgentAutoConfiguration {
 
     private static final String SYSTEM_PROMPT = """
@@ -52,13 +57,18 @@ public class AgentAutoConfiguration {
                                  ObjectProvider<ToolCallback> toolCallbacks,
                                  ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                  ObjectProvider<ObservationRegistry> observationRegistry,
-                                 ObjectProvider<MeterRegistry> meterRegistry) {
+                                 ObjectProvider<MeterRegistry> meterRegistry,
+                                 ObjectProvider<ToolIndex> toolIndex,
+                                 ToolSearchProperties toolSearch) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
+        List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
+                meterRegistry.getIfAvailable());
         // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
         // 拿到的是框架内建的那个，用的是 40/150 的默认值，这里定的预算根本不生效
-        // （细节见 ToolCallBudget 的类注释）。
-        var toolCallingAdvisor = ToolCallingAdvisor.builder()
-                .toolCallingManager(ToolCallBudget.toolCallingManager(observations));
+        // （细节见 ToolCallBudget 的类注释）。全塞与检索两条分支都从 ToolSearch 里过一遍，
+        // 预算因此只有一个落点。
+        var toolCallingAdvisor = ToolSearch.toolLoop(toolSearch, tools.size(),
+                toolIndex.getIfAvailable(), observations);
         return ChatClient.builder(chatModel, observations, null, null, toolCallingAdvisor)
                 .defaultSystem(SYSTEM_PROMPT)
                 // 容器里所有 Advisor 按 order 挂上来。脱敏、记忆后续都只是加一个 bean（ADR-0007）。
@@ -66,9 +76,37 @@ public class AgentAutoConfiguration {
                 .defaultAdvisors(advisors.orderedStream().toList())
                 // 工具同理：容器里所有来源都挂上，这里不点名任何工具类。
                 // 没有工具时是空数组，工具循环照常工作（只是无工具可调）。
-                .defaultToolCallbacks(collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                        meterRegistry.getIfAvailable()))
+                // 检索开着时这份清单不会被全塞进提示词：工具循环会先把它们索引进 ToolIndex，
+                // 只把"找工具"那一个交给模型，查到谁再注入谁。
+                .defaultToolCallbacks(tools)
                 .build();
+    }
+
+    /**
+     * 工具检索用的索引。默认是内存里的正则索引：把查询切成关键词，在工具名与描述里匹配。
+     *
+     * <p>选它而不是向量索引（{@code VectorToolIndex}）是因为这一版的判据是"提示词里的工具定义 token
+     * 降下来、选工具还不选错"，正则索引已经够回答这个问题，而且不需要 embedding 调用、
+     * 不新增一张表。换成 pgvector 时替换这个 bean 即可——装配那边只认 {@link ToolIndex}。
+     */
+    @Bean
+    @ConditionalOnMissingBean(ToolIndex.class)
+    public ToolIndex toolIndex() {
+        return new RegexToolIndex();
+    }
+
+    /**
+     * 检索工具自己的权限。
+     *
+     * <p>它是一层"找工具"的元工具：碰不到任何表、也不执行业务动作，所以只要有 {@code read}
+     * 动作就放行，不为此新增一个动作名（新增动作名意味着所有角色配置都要改一遍才能检索）。
+     *
+     * <p><b>检索不等于授权</b>：它返回的只是工具名。模型拿到名字之后真调哪一个，
+     * 仍然逐个过 {@link AuthorizationAdvisor} 的登记表——查得到但调不动，是这条链上正确的姿势。
+     */
+    @Bean
+    public ToolPermissionRegistry toolSearchPermission() {
+        return ToolPermissionRegistry.of(Map.of(ToolSearch.TOOL_NAME, ToolPermission.read()));
     }
 
     /**

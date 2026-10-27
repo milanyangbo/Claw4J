@@ -53,6 +53,18 @@
             <artifactId>spring-ai-client-chat</artifactId>
         </dependency>
         <!--
+          工具检索（M3-06）：工具多到塞不进提示词时，让模型先找工具再调。
+          刻意不用 starter：`spring-ai-starter-tool-search-advisor` 的自动配置会往
+          ChatClient 里塞它自己的工具循环，跟我们按预算建的那个并存——两个循环里
+          只有一个真的在用，另一个的预算与鉴权落点全是摆设。装配由 ToolSearch 自己决定。
+          这个 jar 顺带带进 `spring-ai-tool-search-tool`（ToolIndex / ToolSearchTool /
+          三种索引实现），Lucene 与 vector-store 在那边都是 optional，所以这里只有正则实现可用。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-tool-search-advisor</artifactId>
+        </dependency>
+        <!--
           主模型供应商（ADR-0006）。故意用纯模型包而不是 starter：
           starter 带来的自动配置条件是 spring.ai.model.chat=deepseek 且 matchIfMissing=true，
           跟 api key 无关，缺 key 时照样激活并抛异常。这里由 ModelConfiguration 自己按
