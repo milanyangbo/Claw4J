@@ -18,6 +18,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 
 import java.io.IOException;
@@ -192,9 +193,12 @@ class SubagentDelegationTest {
         RecordingTool lookup = new RecordingTool("lookup", "原始行 128400");
         AtomicInteger childCalls = new AtomicInteger();
         FixedChatModel child = new FixedChatModel(
-                prompt -> childCalls.getAndIncrement() == 0
-                        ? ChatPipelineTest.requestTool("lookup", "{}")
-                        : ChatPipelineTest.answer("结论：128400"),
+                prompt -> switch (childCalls.getAndIncrement()) {
+                    // 子那一侧也是"先检索、再调用"：它看得见的工具与父一样是渐进披露的
+                    case 0 -> ChatPipelineTest.requestTool(ToolSearch.TOOL_NAME, "{\"query\":\"lookup\"}");
+                    case 1 -> ChatPipelineTest.requestTool("lookup", "{}");
+                    default -> ChatPipelineTest.answer("结论：128400");
+                },
                 List.of());
         SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")),
                 runner(child, List.of(lookup), readsEverything("lookup")));
@@ -204,7 +208,9 @@ class SubagentDelegationTest {
         String result = delegation.call("{\"subagent\":\"alpha\",\"task\":\"上周华东成交额\"}", identity);
 
         assertThat(result).isEqualTo("结论：128400").doesNotContain("原始行");
-        assertThat(child.prompts()).hasSize(2);
+        assertThat(child.prompts())
+                .as("三次模型调用：检索 → 查到工具后调用 → 给结论；中间两轮的明细都不回父")
+                .hasSize(3);
         String childPrompt = child.prompts().getFirst().getInstructions().stream()
                 .map(org.springframework.ai.chat.messages.Message::getText)
                 .reduce("", (left, right) -> left + "\n" + right);
@@ -219,8 +225,11 @@ class SubagentDelegationTest {
     @DisplayName("委派不提权：子 Agent 调的工具仍按父身份鉴权，越权时工具不执行")
     void delegatedToolStillUsesTheParentIdentity() {
         RecordingTool lookup = new RecordingTool("lookup", "128400");
+        AtomicInteger turn = new AtomicInteger();
         FixedChatModel child = new FixedChatModel(
-                prompt -> ChatPipelineTest.requestTool("lookup", "{}"), List.of());
+                prompt -> turn.getAndIncrement() == 0
+                        ? ChatPipelineTest.requestTool(ToolSearch.TOOL_NAME, "{\"query\":\"lookup\"}")
+                        : ChatPipelineTest.requestTool("lookup", "{}"), List.of());
         Principal guest = Principal.of("guest-1", "guest", Set.of("region"), Set.of("read"));
         SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")),
                 runner(child, List.of(lookup),
@@ -263,7 +272,9 @@ class SubagentDelegationTest {
                 beans.getBeanProvider(ToolCallbackProvider.class),
                 beans.getBeanProvider(ObservationRegistry.class),
                 beans.getBeanProvider(MeterRegistry.class),
-                new AuthorizationAdvisor(List.of()));
+                new AuthorizationAdvisor(List.of()),
+                new RegexToolIndex(),
+                ToolSearchProperties.defaults());
 
         assertThat(task.getToolDefinition().name()).isEqualTo(SubagentDelegation.TOOL_NAME);
         assertThat(task.getToolDefinition().description()).contains("alpha").doesNotContain("先查数");
@@ -333,8 +344,15 @@ class SubagentDelegationTest {
     }
 
     private SubagentRunner runner(ChatModel model, List<ToolCallback> tools, ToolPermissionRegistry registry) {
+        // 与装配里那条一致：检索工具自己按 read 放行（AgentAutoConfiguration.toolSearchPermission）。
+        // 少这一条时，子 Agent 的第一步"找工具"就会被自己的鉴权挡掉——
+        // 那不是鉴权在做该做的事，是登记表漏了一项。
+        ToolPermissionRegistry searchTool = ToolPermissionRegistry.of(
+                Map.of(ToolSearch.TOOL_NAME, ToolPermission.read()));
         return new SubagentRunner(model, ObservationRegistry.NOOP, () -> tools,
-                new AuthorizationAdvisor(List.of(registry)));
+                new AuthorizationAdvisor(List.of(registry, searchTool)),
+                new RegexToolIndex(),
+                ToolSearchProperties.defaults());
     }
 
     private static SubagentDelegation delegation(List<SubagentDefinition> definitions, SubagentRunner runner) {

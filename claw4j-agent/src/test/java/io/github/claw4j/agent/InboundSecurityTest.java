@@ -10,12 +10,10 @@ import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
-import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
@@ -257,9 +255,7 @@ class InboundSecurityTest {
     }
 
     private static ChatClient client(ChatModel model, List<Advisor> advisors, List<ToolCallback> tools) {
-        return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
-                        ToolCallingAdvisor.builder()
-                                .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+        return ChatPipelineTest.clientBuilder(model)
                 .defaultAdvisors(advisors)
                 .defaultToolCallbacks(tools)
                 .build();

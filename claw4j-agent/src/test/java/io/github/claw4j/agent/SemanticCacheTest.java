@@ -11,11 +11,9 @@ import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingRequest;
@@ -341,9 +339,7 @@ class SemanticCacheTest {
         Fixture() {
             CacheAdvisor advisor = new CacheAdvisor(cache, embedding, CacheProperties.defaults(),
                     List.of(permissionRegistry()), registry);
-            ChatClient chat = ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
-                            ToolCallingAdvisor.builder()
-                                    .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+            ChatClient chat = ChatPipelineTest.clientBuilder(model)
                     .defaultAdvisors(advisor)
                     .build();
             this.port = new ChatClientAgentPort(chat);

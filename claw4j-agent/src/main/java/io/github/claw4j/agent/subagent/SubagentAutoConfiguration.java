@@ -1,6 +1,7 @@
 package io.github.claw4j.agent.subagent;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
+import io.github.claw4j.agent.ToolSearchProperties;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -8,6 +9,7 @@ import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -56,7 +58,11 @@ public class SubagentAutoConfiguration {
                                              ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                              ObjectProvider<ObservationRegistry> observationRegistry,
                                              ObjectProvider<MeterRegistry> meterRegistry,
-                                             AuthorizationAdvisor authorizationAdvisor) {
+                                             AuthorizationAdvisor authorizationAdvisor,
+                                             // 工具循环只有一种（检索），它要索引与检索参数；
+                                             // 两个 bean 都由 AgentAutoConfiguration 提供。
+                                             ToolIndex toolIndex,
+                                             ToolSearchProperties toolSearch) {
         var definitions = SubagentCatalog.load(Path.of(directory));
         var observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         var runner = new SubagentRunner(chatModel, observations,
@@ -70,7 +76,9 @@ public class SubagentAutoConfiguration {
                         .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(
                                 callback.getToolDefinition().name()))
                         .toList(),
-                authorizationAdvisor);
+                authorizationAdvisor,
+                toolIndex,
+                toolSearch);
         return new SubagentDelegation(definitions, runner);
     }
 

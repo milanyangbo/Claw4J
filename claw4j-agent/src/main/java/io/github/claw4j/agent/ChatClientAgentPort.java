@@ -83,7 +83,7 @@ public class ChatClientAgentPort implements AgentPort {
     /**
      * 把 Principal 与会话 id 交给 Advisor 链：走 Advisor 的上下文，不走 ThreadLocal。
      *
-     * <p>上下文会跟着 {@code ChatClientRequest} 走完工具循环的每一轮（{@code ToolCallingAdvisor}
+     * <p>上下文会跟着 {@code ChatClientRequest} 走完工具循环的每一轮（工具循环
      * 每轮都把 {@code context} 原样带下去），也跟着 Reactor 的订阅走；
      * ThreadLocal 在"流式 + 换线程"的组合下会掉，而掉身份的失败姿势是放行。
      *

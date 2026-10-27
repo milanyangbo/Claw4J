@@ -4,7 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
@@ -22,7 +21,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * 出站之前的 PII 脱敏（ADR-0007）。与鉴权是两件事：鉴权管"能不能查"，这里管"查到了能不能原样说出去"。
  *
- * <p>order 排在工具调用循环**外面**（小于 {@link ToolCallingAdvisor#DEFAULT_ORDER}），
+ * <p>order 排在工具调用循环**外面**（小于 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER}），
  * 于是整通对话只在出站前做一次。放进去也不是不行，但那会连**工具结果**和模型中间轮次的
  * 话一起打码：模型要靠原始值判断"这个号码是哪一单的"，打掉了它就没得判了。
  * 脱敏是给人看的最后一道工序，不是给模型看的。
@@ -36,7 +35,7 @@ public class PiiRedactionAdvisor implements CallAdvisor, StreamAdvisor {
     private static final Logger log = LoggerFactory.getLogger(PiiRedactionAdvisor.class);
 
     /**
-     * 工具循环之外、整通对话只跑一次。比 {@link ToolCallingAdvisor#DEFAULT_ORDER} 小，
+     * 工具循环之外、整通对话只跑一次。比 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER} 小，
      * 也就是排在它前面（链按 order 升序）。
      *
      * <p><b>这个值的下限由会话记忆定</b>：链的 after 按 order 降序跑，order 越大越先收尾。

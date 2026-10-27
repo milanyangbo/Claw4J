@@ -201,9 +201,7 @@ class ChatPipelineTest {
                 .build()
                 .getToolCallbacks()[0];
 
-        ChatClient chat = ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
-                        ToolCallingAdvisor.builder()
-                                .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+        ChatClient chat = clientBuilder(model)
                 .defaultSystem("你是业务助手。回答业务问题前必须先调用 querySales 查数，不要凭空作答。")
                 .defaultAdvisors(new AuthorizationAdvisor(List.of(
                         ToolPermissionRegistry.of(Map.of("querySales",
@@ -242,12 +240,24 @@ class ChatPipelineTest {
     }
 
     private static ChatClient client(ChatModel model, List<Advisor> advisors, List<ToolCallback> tools) {
-        return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
-                        ToolCallingAdvisor.builder()
-                                .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+        return clientBuilder(model)
                 .defaultAdvisors(advisors)
                 .defaultToolCallbacks(tools)
                 .build();
+    }
+
+    /**
+     * 测试脚手架：这一层验的是 Advisor 与调用预算，不是"工具怎么被发现"。
+     * 所以用框架的普通工具循环（工具全塞），免得每条用例都得先演一遍检索回合，
+     * 把要验的东西埋在一堆与它无关的消息里。
+     *
+     * <p>生产只有一条路：{@link ToolSearch#toolLoop}。那份行为（第一轮只给检索工具、
+     * 查到谁再注入谁、缺会话 id 直接抛）由 {@code ToolSearchTest} 各自钉住。
+     */
+    static ChatClient.Builder clientBuilder(ChatModel model) {
+        return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
+                ToolCallingAdvisor.builder()
+                        .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)));
     }
 
     private static InboundMessage message(String chatId, String text) {

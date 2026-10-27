@@ -9,8 +9,9 @@ import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.ai.tool.toolsearch.ToolReference;
@@ -19,6 +20,7 @@ import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
+import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,30 +31,45 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 工具检索：工具多到塞不进提示词时，先给模型一个"找工具"的工具。
+ * 工具循环：模型永远只先看见"找工具"那一个，查到谁再给谁。
  *
  * <p>断言的对象是**模型这一轮看到的工具清单**，不是"配置里有一个索引对象"。
- * 这件事的成本就在那份清单上——清单没变短，检索就什么都没做。
+ * 这件事的成本与价值都在那份清单上——清单没变短，检索就什么都没做；
+ * 清单里少了本该有的工具，就是把能力藏丢了。
+ *
+ * <p>这里也就只剩这一条路：没有"工具少就全塞"的分支，所以第一条用例专门钉"只有一个工具时
+ * 照样先检索"——那条分支一旦被加回来，它先红。
  */
 class ToolSearchTest {
 
     @Test
-    @DisplayName("工具没超过阈值时全塞：不为了省 token 多换一次模型往返")
-    void belowThresholdStuffsEveryTool() {
-        List<ToolCallback> tools = noisyTools(3);
-        FixedChatModel model = new FixedChatModel("好的");
+    @DisplayName("只有一个工具也要先检索：模型看见的清单不随工具数量改变")
+    void singleToolIsStillSearchedFirst() {
+        RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
+        AtomicInteger turn = new AtomicInteger();
+        FixedChatModel model = new FixedChatModel(prompt -> switch (turn.getAndIncrement()) {
+            case 0 -> ChatPipelineTest.requestTool(ToolSearch.TOOL_NAME, "{\"query\":\"成交额\"}");
+            case 1 -> ChatPipelineTest.requestTool("lookup", "{}");
+            default -> ChatPipelineTest.answer("查到了 128400");
+        });
 
-        port(model, tools, new ToolSearchProperties(20, 5)).reply(message("上周华东成交额")).text();
+        String text = port(model, List.of(lookup), ToolSearchProperties.defaults())
+                .reply(message("上周华东成交额")).text();
 
         assertThat(toolNames(model.prompts().getFirst()))
-                .as("阈值以内应该一个不少地列出来，也不该凭空多一个检索工具")
-                .hasSize(3)
-                .doesNotContain(ToolSearch.TOOL_NAME);
+                .as("第一轮只该看见检索工具：这就是渐进式披露，与工具总数无关")
+                .containsExactly(ToolSearch.TOOL_NAME);
+        assertThat(toolNames(model.prompts().get(1)))
+                .as("检索回来的工具要进清单，检索工具自己也要留着（还可能要继续找）")
+                .contains(ToolSearch.TOOL_NAME, "lookup")
+                .hasSize(2);
+        assertThat(lookup.calls()).isEqualTo(1);
+        assertThat(text).isEqualTo("查到了 128400");
     }
 
     @Test
-    @DisplayName("超过阈值先只给「找工具」：检索到之后那个工具才进清单，并且真的被执行")
-    void aboveThresholdSearchesThenCallsTheFoundTool() {
+    @DisplayName("一堆工具里检索挑得出来：找到之后才进清单，并且真的被执行")
+    void searchPicksTheRightToolOutOfMany() {
         RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
         List<ToolCallback> tools = withNoise(lookup, 20);
         AtomicInteger turn = new AtomicInteger();
@@ -62,14 +79,14 @@ class ToolSearchTest {
             default -> ChatPipelineTest.answer("查到了 128400");
         });
 
-        String text = port(model, tools, new ToolSearchProperties(20, 5))
+        String text = port(model, tools, ToolSearchProperties.defaults())
                 .reply(message("上周华东成交额")).text();
 
         assertThat(toolNames(model.prompts().get(0)))
                 .as("第一轮只该看见检索工具：这一份清单就是省下来的 token")
                 .containsExactly(ToolSearch.TOOL_NAME);
         assertThat(toolNames(model.prompts().get(1)))
-                .as("检索回来的工具要进清单，检索工具自己也要留着（还可能要继续找）")
+                .as("20 个占位工具一个都不该进来：检索按描述匹配，只有 lookup 对得上")
                 .contains(ToolSearch.TOOL_NAME, "lookup")
                 .hasSize(2);
         assertThat(lookup.calls()).isEqualTo(1);
@@ -90,41 +107,24 @@ class ToolSearchTest {
                 // 只登记检索工具自己。secretTool 谁也调不动——它能不能调由登记表决定，
                 // 跟"检索得到"没有关系。
                 ToolPermissionRegistry.of(Map.of(ToolSearch.TOOL_NAME, ToolPermission.read())),
-                new ToolSearchProperties(20, 5))).reply(message("机密档案")).text();
+                ToolSearchProperties.defaults())).reply(message("机密档案")).text();
 
         assertThat(secret.calls()).as("越权的工具一次都不能被执行").isZero();
         assertThat(text).contains(AuthorizationAdvisor.DENIAL_PREFIX);
     }
 
-    @Test
-    @DisplayName("阈值 0 表示永远走检索：只剩一个工具也先让模型找一次")
-    void zeroThresholdAlwaysSearches() {
-        RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
-        AtomicInteger turn = new AtomicInteger();
-        FixedChatModel model = new FixedChatModel(prompt -> switch (turn.getAndIncrement()) {
-            case 0 -> ChatPipelineTest.requestTool(ToolSearch.TOOL_NAME, "{\"query\":\"成交额\"}");
-            case 1 -> ChatPipelineTest.requestTool("lookup", "{}");
-            default -> ChatPipelineTest.answer("查到了 128400");
-        });
-
-        port(model, List.of(lookup), new ToolSearchProperties(0, 5)).reply(message("上周华东成交额")).text();
-
-        assertThat(toolNames(model.prompts().getFirst())).containsExactly(ToolSearch.TOOL_NAME);
-        assertThat(lookup.calls()).isEqualTo(1);
-    }
-
     /**
-     * 会话 id 不在上下文里时，检索这条路没有"退化成全塞"的兜底——它直接抛。
+     * 会话 id 不在上下文里时，这条路没有"退化成全塞"的兜底——它直接抛。
      *
      * <p>这条钉的是 {@code ChatClientAgentPort} 里那个 {@code chat_memory_conversation_id} 参数：
-     * 有人以为它只服务会话记忆、删掉也没事，而实际后果是"工具超过阈值之后每一次对话都失败"。
+     * 有人以为它只服务会话记忆、删掉也没事，而实际后果是每一次对话都失败。
      */
     @Test
     @DisplayName("上下文里没有会话 id 时直接报错，不会静默退化成全塞")
     void missingSessionIdFailsLoudly() {
         ChatClient client = ChatClient.builder(new FixedChatModel("好的"),
                         ObservationRegistry.NOOP, null, null,
-                        ToolSearch.toolLoop(new ToolSearchProperties(0, 5), 1, new RegexToolIndex(),
+                        ToolSearch.toolLoop(ToolSearchProperties.defaults(), new RegexToolIndex(),
                                 ObservationRegistry.NOOP))
                 .defaultToolCallbacks(new RecordingTool("lookup", "128400", "查询销售成交额"))
                 .build();
@@ -135,29 +135,60 @@ class ToolSearchTest {
     }
 
     /**
-     * 阈值没配的时候必须落回 20，而不是 0。
+     * 一次检索返回几个候选，夹在框架约定的 1–10 之间。
      *
-     * <p>这条守的是配置绑定的一个坑：键缺失时原始类型会被填成 0，而 0 在我们这里的意思是
-     * "永远走检索"。字段用 {@code Integer} 才分得开这两件事。
+     * <p>这条守的是"配错一个数会静默变成另一件事"：0 或负数会让检索空手而归，
+     * 大于 10 则被框架自己截断，两种都不该让调用方以为配置生效了。
      */
     @Test
-    @DisplayName("配置绑定：键缺失落回 20，写 0 才是「永远检索」")
-    void missingThresholdIsNotZero() {
-        assertThat(ToolSearchProperties.defaults().maxToolsInPrompt())
-                .isEqualTo(ToolSearchProperties.DEFAULT_MAX_TOOLS_IN_PROMPT);
+    @DisplayName("max-results 越界夹到 1–10，键缺失落回 5")
+    void maxResultsIsClamped() {
+        assertThat(ToolSearchProperties.defaults().maxResults())
+                .as("没配时是 5")
+                .isEqualTo(ToolSearchProperties.DEFAULT_MAX_RESULTS);
+        assertThat(new ToolSearchProperties(3).maxResults()).isEqualTo(3);
+        assertThat(new ToolSearchProperties(99).maxResults())
+                .as("框架写的是 1–10，超出的部分由它兜底，这里提前夹住")
+                .isEqualTo(10);
 
         new ApplicationContextRunner()
                 .withUserConfiguration(BindingOnly.class)
-                .run(context -> assertThat(context.getBean(ToolSearchProperties.class).maxToolsInPrompt())
-                        .as("没写这个键 = 用默认值，不是 0")
-                        .isEqualTo(ToolSearchProperties.DEFAULT_MAX_TOOLS_IN_PROMPT));
+                .run(context -> assertThat(context.getBean(ToolSearchProperties.class).maxResults())
+                        .as("没写这个键 = 用默认值")
+                        .isEqualTo(ToolSearchProperties.DEFAULT_MAX_RESULTS));
 
         new ApplicationContextRunner()
                 .withUserConfiguration(BindingOnly.class)
-                .withPropertyValues("claw4j.tool-search.max-tools-in-prompt=0")
-                .run(context -> assertThat(context.getBean(ToolSearchProperties.class).maxToolsInPrompt())
-                        .as("显式写 0 才是「永远检索」")
-                        .isZero());
+                .withPropertyValues("claw4j.tool-search.max-results=3")
+                .run(context -> assertThat(context.getBean(ToolSearchProperties.class).maxResults())
+                        .isEqualTo(3));
+    }
+
+    /**
+     * 流式路径走的是另一对钩子（{@code doInitializeLoopStream} / {@code doBeforeStream}）。
+     *
+     * <p>生产上真正的入口是 SSE：只给检索工具、追加那段提示词这两件事都发生在流式钩子上，
+     * 同步路径绿不能推出它绿。这里只钉两件事——第一轮的工具清单、提示词确实被追加了。
+     */
+    @Test
+    @DisplayName("流式路径同样先检索：SSE 上模型看到的也不是全部工具")
+    void streamPathAlsoUsesProgressiveDisclosure() {
+        RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
+        FixedChatModel model = new FixedChatModel(
+                prompt -> ChatPipelineTest.answer("同步路径不该被走到"),
+                prompt -> Flux.just(ChatPipelineTest.answer("查到了 128400")));
+
+        port(model, List.of(lookup), ToolSearchProperties.defaults())
+                .stream(message("上周华东成交额"), chunk -> {
+                });
+
+        Prompt first = model.prompts().getFirst();
+        assertThat(toolNames(first))
+                .as("流式第一轮同样只看得见检索工具")
+                .containsExactly(ToolSearch.TOOL_NAME);
+        assertThat(textsOf(first))
+                .as("检索提示词也要追加到流式的系统消息上，否则模型会说「我没有工具」")
+                .contains("空格分隔");
     }
 
     @Test
@@ -206,7 +237,7 @@ class ToolSearchTest {
                 // 与装配里那个 bean 同一条：检索工具自己按 read 放行
                 ToolPermissionRegistry.of(Map.of(ToolSearch.TOOL_NAME, ToolPermission.read())));
         return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
-                        ToolSearch.toolLoop(properties, tools.size(), index, ObservationRegistry.NOOP))
+                        ToolSearch.toolLoop(properties, index, ObservationRegistry.NOOP))
                 .defaultAdvisors(new AuthorizationAdvisor(registries))
                 .defaultToolCallbacks(tools)
                 .build();
@@ -218,6 +249,12 @@ class ToolSearchTest {
         return options.getToolCallbacks().stream()
                 .map(callback -> callback.getToolDefinition().name())
                 .toList();
+    }
+
+    private static String textsOf(Prompt prompt) {
+        return prompt.getInstructions().stream()
+                .map(Message::getText)
+                .reduce("", (left, right) -> left + "\n" + right);
     }
 
     private static InboundMessage message(String text) {
@@ -243,7 +280,7 @@ class ToolSearchTest {
         return List.copyOf(tools);
     }
 
-    /** 一个真工具 + 一堆占位工具，凑到超过阈值。 */
+    /** 一个真工具 + 一堆占位工具，凑到"工具很多"的样子。 */
     private static List<ToolCallback> withNoise(RecordingTool real, int noise) {
         List<ToolCallback> tools = new ArrayList<>(List.of(real));
         tools.addAll(noisyTools(noise));

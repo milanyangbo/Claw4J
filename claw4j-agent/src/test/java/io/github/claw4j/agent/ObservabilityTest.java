@@ -6,11 +6,9 @@ import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
@@ -138,9 +136,8 @@ class ObservabilityTest {
         AuthorizationAdvisor advisor = new AuthorizationAdvisor(
                 List.of(ToolPermissionRegistry.of(Map.of("querySales", ToolPermission.read("sales_order")))),
                 registry);
-        ChatClient chat = ChatClient.builder(
-                        new FixedChatModel(prompt -> ChatPipelineTest.requestTool("querySales", "{}")),
-                        ObservationRegistry.NOOP, null, null, ToolCallingAdvisor.builder())
+        ChatClient chat = ChatPipelineTest.clientBuilder(
+                        new FixedChatModel(prompt -> ChatPipelineTest.requestTool("querySales", "{}")))
                 .defaultAdvisors(advisor)
                 .defaultToolCallbacks(List.of(tool))
                 .build();

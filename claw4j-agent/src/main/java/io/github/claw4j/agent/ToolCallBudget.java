@@ -16,7 +16,7 @@ import org.springframework.ai.model.tool.ToolCallingManager;
  * 正常一次查到，留两次给自纠错；第三次还错，说明模型没读懂错误原因，
  * 再给机会也只是继续烧。
  *
- * <p><b>超限的行为必须是 THROW</b>：{@code ToolCallingAdvisor} 会接住
+ * <p><b>超限的行为必须是 THROW</b>：工具循环（{@code ToolSearchToolCallingAdvisor}）会接住
  * {@code ToolCallLimitExceededException}，把它变成一代回答直接给客户端，
  * 不再回头问模型。另一种行为 {@code RETURN_ERROR_RESPONSE} 是把"超限"当成
  * 工具结果喂回模型，模型会再试一次——那就是又一轮调用，上限等于没设。

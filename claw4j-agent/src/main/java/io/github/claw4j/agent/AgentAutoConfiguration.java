@@ -58,25 +58,26 @@ public class AgentAutoConfiguration {
                                  ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                  ObjectProvider<ObservationRegistry> observationRegistry,
                                  ObjectProvider<MeterRegistry> meterRegistry,
-                                 ObjectProvider<ToolIndex> toolIndex,
+                                 ToolIndex toolIndex,
                                  ToolSearchProperties toolSearch) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
                 meterRegistry.getIfAvailable());
         // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
         // 拿到的是框架内建的那个，用的是 40/150 的默认值，这里定的预算根本不生效
-        // （细节见 ToolCallBudget 的类注释）。全塞与检索两条分支都从 ToolSearch 里过一遍，
-        // 预算因此只有一个落点。
-        var toolCallingAdvisor = ToolSearch.toolLoop(toolSearch, tools.size(),
-                toolIndex.getIfAvailable(), observations);
+        // （细节见 ToolCallBudget 的类注释）。预算只有一个落点：ToolSearch.toolLoop。
+        //
+        // ToolIndex 是必填参数而不是 ObjectProvider：循环只有"检索"这一种，
+        // 没有索引时唯一的出路是启动就失败，而不是悄悄退化成全塞。
+        var toolCallingAdvisor = ToolSearch.toolLoop(toolSearch, toolIndex, observations);
         return ChatClient.builder(chatModel, observations, null, null, toolCallingAdvisor)
                 .defaultSystem(SYSTEM_PROMPT)
                 // 容器里所有 Advisor 按 order 挂上来。脱敏、记忆后续都只是加一个 bean（ADR-0007）。
                 // 顺序由各自的 order 决定，这里不排：鉴权要落在工具循环内部，那条约束写在它自己身上。
                 .defaultAdvisors(advisors.orderedStream().toList())
                 // 工具同理：容器里所有来源都挂上，这里不点名任何工具类。
-                // 没有工具时是空数组，工具循环照常工作（只是无工具可调）。
-                // 检索开着时这份清单不会被全塞进提示词：工具循环会先把它们索引进 ToolIndex，
+                // 没有工具时是空数组，工具循环照常工作（只是无工具可检索）。
+                // 这份清单永远不会被整份塞进提示词：工具循环先把它们索引进 ToolIndex，
                 // 只把"找工具"那一个交给模型，查到谁再注入谁。
                 .defaultToolCallbacks(tools)
                 .build();

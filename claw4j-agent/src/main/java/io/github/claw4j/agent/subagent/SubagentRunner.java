@@ -1,16 +1,19 @@
 package io.github.claw4j.agent.subagent;
 
 import io.github.claw4j.agent.ToolCallBudget;
+import io.github.claw4j.agent.ToolSearch;
+import io.github.claw4j.agent.ToolSearchProperties;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.domain.principal.Principal;
 import io.micrometer.observation.ObservationRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.toolsearch.ToolIndex;
 
 import java.util.List;
 import java.util.Objects;
@@ -37,10 +40,18 @@ import java.util.function.Supplier;
  * 于是"父看不到的表，派个 Subagent 就看得到"这条路从设计上不存在
  * （子 Agent 委派那份测试里 guest 那条盯着它）。
  *
- * <p><b>子也吃同一份调用预算</b>（3 / 6，见 {@link ToolCallBudget}）：
- * manager 显式塞进 {@code ToolCallingAdvisor}，与父那一侧同一个构造入口。
- * 委派不能变成绕过预算的口子——否则"一个坏掉的脚本在子里循环"能一直烧下去，
- * 而父那一侧的预算看起来还一点没动。
+ * <p><b>子也吃同一份调用预算</b>（3 / 6，见 {@link ToolCallBudget}），也走同一个工具循环
+ * （{@link ToolSearch#toolLoop}）：委派不能变成绕过预算的口子——否则"一个坏掉的脚本在子里循环"
+ * 能一直烧下去，而父那一侧的预算看起来还一点没动。工具循环只有一种这件事也适用于这里：
+ * 子那边同样是"先检索、再调用"，白名单里的工具先被索引进 {@link ToolIndex}，
+ * 检索得到才拿得到——于是"子只能用它白名单里的工具"这条约束在检索这条路上也成立。
+ *
+ * <p><b>子窗口的会话 id 按定义名固定</b>：工具循环按会话 id 分桶存索引，
+ * 而它每个请求都会新建一个实例（{@code DefaultChatClient} 每轮都 {@code copy().build()}），
+ * LRU 只在实例内生效——真正长期持有的是共享的 {@link ToolIndex}。
+ * 每次委派生成一个新 id 会让那个桶按委派次数增长且永不回收；
+ * 按定义名固定则桶数等于定义的个数，索引内容也只取决于白名单。
+ * 代价是同一个定义的两个并发委派共用一个桶，与"同一个用户同时发两条消息"是同一类情形。
  *
  * <p><b>工具集在这里才取，而且是 {@code Supplier}</b>：装配期取会撞上循环依赖——
  * 本 Runner 是 {@code Task} 工具回调的依赖，而 {@code Task} 自己又是一个
@@ -64,14 +75,23 @@ public final class SubagentRunner {
 
     private final Advisor authorizationAdvisor;
 
+    /** 工具检索索引：与父那条链共用同一个 bean，桶按会话 id 分开（见类注释）。 */
+    private final ToolIndex toolIndex;
+
+    private final ToolSearchProperties toolSearch;
+
     public SubagentRunner(ChatModel model,
                           ObservationRegistry observations,
                           Supplier<List<ToolCallback>> availableTools,
-                          Advisor authorizationAdvisor) {
+                          Advisor authorizationAdvisor,
+                          ToolIndex toolIndex,
+                          ToolSearchProperties toolSearch) {
         this.model = Objects.requireNonNull(model, "model");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.availableTools = Objects.requireNonNull(availableTools, "availableTools");
         this.authorizationAdvisor = Objects.requireNonNull(authorizationAdvisor, "authorizationAdvisor");
+        this.toolIndex = Objects.requireNonNull(toolIndex, "toolIndex");
+        this.toolSearch = Objects.requireNonNull(toolSearch, "toolSearch");
     }
 
     /**
@@ -89,13 +109,8 @@ public final class SubagentRunner {
                 definition.name(),
                 tools.stream().map(callback -> callback.getToolDefinition().name()).toList());
 
-        ChatClient subagent = ChatClient.builder(
-                        model,
-                        observations,
-                        null,
-                        null,
-                        ToolCallingAdvisor.builder()
-                                .toolCallingManager(ToolCallBudget.toolCallingManager(observations)))
+        ChatClient subagent = ChatClient.builder(model, observations, null, null,
+                        ToolSearch.toolLoop(toolSearch, toolIndex, observations))
                 .defaultSystem(definition.systemPrompt())
                 .defaultToolCallbacks(tools)
                 // 只挂鉴权：记忆与脱敏都不进子链（理由见类注释）。
@@ -103,7 +118,12 @@ public final class SubagentRunner {
                 .build();
 
         String conclusion = subagent.prompt(task)
-                .advisors(spec -> spec.param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal))
+                .advisors(spec -> spec
+                        .param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal)
+                        // 工具循环按这个键取会话 id，缺了不是"退化成全塞"而是直接抛。
+                        // 父那边由 ChatClientAgentPort 塞；子这边没有 AgentPort，只能自己补。
+                        // 键用框架的 ChatMemory 常量，与父那边用的是同一个字符串。
+                        .param(ChatMemory.CONVERSATION_ID, "subagent:" + definition.name()))
                 .call()
                 .content();
         return (conclusion == null || conclusion.isBlank()) ? EMPTY_CONCLUSION : conclusion;

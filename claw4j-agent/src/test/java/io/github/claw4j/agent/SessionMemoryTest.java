@@ -10,11 +10,9 @@ import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -353,9 +351,7 @@ class SessionMemoryTest {
     }
 
     private static ChatClientAgentPort port(ChatModel model, SessionService sessions) {
-        ChatClient chat = ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
-                        ToolCallingAdvisor.builder()
-                                .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+        ChatClient chat = ChatPipelineTest.clientBuilder(model)
                 .defaultAdvisors(SessionMemoryAdvisor.builder(sessions)
                         .order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
                         .build())

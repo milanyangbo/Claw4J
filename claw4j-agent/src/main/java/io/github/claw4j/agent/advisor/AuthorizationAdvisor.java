@@ -9,7 +9,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
-import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
+import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
@@ -27,14 +27,15 @@ import java.util.Optional;
 /**
  * 鉴权 Advisor：一次工具调用能不能发生由 Principal 决定，不由模型决定（ADR-0007）。
  *
- * <p>摆位是这个 Advisor 的全部要点。{@code ToolCallingAdvisor} 把工具循环实现成了
+ * <p>摆位是这个 Advisor 的全部要点。工具循环（{@code ToolSearchToolCallingAdvisor}，它继承
+ * {@code ToolCallingAdvisor}）把"再问一次模型"实现成
  * "自己递归调用链上后续的 Advisor"，所以排在它**之后**的 Advisor 会在
  * <b>每一次工具迭代</b>上都被走一遍；排在它之前的只在整通对话里走一次。
- * 链是按 order 升序排的，于是"在循环内部"= order 大于 {@link ToolCallingAdvisor#DEFAULT_ORDER}。
+ * 链是按 order 升序排的，于是"在循环内部"= order 大于 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER}。
  *
  * <p>判定发生在模型返回之后、工具执行之前：这一轮模型说"我要调 querySales"，
  * 本 Advisor 先看 Principal 有没有这个权限，没有就把这一轮换成一个明确的拒绝，
- * 并且**不把工具调用请求往下传**——{@code ToolCallingAdvisor} 因此看不到工具调用，
+ * 并且**不把工具调用请求往下传**——工具循环因此看不到工具调用，
  * 工具一次都不会被执行。注意这与"让工具跑完再过滤结果"有本质区别：
  * 后者在执行那一刻越权已经发生了。
  *
@@ -59,11 +60,11 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     public static final String DENIAL_PREFIX = "没有权限";
 
     /**
-     * 排在工具循环内部：比 {@link ToolCallingAdvisor#DEFAULT_ORDER} 大，
+     * 排在工具循环内部：比 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER} 大，
      * 于是每次迭代都过一遍；比模型调用 Advisor（{@code LOWEST_PRECEDENCE}）小，
      * 于是还有机会在工具执行之前拦下来。
      */
-    public static final int ORDER = ToolCallingAdvisor.DEFAULT_ORDER + 100;
+    public static final int ORDER = ToolSearchToolCallingAdvisor.DEFAULT_ORDER + 100;
 
     private final List<ToolPermissionRegistry> registries;
 
@@ -105,7 +106,7 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
      * 流式路径：逐块看，看到越权的工具调用就发一条拒绝并掐断上游。
      *
      * <p>不能攒到最后再判断：攒起来的话，越权那一轮的内容已经吐出去了，
-     * 而 {@code ToolCallingAdvisor} 拿的是聚合后的响应，它照样会去执行工具。
+     * 而工具循环拿的是聚合后的响应，它照样会去执行工具。
      */
     @Override
     public Flux<ChatClientResponse> adviseStream(ChatClientRequest request, StreamAdvisorChain chain) {
@@ -234,7 +235,7 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
 
     /**
      * 把这一轮换成一句明确的拒绝。必须连工具调用一起换掉：
-     * 只换正文的话 {@code ToolCallingAdvisor} 看到的仍然是一个"要调工具"的响应，
+     * 只换正文的话工具循环看到的仍然是一个"要调工具"的响应，
      * 工具照跑，客户端拿到的是"拒绝 + 真数据"这种自相矛盾的结果。
      */
     private static ChatClientResponse replacedWith(ChatClientResponse response, String text) {
