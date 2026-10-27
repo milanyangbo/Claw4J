@@ -28,6 +28,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 import javax.sql.DataSource;
 
@@ -55,6 +56,7 @@ import javax.sql.DataSource;
 @AutoConfiguration(afterName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
 @ConditionalOnClass({SessionService.class, JdbcSessionRepository.class})
 @ConditionalOnSingleCandidate(DataSource.class)
+@EnableScheduling
 @EnableConfigurationProperties({DataSourceProperties.class, SessionMemoryProperties.class,
         SessionServiceProperties.class})
 public class SessionMemoryConfiguration implements DisposableBean {
@@ -161,6 +163,20 @@ public class SessionMemoryConfiguration implements DisposableBean {
         MeterRegistry registry = meterRegistry.getIfAvailable();
         return new SessionCompactor(sessionService, trigger, strategy,
                 registry == null ? Metrics.globalRegistry : registry);
+    }
+
+    /**
+     * 过期会话清理（M3-04）。
+     *
+     * <p>{@code spring.ai.session.time-to-live} 只是写在会话行上的时间戳，没有任何东西读它。
+     * 只配 TTL 不配清理 = 一条都不删，而配置看起来已经成立。
+     */
+    @Bean
+    @ConditionalOnMissingBean(SessionCleanup.class)
+    public SessionCleanup sessionCleanup(SessionService sessionService,
+                                         ObjectProvider<MeterRegistry> meterRegistry) {
+        MeterRegistry registry = meterRegistry.getIfAvailable();
+        return new SessionCleanup(sessionService, registry == null ? Metrics.globalRegistry : registry);
     }
 
     /**

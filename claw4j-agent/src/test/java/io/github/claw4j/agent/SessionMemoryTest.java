@@ -1,6 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.session.FaultTolerantSessionService;
+import io.github.claw4j.agent.session.SessionCleanup;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionSchema;
@@ -31,6 +32,7 @@ import org.springframework.ai.session.compaction.TokenCountTrigger;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.transaction.CannotCreateTransactionException;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -254,6 +256,34 @@ class SessionMemoryTest {
         assertThat(registry.get("claw4j.session.compaction.failures").counter().count()).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("过期会话真的被删掉、没过期的还在：TTL 只是一个时间戳，删要靠清理任务")
+    void expiredSessionsAreDeleted() {
+        MapSessionService sessions = new MapSessionService();
+        sessions.create(CreateSessionRequest.builder()
+                .id("old").userId("u-1").timeToLive(Duration.ofSeconds(-1)).build());
+        sessions.create(CreateSessionRequest.builder()
+                .id("fresh").userId("u-1").timeToLive(Duration.ofDays(1)).build());
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        new SessionCleanup(sessions, registry).deleteExpired();
+
+        assertThat(sessions.findById("old")).as("过期的那条该没了").isNull();
+        assertThat(sessions.findById("fresh")).as("没过期的一条都不该动").isNotNull();
+        assertThat(registry.get("claw4j.session.expired").counter().count()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("没设 TTL 的会话永不过期：这是框架默认值，也正是必须显式配 30 天的理由")
+    void sessionWithoutTtlNeverExpires() {
+        MapSessionService sessions = new MapSessionService();
+        sessions.create(CreateSessionRequest.builder().id("forever").userId("u-1").build());
+
+        new SessionCleanup(sessions, new SimpleMeterRegistry()).deleteExpired();
+
+        assertThat(sessions.findById("forever")).isNotNull();
+    }
+
     private static SessionCompactor compactor(SessionService sessions, MeterRegistry registry) {
         return new SessionCompactor(sessions,
                 TokenCountTrigger.builder().threshold(100).build(),
@@ -297,10 +327,13 @@ class SessionMemoryTest {
 
         @Override
         public Session create(CreateSessionRequest request) {
+            Instant now = Instant.now();
             Session session = Session.builder()
                     .id(request.id())
                     .userId(request.userId())
-                    .createdAt(Instant.now())
+                    .createdAt(now)
+                    // 与 JdbcSessionRepository 同一个口径：TTL 为空就是永不过期。
+                    .expiresAt(request.timeToLive() == null ? null : now.plus(request.timeToLive()))
                     .build();
             sessions.put(session.id(), session);
             createdIds.add(session.id());
@@ -325,7 +358,12 @@ class SessionMemoryTest {
 
         @Override
         public int deleteExpiredSessions(Instant now) {
-            return 0;
+            List<String> expired = sessions.values().stream()
+                    .filter(s -> s.expiresAt() != null && !s.expiresAt().isAfter(now))
+                    .map(Session::id)
+                    .toList();
+            expired.forEach(this::delete);
+            return expired.size();
         }
 
         @Override
