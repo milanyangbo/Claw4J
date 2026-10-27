@@ -149,7 +149,7 @@
                       这一组里跑的是真的外部 CLI：起 Python 子进程、包 gh 与 himalaya。
                       它们依赖本机装了什么，不属于回归基线（票面：真实调用不进 CI）。
 
-                      本机想跑：./mvnw test -DexcludedGroups= -Dgroups=real-cli
+                      本机想跑：./mvnw test -Preal-cli
                     -->
                     <configuration>
                         <!-- 一个不存在的组名：profile 里要把它顶掉，而"空"在 surefire 里

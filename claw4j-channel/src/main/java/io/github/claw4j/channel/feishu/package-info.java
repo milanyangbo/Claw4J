@@ -7,7 +7,7 @@
  *       所以能在没有凭据、没有网络的默认构建里用"假发送 + 可控 executor"断言
  *       "入站不等 Agent"。</li>
  *   <li>{@code channel.feishu.sdk} —— SDK 绑定：长连接回调进来、把 SDK 的事件对象翻译成入站事件；
- *       回推接口的实现调飞书消息 API。这一层只有在真凭据下才有意义，由 {@code feishu-live} 那几条覆盖。</li>
+ *       回推接口的实现调飞书消息 API。这一层只有在真凭据下才有意义，靠"带凭据起一次应用"验。</li>
  * </ul>
  *
  * <p>分界由 ArchUnit 钉住（见 {@code ChannelBoundaryTest}）：本包不许出现 {@code com.larksuite}

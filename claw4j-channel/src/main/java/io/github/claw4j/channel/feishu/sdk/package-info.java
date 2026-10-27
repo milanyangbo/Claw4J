@@ -6,7 +6,7 @@
  *
  * <p>这一层**不写单测**。它的全部内容是"把事件对象翻成几个字符串"与"发一条消息"，
  * 两者都只有在真凭据下才有意义：假事件能证明我们读对了 getter，证明不了飞书真的会那样推。
- * 它由 {@code -Pfeishu-live} 下的真链接用例覆盖，覆盖不到的部分记在
+ * 真链路靠"带凭据起一次应用、在群里问一句"来验，不进自动化；覆盖不到的部分记在
  * {@code docs/agents/guardrails.md}。
  */
 package io.github.claw4j.channel.feishu.sdk;
