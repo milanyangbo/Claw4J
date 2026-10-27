@@ -237,3 +237,23 @@ miss，且原因是权限不同」那条守着这个边界——诊断看得见�
 读框架接口时看到 `default`，要去反编译它默认干了什么——
 尤其是那些"多了一个参数、多了一层安全语义"的方法。javadoc 通常不会写这个。
 
+## 十四、"整类一起红"不等于代码坏了
+
+**现象**：跑测试时，第二个自己要起容器的测试类整类五条一起 ERROR，
+`Caused by` 停在 `Unable to obtain connection from database: An error occurred while
+setting up the SSL connection`（`SQL State 08P01`）。**单独跑这个类，五条全绿。**
+
+**根因**：不是代码。两个测试类各自 `POSTGRES.start()`，谁先跑由类顺序决定；
+Docker Desktop 内存紧的时候，后起的那个容器连接会在 SSL 握手阶段断掉，
+Spring 把它包成"数据库连不上"——看起来像迁移、配置或 JDBC URL 坏了。
+
+**判据**：失败发生在**启动那一关**（`Failed to load ApplicationContext`），且 `Caused by`
+落在连接 / SSL / 端口上时，先**单跑这一个类**。单跑绿就是环境争抢，别顺着报错改代码；
+单跑也红才是真问题，那时候才轮到看 DDL 与 migration。
+
+**现在**：全量 `./scripts/verify.sh` 多次跑没有复现（串行、容器及时回收）。
+遇到时先单跑一次；连续两次单跑都红，再当缺陷查。
+
+**要分清两类"红"**：可以放过的是"环境抢内存"，判据是单跑即绿；
+同一类单独跑也时红时绿属于另一回事——那说明测试自己依赖了顺序或共享状态，必须查到底。
+
