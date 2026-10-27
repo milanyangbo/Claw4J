@@ -85,8 +85,14 @@
    ./mvnw -o install -DskipTests          # 兄弟模块要先进本地仓库，-pl 单独跑才找得到
    ./mvnw -o -pl claw4j-app spring-boot:run -Pchannel-feishu -Dspring-boot.run.profiles=local
    ```
-   日志出现 `飞书通道就绪：长连接已建立` 就说明凭证与网络都对。**`-Pchannel-feishu` 不能省**：
-   `oapi-sdk` 在 `claw4j-channel` 里是 optional，不传递，少了它整个通道静默退让（只跑 HTTP）。
+   日志出现 `飞书通道就绪：长连接已建立` 只说明**凭据与网络**都对。还要看到
+   `The following 1 profile is active: "local"`，否则 `application-local.yml` 整份没加载、
+   `roles.*.users` 等于没写（凭据可能来自环境变量，**"能连上"对两处都成立**，群里表现却一样）。
+   `-Pchannel-feishu` 也不能省：`oapi-sdk` 在 `claw4j-channel` 里是 optional、不传递，
+   少了它整个通道静默退让（只跑 HTTP）。
+   库已在跑时再加 `SPRING_DOCKER_COMPOSE_ENABLED=false`：`spring-boot:run` 的工作目录是
+   模块目录 `claw4j-app`，`compose.yaml` 在仓库根，local 打开 compose 后会直接失败
+   `'files' content [compose.yaml] must exist`。
 6. **切订阅方式并加事件**：「开发配置 > 事件与回调 > 事件配置」→「订阅方式」→
    「使用长连接接收事件」→ 保存 →「添加事件」→ `接收消息 im.message.receive_v1`。
 7. **设可用范围并发布**：「应用发布 > 版本管理与发布」→ 创建版本 → 可用范围里至少包含你自己

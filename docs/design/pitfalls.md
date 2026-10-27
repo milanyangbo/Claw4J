@@ -100,3 +100,27 @@ PG 的子查询里不能是 `insert` / `update` / `delete`。
 **现在**：`ModelFailures` 一处判断（沿 `getCause()` 走完整条链）：429 / 5xx / 连接失败 / 超时降级；
 401 / 403 / 400 / 422 / 响应解析不了 / 本地构造错误直接抛并点名哪一家。
 **认不出的失败按不降级处理**——降级要保住"只有明确知道换一家可能好时才换"这个能被讲清的含义。
+
+## 九、"通道连上了"不等于"配置读全了"
+
+**现象**：日志一切正常（`飞书通道就绪：长连接已建立`、`Started Claw4jApplication`），
+群里 @ 机器人却永远回"没有权限：你的飞书账号还没有在 Claw4J 里登记"——
+而那个 `ou_...` 明明已经写进 `application-local.yml` 的 `roles.read-only.users`。
+
+**根因**：启动命令漏了 `-Dspring-boot.run.profiles=local`，`application-local.yml` **整份没被加载**，
+`claw4j.channel.feishu.roles.*.users` 于是根本不存在。它照样能连，是因为凭据来自
+`set -a && . ./.env` 导出的环境变量，`application.yml` 里 `${FEISHU_APP_ID:}` 直接取到了。
+**两条配置来源，一条在、一条不在，而"通道就绪"这个信号对两处都成立**——
+凭据对不代表角色表读到了。
+
+**现在**：
+- 启动两件都要带，缺一不可：`-Pchannel-feishu`（把 optional 的 SDK 放进 classpath，
+  否则整个通道静默退让、只跑 HTTP）+ `-Dspring-boot.run.profiles=local`（否则 local 那份整份不加载）。
+- `spring-boot:run` 的工作目录是**模块目录** `claw4j-app`，而 `compose.yaml` 在仓库根；
+  local 又会打开 `spring.docker.compose`，于是启动直接失败
+  `IllegalArgumentException: 'files' content [compose.yaml] must exist`。
+  库已经在跑时加 `SPRING_DOCKER_COMPOSE_ENABLED=false`——compose 的职责是"帮忙拉起"，
+  不是"没有它就不能跑"。同一个工作目录差异也解释了 `.env` 为什么必须有 `./` 与 `../` 两条 import 路径。
+- **判据是日志里那行 `The following 1 profile is active: "local"`**。没有它，
+  "通道就绪"只能证明凭据对，不能证明角色表读到了；而这两种情况在群里长得完全一样。
+
