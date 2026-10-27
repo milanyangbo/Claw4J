@@ -1,8 +1,11 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.cache.CacheAdvisor;
+import io.github.claw4j.agent.cache.CacheAutoConfiguration;
 import io.github.claw4j.agent.cache.CacheProperties;
 import io.github.claw4j.agent.cache.SemanticCache;
+import io.github.claw4j.agent.cache.SemanticCacheCleanup;
+import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
@@ -17,7 +20,12 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingRequest;
 import org.springframework.ai.embedding.EmbeddingResponse;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import javax.sql.DataSource;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -26,6 +34,8 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 /**
  * 语义缓存：同一个问题第二遍不打模型，以及**哪些情况必须不命中**。
@@ -48,6 +58,9 @@ class SemanticCacheTest {
     private static final String SOUTH_LAST_WEEK = "上周华南成交额多少";
 
     private static final String EAST_WEEK_BEFORE = "上上周华东成交额多少";
+
+    /** 三周前。它比「上上周」多一个「上」字，意思却是另一段时间。 */
+    private static final String THREE_WEEKS_BEFORE = "上上上周华东成交额多少";
 
     private static final String ANSWER = "上周华东区成交 128400 元";
 
@@ -104,6 +117,21 @@ class SemanticCacheTest {
     }
 
     @Test
+    @DisplayName("「上上上周」不能被当成「上上周」：差一个「上」字也是另一段时间")
+    void threeWeeksAgoIsNotTwoWeeksAgo() {
+        Fixture fixture = new Fixture();
+        fixture.port.reply(message("u-1", EAST_WEEK_BEFORE));
+        String third = fixture.port.reply(message("u-1", THREE_WEEKS_BEFORE)).text();
+
+        assertThat(third)
+                .as("三周前拿到两周前的数，读起来完全正常——这是这个功能最坏的姿势")
+                .doesNotContain(CacheAdvisor.MARKER);
+        assertThat(fixture.misses("different-entities"))
+                .as("挡它的必须是上下文，不是分数：这两句的向量在这里故意给成一样")
+                .isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("实体签名只看时间词与数字：换个说法问同一段时间，签名相同")
     void entitySignatureSeparatesTimeWindows() {
         assertThat(CacheAdvisor.entitySignature(EAST_LAST_WEEK))
@@ -122,6 +150,11 @@ class SemanticCacheTest {
         assertThat(CacheAdvisor.entitySignature("你好，你能做什么"))
                 .as("闲聊也有签名：空集也是一种取值，不是 null")
                 .isEqualTo(CacheAdvisor.entitySignature("你能干什么"));
+
+        assertThat(CacheAdvisor.entitySignature("近7天华东成交额"))
+                .as("「近 7 天」与「近7天」是同一个时间窗：不去掉 token 内的空白就会算出两个签名，"
+                        + "表现是同一句话带空格重问永远命不中")
+                .isEqualTo(CacheAdvisor.entitySignature("近 7 天华东成交额"));
     }
 
     @Test
@@ -226,6 +259,47 @@ class SemanticCacheTest {
                 .isEqualTo(CacheProperties.DEFAULT_TIME_TO_LIVE);
     }
 
+    @Test
+    @DisplayName("清理间隔配成 0 直接拒绝启动：归一回默认会让调度器拿到另一个值")
+    void cleanupIntervalMustBePositive() {
+        assertThatThrownBy(() -> new CacheProperties(null, null, Duration.ZERO, null, null))
+                .as("调度器读的是 @Scheduled 占位符里的原文，这里悄悄改成 1 小时只会让它拿到 0，"
+                        + "而 fixedDelay=0 是「上一轮结束立刻下一轮」的循环")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cleanup-interval");
+        assertThatThrownBy(() -> new CacheProperties(null, null, Duration.ofHours(-1), null, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(CacheProperties.defaults().cleanupInterval())
+                .as("键缺失才落默认值——两种没配好必须分开处理：缺失有合理默认，写 0 是写错了")
+                .isEqualTo(CacheProperties.DEFAULT_CLEANUP_INTERVAL);
+    }
+
+    @Test
+    @DisplayName("开关挂在整个装配上：关掉之后清理任务也不该留下")
+    void disabledSwitchRemovesEveryCacheBean() {
+        ApplicationContextRunner runner = new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(CacheAutoConfiguration.class))
+                // 装配前提是"有库、有向量模型"，这些都给它，于是下面能关掉只能是开关本身
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+                .withBean(ModelProperties.class, ModelProperties::new)
+                .withPropertyValues(
+                        "claw4j.model.qwen.api-key=test-key",
+                        "claw4j.model.qwen.base-url=http://127.0.0.1:9/v1");
+
+        // 先证明"开着时确实装了"。没有这一半，条件写错成"永不匹配"时，下半条照样绿
+        runner.run(context -> assertThat(context)
+                .as("默认开着：不配这个键就等于开着")
+                .hasSingleBean(CacheAdvisor.class)
+                .hasSingleBean(SemanticCacheCleanup.class));
+
+        runner.withPropertyValues("claw4j.cache.enabled=false").run(context -> assertThat(context)
+                .as("只关掉 Advisor 的话，清理任务照旧每小时删一次，而配置看起来已经生效了")
+                .doesNotHaveBean(CacheAdvisor.class)
+                .doesNotHaveBean(SemanticCacheCleanup.class)
+                .doesNotHaveBean(SemanticCache.class));
+    }
+
     /** 一轮请求的三种身份：默认只读、guest 只读一张表、换个人但同角色。 */
     private static InboundMessage message(String userId, String text) {
         return new InboundMessage(Principal.readOnly(userId), "chat-1", text);
@@ -300,7 +374,11 @@ class SemanticCacheTest {
                 // 实测 0.8968：换区域。意思不同，分数也不该过阈值
                 SOUTH_LAST_WEEK, unit(0.8968),
                 // 实测 0.9950：只差一个「上」字，意思完全不同
-                EAST_WEEK_BEFORE, unit(0.9950));
+                EAST_WEEK_BEFORE, unit(0.9950),
+                // 故意给成和「上上周」**一模一样**的向量（余弦 1.0，比任何阈值都高）：
+                // 三周前与两周前的真实余弦没有单独实测过，这里不需要它——
+                // 要证明的是"签名把它挡住了"，那就让分数完全挡不住
+                THREE_WEEKS_BEFORE, unit(0.9950));
 
         private boolean failing;
 

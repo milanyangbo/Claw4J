@@ -5,20 +5,22 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.time.Duration;
 
 /**
- * 语义缓存的四个数。
+ * 语义缓存的几项配置。
  *
  * <p><b>字段全部用包装类型</b>：配置绑定对缺失的键只能传 null，原始类型会被填成 0 ——
  * 而这里 0 是有意义的坏值（阈值 0 = 任何候选都算命中，TTL 0 = 存进去就过期）。
  * 这个坑在 M3-06 踩过一次（`ToolSearchProperties`），同样的形状不再踩第二次。
  *
- * <p><b>没有 {@code enabled} 字段</b>：总开关由装配层那个 {@code @ConditionalOnProperty}
- * 读 {@code claw4j.cache.enabled} 判定。同一个键在 record 里再存一份、再写一个
- * {@code isEnabled()}，就是"两处判断同一个开关"——它们迟早会不一致，
- * 而表现是"配了关但还在缓存"。这与 pitfalls 第十条是同一类问题。
+ * <p><b>没有 {@code enabled} 字段</b>：总开关由 {@code CacheAutoConfiguration} 类上那个
+ * {@code @ConditionalOnProperty} 读 {@code claw4j.cache.enabled} 判定，关掉即整套不装。
+ * 同一个键在 record 里再存一份、再写一个 {@code isEnabled()}，就是"两处判断同一个开关"——
+ * 它们迟早会不一致，而表现是"配了关但还在缓存"。这与 pitfalls 第十条是同一类问题。
  *
  * @param similarityThreshold 余弦相似度到多少算"同一个问题"
  * @param timeToLive         一条缓存活多久
- * @param cleanupInterval    多久扫一次过期行
+ * @param cleanupInterval    多久扫一次过期行。**它的问题不是我们不读，是别人读**：
+ *                           调度器走 {@code @Scheduled} 的占位符拿原文，不经过这个 record，
+ *                           所以越界值在这里"归一回默认"只会让两边对不上（见构造器）
  * @param embeddingModel     向量模型名。复用通义那套 key（DeepSeek 没有 embedding 接口），
  *                           只换模型名，所以它落在这里而不是模型配置里
  * @param embeddingDimensions 向量维度。**必须与表的 `vector(1024)` 一致**：
@@ -86,8 +88,20 @@ public record CacheProperties(Double similarityThreshold, Duration timeToLive,
                 ? DEFAULT_SIMILARITY_THRESHOLD : similarityThreshold;
         timeToLive = (timeToLive == null || timeToLive.isNegative() || timeToLive.isZero())
                 ? DEFAULT_TIME_TO_LIVE : timeToLive;
-        cleanupInterval = (cleanupInterval == null || cleanupInterval.isNegative() || cleanupInterval.isZero())
-                ? DEFAULT_CLEANUP_INTERVAL : cleanupInterval;
+        // 清理间隔是唯一一个"我们不读、别人读"的字段：调度器从 @Scheduled 的占位符拿原文。
+        // 于是它不能静默归一——`PT0S` 在这里被改成 1 小时，调度器那边照样拿到 0，
+        // fixedDelay=0 是"上一轮结束立刻下一轮"，一个热循环在打库。这种值只能拒绝。
+        // 判据与"启动就炸"那一格一致：宁可起不来，也不留一个看起来配好了的错配置。
+        // 清理间隔是唯一一个"我们不读、别人读"的字段：调度器从 @Scheduled 的占位符拿原文。
+        // 于是它不能静默归一——`PT0S` 在这里被改成 1 小时，调度器那边照样拿到 0，
+        // fixedDelay=0 是"上一轮结束立刻下一轮"，一个热循环在打库。这种值只能拒绝。
+        // 判据与"启动就炸"那一格一致：宁可起不来，也不留一个看起来配好了的错配置。
+        cleanupInterval = cleanupInterval == null ? DEFAULT_CLEANUP_INTERVAL : cleanupInterval;
+        if (cleanupInterval.isNegative() || cleanupInterval.isZero()) {
+            throw new IllegalArgumentException(
+                    "claw4j.cache.cleanup-interval 必须为正：" + cleanupInterval
+                            + "。它由 @Scheduled 直接读取原文，归一回默认只会让调度器与配置对不上");
+        }
         embeddingModel = (embeddingModel == null || embeddingModel.isBlank())
                 ? DEFAULT_EMBEDDING_MODEL : embeddingModel.trim();
         embeddingDimensions = (embeddingDimensions == null || embeddingDimensions <= 0)

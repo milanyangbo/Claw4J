@@ -38,7 +38,10 @@ import javax.sql.DataSource;
  * 这比"装一个会在第一次请求时才失败的缓存"好：失败点前移到装配期，且能解释为什么没有它。
  *
  * <p><b>为什么开关用 {@code @ConditionalOnProperty} 而不是 properties 里一个 boolean</b>：
- * 同一个键在两处判断，迟早会不一致（pitfalls 第十条）。这里只留一处。
+ * 同一个键在两处判断，迟早会不一致（pitfalls 第十条）。这里只留一处，而且它挂在**类上**：
+ * 关掉之后四个 bean（向量模型、存储、清理任务、Advisor）一个都不装。
+ * 挂在某个方法上是不够的——那样"配了关"仍然留着每小时跑一次的删除任务和一个用不上的
+ * 向量模型，配置看起来生效了，实际只关掉了一半。
  *
  * <p><b>缓存不参与可用性</b>：向量算不出来时 {@link CacheAdvisor} 退化成"没命中"，
  * 库写不进去只影响省成本，都不会让这一轮答不了话。它是成本优化，不是依赖。
@@ -47,6 +50,7 @@ import javax.sql.DataSource;
 @ConditionalOnClass({SemanticCache.class, JdbcTemplate.class, EmbeddingModel.class})
 @ConditionalOnBean(DataSource.class)
 @Conditional(QwenModelCondition.class)
+@ConditionalOnProperty(value = "claw4j.cache.enabled", matchIfMissing = true)
 @EnableConfigurationProperties(CacheProperties.class)
 // 清理任务是 @Scheduled，跟着本配置一起开：会话那份额外也开了，重复一次无害，
 // 而依赖别人的 @EnableScheduling（比如 spring-ai-session 不在 classpath 时）会漏开。
@@ -124,7 +128,6 @@ public class CacheAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(CacheAdvisor.class)
-    @ConditionalOnProperty(value = "claw4j.cache.enabled", matchIfMissing = true)
     public CacheAdvisor cacheAdvisor(SemanticCache cache, EmbeddingModel cacheEmbeddingModel,
                                      CacheProperties properties,
                                      ObjectProvider<ToolPermissionRegistry> permissions,

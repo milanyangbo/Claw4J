@@ -101,16 +101,24 @@ public class CacheAdvisor implements CallAdvisor, StreamAdvisor {
     static final String REASON_CACHE_FAILED = "cache-failed";
 
     /**
-     * 中文里的相对时间词。**顺序有意义**：{@code 上上周} 必须排在 {@code 上周} 前面，
-     * 否则 find 会先从第二个字开始匹配到"上周"，把"上上周"当成"上周"。
+     * 中文里的相对时间词。
+     *
+     * <p><b>「上」用 {@code {2,}} 而不是把 {@code 上上周}、{@code 上上上周} 一个个列出来</b>：
+     * 列 {@code 上上周} 会让 {@code 上上上周} 从第 2 个字开始匹配到 {@code 上上周}，
+     * 于是"三周前"与"两周前"落进同一个上下文——余弦 0.99 那一档，直接给出另一个时间窗的答案。
+     * 枚举只能挡住已经想到的那几档，量词把这一类一次挡住；顺序仍然有意义：
+     * {@code 上{2,}周} 必须排在 {@code 上周} 前面。
      */
     private static final Pattern TIME_WORDS = Pattern.compile(
-            "上上周|上周|本周|这周|下周|上上个月|上个月|上月|本月|这个月|下个月"
+            "上{2,}周|上周|本周|这周|下周|上{2,}个月|上个月|上月|本月|这个月|下个月"
                     + "|上季度|本季度|这季度|下季度|前年|去年|今年|明年"
                     + "|今天|昨天|前天|明天|后天|近\\s*\\d+\\s*(?:天|周|月)|最近\\s*\\d+\\s*(?:天|周|月)"
                     + "|\\d{4}\\s*年|\\d{1,2}\\s*月|\\d{1,2}\\s*[日号]");
 
     private static final Pattern NUMBERS = Pattern.compile("\\d+(?:\\.\\d+)?");
+
+    /** token 内部的空白，用于把「近 7 天」与「近7天」折成同一个。 */
+    private static final Pattern INNER_SPACES = Pattern.compile("\\s+");
 
     private final SemanticCache cache;
 
@@ -286,7 +294,9 @@ public class CacheAdvisor implements CallAdvisor, StreamAdvisor {
         Matcher matcher = pattern.matcher(text == null ? "" : text);
         Set<String> found = new TreeSet<>();
         while (matcher.find()) {
-            found.add(matcher.group());
+            // 去掉 token 内部的空白：「近 7 天」与「近7天」是同一个时间窗，在正则里
+            // 用 \s* 让它们都能被认出来，但 group() 带的是原文，不去掉就会算出两个签名。
+            found.add(INNER_SPACES.matcher(matcher.group()).replaceAll(""));
         }
         return found;
     }

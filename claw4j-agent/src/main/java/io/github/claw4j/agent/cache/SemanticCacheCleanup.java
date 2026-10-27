@@ -35,6 +35,11 @@ public class SemanticCacheCleanup {
      * 间隔走 {@code @Scheduled} 的占位符而不是从 {@link CacheProperties} 读：调度注解在容器
      * 启动时就要拿到值，那时属性绑定不一定已经完成。占位符与 properties 读的是同一个键，
      * 不会出现"配了 2 小时但实际还是 1 小时"。
+     *
+     * <p>这个键**只保证"两边读到的原文一致"，不保证"原文是合法值"**——归一化那一步在
+     * {@link CacheProperties} 的构造器里，它不经手这里。所以 0 与负数在那一步直接拒绝启动，
+     * 而不是被悄悄改成默认值：真让 {@code PT0S} 走到这个注解上，就是 {@code fixedDelay=0}
+     * 的热循环。
      */
     @Scheduled(fixedDelayString = "${claw4j.cache.cleanup-interval:PT1H}")
     public void deleteExpired() {
