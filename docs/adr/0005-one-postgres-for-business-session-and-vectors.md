@@ -23,8 +23,10 @@ date: 2026-10-22
 - `spring-ai-session` 走 **`org.springaicommunity:spring-ai-starter-session-jdbc`**（版本见根 pom 的 `spring-ai-session.version`，当前 0.10.0），会话表与业务表同库不同 schema。生产禁止用 `InMemorySessionRepository`（多实例失忆）。
 - 向量检索用 pgvector，走 Spring AI 的 PgVectorStore；业务库用同一实例，`vector` 扩展只需装一次。
 - Redis 只留 Lettuce 一个客户端；1.x 的 Jedis、Redisson 依赖不再引入，扫描类命令（`KEYS`）一律替换为带游标的迭代。
-  （2026-10-26 修正：引回 Redis 做语义缓存时客户端要 **Jedis** 而不是 Lettuce，见修订记录。）
-- docker compose 里只有两个服务：Postgres（含 pgvector）与应用本身。Redis 在 M3 语义缓存落地前不引入。
+  （2026-10-26 修正：引回 Redis 做语义缓存时客户端要 **Jedis** 而不是 Lettuce，见修订记录。
+  ~~2026-10-27 再修正：不引 Redis 了，语义缓存走库里的 pgvector，上面这条随之作废——见第二次修订。~~）
+- docker compose 里只有两个服务：Postgres（含 pgvector）与应用本身。Redis 不引入
+  （2026-10-27：M3-05 的语义缓存落在 `claw4j_cache` schema 的 pgvector 上，不是 Redis）。
 
 ## 修订记录
 
@@ -98,5 +100,37 @@ date: 2026-10-22
 - **客户端要 Jedis，不是 Lettuce**。`RedisVectorStore` 的构建器收的是 `JedisPooled`，
   而 `spring-boot-starter-data-redis` 默认装配的是 Lettuce 连接工厂。要么用官方的
   `spring-ai-starter-vector-store-redis`（自带 Jedis），要么把 Lettuce 显式排除。
+
+**2026-10-27：上面那条"引回 Redis Stack"作废——语义缓存直接用库里的 pgvector（M3-05）。**
+
+上一条的判断前提是"Redis 有向量检索，所以语义缓存该放 Redis"。真到实现时这个前提不成立：
+
+1. **这个缓存要和授权、会话在同一套数据里做一致性判断**。命中与否取决于权限指纹，
+   而指纹来自角色配置；缓存的有效期要与会话里"上次说过的口径"对齐；清理任务与过期判定
+   跟会话那边是同一套心思。放到另一个存储只是多一个**会不一致的来源**，
+   而每多一个来源就多一种"两边对不上时信谁"的问题。
+2. **pgvector 已经在库里了**。镜像自带、扩展已 `create extension`，
+   一个迁移文件就能建表——相比之下引 Redis Stack 要换镜像、换客户端、加一个 compose 服务。
+3. 代价是向量检索的性能上限：没有 HNSW/IVFFlat 索引时是全表精确扫描。
+   这个缓存的量级是"一个角色一天几十到几百条"，全表扫描是微秒级；
+   真到需要近似召回的那天，加一条迁移建 HNSW 即可——**那时候要接受近似召回会漏掉真正最近的一条**，
+   所以这件事不该提前做。
+
+于是上面那两条"引回时的坑"（换 Redis Stack 镜像、客户端要 Jedis）一并作废，
+`spring.data.redis` 与 compose 里的 redis 服务继续不引入。**照这份 ADR 去装 Redis 的人会白装一遍，
+这一条就是为拦住他写的。**
+
+同一次落地还定下两条与"能不能命中"有关的规则，都不是调参能替代的：
+
+- **缓存 key 含权限指纹（`tables + actions` 排序后哈希），不含 `userId`、不含角色名。**
+  前者是安全边界（guest 读不到 `sales_order`，同一个问题两个角色答案不同），
+  后两者是可用性（按人分等于完全不共享；按角色名分则角色改一次配置缓存全失效）。
+- **相似度阈值挡不住"只差一个时间词"的问题。** 实测 `text-embedding-v3`（1024 维）：
+  「上周华东成交额多少」与「上上周华东成交额多少」余弦 **0.9950**，
+  而真正的同义改写「华东上周卖了多少」只有 **0.9372**。也就是说任何单一阈值都无法
+  同时命中后者、挡住前者。所以命中判定里加了一道词面守卫（两边的相对时间词与数字集合
+  必须完全一致），并把默认阈值定在 0.93 而不是当初拍的 0.95（0.95 会让同义改写全部落空）。
+  这道守卫是补丁不是解法——语义缓存对"数值/时间实体只差一点"的问答本质上不可靠，
+  它只该用来省"同一个人十分钟内换个说法再问一遍"的成本，不该被当成正确答案的来源。
 
 上面 Consequences 里"只留 Lettuce 一个客户端"那条随之作废，已在原处标注。

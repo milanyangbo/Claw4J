@@ -9,9 +9,9 @@
 会话表在 `claw4j_session` schema，业务表在 `business`，同库不同 schema。
 
 **这条链上没有 Redis。** ADR-0005 否决过"Redis 兼做会话存储"：会话要事务、要按会话查事件，
-这两件事 Redis 都做不好。Redis 的用途只剩语义缓存（M3），而仓库里那点占位（依赖、`spring.data.redis`、
-compose 的容器）已于 2026-10-26 一并摘掉——排查记忆问题时不该有人去翻 Redis，
-M3 要做语义缓存时按 ADR-0005 修订记录引 Redis Stack。
+这两件事 Redis 都做不好。仓库里那点占位（依赖、`spring.data.redis`、compose 的容器）
+已于 2026-10-26 一并摘掉。语义缓存（M3-05）也**没有把它引回来**——那是同一份 ADR 的第二次修订，
+缓存落在库里的 `claw4j_cache` schema，理由是"要和授权、会话在同一套数据里做一致性判断"。
 
 三点值得留意：
 

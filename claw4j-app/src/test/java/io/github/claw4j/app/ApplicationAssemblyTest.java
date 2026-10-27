@@ -40,7 +40,7 @@ class ApplicationAssemblyTest {
     private static final String QUESTION = "上周华东区成交额多少";
 
     /** 容器要在 Spring 建上下文之前起好：DynamicPropertySource 要读它的端口。 */
-    private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
+    private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     static {
         POSTGRES.start();

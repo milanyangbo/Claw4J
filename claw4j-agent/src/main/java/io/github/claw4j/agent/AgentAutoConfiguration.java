@@ -133,9 +133,9 @@ public class AgentAutoConfiguration {
                                                           ObjectProvider<ToolCallbackProvider> providers,
                                                           MeterRegistry registry) {
         List<ToolCallback> collected = new ArrayList<>();
-        Consumer<ToolCallback> add = registry == null
-                ? collected::add
-                : callback -> collected.add(new MeteredToolCallback(callback, registry));
+        // 一律包一层：没有 registry 时它只记"这一轮调过哪些工具"，不报指标。
+        // 语义缓存判断副作用靠的就是这份记录，所以它不能跟着 actuator 一起缺席。
+        Consumer<ToolCallback> add = callback -> collected.add(new MeteredToolCallback(callback, registry));
         callbacks.orderedStream().forEach(add);
         providers.orderedStream()
                 .forEach(provider -> List.of(provider.getToolCallbacks()).forEach(add));
