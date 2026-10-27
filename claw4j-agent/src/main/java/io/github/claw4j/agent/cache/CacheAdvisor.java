@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.cache;
 
+import io.github.claw4j.agent.PermissionFingerprint;
 import io.github.claw4j.agent.ToolCallLog;
 import io.github.claw4j.agent.cache.SemanticCache.Candidate;
 import io.github.claw4j.domain.ContextKeys;
@@ -243,14 +244,12 @@ public class CacheAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 权限指纹：{@code tables} 与 {@code actions} 排序后拼一起再哈希。
      *
-     * <p>三个"不取"各有代价：取 {@code userId} 等于同角色的人互相命中不了（缓存形同虚设）；
-     * 取角色名则角色改一次配置、所有缓存失效（而且改配置看起来跟缓存无关）；
-     * 取整个 {@link Principal} 的 {@code toString} 会因为字段顺序变化而漂移。
+     * <p>口径与 {@link PermissionFingerprint} 是同一份——会话 id 也用它（{@code SessionKeys}）。
+     * 两处共用一份实现不是图省事：缓存若认"权限 A"，会话就该是"权限 A 的那段历史"，
+     * 一边按角色名、一边按表集合的话，改一次配置会出现"命中缓存但串了会话"这种没人能复现的组合。
      */
     static String fingerprintOf(Principal who) {
-        String tables = String.join(",", new TreeSet<>(who.accessibleTables()));
-        String actions = String.join(",", new TreeSet<>(who.allowedActions()));
-        return PgVectorSemanticCache.sha256(tables + "|" + actions);
+        return PermissionFingerprint.of(who);
     }
 
     /** 这一轮有没有副作用。空集合（一次工具都没调）算没有。 */

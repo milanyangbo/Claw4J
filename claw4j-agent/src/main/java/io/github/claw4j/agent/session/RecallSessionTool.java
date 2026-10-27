@@ -27,7 +27,7 @@ import java.util.Objects;
  * userId 来自这一轮请求的 {@link Principal}。
  *
  * <p><b>为什么召回的是"另一个会话"，现在却只有一个会话</b>：会话 id 由
- * {@link SessionKeys#sessionIdOf} 从 userId 派生，一个人目前只有一段会话。
+ * {@link SessionKeys#sessionIdOf} 从"人 + 权限"派生，一个人在某份权限下只有一段会话。
  * 那这个工具此刻的真实用途是——<b>把被压缩掉的原文找回来</b>。
  * 压缩把早期事件归档或折成摘要（{@code EventFilter} 的 {@code excludeArchived}
  * 默认 false，归档的照样查得到），摘要留着结论、丢了细节；
@@ -166,9 +166,14 @@ public final class RecallSessionTool implements ToolCallback {
      *
      * <p>包内可见是为了让测试能直接钉住"换一个身份就换一个 userId"这条——
      * 它唯一的失效方式是静默的（谁都能召回，只是召回到的是别人的）。
+     *
+     * <p><b>传的是归属键而不是裸 userId</b>：框架按 {@code ai_session.user_id} 精确匹配，
+     * 而那一列存的是 {@link SessionKeys#ownerOf}。传裸 userId 的后果很隐蔽——
+     * 召回永远"没有找到"（看起来像没历史），或者更糟：若哪天有人把两处都改回裸 userId，
+     * 降权之后照样能把高权限时的对话召回来。
      */
     CrossSessionRecallTools recallToolsFor(Principal who) {
-        return CrossSessionRecallTools.builder(sessionService, who.userId())
+        return CrossSessionRecallTools.builder(sessionService, SessionKeys.ownerOf(who))
                 .pageSize(MAX_PAGE_SIZE)
                 .build();
     }

@@ -38,12 +38,18 @@ class RecallSessionTest {
 
     private static final String OTHER_SESSION = "claw4j:user:u-1:topic-2";
 
+    /**
+     * 会话表里 {@code user_id} 存的是归属键而不是裸 userId（见 {@link SessionKeys#ownerOf}）。
+     * 假仓库也照这个形状建数据：造一条裸 userId 的记录，测的就是一个不会出现的世界。
+     */
+    private static final String OWNER_U1 = SessionKeys.ownerOf(Principal.readOnly("u-1"));
+
     @Test
     @DisplayName("另一个会话里说过的口径，这一轮问起来能召回到")
     void recallsWhatWasSaidInAnotherSession() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId("u-1").build());
-        sessions.create(CreateSessionRequest.builder().id(OTHER_SESSION).userId("u-1").build());
+        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
+        sessions.create(CreateSessionRequest.builder().id(OTHER_SESSION).userId(OWNER_U1).build());
         sessions.append(OLD_SESSION, "华东区的成交口径按签约主体算，不按开票主体");
         sessions.append(OTHER_SESSION, "华南那边的口径还是按开票主体");
 
@@ -63,7 +69,7 @@ class RecallSessionTest {
     @DisplayName("match_mode 真的传下去了：all 只留同时命中全部关键词的那段")
     void matchModeNarrowsTheResults() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId("u-1").build());
+        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
         sessions.append(OLD_SESSION, "华东区的成交口径按签约主体算");
         sessions.append(OLD_SESSION, "华南那边的口径还是按开票主体");
 
@@ -77,7 +83,7 @@ class RecallSessionTest {
     @DisplayName("换一个 userId 就看不到：召回按当前身份查，不是按工具实例上写死的那个人")
     void anotherUserSeesNothing() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId("u-1").build());
+        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
         sessions.append(OLD_SESSION, "华东区的成交口径按签约主体算");
 
         String recalled = tool(sessions).call("{\"query\":\"华东\"}",
@@ -90,10 +96,28 @@ class RecallSessionTest {
     }
 
     @Test
+    @DisplayName("同一个人被降权后，旧会话召不回来：归属键里带着权限指纹")
+    void downgradedUserLosesItsOwnHistory() {
+        FakeSessions sessions = new FakeSessions();
+        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
+        sessions.append(OLD_SESSION, "上周华东区成交额 99,999.00");
+
+        Principal downgraded = Principal.of("u-1", "guest",
+                java.util.Set.of("region"), java.util.Set.of(ToolPermission.READ));
+
+        String recalled = tool(sessions).call("{\"query\":\"成交额\"}", toolContext(downgraded));
+
+        assertThat(recalled)
+                .as("降权之后还念得出高权限时看到的数字，权限就等于没收回去")
+                .doesNotContain("99,999")
+                .contains("没有找到");
+    }
+
+    @Test
     @DisplayName("没有身份就不查：宁可不回答，也不能退化成查某个人")
     void refusesWithoutPrincipal() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId("u-1").build());
+        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
         sessions.append(OLD_SESSION, "华东区的成交口径按签约主体算");
 
         assertThat(tool(sessions).call("{\"query\":\"华东\"}", null))
@@ -108,7 +132,7 @@ class RecallSessionTest {
     @DisplayName("一条长对话不会把上下文吃满：条数与总字数都封顶")
     void truncatesWhatItBringsBack() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId("u-1").build());
+        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
         for (int i = 0; i < 40; i++) {
             sessions.append(OLD_SESSION, "华东口径第 " + i + " 段：" + "按签约主体算。".repeat(60));
         }

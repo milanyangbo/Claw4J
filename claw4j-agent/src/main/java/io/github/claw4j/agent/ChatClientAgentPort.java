@@ -92,10 +92,13 @@ public class ChatClientAgentPort implements AgentPort {
      * 这里设的是 Advisor 上下文里的参数，链上没有记忆 Advisor 时它安静地被忽略。
      */
     private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message) {
+        // 归属键只算一次：会话 id 与外键都是它，两处各算一遍的话，
+        // 指纹计算方式一改就可能只改到一半，而表现是"会话记得住、召回查不到"。
+        String owner = SessionKeys.ownerOf(message.principal());
         // 压缩必须发生在"这一轮拼提示词"之前：记忆 Advisor 在 before 阶段读事件，
         // 压完紧接着就被读到。放在 after 里等于压给下一轮用，而下一轮可能已经超了。
         if (compactor != null) {
-            compactor.compactIfNeeded(SessionKeys.sessionIdOf(message.principal()));
+            compactor.compactIfNeeded(SessionKeys.sessionIdOfOwner(owner));
         }
         // 入站就脱敏（ADR-0011 里真模型测试抓到的那个缺陷）：
         // 会话记忆是在 Advisor 链的 before 阶段最早那一步把用户消息写进库的，
@@ -114,7 +117,9 @@ public class ChatClientAgentPort implements AgentPort {
                 .advisors(spec -> spec
                         .param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, message.principal())
                         .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY,
-                                SessionKeys.sessionIdOf(message.principal()))
-                        .param(SessionMemoryAdvisor.USER_ID_CONTEXT_KEY, message.principal().userId()));
+                                SessionKeys.sessionIdOfOwner(owner))
+                        // 外键用归属键而不是裸 userId：跨会话召回走 user_id 精确匹配，
+                        // 传裸 userId 的话"换角色即换会话"在召回那条路上等于没做（见 SessionKeys）。
+                        .param(SessionMemoryAdvisor.USER_ID_CONTEXT_KEY, owner));
     }
 }

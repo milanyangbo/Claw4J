@@ -7,6 +7,7 @@ import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.principal.ToolPermission;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
@@ -36,8 +37,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
@@ -201,11 +204,57 @@ class SessionMemoryTest {
     }
 
     @Test
+    @DisplayName("会话表的 user_id 存归属键而非裸 userId：召回按它精确匹配，裸的会让降权失效")
+    void sessionUserIdCarriesThePermissionFingerprint() {
+        MapSessionService sessions = new MapSessionService();
+        ChatClientAgentPort port = port(new FixedChatModel("好"), sessions);
+
+        Principal who = Principal.readOnly("u-1");
+        port.reply(new InboundMessage(who, "chat", "问一句"));
+
+        assertThat(sessions.createdUserIds())
+                .as("写裸 userId 的话，换角色之后 recall_session 照样能查回他高权限时的会话")
+                .containsExactly(SessionKeys.ownerOf(who));
+    }
+
+    @Test
     @DisplayName("userId 为空的身份不许开会话：否则所有人共用一个，还记得是别人的")
     void blankUserIdIsRejected() {
         assertThatThrownBy(() -> SessionKeys.sessionIdOf(Principal.readOnly(" ")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("userId");
+    }
+
+    @Test
+    @DisplayName("会话 id 跟着「人 + 权限」走：同一份权限稳定，换一份权限就换会话")
+    void sessionIdFollowsIdentityAndPermissions() {
+        Principal who = Principal.readOnly("u-1");
+
+        assertThat(SessionKeys.sessionIdOf(who))
+                .as("每次都不一样的话，这个人永远记不住上一轮，而且没有任何报错")
+                .isEqualTo(SessionKeys.sessionIdOf(Principal.readOnly("u-1")))
+                .startsWith(SessionKeys.PREFIX + "u-1@");
+
+        Principal downgraded = Principal.of("u-1", "guest",
+                Set.of("region"), Set.of(ToolPermission.READ));
+        assertThat(SessionKeys.sessionIdOf(downgraded))
+                .as("权限变了却还是同一段会话，历史里那些高权限数字会被原样念出来")
+                .isNotEqualTo(SessionKeys.sessionIdOf(who));
+    }
+
+    @Test
+    @DisplayName("权限集合的迭代顺序不影响指纹")
+    void fingerprintIgnoresSetOrder() {
+        Principal a = Principal.of("u-1", "read-only",
+                new LinkedHashSet<>(Set.of("sales_order", "order_item", "region")),
+                new LinkedHashSet<>(Set.of("read", "recall_session")));
+        Principal b = Principal.of("u-1", "read-only",
+                new LinkedHashSet<>(Set.of("region", "sales_order", "order_item")),
+                new LinkedHashSet<>(Set.of("recall_session", "read")));
+
+        assertThat(PermissionFingerprint.of(a))
+                .as("不排序的话同一份权限能算出两个指纹：缓存永不命中，会话每轮都是新的")
+                .isEqualTo(PermissionFingerprint.of(b));
     }
 
     @Test
@@ -324,6 +373,7 @@ class SessionMemoryTest {
         private final Map<String, Session> sessions = new LinkedHashMap<>();
         private final Map<String, List<SessionEvent>> events = new LinkedHashMap<>();
         private final List<String> createdIds = new CopyOnWriteArrayList<>();
+        private final List<String> createdUserIds = new CopyOnWriteArrayList<>();
 
         @Override
         public Session create(CreateSessionRequest request) {
@@ -337,6 +387,7 @@ class SessionMemoryTest {
                     .build();
             sessions.put(session.id(), session);
             createdIds.add(session.id());
+            createdUserIds.add(session.userId());
             return session;
         }
 
@@ -404,6 +455,10 @@ class SessionMemoryTest {
 
         List<String> createdIds() {
             return List.copyOf(createdIds);
+        }
+
+        List<String> createdUserIds() {
+            return List.copyOf(createdUserIds);
         }
     }
 }

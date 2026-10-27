@@ -97,3 +97,33 @@
 
 **Redis 仍然不引**。ADR-0005 里那段"引回 Redis Stack 要换镜像、客户端要 Jedis"的说明已标作废——
 不标的话，下一个人会照它去装一遍，然后发现装了个没人用的东西。
+
+## 框架自己有 `SemanticCacheAdvisor`，为什么还是自己写
+
+Spring AI 2.0 起带了 `org.springframework.ai.chat.cache.semantic.SemanticCacheAdvisor` 与
+`SemanticCache` 接口（2.0.0-M2 加入，Redis 模块里给了一个 `DefaultSemanticCache`）。
+它有两件事正合我们需要：**TTL 是接口的一部分**（`set(query, response, Duration ttl)`），
+**上下文隔离也是**（`get/set(query, response, String contextHash)`）。
+
+但它有两处对不上：
+
+1. **隔离维度是系统提示词，不是权限。** 那个 `contextHash` 由请求里的 system prompt 算 SHA-256
+   （官方测试就叫 `sameSystemPromptProducesSameContextHash` / `differentSystemPromptsProduceDifferentContextHashes`），
+   调用方插不上手。我们全员共用一份系统提示词，于是所有角色会共享同一片缓存——
+   `different-permission` 那道守卫直接失效。要借官方 advisor 保住权限隔离，只能把权限指纹
+   掺进 system prompt，那是拿业务提示词去迁就缓存。
+2. **它没有"这一轮该不该缓存"的判断。** 只按相似度 + `contextHash` + TTL 命中，
+   不区分有没有副作用、有没有调过工具，`sideEffectFree` 在它那里没有挂点。
+
+所以自建 advisor 不是重复造轮子，是框架那一层抽象正好缺了我们要的两件事。
+**退场条件是明确的**：哪天 `contextHash` 开放给调用方，这套就可以换成
+`SemanticCacheAdvisor` + 一个 pgvector 的 `SemanticCache` 实现，只留"权限指纹"与"副作用判定"两个钩子。
+
+## 纯问答也进缓存：知道，但不加判断
+
+"你好，你能做什么"这类一问一答也会进表（`sideEffectFree` 对空集合返回 true——
+没调工具就是没有外部状态参与）。它确实不是"查得到数的答案"，但**这一轮不额外加规则**：
+
+官方的 `SemanticCacheAdvisor` 同样只按相似度 + `contextHash` + TTL 判断，也没有"这轮调没调工具"的概念。
+自己加一条，等于把一个特例塞进框架将来可能统一解决的地方，而且它的收益只有"少存几行"。
+真觉得碍事，调小 `claw4j.cache.time-to-live`（比如 10 分钟）比加判断直接。

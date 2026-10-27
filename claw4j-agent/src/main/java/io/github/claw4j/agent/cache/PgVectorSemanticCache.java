@@ -1,13 +1,10 @@
 package io.github.claw4j.agent.cache;
 
+import io.github.claw4j.agent.PermissionFingerprint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -139,16 +136,14 @@ public class PgVectorSemanticCache implements SemanticCache {
         return sha256(normalized);
     }
 
-    /** 指纹的计算与判定的口径在 {@link CacheAdvisor} 里定，这里只要求"它是个短字符串"。 */
+    /**
+     * 指纹的计算与判定的口径在 {@link CacheAdvisor} 里定，这里只要求"它是个短字符串"。
+     *
+     * <p>实现挪到了 {@link PermissionFingerprint}：权限指纹（缓存用）与会话 id（记忆用）
+     * 必须是同一套口径，两份 SHA-256 各自演化迟早会出现"同一个人两处不是一个人"。
+     */
     static String sha256(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
-        }
-        catch (NoSuchAlgorithmException impossible) {
-            // JDK 必须提供 SHA-256，缺了就不是这个仓库能处理的问题。
-            throw new IllegalStateException("JDK 缺少 SHA-256", impossible);
-        }
+        return PermissionFingerprint.sha256(value);
     }
 
     /**
