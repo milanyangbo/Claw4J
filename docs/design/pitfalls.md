@@ -218,13 +218,20 @@ default Optional<ChatResponse> get(String query, String contextHash) {
 任何权限、任何时间窗的缓存互相命中，不报错、不缺功能，只是偶尔给出别人的答案。
 这个问题在 code review 里也看不出来：接口签名上那个参数明明白白写着。
 
-**现在**：我们**没有实现框架这个接口**，而是自己定了一个 `SemanticCache`
-（`nearest` / `store`），上下文是**必填入参**，签名上就没有"不带上下文"的版本可选：
-SQL 里 `where fingerprint = ? and entities = ?` 是唯一能保证生效的地方。
+**现在**：我们**没有实现框架这个接口**，而是自己定了一个 `SemanticCache`，把上下文拆成
+权限指纹（`fingerprint`）与实体签名（`entities`）两段，**命中路径 `nearest` 两段都必填**，
+签名上没有省略它们的版本：SQL 里 `where fingerprint = ? and entities = ?` 是唯一能保证生效的地方。
 
-这不是"记得 override"，是让"忘记传上下文"这件事**编译不过**——从第一版起就是自有接口，
+不能说"整个接口里都没有不带上下文的版本"——`nearestInFingerprint` 与 `nearestAnyFingerprint`
+就是有意不带实体、甚至不带权限的两条。它们能放出来，是因为**名字里写着自己少了什么**，
+而且只喂 `CacheAdvisor.reasonForEmpty` 那一段：把 miss 说成 "different-entities" 还是
+"different-permission"。结果绝不参与命中判定，`SemanticCacheTest` 里「换一个角色问同一句话：
+miss，且原因是权限不同」那条守着这个边界——诊断看得见候选，命中仍然不发生。
+
+这不是"记得 override"，是让"忘记传上下文"这件事在**命中路径上编译不过**——从第一版起就是自有接口，
 没有走过"实现框架接口"那条路。差别在守不守得住：靠"每个方法都别忘写那个参数"的实现，
-今天对，明天加一个方法就漏，而漏了之后什么都不报。
+今天对，明天加一个方法就漏，而漏了之后什么都不报。诊断那两条是这套结构里唯一可以少传的地方，
+所以它们的命名与调用点都必须显眼——不能起个 `nearest` 之类的名字。
 
 **更普遍的一条**：`default` 方法常被用来"不给旧实现添负担"，代价就是新参数被静默忽略。
 读框架接口时看到 `default`，要去反编译它默认干了什么——
