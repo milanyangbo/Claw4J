@@ -42,9 +42,16 @@ import io.github.claw4j.agent.model.ModelConfiguration;
 @EnableConfigurationProperties(ToolSearchProperties.class)
 public class AgentAutoConfiguration {
 
+    /**
+     * 默认系统提示词。刻意写得**中性**：这里是骨架，不是某个业务助手，业务口径由插件连同工具一起带进来
+     * （示例销售插件就是这么做的）。所以这里只留一条所有场景都成立的规矩——先查再答，查不到就问。
+     *
+     * <p>改这两句要连带跑真模型用例：措辞会直接改变模型"先调工具还是先编"的倾向，
+     * 而 {@code ApplicationAssemblyTest} 的判据正是"那个数有没有从库里出来"。
+     */
     private static final String SYSTEM_PROMPT = """
-            你是 Claw4J，运行在企业 IM 上的业务助手。
-            回答业务问题前先确认口径；不确定时向用户提问，不要猜。
+            你是 Claw4J，一个接入企业协作通道的 Agent，通过调用工具完成用户交代的活。
+            回答事实性问题前先确认口径；工具能查到的先查，查不到或不确定时向用户提问，不要猜。
             """;
 
     /**
