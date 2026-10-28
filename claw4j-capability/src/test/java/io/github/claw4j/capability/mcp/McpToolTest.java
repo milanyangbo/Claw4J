@@ -58,6 +58,38 @@ class McpToolTest {
     }
 
     @Test
+    @DisplayName("按工具声明的权限进了登记表：点名的用覆盖，其余回落到 server 那一条")
+    void perToolPermissionReachesTheRegistry() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new CalcTools())) {
+            McpServerEndpoint endpoint = McpServerEndpoint.of("calc", ToolPermission.read(),
+                    Map.of("echo", ToolPermission.of("send_email")), server::openTransport);
+
+            try (McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(endpoint)))) {
+                assertThat(provider.permissions())
+                        .as("登记表就是鉴权 Advisor 查的那张表，所以这一条等价于“调用时真的按工具分权”")
+                        .containsEntry("echo", ToolPermission.of("send_email"))
+                        .containsEntry("add", ToolPermission.read());
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("覆盖表点名了 server 没导出的工具：建 provider 就失败，且把实际清单一起报出来")
+    void unknownToolNameInOverridesFailsWhenTheProviderIsBuilt() {
+        try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("calc", new CalcTools())) {
+            McpServerEndpoint endpoint = McpServerEndpoint.of("calc", ToolPermission.read(),
+                    Map.of("send_mail", ToolPermission.of("send_email")), server::openTransport);
+
+            assertThatThrownBy(() -> new McpToolProvider(List.of(new McpConnection(endpoint))))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("MCP server calc")
+                    .hasMessageContaining("send_mail")
+                    .as("报出实际导出的清单，省得再去翻 server 的文档")
+                    .hasMessageContaining("add");
+        }
+    }
+
+    @Test
     @DisplayName("连接通了但一个工具都没有：建 provider 就失败，不留到用户问起")
     void emptyToolListFailsWhenTheProviderIsBuilt() {
         try (InProcessStdioMcpServer server = InProcessStdioMcpServer.of("empty")) {

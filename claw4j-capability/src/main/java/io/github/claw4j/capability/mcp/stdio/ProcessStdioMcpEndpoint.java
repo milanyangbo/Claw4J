@@ -101,6 +101,14 @@ public final class ProcessStdioMcpEndpoint {
     }
 
     /**
+     * 端点 + 按工具覆盖的那张表。一个 server 同时导出"查"与"改"时，
+     * 整条只给一个权限只能得到两种坏结果：权限放大，或者整条不可用。
+     */
+    public McpServerEndpoint endpoint(ToolPermission permission, Map<String, ToolPermission> toolPermissions) {
+        return McpServerEndpoint.of(name, permission, toolPermissions, this::openTransport);
+    }
+
+    /**
      * 起一个新进程并连上它。
      *
      * <p>进程是<b>懒起</b>的：只有端点被连接（第一次列工具）或重连时才会真的 fork，

@@ -53,6 +53,17 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
                         + "通常是命令写错、版本对不上或工具没被注册。按 ADR-0002 的要求在这里就失败，"
                         + "不等到用户问到了才暴露。");
             }
+            // 点名了不导出的工具名＝配置写错了。静默沿用它背后的兜底权限，症状是
+            // "我明明给那个写动作加严了"，查起来要翻到 yml 里数冒号。
+            Set<String> exported = new LinkedHashSet<>(tools.stream().map(Tool::name).toList());
+            Set<String> unknown = new LinkedHashSet<>(connection.declaredToolNames());
+            unknown.removeAll(exported);
+            if (!unknown.isEmpty()) {
+                throw new IllegalStateException("MCP server " + connection.name()
+                        + " 的 tools 里点名了它没有导出的工具：" + String.join("、", unknown.stream().sorted().toList())
+                        + "。它实际导出的是：" + String.join("、", exported.stream().sorted().toList())
+                        + "。按工具声明权限时名字必须是 server 里的原名，写错一个就等于那条加严没生效。");
+            }
             for (Tool tool : tools) {
                 if (!seen.add(tool.name())) {
                     throw new IllegalStateException("MCP 工具重名：" + tool.name()
@@ -60,7 +71,7 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
                             + "悄悄留一个等于让这次调到谁取决于注册顺序，所以按配置错误失败。");
                 }
                 collected.add(new McpToolCallback(connection, tool));
-                declared.put(tool.name(), connection.requiredPermission());
+                declared.put(tool.name(), connection.permissionFor(tool.name()));
             }
         }
 

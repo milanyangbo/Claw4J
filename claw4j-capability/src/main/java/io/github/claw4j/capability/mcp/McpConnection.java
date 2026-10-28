@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -42,9 +43,23 @@ public final class McpConnection implements AutoCloseable {
     /** 一次 MCP 请求的等待上限。超时与"会话丢失"是两种故障，不能混成同一种重试。 */
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
+    /** 握手的默认上限。见 {@link #initializationTimeout}：启动器解析包可能比一次调用慢两个数量级。 */
+    private static final Duration DEFAULT_INITIALIZATION_TIMEOUT = Duration.ofSeconds(60);
+
     private final McpServerEndpoint endpoint;
 
     private final Duration requestTimeout;
+
+    /**
+     * 握手（{@code initialize}）的等待上限，与单次请求超时分开。
+     *
+     * <p>分开是因为两者量级差一个数量级：一次工具调用通常几百毫秒，
+     * 而 {@code npx} 这类启动器要解析包、可能要访问 registry——本机实测
+     * {@code npx -y @modelcontextprotocol/server-everything} 在缓存已热的情况下
+     * 仍然要 50 秒才走完握手。SDK 的默认值是 20 秒，于是一个完全正常的 server
+     * 会以 {@code Client failed to initialize} 的形式被判成"连不上"。
+     */
+    private final Duration initializationTimeout;
 
     private final AtomicInteger initializations = new AtomicInteger();
 
@@ -62,8 +77,18 @@ public final class McpConnection implements AutoCloseable {
      *                      测试给 2 秒，于是一条断言不必等满 30 秒才知道连不上。
      */
     public McpConnection(McpServerEndpoint endpoint, Duration requestTimeout) {
+        this(endpoint, requestTimeout, DEFAULT_INITIALIZATION_TIMEOUT);
+    }
+
+    /**
+     * @param initializationTimeout 握手超时。给的是 {@code npx} / {@code uvx} 这类启动器的余量：
+     *                              它们要先解析包、可能需要访问 registry，本机实测 50 秒，
+     *                              而 SDK 的默认值 20 秒会把一个正常的 server 判成"连不上"。
+     */
+    public McpConnection(McpServerEndpoint endpoint, Duration requestTimeout, Duration initializationTimeout) {
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
         this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
+        this.initializationTimeout = Objects.requireNonNull(initializationTimeout, "initializationTimeout");
     }
 
     public String name() {
@@ -73,6 +98,16 @@ public final class McpConnection implements AutoCloseable {
     /** 这个 server 导出的工具需要什么权限。由端点声明，本层不认识任何业务表。 */
     public ToolPermission requiredPermission() {
         return endpoint.permission();
+    }
+
+    /** 某个工具实际要什么权限：端点按工具覆盖过就用覆盖，否则回落到 server 那一条。 */
+    public ToolPermission permissionFor(String toolName) {
+        return endpoint.permissionFor(toolName);
+    }
+
+    /** 端点上逐个点名过权限的工具名。用来判"点名了但 server 没导出"。 */
+    public Set<String> declaredToolNames() {
+        return endpoint.declaredToolPermissions().keySet();
     }
 
     /**
@@ -135,10 +170,20 @@ public final class McpConnection implements AutoCloseable {
     }
 
     private McpSyncClient open() {
-        McpSyncClient opened = McpClient.sync(endpoint.openTransport())
-                .requestTimeout(requestTimeout)
-                .build();
-        opened.initialize();
+        McpSyncClient opened;
+        try {
+            opened = McpClient.sync(endpoint.openTransport())
+                    .requestTimeout(requestTimeout)
+                    .initializationTimeout(initializationTimeout)
+                    .build();
+            opened.initialize();
+        }
+        catch (RuntimeException failure) {
+            // 消息里必须带 server 名。底层抛的是 Cannot run program / ConnectException /
+            // 超时，里面一个能认出"是哪一个"的字都没有；而配置化的接法天然会有好几个 server，
+            // 只报一句 IOException 等于让人在 yml 里逐个二分。
+            throw new IllegalStateException("MCP server " + name() + " 连不上：" + failure.getMessage(), failure);
+        }
         initializations.incrementAndGet();
         return opened;
     }
