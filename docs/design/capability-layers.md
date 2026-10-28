@@ -298,7 +298,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --claw4j.scripts.directory=examples/scripts \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents \
-  --spring.profiles.active=mcp-demo --claw4j.mcp.demo.demo-server=true
+  --spring.profiles.active=mcp-demo
 ```
 
 下面这几段是**那次运行的真实 curl 输出**，不是占位符（M2-07 收尾时录的，DeepSeek + 本地 Postgres）：

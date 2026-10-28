@@ -11,7 +11,7 @@
 | `scripts/` | 三层：Script Package | `claw4j.scripts.directory=examples/scripts` |
 | `skills/` | Skill | `claw4j.skills.directory=examples/skills` |
 | `subagents/` | Subagent | `claw4j.subagents.directory=examples/subagents` |
-| `mcp/` | 二层：MCP server（跨进程） | `--spring.profiles.active=mcp-demo` + 各自的开关 |
+| `mcp/` | 二层：MCP server（跨进程） | `--spring.profiles.active=mcp-demo`（一份配置，三个 server） |
 
 四层里**只有 MCP 那一层是协议层面的语言无关**（对端可以是任何语言写的程序）；
 脚本包、Skill、Subagent 的语言无关来自文件格式与本项目的接缝，Spring AI 没有对应抽象。
@@ -36,19 +36,22 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 ## MCP 层（二层，真的跨进程）
 
 ```bash
-java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
-  --spring.profiles.active=mcp-demo \
-  --claw4j.mcp.demo.demo-server=true \
-  --claw4j.mcp.demo.github=true
+# 在仓库根目录起：三个 server 的脚本路径是相对的，按当前工作目录解析
+java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar --spring.profiles.active=mcp-demo
 ```
 
-`mcp-demo` profile 打开的是 `McpDemoConfiguration`：它把 `examples/mcp/` 下的
-Python server 接成端点，每个 server 一个开关（默认全关）。
+`mcp-demo` 这个 profile 里只有一份配置（`claw4j-app/src/main/resources/application-mcp-demo.yml`），
+三个 server 各一段 YAML。**这里没有对应的 Java 类**——曾经有一个 `McpDemoConfiguration`，
+它干的事只是拼三个绝对路径，而"相对路径按当前工作目录解析"本来就成立，
+所以那份配置自己就够，类被删掉了。
+
 Java 这边起的是**真的子进程**，用它的 stdin/stdout 说 MCP——不是进程内的替身。
 
 - `demo_mcp_server.py`：不依赖任何 CLI，`demo_echo` 回话、`demo_now` 报子进程 pid 与时间戳（每次不同）
 - `gh_mcp_server.py`：包 `gh` CLI，导出 `github_issue_list` / `github_pr_checks` / `github_api`（只读）
-- `himalaya_mcp_server.py`：包 `himalaya`，导出 `mail_list_unread` 与 **`mail_send`**（有副作用，所以端点登记的是 `send_email` 而不是只读）
+- `himalaya_mcp_server.py`：包 `himalaya`，导出 `mail_list_unread` 与 **`mail_send`**。后者有副作用，
+  所以配置里按工具覆盖权限（兜底 `read`，只有 `mail_send` 是 `send_email`）——
+  整条声明成只读就会变成"只读角色能发邮件"
 
 `mcp_stdio.py` 是这三个共用的最小骨架（约 100 行，零第三方依赖）：读 JSON-RPC 帧、分派、写回。
 用它而不是官方 SDK，是为了让"Java 侧连的到底是个什么"从头到尾看得见。
