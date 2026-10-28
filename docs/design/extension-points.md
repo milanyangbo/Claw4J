@@ -13,9 +13,12 @@
 | 扩展点 | 你要提供 | 依赖 | 参照实现 |
 | --- | --- | --- | --- |
 | Java 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` | `claw4j-domain`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
-| MCP server | 一个说 MCP 协议的可执行程序（任何语言） | 宿主侧 `claw4j-capability`；server 侧什么都不要 | [`claw4j-example-mcp-server`](../../claw4j-example-mcp-server)、[`examples/mcp/`](../../examples/mcp) |
+| MCP server | 一段配置（或一个 `McpServerEndpoint` bean）；server 本身可以是任何语言 | 宿主侧 `claw4j-capability`；server 侧什么都不要 | [`application-mcp-third-party.yml`](../../claw4j-app/src/main/resources/application-mcp-third-party.yml)、[`claw4j-example-mcp-server`](../../claw4j-example-mcp-server)、[`examples/mcp/`](../../examples/mcp) |
+| 脚本包 | 一个目录（`package.properties` + 入口脚本） | 无（子进程 + 沙箱） | [`examples/scripts/`](../../examples/scripts) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](../../examples/skills/weekly-sales) |
+| Subagent | 一份 `*.md`（front matter + 正文） | 无（纯文本） | [`examples/subagents/capacity-triage.md`](../../examples/subagents/capacity-triage.md) |
 | 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-domain`（要复用编排再加 `claw4j-channel`） | `claw4j-channel/http`、`claw4j-channel/feishu` |
+
 
 ---
 
@@ -71,6 +74,12 @@ com.acme.jira.JiraToolsAutoConfiguration
 登记的是**这个工具会碰到什么**（表 + 动作），不是"谁能用它"——后者在角色的授权表里，
 改那个不用发版。
 
+**粒度到工具，不到参数。** 一个 Java 工具的权限写在它自己的 `@Bean` 里（一个工具一份声明）；
+MCP 那边默认按 server 一份，`servers.<名字>.tools.<工具名>` 可以逐个覆盖。需要这一层的原因是
+第三方 server 常把只读查询与写动作装在同一个进程里（`list_inbox` 与 `send_email`）：
+只按 server 声明时，这类 server 只有"写动作也被只读身份调用"与"整条不可用"两个结局。
+覆盖只影响被点名的工具；点名了 server 没导出的工具名，启动就失败。
+
 ### 加一个开关
 
 示例插件给自己的键是 `claw4j.example.sales.enabled`（默认 true）。插件应该给得出
@@ -98,10 +107,44 @@ public class JiraToolsAutoConfiguration { ... }
 
 ## 二、MCP server
 
-MCP 这一层与语言无关：**server 是另一个进程，和宿主之间只有 JSON-RPC**。
+MCP 这一层与语言无关：**server 是另一个进程（或另一个端点），和宿主之间只有 JSON-RPC**。
 Python 能写，Java 也能写，写出来对宿主完全一样。
 
-### 宿主侧：多放一个端点 bean
+### 宿主侧：一段配置就够
+
+接一个**别人写的** server 不需要写 Java——`claw4j.capability.mcp.servers` 下写一段：
+
+```yaml
+claw4j:
+  capability:
+    mcp:
+      servers:
+        deepwiki:                      # 走 HTTP：连别人已经跑着的端点
+          transport: http
+          url: https://mcp.deepwiki.com
+          # endpoint 不填走 SDK 默认（http → /mcp，sse → /sse）
+          # headers:
+          #   Authorization: "Bearer ${MCP_TOKEN}"     # 凭据写成占位符，值不进仓库
+        everything:                    # 走 stdio：起一个子进程
+          command: npx
+          args: ["-y", "@modelcontextprotocol/server-everything"]
+          inherit-env: [PATH, HOME]    # 没点名的变量子进程一个都看不到
+          permission:
+            action: read               # 默认就是 read；能写东西的 server 要显式写
+```
+
+键的名字与默认值在 `McpServerProperties` 里；`McpEndpoints` 负责把它翻成端点，那里也是
+**配错就当场失败**的地方：stdio 没 `command`、http 没 `url`、`url` 不是 http(s)、
+`inherit-env` 里有空项——每条失败消息都带 server 名，因为配置化之后一次会配好几个。
+
+装配条件看的是**配置**（`ConfiguredMcpServersAutoConfiguration.ServersConfigured` 读 Environment），
+不是容器里有没有某个 bean。写成 `@ConditionalOnBean` 会踩上面第三种失效：条件按声明顺序求值，
+顺序一错整层静默消失。
+
+### 什么时候仍然写 bean
+
+值要**算出来**的时候：路径要拼、token 要从 vault 取、传输要包一层重试或代理。
+`claw4j-app/McpDemoConfiguration` 就是这种——它按可配置的目录拼出 `examples/mcp/*.py` 的绝对路径。
 
 ```java
 @Bean
@@ -115,8 +158,10 @@ McpServerEndpoint javaDemoMcp() {
 }
 ```
 
-`McpToolAutoConfiguration` 收所有 `McpServerEndpoint`，每条连接在**启动时**建立、
-工具清单在启动时取回。于是：
+两条路都在 `McpToolAutoConfiguration` / `ConfiguredMcpServersAutoConfiguration` 里收，
+各自出**一份** `McpToolProvider`：多份是设计上允许的，Agent 侧按 `ObjectProvider` 收全部。
+每条连接在**启动时**建立、工具清单在启动时取回。于是：
+
 
 - **清单为空即失败**（ADR-0002）：连接是通的、协议握手也成功，只是它一件能力都没有。
   那种状态必须报错，否则现场是"模型说它没这个能力"，而真正的原因是命令写错了。
@@ -130,8 +175,10 @@ McpServerEndpoint javaDemoMcp() {
 ```java
 var transport = new StdioServerTransportProvider(McpJsonDefaults.getMapper(), System.in, System.out);
 var specs = new SyncMcpToolProvider(List.of(new DemoJavaTools())).getToolSpecifications();
-McpServer.sync(transport).serverInfo("claw4j-java-demo", "1.0.0").tools(specs).build();
-new CountDownLatch(1).await();   // main 返回 = 进程退出 = 客户端看到"刚起来就没了"
+var server = McpServer.sync(transport).serverInfo("claw4j-java-demo", "1.0.0").tools(specs).build();
+Runtime.getRuntime().addShutdownHook(new Thread(server::closeGracefully));
+// 不用挂 CountDownLatch 阻塞 main：传输线程不是守护线程，main 返回后进程照样活着。
+// 构建过程中实测过一次——加了 latch 与不加没有区别，于是删掉了它。
 ```
 
 它踩过一次坑，值得所有人提前知道：**stdout 是协议通道**。SDK 自己的 INFO 日志默认也走 stdout，
@@ -221,11 +268,43 @@ public class WecomChannelAutoConfiguration {
 
 ---
 
+## 五、语言不是扩展点的维度
+
+"用 Python 写一个 tool"这句话在这个仓库里没有直接对应物，因为 Spring AI 让模型**动手**的
+官方通道只有两条：Java 方法（`@Tool` / `MethodToolCallbackProvider`，本项目再加一张
+`ToolPermissionRegistry`）与 MCP（`SyncMcpToolCallbackProvider`，来自 `spring-ai-mcp`）。
+非 Java 的代码要变成模型手上的能力，只有三种结局：
+
+| 你手上的东西 | 变成什么 | 语言无关来自哪儿 | 官方还是本项目 |
+| --- | --- | --- | --- |
+| 会说 MCP 的程序 | 一个 MCP 端点（生成 `ToolCallback`） | **协议**：JSON-RPC 帧，与实现语言无关 | 官方（MCP SDK + `spring-ai-mcp`） |
+| 命令行程序 | 一个脚本包工具 | **进程边界**：起得来、读得懂 stdout | 本项目接缝（`capability/script`） |
+| 一份做法 | 一个 Skill | **文件格式**：`SKILL.md` | 本项目接缝（`capability/skill`） |
+| 一个专职的人 | 一个 Subagent | **文件格式**：markdown + front matter | 本项目接缝（`agent/subagent`） |
+
+四条路的取舍很实际：
+
+- **要复用已有的 Python/Go 服务，就走 MCP。** 它有官方 SDK、有协议兜底、有会话与重连语义，
+  而且对宿主是**唯一**一种"跨语言且跨进程"的接法。
+- **只是一条命令，就走脚本包。** 代价是子进程只拿得到 `PATH`（`SandboxPolicy`），
+  需要凭据的能力在这一层跑不通——那不是缺陷，是这一层故意的边界。
+- **只是"怎么做"，就不要写成工具。** Skill 不提新能力，它只决定现有工具怎么用；
+  把它写成工具等于让模型多一个需要检索的动作，收益为零。
+- **要隔离上下文与预算，才用 Subagent。** 它的 `tools` 是白名单，是这一层唯一的安全边界。
+
+反过来说：**不要为了"支持某语言"而加一层插件协议**。跨语言这件事 MCP 已经解决了，
+再加一层只会得到"两个都不完整的协议"。
+
+---
+
 ## 一张表总结
 
 | 我想加… | 改哪里 | 不需要改 |
 | --- | --- | --- |
 | 一个业务工具 | 新 jar：工具类 + 自动配置 + imports 文件 + 一条依赖 | 框架任何一处 |
-| 一个新的 MCP 能力 | 宿主侧多一个 `McpServerEndpoint` bean；server 用任何语言写 | 连接的建立、重连、权限登记 |
-| 一套做事流程 | 一个目录 + `SKILL.md` | 代码 |
+| 一个新的 MCP 能力 | 一段 `claw4j.capability.mcp.servers.<名字>` 配置；要算值时才写 bean | 连接的建立、重连、权限登记 |
+| 一个命令行能力 | 一个目录（`package.properties` + 入口脚本）+ `claw4j.scripts.directory` | 代码 |
+| 一套做事流程 | 一个目录 + `SKILL.md` + `claw4j.skills.directory` | 代码 |
+| 一个专职的子 Agent | 一份 `*.md` + `claw4j.subagents.directory` | 代码 |
 | 一条新通道 | 新 jar：`ChatChannel` 实现 + 端点 + imports 文件 | agent、已有的通道 |
+

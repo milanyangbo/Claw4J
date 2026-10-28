@@ -118,11 +118,20 @@ _Avoid_: 权限矩阵、ACL、角色继承树
 连接建立时工具清单为空即失败；会话丢失（`McpTransportSessionNotFoundException`）要
 **重新初始化连接**，而不是对着一条死会话重试。
 
-物理形态有两种，靠端点的 `openTransport()` 这一条接缝切换，上面的连接代码一行不改：
-**进程内 stdio**（默认构建里跑的那种，不依赖 Docker 与 Python，验的是连接生命周期的逻辑）与
+物理形态有三种，靠端点的 `openTransport()` 这一条接缝切换，上面的连接代码一行不改：
+**进程内 stdio**（默认构建里跑的那种，不依赖 Docker 与 Python，验的是连接生命周期的逻辑）、
 **真的 OS 进程**（`gh` / `himalaya` 各包成一个 Python server，见 `examples/mcp/`，
-验的是这条逻辑在真实进程边界上还成立）。真实外部 CLI 那一组测试默认不跑（ADR-0014）。
+验的是这条逻辑在真实进程边界上还成立）、以及 **HTTP**（对方的 server 已经跑着，我们只当客户端）。
+真实外部那一组测试默认不跑（ADR-0014）。
 _Avoid_: 外部工具、插件、RPC 服务、命令行工具
+
+**MCP 传输（transport）**:
+一条 MCP 连接**怎么被建立**，与"连上之后干什么"是两件事。三选一：
+`stdio`（起子进程，用它的 stdin/stdout 说协议）、`http`（Streamable HTTP，2025 版协议的标准，
+每个请求一个 POST，会话靠 `Mcp-Session-Id` 头）、`sse`（旧版 HTTP+SSE，为只给 `/sse` 的老 server 留着）。
+它是一个**封闭集合**，由 `McpServerProperties.Transport` 枚举钉住：加一种传输是加一个实现类，
+不是加一段配置。
+_Avoid_: 协议类型、连接方式（"连接方式"在本项目里指 stdio / 进程内替身那种更粗的分类）
 
 **结构化 argv（给外部进程的命令）**:
 Java 侧给外部进程的**一个数组**，不是一条字符串。两处用到：

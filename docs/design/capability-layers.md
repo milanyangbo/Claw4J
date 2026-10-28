@@ -44,15 +44,34 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 宿主只认协议，不认对端用什么语言写。
 子进程的**环境默认为空**，需要 `PATH` 就显式写一行——应用的模型 key 与数据库口令不会漏过去。
 
-这条链路真跑一次的测试打的是 `real-cli` tag，默认不跑（它依赖本机装了 python3 与那些 CLI，
-不是每台机器都有，所以不进默认构建）：
+**另一种传输是 HTTP。** 对方的 server 已经跑着，我们只当一个 JSON-RPC 客户端：
+`transport: http`（Streamable HTTP，2025 版协议的标准）与 `transport: sse`（旧版 HTTP+SSE）
+走的是 `HttpMcpEndpoint`——不起进程、没有什么"对端的环境"，凭据放在请求头里。
+两者对上面那套连接生命周期（会话丢失重开、清单 fail-fast）完全透明：
+换传输只是换 `openTransport()` 返回的对象，这与 stdio 那条是同一个接缝。
+
+接**别人写的** server 不需要写 Java。`claw4j.capability.mcp.servers.<名字>` 下一段配置就是全部：
+`application-mcp-third-party.yml` 里就有一个 npm 上的 stdio server 与一个公网 HTTP 端点。
+键名、默认值与失败姿势在 [extension-points.md](extension-points.md) 的第二节；
+条件按**配置**求值（不是按容器里有没有 bean），所以配了才有这一层、不配就一层都没有。
+
+这条链路真跑一次的测试分两组，都默认不跑（一组依赖本机装了什么，一组依赖能不能出网，
+都不属于回归基线）：
 
 ```bash
-./mvnw -Preal-cli -pl claw4j-capability test
+./mvnw -Preal-cli -pl claw4j-capability test -Dtest=RealCliMcpEndToEndTest   # 真的 OS 子进程
+./mvnw -Preal-cli -pl claw4j-capability test -Dtest=RealThirdPartyMcpTest    # 第三方：stdio + 公网 HTTP
 ```
 
+**握手超时与调用超时是两件事。** `npx -y @modelcontextprotocol/server-everything`
+在本机实测要 **50 秒**才走完 `initialize`（启动器要先解析包），而 MCP SDK 的默认握手超时是
+20 秒——症状是 `Client failed to initialize by explicit API call`，server 侧却一切正常。
+所以这两个值分开配：`claw4j.capability.mcp.request-timeout`（单次调用，默认 30s）与
+`.initialization-timeout`（握手，默认 60s）。接更慢的启动器就调大后者，不必改代码。
+
 MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没有，鉴权只看动作。
-没登记权限的工具一律按拒绝处理（ADR-0007）。
+没登记权限的工具一律按拒绝处理（ADR-0007）。按工具覆盖权限时（`servers.<名字>.tools.<工具名>`），
+覆盖只影响被点名的工具；点名了 server 没导出的工具名，启动就失败。
 
 ## Script Package：脚本本体不进上下文，只有输出进
 
