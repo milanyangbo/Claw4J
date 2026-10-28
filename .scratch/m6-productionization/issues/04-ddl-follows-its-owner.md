@@ -14,7 +14,7 @@
 
 | 迁移 | 建的表 | 谁在用 |
 | --- | --- | --- |
-| `V3` | `claw4j_session.ai_session` / `ai_message` | `agent.session.SessionMemoryConfiguration` / `SessionSchema` |
+| `V3` | `claw4j_session.ai_session` / `ai_session_event` | `agent.session.SessionMemoryConfiguration` / `SessionSchema` |
 | `V4` `V5` | `claw4j_cache.*` | `agent.cache.PgVectorSemanticCache` / `CacheAdvisor` / `SemanticCacheCleanup` |
 
 而 `claw4j-capability` 里装的是 `mcp` / `script` / `skill` / `generator` / `process` / `builtin.system`
