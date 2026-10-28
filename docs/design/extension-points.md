@@ -17,7 +17,7 @@
 | 脚本包 | 一个目录（`package.properties` + 入口脚本） | 无（子进程 + 沙箱） | [`examples/scripts/`](../../examples/scripts) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](../../examples/skills/weekly-sales) |
 | Subagent | 一份 `*.md`（front matter + 正文） | 无（纯文本） | [`examples/subagents/capacity-triage.md`](../../examples/subagents/capacity-triage.md) |
-| 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-domain`（要复用编排再加 `claw4j-channel`） | `claw4j-channel/http`、`claw4j-channel/feishu` |
+| 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-channel-core`（**不带任何 IM SDK**） | `claw4j-channel/http`、`claw4j-channel/feishu` |
 
 
 ---
@@ -241,6 +241,36 @@ public interface AgentPort {
 2. **用事件 id 做幂等**（`InboundMessage#eventId`）。重推不能让同一句话被处理两次。
 3. **认不出人就拒绝**，不要把匿名请求放进来，也不要回落到某个默认角色。
 
+### 这三条已经有人替你实现了
+
+`claw4j-channel-core` 的 `channel.kernel.InboundDispatcher` 做的就是这四件事：去重 → 认人 →
+异步 → 分段回推，以及"失败也要回一句"。它只认两个接口，你的通道只要把平台事件压成五列即可：
+
+```java
+// 1. 平台事件 → 五个字段（这里用 Telegram 的形状）
+record TelegramUpdate(String updateId, long chatId, long fromId, String text, Instant receivedAt)
+        implements InboundEvent {
+    public String eventId()        { return updateId; }        // 重试时不变的那个
+    public String conversationId() { return String.valueOf(chatId); }
+    public String senderId()       { return String.valueOf(fromId); }
+}
+
+// 2. 发一段文本（分段由编排层做，实现只管发）
+ReplySender sender = (conversationId, text) -> telegram.sendMessage(conversationId, text);
+
+// 3. 接起来。accept 返回就是 ACK，它不等模型
+new InboundDispatcher(agentPort, executor, resolver, sender, "Telegram").accept(update);
+```
+
+为什么它能跨通道，而不是"飞书专用"：三个平台的回调在这五列上逐个对得上——
+飞书 `event_id` / `chat_id` / `open_id`、Telegram `update_id` / `chat.id` / `from.id`、
+Slack `event_id` / `channel` / `user`。差别只在参数（窗口 3 秒还是 7 秒、单条上限 4096 还是 40000），
+不在结构。飞书自己走的就是这条路：`FeishuInboundEvent` 只是把这个接口的 `conversationId()`
+映射到 `chat_id`，编排代码一行不分平台。
+
+模块边界是可执行的：`claw4j-channel-core/pom.xml` 只有 `claw4j-domain` 与 `slf4j-api`，
+`KernelBoundaryTest` 用白名单守着（只许依赖 JDK、日志、domain、自家代码）。
+
 ### 装配
 
 ```java
@@ -259,14 +289,11 @@ public class WecomChannelAutoConfiguration {
 
 ### 今天的限制（如实写）
 
-- **复用现有编排要依赖整个 `claw4j-channel`**。认人、幂等、ACK、回推、过载答复这套逻辑
-  现在长在 `feishu` 包里，第三方通道想复用它，就会把飞书 SDK 一起带进来。
-  只依赖 `claw4j-domain` 也能接，代价是那套编排要自己再写一遍。
-  抽一层平台无关的编排是待办，不是已完成的承诺。
-- **插件 jar 的外部加载（`loader.path`）没验证过**。加 Maven 依赖重新打包是验证过的路径；
-  不重新打包就换 classpath 这条路，写在这里是给方向，不是给保证。
-
----
+- **版本兼容口径还没定义**。插件靠自动配置被发现，但没有任何版本校验：插件编译时依赖的是旧版
+  `claw4j-domain`，核心接口一变就是运行期 `NoSuchMethodError`，而不是启动时一句
+  "这个插件要求核心 ≥ x.y"。现在只能靠"插件与核心同时升级"这个约定。
+- **只支持 `stdio` 与 `http`/`sse` 两种 MCP 传输**。社区里还有别的（比如基于消息队列的），
+  接进来要改 `McpEndpoints` 的枚举——那是一个明确的改动点，不是"配一下就行"。
 
 ## 五、语言不是扩展点的维度
 
@@ -294,6 +321,71 @@ public class WecomChannelAutoConfiguration {
 
 反过来说：**不要为了"支持某语言"而加一层插件协议**。跨语言这件事 MCP 已经解决了，
 再加一层只会得到"两个都不完整的协议"。
+
+---
+
+## 六、插件 jar 怎么进 classpath
+
+### 两种装法
+
+| 做法 | 动什么 | 代价 |
+| --- | --- | --- |
+| 加 Maven 依赖 | 宿主的 `pom.xml` 一行 | 重新构建、重新发版 |
+| 外部目录 + `loader.path` | 什么都不改，只改启动命令 | 启动时扫一次，**不是热加载** |
+
+```bash
+java -cp claw4j-app-0.1.0-SNAPSHOT.jar \
+     -Dloader.path=/opt/claw4j/plugins \
+     org.springframework.boot.loader.launch.PropertiesLauncher
+```
+
+### 实测记录（三组对照，缺一不可）
+
+插件 jar 的内容就是"工具类 + 自动配置 + `imports` 文件"，工具名取 `pluginPing`
+（与仓库里任何工具都不同，于是"它出现了"是可判定的）。
+
+| 起法 | 插件 bean | 说明 |
+| --- | --- | --- |
+| `-Dloader.path=/tmp/plugins` + `PropertiesLauncher` | **创建了** | 插件生效 |
+| `PropertiesLauncher`，不给 `loader.path` | 没创建 | 证明插件确实来自那个目录，不是 classpath 里本来就有 |
+| `java -jar app.jar -Dloader.path=...` | 没创建，**且不报错** | 默认 `Main-Class` 是 `JarLauncher`，它不认识 `loader.path` |
+
+端到端也验过一次：`POST /api/chat` 让模型调 `pluginPing`，返回
+`plugin 收到：外部插件端到端通了`——工具真到了模型手上，不是只建了个 bean。
+
+两个坑：
+
+- **`-D` 必须写在 `-cp` 前面**，且主类要显式写成 `PropertiesLauncher`。
+  写成 `java -jar` 时启动一切正常、插件静默不加载，这是最难查的一种。
+- **插件 jar 里必须有 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`**。
+  少这个文件，那个 jar 只是躺在 classpath 上，一个 bean 都不会注册。
+
+### 网关类产品是怎么做到"不改源码加一个负载均衡算法"的
+
+那类需求通常不是靠 `loader.path`，而是靠 **SPI + 外部 ClassLoader**：
+
+1. 核心定义一个稳定接口（`LoadBalancer`）与一个按名字取实现的注册表；
+2. 插件 jar 提供实现，并在 `META-INF/services/<接口全限定名>`（JDK `ServiceLoader`）、
+   `META-INF/dubbo/`（Dubbo）、`META-INF/shenyu/`（ShenYu）里登记；
+3. 启动时用 `URLClassLoader` 扫一个目录，把实现加载进来；
+4. 配置里写 `load-balancer: my-round-robin`，按名字选中一个。
+
+关键点是第 4 步：SPI 解决的是**「同类实现里选一个」**。
+
+Claw4J 的扩展点不是这个形状，所以没有走 SPI：
+
+| | 网关的扩展点 | Claw4J 的扩展点 |
+| --- | --- | --- |
+| 语义 | 同一接口的多个实现，按名字选一个 | 多个来源并存，全部交给模型 |
+| 需要什么 | 稳定接口 + 注册表 + 名字 | Spring bean + 条件装配 |
+| 用什么加载 | `ServiceLoader` + `URLClassLoader` | Boot 的自动配置发现 |
+
+"两个工具插件都提供 `querySales`"在 Claw4J 里是**配置错误**（重名即冲突，见
+`McpToolProvider` 的检查），不是"按名字选一个"——因为模型认的是工具名，
+悄悄留一个等于让这次调到谁取决于注册顺序。
+
+如果哪天真要"按名字选一个"（比如多种检索策略），那才需要 SPI 那一套；
+现在还不需要，`loader.path` 已经够用，而且免费拿到 Spring 的条件装配与配置绑定。
 
 ---
 

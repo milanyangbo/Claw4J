@@ -134,7 +134,7 @@ curl -s -X POST http://localhost:8080/api/chat \
 | 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` | `claw4j-domain`、`spring-ai-client-chat` | [`claw4j-example-sales`](claw4j-example-sales) |
 | MCP server | 一个说 MCP 协议的可执行程序（Java、Python 或任何语言） | 宿主侧 `claw4j-capability`；**server 侧什么都不要** | [`claw4j-example-mcp-server`](claw4j-example-mcp-server)、[`examples/mcp/`](examples/mcp) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](examples/skills/weekly-sales) |
-| 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-domain`；要复用现有编排再加 `claw4j-channel` | `claw4j-channel/http`、`claw4j-channel/feishu` |
+| 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-channel-core`（**不带任何 IM SDK**） | `claw4j-channel/http`、`claw4j-channel/feishu` |
 
 ### 三个文件接一个工具
 
@@ -284,11 +284,36 @@ public class WecomChannelAutoConfiguration {
 ```
 
 通道只要三件事：**拿到消息尽快 ACK**（IM 平台都有超时重推）、**用事件 id 做幂等**、**认不出人就拒绝**。
-这三条写进了 [`ChatChannel`](claw4j-channel/src/main/java/io/github/claw4j/channel/spi/ChatChannel.java) 的契约里。
+这三条写进了 [`ChatChannel`](claw4j-channel-core/src/main/java/io/github/claw4j/channel/spi/ChatChannel.java)
+的契约里；"ACK 之后怎么办"（去重、认人、异步、分段回推、失败也回一句）在
+[`channel.kernel`](claw4j-channel-core/src/main/java/io/github/claw4j/channel/kernel)，
+它只依赖 `claw4j-domain`——所以接 Telegram 不必把飞书 SDK 拖进 classpath。
 
-插件 jar 怎么进 classpath：最直接的是加一条 Maven 依赖重新打包；不想重新打包就用
-PropertiesLauncher 的 `loader.path` 指到一个插件目录。**后者还没在仓库里验证过**，写在这里是让人知道方向，
-不是承诺。
+### 插件 jar 怎么进 classpath（两种都验过）
+
+| 做法 | 动什么 | 代价 |
+| --- | --- | --- |
+| 加一条 Maven 依赖 | 宿主的 `pom.xml` 一行 | 要重新构建、重新发版 |
+| 外部目录 + `loader.path` | 什么都不改，只改启动命令 | 启动时扫一次，**不是热加载** |
+
+```bash
+# 插件 jar 放进 /opt/claw4j/plugins/ 之后，这样起：
+java -cp claw4j-app-0.1.0-SNAPSHOT.jar \
+     -Dloader.path=/opt/claw4j/plugins \
+     org.springframework.boot.loader.launch.PropertiesLauncher
+```
+
+两个坑，都实测过：
+
+- **`java -jar app.jar -Dloader.path=...` 不生效，而且一声不响。** 默认 `Main-Class` 是
+  `JarLauncher`，它根本不认识 `loader.path`。启动照常成功，插件照常没加载——所以要按上面那样
+  显式指定 `PropertiesLauncher`，并且 `-D` 必须写在 `-cp` 前面。
+- **插件 jar 里必须有 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`。**
+  少这个文件，那个 jar 只是躺在 classpath 上，一个 bean 都不会注册。
+
+验证方式写在 [`docs/design/extension-points.md`](docs/design/extension-points.md) 里：
+一个只依赖 `claw4j-domain` 与 Spring AI 的 jar，工具名 `pluginPing`，三组对照（带/不带
+`loader.path`、`java -jar`）+ 一次 `/api/chat` 真调用。
 
 ## 配置
 
@@ -338,6 +363,7 @@ PropertiesLauncher 的 `loader.path` 指到一个插件目录。**后者还没�
 | --- | --- |
 | `claw4j-domain` | 领域模型与端口。**零框架依赖**，唯一被承诺能脱离框架复用的模块 |
 | `claw4j-agent` | ChatClient 装配、模型路由、Advisor 链。不认识任何通道，也不认识任何工具类 |
+| `claw4j-channel-core` | 通道契约（`channel.spi`）与入站编排（`channel.kernel`）。只依赖 `domain`，**不带任何 IM SDK** |
 | `claw4j-channel` | 入站出站适配（HTTP+SSE、飞书长连接）。按平台分包，不按平台分模块 |
 | `claw4j-capability` | 能力来源的接缝：MCP、脚本包、Skill、子 Agent、生成器，加一个平台无关的 `system` 工具 |
 | `claw4j-example-sales` | **示例插件**：一个业务工具 + 四张业务表 + 种子数据。不依赖 `claw4j-capability` |
@@ -355,20 +381,19 @@ PropertiesLauncher 的 `loader.path` 指到一个插件目录。**后者还没�
 
 写在这里是因为它们会影响上面那些承诺的强度，而不是自谦：
 
-- **通道的中性编排层没抽出来**：认人、幂等、ACK、回推这套逻辑现在长在 `feishu` 包里，
-  第三方通道要复用它就得把飞书 SDK 一起拉进来。
-- **插件 jar 的外部加载（`loader.path`）没验证过**，也没定义插件与核心的版本兼容口径。
+- **插件与核心的版本兼容口径没定义**：插件靠 Spring Boot 自动配置被发现，但没有任何版本校验——
+  插件编译时依赖的是旧版 `claw4j-domain`，核心接口一变就是运行期 `NoSuchMethodError`，
+  而不是启动时一句"这个插件要求核心 ≥ x.y"。现在只能靠"同时升级"这个约定。
 - **MCP 的凭据只有"静态请求头"这一种**：`headers` 里写 `Bearer ${TOKEN}`。
   需要浏览器跳转、刷新 token、按用户授权的那些端点（OAuth 授权码流）现在接不了——
   要么先在别处换一个长期 token，要么等这一块做出来。
-- **框架自己的账本迁移还留在 `claw4j-capability`**：会话表（`V3`）与语义缓存表（`V4`/`V5`）
-  与能力来源无关，更该挨着用它们的模块（`claw4j-agent`）。业务表已经跟着
-  `claw4j-example-sales` 搬走了，剩这三份是纯账本，不构成"框架带业务"的问题，所以这轮没动。
 
 ## 目录结构
 
 ```text
-claw4j-{domain,agent,channel,capability,app}/      核心五个模块
+claw4j-{domain,agent,capability,app}/              核心：领域、Agent、能力、装配
+claw4j-channel-core/                               通道契约与入站编排（不带 IM SDK）
+claw4j-channel/                                    平台适配：HTTP、飞书长连接
 claw4j-example-{sales,mcp-server}/                 示例插件：业务工具、Java 版 MCP server
 docs/adr/            架构决策记录：为什么这样，否决了什么
 docs/design/         设计说明：能力来源与扩展点、鉴权、接入拦截、会话记忆、语义缓存
