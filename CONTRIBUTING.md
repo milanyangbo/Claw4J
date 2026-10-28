@@ -82,14 +82,29 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 
 ### 迁移与种子
 
-业务 schema 与种子在 `claw4j-capability/src/main/resources/db/migration/`
-（`V1` 建表、`V2` 放种子、`V3` 会话表），由 Flyway 执行。
+迁移脚本按**归属**分散在各模块自己的 `src/main/resources/db/migration/` 下：
 
-**改字段是加一个 `V4__xxx.sql`，不要回头改已提交的版本**——本地常驻库已经记过账了，
-改历史版本会让校验和不匹配，而删库重建正是这套迁移要替你免掉的事。
+| 版本 | 在哪 | 建什么 | 谁在用 |
+| --- | --- | --- | --- |
+| `V1` `V2` | `claw4j-example-sales` | 业务表与种子 | 示例插件自己的工具 |
+| `V3` | `claw4j-agent` | 会话表（`claw4j_session`） | `agent.session` |
+| `V4` `V5` | `claw4j-agent` | 语义缓存表（`claw4j_cache`） | `agent.cache` |
+
+判据只有一条：**谁读这张表，DDL 就放在谁的模块里**。这三张框架表原先都在 `claw4j-capability`，
+而那个模块装的是 mcp / script / skill / generator，一条 JDBC 都不碰——于是它被迫依赖整套
+Flyway 与 Postgres 驱动（M6-04 搬走了）。
+
+Flyway 扫遍 classpath 上所有 `db/migration` 再**按版本号排序**，所以文件在哪个 jar 里不影响
+执行顺序，"只有一个入口"指的是应用启动时那一次迁移。代价是**版本号必须全局唯一**：
+新增一个迁移就是挑当前最大号 +1，跟在哪个模块无关。
+
+**不要回头改已提交的版本**——本地常驻库已经记过账了，改历史版本会让校验和不匹配，
+而删库重建正是这套迁移要替你免掉的事。
 
 **注意**：Boot 4 把 Flyway 的自动配置拆成了独立 artifact，只放 `flyway-core` 时配置会静默不生效，
-见 [踩过的坑](docs/design/pitfalls.md) 第三条。
+见 [踩过的坑](docs/design/pitfalls.md) 第三条。三条依赖（`flyway-core` /
+`flyway-database-postgresql` / `spring-boot-flyway`）跟着迁移放在 `claw4j-agent`，
+应用经依赖传递拿到。
 
 种子里的日期是相对的（按"本周一"推算），所以每次重建的库里"上周"永远落在同一批订单上。
 这个"相对"只在迁移那一刻求值：常驻库建好之后，它里面的"上周"是**建库那天**的上周，放久了照样会漂。
@@ -104,7 +119,7 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | 门禁 | 拦什么 | 什么时候跑 |
 | --- | --- | --- |
 | `./mvnw verify` | 编译、测试、行覆盖率 ≥60%、打包 | 本地随时 |
-| ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程**（例外只有 `LocalProcessRunner` 一个类，ADR-0002） | `mvn test` |
+| ArchUnit 测试 | domain 不依赖框架、agent 与 channel 互不依赖、通道 SPI 平台中立、`channel-core` 只依赖 JDK / slf4j / domain、飞书 SDK 只在 feishu 包、**Advisor 必须双实现 Call + Stream**、**Java 侧不起进程**（例外只有 `LocalProcessRunner` 一个类，ADR-0002） | `mvn test` |
 | `ProcessBoundaryTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段 |
 | `./scripts/verify.sh` | 一条命令跑完上面几步：载入 `.env` → `clean verify`（含覆盖率红线）→ 用例数与**跳过数必须为 0** → 文件数/方法数上限（≤10 / ≤20） | 提交前 |

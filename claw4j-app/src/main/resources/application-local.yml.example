@@ -19,7 +19,9 @@ spring:
       lifecycle-management: start-and-stop
 
   # 库起来了才做迁移（默认 profile 里是关的，免得没 Docker 时启动失败）。
-  # 迁移脚本在 claw4j-capability 的 classpath:db/migration 下，改 schema 是加一个新版本文件。
+  # 迁移脚本散在各模块自己的 classpath:db/migration 下（示例插件 V1/V2、agent 的 V3~V5），
+  # Flyway 会扫遍 classpath 上所有同名目录再按版本号排序，所以不需要写 locations。
+  # 改 schema 是加一个版本号更大的新文件，不要回头改已提交的。
   flyway:
     enabled: true
 

@@ -106,6 +106,33 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
+        <!--
+          本模块的 DDL 在 src/main/resources/db/migration（V3 会话表、V4/V5 语义缓存表），
+          这三张表只有本模块的 agent.session / agent.cache 在读，所以迁移与依赖都归这里
+          （M6-04：原先它们在 claw4j-capability，那个模块一条 JDBC 都不碰）。
+          版本号接着示例插件的 V1/V2 往下排，全局唯一；Flyway 按版本号排序、跨 jar 合并不受影响，
+          所以文件放在哪个 jar 里不影响执行顺序。
+
+          三条缺一不可：
+          - flyway-core：迁移引擎本身。
+          - flyway-database-postgresql：Flyway 10+ 把各数据库的支持拆成独立 artifact。
+          - spring-boot-flyway：Boot 4 把自动配置也拆了出去。只放 flyway-core 时
+            spring.flyway.enabled=true 会**静默不生效**——启动日志一个字不提、表一直不建，
+            而业务侧报的是"连不上库"，根因在迁移没跑，看的人只会去查网络
+            （07 号票第一次真实联调就是这么挂的，见 docs/design/pitfalls.md 第三条）。
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>
@@ -136,10 +163,7 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-            <scope>test</scope>
-        </dependency>
+        <!-- flyway-core 原先只在这里以 test 身份出现（测试里手跑迁移）。
+             现在它随 DDL 一起提成了编译期依赖，见上面那段注释，所以这条不再需要。 -->
     </dependencies>
 </project>

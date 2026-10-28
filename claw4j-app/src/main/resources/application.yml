@@ -36,7 +36,7 @@ spring:
       time-to-live: 30d
       repository:
         jdbc:
-          # 建表归 Flyway（claw4j-capability 的 V3）。框架那个 initializer 默认只在嵌入式库上跑，
+          # 建表归 Flyway（claw4j-agent 的 V3）。框架那个 initializer 默认只在嵌入式库上跑，
           # 在 Postgres 上什么都不做——"以为建了其实没建"，而且它建 bean 时就要探测驱动类型。
           initialize-schema: never
     mcp:

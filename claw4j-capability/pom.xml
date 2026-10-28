@@ -62,36 +62,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
-        <!-- 迁移落在本模块：会话表与语义缓存表是框架自己的账本，跟能力来源无关，
-             所以它们留在这里；业务表（V1/V2）已经跟着示例插件搬走了。
-             app 通过依赖传递拿到，启动时的自动迁移扫的是同一份 classpath:db/migration。
-             Flyway 10+ 把各数据库的驱动拆成了独立 artifact，Postgres 要显式引。 -->
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-database-postgresql</artifactId>
-        </dependency>
-        <!--
-          Boot 4 把 Flyway 的自动配置拆成了独立 artifact：flyway-core 在 classpath 上
-          并不足以让 spring.flyway.enabled 生效，FlywayAutoConfiguration 在 spring-boot-flyway 里。
-          少了这一条的表现是本项目至今最阴的一种：配置写着 enabled=true、启动日志一个字不提、
-          表一直不建，而业务侧报的是"连不上库"——根因在迁移没跑，看的人只会去查网络。
-          （07 号票第一次真实联调就是这么挂的。）
-          它跟迁移脚本放在一起，是因为"启动即迁移"这件事只有这两个东西同时在才成立。
-        -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-flyway</artifactId>
-        </dependency>
-        <!-- 驱动只要运行时，编译期不该有人 import 它 -->
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
-        </dependency>
+        <!-- 这里**没有** Flyway，也没有 Postgres 驱动。
+             会话表与语义缓存表的 DDL 曾经放在本模块，理由是"它们是框架自己的账本，跟能力来源无关"——
+             后半句对，前半句推出的结论错：跟能力来源无关的东西，恰恰不该住在能力模块里。
+             那三张表只有 claw4j-agent 的 agent.session / agent.cache 在读，DDL 与依赖已经跟着搬过去
+             （M6-04）。本模块现在装的是 mcp / script / skill / generator / process，一条 JDBC 都不碰，
+             所以谁想单独引工具层写个 CLI，不用把数据库驱动一起拖进来。 -->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

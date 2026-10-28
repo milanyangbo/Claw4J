@@ -47,8 +47,15 @@ date: 2026-10-22
 这里补上——它们不是实现的副作用，是决策。
 
 **schema 怎么演进：Flyway 版本化，只有一个入口。**
-迁移脚本放在 `claw4j-capability` 的 `db/migration`（`V1` 业务表、`V2` 种子、`V3` 会话表），
-改字段是加一个新版本文件，**不改已提交的版本**——本地常驻库已经记过账，改历史版本会让校验和不匹配。
+迁移脚本按归属分散在各模块自己的 `db/migration`（示例插件 `V1` 业务表 / `V2` 种子，
+`claw4j-agent` 的 `V3` 会话表 / `V4` `V5` 语义缓存表），改字段是加一个新版本文件，
+**不改已提交的版本**——本地常驻库已经记过账，改历史版本会让校验和不匹配。
+"只有一个入口"指的是**一个执行者**（应用启动时那一次迁移），不是"一个目录"：Flyway 会扫遍
+classpath 上所有 `db/migration` 再按版本号排序，所以文件在哪个 jar 里不影响执行顺序，
+而版本号必须全局唯一。
+（2026-10-28，M6-04 修订：本条原文写的是"迁移脚本放在 `claw4j-capability` 的 `db/migration`"。
+那三张表只有 `agent.session` / `agent.cache` 在读，让一个不碰 JDBC 的模块替它们背着
+Flyway 与驱动是归属错误，DDL 与依赖已搬回 `claw4j-agent`。）
 三条随之而来的约束值得记：
 
 - **建表由 Flyway 做，官方 initializer 关掉**（`spring.ai.session.repository.jdbc.initialize-schema=never`）。
