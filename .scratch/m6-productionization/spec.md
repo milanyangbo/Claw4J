@@ -4,12 +4,14 @@
 
 框架代码里不该出现为了演示而存在的类；通用的东西不该绑在某一个通道上；插件不该非得改源码才能装。
 
-## 四张票
+## 五张票
 
 - `01-frame-has-no-demo.md`：删 `McpDemoConfiguration`，`mcp-demo` 全走配置，顺手清掉代码里写死的示例路径。
 - `02-channel-kernel.md`：把入站编排从 `channel.feishu` 提到一个不依赖任何 IM SDK 的模块。
 - `03-external-plugin-jar.md`：验证 `-Dloader.path` 能不能加载外部插件 jar，并把结论写成可照抄的话。
 - `04-ddl-follows-its-owner.md`：会话与缓存的三张表只有 `agent` 在读，DDL 与 Flyway 依赖跟着搬回 `agent`。
+- `05-mcp-config-lives-in-local.md`：接哪几个 MCP server 是这台机器的事，两份 `mcp-*.yml` 并进
+  `application-local.yml`——`01` 的后半段，演示配置本身也要离开框架资源。
 
 ## 它们共同点
 
@@ -20,8 +22,10 @@
 - 插件的文档写着"未验证"，于是"插件化"只是个说法。
 - 迁移跑得通，但一个只装工具适配器的模块被迫依赖 Flyway 与 JDBC 驱动——**归属错了，
   依赖就会错**。这一张是前三张的同一条判据在数据库上的复现。
+- 演示配置跑得通，但"这台机器连哪几个 MCP server"被做成了两个 profile——归属同样错了：
+  它是部署环境的事，跟"数据库连哪个"同一层。
 
-## 判据（四张票共用）
+## 判据（五张票共用）
 
 - 删掉一个类、搬走一个目录，框架照常构建、照常启动，功能不少——说明它本来就不该在那儿。
 - 新模块的 `pom.xml` 里没有任何 IM SDK。
@@ -30,7 +34,8 @@
 ## 冒烟记录（2026-10-28，四张票全部落地之后）
 
 环境：Docker 29.9.2、本地 Postgres 16.15（pgvector）；真 DeepSeek（主）+ 通义（备，兼向量）；
-应用从当前 HEAD 的 fat jar 起，profile `local,mcp-demo`，三份示例目录都指到 `examples/`。
+应用从当前 HEAD 的 fat jar 起，profile `local,mcp-demo`（`05` 之后 `mcp-demo` 这个 profile 已经
+不存在了，三个 server 就写在 `application-local.yml` 里，起 `local` 就有），三份示例目录都指到 `examples/`。
 **库是新建的空库**（`create database claw4j_m6`），所以迁移是从零跑，不是"已是最新"。
 
 | 验的什么 | 证据 |

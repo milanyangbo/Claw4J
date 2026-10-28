@@ -1,8 +1,13 @@
 # 本地开发配置模板。复制为 application-local.yml 后生效：
 #   cp application-local.yml.example application-local.yml
 #
-# 真正的 application-local.yml 已被 .gitignore 忽略 —— 它可能放真实 API key，
-# 绝不能入库。这个文件是模板，随仓库走。
+# 真正的 application-local.yml 已被 .gitignore 忽略 —— 它可能放真实 API key、
+# 真实的人（飞书 open_id），绝不能入库。这个文件是模板，随仓库走。
+#
+# **MCP 那一层也在这里**。接哪几个 server 是这台机器/这个部署的事，不是框架的默认值：
+# 所以它不在 application.yml 里，也没有单独的 mcp-* profile —— 起 local 就是
+# "这台机器决定要连的那些"，一处看全。不接 MCP 就把 claw4j.capability.mcp 整段注释掉，
+# 那一层会干净地消失（没有端点就没有工具，不影响启动）。
 
 spring:
   # Boot 默认不读 .env（那是 docker compose 的约定），这行按 properties 解析进来。
@@ -40,3 +45,85 @@ claw4j:
       roles:
         read-only:
           users: ["ou_xxxxxxxxxxxxxxxx"]
+
+  # ---- MCP 那一层 --------------------------------------------------------
+  # 一段配置 = 一条连接 = 一个能力来源。server 用什么语言写、在不在本进程里，宿主都不关心：
+  # stdio 起一个子进程用它的 stdin/stdout 说协议，http 连一个别人已经跑着的端点。
+  # 差别只在 transport 那一个键，连接生命周期与鉴权一行都不用改。
+  #
+  # 相对路径（examples/...）按**当前工作目录**解析——stdio 子进程继承宿主的 CWD，
+  # 所以从仓库根目录起才对。从别处起（systemd、容器）就换成绝对路径。
+  # 子进程的环境默认**只有 PATH**：应用的模型 key 与数据库口令不会漏过去；
+  # 需要 HOME 之类的变量，就在那个 server 的 inherit-env 里显式写。
+  capability:
+    mcp:
+      # 下面那段"别人写的"里有一个 npx 起的 server。要打开它，先把这两行一起解注释：
+      # `npx -y` 本机实测**每次启动要 36 秒**（缓存已热也一样，它要先解析包），而默认的
+      # request-timeout 是 30 秒——它会在 server 就绪之前先超时，症状是
+      # "Client failed to initialize by explicit API call"，server 侧一切正常。
+      # 两个都得调大（2026-10-28 三组对照）：只给 initialization-timeout=90s 时仍在 30s 失败；
+      # 只给 request-timeout=120s、initialization-timeout=1s 时在 1s 失败；两个都给才起得来。
+      # request-timeout: 120s
+      # initialization-timeout: 90s
+
+      servers:
+        # == 仓库自带的三个，只要 python3，就在 examples/mcp/ 下 ==
+        #
+        # 不依赖任何外部 CLI 的那个：一个回话、一个报时。
+        # demo_now 每次都返回不同的 pid 与时间戳，于是"结果确实来自新起的进程"是可判定的。
+        demo:
+          command: python3
+          args:
+            - examples/mcp/demo_mcp_server.py
+          permission:
+            action: read
+
+        # 把 gh 包成只读能力：列表、CI 状态、API 查询。开 issue / 合 PR 不在这个 server 里，
+        # 所以整条按只读声明是准确的。要本机装了 gh 且已登录。
+        github:
+          command: python3
+          args:
+            - examples/mcp/gh_mcp_server.py
+          permission:
+            action: read
+
+        # 混装的那一个：mail_list_unread 是读，mail_send 有副作用。
+        # 整条只给一个权限只有两个结局——写动作也被只读身份调用（权限放大），
+        # 或者只读身份连读都不行（整条不可用）。所以按工具覆盖：
+        # 兜底是 read，只有 mail_send 这一条要 send_email。要本机装了 himalaya 且配好账户。
+        mail:
+          command: python3
+          args:
+            - examples/mcp/himalaya_mcp_server.py
+          permission:
+            action: read
+          tools:
+            mail_send:
+              action: send_email
+
+        # == 别人写的两个：默认关着，因为要 Node 与出网 ==
+        #
+        # 解注释的方法：从下面那行 `# everything:` 起到**文件末尾**，逐行删掉行首的 "# "，
+        # 缩进就自动对齐了（块里没有说明行，说明只在这里和行尾）——另外把上面那两行
+        # 超时也一起解注释，否则 npx 那 36 秒启动会被默认的 30 秒判成"连不上"。
+        #
+        # everything = 官方参考实现：零参数、零凭据，工具名与返回都是确定的；它导出的工具里有
+        #   几个是"模拟/开关"性质（触发长任务、开关模拟日志），不写业务数据，所以整条按只读声明准确。
+        # deepwiki = 公开的 Streamable HTTP 端点：无需凭据、不起进程；工具都是"读某个 GitHub 仓库的
+        #   文档"，只读声明与事实一致。点了 server 并不导出的工具名，启动就失败（报错里带 server 名
+        #   与实际导出的清单）。
+        #
+        # everything:
+        #   command: npx
+        #   args: ["-y", "@modelcontextprotocol/server-everything"]
+        #   inherit-env: [PATH, HOME]   # npx 靠 PATH 找到自己、靠 HOME 放包缓存；没列的变量子进程看不到
+        #   permission:
+        #     action: read
+        # deepwiki:
+        #   transport: http
+        #   url: https://mcp.deepwiki.com   # endpoint 不填就走 SDK 默认的 /mcp
+        #   permission:
+        #     action: read
+        #   # 要连需要凭据的端点时，把下面两行解注释（值从环境变量来）：
+        #   # headers:
+        #   #   Authorization: "Bearer ${DEEPWIKI_TOKEN}"

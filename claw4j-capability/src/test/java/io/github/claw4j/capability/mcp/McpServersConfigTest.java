@@ -27,8 +27,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 配置里的 MCP server：一段 YAML 变成什么、配错了在哪一步红。
  *
  * <p>这里<b>不连任何 server</b>，也不起任何进程：断言的是"配置翻译出来的形状"与
- * "配错时的失败"。真连第三方要出网、要装 Node，那是演示（{@code mcp-third-party} profile）
- * 的活，不是门禁的活——一条每天跑、结果取决于公网状态的用例，红了也说明不了是谁的问题。
+ * "配错时的失败"。真连第三方要出网、要装 Node，那是演示（{@code application-local.yml} 里
+ * 那段注释着的配置）的活，不是门禁的活——一条每天跑、结果取决于公网状态的用例，红了也说明不了是谁的问题。
  */
 class McpServersConfigTest {
 

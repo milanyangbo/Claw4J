@@ -13,7 +13,7 @@
 | 扩展点 | 你要提供 | 依赖 | 参照实现 |
 | --- | --- | --- | --- |
 | Java 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` | `claw4j-domain`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
-| MCP server | 一段配置（或一个 `McpServerEndpoint` bean）；server 本身可以是任何语言 | 宿主侧 `claw4j-capability`；server 侧什么都不要 | [`application-mcp-third-party.yml`](../../claw4j-app/src/main/resources/application-mcp-third-party.yml)、[`claw4j-example-mcp-server`](../../claw4j-example-mcp-server)、[`examples/mcp/`](../../examples/mcp) |
+| MCP server | 一段配置（或一个 `McpServerEndpoint` bean）；server 本身可以是任何语言 | 宿主侧 `claw4j-capability`；server 侧什么都不要 | [`application-local.yml.example`](../../claw4j-app/src/main/resources/application-local.yml.example)、[`claw4j-example-mcp-server`](../../claw4j-example-mcp-server)、[`examples/mcp/`](../../examples/mcp) |
 | 脚本包 | 一个目录（`package.properties` + 入口脚本） | 无（子进程 + 沙箱） | [`examples/scripts/`](../../examples/scripts) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](../../examples/skills/weekly-sales) |
 | Subagent | 一份 `*.md`（front matter + 正文） | 无（纯文本） | [`examples/subagents/capacity-triage.md`](../../examples/subagents/capacity-triage.md) |

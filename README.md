@@ -70,7 +70,7 @@ event:done
 **跨进程 MCP**（一个真的 Python server，走协议边界）：
 
 ```bash
-java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar --spring.profiles.active=mcp-demo
+# 三个示例 server 已经写在 application-local.yml 里，起 local 就有（见「本地开发配置」）
 curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
   -H 'X-Claw4j-User: ops9' -H 'X-Claw4j-Role: admin' \
   -d '{"text":"用 demo_echo 这个工具，把“跨进程调用成功”这句话原样带回来，只回这句话"}'
@@ -85,8 +85,9 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
   -d '{"text":"深圳未来三天的天气怎么样"}'
 ```
 
-> 同一件事的第三方版本是 `--spring.profiles.active=mcp-third-party`：一个 npm 上的 stdio server
-> 加一个公网 HTTP 端点，全部是配置。它要 Node 与出网，所以没放进默认演示。
+> 同一件事的第三方版本不用新开 profile：`application-local.yml` 里有一段注释着的
+> `everything`（npm 上的 stdio server）与 `deepwiki`（公网 HTTP 端点），解开就是全部动作。
+> 它要 Node 与出网，所以默认关着。
 > Skill 与 Subagent 那两层的演示素材在 `examples/skills`、`examples/subagents`，
 > 怎么打开见 [`examples/README.md`](examples/README.md)。
 
@@ -95,7 +96,7 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
 
 ## 快速开始
 
-前置：**JDK 21**、**Docker**（数据库）、一个 `DEEPSEEK_API_KEY`。
+前置：**JDK 21**、**Docker**（数据库）、**python3**（三个示例 MCP server 用它）、一个 `DEEPSEEK_API_KEY`。
 
 ```bash
 git clone git@github.com:milanyangbo/Claw4J.git && cd Claw4J
@@ -105,6 +106,7 @@ echo 'DEEPSEEK_API_KEY=sk-xxxxxxxx' > .env          # 也可以直接 export
 cp claw4j-app/src/main/resources/application-local.yml.example \
    claw4j-app/src/main/resources/application-local.yml
 # application-local.yml 被 .gitignore 忽略（它可能放真实 key），仓库里只有模板
+# 接哪些 MCP server 也写在这份里（一段配置 = 一条连接），不接就整段注释掉
 
 ./mvnw -pl claw4j-app spring-boot:run -Dspring-boot.run.profiles=local
 # local profile 会按 compose.yaml 拉起 Postgres(pgvector)，退出时回收；
@@ -175,7 +177,8 @@ src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoCo
 
 ### 接一个第三方 MCP server：写配置，不写代码
 
-下面两段就是 `mcp-third-party` profile 的全部内容——一个公网 HTTP 端点，一个 npm 上的 stdio server：
+下面两段就是 `application-local.yml` 里那段**注释着**的配置——解开就是全部动作。
+一个公网 HTTP 端点，一个 npm 上的 stdio server：
 
 ```yaml
 claw4j:
@@ -211,9 +214,10 @@ claw4j:
   并不导出的工具名按**启动失败**处理——拼错一个名字而静默沿用兜底，等于让人以为加严了、其实没有。
 - `inherit-env` 没点名的变量子进程一个都看不到；`env` 里显式写的那份覆盖透传进来的同名值。
 - 两个超时分开配：`claw4j.capability.mcp.request-timeout`（单次调用，默认 30s）与
-  `.initialization-timeout`（握手，默认 60s）。后者给得宽是因为 `npx` / `uvx` 这类启动器
-  要先解析包——本机实测 `npx -y @modelcontextprotocol/server-everything` 在缓存已热时
-  **仍要 50 秒**才走完握手；SDK 默认的 20 秒会把一个完全正常的 server 判成"连不上"。
+  `.initialization-timeout`（握手，默认 60s）。接 `npx` / `uvx` 这类启动器时**两个都要调大**：
+  `npx -y @modelcontextprotocol/server-everything` 本机实测冷启动 **36 秒**（它要先解析包），
+  只调 `initialization-timeout` 根本没用——默认 30 秒的 `request-timeout` 会先超时；
+  两个一起给到 120s / 90s 才起得来（三组对照写在 `application-local.yml.example` 那段注释里）。
 - 凭据写成占位符，值不进仓库：`headers: { Authorization: "Bearer ${MCP_TOKEN}" }`。
 - 配错（stdio 没 `command`、http 没 `url`、`url` 不是 http(s)、`tools` 点了不存在的工具）在
   **启动时**失败，报错带 server 名。
@@ -254,11 +258,11 @@ Spring AI 让模型**动手**的官方通道只有两条：Java 方法（`@Tool`
 一句能记住的分界：**MCP 的语言无关是协议层面的，Skill 与 Subagent 的来自文件格式，
 脚本层的来自"能不能起一个进程"**。三者不能互相替代，因为它们解决的不是同一件事。
 
-四层一起打开就是这样（`mcp-third-party` 那两段是纯配置，其余三个是目录）：
+四层一起打开就是这样（MCP 那层是 `application-local.yml` 里的一段配置，其余三个是目录）：
 
 ```bash
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
-  --spring.profiles.active=mcp-third-party \
+  --spring.profiles.active=local \
   --claw4j.scripts.directory=examples/scripts \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents

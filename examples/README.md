@@ -11,7 +11,7 @@
 | `scripts/` | 三层：Script Package | `claw4j.scripts.directory=examples/scripts` |
 | `skills/` | Skill | `claw4j.skills.directory=examples/skills` |
 | `subagents/` | Subagent | `claw4j.subagents.directory=examples/subagents` |
-| `mcp/` | 二层：MCP server（跨进程） | `--spring.profiles.active=mcp-demo`（一份配置，三个 server） |
+| `mcp/` | 二层：MCP server（跨进程） | `claw4j.capability.mcp.servers`（三个 server 都写在 `application-local.yml` 里） |
 
 四层里**只有 MCP 那一层是协议层面的语言无关**（对端可以是任何语言写的程序）；
 脚本包、Skill、Subagent 的语言无关来自文件格式与本项目的接缝，Spring AI 没有对应抽象。
@@ -37,13 +37,14 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 
 ```bash
 # 在仓库根目录起：三个 server 的脚本路径是相对的，按当前工作目录解析
-java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar --spring.profiles.active=mcp-demo
+java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
-`mcp-demo` 这个 profile 里只有一份配置（`claw4j-app/src/main/resources/application-mcp-demo.yml`），
-三个 server 各一段 YAML。**这里没有对应的 Java 类**——曾经有一个 `McpDemoConfiguration`，
+三个 server 各一段 YAML，写在 `application-local.yml` 里（随仓库的是模板
+`application-local.yml.example`）。**这里没有对应的 Java 类**——曾经有一个 `McpDemoConfiguration`，
 它干的事只是拼三个绝对路径，而"相对路径按当前工作目录解析"本来就成立，
-所以那份配置自己就够，类被删掉了。
+所以那份配置自己就够，类被删掉了；那份配置也不该单独开一个 `mcp-demo` profile，
+"接哪几个 server"是这台机器的事，跟 local 的其余内容同一个归属。
 
 Java 这边起的是**真的子进程**，用它的 stdin/stdout 说 MCP——不是进程内的替身。
 
@@ -57,7 +58,7 @@ Java 这边起的是**真的子进程**，用它的 stdin/stdout 说 MCP——�
 用它而不是官方 SDK，是为了让"Java 侧连的到底是个什么"从头到尾看得见。
 
 这三个是**我们自己写的** server，所以要演示的是"跨进程协议边界"。**别人写的** server 不用写代码：
-`mcp-third-party` profile 里那两段配置（一个 npm 上的 stdio server、一个公网 Streamable HTTP 端点）
+`application-local.yml` 末尾那段注释着的配置（一个 npm 上的 stdio server、一个公网 Streamable HTTP 端点）
 就是全部动作，见根 README 的「接一个第三方 MCP server：写配置，不写代码」。
 
 ## Skill 与 Subagent（纯 markdown）

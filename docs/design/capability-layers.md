@@ -51,7 +51,7 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 换传输只是换 `openTransport()` 返回的对象，这与 stdio 那条是同一个接缝。
 
 接**别人写的** server 不需要写 Java。`claw4j.capability.mcp.servers.<名字>` 下一段配置就是全部：
-`application-mcp-third-party.yml` 里就有一个 npm 上的 stdio server 与一个公网 HTTP 端点。
+`application-local.yml.example` 末尾那段注释着的配置里就有一个 npm 上的 stdio server 与一个公网 HTTP 端点。
 键名、默认值与失败姿势在 [extension-points.md](extension-points.md) 的第二节；
 条件按**配置**求值（不是按容器里有没有 bean），所以配了才有这一层、不配就一层都没有。
 
@@ -63,11 +63,19 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 ./mvnw -Preal-cli -pl claw4j-capability test -Dtest=RealThirdPartyMcpTest    # 第三方：stdio + 公网 HTTP
 ```
 
-**握手超时与调用超时是两件事。** `npx -y @modelcontextprotocol/server-everything`
-在本机实测要 **50 秒**才走完 `initialize`（启动器要先解析包），而 MCP SDK 的默认握手超时是
-20 秒——症状是 `Client failed to initialize by explicit API call`，server 侧却一切正常。
-所以这两个值分开配：`claw4j.capability.mcp.request-timeout`（单次调用，默认 30s）与
-`.initialization-timeout`（握手，默认 60s）。接更慢的启动器就调大后者，不必改代码。
+**握手超时与调用超时是两件事，接慢启动器时两个都得调大。** `npx -y
+@modelcontextprotocol/server-everything` 在本机实测**每次启动要 36 秒**（缓存已热也一样，
+它要先解析包）。症状是 `Client failed to initialize by explicit API call`，server 侧却一切正常。
+2026-10-28 做过三组对照：
+
+| `request-timeout` | `initialization-timeout` | 结果 |
+| --- | --- | --- |
+| 默认 30s | 90s | 失败：`within 30000ms` —— **只调握手那个没用**，先超时的是请求超时 |
+| 120s | 1s | 失败：`within 1000ms` —— 握手那个也不能压小 |
+| 120s | 90s | 成功，启动 64 秒，五个 server 全连上 |
+
+所以 `claw4j.capability.mcp.request-timeout`（单次调用，默认 30s）与 `.initialization-timeout`
+（握手，默认 60s）要按启动器的真实启动时间一起给足，不必改代码。
 
 MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没有，鉴权只看动作。
 没登记权限的工具一律按拒绝处理（ADR-0007）。按工具覆盖权限时（`servers.<名字>.tools.<工具名>`），
@@ -298,8 +306,11 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --claw4j.scripts.directory=examples/scripts \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents \
-  --spring.profiles.active=mcp-demo
+  --spring.profiles.active=local
 ```
+
+> MCP 那三个 server 现在写在 `application-local.yml` 里（`local` 一起带上），
+> 当时还是单独的 `mcp-demo` profile —— 同一个东西换了个归属，命令是同一件事。
 
 下面这几段是**那次运行的真实 curl 输出**，不是占位符（M2-07 收尾时录的，DeepSeek + 本地 Postgres）：
 

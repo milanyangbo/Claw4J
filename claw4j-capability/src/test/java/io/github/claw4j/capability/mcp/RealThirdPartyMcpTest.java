@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ./mvnw -Preal-cli -pl claw4j-capability test -Dtest=RealThirdPartyMcpTest
  * }</pre>
  *
- * <p>它与 {@code application-mcp-third-party.yml} 是同一件事的两面：那份配置是给人照着抄的，
+ * <p>它与 {@code application-local.yml.example} 末尾那段注释着的配置是同一件事的两面：那份配置是给人照着抄的，
  * 这两条用例是"那样一段配置真的能连上"的证据。两边用的是同一套 {@link McpEndpoints} 转换，
  * 差别只在命令与地址写死在这里（读 yml 就变成"测 Spring 的绑定"，那是
  * {@code McpServersConfigTest} 的事）。

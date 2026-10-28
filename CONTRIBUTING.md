@@ -119,7 +119,7 @@ Flyway 扫遍 classpath 上所有 `db/migration` 再**按版本号排序**，所
 ```bash
 set -a; . ./.env; set +a
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
-  --spring.profiles.active=local,mcp-demo \
+  --spring.profiles.active=local \
   --claw4j.scripts.directory=examples/scripts \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents
@@ -135,6 +135,10 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | 脚本包 | 用 `weather-forecast` 查深圳天气 | 一串温度；**角色要 `admin`** |
 | Skill | 调用 `Skill` 工具加载 `weekly-sales` | 把口径与步骤复述出来 |
 | Subagent | 委派给 `weekly-digest` 生成周报 | 三区 + 合计，与库对得上 |
+
+三个示例 MCP server 就写在 `application-local.yml` 里，起 `local` 就有。要顺带验第三方那两条
+（`npx` 的 stdio 与公网 HTTP），把同一份文件末尾那段解注释、并把那两行超时一起解开——
+它们要 Node 与出网，所以默认关着。
 
 **脚本层必须用 `X-Claw4j-Role: admin`**：`run_script` 不在 `read-only` / `guest` 的动作表里，
 用默认角色照这张表走，第二行就会拿到"没有权限"，容易误判成脚本层坏了。
@@ -154,7 +158,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | `ProcessBoundaryTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；domain 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段 |
 | `./scripts/verify.sh` | 一条命令跑完上面几步：载入 `.env` → `clean verify`（含覆盖率红线）→ 用例数与**跳过数必须为 0** → 文件数/方法数上限（≤10 / ≤20） | 提交前 |
-| 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}` + `mcp-demo` 或 `mcp-third-party`，真模型走一遍三层与越权。**命令、每层问什么、该看到什么，见上面「冒烟」一节** | 改了装配或能力层之后 |
+| 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}`（三个示例 MCP server 已经写在 `application-local.yml` 里），真模型走一遍三层与越权。**命令、每层问什么、该看到什么，见上面「冒烟」一节** | 改了装配或能力层之后 |
 | 要外部世界的两组（`real-cli` / `real-mcp`） | 真的 OS 子进程（Python、`gh`、`himalaya`）与真的公网 MCP 端点。**默认排除**，`-Preal-cli` 才跑；它们依赖本机装了什么与能不能出网，不属于回归基线 | 改 MCP 传输、改脚本层之后 |
 
 **为什么 Advisor 那条值得单独立规则**：`BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，
