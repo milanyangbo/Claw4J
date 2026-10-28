@@ -7,7 +7,7 @@
 
 | 层 | 形态 | 状态 |
 | --- | --- | --- |
-| 一层 | Java `@Tool`（`SalesTools.querySales`、`SystemStatusTools.systemStatus`） | M1 已落地，M2-07 补齐 `system-status` |
+| 一层 | Java `@Tool`（`SystemStatusTools.systemStatus`，以及示例插件里的 `SalesTools.querySales`） | M1 已落地，M2-07 补齐 `system-status`；示例业务工具在独立模块 `claw4j-example-sales` |
 | 二层 | MCP server 的 `@McpTool` | M2-02 已落地（连接生命周期），M2-07 接到真的 OS 进程，见下 |
 | 三层 | Script Package（受限执行） | M2-03 已落地，M2-07 迁完三个保留场景，见下 |
 
@@ -24,7 +24,8 @@ MCP 这一层的连接生命周期由 `claw4j-capability` 的 `io.github.claw4j.
   对一条已经不在的会话重试，会让一次断连变成永久不可用。
 
 这两条是 ADR-0008 的三条必测之一，所以测试里的 MCP server 是 **Java 自实现的进程内 stdio server**
-（`InProcessStdioMcpServer`）：不依赖 Docker、不依赖 Python，于是这两条进得了默认构建。
+（`InProcessStdioMcpServer`，在 `claw4j-capability` 的**测试源码**里——它是替身，不该进发行物）：
+不依赖 Docker、不依赖 Python，于是这两条进得了默认构建。
 **它跨的是协议边界不是 OS 进程边界**。真实部署换的是 `McpServerEndpoint.openTransport()`
 给出来的传输，上面的生命周期代码一行都不用改——M2-07 就是这么接上真的 OS 进程的：
 
@@ -38,6 +39,9 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 `examples/mcp/` 下有三个零第三方依赖的 Python server：`gh_mcp_server.py` 包 `gh`、
 `himalaya_mcp_server.py` 包 `himalaya`（它导出会发邮件的 `mail_send`，所以接它的端点登记的是
 `send_email` 而不是只读）、`demo_mcp_server.py` 不依赖任何 CLI。
+同一个端点接一个 **Java** 版也是同样的写法：`claw4j-example-mcp-server` 是一个
+`java -jar` 就能跑的 stdio server，与那三个 Python 的对端完全平级——
+宿主只认协议，不认对端用什么语言写。
 子进程的**环境默认为空**，需要 `PATH` 就显式写一行——应用的模型 key 与数据库口令不会漏过去。
 
 这条链路真跑一次的测试打的是 `real-cli` tag，默认不跑（它依赖本机装了 python3 与那些 CLI，

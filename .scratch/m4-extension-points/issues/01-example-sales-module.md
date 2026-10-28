@@ -6,7 +6,7 @@
 
 **Blocked by:** 无
 
-**Status:** claimed
+**Status:** resolved
 
 ## 为什么
 
@@ -55,3 +55,52 @@
 - 不动 `builtin/system`（它跟业务无关，是"这个进程自己"的能力）。
 - 不改 SALES 的 SQL 与口径（那是 `docs/design/text-to-sql.md` 的事）。
 - 不做"插件市场"、不做插件清单接口。
+
+## 实现记录（2026-10-28）
+
+### 结果
+
+`claw4j-example-sales` 落地：5 个类 + `V1`/`V2` 迁移 + `SalesExampleAutoConfiguration` + imports 文件。
+依赖只有 `claw4j-domain`、`spring-ai-client-chat`、`spring-boot-starter`（自动配置注解）、
+`spring-boot-starter-jdbc`（`JdbcClient`）、flyway 三件（迁移在它这里）、postgresql（runtime）。
+
+capability 侧删掉 `ToolsAutoConfiguration` 与它的 imports 行，顺带**不需要**的两项依赖一起删了：
+`spring-boot-starter-jdbc`（主代码里唯一用 `JdbcClient` 的就是 sales）与 testcontainers（唯一用它的就是 `SalesQueryTest`）。
+capability 的测试文件从 7 份降到 6 份。
+
+### 删依赖实验：只红一条，正是该红的那一条
+
+从 `claw4j-app/pom.xml` 拿掉 `claw4j-example-sales` 之后跑 `-pl claw4j-app -am test`：
+
+- 编译通过（app 的代码里没有任何一处引用示例类）；
+- agent 113 条、channel 42 条、app 其余 5 条全绿，**Spring 上下文照常起来**；
+- 唯一红的是 `ApplicationAssemblyTest.toolIsRegisteredAndReachesTheDatabase`，模型的原话是
+  「我这边暂时没检索到能直接查业务数据的工具（成交额/销售报表类都没有匹配到），所以这个数我现在取不到」——
+  工具确实不在清单里了，而不是报了别的错。
+
+这就是"插件"两个字的判据：**删掉这条依赖，核心照常构建、照常启动**。
+
+### 变异：迁移真的跟着走了
+
+删掉 `claw4j-example-sales/.../V1__business_schema.sql` → `SalesQueryTest` 13 条全部 ERROR：
+`relation "business.region" does not exist`。
+
+**这里先踩了一次假绿**：第一次只删了源文件，用例照样全绿——`target/classes/db/migration/` 里还留着上一次
+构建复制的副本，Maven 不会清理陈旧资源。所以做这类"删文件"的变异必须**连产物一起删**，
+否则验的是上一次构建。这一条已记进 `docs/design/pitfalls.md`。
+
+### 搬走之后暴露的两处错误依赖
+
+- **`claw4j-agent` 的真模型用例借了示例销售工具当替身。** 编译不过才发现：agent 为了一条 test fixture
+  跨模块认识了业务包。改成文件内自带的 `RecordingSalesTool`，并把断言从
+  `contains("sales_order", "order_item", "east", "sum")` 收紧为 `contains("sum(", "interval")`——
+  后面那几个是**某份业务 schema 的写法**，不属于"这条链路装配对了没有"这个判据。
+- **capability 的 `ToolsAutoConfiguration` 里有一段注释**解释"同一个自动配置类内 `@Bean` 声明顺序"
+  如何让工具静默消失。sales 搬走之后那个类不存在了，但这段教训是真的（`SalesExampleAutoConfiguration`
+  里仍然依赖声明顺序），所以注释跟着搬过去，而不是删掉。
+
+### 没做
+
+- `V3`（会话表）、`V4`/`V5`（语义缓存表）还留在 `claw4j-capability`。它们是框架自己的账本，
+  不构成"框架带业务"，更该挨着 `claw4j-agent`，但这轮不动——迁移位置一改，Flyway 的
+  checksum/位置校验要重新验一遍，属于另一件事。已写进 README 的「还没做的」。

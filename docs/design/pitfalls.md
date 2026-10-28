@@ -257,3 +257,18 @@ Spring 把它包成"数据库连不上"——看起来像迁移、配置或 JDBC
 **要分清两类"红"**：可以放过的是"环境抢内存"，判据是单跑即绿；
 同一类单独跑也时红时绿属于另一回事——那说明测试自己依赖了顺序或共享状态，必须查到底。
 
+
+## 十五、"文件删了"不等于"它不在了"：`target/` 里还有一份
+
+做"删掉某个文件，对应的用例必须红"这类变异时，只删 `src/` 下的源文件是**不够**的：
+`process-resources` 早先把上一份复制到了 `target/classes/`，而 Maven 不会删除陈旧产物。
+于是用例读到的还是那份副本，**变异不红**——你会以为"这条用例没守住"，或者更糟，
+以为"这个文件本来就没人用"。
+
+本仓库踩过一次：删掉 `claw4j-example-sales` 的 `V1__business_schema.sql`，
+`SalesQueryTest` 13 条照样全绿；把 `target/classes/db/migration/V1__business_schema.sql` 一起删掉之后，
+13 条全部 ERROR `relation "business.region" does not exist`。
+
+**判据**：凡是"删文件 / 改文件名 / 搬目录"的变异，先确认产物里也变了。
+最省事的做法是变异前跑一次 `clean`，或者直接删 `target/` 下对应的那一份；
+不要用"用例绿了"来反推"这个文件没用"。

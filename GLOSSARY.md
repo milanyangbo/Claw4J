@@ -51,7 +51,15 @@ _Avoid_: 懒加载（那是延后取数据，这里是延后放上下文）、�
 
 **Tool**:
 一个 Agent 可调用的具体动作，有名字、参数 Schema 和返回值。Skill 描述流程，Tool 提供能力；一个 Skill 通常编排多个 Tool。
-_Avoid_: Function（1.x 时期的叫法）、Callback、插件
+_Avoid_: Function（1.x 时期的叫法）、Callback、插件（插件是打包单位，见下一条）
+
+**Plugin（插件）**:
+**打包单位，不是能力单位**：一个独立 jar，通过 Spring Boot 的自动配置被装配进核心，
+内容可以是若干 Tool、一条 Channel，或一个 MCP server 的宿主侧端点。
+插件与核心同进程，因此被视为**可信代码**——沙箱只针对模型自己写出来的脚本，不针对插件。
+仓库自带两个插件示例：`claw4j-example-sales`（业务工具）与 `claw4j-example-mcp-server`（MCP server）。
+判断它是不是真插件的标准只有一条：**删掉这条依赖，核心照常构建、照常启动**。
+_Avoid_: 扩展包、addon、module（module 在本仓库专指 Maven 模块）、把某个 Tool 叫成"一个插件"
 
 **Advisor**:
 Advisor 链上的一环，包在模型调用外面，能改写进出的消息。链按 order **升序**执行：

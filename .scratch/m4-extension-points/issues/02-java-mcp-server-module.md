@@ -6,7 +6,7 @@
 
 **Blocked by:** 无
 
-**Status:** claimed
+**Status:** resolved
 
 ## 为什么
 
@@ -57,3 +57,57 @@
 - 不做 HTTP/SSE 传输的 server（那是另一个部署形态，先只做 stdio）。
 - 不做 MCP 的 resources / prompts / sampling——**这一版只需要 tools**，多做的每一件都要有测试盯着。
 - 不把 `McpConnection` / `McpToolProvider` 这类 client 侧的代码搬进新模块。
+
+## 实现记录（2026-10-28）
+
+### 结果
+
+`claw4j-example-mcp-server` 落地：`DemoJavaTools`（`echo` / `serverTime` / `processId`）、
+`McpServerApplication`（stdio，`spring-boot-maven-plugin` 打成 `java -jar` 可执行的包）、
+`logback.xml`（出口只走 stderr）。**pom 里没有任何 `io.github.claw4j` 依赖**。
+
+测试替身归位：`InProcessStdioMcpServer` 与 `PipedStdioClientTransport` 从 `capability/src/main`
+挪到 `capability/src/test`（包名没动，`McpToolTest` 的 import 一行没改）。
+
+### 第一条真红：INFO 日志把协议帧顶掉了
+
+第一次跑进程级用例，客户端报：
+
+```
+Client failed to initialize by explicit API call
+```
+
+server 侧看起来一切正常——因为它确实正常：SDK 自己打的那行
+`Client initialize request - Protocol: 2025-06-18 ...` **写进了 stdout**，
+客户端拿第一行当 JSON 解析，失败。修法是把日志出口改到 stderr（`logback.xml`），
+并把这一条写进类注释与集成指南——它属于"不报错、只表现为连不上"的那类坑。
+
+### 变异一：不导出工具 → 红
+
+```java
+.tools(java.util.List.of())   // 变异
+```
+`JavaMcpServerProcessTest` 红在 `listTools` 上。server 照常握手、照常回响应，
+只是清单是空的——这正是 ADR-0002 要求调用方 fail-fast 的那种状态。
+
+### 变异二：`main` 直接返回 → **不红**，推翻了一条注释
+
+票面要求"先实测 `main` 返回会不会让进程退出"。实测结论：**不会**。
+把 `new CountDownLatch(1).await()` 删掉，用例照样全绿——传输用的是非守护线程。
+所以原注释里那句"SDK 的传输线程是守护线程，main 一返回 JVM 就退出"是**编的**。
+
+改法不是加回去，而是**删掉那个闩**：客户端关 stdin → 传输线程收尾 → 进程自然退出，
+而"关掉客户端后子进程必须真的没了"已经由 `awaitility` 那条断言盯着。
+多留一个 `await()` 等于多一条测试看不见的、决定进程寿命的依赖。
+
+### 覆盖率：0% → 75%
+
+进程级用例把 server 起在**另一个 JVM**，jacoco 只看得见自己那一个，于是模块覆盖率第一次是 **0.00**，
+闸直接判红（这是它该做的事）。补 `DemoJavaToolsTest`（3 条：echo / 钉住的时钟 / pid 是当前进程）
+之后 75%。分工也因此更清楚：工具自己算得对由单元用例管，协议与进程边界由进程级用例管。
+
+### `surefire` 的 classpath
+
+进程级用例要把"本模块完整 classpath"传给子进程，而 `surefire` 默认给的是 manifest-only 的 booter jar。
+模块里关掉 `<useManifestOnlyJar>false</useManifestOnlyJar>`，理由写在 pom 的注释里。
+子进程的 java 用 `System.getProperty("java.home")`，不读 `JAVA_HOME`（surefire 里可能是空的）。

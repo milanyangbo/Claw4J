@@ -7,7 +7,7 @@ README 的「接自己的能力」一节指向它。覆盖四类：**Java 工具
 **Blocked by:** 01、02 —— 两份文档里的示例路径要指向真实存在的模块，
 在它们落地之前写出来就是编的。
 
-**Status:** claimed
+**Status:** resolved
 
 ## 为什么
 
@@ -53,3 +53,30 @@ README 的「接自己的能力」一节指向它。覆盖四类：**Java 工具
 
 - 不做插件清单的 HTTP 接口、不做插件版本兼容矩阵（没有多个插件，就没有矩阵）。
 - 不重写 `docs/design/capability-layers.md`（它讲的是"为什么三层"，与"怎么接第四类"不冲突）。
+
+## 实现记录（2026-10-28）
+
+### 落地
+
+- 新增 `docs/design/extension-points.md`：四个扩展点各一节（工具 / MCP server / Skill / 通道），
+  每节给"要提供什么、写哪几个文件、依赖什么、参照哪份代码"，外加一张"三种让插件静默失效的写法"表。
+- README 的「接自己的能力」改成四个扩展点 + **两个能照抄的片段**（工具插件的自动配置、接 MCP server 的一个 bean），
+  细节全部指向新文档，不重抄。
+- `AGENTS.md` 路由加一行（什么时候该读这份）；`GLOSSARY.md` 加 **Plugin（插件）** 条目——
+  它是**打包单位不是能力单位**，并给出一条可判定的标准："删掉这条依赖，核心照常构建、照常启动"。
+
+### 每条路径都核对过
+
+文档里的相对链接逐个 `test -e` 过一遍（`claw4j-example-sales`、`claw4j-example-mcp-server`、
+`examples/mcp`、`examples/skills/weekly-sales`、`claw4j-channel` 的两个包），全部存在。
+类名与配置键也一样：`ProcessStdioMcpEndpoint.of(...).endpoint(ToolPermission)`、
+`claw4j.skills.directory`、`use_skill`、`ToolPermission.of(action)`、`ToolPermissionRegistry.of(Map)`
+——都是照着代码抄的，不是照印象写的。
+
+### 刻意没写的
+
+- 没写"插件热加载""插件市场""版本兼容矩阵"：前两件没实现，第三件在只有一个插件的时候没有意义。
+- 没写"换模型只是放一个 `ChatModel` bean"：容器里已经有主备两个模型，再放一个会撞成
+  `NoUniqueBeanDefinitionException`，而我没有实测过 `@Primary` 之类的解法。**不确定的不写。**
+- 没写"通道插件的完整编排复用"：今天要复用得依赖整个 `claw4j-channel`，会把飞书 SDK 拖进来，
+  这一条在文档里是明写的限制，不是被省略的细节。
