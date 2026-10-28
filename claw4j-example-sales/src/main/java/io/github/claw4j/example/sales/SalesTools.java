@@ -1,8 +1,5 @@
-package io.github.claw4j.capability.builtin.sales;
+package io.github.claw4j.example.sales;
 
-import io.github.claw4j.capability.builtin.sales.QueryResult;
-import io.github.claw4j.capability.builtin.sales.ReadOnlySqlExecutor;
-import io.github.claw4j.capability.builtin.sales.SalesSqlGuard;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.dao.DataAccessException;

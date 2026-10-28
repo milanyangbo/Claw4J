@@ -14,9 +14,10 @@ import java.util.Objects;
 /**
  * 一个<b>真的跨 OS 进程</b>的 MCP 端点：起一个子进程，用它的 stdin/stdout 说 MCP 协议。
  *
- * <p>它与 {@link InProcessStdioMcpServer} 的区别只有"server 在哪儿"：
- * 那边是同一个 JVM 里的一个对象，这边是另一个进程（Python 包 {@code gh}、包 {@code himalaya}，
- * 或者任何语言写的 server）。两者对上是同一个接缝
+ * <p>它与进程内那种替身（测试源码里的 {@code InProcessStdioMcpServer}）的区别只有"server 在哪儿"：
+ * 那边是同一个 JVM 里的一个对象，这边是另一个进程——Python 包 {@code gh}、包 {@code himalaya}，
+ * {@code claw4j-example-mcp-server} 那个 Java 版，或者任何语言写的 server。
+ * 两者对上是同一个接缝
  * {@link McpServerEndpoint#openTransport()}，连接生命周期代码一行都不用改——
  * 这条接缝是 02 号票刻意留下的，本类只是把它接到真实进程边界上。
  *

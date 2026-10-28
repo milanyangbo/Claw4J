@@ -1,4 +1,4 @@
-package io.github.claw4j.capability.builtin.sales;
+package io.github.claw4j.example.sales;
 
 import java.util.Locale;
 import java.util.Optional;

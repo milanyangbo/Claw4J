@@ -1,6 +1,5 @@
-package io.github.claw4j.capability.builtin.sales;
+package io.github.claw4j.example.sales;
 
-import io.github.claw4j.capability.ToolsAutoConfiguration;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
@@ -159,7 +158,7 @@ class SalesQueryTest {
     @Test
     @DisplayName("只被授予 region 的身份不得调用查询工具：登记的四张表缺一张就是放行越权")
     void principalWithoutEveryDeclaredTableIsDenied() {
-        ToolPermissionRegistry registry = new ToolsAutoConfiguration().salesToolPermissionRegistry();
+        ToolPermissionRegistry registry = new SalesExampleAutoConfiguration().salesToolPermissionRegistry();
         ToolPermission permission = registry.permissionFor("querySales").orElseThrow();
 
         assertThat(Principal.readOnly("analyst").canUse(permission)).isTrue();

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.claw4j</groupId>
+        <artifactId>claw4j</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>claw4j-example-sales</artifactId>
+    <name>Claw4J :: Example :: Sales</name>
+    <description>示例插件：一个业务工具、四张业务表、一份种子数据。故意不依赖 claw4j-capability</description>
+
+    <dependencies>
+        <!--
+          这份 pom 本身就是"第三方工具插件要依赖什么"的答案，所以它短得可疑：
+
+          - claw4j-domain：权限登记表的契约（ToolPermissionRegistry / ToolPermission / Principal）。
+            工具插件只需要这一个模块，不需要 agent、不需要 capability。
+          - spring-ai-client-chat：@Tool 注解与 ToolCallbackProvider。
+          - spring-boot-starter：@AutoConfiguration 与各个 @Conditional*，让插件能被发现。
+
+          没有 claw4j-capability：业务能力不该长在框架模块里，反过来也一样——
+          它装不上，就说明框架没有被业务绑住。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-domain</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-client-chat</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- 业务查询走 JDBC：模型生成的是 SQL，不是实体映射。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!-- 迁移跟着业务表一起搬过来：建表与种子是这份示例的一部分。
+             app 侧只要把本模块放进 classpath，Flyway 扫的仍是同一份 classpath:db/migration，
+             版本号 V1/V2 与内容都没动，所以已有的库不会被重新迁移一遍。 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- 驱动只要运行时，编译期不该有人 import 它 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- 这份用例要真 PostgreSQL：守卫是字符串校验，只读约束是数据库给的，
+             两者之间的缺口只有真库能证。 -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -17,6 +17,11 @@
         <module>claw4j-agent</module>
         <module>claw4j-channel</module>
         <module>claw4j-capability</module>
+        <!-- 示例一律在核心之外：业务插件与 Java 版 MCP server。
+             它们只依赖 domain 与 Spring AI，不依赖 capability——
+             "删掉这一行，框架照常构建启动"就是插件契约的自证。 -->
+        <module>claw4j-example-sales</module>
+        <module>claw4j-example-mcp-server</module>
         <module>claw4j-app</module>
     </modules>
 

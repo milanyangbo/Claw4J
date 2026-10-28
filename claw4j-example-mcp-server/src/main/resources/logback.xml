@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  这份配置存在的理由只有一条：**stdout 是 MCP 的协议通道**。
+
+  SDK 自己会打 INFO 日志（比如收到 initialize 的那一行）。日志默认走 stdout，
+  于是一帧 JSON 中间插进一行日志，客户端解析失败——症状是"连不上"，
+  而真正的原因是一个日志行。第一次跑这个 server 时就是这么挂的：
+  客户端报 `Client failed to initialize`，server 侧一片正常，因为它确实正常。
+
+  所以这里把根出口改到 stderr，格式也收短：stderr 上留下的应该是给人看的东西，
+  协议帧一个字节都不该跑到那里去。
+-->
+<configuration>
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDERR"/>
+    </root>
+</configuration>

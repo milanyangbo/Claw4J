@@ -3,9 +3,6 @@ package io.github.claw4j.agent;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.model.ModelConfiguration;
 import io.github.claw4j.agent.model.ModelProperties;
-import io.github.claw4j.capability.builtin.sales.QueryResult;
-import io.github.claw4j.capability.builtin.sales.ReadOnlySqlExecutor;
-import io.github.claw4j.capability.builtin.sales.SalesTools;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
@@ -26,6 +23,8 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import reactor.core.publisher.Flux;
@@ -192,12 +191,8 @@ class ChatPipelineTest {
         ChatModel model = new ModelConfiguration().deepSeekChatModel(properties);
 
         List<String> executedSql = new CopyOnWriteArrayList<>();
-        ReadOnlySqlExecutor executor = sql -> {
-            executedSql.add(sql);
-            return new QueryResult(List.of("revenue"), List.of(List.of("128400")), false);
-        };
         ToolCallback querySales = MethodToolCallbackProvider.builder()
-                .toolObjects(new SalesTools(executor))
+                .toolObjects(new RecordingSalesTool(executedSql))
                 .build()
                 .getToolCallbacks()[0];
 
@@ -220,8 +215,12 @@ class ChatPipelineTest {
         assertThat(executedSql)
                 .as("模型没有调用 querySales：自然语言没有被翻成工具调用")
                 .isNotEmpty();
+        // 只断言"翻译发生了"：聚合函数与时间窗都从这句中文里来。
+        // 以前这里还断言 sales_order / east 这些**业务 schema 的写法**，那是借了示例销售工具的描述，
+        // 而示例已经搬去独立 jar —— 一个验链路装配的用例，不该由某份业务表的结构决定它红不红。
         assertThat(executedSql.getFirst().toLowerCase())
-                .contains("sales_order", "order_item", "east", "sum");
+                .as("中文里的‘成交额’没有被翻成聚合、‘上周’没有被翻成时间窗")
+                .contains("sum(", "interval");
         assertThat(answer).isNotBlank();
     }
 
@@ -374,5 +373,27 @@ class RecordingTool implements ToolCallback {
 
     int calls() {
         return calls.get();
+    }
+}
+
+/**
+ * 真模型用例需要一个"真的会被调用、且会留下痕迹"的工具。
+ *
+ * <p>它以前借的是 capability 里的示例销售工具——那条依赖是错的：agent 不该为了一个替身
+ * 认识业务模块（示例业务搬去独立 jar 之后，这里编译不过才暴露出来）。
+ * 替身只做两件真模型用例关心的事：记下被传进来的 SQL、回一行数。
+ */
+class RecordingSalesTool {
+
+    private final List<String> executed;
+
+    RecordingSalesTool(List<String> executed) {
+        this.executed = executed;
+    }
+
+    @Tool(name = "querySales", description = "按 SQL 查询销售数据，只读")
+    public String querySales(@ToolParam(description = "要执行的 select 语句") String sql) {
+        executed.add(sql);
+        return "revenue\n128400";
     }
 }

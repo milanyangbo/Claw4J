@@ -35,6 +35,18 @@
             <artifactId>claw4j-channel</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!--
+          示例业务插件。**下面这一行就是整个接线动作**——去掉它，框架照常构建、照常启动，
+          只是 `querySales` 这个工具不在清单里、business schema 不再被建。
+
+          保留它是为了让 `examples/` 与 README 里的演示能真跑；它不参与任何框架逻辑。
+          这一行也是"第三方工具插件怎么接"的答案：一条依赖，不需要改核心一行代码。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-example-sales</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>

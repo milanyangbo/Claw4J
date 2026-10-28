@@ -22,7 +22,7 @@ if [ -f .env ]; then
     set +a
 fi
 
-MODULES="claw4j-domain claw4j-channel claw4j-capability claw4j-agent claw4j-app"
+MODULES="claw4j-domain claw4j-channel claw4j-capability claw4j-agent claw4j-example-sales claw4j-example-mcp-server claw4j-app"
 MAX_FILES=10
 MAX_METHODS=20
 MIN_COVERAGE=60

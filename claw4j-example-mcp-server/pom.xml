@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.claw4j</groupId>
+        <artifactId>claw4j</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>claw4j-example-mcp-server</artifactId>
+    <name>Claw4J :: Example :: MCP Server</name>
+    <description>一个能 java -jar 独立运行的 Java MCP server（stdio），与 examples/mcp 下的 Python 版平级</description>
+
+    <dependencies>
+        <!--
+          这份 pom 里**没有任何 io.github.claw4j 依赖**，这是刻意的：
+          MCP server 与宿主之间只有协议，没有代码。它不需要 Claw4J 的任何类型，
+          也不需要知道将来谁把它接进去——这正是 MCP 这一层的价值。
+
+          spring-ai-mcp 传递引 MCP Java SDK（mcp / mcp-core / mcp-json-jackson3）；
+          spring-ai-mcp-annotations 提供 @McpTool 与 SyncMcpToolProvider，
+          于是"Java 工具"可以照常写成带注解的普通对象，不必手写 JSON Schema。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-mcp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-mcp-annotations</artifactId>
+        </dependency>
+
+        <!-- 日志实现显式引，并且只走 stderr（见 src/main/resources/logback.xml）。
+             不引也能跑——stdout 反而更干净——但那样这个 server 一旦出问题就是"什么都不说"，
+             而示例的价值一半在于能被调试。 -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- 打成能 java -jar 直接跑的可执行包：这一层的样本必须是"一个独立程序"，
+                 而不是"一段要在宿主里被 new 出来的代码"。 -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <mainClass>io.github.claw4j.example.mcp.server.McpServerApplication</mainClass>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!--
+                      这条用例要把 server 起成**另一个进程**，于是需要把"本模块的完整 classpath"
+                      原样传给子进程。surefire 默认给测试的是一条 manifest-only 的 booter jar，
+                      java.class.path 指向它——能不能加载到类取决于 jar 的 Manifest 而不是目录结构，
+                      换台机器就可能加载不到，报出来是 ClassNotFoundException，指向的是子进程
+                      而不是真正的原因。关掉它，java.class.path 就是那串真实路径。
+                    -->
+                    <useManifestOnlyJar>false</useManifestOnlyJar>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

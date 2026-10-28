@@ -1,4 +1,4 @@
-package io.github.claw4j.capability.builtin.sales;
+package io.github.claw4j.example.sales;
 
 /**
  * 数据源接缝：把"执行一条只读 SQL"从"怎么连库、怎么开事务"里摘出来。

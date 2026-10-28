@@ -1,4 +1,4 @@
-package io.github.claw4j.capability.builtin.sales;
+package io.github.claw4j.example.sales;
 
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.simple.JdbcClient;
