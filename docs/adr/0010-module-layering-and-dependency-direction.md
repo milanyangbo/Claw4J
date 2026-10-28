@@ -7,6 +7,11 @@ date: 2026-10-22
 
 模块数从七个收敛到五个：**`claw4j-domain` / `claw4j-agent` / `claw4j-channel` / `claw4j-capability` / `claw4j-app`**。通道按平台分包（`channel.spi` / `channel.http` / `channel.feishu` / `channel.a2a`），不再按平台分模块。模块之间的依赖方向单向，并且用 ArchUnit 写成会失败的测试，不靠口头约定。
 
+> **后续变化**：M6 把通道契约与入站编排抽成 `claw4j-channel-core`（第三方接通道不必拖进飞书 SDK），
+> ADR-0015 又把它改名 `claw4j-core` 并把 `claw4j-domain` 并了进去。现在的模块清单是
+> **`claw4j-core` / `claw4j-agent` / `claw4j-channel` / `claw4j-capability` / `claw4j-app`**
+> 加两个示例模块，本文其余部分（依赖方向、"什么时候该拆模块"的判据）仍然有效。
+
 ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离成 `channel-api` + `channel-http` + `channel-feishu` 三个。本条把口径改回来，并说明理由。
 
 ## Context
@@ -40,7 +45,8 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
                       app（唯一知道所有模块的地方，负责接线）
 ```
 
-- `claw4j-domain` 不依赖任何框架，是唯一零框架模块。
+- `claw4j-domain` 不依赖任何框架，是唯一零框架模块。（ADR-0015 之后它是 `claw4j-core` 的一部分，
+  包名不变；零框架这条性质由 `core` 的 enforcer 与 `DomainBoundaryTest` 继续守着。）
 - `claw4j-agent` 与 `claw4j-channel` **互不依赖**。这条是本轮最重要的修正：之前两者之间没有任何依赖边，"入站消息怎么交给 Agent"根本没定义，等到 M1 写 HTTP 通道时必然要临时拍脑袋。
 - 接缝放在 `domain.port`：`AgentPort`（行为）+ `InboundMessage` / `OutboundMessage`（数据）。两边都只朝 domain 依赖，装配权交给 app。
 - `claw4j-app` 是唯一同时依赖四个模块的地方，也是唯一打 fat jar 的模块。

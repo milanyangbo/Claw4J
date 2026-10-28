@@ -92,7 +92,9 @@ _Avoid_: Proxy（旧代码里的含义）、Gateway、Bot
 异步算、分段回推、失败也回一句。它只认 `InboundEvent`（五列：事件 id、会话语义、发送人、文本、
 收到时间）与 `ReplySender`，所以飞书、Telegram、Slack 共用同一份实现——三家的回调在这五列上
 逐个对得上，差别只在参数（窗口几秒、单条上限多少）。
-住在 `claw4j-channel-core`，那个模块的 `pom.xml` 里只有 `claw4j-domain` 与 slf4j，**不带任何 IM SDK**。
+住在 `claw4j-core`。那个模块是零框架的：编译期只有 slf4j 一条依赖，外加一段
+validate 阶段的 enforcer（不许 Spring / Spring AI / 厂商 SDK），**不带任何 IM SDK**。
+`claw4j-domain` 在 ADR-0015 里并进了同一个 jar——契约与不变量本来就该是一个坐标。
 _Avoid_: 飞书调度器、"入站调度"（它现在不绑任何平台）
 
 **Session**:

@@ -133,10 +133,10 @@ curl -s -X POST http://localhost:8080/api/chat \
 
 | 扩展点 | 你要提供 | 依赖 | 参照实现 |
 | --- | --- | --- | --- |
-| 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` | `claw4j-domain`、`spring-ai-client-chat` | [`claw4j-example-sales`](claw4j-example-sales) |
+| 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` | `claw4j-core`、`spring-ai-client-chat` | [`claw4j-example-sales`](claw4j-example-sales) |
 | MCP server | 一个说 MCP 协议的可执行程序（Java、Python 或任何语言） | 宿主侧 `claw4j-capability`；**server 侧什么都不要** | [`claw4j-example-mcp-server`](claw4j-example-mcp-server)、[`examples/mcp/`](examples/mcp) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](examples/skills/weekly-sales) |
-| 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-channel-core`（**不带任何 IM SDK**） | `claw4j-channel/http`、`claw4j-channel/feishu` |
+| 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-core`（**不带任何 IM SDK**） | `claw4j-channel/http`、`claw4j-channel/feishu` |
 
 ### 三个文件接一个工具
 
@@ -172,7 +172,7 @@ src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoCo
 而容器里本来就会有别的来源——让位的结果是**你这一方的工具静默消失**，不报错，只是模型手上没它，
 于是它开始编答案。这个坑在 [`docs/design/pitfalls.md`](docs/design/pitfalls.md) 里记了两次。
 
-示例销售插件就是这么接的：它只依赖 `claw4j-domain` 与 Spring AI，**不依赖 `claw4j-capability`**，
+示例销售插件就是这么接的：它只依赖 `claw4j-core` 与 Spring AI，**不依赖 `claw4j-capability`**，
 `claw4j-app` 里那一行依赖就是全部接线动作——删掉它，框架照常构建、照常启动。
 
 ### 接一个第三方 MCP server：写配置，不写代码
@@ -288,10 +288,10 @@ public class WecomChannelAutoConfiguration {
 ```
 
 通道只要三件事：**拿到消息尽快 ACK**（IM 平台都有超时重推）、**用事件 id 做幂等**、**认不出人就拒绝**。
-这三条写进了 [`ChatChannel`](claw4j-channel-core/src/main/java/io/github/claw4j/channel/spi/ChatChannel.java)
+这三条写进了 [`ChatChannel`](claw4j-core/src/main/java/io/github/claw4j/channel/spi/ChatChannel.java)
 的契约里；"ACK 之后怎么办"（去重、认人、异步、分段回推、失败也回一句）在
-[`channel.kernel`](claw4j-channel-core/src/main/java/io/github/claw4j/channel/kernel)，
-它只依赖 `claw4j-domain`——所以接 Telegram 不必把飞书 SDK 拖进 classpath。
+[`channel.kernel`](claw4j-core/src/main/java/io/github/claw4j/channel/kernel)，
+它在 `claw4j-core` 里——所以接 Telegram 不必把飞书 SDK 拖进 classpath。
 
 ### 插件 jar 怎么进 classpath（两种都验过）
 
@@ -316,7 +316,7 @@ java -cp claw4j-app-0.1.0-SNAPSHOT.jar \
   少这个文件，那个 jar 只是躺在 classpath 上，一个 bean 都不会注册。
 
 验证方式写在 [`docs/design/extension-points.md`](docs/design/extension-points.md) 里：
-一个只依赖 `claw4j-domain` 与 Spring AI 的 jar，工具名 `pluginPing`，三组对照（带/不带
+一个只依赖 `claw4j-core` 与 Spring AI 的 jar，工具名 `pluginPing`，三组对照（带/不带
 `loader.path`、`java -jar`）+ 一次 `/api/chat` 真调用。
 
 ## 配置
@@ -354,30 +354,29 @@ java -cp claw4j-app-0.1.0-SNAPSHOT.jar \
 ## 架构
 
 ```
-     channel ──► domain ◄── agent
-                    ▲          ▲
-                    │          │
-                    └─ capability ─┘
-                    ▲
-                    │
-                   app（唯一知道所有模块的地方，负责接线）
+     channel ──► core ◄── agent
+                   ▲        ▲
+                   │        │
+                   └ capability ┘
+                   ▲
+                   │
+                  app（唯一知道所有模块的地方，负责接线）
 ```
 
 | 模块 | 职责 |
 | --- | --- |
-| `claw4j-domain` | 领域模型与端口。**零框架依赖**，唯一被承诺能脱离框架复用的模块 |
+| `claw4j-core` | 契约与不变量：`domain`（端口、`Principal`、权限登记表）+ `channel.spi`（通道契约）+ `channel.kernel`（入站编排）。**零框架依赖**——编译期只有 slf4j，接插件与接通道都只认这一个坐标，见 ADR-0015 |
 | `claw4j-agent` | ChatClient 装配、模型路由、Advisor 链。不认识任何通道，也不认识任何工具类 |
-| `claw4j-channel-core` | 通道契约（`channel.spi`）与入站编排（`channel.kernel`）。只依赖 `domain`，**不带任何 IM SDK** |
 | `claw4j-channel` | 入站出站适配（HTTP+SSE、飞书长连接）。按平台分包，不按平台分模块 |
 | `claw4j-capability` | 能力来源的接缝：MCP、脚本包、Skill、子 Agent、生成器，加一个平台无关的 `system` 工具 |
 | `claw4j-example-sales` | **示例插件**：一个业务工具 + 四张业务表 + 种子数据。不依赖 `claw4j-capability` |
 | `claw4j-example-mcp-server` | **示例插件**：一个 `java -jar` 就能跑的 Java MCP server，不依赖 Claw4J 任何模块 |
 | `claw4j-app` | 启动与装配，唯一打 fat jar 的模块 |
 
-两条最关键的方向：`channel → domain ← agent`，两边互不依赖；接线只发生在 `app`。
+两条最关键的方向：`channel → core ← agent`，两边互不依赖；接线只发生在 `app`。
 加一个通道不需要碰 agent，换一个 Agent 实现不需要碰 channel。
 
-两个 `example` 模块只依赖 `domain` 与 Spring AI（MCP server 连这个都不依赖），
+两个 `example` 模块只依赖 `core` 与 Spring AI（MCP server 连这个都不依赖），
 `claw4j-app` 对它们的依赖是**唯一**的接线点。这不是分层洁癖：
 "删掉那一行、框架照常构建启动"正是插件契约能自证的唯一方式。
 
@@ -386,7 +385,7 @@ java -cp claw4j-app-0.1.0-SNAPSHOT.jar \
 写在这里是因为它们会影响上面那些承诺的强度，而不是自谦：
 
 - **插件与核心的版本兼容口径没定义**：插件靠 Spring Boot 自动配置被发现，但没有任何版本校验——
-  插件编译时依赖的是旧版 `claw4j-domain`，核心接口一变就是运行期 `NoSuchMethodError`，
+  插件编译时依赖的是旧版 `claw4j-core`，核心接口一变就是运行期 `NoSuchMethodError`，
   而不是启动时一句"这个插件要求核心 ≥ x.y"。现在只能靠"同时升级"这个约定。
 - **MCP 的凭据只有"静态请求头"这一种**：`headers` 里写 `Bearer ${TOKEN}`。
   需要浏览器跳转、刷新 token、按用户授权的那些端点（OAuth 授权码流）现在接不了——
@@ -395,8 +394,9 @@ java -cp claw4j-app-0.1.0-SNAPSHOT.jar \
 ## 目录结构
 
 ```text
-claw4j-{domain,agent,capability,app}/              核心：领域、Agent、能力、装配
-claw4j-channel-core/                               通道契约与入站编排（不带 IM SDK）
+claw4j-core/                                       契约与不变量：domain + channel.spi + channel.kernel
+                                                   （零框架：编译期只有 slf4j）
+claw4j-{agent,capability,app}/                     核心：Agent、能力、装配
 claw4j-channel/                                    平台适配：HTTP、飞书长连接
 claw4j-example-{sales,mcp-server}/                 示例插件：业务工具、Java 版 MCP server
 docs/adr/            架构决策记录：为什么这样，否决了什么

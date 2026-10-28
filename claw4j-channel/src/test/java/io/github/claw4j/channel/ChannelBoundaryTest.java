@@ -15,8 +15,9 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * 两条都是代码照跑、日志干净、只是边界没了。
  *
  * <p><b>契约与编排已经不在这里</b>：{@code channel.spi} 与 {@code channel.kernel} 在
- * {@code claw4j-channel-core} 模块里（M6），它们的边界由那个模块的 {@code KernelBoundaryTest}
- * 用<b>白名单</b>守着——"只许依赖 JDK、slf4j、domain 与自家代码"，比本类这几条更严。
+ * {@code claw4j-core} 模块里（M6 搬出去，ADR-0015 又把 {@code claw4j-domain} 并进了同一个 jar），
+ * 它们的边界由那个模块的 {@code CoreBoundaryTest} 用<b>白名单</b>守着——
+ * "只许依赖 JDK、slf4j、domain 与自家代码"，比本类这几条更严。
  * 本类只守这个模块里的平台实现（飞书、HTTP）不反向依赖 Agent 与能力。
  */
 @AnalyzeClasses(packages = "io.github.claw4j.channel", importOptions = ImportOption.DoNotIncludeTests.class)

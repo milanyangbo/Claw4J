@@ -18,8 +18,10 @@
         <!--
           这份 pom 本身就是"第三方工具插件要依赖什么"的答案，所以它短得可疑：
 
-          - claw4j-domain：权限登记表的契约（ToolPermissionRegistry / ToolPermission / Principal）。
+          - claw4j-core：权限登记表的契约（ToolPermissionRegistry / ToolPermission / Principal）。
             工具插件只需要这一个模块，不需要 agent、不需要 capability。
+            它同时带来 slf4j 与通道契约——ADR-0015 把 domain 并进了 core，这是那次合并的代价，
+            换来的是"接插件只记一个坐标"。
           - spring-ai-client-chat：@Tool 注解与 ToolCallbackProvider。
           - spring-boot-starter：@AutoConfiguration 与各个 @Conditional*，让插件能被发现。
 
@@ -28,7 +30,7 @@
         -->
         <dependency>
             <groupId>io.github.claw4j</groupId>
-            <artifactId>claw4j-domain</artifactId>
+            <artifactId>claw4j-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>

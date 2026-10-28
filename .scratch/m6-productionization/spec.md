@@ -4,7 +4,7 @@
 
 框架代码里不该出现为了演示而存在的类；通用的东西不该绑在某一个通道上；插件不该非得改源码才能装。
 
-## 五张票
+## 六张票
 
 - `01-frame-has-no-demo.md`：删 `McpDemoConfiguration`，`mcp-demo` 全走配置，顺手清掉代码里写死的示例路径。
 - `02-channel-kernel.md`：把入站编排从 `channel.feishu` 提到一个不依赖任何 IM SDK 的模块。
@@ -12,6 +12,8 @@
 - `04-ddl-follows-its-owner.md`：会话与缓存的三张表只有 `agent` 在读，DDL 与 Flyway 依赖跟着搬回 `agent`。
 - `05-mcp-config-lives-in-local.md`：接哪几个 MCP server 是这台机器的事，两份 `mcp-*.yml` 并进
   `application-local.yml`——`01` 的后半段，演示配置本身也要离开框架资源。
+- `06-one-core-artifact.md`：`claw4j-channel-core` 改名 `claw4j-core`，`claw4j-domain` 并进来——
+  `02` 抽出来的那个模块与 `domain` 是同一种东西（零框架的契约），劈成两个坐标只是让接入方猜。
 
 ## 它们共同点
 
@@ -25,7 +27,7 @@
 - 演示配置跑得通，但"这台机器连哪几个 MCP server"被做成了两个 profile——归属同样错了：
   它是部署环境的事，跟"数据库连哪个"同一层。
 
-## 判据（五张票共用）
+## 判据（六张票共用）
 
 - 删掉一个类、搬走一个目录，框架照常构建、照常启动，功能不少——说明它本来就不该在那儿。
 - 新模块的 `pom.xml` 里没有任何 IM SDK。

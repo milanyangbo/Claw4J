@@ -16,18 +16,13 @@
 
     <dependencies>
         <!--
-          契约与入站编排在这个模块里：它不依赖任何 IM SDK，所以第三方接新通道时
-          只需要依赖 claw4j-channel-core，不必把飞书 SDK 拖进自己的 classpath。
+          契约与入站编排在 claw4j-core 里（ADR-0015 之后 domain 也并在那儿）。
+          它不依赖任何 IM SDK，所以第三方接新通道时只需要依赖那一个坐标，
+          不必把飞书 SDK 拖进自己的 classpath。
         -->
         <dependency>
             <groupId>io.github.claw4j</groupId>
-            <artifactId>claw4j-channel-core</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
-        <dependency>
-            <groupId>io.github.claw4j</groupId>
-            <artifactId>claw4j-domain</artifactId>
+            <artifactId>claw4j-core</artifactId>
             <version>${project.version}</version>
         </dependency>
 

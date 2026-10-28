@@ -27,7 +27,7 @@ import java.util.Map;
  *
  * <p>为什么这个类不在 {@code claw4j-capability} 里：它是一份业务示例，不是框架能力。
  * 框架模块里放业务的结果是"装了框架就等于装了业务表"，而这个类证明的是相反的路径——
- * 一个只依赖 {@code claw4j-domain} 与 Spring AI 的 jar，加一行依赖就能接进来，
+ * 一个只依赖 {@code claw4j-core} 与 Spring AI 的 jar，加一行依赖就能接进来，
  * 拿掉它框架照常启动（{@code claw4j-app} 里那条依赖就是唯一的接线点）。
  *
  * <p><b>关掉它</b>：{@code claw4j.example.sales.enabled=false}。示例插件必须给得出

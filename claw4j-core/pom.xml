@@ -10,11 +10,31 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>claw4j-domain</artifactId>
-    <name>Claw4J :: Domain</name>
-    <description>领域模型。不依赖 Spring、Spring AI 或任何通道 SDK，见 ADR-0004</description>
+    <artifactId>claw4j-core</artifactId>
+    <name>Claw4J :: Core</name>
+    <description>框架的契约与不变量：domain（端口、Principal、权限登记表）+ channel.spi（通道契约）
+        + channel.kernel（入站编排）。不依赖 Spring、不依赖任何 IM SDK，见 ADR-0010 / ADR-0015</description>
 
+    <!--
+      这个模块的全部意义在下面这段 dependencies 里：只有 slf4j。
+
+      它装的是"所有别的模块都朝它依赖"的那一层：domain.port 是通道与 agent 之间的接缝，
+      channel.spi 是通道实现要满足的契约，channel.kernel 是每个通道都要写一遍的入站四件事。
+      飞书 SDK 在 claw4j-channel 里（那个模块依赖本模块），所以第三方接 Telegram 时
+      依赖本模块就够了，classpath 里不会出现 com.larksuite.oapi。
+
+      这条边界不是靠自觉：模块依赖方向写反就编译不过，而"有人在 pom 里加了 Spring"
+      由下面 validate 阶段的 enforcer 当场拦下——两件事得分开守，因为前者管 import，
+      后者管声明。
+    -->
     <dependencies>
+        <!-- 编排层要记日志；版本由 spring-boot-dependencies 管。
+             这是本模块唯一一条编译期依赖——domain 里连它都没有（见 DomainBoundaryTest）。 -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -31,16 +51,19 @@
         <plugins>
             <!--
               ArchUnit 拦的是"源码里 import 了框架"，这条拦的是"POM 里声明了框架依赖"。
-              两者缺一不可：前者管不住有人在 domain 里 import 一个没用到的 Spring 类型
-              （编译不过所以其实也拦得住），后者管不住有人先把依赖加进来、再慢慢写代码。
+              两者缺一不可：前者管不住有人先把依赖加进来、再慢慢写代码。
               放在 validate 阶段，加错依赖当场就红，不用等到测试阶段。
+
+              这条规则从 claw4j-domain 搬过来（ADR-0015 把那个模块并进了本模块）：
+              domain 与 channel.kernel 本来就是同一种东西——零框架的契约与不变量，
+              现在它们在一个 jar 里，就只需要一条规则守着。
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
                 <executions>
                     <execution>
-                        <id>domain-must-stay-framework-free</id>
+                        <id>core-must-stay-framework-free</id>
                         <phase>validate</phase>
                         <goals>
                             <goal>enforce</goal>
@@ -58,9 +81,9 @@
                                         <exclude>io.projectreactor</exclude>
                                     </excludes>
                                     <message>
-                                        domain 模块不得引入 Spring / Spring AI / 厂商 SDK / 响应式库。
-                                        它是唯一被承诺"能脱离框架独立复用"的模块，见 ADR-0004 与 ADR-0010。
-                                        需要框架能力就把它放到 agent 或 channel，由 app 接线。
+                                        claw4j-core 不得引入 Spring / Spring AI / 厂商 SDK / 响应式库。
+                                        它是唯一被承诺"能脱离框架独立复用"的模块，见 ADR-0004、ADR-0010、ADR-0015。
+                                        需要框架能力就把它放到 agent / channel / capability，由 app 接线。
                                     </message>
                                 </bannedDependencies>
                             </rules>

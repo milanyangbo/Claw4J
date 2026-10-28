@@ -8,11 +8,11 @@ import com.tngtech.archunit.lang.ArchRule;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 
 /**
- * 本模块的依赖边界：只有 JDK、slf4j、domain、以及自己。
+ * core 里 channel 那半边的依赖边界：只有 JDK、slf4j、domain、以及自己。
  *
- * <p>这条规则要守的是这个模块存在的理由。{@code claw4j-channel-core} 之所以单独拆出来，
- * 是因为第三方接一个新通道时应该能<b>只依赖它</b>，而 classpath 里不出现飞书 SDK。
- * 一旦这里 import 了任何 SDK 的类型（哪怕只是"顺手用一下那个常量"），整件事就白做了：
+ * <p>这条规则要守的是 {@code claw4j-core} 存在的理由：第三方接一个新通道、或者写一个工具插件，
+ * 应该能<b>只依赖它一个坐标</b>，而 classpath 里不出现飞书 SDK、也不出现 Spring。
+ * 一旦这里 import 了任何框架或 SDK 的类型（哪怕只是"顺手用一下那个常量"），整件事就白做了：
  * 第三方要么把 SDK 拖进来，要么自己再抄一份编排。
  *
  * <p><b>为什么写成白名单而不是点名飞书</b>：点名写法有两种静默失效——包名写错一位，
@@ -21,12 +21,17 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
  *
  * <p>同样的理由，这里不写"不依赖 channel.feishu"这种规则：本模块的 classpath 上
  * 根本没有那个包，规则会匹配到零个类然后报绿——一条永远为真的断言比没有断言更糟。
+ *
+ * <p><b>为什么没和 {@code DomainBoundaryTest} 合成一条</b>：那条更严，管的是
+ * {@code io.github.claw4j.domain} 不许依赖<b>任何</b>外部包（连 slf4j 都不行）——
+ * domain 是连日志都不该知道的纯模型。这条允许 slf4j，因为编排要记日志。
+ * 两个包现在在同一个 jar 里（ADR-0015），但两条边界不是一回事。
  */
 @AnalyzeClasses(packages = "io.github.claw4j.channel", importOptions = ImportOption.DoNotIncludeTests.class)
-class KernelBoundaryTest {
+class CoreBoundaryTest {
 
     @ArchTest
-    static final ArchRule coreDependsOnNothingButTheJdkDomainAndItself =
+    static final ArchRule channelSideOfCoreDependsOnNothingButTheJdkSlf4jAndDomain =
             classes().that().resideInAPackage("io.github.claw4j.channel..")
                     .should().onlyDependOnClassesThat().resideInAnyPackage(
                             "java..",

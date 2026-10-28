@@ -12,12 +12,12 @@
 
 | 扩展点 | 你要提供 | 依赖 | 参照实现 |
 | --- | --- | --- | --- |
-| Java 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` | `claw4j-domain`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
+| Java 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` | `claw4j-core`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
 | MCP server | 一段配置（或一个 `McpServerEndpoint` bean）；server 本身可以是任何语言 | 宿主侧 `claw4j-capability`；server 侧什么都不要 | [`application-local.yml.example`](../../claw4j-app/src/main/resources/application-local.yml.example)、[`claw4j-example-mcp-server`](../../claw4j-example-mcp-server)、[`examples/mcp/`](../../examples/mcp) |
 | 脚本包 | 一个目录（`package.properties` + 入口脚本） | 无（子进程 + 沙箱） | [`examples/scripts/`](../../examples/scripts) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](../../examples/skills/weekly-sales) |
 | Subagent | 一份 `*.md`（front matter + 正文） | 无（纯文本） | [`examples/subagents/capacity-triage.md`](../../examples/subagents/capacity-triage.md) |
-| 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-channel-core`（**不带任何 IM SDK**） | `claw4j-channel/http`、`claw4j-channel/feishu` |
+| 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-core`（**不带任何 IM SDK**） | `claw4j-channel/http`、`claw4j-channel/feishu` |
 
 
 ---
@@ -243,7 +243,7 @@ public interface AgentPort {
 
 ### 这三条已经有人替你实现了
 
-`claw4j-channel-core` 的 `channel.kernel.InboundDispatcher` 做的就是这四件事：去重 → 认人 →
+`claw4j-core` 的 `channel.kernel.InboundDispatcher` 做的就是这四件事：去重 → 认人 →
 异步 → 分段回推，以及"失败也要回一句"。它只认两个接口，你的通道只要把平台事件压成五列即可：
 
 ```java
@@ -268,8 +268,9 @@ Slack `event_id` / `channel` / `user`。差别只在参数（窗口 3 秒还是 
 不在结构。飞书自己走的就是这条路：`FeishuInboundEvent` 只是把这个接口的 `conversationId()`
 映射到 `chat_id`，编排代码一行不分平台。
 
-模块边界是可执行的：`claw4j-channel-core/pom.xml` 只有 `claw4j-domain` 与 `slf4j-api`，
-`KernelBoundaryTest` 用白名单守着（只许依赖 JDK、日志、domain、自家代码）。
+模块边界是可执行的：`claw4j-core/pom.xml` 的编译期依赖只有 `slf4j-api`（`domain` 在 ADR-0015
+之后就在同一个 jar 里，不再是一个坐标），`CoreBoundaryTest` 用白名单守着
+（只许依赖 JDK、日志、domain、自家代码）；POM 里想加 Spring 有 enforcer 在 `validate` 阶段拦。
 
 ### 装配
 
@@ -290,7 +291,7 @@ public class WecomChannelAutoConfiguration {
 ### 今天的限制（如实写）
 
 - **版本兼容口径还没定义**。插件靠自动配置被发现，但没有任何版本校验：插件编译时依赖的是旧版
-  `claw4j-domain`，核心接口一变就是运行期 `NoSuchMethodError`，而不是启动时一句
+  `claw4j-core`，核心接口一变就是运行期 `NoSuchMethodError`，而不是启动时一句
   "这个插件要求核心 ≥ x.y"。现在只能靠"插件与核心同时升级"这个约定。
 - **只支持 `stdio` 与 `http`/`sse` 两种 MCP 传输**。社区里还有别的（比如基于消息队列的），
   接进来要改 `McpEndpoints` 的枚举——那是一个明确的改动点，不是"配一下就行"。
