@@ -1,16 +1,22 @@
 package io.github.claw4j.channel.feishu;
 
+import io.github.claw4j.channel.kernel.ReplySender;
+
 /**
  * 把一段文本主动推回某个会话。
  *
  * <p>飞书的普通消息没有 SSE，逐块增量更新要额外调消息更新接口并处理限频，所以这里只有
- * "发一条完整文本"这一种形态；超过平台单条上限的拆分由调用方（{@link InboundDispatcher}）负责，
+ * "发一条完整文本"这一种形态；超过平台单条上限的拆分由调用方
+ * （{@link io.github.claw4j.channel.kernel.InboundDispatcher}）负责，
  * 不交给实现——否则每个实现都要重新决定一次怎么切。
+ *
+ * <p>它只是把 {@link ReplySender} 收到飞书这一侧命名：{@code conversationId} 在飞书是
+ * {@code chat_id}。方法签名与内核一致，所以飞书自己的代码仍然写 `send(chatId, text)` 读得通顺。
  *
  * <p>实现由 SDK 绑定层提供。失败要抛出来（网络、限频、凭据过期都算）：调度层要能在日志里
  * 记下"这一条没发出去"，而不是以为发出去了。{@code chatId} 与入站那条同源。
  */
-public interface FeishuReplySender {
+public interface FeishuReplySender extends ReplySender {
 
     /**
      * @param chatId 回哪条会话

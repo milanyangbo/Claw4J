@@ -6,7 +6,7 @@ import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1;
 import com.lark.oapi.ws.Client;
 import io.github.claw4j.channel.feishu.FeishuInboundEvent;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
-import io.github.claw4j.channel.feishu.InboundDispatcher;
+import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.channel.spi.ChatChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

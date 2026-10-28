@@ -15,6 +15,16 @@
     <description>入站与出站的通道实现：HTTP+SSE、飞书长连接、A2A。SPI 在 channel.spi 包，各实现分包隔离</description>
 
     <dependencies>
+        <!--
+          契约与入站编排在这个模块里：它不依赖任何 IM SDK，所以第三方接新通道时
+          只需要依赖 claw4j-channel-core，不必把飞书 SDK 拖进自己的 classpath。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-channel-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>io.github.claw4j</groupId>
             <artifactId>claw4j-domain</artifactId>

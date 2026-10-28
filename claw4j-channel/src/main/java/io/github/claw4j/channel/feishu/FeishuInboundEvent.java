@@ -1,5 +1,7 @@
 package io.github.claw4j.channel.feishu;
 
+import io.github.claw4j.channel.kernel.InboundEvent;
+
 import java.time.Instant;
 
 /**
@@ -9,12 +11,21 @@ import java.time.Instant;
  * 没有网络、没有 {@code oapi-sdk} 的情况下跑，所以事件进调度层之前必须先变成这几个字符串。
  * 因此这个接口刻意保持在"通道自己需要的最小信息"上——不是飞书事件的 Java 镜像。
  *
- * <p>它不进 {@code channel.spi}：spi 是"任何通道都要满足的契约"，而这里的字段是飞书事件的形状
- * （{@code event_id}、{@code chat_id}、{@code open_id}）。放进 spi 会让下一个通道被迫解释飞书的语义。
+ * <p>它是 {@link InboundEvent} 在飞书这一侧的<b>适配</b>：编排层只认那五列，
+ * 而 {@code chat_id} 在这里映射成 {@code conversationId}。这样编排层里不会出现
+ * "chatId"这个词，将来接 Telegram 时也不必解释飞书的语义。
+ *
+ * <p>它本身不进 {@code channel.spi}：spi 是"任何通道都要满足的契约"，
+ * 而这里的字段是飞书事件的形状（{@code event_id}、{@code chat_id}、{@code open_id}）。
  *
  * @see io.github.claw4j.domain.port.InboundMessage 认出人之后往 Agent 送的那一份
  */
-public interface FeishuInboundEvent {
+public interface FeishuInboundEvent extends InboundEvent {
+
+    @Override
+    default String conversationId() {
+        return chatId();
+    }
 
     /**
      * 平台侧的事件标识，去重就按它。飞书 3 秒没确认会重推，重推送的是同一个 {@code event_id}。

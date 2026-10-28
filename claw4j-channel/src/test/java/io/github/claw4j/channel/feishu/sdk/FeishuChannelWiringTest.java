@@ -1,7 +1,7 @@
 package io.github.claw4j.channel.feishu.sdk;
 
 import io.github.claw4j.channel.feishu.FeishuReplySender;
-import io.github.claw4j.channel.feishu.InboundDispatcher;
+import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;

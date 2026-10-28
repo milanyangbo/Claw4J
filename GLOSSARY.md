@@ -87,6 +87,14 @@ _Avoid_: 模型切换（那是改配置的结果，不是运行时的行为）�
 一条对外的消息通道，负责把外部消息转成内部请求、把内部结果发回外部。同一套编排逻辑可以同时挂多条 Channel。
 _Avoid_: Proxy（旧代码里的含义）、Gateway、Bot
 
+**Inbound 编排（`channel.kernel`）**:
+平台回调进来之后、Agent 算完之后，那两段与平台无关的逻辑：立刻 ACK、按幂等键去重、认出是谁、
+异步算、分段回推、失败也回一句。它只认 `InboundEvent`（五列：事件 id、会话语义、发送人、文本、
+收到时间）与 `ReplySender`，所以飞书、Telegram、Slack 共用同一份实现——三家的回调在这五列上
+逐个对得上，差别只在参数（窗口几秒、单条上限多少）。
+住在 `claw4j-channel-core`，那个模块的 `pom.xml` 里只有 `claw4j-domain` 与 slf4j，**不带任何 IM SDK**。
+_Avoid_: 飞书调度器、"入站调度"（它现在不绑任何平台）
+
 **Session**:
 一次用户会话的完整事件流，是记忆、压缩和追踪的作用域。用户换个 Channel 进来，只要 Session 相同，上下文就连续。
 _Avoid_: ChatContext、Conversation、chatId 窗口

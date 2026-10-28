@@ -1,4 +1,4 @@
-package io.github.claw4j.channel.feishu;
+package io.github.claw4j.channel.kernel;
 
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.port.AgentPort;
@@ -35,20 +35,27 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 飞书入站调度这一个功能：一条事件进来之后，群里出现几条消息、Agent 被调了几次、什么时候返回。
+ * 入站编排这一个功能：一条事件进来之后，会话里出现几条消息、Agent 被调了几次、什么时候返回。
  *
- * <p>入口是 {@link InboundDispatcher#accept}——真正的系统边界（长连接回调）需要真凭据，
- * 而它要做的事只是"把 SDK 对象翻译成 {@link FeishuInboundEvent}"，翻译错了在假事件上没有意义。
+ * <p>入口是 {@link InboundDispatcher#accept}——真正的系统边界（长连接 / webhook）需要真凭据，
+ * 而它要做的事只是"把平台事件压成 {@link InboundEvent}"，翻译错了在假事件上没有意义。
  * 所以这里从责任开始的那一层进，断言的是**外部可观察的结果**：发送了什么、调了几次、ACK 何时返回。
  *
- * <p>这些错了都不会报错：事件照样被"确认"，只是群里多一条重复回答、少一条失败说明、
- * 或者某个人拿到了不该看的数。飞书侧看不出区别，只有重推次数在涨。
+ * <p><b>本用例一个字都不提飞书。</b>它用的 {@link Event} 是一个只有五个字段的 record，
+ * 语义上与飞书、Telegram、Slack 无关。这就是"这套编排不属于某一个通道"的可执行版本：
+ * 如果哪天有人往 {@code InboundDispatcher} 里加了一个飞书概念，这里会先编译不过。
+ *
+ * <p>这些错了都不会报错：事件照样被"确认"，只是会话里多一条重复回答、少一条失败说明、
+ * 或者某个人拿到了不该看的数。平台侧看不出区别，只有重推次数在涨。
  */
 class InboundDispatchTest {
 
-    private static final String CHAT_ID = "oc_demo_chat";
+    /** 平台名只出现在一句拒绝文案里，所以用一个能一眼认出来的假值。 */
+    private static final String PLATFORM = "测试平台";
 
-    private static final String SENDER = "ou_zhang";
+    private static final String CONVERSATION = "conv-demo";
+
+    private static final String SENDER = "user-zhang";
 
     private static final String EVENT_ID = "evt-0001";
 
@@ -62,7 +69,7 @@ class InboundDispatchTest {
         directory.put(SENDER, Principal.readOnly("u-1"));
     }
 
-    // ---------------------------------------------------------------- ACK：事件线程不等 Agent
+    // ---------------------------------------------------------------- ACK：回调线程不等 Agent
 
     @Test
     @DisplayName("ACK 不等 Agent：accept 返回时任务还排在队列里，Agent 一次都没被调")
@@ -72,7 +79,7 @@ class InboundDispatchTest {
 
         dispatcher.accept(event(EVENT_ID, "上周华东区成交额"));
 
-        assertTrue(agent.received.isEmpty(), "accept 里就跑了 Agent，等于把 3 秒预算赌在模型上");
+        assertTrue(agent.received.isEmpty(), "accept 里就跑了 Agent，等于把几秒的 ACK 预算赌在模型上");
         assertTrue(sender.texts().isEmpty());
 
         executor.runAll();
@@ -81,20 +88,21 @@ class InboundDispatchTest {
         InboundMessage delivered = agent.received.get(0);
         assertEquals("上周华东区成交额", delivered.text());
         assertEquals("u-1", delivered.principal().userId());
-        assertEquals(CHAT_ID, delivered.chatId());
+        assertEquals(CONVERSATION, delivered.chatId());
         assertEquals(EVENT_ID, delivered.eventId());
         assertEquals(List.of("答复"), sender.texts());
-        assertEquals(CHAT_ID, sender.sent.get(0).chatId());
+        assertEquals(CONVERSATION, sender.sent.get(0).conversationId());
     }
 
     @Test
     @Timeout(20)
-    @DisplayName("Agent 卡住不返回时 ACK 仍然立刻返回：否则飞书判定超时并无限重推")
+    @DisplayName("Agent 卡住不返回时 ACK 仍然立刻返回：否则平台判定超时并无限重推")
     void ackStillReturnsWhileTheAgentIsStuck() throws Exception {
         ExecutorService pool = Executors.newSingleThreadExecutor();
         try {
             BlockingAgent stuck = new BlockingAgent(1);
-            InboundDispatcher dispatcher = new InboundDispatcher(stuck, pool, this::lookup, sender);
+            InboundDispatcher dispatcher =
+                    new InboundDispatcher(stuck, pool, this::lookup, sender, PLATFORM);
 
             dispatcher.accept(event(EVENT_ID, "慢慢算")); // 若这里等 Agent，本用例会挂到超时
 
@@ -116,7 +124,8 @@ class InboundDispatchTest {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             BlockingAgent stuck = new BlockingAgent(2);
-            InboundDispatcher dispatcher = new InboundDispatcher(stuck, pool, this::lookup, sender);
+            InboundDispatcher dispatcher =
+                    new InboundDispatcher(stuck, pool, this::lookup, sender, PLATFORM);
 
             dispatcher.accept(event("evt-1", "问题一"));
             dispatcher.accept(event("evt-2", "问题二"));
@@ -136,17 +145,17 @@ class InboundDispatchTest {
     // ---------------------------------------------------------------- 去重：重推只执行一次
 
     @Test
-    @DisplayName("同一个 eventId 再来一次：仍然 ACK，但 Agent 只跑一次、群里只有一条回答")
+    @DisplayName("同一个 eventId 再来一次：仍然 ACK，但 Agent 只跑一次、会话里只有一条回答")
     void duplicateDeliveryRunsOnceButStillAcks() {
         InboundDispatcher dispatcher = dispatcher(Runnable::run);
-        FeishuInboundEvent event = event(EVENT_ID, "上周成交额");
+        InboundEvent event = event(EVENT_ID, "上周成交额");
 
         dispatcher.accept(event);
         dispatcher.accept(event);
         dispatcher.accept(event(EVENT_ID, "上周成交额"));
 
         assertEquals(1, agent.received.size(), "重推被当成新消息，模型与库都白跑一遍");
-        assertEquals(1, sender.texts().size(), "群里会刷出两条一样的回答");
+        assertEquals(1, sender.texts().size(), "会话里会刷出两条一样的回答");
     }
 
     @Test
@@ -154,7 +163,7 @@ class InboundDispatchTest {
     void redeliveryAfterTheWindowRunsAgain() {
         MutableClock clock = new MutableClock();
         InboundDispatcher dispatcher = new InboundDispatcher(agent, Runnable::run, this::lookup, sender,
-                new InboundDispatcher.SeenEventIds(Duration.ofMinutes(10), clock));
+                PLATFORM, new InboundDispatcher.SeenEventIds(Duration.ofMinutes(10), clock));
 
         dispatcher.accept(event(EVENT_ID, "问题"));
         dispatcher.accept(event(EVENT_ID, "问题"));
@@ -164,33 +173,60 @@ class InboundDispatchTest {
         assertEquals(2, agent.received.size());
     }
 
-    // ---------------------------------------------------------------- 失败：不能变成群里的沉默
+    @Test
+    @DisplayName("事件没有 eventId：照常处理并记 WARN，不能因为少一个字段把用户的话丢掉")
+    void missingEventIdStillProcesses() {
+        dispatcher(Runnable::run).accept(event(null, "问题"));
+
+        assertEquals(1, agent.received.size());
+        assertEquals(List.of("答复"), sender.texts());
+    }
+
+    // ---------------------------------------------------------------- 失败：不能变成沉默
 
     @Test
-    @DisplayName("Agent 抛异常：群里出现的是一条说清失败的消息，而不是什么都没有")
+    @DisplayName("Agent 抛异常：会话里出现的是一条说清失败的消息，而不是什么都没有")
     void agentFailureStillPutsAReasonInTheChat() {
         agent.failingWith(new IllegalStateException("模型连不上"));
 
         dispatcher(Runnable::run).accept(event(EVENT_ID, "问题"));
 
         List<String> texts = sender.texts();
-        assertEquals(1, texts.size(), "群里的沉默分不清'还在算'和'挂了'");
+        assertEquals(1, texts.size(), "沉默分不清'还在算'和'挂了'");
         assertTrue(texts.get(0).startsWith(InboundDispatcher.FAILURE_REPLY_PREFIX));
         assertTrue(texts.get(0).contains("模型连不上"), "没带上原因，用户无从判断");
-        assertEquals(CHAT_ID, sender.sent.get(0).chatId());
+        assertEquals(CONVERSATION, sender.sent.get(0).conversationId());
     }
 
     @Test
-    @DisplayName("没登记的用户：回一句没有权限，绝不调 Agent、也不静默丢弃")
+    @DisplayName("没登记的用户：回一句没有权限（带平台名），绝不调 Agent、也不静默丢弃")
     void unknownSenderGetsANoPermissionReply() {
-        dispatcher(Runnable::run).accept(event(EVENT_ID, "问题", "ou_stranger"));
+        dispatcher(Runnable::run).accept(event(EVENT_ID, "问题", "user-stranger"));
 
         assertTrue(agent.received.isEmpty());
-        assertEquals(List.of(InboundDispatcher.NO_PERMISSION_REPLY), sender.texts());
+        List<String> texts = sender.texts();
+        assertEquals(1, texts.size());
+        assertTrue(texts.get(0).contains("没有权限"), "用户要知道这是权限问题，不是系统坏了");
+        assertTrue(texts.get(0).contains(PLATFORM),
+                "各平台账号体系不同，说错平台名会让人去找错地方：" + texts.get(0));
     }
 
     @Test
-    @DisplayName("线程池满：ACK 已发生、飞书不会重推，所以必须当场回一句，不能让用户干等")
+    @DisplayName("认人本身抛异常：与'没登记'同样当场回一句，不能把用户晾着")
+    void resolverFailureStillAnswersTheUser() {
+        InboundDispatcher dispatcher = new InboundDispatcher(agent, Runnable::run, senderId -> {
+            throw new IllegalStateException("角色表配错了");
+        }, sender, PLATFORM);
+
+        dispatcher.accept(event(EVENT_ID, "问题"));
+
+        assertTrue(agent.received.isEmpty());
+        assertEquals(1, sender.texts().size());
+        assertTrue(sender.texts().get(0).contains("没有权限"));
+    }
+
+    @Test
+    @DisplayName("线程池满：ACK 已发生、平台不会重推，所以必须当场回一句，不能让用户干等")
     void overloadedPoolTellsTheUserInsteadOfDropping() {
         Executor full = command -> {
             throw new RejectedExecutionException("池满");
@@ -203,13 +239,28 @@ class InboundDispatchTest {
     }
 
     @Test
-    @DisplayName("模型返回空内容：也要发一句占位，不能让群里什么都不出现")
+    @DisplayName("模型返回空内容：也要发一句占位，不能什么都不出现")
     void blankAnswerIsNotSilentlyDropped() {
         agent.answeringWith("   ");
 
         dispatcher(Runnable::run).accept(event(EVENT_ID, "问题"));
 
         assertEquals(List.of(InboundDispatcher.EMPTY_ANSWER_REPLY), sender.texts());
+    }
+
+    @Test
+    @DisplayName("回推失败：后续段落不再发（宁可缺也不乱），但已经发出去的那些不受影响")
+    void sendFailureStopsFurtherParts() {
+        // 三段、远超单条上限，于是"切出来的段数 ≥ 3"是可预期的：第 1 段成功，第 2 段失败
+        String first = "第一段：" + "甲".repeat(3000);
+        String second = "第二段：" + "乙".repeat(3000);
+        String third = "第三段：" + "丙".repeat(3000);
+        agent.answeringWith(String.join("\n\n", first, second, third));
+        sender.failingAfter(1);
+
+        dispatcher(Runnable::run).accept(event(EVENT_ID, "问题"));
+
+        assertEquals(1, sender.sent.size(), "第二段发不出去时，不该再往下发第三段");
     }
 
     // ---------------------------------------------------------------- 出站：长回答怎么切
@@ -317,23 +368,29 @@ class InboundDispatchTest {
 
     // ---------------------------------------------------------------- 装配
     private InboundDispatcher dispatcher(Executor executor) {
-        return new InboundDispatcher(agent, executor, this::lookup, sender);
+        return new InboundDispatcher(agent, executor, this::lookup, sender, PLATFORM);
     }
 
     private Optional<Principal> lookup(String senderId) {
         return Optional.ofNullable(directory.get(senderId));
     }
 
-    private static FeishuInboundEvent event(String eventId, String text) {
+    private static InboundEvent event(String eventId, String text) {
         return event(eventId, text, SENDER);
     }
 
-    private static FeishuInboundEvent event(String eventId, String text, String senderId) {
-        return new Event(eventId, CHAT_ID, senderId, text, Instant.parse("2026-10-26T12:00:00Z"));
+    private static InboundEvent event(String eventId, String text, String senderId) {
+        return new Event(eventId, CONVERSATION, senderId, text, Instant.parse("2026-10-26T12:00:00Z"));
     }
 
-    private record Event(String eventId, String chatId, String senderId, String text, Instant receivedAt)
-            implements FeishuInboundEvent {
+    /**
+     * 一个"第三方通道"的事件：五个字段，与任何平台无关。
+     *
+     * <p>它刻意不叫 {@code FeishuInboundEvent}——那份是飞书侧的适配，属于 {@code claw4j-channel}。
+     * 这里能用一个 record 顶替它，说明编排层要的确实只有这五列。
+     */
+    private record Event(String eventId, String conversationId, String senderId, String text,
+                         Instant receivedAt) implements InboundEvent {
     }
 
     // ---------------------------------------------------------------- 边界外的替身
@@ -368,7 +425,7 @@ class InboundDispatchTest {
 
         @Override
         public void stream(InboundMessage message, Consumer<OutboundMessage> onChunk) {
-            throw new UnsupportedOperationException("飞书走一次性回答，不走流式");
+            throw new UnsupportedOperationException("这个通道走一次性回答，不走流式");
         }
     }
 
@@ -396,20 +453,30 @@ class InboundDispatchTest {
 
         @Override
         public void stream(InboundMessage message, Consumer<OutboundMessage> onChunk) {
-            throw new UnsupportedOperationException("飞书走一次性回答，不走流式");
+            throw new UnsupportedOperationException("这个通道走一次性回答，不走流式");
         }
     }
 
     /** 记下发了什么，并留一个队列让测试能"等第一条出现"而不必睡一会儿再看。 */
-    private static final class RecordingSender implements FeishuReplySender {
+    private static final class RecordingSender implements ReplySender {
 
         private final List<Sent> sent = new CopyOnWriteArrayList<>();
 
         private final BlockingQueue<Sent> arriving = new LinkedBlockingQueue<>();
 
+        private int failAfter = -1;
+
+        /** 发出去 N 条之后开始失败，用来验证"后续段落不再发"。 */
+        void failingAfter(int successfulSends) {
+            this.failAfter = successfulSends;
+        }
+
         @Override
-        public void send(String chatId, String text) {
-            Sent message = new Sent(chatId, text);
+        public void send(String conversationId, String text) {
+            if (failAfter >= 0 && sent.size() >= failAfter) {
+                throw new IllegalStateException("平台拒收");
+            }
+            Sent message = new Sent(conversationId, text);
             sent.add(message);
             arriving.add(message);
         }
@@ -423,7 +490,7 @@ class InboundDispatchTest {
         }
     }
 
-    private record Sent(String chatId, String text) {
+    private record Sent(String conversationId, String text) {
     }
 
     /** 把提交的任务攒着，由测试决定什么时候在哪个线程上跑。 */

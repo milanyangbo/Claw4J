@@ -1,8 +1,8 @@
 package io.github.claw4j.channel.feishu.sdk;
 
 import io.github.claw4j.channel.feishu.FeishuReplySender;
-import io.github.claw4j.channel.feishu.InboundDispatcher;
 import io.github.claw4j.channel.http.HttpChannelProperties;
+import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.port.AgentPort;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -97,7 +97,7 @@ public class FeishuChannelAutoConfiguration {
                                                          @Qualifier(FEISHU_EXECUTOR) Executor feishuExecutor,
                                                          FeishuReplySender replySender,
                                                          FeishuPrincipalResolver principalResolver) {
-            return new InboundDispatcher(agentPort, feishuExecutor, principalResolver, replySender);
+            return new InboundDispatcher(agentPort, feishuExecutor, principalResolver, replySender, "飞书");
         }
 
         @Bean(initMethod = "start", destroyMethod = "stop")
