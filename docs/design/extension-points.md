@@ -144,7 +144,8 @@ claw4j:
 ### 什么时候仍然写 bean
 
 值要**算出来**的时候：路径要拼、token 要从 vault 取、传输要包一层重试或代理。
-`claw4j-app/McpDemoConfiguration` 就是这种——它按可配置的目录拼出 `examples/mcp/*.py` 的绝对路径。
+配置写不出表达式，bean 可以——比如把一个 `java -jar` 的 server 接进来（`java` 的绝对路径按 `java.home` 算，
+不依赖 `PATH`）：
 
 ```java
 @Bean

@@ -15,7 +15,8 @@
 
 四层里**只有 MCP 那一层是协议层面的语言无关**（对端可以是任何语言写的程序）；
 脚本包、Skill、Subagent 的语言无关来自文件格式与本项目的接缝，Spring AI 没有对应抽象。
-这条分界在 README 的「非 Java 的东西怎么变成能力」里写清楚了，别把它们当成同一件事。
+这条分界在根 README 的「集成」与 [`docs/capability-tests.md`](../docs/capability-tests.md) §8 里写清楚了，
+别把它们当成同一件事。每一个工具怎么验（命令、要涨的计数、期望值）也在那份测试手册里。
 
 ## 脚本层（三层）
 
@@ -59,7 +60,7 @@ Java 这边起的是**真的子进程**，用它的 stdin/stdout 说 MCP——�
 
 这三个是**我们自己写的** server，所以要演示的是"跨进程协议边界"。**别人写的** server 不用写代码：
 `application-local.yml` 末尾那段注释着的配置（一个 npm 上的 stdio server、一个公网 Streamable HTTP 端点）
-就是全部动作，见根 README 的「接一个第三方 MCP server：写配置，不写代码」。
+就是全部动作，见根 README 的「集成 → 2. 一个 MCP server」。
 
 ## Skill 与 Subagent（纯 markdown）
 

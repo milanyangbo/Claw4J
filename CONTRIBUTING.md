@@ -114,7 +114,7 @@ Flyway 扫遍 classpath 上所有 `db/migration` 再**按版本号排序**，所
 
 ## 冒烟
 
-门禁跑的是假模型与真容器，它能证明"装配成立"，证明不了"四层能力真能用"。后者要一次真跑：
+门禁跑的是假模型与真容器，它能证明"装配成立"，证明不了"各层能力真能用"。后者要一次真跑：
 
 ```bash
 set -a; . ./.env; set +a
@@ -125,27 +125,19 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --claw4j.subagents.directory=examples/subagents
 ```
 
-四层各问一句（`curl` 三个头：`X-Claw4j-User` 是谁、`X-Claw4j-Role` 什么角色、
-`X-Claw4j-Chat-Id` 可选，不带就按用户分）：
+**每个工具**问什么、该看到什么、判定的口径（哪些是确定数、哪些只能断言形状）、配错长什么样：
+**[`docs/capability-tests.md`](docs/capability-tests.md)**。那份把仓库里的 20 个工具一个一条列全了，
+改动装配或能力层之后照它走一遍——它是"能力清单"，不是"设计说明"，加一个工具就该在里面多一条。
+最省事的验法是照那份文档的表格逐行走一遍，再回读每个工具的计数。
 
-| 层 | 问什么 | 该看到 |
-| --- | --- | --- |
-| 业务工具 | 上周华东的成交额是多少 | 128400（取消那单不算） |
-| MCP（跨进程） | 调用 `demo_echo`，payload 用「端到端通了」 | `echo: 端到端通了` |
-| 脚本包 | 用 `weather-forecast` 查深圳天气 | 一串温度；**角色要 `admin`** |
-| Skill | 调用 `Skill` 工具加载 `weekly-sales` | 把口径与步骤复述出来 |
-| Subagent | 委派给 `weekly-digest` 生成周报 | 三区 + 合计，与库对得上 |
+三条最容易踩的写在这里，因为不看那份文档的人也会踩：
 
-三个示例 MCP server 就写在 `application-local.yml` 里，起 `local` 就有。要顺带验第三方那两条
-（`npx` 的 stdio 与公网 HTTP），把同一份文件末尾那段解注释、并把那两行超时一起解开——
-它们要 Node 与出网，所以默认关着。
-
-**脚本层必须用 `X-Claw4j-Role: admin`**：`run_script` 不在 `read-only` / `guest` 的动作表里，
-用默认角色照这张表走，第二行就会拿到"没有权限"，容易误判成脚本层坏了。
-
-**判断"是不是被拒了"看日志，不要看模型转述**。同一个会话里被拒过一次之后，模型可能照着那个句式
-编一条拒绝出来——2026-10-28 那次冒烟里它就编了个不存在的动作名（`load_skill`）。
-日志里 `ChatClientAgentPort : 出站回答` 与鉴权 WARN 才是事实；模型的原话只说明它读到了什么。
+- **脚本层必须 `X-Claw4j-Role: admin`**：`run_script` 不在 `read-only` / `guest` 的动作表里，
+  用默认角色问会拿到"没有权限"，容易误判成脚本层坏了。
+- **判断"是不是被拒了"看日志与计数，不要看模型转述**。同一个会话里被拒过一次之后，模型可能照着那个句式
+  编一条拒绝出来——2026-10-28 那次冒烟里它就编了个不存在的动作名（`load_skill`）。
+- **不要问模型"你有哪些工具"来核对清单**：工具是渐进式披露的，它只看得到检索工具。
+  清单以那份文档的表格为准，实际有没有被调起来看 `claw4j.tool.calls{tool=…}`。
 
 ## 质量门禁
 
@@ -158,7 +150,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | `ProcessBoundaryTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；`claw4j-core` 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段 |
 | `./scripts/verify.sh` | 一条命令跑完上面几步：载入 `.env` → `clean verify`（含覆盖率红线）→ 用例数与**跳过数必须为 0** → 文件数/方法数上限（≤10 / ≤20） | 提交前 |
-| 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}`（三个示例 MCP server 已经写在 `application-local.yml` 里），真模型走一遍三层与越权。**命令、每层问什么、该看到什么，见上面「冒烟」一节** | 改了装配或能力层之后 |
+| 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}`（三个示例 MCP server 已经写在 `application-local.yml` 里），真模型走一遍各层与越权。**命令、每层问什么、该看到什么，见 [`docs/capability-tests.md`](docs/capability-tests.md)** | 改了装配或能力层之后 |
 | 要外部世界的两组（`real-cli` / `real-mcp`） | 真的 OS 子进程（Python、`gh`、`himalaya`）与真的公网 MCP 端点。**默认排除**，`-Preal-cli` 才跑；它们依赖本机装了什么与能不能出网，不属于回归基线 | 改 MCP 传输、改脚本层之后 |
 
 **为什么 Advisor 那条值得单独立规则**：`BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，
@@ -182,7 +174,8 @@ Docker 就直接红，不许判成跳过），以及 `secrets.DEEPSEEK_API_KEY`�
 
 | 要找的东西 | 在哪 |
 | --- | --- |
-| 项目简介与用法 | [`README.md`](README.md) |
+| 项目简介、怎么用、怎么集成 | [`README.md`](README.md) |
+| 某个能力怎么验、期望值是什么 | [`docs/capability-tests.md`](docs/capability-tests.md) |
 | 架构决策记录（为什么这样，否决了什么） | [`docs/adr/`](docs/adr/) |
 | 设计说明（搬到这儿是为了不让 README 变长） | [`docs/design/`](docs/design/) |
 | 踩过的坑（代码里看不出来，只会再犯一次） | [`docs/design/pitfalls.md`](docs/design/pitfalls.md) |
