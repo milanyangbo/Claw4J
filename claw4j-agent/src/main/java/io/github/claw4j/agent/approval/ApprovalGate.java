@@ -9,7 +9,7 @@ import java.util.Optional;
  *
  * <p><b>为什么是接口而不是直接用 {@link ApprovalLedger}</b>：Advisor 判定完还要做两件事——
  * 把这一步落成 awaiting、把这件事挂起。这两件事属于 run 域，而 Advisor 不该认识
- * {@code RunStore} 那十二个方法（它只会用到其中两个，多出来的每一个都是"以后顺手在这里改点别的"
+ * {@code RunStore} 那十六个方法（它只会用到其中两个，多出来的每一个都是"以后顺手在这里改点别的"
  * 的入口）。收成两个方法之后，"判定"与"落状态"的分界就写在类型上了。
  *
  * <p><b>没有审批设施时用 {@link #denyAll()}</b>：一律没有批准、也登记不了请求。

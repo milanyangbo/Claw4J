@@ -67,9 +67,16 @@ public final class RunBudget {
     }
 
     /**
-     * 一次工具调用：顶得住就扣一笔并放行，顶不住就拒。
+     * 记一次工具调用：工具调用这一项还没撞线就扣一笔。
      *
-     * @return true = 这一次可以执行；false = 预算用尽，这一次不该被执行
+     * <p><b>它只判一维，也不负责"拦"</b>：三维（次数 / token / 耗时）的判据是 {@link #exhausted}，
+     * 拦不拦由调用方决定——{@code MeteredToolCallback} 先读一次 {@code spent}、用
+     * {@code exhausted} 判完再决定要不要执行，执行完才到这里记账。所以这个返回值在生产里
+     * 没有人接，它只回答"工具调用这一项还有没有额度"，<b>不回答"这一次该不该执行"</b>：
+     * token 撞线时它照样返回 true。两次读之间也没有原子性，把拦截放在这里会漏掉另外两维。
+     *
+     * @return false = 工具调用这一项已撞线（这一笔没扣）；true = 扣上了，或读不到用量
+     *         （管不住的时候不拦活，见类注释）
      */
     public boolean chargeToolCall(String runId) {
         Optional<Budget> spent = spent(runId);

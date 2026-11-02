@@ -4,8 +4,16 @@ package io.github.claw4j.agent.run;
  * run 的状态机（ADR-0016）：{@code running ⇄ suspended}，二者后可进
  * {@code done / failed / budget_exhausted}。
  *
- * <p><b>只有 {@link #SUSPENDED} 能被外部事件唤醒</b>：审批通过、定时到点、用户说的下一句。
- * {@link #RUNNING} 不能被外部唤醒——它在跑，唤醒它会变成"同一件事跑两遍"。
+ * <p><b>{@link #SUSPENDED} 只能由服务端事件唤醒</b>（审批放行、定时到点）：它只在"停下来等人"
+ * 时出现，别的路径不该把它拉起来。<b>{@link #RUNNING} 则允许被用户的"继续"接上</b>——
+ * {@code RunStore#resume} 的谓词就是"除 suspended 之外都接"。理由不是"想接就接"：
+ * 进程被杀之后库里这一行仍然写着 running，而本仓库没有租约，从库里分不出
+ * "还在跑"与"已经死了"，A02 的"杀进程后继续"只能走这条路。
+ *
+ * <p>要付的代价写在 {@code JdbcRunStore#resume} 上：同一件真在跑的事被两个人同时"继续"时，
+ * 两条执行流都会往下走，谁的 step 先落谁占号，另一条撞 {@code (run_id, seq)} 唯一键
+ * 之后被 {@code guard} 吞掉、只记一条 {@code claw4j.run.errors}——也就是悄悄少一行。
+ * 要根治得给 run 加租约（谁在跑、什么时候心跳），那是另一次改动，不在 P07 的口径里。
  *
  * <p><b>{@link #BUDGET_EXHAUSTED} 是终态但允许重开</b>：追加预算后重进 running（A04 那张票的事）。
  * 它与 {@link #FAILED} 的区别是"停下来是因为额度用完了，不是因为做错了"——

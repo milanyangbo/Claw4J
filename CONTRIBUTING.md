@@ -126,7 +126,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 ```
 
 **每个工具**问什么、该看到什么、判定的口径（哪些是确定数、哪些只能断言形状）、配错长什么样：
-**[`docs/capability-tests.md`](docs/capability-tests.md)**。那份把仓库里的 20 个工具一个一条列全了，
+**[`docs/capability-tests.md`](docs/capability-tests.md)**。那份把仓库里的每一项能力一个一条列全了，
 改动装配或能力层之后照它走一遍——它是"能力清单"，不是"设计说明"，加一个工具就该在里面多一条。
 最省事的验法是照那份文档的表格逐行走一遍，再回读每个工具的计数。
 

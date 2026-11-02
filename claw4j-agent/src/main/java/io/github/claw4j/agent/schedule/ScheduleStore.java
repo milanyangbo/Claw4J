@@ -252,17 +252,15 @@ public class ScheduleStore {
     }
 
     /**
-     * 认领一批到点的任务（多实例安全）。读不到库时返回空列表，不抛——
-     * 下一轮扫描再来，一个后台任务不该反复抛栈。
+     * 认领一批到点的任务（多实例安全）。
+     *
+     * <p><b>读不到库时抛出，不在这儿吞</b>：吞掉之后调用方再也分不出"这一轮没有到点任务"
+     * 与"这张表根本读不出来"——前者是常态，后者要么该告警、要么该有人去跑迁移。
+     * 喊几次由 {@link ScheduleScanner} 决定（它只喊一次），这里只负责如实报错。
      */
     public List<Due> claim(int max, Duration lease) {
-        try {
-            return jdbc.query(CLAIM_SQL, (row, index) -> due(row),
-                    (double) lease.toMillis() / 1000, max);
-        } catch (RuntimeException failure) {
-            log.warn("认领定时任务失败（这一轮不跑）", failure);
-            return List.of();
-        }
+        return jdbc.query(CLAIM_SQL, (row, index) -> due(row),
+                (double) lease.toMillis() / 1000, max);
     }
 
     /** 这一轮跑成了：清零计数、推进到 {@code nextRunAt}。 */

@@ -258,7 +258,7 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 `./mvnw -pl claw4j-app -am test -Dtest=ApplicationAssemblyTest` 里那条
 **真模型闭环**：真 HTTP 回调（真加密真签名）→ 真模型 → 结果推回成员。
 
-## 1. Tool：进程内 Java 方法（8 个中本节列 6 个，编号即工具号；`Skill` 见 §4、`Task` 见 §6）
+## 1. Tool：进程内 Java 方法（编号即工具号，追加式：新增工具接在表尾，不重排已有编号）
 
 | # | 工具 | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- | --- | --- |
@@ -274,6 +274,12 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | 6 | `update_plan` | 计划外置：写进 run，不放在上下文里 | `t '把华东的口径对齐分成三步做，先列个计划'` | 回答列出三步；`hit update_plan` +1 |
 | 6 | 同上 | 压缩之后仍读得到"还剩什么没做" | `t '接着做，还剩哪几步'`（带上一条返回的 `runId`） | 答得出未完成项的序号；`hit update_plan` +1 |
 | 6 | 同上 | 标了已做就不会重做 | 先让模型标完第 2 步，再 `t '继续'`（带同一个 `runId`） | 不再重做第 2 步 |
+| 21 | `schedule_task` | 从对话里建一条定时任务（P05） | `t '每天九点帮我出一份上周各区成交额'` | 回答里有 8 位编号；`hit schedule_task` +1；`select count(*) from claw4j_run.agent_schedule` +1 |
+| 22 | `list_schedules` | 列出自己名下的任务 | `t '我定了哪些定时任务'` | 列出刚建的那条；`hit list_schedules` +1 |
+| 23 | `cancel_schedule` | 软停用：记录留着，只是不再跑 | `t '把 <前 8 位> 那条取消掉'` | `enabled=false` 而行还在；`hit cancel_schedule` +1 |
+
+- **7 号位是空的，这是有意的**：7 号留给 `Skill`（§4），`Task` 见 §6、不占号。所以 8 号起是 MCP、18–20 是脚本包、21–23 是 P05 的三个调度工具——**编号只追加，不跟着章节顺序走**，重排会让别处所有引用失效。
+- 三个调度工具要 `schedule_task` 动作（`read-only` 与 `admin` 有，`guest` 没有），且跟着 `claw4j.schedule.enabled` 一起进退：关掉调度时它们从工具清单里消失，不是被拒。
 
 - 上表角色默认 `admin`。`systemStatus` 要 `read_system`，`querySales` 要表权限，`propose_script` 要 `draft_script`——用 `read-only` 测 `propose_script` 会被拒。
 - `update_plan` 要 `update_plan` 动作（`read-only` 与 `admin` 有，`guest` 没有），且只在装配了 run 存储时存在：`claw4j.run.enabled=false` 时它从工具清单里消失。
