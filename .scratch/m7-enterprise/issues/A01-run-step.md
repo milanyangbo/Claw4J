@@ -8,12 +8,15 @@
 
 **Status:** resolved
 
-- [ ] 一次提问对应一个 run，含发起人身份与状态；工具循环**内部**不写任何行（ADR-0016 硬边界）
-- [ ] step 只落在 run 边界上，kind 至少有模型轮 / 工具调用汇总 / 计划
-- [ ] 杀进程重启后，能从库里答出每一个 run 做到了第几步
-- [ ] run 级指标同缝回读：新增 `claw4j.run.*`，与 `claw4j.tool.calls` 同一判定纪律
-- [ ] 表结构与唯一键用 SQL 用例钉住（含变异验证，先例：语义缓存那批）
-- [ ] 门禁本地 `./mvnw clean verify` 通过
+- [x] 一次提问对应一个 run，含发起人身份与状态；工具循环**内部**不写任何行（ADR-0016 硬边界）
+      ——**P07 起口径微调**：一次工具调用另落一行审计（`kind = tool_calls`），
+      ADR-0023 写明了"只松动这一格"，其余内部事件（检索、候选项、自纠错）仍然不落
+- [x] step 只落在 run 边界上，kind 至少有模型轮 / 工具调用汇总 / 计划
+      （实际四类：`model_turn` / `tool_calls` / `approval` / `plan`）
+- [x] 杀进程重启后，能从库里答出每一个 run 做到了第几步
+- [x] run 级指标同缝回读：新增 `claw4j.run.*`，与 `claw4j.tool.calls` 同一判定纪律
+- [x] 表结构与唯一键用 SQL 用例钉住（含变异验证，先例：语义缓存那批）
+- [x] 门禁本地 `./mvnw clean verify` 通过
 
 ## Comments
 
@@ -31,3 +34,11 @@
   次数记在 `claw4j.run.errors`，别让降级变静默。
 - 用例：主链路 5 条并进 `ChatPipelineTest`（agent 模块测试文件已满 10 个，不能新开文件）；
   SQL 缝新建 `RunSchemaSqlTest`（app，4 条）。全量 310 条绿、跳过 0。
+- **2026-11-02 复核补勾**（此前只有上面这段收票记录，验收框一直空着）。六条逐条落到证据：
+  ① `agent_run` 的 `owner / principal_digest / status` 三列 + `ChatClientAgentPort.openRun`；
+  ② `StepKind` 四个取值而不是三个；③ `writtenRunSurvivesAFreshStore` + `RunStore.stepsOf`；
+  ④ `JdbcRunStore.RUN_METRIC` 常量 + `count("created" / "steps" / "finished" / "suspended" /
+  "resumed" / "reopened" / "charged" / "errors" / "plan_*")` 拼出 `claw4j.run.*`；
+  ⑤ `freshTables`、`migrationCreatesRunTablesInTheirOwnSchema`、
+  `sequenceNumbersAreAssignedByTheStore`（撞号那条断言点名 `uq_agent_step_run_seq`，不是只看"没抛"）；
+  ⑥ `./scripts/verify.sh` 465 条绿、跳过 0。第 1 条按 P07 的口径补了限定，理由见票面。

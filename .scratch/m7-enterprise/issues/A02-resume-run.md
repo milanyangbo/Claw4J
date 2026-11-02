@@ -8,10 +8,10 @@
 
 **Status:** resolved
 
-- [ ] 断点后说"继续"，落的是同一个 runId、seq 连续，回答内容是"下一步"而不是从头再来
-- [ ] HTTP resume 入口可用，三个入口共用同一个方法
-- [ ] 真模型闭环用例："断点 → resume → seq 连续"（mock 只证明装配）
-- [ ] 指标与库行回读判定，不问模型措辞
+- [x] 断点后说"继续"，落的是同一个 runId、seq 连续，回答内容是"下一步"而不是从头再来
+- [x] HTTP resume 入口可用，三个入口共用同一个方法
+- [x] 真模型闭环用例："断点 → resume → seq 连续"（mock 只证明装配）
+- [x] 指标与库行回读判定，不问模型措辞
 
 ## Comments
 
@@ -34,3 +34,10 @@
   HTTP 缝 1 条进 `HttpChatControllerTest`。全量 320 绿、跳过 0。
 - 留给 P02 的接口：服务端续跑 = `new InboundMessage(principal, chatId, pendingStepInput,
   now, null, runId)`，无需新开方法。
+- **2026-11-02 复核补勾**（此前验收框一直空着）。四条逐条落到证据：
+  ① `resumeContinuesTheSameRun`（主链路）+ `resumeReusesTheRunAndContinuesTheSequence`（库里 seq 1,2）；
+  ② `HttpChatControllerTest#runIdInTheRequestReachesTheAgent`，且流式与同步共用同一个
+  `InboundMessage.runId` 形状（没有第二个分支可走偏）；
+  ③ `realModelResumeContinuesTheSameRun`（真模型，不是 mock）；
+  ④ `claw4j.run.resumed` / `claw4j.run.resume_rejected` 两个计数 + `RunSchemaSqlTest` 里
+  "别人的/不存在的/`suspended` 不唤醒"三条。
