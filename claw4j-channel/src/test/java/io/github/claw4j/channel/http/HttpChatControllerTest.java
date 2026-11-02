@@ -5,6 +5,7 @@ import io.github.claw4j.channel.http.HttpChatController.ErrorResponse;
 import io.github.claw4j.channel.http.HttpChatController.InvalidRequestException;
 import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.channel.spi.TooBusyException;
+import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
@@ -104,6 +105,55 @@ class HttpChatControllerTest {
                 () -> controller.stream(new AskRequest(""), "u-1", "read-only", null));
 
         assertEquals(0, agent.received.size());
+    }
+
+    /**
+     * resume 的入口就长这样：客户端把上一轮回答里的 runId 带回来（A02）。
+     *
+     * <p>不另开一个 {@code /api/runs/{id}/resume} 端点——那就要把认人这一段再写一遍，
+     * 而两处认人迟早只对一处改。runId 是请求体里一个可选字段，
+     * 同步与流式两条路同时生效，代价是零。
+     */
+    @Test
+    @DisplayName("带着 runId 的 /api/chat 就是 resume：runId 原样交给 Agent")
+    void runIdInTheRequestReachesTheAgent() {
+        ScriptedAgent agent = new ScriptedAgent();
+        HttpChatController controller = controller(agent, Runnable::run);
+
+        controller.ask(new AskRequest("继续", "run-7"), "u-1", "read-only", null);
+        controller.ask(new AskRequest("新问题"), "u-1", "read-only", null);
+
+        assertEquals("run-7", agent.received.getFirst().runId());
+        assertEquals(null, agent.received.getLast().runId());
+    }
+
+    @Test
+    @DisplayName("通道名与通知策略随消息下去：结果以后能不能被找回、要不要吵人，都靠这两个字段")
+    void channelAndNotifyPolicyReachTheAgent() {
+        ScriptedAgent agent = new ScriptedAgent();
+        HttpChatController controller = controller(agent, Runnable::run);
+
+        controller.ask(new AskRequest("继续", "run-7", " silent "), "u-1", "read-only", null);
+        controller.ask(new AskRequest("随口问问"), "u-1", "read-only", null);
+
+        InboundMessage silent = agent.received.getFirst();
+        assertEquals(HttpChatController.CHANNEL, silent.channel(),
+                "没有通道名，这件事做完之后没人能把它送回原处");
+        assertEquals(NotifyPolicy.SILENT, silent.notifyPolicy(),
+                "前后空白不该让一句写对的请求落到 400");
+        assertEquals(NotifyPolicy.DONE_ONLY, agent.received.getLast().notifyPolicy(),
+                "不点名就该是交互式的默认档：做完了说一次");
+    }
+
+    @Test
+    @DisplayName("notifyPolicy 拼错就 400：静默退回默认的方向是「该说的一次没说」")
+    void unknownNotifyPolicyIsRejected() {
+        ScriptedAgent agent = new ScriptedAgent();
+
+        assertThrows(InvalidRequestException.class, () -> controller(agent, Runnable::run)
+                .ask(new AskRequest("问题", null, "slience"), "u-1", "read-only", null));
+
+        assertEquals(0, agent.received.size(), "拼错的请求不该先跑一遍再报错");
     }
 
     // ---------------------------------------------------------------- 装配

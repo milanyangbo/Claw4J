@@ -118,4 +118,40 @@ class AuthorizationDecisionTest {
         assertFalse(analyst().canUse(registry.permissionFor("sales_query").orElseThrow()));
         assertTrue(registry.permissionFor("rm_rf").isEmpty());
     }
+
+    /**
+     * 加了第三个分量之后，**默认放行面一个都不该变**（P01）。
+     *
+     * <p>这条挡的是"顺手收紧"：把默认值写成 {@code REQUIRED}，或者让某个工厂偷偷带上审批，
+     * 21 个工具会在一夜之间全都要求人点头，而上线时看到的只是"这个系统怎么每句话都卡住"。
+     * 审批只加在真正有副作用的动作上，而且是被人显式写出来的一处。
+     */
+    @Test
+    @DisplayName("两个工厂出来的权限都不带审批：加了第三个分量，默认放行面不变")
+    void permissionFactoriesDefaultToNoApproval() {
+        assertFalse(ToolPermission.read("sales_order").needsApproval());
+        assertFalse(ToolPermission.of("send_email").needsApproval());
+        // 显式要审批的那一档才带：否则上面两条断言只是在验一个常数，
+        // 分不出「默认关着」与「这一档根本不存在」。
+        assertTrue(ToolPermission.requiringApproval("send_email").needsApproval());
+    }
+
+    /**
+     * 审批不替代鉴权（P01 最要紧的一条）。
+     *
+     * <p>答案必须与"没有审批这一档"时完全一样：没这个动作就是不授予。
+     * 一旦 {@code grantedTo} 把审批也算进来（比如"要审批的就先放行，等审批兜底"），
+     * 越权调用会以"等审批"的样子排进队列，审批人看到的是"这个人能不能发邮件"，
+     * 而真正该回答的问题"他的角色有没有这个动作"已经被悄悄跳过了。
+     */
+    @Test
+    @DisplayName("标了要审批也不改变鉴权结论：审批是第二道门，不是替代品")
+    void approvalDoesNotChangeWhoIsGranted() {
+        ToolPermission heavy = ToolPermission.requiringApproval("send_email", "customer");
+
+        assertFalse(analyst().canUse(heavy));
+        // 反方向也要验：有动作授权的人，这条权限本身是授予的——审批在更后面才拦。
+        Principal mailer = Principal.of("u-mailer", "mailer", Set.of("customer"), Set.of("send_email"));
+        assertTrue(mailer.canUse(heavy));
+    }
 }

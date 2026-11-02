@@ -2,7 +2,12 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
+import io.github.claw4j.agent.approval.ApprovalGate;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.agent.run.RunBudget;
+import io.github.claw4j.agent.run.RunDelivery;
+import io.github.claw4j.agent.run.RunStore;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.principal.ToolPermission;
@@ -66,11 +71,13 @@ public class AgentAutoConfiguration {
                                  ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                  ObjectProvider<ObservationRegistry> observationRegistry,
                                  ObjectProvider<MeterRegistry> meterRegistry,
+                                 ObjectProvider<RunBudget> runBudget,
+                                 ObjectProvider<ToolCallAudit> audit,
                                  ToolIndex toolIndex,
                                  ToolSearchProperties toolSearch) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                meterRegistry.getIfAvailable());
+                meterRegistry.getIfAvailable(), runBudget.getIfAvailable(), audit.getIfAvailable());
         // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
         // 拿到的是框架内建的那个，用的是 40/150 的默认值，这里定的预算根本不生效
         // （细节见 ToolCallBudget 的类注释）。预算只有一个落点：ToolSearch.toolLoop。
@@ -134,16 +141,29 @@ public class AgentAutoConfiguration {
      * 重名不在这里去重——两个来源导出同名工具是配置错误，该在清单断言上红，
      * 而不是被这里悄悄吞掉一个。
      *
-     * <p><b>计量也在这里包</b>：这是所有工具的**唯一入口**（父 Agent 与子 Agent 都走它），
-     * 包在这一层就不会出现"某条路径上的工具调用没被记上"。
+     * <p><b>计量与扣预算也在这里包</b>：这是所有工具的**唯一入口**（父 Agent 与子 Agent 都走它），
+     * 包在这一层就不会出现"某条路径上的工具调用没被记上、也没被扣"。
+     * 预算按 run 累计（{@link RunBudget}，A04），而 runId 由入口放进工具上下文——
+     * 也就是说"扣谁的额度"这件事在这里才第一次知道答案。
+     *
+     * <p><b>审计也在这里包</b>（P07）：它要的是同一个事实——"这次调用真的发生了"。
+     * 放在这里而不是每个工具自己写，理由与预算相同：漏一条路径的表现是
+     * "有些调用在审计里不存在"，而那正是审计最不该有的样子。
+     *
+     * @param budget 可以为 null：没有装配 run 存储时（{@code claw4j.run.enabled=false}）
+     *               工具照常调用，只是这一轮没有额度可扣
+     * @param audit  可以为 null：同上，没有 run 存储就没有可写的审计落点
      */
     public static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
                                                           ObjectProvider<ToolCallbackProvider> providers,
-                                                          MeterRegistry registry) {
+                                                          MeterRegistry registry,
+                                                          RunBudget budget,
+                                                          ToolCallAudit audit) {
         List<ToolCallback> collected = new ArrayList<>();
         // 一律包一层：没有 registry 时它只记"这一轮调过哪些工具"，不报指标。
         // 语义缓存判断副作用靠的就是这份记录，所以它不能跟着 actuator 一起缺席。
-        Consumer<ToolCallback> add = callback -> collected.add(new MeteredToolCallback(callback, registry));
+        Consumer<ToolCallback> add = callback ->
+                collected.add(new MeteredToolCallback(callback, registry, budget, audit));
         callbacks.orderedStream().forEach(add);
         providers.orderedStream()
                 .forEach(provider -> List.of(provider.getToolCallbacks()).forEach(add));
@@ -155,12 +175,24 @@ public class AgentAutoConfiguration {
      * 也就是"工具需要什么权限"由提供工具的模块自己声明，Agent 不认识任何具体工具。
      * 一个都没声明时它照样在链上，只是每个工具都因"未登记权限"被拒——
      * 失败的姿势是拒绝而不是放行（ADR-0007）。
+     *
+     * <p><b>审批门走 {@code ObjectProvider}</b>（P01、P02）：它跟着 run 存储一起装配
+     * （审批表与 run 在同一个 schema 下），没有数据库的部署里它是缺席的。
+     * 缺席时用 {@link ApprovalGate#denyAll()}——标了要审批的动作照样被拦，
+     * 而不是因为少一个 bean 悄悄变成普通动作。
+     *
+     * <p><b>审计同理</b>（P07）：它也跟着 run 存储装配。缺席时判定照常，
+     * 只是事后查不到这一次——被拒与等审批那两行没有落点。
      */
     @Bean
     @ConditionalOnMissingBean(AuthorizationAdvisor.class)
     public AuthorizationAdvisor authorizationAdvisor(ObjectProvider<ToolPermissionRegistry> registries,
-                                                     ObjectProvider<MeterRegistry> meterRegistry) {
-        return new AuthorizationAdvisor(registries.orderedStream().toList(), meterRegistry.getIfAvailable());
+                                                     ObjectProvider<ApprovalGate> gates,
+                                                     ObjectProvider<MeterRegistry> meterRegistry,
+                                                     ObjectProvider<ToolCallAudit> audit) {
+        return new AuthorizationAdvisor(registries.orderedStream().toList(),
+                gates.getIfAvailable(ApprovalGate::denyAll), meterRegistry.getIfAvailable(),
+                audit.getIfAvailable());
     }
 
     /**
@@ -200,7 +232,16 @@ public class AgentAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(AgentPort.class)
-    public AgentPort agentPort(ChatClient chatClient, ObjectProvider<SessionCompactor> compactor) {
-        return new ChatClientAgentPort(chatClient, compactor.getIfAvailable());
+    public AgentPort agentPort(ChatClient chatClient,
+                               ObjectProvider<SessionCompactor> compactor,
+                               ObjectProvider<RunStore> runs,
+                               ObjectProvider<RunBudget> budget,
+                               ObjectProvider<RunDelivery> delivery) {
+        // run、预算、投递都走 ObjectProvider 而不是直接注入：没配存储时它们是缺席而不是失败，
+        // 门照常住着，只是"这件事做完了没有"没人记、也没人在看额度（与压缩器同一个判断）。
+        // 三者同进同出：预算与收件地址都是 run 的属性，没有 run 就没有可扣的额度、
+        // 也没有"送到哪儿"。
+        return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(), runs.getIfAvailable(),
+                budget.getIfAvailable(), delivery.getIfAvailable());
     }
 }

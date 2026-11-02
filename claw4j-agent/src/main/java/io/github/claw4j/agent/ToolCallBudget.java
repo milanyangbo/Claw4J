@@ -7,6 +7,12 @@ import org.springframework.ai.model.tool.ToolCallingManager;
 /**
  * 一轮对话的工具调用预算。
  *
+ * <p><b>它是一轮的护栏，不是一件事的上限</b>（A04）：这两个数每轮重置，
+ * 于是一件跨三轮、每轮调两次的事在它眼里一直"没超限"，而这件事一共烧了六次。
+ * 真正按"事"累计的是 {@code RunBudget}（工具调用 / token / 耗时三项，落在 run 上）。
+ * 留着它的理由与留着超时重试的理由一样：一轮之内绕圈的循环要在<b>这一轮</b>里被截断，
+ * 而不是等到有人再来一句"继续"时才发现额度早就烧完了。
+ *
  * <p><b>为什么自己定数而不是用框架默认值</b>：Spring AI 2.0.2 的
  * {@code DefaultToolCallingManager} 默认给的是每工具 40 次、整轮 150 次
  * （{@code DEFAULT_MAX_CALLS_PER_TOOL} / {@code DEFAULT_MAX_TOTAL_TOOL_CALLS}）。

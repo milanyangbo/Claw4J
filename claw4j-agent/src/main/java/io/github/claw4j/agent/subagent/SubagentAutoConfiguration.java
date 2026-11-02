@@ -71,7 +71,14 @@ public class SubagentAutoConfiguration {
                 // 而它明明在父的清单里——症状与 01 号票那个一模一样。
                 // 计量也跟着一起来：子 Agent 调的工具同样是真实成本，不该只在父那一侧可见。
                 () -> AgentAutoConfiguration.collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                                meterRegistry.getIfAvailable())
+                                // 预算传 null：子的工具上下文里没有父这一轮的 runId
+                                // （SubagentRunner 目前只把身份传下去），传了也扣不到。
+                                // 于是"子调的工具扣父的额度"还没有接上，那是 A10 的事——
+                                // 在此之前，子那一侧只有轮内的 3 / 6 那条护栏。
+                                meterRegistry.getIfAvailable(), null,
+                                // 审计同理（P07）：子链没有 runId，写不进任何一件事的审计行。
+                                // 与预算那一条同一个原因，不是"忘了接"。
+                                null)
                         .stream()
                         .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(
                                 callback.getToolDefinition().name()))

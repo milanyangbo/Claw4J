@@ -32,6 +32,7 @@ import java.util.function.Consumer;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -163,7 +164,7 @@ class InboundDispatchTest {
     void redeliveryAfterTheWindowRunsAgain() {
         MutableClock clock = new MutableClock();
         InboundDispatcher dispatcher = new InboundDispatcher(agent, Runnable::run, this::lookup, sender,
-                PLATFORM, new InboundDispatcher.SeenEventIds(Duration.ofMinutes(10), clock));
+                PLATFORM, null, new InboundDispatcher.SeenEventIds(Duration.ofMinutes(10), clock));
 
         dispatcher.accept(event(EVENT_ID, "问题"));
         dispatcher.accept(event(EVENT_ID, "问题"));
@@ -364,6 +365,56 @@ class InboundDispatchTest {
         List<String> texts = sender.texts();
         assertEquals(1, texts.size(), "切不出更小的段，就整块发一条，不该凭空多出一条或变成失败提示");
         assertTrue(texts.get(0).contains(header), "整段内容被丢了：" + texts.get(0).length());
+    }
+
+    @Test
+    @DisplayName("通道名传到 Agent：不传是 null（老调用方照旧），传了才知道结果送回哪儿")
+    void channelNameReachesTheAgent() {
+        new InboundDispatcher(agent, Runnable::run, this::lookup, sender, PLATFORM, "feishu")
+                .accept(event(EVENT_ID, "问题"));
+
+        assertEquals("feishu", agent.received.getFirst().channel(),
+                "没有通道名，这件事做完之后没人能把它送回原处");
+
+        dispatcher(Runnable::run).accept(event(EVENT_ID + "-2", "另一件"));
+
+        assertNull(agent.received.getLast().channel(),
+                "不点名的通道不该凭空有一个名字：那会让结果被送到一个猜出来的地址");
+    }
+
+    // ---------------------------------------------------------------- 回执（可选）
+    @Test
+    @DisplayName("回执先出门、答案随后：没有被动回复的平台，用户在那十几秒里至少知道有人接了")
+    void theReceiptGoesOutBeforeTheAnswer() {
+        new InboundDispatcher(agent, Runnable::run, this::lookup, sender, PLATFORM, null, "收到，正在查")
+                .accept(event(EVENT_ID, "问题"));
+
+        assertEquals(List.of("收到，正在查", "答复"), sender.texts());
+    }
+
+    @Test
+    @DisplayName("回执发不出去不打断回答：回执是“别让人以为没收到”，不该反过来把回答弄丢")
+    void aFailedReceiptDoesNotSwallowTheAnswer() {
+        List<String> sent = new CopyOnWriteArrayList<>();
+        ReplySender onlyAnswersAreSent = (conversationId, text) -> {
+            if (text.startsWith("收到")) {
+                throw new IllegalStateException("回执这一条没发出去");
+            }
+            sent.add(text);
+        };
+
+        new InboundDispatcher(agent, Runnable::run, this::lookup, onlyAnswersAreSent, PLATFORM, null, "收到，正在查")
+                .accept(event(EVENT_ID, "问题"));
+
+        assertEquals(List.of("答复"), sent, "回执失败只该记日志，答案必须照发——否则用户什么都收不到");
+    }
+
+    @Test
+    @DisplayName("不传回执就一句都不多：飞书自己能被动回复，多推一句只是噪音")
+    void withoutAReceiptNothingExtraIsSent() {
+        dispatcher(Runnable::run).accept(event(EVENT_ID, "问题"));
+
+        assertEquals(List.of("答复"), sender.texts());
     }
 
     // ---------------------------------------------------------------- 装配

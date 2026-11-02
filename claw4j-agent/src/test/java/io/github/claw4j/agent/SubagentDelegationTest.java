@@ -283,7 +283,11 @@ class SubagentDelegationTest {
         assertThat(AgentAutoConfiguration.collectToolCallbacks(
                 beans.getBeanProvider(ToolCallback.class),
                 beans.getBeanProvider(ToolCallbackProvider.class),
-                beans.getBeanProvider(MeterRegistry.class).getIfAvailable()))
+                beans.getBeanProvider(MeterRegistry.class).getIfAvailable(),
+                // 没有 run 预算：这一层验的是"两种形态都被收到"，不是"额度怎么扣"
+                null,
+                // 审计同理：这一条只关心清单里有什么（P07）
+                null))
                 .extracting(callback -> callback.getToolDefinition().name())
                 .contains("lookup", SubagentDelegation.TOOL_NAME);
 

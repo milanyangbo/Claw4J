@@ -1,0 +1,251 @@
+package io.github.claw4j.agent.schedule;
+
+import io.github.claw4j.agent.run.RunLauncher;
+import io.github.claw4j.domain.port.InboundMessage;
+import io.github.claw4j.domain.port.OutboundDelivery;
+import io.github.claw4j.domain.principal.Principal;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+
+/**
+ * 到点了就跑（P04）：每 30 秒看一眼库，把到点的任务各跑一次。
+ *
+ * <p><b>为什么是"扫表"而不是"给每个任务起一个定时器"</b>：定时器活在进程里，
+ * 进程重启就全没了——而"已定好的时间点"必须比进程活得久。扫表还有一个副作用是好的：
+ * 同一个部署里起了两个实例时，它们不需要互相认识，认领那条语句（{@code for update
+ * skip locked}）自己就把重复挡掉了。
+ *
+ * <p><b>跑在扫描线程上，不另开池</b>：一次扫描最多认领 {@code max-per-scan} 条，
+ * 逐条跑完再回来看下一轮。另开线程池的后果是"同一时刻有 N 个模型调用"，
+ * 而那 N 个各自烧的是不同人的额度——在没做配额之前，串行是唯一说得清的算法。
+ * 代价是一条慢任务会推迟后面的任务；这就是 {@code max-per-scan} 要小的理由。
+ *
+ * <p><b>成功与失败都推进时间点</b>：不推进的话，失败的任务会在 30 秒后被再跑一次，
+ * 于是一次模型故障能在一分半里耗光三次机会。推进之后，"连续三次"指的是三个
+ * <b>到点</b>没跑成——对每天九点的任务来说就是连着三天。
+ *
+ * <p><b>停用必须有人知道</b>：失败计数走到阈值时那一条 update 会顺手把任务停掉，
+ * 而"一个任务悄悄不跑了"与"一切正常"在界面上长得一样。所以停用的那一下往
+ * 任务登记的通道推一条带最后错误的通知；推不出去（HTTP 部署没有可推的通道）
+ * 时至少留一条 WARN，并且库里的 {@code disabled_reason} 是能查到的。
+ *
+ * <p><b>到点之前重新算一次权限</b>（P05）：跑的是任务主人的身份，但权限不是创建时那份
+ * 快照——而是按此刻的角色表现算（{@link ScheduleAuthorization}）。算不出来就不跑，
+ * 并当场停用：一条被收权的任务继续按旧权限跑，是这条链上唯一一个"越权可以持续发生"
+ * 的形状。
+ */
+public class ScheduleScanner {
+
+    /** 计数前缀，与 {@code claw4j.run.*} 同一条纪律：判据回读，不问措辞。 */
+    public static final String METRIC = "claw4j.schedule.fired";
+
+    private static final Logger log = LoggerFactory.getLogger(ScheduleScanner.class);
+
+    private final ScheduleStore store;
+
+    /** 到点跑一轮的那条腿。可以为 null——那种部署里定时任务跑不起来，会被记成失败。 */
+    private final RunLauncher launcher;
+
+    /** "这条任务现在还能不能按它主人的权限跑"（P05）。建的时候问的是同一个对象。 */
+    private final ScheduleAuthorization authorization;
+
+    /** 各通道的推送实现，用来送"任务已停用"那条通知。没有就是只留日志。 */
+    private final List<OutboundDelivery> deliveries;
+
+    private final ScheduleProperties properties;
+
+    /** 为 null 表示没装 actuator：照常扫，只是没有指标可报。 */
+    private final MeterRegistry registry;
+
+    /** 库读不到时只喊一次：一个后台任务每 30 秒重复一条同样的 WARN，等于把日志变成噪声。 */
+    private boolean complained;
+
+    public ScheduleScanner(ScheduleStore store, RunLauncher launcher,
+                           ScheduleAuthorization authorization,
+                           List<OutboundDelivery> deliveries,
+                           ScheduleProperties properties, MeterRegistry registry) {
+        this.store = Objects.requireNonNull(store, "store");
+        this.launcher = launcher;
+        this.authorization = Objects.requireNonNull(authorization, "authorization");
+        this.deliveries = deliveries == null ? List.of() : List.copyOf(deliveries);
+        this.properties = Objects.requireNonNull(properties, "properties");
+        this.registry = registry;
+    }
+
+    /**
+     * 一波扫描。
+     *
+     * <p><b>间隔用 {@code fixedDelay} 而不是 {@code fixedRate}</b>：固定频率在上一轮
+     * 没跑完时会排队，积出一串同时开始的扫描，互相锁在同一批行上。
+     *
+     * <p>占位符里的默认值与 {@link ScheduleProperties} 的默认值是同一个数：
+     * 两边读同一个键，所以"配了 5 分钟却还是 30 秒"不会发生。
+     */
+    @Scheduled(fixedDelayString = "${claw4j.schedule.scan-interval:PT30S}")
+    public void scan() {
+        List<ScheduleStore.Due> due;
+        try {
+            due = store.claim(properties.maxPerScan(), properties.lease());
+            complained = false;
+        } catch (RuntimeException failure) {
+            if (!complained) {
+                log.warn("定时任务的表读不出来（claw4j_run.agent_schedule）：扫描这一轮跳过，"
+                        + "下一轮再试。迁移没跑过时就是这个样子", failure);
+                complained = true;
+            }
+            return;
+        }
+        for (ScheduleStore.Due task : due) {
+            fire(task);
+        }
+    }
+
+    /**
+     * 跑一条。五条出口：解析不了 → 直接停用；身份没了 / 权限没了 → 直接停用；
+     * 跑不动 / 跑炸了 → 记一次失败；跑成了 → 清零并推进。
+     *
+     * <p><b>不同的坏法走不同的出口</b>：cron 坏了、角色被删了、权限被收回，这三样
+     * 再试三次也不会变好，攒三次只是晚三天才停——而"任务悄悄停摆三天"与"当天就告诉你"
+     * 差的是三个早上。反过来，模型抽风是暂时的，一次就停用会让一个每天都在用的任务
+     * 被一次抖动杀掉。
+     *
+     * <p><b>权限在开跑之前算，不在跑的过程中撞</b>（P05）：用的是任务主人的身份，
+     * 但按<b>此刻</b>的角色表重新算。让 run 开起来再由鉴权 Advisor 一个个拒掉，
+     * 结果是一条每天照跑的任务每天交回一句"没有权限"——那看起来像在正常工作。
+     */
+    void fire(ScheduleStore.Due task) {
+        Instant now = Instant.now();
+        Optional<Instant> next;
+        try {
+            next = ScheduleStore.nextRunAt(task.cron(), task.zone(), now);
+        } catch (IllegalArgumentException broken) {
+            // 解析不了：这条任务永远不会有下一次，停用它并把原文记下来。
+            disable(task, broken.getMessage());
+            return;
+        }
+        if (next.isEmpty()) {
+            disable(task, "这条 cron 没有下一次了（" + task.cron() + "），不会再跑");
+            return;
+        }
+        Optional<Principal> owner = authorization.currentOwner(task.userId(), task.role());
+        if (owner.isEmpty()) {
+            disable(task, "任务主人的身份认不出来了（用户 " + task.userId() + "，角色 "
+                    + task.role() + "）：要么这个角色已经从授权表里删掉，要么这个部署没有角色表。"
+                    + "把角色加回来，再重新建一条任务");
+            return;
+        }
+        Optional<String> refusal = authorization.refusalFor(owner.get(), task.requiredTools());
+        if (refusal.isPresent()) {
+            disable(task, "这条任务要用的工具现在不能用了：" + refusal.get()
+                    + "。权限改回来之后，重新建一条任务");
+            return;
+        }
+        if (launcher == null) {
+            fail(task, next.get(), "这个部署没有可用的 Agent，到点了也跑不起来");
+            return;
+        }
+        try {
+            Optional<String> answer = launcher.launch(message(task, owner.get(), now));
+            if (answer.isEmpty()) {
+                fail(task, next.get(), "这一轮没有跑成（没有 run 存储，或者根本没开跑）");
+                return;
+            }
+            store.settle(task.id(), next.get());
+            count("ok");
+            log.debug("定时任务跑完 id={} goal={}", task.id(), task.goal());
+        } catch (RuntimeException | Error failure) {
+            log.warn("定时任务这一轮炸了 id={}", task.id(), failure);
+            fail(task, next.get(), failure.getClass().getSimpleName()
+                    + (failure.getMessage() == null ? "" : "：" + failure.getMessage()));
+        }
+    }
+
+    /**
+     * 交给 Agent 的那一条"提问"。{@code runId} 是 null：每次到点都是新的一件，
+     * 而不是接着上一件——定时任务的每一步都该是一份独立的记录。
+     */
+    private static InboundMessage message(ScheduleStore.Due task, Principal owner, Instant now) {
+        return new InboundMessage(owner, task.channelRef() == null ? task.id() : task.channelRef(),
+                task.goal(), now, null, null, task.channel(), task.notifyPolicy());
+    }
+
+    private void fail(ScheduleStore.Due task, Instant nextRunAt, String error) {
+        count("failed");
+        Optional<ScheduleStore.AfterFailure> after =
+                store.fail(task.id(), nextRunAt, error, properties.failureThreshold());
+        if (after.isPresent() && !after.get().enabled()) {
+            count("disabled");
+            notifyDisabled(task, after.get(), error);
+        }
+    }
+
+    private void disable(ScheduleStore.Due task, String reason) {
+        count("disabled");
+        store.disable(task.id(), reason);
+        notifyDisabled(task, new ScheduleStore.AfterFailure(task.failures(), false, reason), reason);
+        log.error("定时任务被停用 id={}：{}", task.id(), reason);
+    }
+
+    /**
+     * 告诉任务主人"它不跑了"，并带上最后一次错误。
+     *
+     * <p><b>为什么发在这一刻、而不是等他自己发现</b>：任务停用之后一切照常安静，
+     * "没有消息"既可能是"今天没到点"，也可能是"三天前就死了"。
+     * 这条通知是它们之间唯一的区别。
+     *
+     * <p>推不出去（HTTP 部署、或者通道没实现推）时只留一条 WARN：
+     * 停用已经落库，`disabled_reason` 与 {@code GET /api/runs} 那一侧仍然查得到。
+     */
+    private void notifyDisabled(ScheduleStore.Due task, ScheduleStore.AfterFailure after, String error) {
+        OutboundDelivery delivery = deliveryFor(task.channel());
+        // 不写"连续 N 次"：被停用的原因有两种（跑不成跑到阈值，或者根本不该再跑），
+        // 通知里那句现成的原因已经说清是哪一种，再补一句次数只会让第二种看起来像第一种。
+        String text = "定时任务已停用。\n"
+                + "任务：" + task.goal() + "\n"
+                + "为什么：" + error + "\n"
+                + "库里的说明：" + (after.disabledReason() == null ? "（无）" : after.disabledReason());
+        if (delivery == null) {
+            log.warn("定时任务停用，但这个任务没有可推的通道（channel={}），只能靠库里那行看到",
+                    task.channel());
+            return;
+        }
+        try {
+            delivery.send(task.channelRef(), text);
+            count("notified");
+        } catch (RuntimeException failure) {
+            // 通知送不出去不能把调度器带崩：停用这件事已经落库了。
+            log.error("定时任务停用的通知没送出去 id={} channel={}", task.id(), task.channel(), failure);
+        }
+    }
+
+    private OutboundDelivery deliveryFor(String channel) {
+        if (channel == null || channel.isBlank()) {
+            return null;
+        }
+        for (OutboundDelivery delivery : deliveries) {
+            if (channel.equals(delivery.channel())) {
+                return delivery;
+            }
+        }
+        return null;
+    }
+
+    private void count(String outcome) {
+        if (registry == null) {
+            return;
+        }
+        Counter.builder(METRIC)
+                .description("定时任务到点执行的计数，按结果分档")
+                .tag("outcome", outcome)
+                .register(registry)
+                .increment();
+    }
+}

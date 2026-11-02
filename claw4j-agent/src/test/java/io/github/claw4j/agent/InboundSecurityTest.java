@@ -9,6 +9,9 @@ import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.guard.GuardAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.session.SessionMemoryConfiguration;
+import io.github.claw4j.agent.approval.ApprovalGate;
+import io.github.claw4j.agent.approval.CallFingerprint;
+import io.github.claw4j.domain.port.ApprovalLedger;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
@@ -27,9 +30,11 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import reactor.core.publisher.Flux;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -122,6 +127,128 @@ class InboundSecurityTest {
 
         assertThat(tool.calls()).isEqualTo(1);
         assertThat(answer).contains("128400");
+    }
+
+    /**
+     * 第二个分量之后的第一条（P01）：有权限、但要人批的动作，没有批准记录时必须被拦。
+     *
+     * <p>判据是两件事一起看：话术**不是**"没有权限"（这个人确实有 {@code send_email}
+     * 这个动作，缺的是批准），以及工具一次都没执行——只替换正文、不替换工具调用的话，
+     * 拒绝与"已经发出去了"会同时成立。
+     */
+    @Test
+    @DisplayName("要审批的动作没有批准记录时被拦：理由回到对话里，工具一次都没执行")
+    void actionThatNeedsApprovalIsHeldBackWithoutAGrant() {
+        RecordingTool tool = new RecordingTool("sendEmail", "已发送");
+        FixedChatModel model = new FixedChatModel(prompt -> ChatPipelineTest.requestTool("sendEmail", "{}"));
+        ChatClient chat = client(model, List.of(new AuthorizationAdvisor(
+                List.of(ToolPermissionRegistry.of(Map.of("sendEmail",
+                        ToolPermission.requiringApproval("send_email")))),
+                ApprovalGate.denyAll())), List.of(tool));
+
+        String answer = new ChatClientAgentPort(chat).reply(mailer("chat-ap1", "发一封邮件")).text();
+
+        assertThat(answer)
+                .as("等审批与没有权限是两件事：前者要找人点按钮，后者要改角色配置")
+                .startsWith(AuthorizationAdvisor.APPROVAL_PREFIX)
+                .contains("sendEmail")
+                .doesNotContain(AuthorizationAdvisor.DENIAL_PREFIX);
+        assertThat(tool.calls()).isZero();
+    }
+
+    /**
+     * 反过来的一条：有批准就放行。没有它，上面那条的"通过"只是"永远拒绝"。
+     *
+     * <p>这里还钉住<b>门被问了什么</b>：人 + **工具名** + **参数指纹**（P02）。
+     * 拿动作名（{@code send_email}）去问的话，同一动作下新增的工具会白捡一次批准；
+     * 拿 {@code role} 去问的话，同角色的人会互相捡批准；不问参数的话，
+     * "批了查一次上周成交额"同时放行了"查全表"。
+     */
+    @Test
+    @DisplayName("有有效批准就放行：门按「人 + 工具名 + 参数指纹」问，不是按动作名")
+    void anEffectiveGrantLetsTheCallThrough() {
+        List<String> asked = new ArrayList<>();
+        ApprovalGate granted = new ApprovalGate() {
+
+            @Override
+            public Optional<ApprovalLedger.Grant> redeem(String owner, String toolName, String argsDigest) {
+                asked.add(owner + "/" + toolName + "/" + argsDigest);
+                return Optional.of(new ApprovalLedger.Grant("ap-1", Instant.now().plusSeconds(600)));
+            }
+
+            @Override
+            public Optional<String> ask(ApprovalLedger.Ask ask) {
+                return Optional.of("ap-should-not-be-asked");
+            }
+        };
+        AtomicInteger modelCalls = new AtomicInteger();
+        RecordingTool tool = new RecordingTool("sendEmail", "已发送");
+        FixedChatModel model = new FixedChatModel(
+                prompt -> modelCalls.getAndIncrement() == 0
+                        ? ChatPipelineTest.requestTool("sendEmail", "{}")
+                        : ChatPipelineTest.answer("已发送"));
+        ChatClientAgentPort port = new ChatClientAgentPort(client(model, List.of(new AuthorizationAdvisor(
+                List.of(ToolPermissionRegistry.of(Map.of("sendEmail",
+                        ToolPermission.requiringApproval("send_email")))),
+                granted)), List.of(tool)));
+
+        String answer = port.reply(mailer("chat-ap2", "发一封邮件")).text();
+
+        assertThat(tool.calls()).isEqualTo(1);
+        assertThat(answer).contains("已发送").doesNotContain(AuthorizationAdvisor.APPROVAL_PREFIX);
+        assertThat(asked).hasSize(1);
+        assertThat(asked.getFirst())
+                .as("指纹是第三段：同一工具换个参数就是另一次，要重新批")
+                .startsWith("u-mailer/sendEmail/");
+        assertThat(asked.getFirst()).doesNotEndWith("/");
+    }
+
+    /**
+     * 指纹自己的口径（P02）——上面那条只证明"门问了第三段"，这条证明那一段算得对。
+     *
+     * <p>两头都得钉住，因为错法各有一条：
+     * <ul>
+     *   <li><b>只算工具名</b>：批了"查一次上周成交额"就同时放行"查全表"。</li>
+     *   <li><b>连字节顺序一起算</b>：模型每次生成的字段顺序不保证一样，数字写成
+     *       {@code 1} 还是 {@code 1.00} 也不保证一样——那都是同一个调用，
+     *       却会被要求重新批一遍。人被这样折腾几次之后就开始闭眼点，
+     *       而闭眼点正是这道门失效的方式。</li>
+     * </ul>
+     *
+     * <p>还有一条：<b>参数不完整时算不出来</b>（流式下参数分片到达）。收到一半就给个指纹的话，
+     * 每收到一块换一个，审批卡片上那个编号对应的调用跟眼前这个对不上。
+     */
+    @Test
+    @DisplayName("参数指纹：顺序与数字写法不影响，参数值一改就是另一次；参数不完整时算不出来")
+    void theFingerprintReadsArgumentsNotOnlyTheToolName() {
+        Optional<String> digest = CallFingerprint.of("sendEmail", "{\"to\":\"a@b.c\",\"subject\":\"周报\"}");
+        assertThat(digest).isPresent();
+        assertThat(digest.orElseThrow()).as("sha256 的十六进制").matches("[0-9a-f]{64}");
+        assertThat(CallFingerprint.of("sendEmail", "{\"subject\":\"周报\",\"to\":\"a@b.c\"}"))
+                .as("换个字段顺序还是同一个调用")
+                .isEqualTo(digest);
+        assertThat(CallFingerprint.of("sendEmail",
+                "{\"filter\":{\"from\":\"2026-10-01\",\"to\":\"2026-10-31\"},\"to\":\"a@b.c\"}"))
+                .as("嵌套里也要排序：查询条件这种结构才是常态")
+                .isEqualTo(CallFingerprint.of("sendEmail",
+                        "{\"to\":\"a@b.c\",\"filter\":{\"to\":\"2026-10-31\",\"from\":\"2026-10-01\"}}"));
+        assertThat(CallFingerprint.of("sendEmail", "{\"to\":\"a@b.c\",\"subject\":\"月报\"}"))
+                .as("参数值一改就是另一次：批的不是「发邮件」这个动作")
+                .isNotEqualTo(digest);
+        assertThat(CallFingerprint.of("sendEmail", "{\"n\":1}"))
+                .as("1 与 1.00 是同一个数，模型写哪一种都有可能")
+                .isEqualTo(CallFingerprint.of("sendEmail", "{\"n\":1.00}"));
+        assertThat(CallFingerprint.of("sendEmail", "{\"note\":\"他说\\\"好\\\"\\n第二行\"}"))
+                .as("引号与换行按 JSON 转义，不是原样拼进去")
+                .isEqualTo(CallFingerprint.of("sendEmail", "{ \"note\" : \"他说\\\"好\\\"\\n第二行\" }"));
+        assertThat(CallFingerprint.of("sendEmail", null))
+                .as("不给参数与给空参数是同一件事")
+                .isEqualTo(CallFingerprint.of("sendEmail", "  "))
+                .isEqualTo(CallFingerprint.of("sendEmail", "{}"));
+        assertThat(CallFingerprint.of("sendEmail", "{\"to\":\"a@b"))
+                .as("参数还在路上：等下一块，而不是拿半截参数去问账本")
+                .isEmpty();
+        assertThat(CallFingerprint.of(" ", "{}")).as("没有工具名就没有「这一次调用」").isEmpty();
     }
 
     @Test
@@ -361,5 +488,16 @@ class InboundSecurityTest {
 
     private static InboundMessage message(String chatId, String text) {
         return new InboundMessage(Principal.readOnly("u-1"), chatId, text);
+    }
+
+    /**
+     * 有 {@code send_email} 动作的人，但没有表权限。
+     *
+     * <p>审批那两条要的是"第一道门已经过了、第二道门在挡"这种状态：用只读身份的话，
+     * 拦截会发生在鉴权那一步，用例就变成在验一件已经验过的事。
+     */
+    private static InboundMessage mailer(String chatId, String text) {
+        return new InboundMessage(Principal.of("u-mailer", "mailer", Set.of(), Set.of("send_email")),
+                chatId, text);
     }
 }

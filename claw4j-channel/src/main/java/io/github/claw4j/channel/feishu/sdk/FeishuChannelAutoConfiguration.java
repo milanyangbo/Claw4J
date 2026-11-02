@@ -1,9 +1,14 @@
 package io.github.claw4j.channel.feishu.sdk;
 
+import io.github.claw4j.channel.feishu.FeishuOutboundDelivery;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
 import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.port.ApprovalCards;
+import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.OutboundDelivery;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -97,16 +102,61 @@ public class FeishuChannelAutoConfiguration {
                                                          @Qualifier(FEISHU_EXECUTOR) Executor feishuExecutor,
                                                          FeishuReplySender replySender,
                                                          FeishuPrincipalResolver principalResolver) {
-            return new InboundDispatcher(agentPort, feishuExecutor, principalResolver, replySender, "飞书");
+            // 通道标识进去之后，从这里问出去的每一件事都会把"飞书这个会话"登记成收件地址。
+            // 少传它的后果不是报错，是"在飞书开的头，别处做完之后飞书这头什么也收不到"。
+            return new InboundDispatcher(agentPort, feishuExecutor, principalResolver, replySender,
+                    "飞书", FeishuOutboundDelivery.CHANNEL);
         }
 
+        /**
+         * 主动投递：结果回到飞书那个会话（A05）。
+         *
+         * <p><b>只在凭据配齐时才有这个 bean</b>（本类外层那条 {@code @Conditional}）：
+         * 没有凭据就拿不到发送器，而"有一个 send 什么都不做"比"这个通道不支持推"难查得多。
+         * 没有它的时候，飞书侧的结果仍然查得到——那是 {@code GET /api/runs/{id}} 那一读的事。
+         *
+         * <p>条件写的是<b>名字</b>而不是类型：{@code @ConditionalOnMissingBean(OutboundDelivery.class)}
+         * 会让第二个能推的通道（企微）永远注册不上——它们的 bean 类型相同，谁先装配谁赢。
+         * 而"谁先"取决于自动配置的排序，于是"在飞书问、企微收"这条路上会少一个实现，
+         * 表现是库里登记了一行地址、永远没有实现能送。
+         */
+        @Bean
+        @ConditionalOnMissingBean(name = "feishuOutboundDelivery")
+        public OutboundDelivery feishuOutboundDelivery(FeishuReplySender replySender) {
+            return new FeishuOutboundDelivery(replySender);
+        }
+
+        /**
+         * 审批卡片（P03）：这个通道"能把一条待批请求画出来并推回会话"的那个能力。
+         *
+         * <p>注册成 {@link ApprovalCards} 而不是只在通道内部用：Agent 侧的审批门按
+         * {@code channel()} 找实现（它与飞书没有任何编译期关系，ADR-0010）。
+         *
+         * <p>条件写的是<b>名字</b>而不是类型：{@code @ConditionalOnMissingBean(ApprovalCards.class)}
+         * 会让第二个能画卡片的通道（企微）永远注册不上——它们的 bean 类型相同。
+         */
+        @Bean
+        @ConditionalOnMissingBean(name = "feishuApprovalCards")
+        public ApprovalCards feishuApprovalCards(FeishuChannelProperties properties) {
+            return new FeishuApprovalCards(properties.getAppId(), properties.getAppSecret());
+        }
+
+        /**
+         * 通道本体。卡片按钮的处理在装配时定下来：没有 {@link ApprovalDecider}（没开 run 存储）
+         * 就不注册卡片回调——那种部署里也没有卡片可点，注册一个"点了说没装审批"的回调只是噪音。
+         */
         @Bean(initMethod = "start", destroyMethod = "stop")
         @ConditionalOnMissingBean
         public FeishuLongConnectionChannel feishuChannel(FeishuChannelProperties properties,
                                                          InboundDispatcher dispatcher,
                                                          FeishuMessageTranslator translator,
-                                                         FeishuReplySender replySender) {
-            return new FeishuLongConnectionChannel(properties, dispatcher, translator, replySender);
+                                                         FeishuReplySender replySender,
+                                                         FeishuPrincipalResolver principalResolver,
+                                                         ObjectProvider<ApprovalDecider> deciders) {
+            ApprovalDecider decider = deciders.getIfAvailable();
+            FeishuApprovalActions approvals =
+                    decider == null ? null : new FeishuApprovalActions(decider, principalResolver);
+            return new FeishuLongConnectionChannel(properties, dispatcher, translator, replySender, approvals);
         }
     }
 }

@@ -5,3 +5,4 @@ io.github.claw4j.agent.subagent.SubagentAutoConfiguration
 io.github.claw4j.agent.session.SessionMemoryConfiguration
 io.github.claw4j.agent.guard.GuardAutoConfiguration
 io.github.claw4j.agent.cache.CacheAutoConfiguration
+io.github.claw4j.agent.run.RunPersistenceConfiguration

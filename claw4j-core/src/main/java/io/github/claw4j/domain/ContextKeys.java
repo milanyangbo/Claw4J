@@ -19,6 +19,20 @@ public final class ContextKeys {
     /** {@link Principal} 在 Advisor 上下文与工具上下文里的键名。 */
     public static final String PRINCIPAL = "claw4j.principal";
 
+    /**
+     * 当前这一轮落在哪个 run 上，在工具上下文里的键名（A03）。
+     *
+     * <p>只有工具上下文这一侧需要它：写 run 的是 Agent 入口，读它的是计划工具——
+     * 两者都在 {@code claw4j.agent} 里。放在这里而不是入口那个类上，
+     * 是因为键名这种东西<b>只有一处定义才不会漂移</b>，而漂移的表现是
+     * "工具读到的 runId 是 null"，看起来像"这一轮没有 run"——一个完全说得通的假象。
+     * 后面接上 run 的（长 run 上下文 A08、预算 A04）也读这一把 key。
+     *
+     * <p><b>它是入口写进去的，不是模型传进来的</b>：计划工具不接 {@code run_id} 参数，
+     * 于是模型没有"点名别人的 run 写计划"这条路径，也就不需要每次调用都查一次 owner。
+     */
+    public static final String RUN_ID = "claw4j.runId";
+
     private ContextKeys() {
     }
 }

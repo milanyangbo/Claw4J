@@ -73,13 +73,19 @@ claw4j:
       #   delegate_task   委派给子 Agent。委派不提权：子 Agent 用父的身份，照样过鉴权看表
       #   read_system     看 JVM/容器指标。不是业务数据，也不是"能读表的人"就该看的运维信息
       #   recall_session  读自己的历史。不复用 read："能不能回忆"与"能不能查销售单"是两件事
+      #   update_plan     改自己这一件事（run）的计划。写的是 run 的 step，不是业务表
+      #   schedule_task   定一个"以后按点做"的任务（P05）。给它是安全的：任务到点按创建者
+      #                   **当时**的权限跑，所以它永远不比这个人现在能做的更多
+      #   list_schedules  看自己有哪些定时任务
+      #   cancel_schedule 取消自己定的任务。只碰自己的：按归属键判，不按编号判
       #   draft_script    提交脚本草稿。只给 admin：能提议不等于能执行（run_script 是另一个动作）
       #   "*"             全部
       # 表里没有的角色一律拒绝，没有默认角色兜底。
       roles:
         read-only:
           tables: ["*"]
-          actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session"]
+          actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session",
+                    "update_plan", "schedule_task", "list_schedules", "cancel_schedule"]
         # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"
         guest:
           tables: ["region"]
@@ -96,6 +102,25 @@ claw4j:
       ready-timeout: 15s
       # 这里只登记"谁是谁"（飞书 open_id），**不写 tables/actions**：授权共用上面 http 那份，
       # 角色名必须对得上，错一个就启动失败。open_id 是真实的人，填在 application-local.yml。
+      roles:
+        read-only:
+          users: []
+
+    # ---- 企业微信（P06）：入站是公网回调地址，出站是一次 POST ----
+    # 五样齐了才装配（corp-id / corp-secret / agent-id / token / encoding-aes-key），
+    # 少一样整份退让、只跑 HTTP——只跑演示通道的部署不该因为"没配企微"而起不来。
+    # 回调地址固定是 /api/wecom/callback：后台"接收消息 → URL"填它，同一页上的 Token 与
+    # EncodingAESKey 与这里一一对应。三样里错一个的表现都一样：回调静默失败，用户永远等不到回答。
+    wecom:
+      enabled: ${CLAW4J_WECOM_ENABLED:true}
+      corp-id: ${WECOM_CORP_ID:}
+      corp-secret: ${WECOM_CORP_SECRET:}
+      # AgentId 是数字，缺省 0 表示没配（装配条件会因此不成立，而不是拿 0 去发消息）
+      agent-id: ${WECOM_AGENT_ID:0}
+      token: ${WECOM_TOKEN:}
+      encoding-aes-key: ${WECOM_ENCODING_AES_KEY:}
+      # 这里只登记"谁是谁"（成员 UserID），**不写 tables/actions**：授权共用上面 http 那份，
+      # 角色名必须对得上，错一个就启动失败。UserID 是真人，填在 application-local.yml。
       roles:
         read-only:
           users: []
@@ -129,6 +154,72 @@ claw4j:
     # （@Scheduled 上的默认值同样是 PT1H），但"有一个每小时删东西的任务"不该只活在代码里。
     # 压缩阈值那几个数走代码默认值，换模型时才需要动（见 SessionMemoryProperties）。
     cleanup-interval: PT1H
+
+  # ---- run：一件"事"的执行记录（A01/A02/A03）与它的预算（A04） ----
+  run:
+    # 关掉之后"继续"、计划、审批、审计都没有挂载点，预算也不再累计。
+    enabled: true
+    # 一次 run 的三项上限。三项里任何一项撞线，这件事就停在 budget_exhausted：
+    # 不抛异常，把结局写进库里。定时任务每次运行各开一个 run，各计各的。
+    budget:
+      # 工具调用次数。与一轮的上限同数：run 不是"再给几次"的借口，
+      # 它只是让同一个上限跨轮生效（三轮各调两次也会被第 7 次挡住）
+      max-tool-calls: 6
+      # token 总数。模型没报 usage 就记 0，不拿估算值冒充
+      max-tokens: 100000
+      # 各轮实际耗时的累计秒数。不含等待：等审批那一段没有任何一轮在跑
+      max-seconds: 900
+
+  # ---- 审批：一次点头能放行多远、谁能点头（P02、P03） ----
+  approval:
+    # 一条请求等人等多久。默认十分钟。
+    # 太短则审批人开个会回来卡片已经作废，人会开始要求刷新而不是点按钮；
+    # 太长则一条被忘掉的请求三天后还能放行，而三天前的上下文早就不是现在要干的事了。
+    # 过期判定用的是库的时钟（now() 与 expires_at 同一个来源），不是应用进程的。
+    ttl: 10m
+    # 谁能批。与 claw4j.channel.http.roles 是两张表：那个回答"能读哪些表"，
+    # 这个回答"愿意为别人的操作负责"。挂到角色上的话，任何一次提权都会静默扩大审批面。
+    # 飞书那边的人填 open_id，HTTP 那边填用户名（两个 id 空间各自独立）。
+    # 空 = 没人能批：忘配置时请求会一直挂着直到过期，启动日志里有一条 WARN 说明这件事。
+    # 这里不写默认人：默认值会让"没配"和"配了一个不存在的人"看起来一样。
+    approvers: []
+
+  # ---- 定时任务：到点 = 创建一个 run（P04、P05） ----
+  schedule:
+    # 关掉之后扫描任务与那三个工具（schedule_task / list_schedules / cancel_schedule）
+    # 一起不装配（表与已建的任务照旧保留，重新打开即恢复）。能建任务却没有东西会跑它，
+    # 等于对用户说"已经定好了"而实际不会发生。
+    # 它的读者是那几个 @Bean 上的 @ConditionalOnProperty，不是 ScheduleProperties——
+    # 在那里再声明一次就是"人人都以为自己读了的键"。
+    enabled: true
+    # 扫表间隔。它只被 @Scheduled 读（占位符原文），写 0 会让调度退化成热循环，
+    # 所以非法值在 ScheduleProperties 里直接拒绝启动，不静默归一到 30 秒。
+    scan-interval: PT30S
+    # 一次扫描最多认领几条，逐条串行跑完再回来看下一轮。
+    # 调大等于让 "同一时刻有 N 个模型调用在烧不同人的额度"——没做配额之前，串行是唯一说得清的算法。
+    max-per-scan: 5
+    # 连续几次没跑成就自动停用（并推一条带最后错误的通知）。成功一次清零。
+    # 只对"可能是暂时的"失败计数（模型抽风、库连不上）。角色被删、工具权限被收回
+    # 这类问题再试三次也不会变好，它们当场停用——见 ScheduleScanner#fire。
+    failure-threshold: 3
+    # 一条被认领之后占多久。管的是"认领之后进程崩了"：行锁随连接消失，
+    # 没有租约的话那条任务会一直躺在"已认领"里没人敢再跑。
+    lease: PT5M
+
+  # ---- 审计：一次工具调用一行，写在 step 上（P07，ADR-0023） ----
+  # 这里只有一个数：留多久。行本身没有开关——它跟着 claw4j.run.enabled 走，
+  # 因为"审计行"就是 step，没有 run 存储就没有可写的落点。
+  # 查询走视图 claw4j_run.audit_trail（按人 / 按时间 / 按结局三格都能过滤），
+  # 那三句 SQL 抄在 docs/capability-tests.md 里。
+  audit:
+    # 90 天：一个季度的口径。短于它，季度复盘时"上个季度谁批了什么"就查不到了；
+    # 长于它，那 200 字符的参数摘要会跟会话记录一起变成没人清理的历史。
+    # 到点删的是整件旧事（run 级联带走 step），审批按提出时间单独删——
+    # 它没有外键，不单独删的话"谁批过"会无限期长下去。
+    retention: P90D
+    # 清理任务之间隔多久。写出来是为了让人知道有这个后台任务：
+    # 不写也成立（@Scheduled 上的默认值同样是 24 小时）。
+    purge-interval: PT24H
 
   # ---- 工具检索：工具循环只有这一种，没有"要不要开"的开关，也没有"少于几个就全塞"的阈值 ----
   # 代价是工具集很小时也要多一次检索往返；收益是模型看到的行为不随工具数量改变。

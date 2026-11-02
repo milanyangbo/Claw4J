@@ -5,6 +5,7 @@ import io.github.claw4j.capability.mcp.McpServerProperties.Server;
 import io.github.claw4j.capability.mcp.McpServerProperties.Transport;
 import io.github.claw4j.capability.mcp.http.HttpMcpEndpoint;
 import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
+import io.github.claw4j.domain.principal.Approval;
 import io.github.claw4j.domain.principal.ToolPermission;
 
 import java.util.ArrayList;
@@ -108,8 +109,16 @@ final class McpEndpoints {
         }
     }
 
+    /**
+     * 配置里那一段 → 一个权限。
+     *
+     * <p><b>审批这一档不从 yml 读</b>（P01）：配出来的第三方工具一律 {@link Approval#NONE}。
+     * 加一个 {@code approval: required} 的键很便宜，但"哪个外部动作必须有批"是个部署决定，
+     * 而它的落点更该是有名单、有卡片的审批策略（P09），不是"谁记得在 yml 里补一行"。
+     * 这一处只把第三个分量显式写出来，好让"接进来的 MCP 工具默认不需要审批"是一句可读的代码。
+     */
     private static ToolPermission permission(Permission declared) {
-        return new ToolPermission(declared.action(), Set.copyOf(declared.tables()));
+        return new ToolPermission(declared.action(), Set.copyOf(declared.tables()), Approval.NONE);
     }
 
     /**

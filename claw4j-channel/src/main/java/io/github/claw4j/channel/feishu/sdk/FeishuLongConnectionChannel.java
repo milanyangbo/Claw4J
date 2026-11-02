@@ -1,9 +1,16 @@
 package io.github.claw4j.channel.feishu.sdk;
 
 import com.lark.oapi.event.EventDispatcher;
+import com.lark.oapi.event.cardcallback.P2CardActionTriggerHandler;
+import com.lark.oapi.event.cardcallback.model.CallBackCard;
+import com.lark.oapi.event.cardcallback.model.CallBackToast;
+import com.lark.oapi.event.cardcallback.model.P2CardActionTrigger;
+import com.lark.oapi.event.cardcallback.model.P2CardActionTriggerData;
+import com.lark.oapi.event.cardcallback.model.P2CardActionTriggerResponse;
 import com.lark.oapi.service.im.ImService;
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1;
 import com.lark.oapi.ws.Client;
+import io.github.claw4j.channel.feishu.FeishuApprovalCard;
 import io.github.claw4j.channel.feishu.FeishuInboundEvent;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
@@ -11,6 +18,7 @@ import io.github.claw4j.channel.spi.ChatChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -50,17 +58,26 @@ public class FeishuLongConnectionChannel implements ChatChannel {
 
     private final FeishuReplySender replySender;
 
+    /**
+     * 卡片按钮的处理（P03）。可以为 null——没有装配审批的部署里没人会发卡片，
+     * 此时不注册卡片回调。留一个"注册了但没东西可判"的回调，表现是每次点击都回一句
+     * "没装审批"，那比没有按钮更让人困惑。
+     */
+    private final FeishuApprovalActions approvals;
+
     /** 建连成功之后才有值；{@code stop()} 之后清空，所以它是可重复调用的。 */
     private volatile Client client;
 
     public FeishuLongConnectionChannel(FeishuChannelProperties properties,
                                        InboundDispatcher dispatcher,
                                        FeishuMessageTranslator translator,
-                                       FeishuReplySender replySender) {
+                                       FeishuReplySender replySender,
+                                       FeishuApprovalActions approvals) {
         this.properties = properties;
         this.dispatcher = dispatcher;
         this.translator = translator;
         this.replySender = replySender;
+        this.approvals = approvals;
     }
 
     @Override
@@ -70,14 +87,24 @@ public class FeishuLongConnectionChannel implements ChatChannel {
 
     @Override
     public void start() {
-        EventDispatcher eventDispatcher = EventDispatcher.newBuilder("", "")
+        EventDispatcher.Builder events = EventDispatcher.newBuilder("", "")
                 .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
                     @Override
                     public void handle(P2MessageReceiveV1 event) {
                         onMessage(event);
                     }
-                })
-                .build();
+                });
+        if (approvals != null) {
+            // 卡片按钮走的是另一类事件（card.action.trigger），与消息事件共用同一条长连接：
+            // 于是"点一下批准"不需要公网回调地址，也不需要另开一个入口（P03 的前提）。
+            events.onP2CardActionTrigger(new P2CardActionTriggerHandler() {
+                @Override
+                public P2CardActionTriggerResponse handle(P2CardActionTrigger event) {
+                    return onCardAction(event);
+                }
+            });
+        }
+        EventDispatcher eventDispatcher = events.build();
         // 长连接模式不需要 verification token 与 encrypt key：那两个参数是给公网回调做签名校验的。
         Client starting = new Client.Builder(properties.getAppId(), properties.getAppSecret())
                 .eventHandler(eventDispatcher)
@@ -120,6 +147,59 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         } catch (RuntimeException failure) {
             log.error("飞书事件处理失败（不抛出，避免平台重推一条同样处理不了的消息）", failure);
         }
+    }
+
+    /**
+     * 卡片按钮的回调（P03）：返回的这个对象就是"就地换卡片 + 一句提示"。
+     *
+     * <p><b>不抛</b>，同 {@link #onMessage} 的理由：抛出去平台会重推同一个点不动的按钮。
+     * 但这里多一层考虑——点击是人在等回音（toast 会转圈），所以失败也要回一句，
+     * 而不是安静地什么都不做。
+     */
+    private P2CardActionTriggerResponse onCardAction(P2CardActionTrigger event) {
+        try {
+            return responseOf(approvals.on(clickOf(event)));
+        } catch (RuntimeException failure) {
+            log.error("飞书卡片回调失败（不抛出，避免平台重推同一次点击）", failure);
+            return responseOf(FeishuApprovalActions.Outcome.of("error",
+                    "这次点击没处理成功，稍后再点一次；如果一直这样，让管理员看服务日志。"));
+        }
+    }
+
+    /** 卡片事件 → 三个值：谁点的、哪一条、批还是拒。别的都不进来，判定不需要它们。 */
+    private static FeishuApprovalActions.Click clickOf(P2CardActionTrigger event) {
+        P2CardActionTriggerData data = event == null ? null : event.getEvent();
+        String openId = data == null || data.getOperator() == null ? null : data.getOperator().getOpenId();
+        Map<String, Object> value = data == null || data.getAction() == null
+                || data.getAction().getValue() == null
+                ? Map.of()
+                : data.getAction().getValue();
+        return new FeishuApprovalActions.Click(openId,
+                textOf(value.get(FeishuApprovalCard.VALUE_APPROVAL)),
+                textOf(value.get(FeishuApprovalCard.VALUE_DECISION)));
+    }
+
+    private static String textOf(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    /**
+     * 结果 → 飞书的响应体。{@code type=raw} 表示"这一整张卡片换成我给的结构"，
+     * 于是同一条消息就地变了，群里不会出现第二条自相矛盾的卡片。
+     */
+    private static P2CardActionTriggerResponse responseOf(FeishuApprovalActions.Outcome outcome) {
+        P2CardActionTriggerResponse response = new P2CardActionTriggerResponse();
+        CallBackToast toast = new CallBackToast();
+        toast.setType(outcome.toastType());
+        toast.setContent(outcome.toastText());
+        response.setToast(toast);
+        if (outcome.card() != null) {
+            CallBackCard card = new CallBackCard();
+            card.setType("raw");
+            card.setData(outcome.card());
+            response.setCard(card);
+        }
+        return response;
     }
 
     /** 翻不出来的消息也要回一句：群里的沉默分不清"没收到"和"不会"。 */

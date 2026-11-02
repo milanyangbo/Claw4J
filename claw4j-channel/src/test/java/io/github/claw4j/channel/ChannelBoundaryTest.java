@@ -65,4 +65,31 @@ class ChannelBoundaryTest {
     static final ArchRule dispatchLayerDoesNotReachIntoItsSdkSubpackage =
             noClasses().that().resideInAPackage("io.github.claw4j.channel.feishu")
                     .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.feishu.sdk..");
+
+    /**
+     * 企业微信这一侧的同一条界：{@code channel.wecom} 里只有三个类型
+     * （入站事件的适配、回推的出口、投递实现），它们不许认识 HTTP、XML、加解密。
+     *
+     * <p>为什么值得单独写一遍，而不是并进上面那条：这两条规则守的是<b>同一件事</b>
+     * （适配层不依赖实现），但作用在两个包上。写成 {@code resideInAnyPackage} 少两行，
+     * 代价是失败信息里那个类名不再直接指向是哪个通道破了界——而这条规则唯一的价值
+     * 就是"破了界的时候一眼看出破了哪条"。
+     */
+    @ArchTest
+    static final ArchRule wecomDispatchLayerDependsOnNothingButItsOwnContracts =
+            noClasses().that().resideInAPackage("io.github.claw4j.channel.wecom")
+                    .should().dependOnClassesThat().resideOutsideOfPackages(
+                            "java..", "org.slf4j..", "io.github.claw4j..");
+
+    /**
+     * 同一条界限的另一半：适配层也不许反过来依赖自己那个实现子包。
+     *
+     * <p>企业微信没有厂商 SDK，所以子包叫 {@code client} 而不是 {@code sdk}——
+     * 那里面的东西是"怎么跟平台说话"（加解密、XML、换 token），适配层一旦伸手去拿，
+     * 调度层的用例就得多一个 {@code WecomCipher} 才能跑。
+     */
+    @ArchTest
+    static final ArchRule wecomDispatchLayerDoesNotReachIntoItsClientSubpackage =
+            noClasses().that().resideInAPackage("io.github.claw4j.channel.wecom")
+                    .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.wecom.client..");
 }

@@ -20,7 +20,7 @@
 
 | 要点 | 说明 |
 | --- | --- |
-| **两条通道，同一份逻辑** | HTTP+SSE（给网关/前端）与飞书长连接（给群聊）；通道只做"收进来 → 认出是谁 → 发出去" |
+| **三条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
 | **五种能力来源，对模型是一回事** | Java `@Tool`、MCP server（stdio / HTTP 都行）、受限脚本包、Agent Skill、子 Agent |
 | **流式与同步同源** | Advisor 必须同时实现 Call 和 Stream，只写一个会在流式路径上静默不生效 |
 | **权限卡在模型之前** | 角色到"可见表 × 可执行动作"的映射在配置里；越权与套取提示词的消息不花 token、不进历史 |
@@ -87,17 +87,23 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 
 | 角色 | 可见表 | 可执行动作 |
 | --- | --- | --- |
-| `read-only`（缺省） | `*` | `read`、`use_skill`、`delegate_task`、`read_system`、`recall_session` |
+| `read-only`（缺省） | `*` | `read`、`use_skill`、`delegate_task`、`read_system`、`recall_session`、`update_plan`、`schedule_task`、`list_schedules`、`cancel_schedule` |
 | `guest` | `region` | `read`、`use_skill`、`delegate_task` |
 | `admin` | `*` | `*` |
 
 动作名与工具登记的动作同口径：`read`（读表）、`use_skill`、`delegate_task`、`read_system`、
-`recall_session`、`run_script`（跑脚本包）、`draft_script`（交脚本草稿）、`send_email`（MCP 按工具覆盖时用）。
+`recall_session`、`update_plan`（改自己这一件事的计划）、`schedule_task`（定一个以后按点做的任务）、
+`list_schedules`、`cancel_schedule`（只碰自己的任务，按归属键判、不按编号判）、`run_script`（跑脚本包）、
+`draft_script`（交脚本草稿）、`send_email`（MCP 按工具覆盖时用）。
 表里没有的角色一律拒绝，没有默认角色兜底。**会话记忆按 `userId` + 权限指纹落库**（`SessionKeys`）：换一条通道进来还是同一个人，但**换一份权限就是另一段会话**——降权之后，历史里躺着的数字读不到，而不是还记得（ADR-0007 的边界在会话这层同样成立）。
+
+**定时任务存的是身份（`userId` + 角色名），不是权限快照**：到点那一刻按当前的角色表重算一遍，
+所以 `schedule_task` 永远不比这个人现在能做的更多——把这个角色删掉（或把某个工具的动作收走），
+任务下一次到点就失败并自动停用，同时通知任务主人。
 
 ## 集成
 
-五种能力 + 一条通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
+五种能力 + 一条新通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
 能整份照抄的模板与三种"静默失效"的写法在 [`docs/design/extension-points.md`](docs/design/extension-points.md)。
 
 | 你要加的东西 | 写什么 | 依赖 |
@@ -235,11 +241,11 @@ tools:
 
 ```java
 @AutoConfiguration
-@ConditionalOnProperty(prefix = "acme.channel.wecom", name = "enabled", havingValue = "true")
-public class WecomChannelAutoConfiguration {
+@ConditionalOnProperty(prefix = "acme.channel.dingtalk", name = "enabled", havingValue = "true")
+public class DingTalkChannelAutoConfiguration {
     @Bean(initMethod = "start", destroyMethod = "stop")
-    public WecomChannel wecomChannel(AgentPort agentPort) {
-        return new WecomChannel(agentPort, ...);   // 收消息 → 认出是谁 → 交给 AgentPort → 回推
+    public DingTalkChannel dingTalkChannel(AgentPort agentPort) {
+        return new DingTalkChannel(agentPort, ...);   // 收消息 → 认出是谁 → 交给 AgentPort → 回推
     }
 }
 ```
@@ -248,7 +254,9 @@ public class WecomChannelAutoConfiguration {
 这三条写进了 [`ChatChannel`](claw4j-core/src/main/java/io/github/claw4j/channel/spi/ChatChannel.java) 的契约；
 "ACK 之后怎么办"（去重、认人、异步、分段回推、失败也回一句）在
 [`channel.kernel`](claw4j-core/src/main/java/io/github/claw4j/channel/kernel)——它在 `claw4j-core` 里，
-所以接 Telegram 不必把飞书 SDK 拖进 classpath。飞书那条凭据齐全才装配，缺一个整个通道退让、HTTP 照常。
+所以接 Telegram 不必把飞书 SDK 拖进 classpath。飞书与企业微信都是凭据齐全才装配，缺一个整个通道退让、HTTP 照常。
+两家的差别只在"怎么收"与"怎么发"：飞书是 SDK 长连接，企业微信是自己验签解密的回调端点；
+一个平台一个包，编排层不认识它们中的任何一个。
 
 ## 配置
 
@@ -260,6 +268,8 @@ public class WecomChannelAutoConfiguration {
 | `QWEN_API_KEY` | 否 | 备用模型 key；也是语义缓存的向量凭据，配了才有主备降级与缓存 |
 | `CLAW4J_MODEL_PRIMARY` | 否 | `deepseek`（默认）/ `qwen`，决定谁是主模型 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 否 | 两个都配才装配长连接通道 |
+| `WECOM_CORP_ID` / `WECOM_CORP_SECRET` / `WECOM_AGENT_ID` | 否 | 企业微信自建应用，三个都配才有出站 |
+| `WECOM_TOKEN` / `WECOM_ENCODING_AES_KEY` | 否 | 回调的签名与解密；与上面三个**一起**齐了才装配通道 |
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用 |
 
 `claw4j.*` 的每个键都有明确的拥有者，`application.yml` 里逐项写了默认值与"动它之前要知道什么"。
@@ -282,7 +292,7 @@ public class WecomChannelAutoConfiguration {
 | --- | --- |
 | `claw4j-core` | 契约与不变量：`domain`（端口、`Principal`、权限登记表）+ `channel.spi` + `channel.kernel`。**编译期只有 slf4j**，接插件与接通道都只认这一个坐标（[ADR-0015](docs/adr/0015-one-core-artifact.md)） |
 | `claw4j-agent` | ChatClient 装配、模型路由、Advisor 链、会话与缓存。不认识任何通道，也不认识任何工具类 |
-| `claw4j-channel` | 入站出站适配（HTTP+SSE、飞书长连接），按平台分包 |
+| `claw4j-channel` | 入站出站适配（HTTP+SSE、飞书长连接、企业微信回调），按平台分包 |
 | `claw4j-capability` | 能力来源的接缝：MCP、脚本包、Skill、子 Agent、生成器，加一个平台无关的 `system` 工具 |
 | `claw4j-example-sales` | **示例插件**：一个业务工具 + 四张业务表 + 种子数据，不依赖 `claw4j-capability` |
 | `claw4j-example-mcp-server` | **示例插件**：`java -jar` 就能跑的 Java MCP server，不依赖 Claw4J 任何模块 |
@@ -299,7 +309,7 @@ public class WecomChannelAutoConfiguration {
 
 门禁跑的是假模型与真容器，能证明"装配成立"，证明不了"能力真能用"。后者要一次真跑，
 **按工具逐条**给出命令与期望值在 **[`docs/capability-tests.md`](docs/capability-tests.md)**：
-本仓库的 20 个工具每个一条（7 个进程内 + 10 个自建 MCP + 3 个脚本包），
+本仓库的 21 个工具每个一条（8 个进程内 + 10 个自建 MCP + 3 个脚本包），
 外加两个第三方 MCP server 的"先取清单再点名"、5 个子 Agent、流式与非流式的成对调法、
 Java 与非 Java 实现的成对接口，以及越权与拦截的负向用例。
 
@@ -328,8 +338,8 @@ Claw4J 是企业里那一层：多用户身份、权限在模型之前裁决、�
 
 | | 内容 |
 | --- | --- |
-| **已达** | 多用户 + 权限前移（越权不花 token、不进历史）；三层能力 20 个工具（进程内 7 / 自建 MCP 10 / 脚本包 3）+ 渐进式披露；Skill 生成链路与 5 个子 Agent；会话记忆（按人 + 权限隔离）与语义缓存（pgvector）；HTTP+SSE 与飞书长连接双通道；单 Postgres + Flyway 可审计；真模型测试与 7 模块 ArchUnit 门禁 |
-| **未达（有票）** | 审批（P01–P03）、定时主动执行（P04/P05）、企业微信等更多通道（P06/P12/P13）、凭据句柄（P08）、知识库检索（P10）、反向 MCP（P11）、OTel 导出（P14）、脚本沙箱隔离（P17）、`doctor` 自检（P18）、WebSocket 传输（P19）——编号见 [ADR-0020](docs/adr/0020-platform-capabilities-ride-on-run.md) |
+| **已达** | 多用户 + 权限前移（越权不花 token、不进历史）；三层能力 21 个工具（进程内 8 / 自建 MCP 10 / 脚本包 3）+ 渐进式披露；Skill 生成链路与 5 个子 Agent；会话记忆（按人 + 权限隔离）与语义缓存（pgvector）；HTTP+SSE 与飞书长连接、企业微信回调三条通道；**run 落库（跨请求的"继续"、计划外置到 step）与按 run 累计的三项预算（工具调用 / token / 耗时，撞线即停并把结局写进库里）**；**结果投递与回收（run 绑 principal 不绑通道：地址表一对多、按 `notifyPolicy` 推、`GET /api/runs/{id}` 取回全文）**；**审批（权限的第三个分量：参数指纹让批准只覆盖"这一次具体要干的事"，没有批准就把 run 停在 suspended、请求当场返回审批编号，不占线程；批准/拒绝之后用发起人身份续跑同一件事，一次点头只放行一次执行、默认十分钟过期；入口是独立的人名单 + 飞书卡片一键批/拒 + 同一条服务端逻辑的 HTTP 接口，自己发起的批不动而别人还能批）**；**审计（一次工具调用一行，补在 step 上而不另建执行表：`actor / actor_role / outcome / args_digest / args_summary / approval_id` 六列 + 只读视图 `claw4j_run.audit_trail`，按人、按时间、按结局都答得出；只落脱敏摘要与指纹，不落参数与产出的原文；被拦下的那次也落一行，带工具名与当时的角色；"一条批准只放行一次执行"由部分唯一索引担保；留存 90 天，到点删整件旧事，审计不会活得比它的执行记录更久）**；**定时执行（一张调度表 + 每 30 秒扫一次，`for update skip locked` 认领所以两个实例不会跑两遍；到点只做一件事——开一个 run，鉴权/工具/预算/投递全部复用现成路径；错过的时间点不补跑、连着三次没跑成就停用并推一条带最后错误的通知；任务由对话里的三个工具建/列/取消，建的时候就把"要用的工具主人现在都有"核完，**权限按到点那一刻的角色表重算而不是用创建时的快照**——收权对定时任务是有效的，角色被删就当场停用并通知主人，每次运行各记一笔预算）**；**企业微信通道（自建应用回调：验签 → 解密 → 去重 → 认人 → 异步 → 回推，五秒内回空串、先推一句回执再推答案；出站是一次 `POST`，token 缓存两小时、被判过期重试一次；投递与飞书共用那张地址表，所以在飞书问、企微也能收到同一条 run 的结果）**；单 Postgres + Flyway 可审计；真模型测试与 7 模块 ArchUnit 门禁 |
+| **未达（有票）** | 更多通道（P12/P13）、凭据句柄（P08）、知识库检索（P10）、反向 MCP（P11）、OTel 导出（P14）、脚本沙箱隔离（P17）、`doctor` 自检（P18）、WebSocket 传输（P19）——编号见 [ADR-0020](docs/adr/0020-platform-capabilities-ride-on-run.md)。另外**仓库里仍没有随包工具登记成"要审批"**（MCP 的 `permission` 只有 `action` / `tables`，`Approval` 恒为 `NONE`），所以审批链路要靠测试造请求才走得完 |
 | **刻意不做** | 浏览器自动化、语音 / Canvas、设备节点、配对码、`heartbeat` 常驻自唤醒、插件市场——理由与重开条件见 [ADR-0021](docs/adr/0021-explicitly-not-doing.md) |
 
 ## 还没做的

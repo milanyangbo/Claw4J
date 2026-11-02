@@ -45,8 +45,17 @@ import java.util.function.Function;
  *   <li><b>回推</b>：算完按段切开推回去；Agent 抛异常也推一条说清失败，而不是让会话里什么都没有。</li>
  * </ol>
  *
+ * <p><b>第五件是可选的：一句回执</b>。给 {@code receipt} 传了文案的通道，会在认出人之后、
+ * 调 Agent 之前先推一句"收到了"。它只对<b>没有被动回复</b>的平台有意义：飞书能在事件回调里
+ * 直接回一段文本，企业微信安全模式下被动回复要现加密一段 XML，两家都不约而同地选择
+ * "回调里回空串、结果主动推"，于是用户在那十几秒里看到的是没有任何反应的对话框——
+ * 分不清"在算"与"没收到"。没传就是不发，飞书那份保持原样。
+ *
+ * <p>回执必须<b>排在去重与认人之后</b>：重推的那一条不该再"收到"一次，被拒的人也不该先被
+ * 安抚一句再说没权限。它发失败只记日志，不打断后面的回答——回执丢了是小事，答案丢了是大事。
+ *
  * <p><b>这一层只认 JDK 类型与自己那两个接口</b>，所以它能进默认构建，
- * 用假发送 + 可控 executor 断言上面这四条，不需要任何平台的凭据。
+ * 用假发送 + 可控 executor 断言上面这几条，不需要任何平台的凭据。
  *
  * <p><b>去重是进程内带 TTL 的缓存</b>，不是 Redis。依据 ADR-0009：长连接是集群投递、
  * 不支持广播，单实例是既定形态，"多实例之间去重"在这个形态下没有意义
@@ -94,6 +103,23 @@ public class InboundDispatcher {
     private final String noPermissionReply;
 
     /**
+     * 本通道的标识（{@code feishu} / {@code telegram}），与
+     * {@code OutboundDelivery#channel()} 同口径。
+     *
+     * <p>它只有一个用途：告诉 Agent "这条消息从哪个通道来"，于是这件事的结果
+     * 知道以后该送回哪儿（A05）。没有它的时候（老调用方）那件事只是不能被主动找到，
+     * 回答本身照旧。
+     */
+    private final String channel;
+
+    /**
+     * 认出人之后先推的一句"收到了"。null 表示这个通道不回执（飞书就是这样）。
+     *
+     * <p>文案由通道给，因为它带着平台的语感；什么时候发由这里定，因为它必须先过去重与认人。
+     */
+    private final String receipt;
+
+    /**
      * @param platformName 平台的中文名（"飞书" / "Telegram"），只用在一句拒绝文案里。
      *                     这是唯一一处必须知道"这是哪个通道"的地方，所以做成参数，
      *                     而不是让子类覆盖一个常量——子类化会让"加一个通道"变成"继承一个类"。
@@ -103,7 +129,35 @@ public class InboundDispatcher {
                              Function<String, Optional<Principal>> principalResolver,
                              ReplySender replySender,
                              String platformName) {
-        this(agentPort, executor, principalResolver, replySender, platformName,
+        this(agentPort, executor, principalResolver, replySender, platformName, null, null,
+                new SeenEventIds(DEFAULT_DEDUP_TTL, Clock.systemUTC()));
+    }
+
+    /**
+     * @param channel 本通道的标识。null 表示"这条消息不登记收件地址"（A05）
+     */
+    public InboundDispatcher(AgentPort agentPort,
+                             Executor executor,
+                             Function<String, Optional<Principal>> principalResolver,
+                             ReplySender replySender,
+                             String platformName,
+                             String channel) {
+        this(agentPort, executor, principalResolver, replySender, platformName, channel, null,
+                new SeenEventIds(DEFAULT_DEDUP_TTL, Clock.systemUTC()));
+    }
+
+    /**
+     * @param receipt 认出人之后先推的一句"收到了"（例如企业微信）。null／空白表示不回执——
+     *                通道自己能被动回复时（飞书）就不需要它，多推一句只是噪音
+     */
+    public InboundDispatcher(AgentPort agentPort,
+                             Executor executor,
+                             Function<String, Optional<Principal>> principalResolver,
+                             ReplySender replySender,
+                             String platformName,
+                             String channel,
+                             String receipt) {
+        this(agentPort, executor, principalResolver, replySender, platformName, channel, receipt,
                 new SeenEventIds(DEFAULT_DEDUP_TTL, Clock.systemUTC()));
     }
 
@@ -113,12 +167,26 @@ public class InboundDispatcher {
                       Function<String, Optional<Principal>> principalResolver,
                       ReplySender replySender,
                       String platformName,
+                      String channel,
+                      SeenEventIds seenEventIds) {
+        this(agentPort, executor, principalResolver, replySender, platformName, channel, null, seenEventIds);
+    }
+
+    InboundDispatcher(AgentPort agentPort,
+                      Executor executor,
+                      Function<String, Optional<Principal>> principalResolver,
+                      ReplySender replySender,
+                      String platformName,
+                      String channel,
+                      String receipt,
                       SeenEventIds seenEventIds) {
         this.agentPort = Objects.requireNonNull(agentPort, "agentPort");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.principalResolver = Objects.requireNonNull(principalResolver, "principalResolver");
         this.replySender = Objects.requireNonNull(replySender, "replySender");
         this.seenEventIds = Objects.requireNonNull(seenEventIds, "seenEventIds");
+        this.channel = channel == null || channel.isBlank() ? null : channel.strip();
+        this.receipt = receipt == null || receipt.isBlank() ? null : receipt;
         String platform = Objects.requireNonNull(platformName, "platformName").strip();
         this.noPermissionReply = "没有权限：你的" + platform
                 + "账号还没有在 Claw4J 里登记。请联系管理员开通后重新提问。";
@@ -179,9 +247,16 @@ public class InboundDispatcher {
         long startedAt = System.nanoTime();
         try {
             InboundMessage message = new InboundMessage(
-                    principal, conversationId, event.text(), event.receivedAt(), event.eventId());
+                    principal, conversationId, event.text(), event.receivedAt(), event.eventId(),
+                    null, channel);
             log.info("开始处理：eventId={} user={} conversationId={}",
                     event.eventId(), principal.userId(), conversationId);
+
+            // 回执在这里，不在 accept 里：走到这一步说明已经去过重、也已经认出了人。
+            // 发失败只记日志——回执是"别让人以为没收到"，不该反过来把回答也弄丢。
+            if (receipt != null) {
+                sendWithoutBlocking(conversationId, receipt);
+            }
 
             OutboundMessage answer = agentPort.reply(message);
             log.info("Agent 算完，用时 {} ms，准备回推：eventId={}",

@@ -1,5 +1,6 @@
 package io.github.claw4j.channel.http;
 
+import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import org.slf4j.Logger;
@@ -34,6 +35,15 @@ public class HttpChatController {
 
     private static final Logger log = LoggerFactory.getLogger(HttpChatController.class);
 
+    /**
+     * 本通道的标识，与 {@code OutboundDelivery#channel()} 同口径（A05）。
+     *
+     * <p>HTTP 不能主动推——请求一答完连接就断了。登记它不是为了推送，
+     * 是为了让"这件事是从这个会话发起的"有据可查：换通道接着做的时候能认出同一件，
+     * 结果由 {@code GET /api/runs/{id}} 取回。
+     */
+    static final String CHANNEL = "http";
+
     private final HttpChatChannel channel;
 
     private final HttpPrincipalResolver principalResolver;
@@ -57,7 +67,9 @@ public class HttpChatController {
                            @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
                            @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
         OutboundMessage answer = channel.ask(inbound(request, user, role, chatId));
-        return new AskResponse(answer.chatId(), answer.text());
+        // runId 跟着回答一起出去：调用方拿到它才问得出"这件事做到第几步"（ADR-0016）。
+        // 没有装配 run 存储时它是 null——那是能力不在场，不是这一轮失败了。
+        return new AskResponse(answer.chatId(), answer.text(), answer.runId());
     }
 
     /**
@@ -139,12 +151,41 @@ public class HttpChatController {
             throw new InvalidRequestException("text 不能为空");
         }
         var principal = principalResolver.resolve(user, role);
+        // runId 是"接着哪件事做"（A02）：客户端拿上一轮回答里的 runId 回来，就是 resume。
+        // 空白一律当成没带——带着一个空串去 resume，比不带更容易掩盖客户端的拼装错误。
+        String runId = request.runId() == null || request.runId().isBlank() ? null : request.runId().strip();
         return new InboundMessage(
                 principal,
                 principalResolver.chatId(principal.userId(), chatId),
                 request.text(),
                 Instant.now(),
-                null);
+                null,
+                runId,
+                // 通道名进去之后，这件事会把"HTTP 这个会话"登记成收件地址（A05）。
+                // HTTP 自己不能推（连接早就断了），登记它是为了让"换通道接着做"时
+                // 认得出同一件事——结果由 GET /api/runs/{id} 取回去。
+                CHANNEL,
+                notifyPolicyOf(request));
+    }
+
+    /**
+     * 请求里点名的通知策略。
+     *
+     * <p>拼错就 400，不静默退回默认：{@code silent} 与 {@code done_only} 的差别是
+     * "要不要去找人"，静默退回的那个方向是"该说的一次没说"，
+     * 那种错在事后表现为"结果去哪了"，没人会想到是请求里少写一个字母。
+     */
+    private static NotifyPolicy notifyPolicyOf(AskRequest request) {
+        String asked = request == null ? null : request.notifyPolicy();
+        if (asked == null || asked.isBlank()) {
+            return NotifyPolicy.DEFAULT;
+        }
+        try {
+            return NotifyPolicy.fromColumn(asked.strip());
+        } catch (IllegalArgumentException unknown) {
+            throw new InvalidRequestException("未知的 notifyPolicy：" + asked.strip()
+                    + "（可选 done_only / silent / state_changes）");
+        }
     }
 
     private static void sendChunk(SseEmitter emitter, OutboundMessage chunk) {
@@ -171,10 +212,24 @@ public class HttpChatController {
         }
     }
 
-    public record AskRequest(String text) {
+    /**
+     * @param text         这一轮说的话
+     * @param runId        要接着做的那件事；不带就是一件新事（A02）
+     * @param notifyPolicy 这一件事的通知策略（A05），不写走 {@link NotifyPolicy#DEFAULT}。
+     *                     定时任务那一类"跑完放着"的事传 {@code silent}
+     */
+    public record AskRequest(String text, String runId, String notifyPolicy) {
+
+        public AskRequest(String text, String runId) {
+            this(text, runId, null);
+        }
+
+        public AskRequest(String text) {
+            this(text, null, null);
+        }
     }
 
-    public record AskResponse(String chatId, String text) {
+    public record AskResponse(String chatId, String text, String runId) {
     }
 
     public record ErrorResponse(String error) {
