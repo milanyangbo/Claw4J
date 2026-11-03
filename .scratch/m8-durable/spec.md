@@ -36,6 +36,9 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
 3. **P10 知识库检索**：向量 + 关键词混合，结果带出处；表与阈值与语义缓存分开。
 4. **P11 反向 MCP server**：把我们自己的工具暴露成 MCP，让 Claude Code / Codex 当工具用。
 5. **P12 / P13 钉钉与 Slack**：复用 P06 的通道模板，扩展点已经就绪。
+   **P13 已定：入站走 Events API（HTTP），不走 Socket Mode。** 不是做不了（JDK 自带 WebSocket），
+   而是官方建议生产用 HTTP、上架 Marketplace 必须用 HTTP，且 Socket Mode 是"我们连出去推"，
+   与 `InboundDispatcher` 那套回调编排处处对不上。重估条件：完全不能开公网的内网。
 6. **P14 可观测与 OTel 导出**：一条 run 能连到它的每个 step 与每次工具调用。
 7. **P15 多 agent 配置**：角色 / 部门口径 / 技能 / 时间上下文 / 工具策略可组合、per-agent 可覆盖。
 8. **P16 插件版本契约**：插件声明它依赖的 core 版本区间（不做市场）。
@@ -138,7 +141,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
   P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，`9389e07`）、
-  P10（已实现，未提交）。
+  P10（已实现，`58fc525`）、P13（已拆，`P13-slack-channel.md`，未开工）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -193,3 +196,21 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   3. **`simple` 分词器 + 应用侧 bigram 这条路在真库上闭合了**：`bigrams` 列 + 生成列 `tsv`
      + GIN 索引，两路各取一次 topK，中文关键词实测命中。票面第一节那 12 个 token 与
      `KnowledgeTextTest` 的断言逐字一致——实测抄进用例，不是照着实现回填的。
+- 2026-11-03 拆 P13（Slack）。写票时核到四件改变实现形态的事，都不在 ADR 那一句里：
+  1. **Socket Mode 这次不是"做不了"而是"不该做"**。P12 的 Stream 模式卡在本地仓库没有 SDK，
+     这条不成立——JDK 自带 `java.net.http.WebSocket`，硬写能写。真正的判据是官方的部署建议
+     （开发/本地用 Socket Mode，**生产用 HTTP**，上架 Marketplace 必须 HTTP），加上"它是我们连出去推"，
+     `InboundDispatcher` 那套一处也用不上，等于为一家单开旁路。**如实记下重估条件**：
+     完全不能开公网的内网里，Socket Mode 是唯一出路。
+  2. **自己发出去的话会被推回来**。前四个通道都没有这个问题，Slack 有——不滤 `bot_id` /
+     `subtype`，一次提问会变成一问一答的无限循环，不报错、只在账单上体现。
+     而且只滤 `bot_id` 不够：`message_changed` / `channel_join` 这些不是 bot 发的，
+     `text` 要么在 `event.message.text` 里（多嵌一层）、要么是"某某加入频道"这种会真的进模型的句子。
+  3. **`ReplySender.send(conversationId, text)` 装不下"频道 + 线程"**。核实过 `conversationId`
+     在 Agent 侧零消费点（`grep` 过 `claw4j-agent/src/main/java`），所以编码成 `channel|thread_ts`
+     是安全的，代价是主动投递只能推回那个具体线程（要发私聊得先 `conversations.open`，不做）。
+  4. **两处"看着对、实则反"的协议细节**：订阅项叫 `message.im` 而载荷里 `event.type` 是 `message`
+     （按订阅名判断 → 单聊永远匹配不到，且不报错）；`chat.postMessage` 的失败是 HTTP 200 +
+     `{"ok":false}`（照抄钉钉/企微那套"200 就当成功"的写法，会得到一个永远成功的发送器）。
+  另外把两处门禁余量也写清了：`claw4j-channel` 与 `claw4j-app` 都已 10 个测试文件，
+  app 那个 `ApplicationAssemblyTest` 还已经 20 条顶格——**P13 想加闭环用例，必须先腾两个槽**。
