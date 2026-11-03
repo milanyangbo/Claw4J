@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * `V8`（用量三维）、`V9`（投递目标与结果全文）、`V10`（审批请求，P01）、
  * `V11`（审批指纹与一次性兑现、awaiting 状态、发起人快照，P02）、
  * `V12`（定时任务表，P04）、`V13`（任务的身份与工具清单，P05）、
- * `V14`（审计加列与只读视图，P07）。
+ * `V14`（审计加列与只读视图，P07）、`V15`（知识库的两张表，P10）。
  * Flyway 扫遍 classpath 上所有 `db/migration` 再按版本号排序，
  * 这件事"读文档觉得没问题"，但它有两个静默失败的姿势：
  *
@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       那时候离"搬了个文件"已经很远了。</li>
  * </ul>
  *
- * <p>所以这里断言的是一件很具体的事：**跑完之后迁移历史正好是 1 到 14，四个 schema 都在**。
+ * <p>所以这里断言的是一件很具体的事：**跑完之后迁移历史正好是 1 到 15，五个 schema 都在**。
  * 搬动任何迁移文件、改任何版本号，这条会红。
  */
 @Testcontainers
@@ -44,7 +44,7 @@ class MigrationCompositionTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：1..14 全跑到，四个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：1..15 全跑到，五个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -53,17 +53,21 @@ class MigrationCompositionTest {
         // 谁先跑都会把迁移做完，盯着 migrationsExecuted 会变成一条看执行顺序的用例。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
+                        "15");
 
         var jdbc = new JdbcTemplate(dataSource());
 
-        // 四个 schema 各自的归属：business 是示例插件的，后三个是 agent 的
-        // （会话 claw4j_session、缓存 claw4j_cache、run 与 step 在 claw4j_run）。
+        // 五个 schema 各自的归属：business 是示例插件的，其余是 agent 的
+        // （会话 claw4j_session、缓存 claw4j_cache、run 与 step 在 claw4j_run、
+        // 知识库在 claw4j_rag）。**缓存与知识库是两个 schema**：合并的话，
+        // 一段文档会被当成"有人问过"的答案吐出来，而它没有出处（P10）。
         assertThat(jdbc.queryForList(
                 "select schema_name from information_schema.schemata"
-                        + " where schema_name in ('business', 'claw4j_session', 'claw4j_cache', 'claw4j_run')"
+                        + " where schema_name in ('business', 'claw4j_session', 'claw4j_cache',"
+                        + " 'claw4j_run', 'claw4j_rag')"
                         + " order by schema_name", String.class))
-                .containsExactly("business", "claw4j_cache", "claw4j_run", "claw4j_session");
+                .containsExactly("business", "claw4j_cache", "claw4j_rag", "claw4j_run", "claw4j_session");
 
         // V1 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
         assertThat(jdbc.queryForObject("select count(*) from business.sales_order", Integer.class))
@@ -76,7 +80,7 @@ class MigrationCompositionTest {
         var flyway = flyway();
         flyway.migrate();
 
-        // 14 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
+        // 15 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
         assertThat(flyway.migrate().migrationsExecuted)
                 .as("第二次调用不该再执行任何迁移")
                 .isZero();

@@ -5,6 +5,7 @@ import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
+import io.github.claw4j.agent.rag.KnowledgeBase;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.capability.mcp.expose.McpExposure;
 import io.github.claw4j.capability.mcp.expose.McpExposureProperties;
@@ -450,6 +451,15 @@ class ApplicationAssemblyTest {
         assertThat(toolCatalog.agent())
                 .as("清单要答得出它属于哪个 agent——没配目录时是内置那份")
                 .isNotBlank();
+        // 知识库默认关（P10）：关着的时候它既不在清单里，也没有 bean。
+        // 断言放在这条用例里而不是单开一条——这份文件的用例方法数已经贴着上限，
+        // 而它问的是同一件事：清单里到底有什么。
+        assertThat(toolCatalog.names())
+                .as("默认关是有意的：知识库要一份文档目录与一次 embedding 调用，开了才在清单里")
+                .doesNotContain("searchDocs");
+        assertThat(context.getBeanNamesForType(KnowledgeBase.class))
+                .as("关着时连 bean 都不装，不是「装了但没挂上去」")
+                .isEmpty();
     }
 
     @Test

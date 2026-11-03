@@ -266,9 +266,9 @@ class SemanticCacheTest {
     @Test
     @DisplayName("阈值配错时落回 0.93：0 会让任何候选都命中")
     void badThresholdFallsBackToDefault() {
-        assertThat(new CacheProperties(0.0, null, null, null, null).similarityThreshold())
+        assertThat(new CacheProperties(0.0, null, null).similarityThreshold())
                 .isEqualTo(CacheProperties.DEFAULT_SIMILARITY_THRESHOLD);
-        assertThat(new CacheProperties(1.5, null, null, null, null).similarityThreshold())
+        assertThat(new CacheProperties(1.5, null, null).similarityThreshold())
                 .isEqualTo(CacheProperties.DEFAULT_SIMILARITY_THRESHOLD);
         assertThat(CacheProperties.defaults().timeToLive())
                 .as("默认 1 小时而不是 24 小时：问的是「上周」，答案随日历翻页而变")
@@ -278,12 +278,12 @@ class SemanticCacheTest {
     @Test
     @DisplayName("清理间隔配成 0 直接拒绝启动：归一回默认会让调度器拿到另一个值")
     void cleanupIntervalMustBePositive() {
-        assertThatThrownBy(() -> new CacheProperties(null, null, Duration.ZERO, null, null))
+        assertThatThrownBy(() -> new CacheProperties(null, null, Duration.ZERO))
                 .as("调度器读的是 @Scheduled 占位符里的原文，这里悄悄改成 1 小时只会让它拿到 0，"
                         + "而 fixedDelay=0 是「上一轮结束立刻下一轮」的循环")
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cleanup-interval");
-        assertThatThrownBy(() -> new CacheProperties(null, null, Duration.ofHours(-1), null, null))
+        assertThatThrownBy(() -> new CacheProperties(null, null, Duration.ofHours(-1)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThat(CacheProperties.defaults().cleanupInterval())
                 .as("键缺失才落默认值——两种没配好必须分开处理：缺失有合理默认，写 0 是写错了")
@@ -295,9 +295,12 @@ class SemanticCacheTest {
     void disabledSwitchRemovesEveryCacheBean() {
         ApplicationContextRunner runner = new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(CacheAutoConfiguration.class))
-                // 装配前提是"有库、有向量模型"，这些都给它，于是下面能关掉只能是开关本身
+                // 装配前提是"有库、有向量模型"，这些都给它，于是下面能关掉只能是开关本身。
+                // **向量模型现在由 EmbeddingAutoConfiguration 提供**（P10 搬出去了）：
+                // 这个 runner 只装缓存那一份配置，所以要自己给一个。
                 .withBean(DataSource.class, () -> mock(DataSource.class))
                 .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+                .withBean(EmbeddingModel.class, () -> mock(EmbeddingModel.class))
                 .withBean(ModelProperties.class, () -> {
                     ModelProperties properties = new ModelProperties();
                     properties.getQwen().setApiKey("secret:qwen_api_key");

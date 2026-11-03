@@ -138,7 +138,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
   P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，`9389e07`）、
-  P10（已拆，`P10-knowledge-retrieval.md`，未开工）。
+  P10（已实现，未提交）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -180,3 +180,16 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   三件事都落在工具这一条路上）。
   顺带纠一处自己写错的：先前打算写"空 tsquery 是全部命中"，实测 `@@` 为 `false`
   ——退化成"一条都不命中"，比响亮地报错更难查。
+- 2026-11-03 P10 实现。三件事记在这里，因为它们都影响下几张票的写法：
+  1. **rag 的 Java 层没有覆盖率**。真容器那边验的是 SQL（生成列、两路 topK、出处回查），
+     不是 `KnowledgeIndexer` / `PgVectorKnowledgeBase` / `KnowledgeTools`——三个类共 140 行，
+     agent 模块的行覆盖率因此从 0.62 掉到 0.58，闸直接红。**"SQL 真跑了"不等于"类被覆盖了"**，
+     以后每加一个碰库的类都要按这个算一遍。
+  2. **腾测试文件槽不能只按票面写的数算**。票面计划"塞进 `SemanticCacheTest`"，
+     但那个文件已经 20 条，塞不下三个类的用例。实际做法是把 `audit/ToolCallAuditTest`(13)
+     与 `session/RecallSessionTest`(8) 合成 `session/ToolGovernanceTest`（合并一条同 setup 的
+     批准用例后 20 条）——它们问的是同一件事的两端：工具进来时能不能用、出去后留下什么。
+     合并后的文件放在 `session` 包里是不得已：`RecallSessionTool.MAX_RESULT_CHARS` 是包内可见的。
+  3. **`simple` 分词器 + 应用侧 bigram 这条路在真库上闭合了**：`bigrams` 列 + 生成列 `tsv`
+     + GIN 索引，两路各取一次 topK，中文关键词实测命中。票面第一节那 12 个 token 与
+     `KnowledgeTextTest` 的断言逐字一致——实测抄进用例，不是照着实现回填的。

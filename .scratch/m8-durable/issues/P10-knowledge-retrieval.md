@@ -1,6 +1,6 @@
 # P10 · 知识库检索：向量 + 关键词混合，结果带出处
 
-**Status:** ready-for-agent
+**Status:** done（2026-11-03 实现，未提交）
 **Blocked by:** None（但下面第一节的裁决是先决条件，开工前已经定了）
 
 ## 背景
@@ -230,40 +230,103 @@ create index chunk_tsv on claw4j_rag.chunk using gin (tsv);
 
 ## 验收判据
 
-- [ ] **中文关键词真能命中**：问「退货政策」，关键词通道能命中包含该词的块。
+- [x] **中文关键词真能命中**：问「退货政策」，关键词通道能命中包含该词的块。
       反例必须能红：把 `bigrams` 换成原文、直接 `to_tsvector('simple', text)` 的实现，
       在这条用例上必须返回 0 条（实测整句一个 token，见第一节）。
-- [ ] **单字不炸也不空**：查询长度为 1 时走前缀匹配（`退:*`），返回包含该字的块；
+      - 真库：`SearchSqlTest#chineseKeywordActuallyMatches`（走 `bigrams` 列命中；
+        用例里的反例就是"同一段原文直接 `to_tsvector('simple', text)`"，返回 0 条）。
+      - 切词侧：`KnowledgeTextTest#chineseSplitsIntoBigrams`——切出来的 token 与第一节
+        那段 PG 实测的 12 个一字不差。
+- [x] **单字不炸也不空**：查询长度为 1 时走前缀匹配（`退:*`），返回包含该字的块；
       断言的是"有结果"，不是"没抛异常"。反例：把单字也去切 bigram → 切出 0 个 token →
       空 tsquery **一条都不命中**（实测 `to_tsvector(...) @@ plainto_tsquery('simple','')` 为
       `false`，不是"全部命中"），于是"搜一个字"与"知识库没这段"在结果与日志上完全一样。
-- [ ] **两路各自都在起作用**：构造一对文档——A 与查询**字面不重合但语义相同**（只有向量通道能查到），
+      - 真库：`SearchSqlTest#singleCharacterQueryUsesPrefix`（`退:*` 有结果，且不是全库）。
+      - 切词侧：`KnowledgeTextTest#singleCharacterQueryUsesPrefix`（单字带 `:*`）与
+        `#emptyQueryIsEmptyString`（没有可检索内容时返回空串，调用方据此**跳过这一路**，
+        不把一条永远为空的 SQL 发出去——`PgVectorKnowledgeBase#search` 就是这么用的，
+        见 `KnowledgeRetrievalTest#aQueryWithNothingToTokeniseSkipsTheKeywordChannel`）。
+- [x] **两路各自都在起作用**：构造一对文档——A 与查询**字面不重合但语义相同**（只有向量通道能查到），
       B 与查询**字面重合但语义无关**（只有关键词通道能查到）。两条都能出现在结果里。
       这一条是把"混合"与"只做向量"分开的唯一办法；只测"能查到"的实现，删掉一路照样绿。
-- [ ] **出处可追溯**：每条结果带 `source` + `ordinal`，且用 `source` 与 `ordinal` 能取回那段原文
+      - 真库：`SearchSqlTest#eachChannelContributes`（A 只靠向量、B 只靠字面，两条都回来）。
+      - 应用侧：`KnowledgeRetrievalTest#bothChannelsAreFusedIntoOneAnswer`——断言的是
+        "两条 SQL 都发出去了"与 RRF 的排序（两路都排到的浮到最前），删掉一路这条会红。
+- [x] **出处可追溯**：每条结果带 `source` + `ordinal`，且用 `source` 与 `ordinal` 能取回那段原文
       （断言取回的文本与结果里的片段一致）。
-- [ ] **不是缓存**：同一段文档被两次检索，两次都带出处；并且 `claw4j_cache.semantic` 里
+      - 真库：`SearchSqlTest#citationPointsBackToTheSource`（照 `source + ordinal` 回查，
+        取回的文本与检索结果逐字相同）。
+      - 形状：`KnowledgeBase.Hit#citation()` 只有一处拼法（`文档路径 第 N 段`），
+        工具的回答直接用它：`KnowledgeRetrievalTest#theAnswerCarriesTheCitationOfEveryPassage`。
+- [x] **不是缓存**：同一段文档被两次检索，两次都带出处；并且 `claw4j_cache.semantic` 里
       **一条文档块都没有**（反例：把块写进缓存表 → 这条红）。
-- [ ] **表与阈值分开**：`claw4j_rag` 与 `claw4j_cache` 是两个 schema；把
+      - `SearchSqlTest#documentsNeverLandInTheSemanticCache`：同一段检索两次、两次都带出处，
+        且 `select count(*) from claw4j_cache.semantic` 为 0。
+- [x] **表与阈值分开**：`claw4j_rag` 与 `claw4j_cache` 是两个 schema；把
       `claw4j.cache.similarity-threshold` 改成 0.99 之后，知识库的检索结果不变。
-- [ ] **权限在工具这一道**：工具登记 `read` + `doc`；表范围不含 `doc` 的身份调用时被拒，
+      - schema：`MigrationCompositionTest` 断言迁移到 V15 之后是五个 schema，含 `claw4j_rag`；
+        两张表的行语义不同见 `SearchSqlTest#documentsNeverLandInTheSemanticCache`。
+      - 阈值：这一条在结构上就不成立——`RagAutoConfiguration#knowledgeBase` 只注入
+        `JdbcTemplate` / `EmbeddingModel` / `RagProperties`，`CacheProperties` 不在
+        `PgVectorKnowledgeBase` 的依赖里，模型切换器改成 0.99 也传不进来。
+        （没有为它单独写用例：一个"改了也传不进去"的配置，用例只能断言"没传进去"，
+        而那正是构造参数本身已经说了的事。）
+- [x] **权限在工具这一道**：工具登记 `read` + `doc`；表范围不含 `doc` 的身份调用时被拒，
       且**检索一次都没执行**（探针计数为 0）。只有"返回了拒绝文本、检索照跑"不可接受。
-- [ ] **开关与空库**：`claw4j.rag.enabled=false` 时容器里没有检索 bean、工具清单里没有 `searchDocs`；
+      - 登记与判据：`KnowledgeRetrievalTest#searchDocsIsOneReadActionOnTheDocTable`
+        （`read` + `doc`；`*` 的身份能过、只给 `region` 的 `guest` 过不去）与
+        `ApplicationAssemblyTest` 里"没有 rag 就没有 `searchDocs`"那两条。
+      - "检索一次都没执行"分在通用那道门上：`ObservabilityTest#
+        deniedCallsAreCountedByTheAuthorizationAdvisor` 用探针把 `tool.calls()` 断言成 0。
+        鉴权 Advisor 对任何工具都是同一个行为（拦在工具循环之前），
+        在知识库这一侧再验一遍就是验 Advisor，不是验知识库。
+- [x] **开关与空库**：`claw4j.rag.enabled=false` 时容器里没有检索 bean、工具清单里没有 `searchDocs`；
       `enabled=true` 但目录为空 → 启动失败并点名（文案里要有"目录"两个字）。
-- [ ] **索引幂等**：同一份文档连续索引两次，`claw4j_rag.chunk` 的行数不变（按 `content_hash` 跳过）。
+      - `KnowledgeRetrievalTest#knowledgeBaseIsOffByDefault`（默认关：没有 `KnowledgeBase`
+        也没有 `KnowledgeTools`）、`#knowledgeBaseWithoutDirectoryFailsLoudly`
+        （启动失败，栈里点得到 `claw4j.rag.directory`）、
+        `#anEmptyDirectoryFailsLoudly`（目录在但一个 `.md`/`.txt` 都没有）、
+        `#aMissingDirectoryFailsLoudly`（路径写错）；`ApplicationAssemblyTest` 断的是
+        默认部署的工具清单里 `doesNotContain("searchDocs")`。
+- [x] **索引幂等**：同一份文档连续索引两次，`claw4j_rag.chunk` 的行数不变（按 `content_hash` 跳过）。
       反例：每次启动都重建 → 行数翻倍，且第二次的 `ordinal` 与第一次错位。
-- [ ] **SQL 真跑**：真容器上跑迁移（生成列 + GIN 索引 + 唯一键），并以两路查询各取一次 topK。
+      - `KnowledgeRetrievalTest#unchangedFilesAreSkippedByContentHash`：哈希相同就既不
+        upsert 文档、也不插块（两条 `never()`）；哈希只覆盖内容不覆盖路径，
+        改名表现成"删旧 + 增新"，见 `#filesGoneFromTheDirectoryAreRemoved`。
+- [x] **SQL 真跑**：真容器上跑迁移（生成列 + GIN 索引 + 唯一键），并以两路查询各取一次 topK。
       这一条不能只靠单元测试：生成列要求 `to_tsvector('simple', …)` 是 immutable，
       不满足时建表就失败；`plainto_tsquery` 的 AND 语义也只在真库上成立。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%。
-- [ ] **门禁余量**：五个模块都已经是 10 个测试文件（上限 10，脚本按
+      - `SearchSqlTest#tsvIsAGeneratedColumnWithAGinIndex`（生成列 + GIN 建得出来）、
+        `#eachChannelContributes` 与 `#chineseKeywordActuallyMatches`（两路各取一次 topK）、
+        `#sameQuestionOverwritesWithinOneContextOnly` 仍是缓存那侧的（同一个容器里一起跑）。
+- [x] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%。
+      - 2026-11-03 实测：**603 条用例、失败 0、跳过 0**；agent 63.7%、core 90.2%、
+        channel 74.2%、capability 85.6%、example-sales 93.8%、example-mcp-server 75.0%。
+        中途红过一次：agent 从 0.62 掉到 **0.58**（rag 三个类 140 行没有测试），
+        补上 `KnowledgeRetrievalTest` 后回到 0.637——**这是本票唯一超出原计划的一处**，
+        见门禁余量最后一条。
+- [x] **门禁余量**：五个模块都已经是 10 个测试文件（上限 10，脚本按
       `find -name '*.java'` 计数，**辅助类也算**）。本票不能新增测试文件，只能腾槽或塞进未满的文件：
       - `claw4j-core`：合并 `DomainBoundaryTest`(2) 与 `CoreBoundaryTest`(2) → 腾一槽，
         给切块 / bigram / RRF 的纯逻辑用例（这两条都是结构规则，合并是同主题合并，不是凑数）。
+        **按计划做了**：`CoreBoundariesTest`（5 条规则，顺带补上此前没人守的 `text` 包）
+        + `text/KnowledgeTextTest`（19 条）。
       - `claw4j-agent`：`SemanticCacheTest` 18 → 20（装配两条：开关关掉没有 bean / 目录为空启动失败）。
+        **没按这条做，原因写在下面**。
       - `claw4j-app`：合并 `ProcessBoundaryTest`(2) 与 `MigrationCompositionTest`(2) → 腾一槽，
         给 `KnowledgeSqlTest`（真容器的迁移与两路查询）；`ApplicationAssemblyTest` 18 → 20
         （工具在清单里 + 权限登记对）。
+        **按计划的意图做了，做法不同**：`SemanticCacheSqlTest` 改名成 `SearchSqlTest`
+        （缓存 5 条 + 知识库 6 条，同一个文件里两件事，不新开槽），
+        `ApplicationAssemblyTest` 只加了断言没加用例（方法数仍 20）。
+      - **实际多出来的一步**：覆盖率闸过不去。rag 四个类（`KnowledgeIndexer` 88 行、
+        `PgVectorKnowledgeBase` 35 行、`KnowledgeTools` 17 行）没有一处被 Java 层覆盖——
+        真库那边验的是 SQL，不是这三个类——agent 模块的 bundle 覆盖率从 0.62 掉到 0.58。
+        要过闸只有两条路：给这三个类写用例（这是应当做的），或者别写它们（那就是没实现完）。
+        腾槽的办法是把 `audit/ToolCallAuditTest`(13) 与 `session/RecallSessionTest`(8)
+        合成 `session/ToolGovernanceTest`：两个文件问的是同一件事的两端（工具进来时能不能用、
+        出去后留下什么），13 + 8 = 21，把"批准落在执行行上"与"批准不串到别的 run"合成一条
+        （同一个 setup、同一个关切）之后正好 20。新文件 `rag/KnowledgeRetrievalTest` 18 条。
 
 ## Comments
 
@@ -281,3 +344,15 @@ create index chunk_tsv on claw4j_rag.chunk using gin (tsv);
   范围写进第二节。如果实现时发现搬迁的影响面超出预期（比如还有别处读旧键），
   **先回来改这份票**，不要一边搬一边加兼容读取。
 - 逐条勾验收框，证据落到方法名 / 文件名，不要只写 Comments——M7 的 A01 / A02 就是这样补的一轮。
+- 2026-11-03 实现。三处与原计划不同，都记在上面门禁余量那一条里：
+  ① rag 的 Java 层没有覆盖率，agent 掉到 0.58，必须为它开一个测试文件；
+  ② 开文件的槽是靠合并 `ToolCallAuditTest` + `RecallSessionTest` 腾出来的（不是原计划的
+  "塞进 `SemanticCacheTest`"——那里已经 20 条，塞不下 140 行的三个类）；
+  ③ app 那边没新开 `KnowledgeSqlTest`，而是把 `SemanticCacheSqlTest` 改名成 `SearchSqlTest`
+  并扩到两件事。
+- 实现中的两个判断值得留着：**假库要真的调用 `RowMapper`**（`KnowledgeRetrievalTest#rows`
+  把 `ResultSet` 也做了替身），否则"列名写错"这种错法会被替身蒙过去；
+  **`KnowledgeIndexer` 先算向量再进事务**，所以用例里的 `JdbcTemplate` 替身必须能在
+  事务外被调用——把 `embed` 挪进事务，那些用例会照绿，但线上的连接会被 HTTP 占住几十秒。
+- 一个已知的、有意不做的：空文件（只有空白）不算失败也不算一块，只 warn 一句。
+  理由是"placeholder 文件不该让进程起不来"，代价是"索引了几份"与"库里多了几块"不是一对一。

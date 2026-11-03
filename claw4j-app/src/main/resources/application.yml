@@ -70,6 +70,16 @@ claw4j:
       api-key: secret:qwen_api_key
       model: ${QWEN_MODEL:qwen-plus}
 
+    # ---- 向量模型：语义缓存与知识库共用这一份（P10 从 claw4j.cache 下面搬上来） ----
+    # 它跟着 qwen 的凭据走（DeepSeek 没有 embedding 接口），但**不跟着任何功能的开关走**：
+    # 原先它挂在 claw4j.cache.enabled 上，于是"关掉缓存"这个省钱开关会连带让知识库起不来。
+    # 现在只有一个条件——配了 qwen key。关掉缓存之后它还在，只是没人调用（懒加载，不发请求）。
+    embedding:
+      model: ${QWEN_EMBEDDING_MODEL:text-embedding-v3}
+      # 必须与 V4（缓存）和 V15（知识库）两个迁移里的 vector(1024) 一致。
+      # 改这个数要同时改两处迁移：维度不符时 Postgres 直接报错，不会静默截断。
+      dimensions: 1024
+
   # ---- 这个部署是哪个 agent（P15） ----
   # 三样东西以前都没有配置入口：系统提示词是 Java 常量（改一个字要重新编译）、
   # 业务口径被抄在各份 Skill 与子 Agent 的正文里、时间压根没进提示词。
@@ -94,7 +104,7 @@ claw4j:
       default-role: read-only
       # 授权表**只有这一份**，飞书也按角色名用它（见下面的 feishu.roles）。加动作只改这里。
       # 认人由通道做、授权从这里查表、Agent 只执行（ADR-0007）。actions 与工具的动作名同口径：
-      #   read            读业务表，范围由 tables 决定
+      #   read            读业务表，范围由 tables 决定。**知识库也用它**，伪表名是 doc（P10）
       #   use_skill       加载一份做法。它本身不读表，真正碰表那一步仍各自鉴权
       #   delegate_task   委派给子 Agent。委派不提权：子 Agent 用父的身份，照样过鉴权看表
       #   read_system     看 JVM/容器指标。不是业务数据，也不是"能读表的人"就该看的运维信息
@@ -108,6 +118,9 @@ claw4j:
       #   "*"             全部
       # 表里没有的角色一律拒绝，没有默认角色兜底。
       roles:
+        # "*" 也包含知识库那个伪表 doc，所以 read-only 能检索知识库。
+        # guest 只给了 region，于是**看不到知识库**——那是想要的默认（能查业务表不等于能看制度文档），
+        # 但必须写在这里：不写的话，某天会变成"配了知识库，某个角色问什么都说没有"。
         read-only:
           tables: ["*"]
           actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session",
@@ -320,9 +333,28 @@ claw4j:
     # 时间词与数字被编进缓存上下文键（不可配，见 CacheAdvisor#entitySignature）。
     time-to-live: PT1H
     cleanup-interval: PT1H
-    embedding-model: ${QWEN_EMBEDDING_MODEL:text-embedding-v3}
-    # 必须与 V4 迁移里的 vector(1024) 一致。改这个数要新写一个迁移。
-    embedding-dimensions: 1024
+    # 向量模型的两项配置**不在这里**（P10 搬去了 claw4j.model.embedding）：
+    # 知识库要用同一个模型，而这里的 enabled 是成本开关。放在这里 = 关掉缓存就连带关掉知识库。
+
+  # ---- 知识库检索（P10）：向量 + 关键词两路，结果带出处 ----
+  # 默认关：它要一份文档目录与一次 embedding 调用，绝大多数部署没有这两样。
+  # 这与 claw4j.skills.directory 那几个键同一条约定——不配就是没有这一层。
+  #
+  # 开着就必须能用：缺目录、目录不存在、目录里一个 .md/.txt 都没有、embedding 算不出来，
+  # 四种都是**启动失败并点名**。反过来（启动成功但库是空的）更糟：每次检索都答
+  # "没有相关资料"，而那与"这段确实没写"在用户看来完全一样。
+  rag:
+    enabled: ${CLAW4J_RAG_ENABLED:false}
+    # 文档目录，递归找 .md / .txt。启动后同步一次，按文件内容哈希跳过没变的；
+    # 文件删了，库里的块也跟着删（目录是事实来源）。
+    directory: ${CLAW4J_RAG_DIRECTORY:}
+    # 每一路各取多少条，融合之后再取多少条。
+    top-k: ${CLAW4J_RAG_TOP_K:5}
+    # 向量通道的下限。**这个数没有实测依据**（与缓存那个 0.93 不是一回事），
+    # 它只负责"把明显不相关的挡掉"，排序交给 RRF 的排名。
+    min-similarity: ${CLAW4J_RAG_MIN_SIMILARITY:0.5}
+    # 一块文档最多多少字符。短段落会合并，超过就断开。
+    max-chars: 800
 
   # ---- 能力层：配了目录才有这一层，不配就没有 ----
   # claw4j.skills.directory / claw4j.scripts.directory / claw4j.subagents.directory /

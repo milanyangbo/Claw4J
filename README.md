@@ -22,6 +22,7 @@
 | --- | --- |
 | **四条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）、钉钉机器人（给企业内，**明文 JSON + header 验签**）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
 | **五种能力来源，对模型是一回事** | Java `@Tool`、MCP server（stdio / HTTP 都行）、受限脚本包、Agent Skill、子 Agent |
+| **知识库检索带出处** | 一份文档目录 + 两路检索（向量 + 中文关键词），按 RRF 排名融合，每段都带「文档 + 第几段」；文档块**不进**缓存表 |
 | **也能反过来当 MCP server** | `claw4j.mcp.server.expose` 点名几个工具，Claude Code 这类客户端就能像用别的工具一样调它们；交出去的只能是模型能用的那一份里的 |
 | **流式与同步同源** | Advisor 必须同时实现 Call 和 Stream，只写一个会在流式路径上静默不生效 |
 | **权限卡在模型之前** | 角色到"可见表 × 可执行动作"的映射在配置里；越权与套取提示词的消息不花 token、不进历史 |
@@ -143,6 +144,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | 无（纯文本） |
 | 一个子 Agent | 一份 `*.md`（front matter + 正文），配 `claw4j.subagents.directory` | 无（纯文本） |
 | **一个 agent（人设）** | 一份 `*.md`（front matter + 正文）+ 可选口径，配 `claw4j.agent.directory` 与 `claw4j.agent.default` | 无（纯文本） |
+| **一份知识库** | 一个目录（`*.md` / `*.txt`）+ 配 `claw4j.rag.directory` | 无（切词、切块、融合都在 `claw4j-core` 的 `text` 包） |
 | 一条通道 | `ChatChannel` 实现 + 自己的端点 | `claw4j-core`，**不带任何 IM SDK** |
 
 ### 1. 一个工具：三个文件
@@ -347,16 +349,18 @@ public class TelegramChannelAutoConfiguration {
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | 是 | 主模型 key，缺失即启动失败 |
-| `QWEN_API_KEY` | 否 | 备用模型 key；也是语义缓存的向量凭据，配了才有主备降级与缓存 |
+| `QWEN_API_KEY` | 否 | 备用模型 key；也是向量凭据（语义缓存与知识库共用），配了才有主备降级与缓存 |
 | `CLAW4J_MODEL_PRIMARY` | 否 | `deepseek`（默认）/ `qwen`，决定谁是主模型 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 否 | 两个都配才装配长连接通道 |
 | `WECOM_CORP_ID` / `WECOM_CORP_SECRET` / `WECOM_AGENT_ID` | 否 | 企业微信自建应用，三个都配才有出站 |
 | `WECOM_TOKEN` / `WECOM_ENCODING_AES_KEY` | 否 | 回调的签名与解密；与上面三个**一起**齐了才装配通道 |
 | `DINGTALK_CLIENT_ID` / `DINGTALK_CLIENT_SECRET` / `DINGTALK_ROBOT_CODE` | 否 | 钉钉机器人，三个都配才装配。**client-secret 同时是验签的密钥**，配错既发不出也收不进 |
+| `CLAW4J_RAG_ENABLED` | 否 | 打开知识库。**开了就必须配目录**，否则启动失败（空知识库比失败更糟） |
+| `CLAW4J_RAG_DIRECTORY` | 否 | 文档目录，启动后同步一次，按文件内容哈希跳过没变的 |
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用 |
 
 `claw4j.*` 的每个键都有明确的拥有者，`application.yml` 里逐项写了默认值与"动它之前要知道什么"。
-最常改的几个：`claw4j.channel.http.roles`、`claw4j.guard.sensitive-words`、`claw4j.cache.*`、
+最常改的几个：`claw4j.channel.http.roles`、`claw4j.guard.sensitive-words`、`claw4j.cache.*`、`claw4j.rag.*`、
 以及三个能力目录 `claw4j.{scripts,skills,subagents}.directory`。
 
 ## 模块

@@ -21,15 +21,14 @@ import java.time.Duration;
  * @param cleanupInterval    多久扫一次过期行。**它的问题不是我们不读，是别人读**：
  *                           调度器走 {@code @Scheduled} 的占位符拿原文，不经过这个 record，
  *                           所以越界值在这里"归一回默认"只会让两边对不上（见构造器）
- * @param embeddingModel     向量模型名。复用通义那套 key（DeepSeek 没有 embedding 接口），
- *                           只换模型名，所以它落在这里而不是模型配置里
- * @param embeddingDimensions 向量维度。**必须与表的 `vector(1024)` 一致**：
- *                           改这个数要新写一个迁移，插入维度不符会直接报错（不会静默截断）
+ *
+ * <p><b>向量模型的两项配置不在这里</b>（P10 搬走了）：它们去了 {@code claw4j.model.embedding}，
+ * 因为知识库也要用同一个向量模型，而这边那个 {@code enabled} 是成本开关。
+ * 把"用哪个模型"放进一个会被关掉的功能的配置里，关掉它就连带关掉了别处的依赖。
  */
 @ConfigurationProperties("claw4j.cache")
 public record CacheProperties(Double similarityThreshold, Duration timeToLive,
-                              Duration cleanupInterval, String embeddingModel,
-                              Integer embeddingDimensions) {
+                              Duration cleanupInterval) {
 
     /**
      * 默认阈值 <b>0.93</b>，这个数是实测出来的，不是拍的。用 {@code text-embedding-v3}
@@ -74,12 +73,6 @@ public record CacheProperties(Double similarityThreshold, Duration timeToLive,
 
     public static final Duration DEFAULT_CLEANUP_INTERVAL = Duration.ofHours(1);
 
-    /** 通义的第三代向量模型。这是唯一被实测过的取值（见 {@link #DEFAULT_SIMILARITY_THRESHOLD}）。 */
-    public static final String DEFAULT_EMBEDDING_MODEL = "text-embedding-v3";
-
-    /** 与迁移里的 `vector(1024)` 成对。 */
-    public static final int DEFAULT_EMBEDDING_DIMENSIONS = 1024;
-
     public CacheProperties {
         // 越界一律落回默认值：0 或负数会让"任何候选都命中"，>1 则永远不命中，
         // 两者都不是"配置错了一点"，而是"这个功能变成了另一件事"。
@@ -92,23 +85,15 @@ public record CacheProperties(Double similarityThreshold, Duration timeToLive,
         // 于是它不能静默归一——`PT0S` 在这里被改成 1 小时，调度器那边照样拿到 0，
         // fixedDelay=0 是"上一轮结束立刻下一轮"，一个热循环在打库。这种值只能拒绝。
         // 判据与"启动就炸"那一格一致：宁可起不来，也不留一个看起来配好了的错配置。
-        // 清理间隔是唯一一个"我们不读、别人读"的字段：调度器从 @Scheduled 的占位符拿原文。
-        // 于是它不能静默归一——`PT0S` 在这里被改成 1 小时，调度器那边照样拿到 0，
-        // fixedDelay=0 是"上一轮结束立刻下一轮"，一个热循环在打库。这种值只能拒绝。
-        // 判据与"启动就炸"那一格一致：宁可起不来，也不留一个看起来配好了的错配置。
         cleanupInterval = cleanupInterval == null ? DEFAULT_CLEANUP_INTERVAL : cleanupInterval;
         if (cleanupInterval.isNegative() || cleanupInterval.isZero()) {
             throw new IllegalArgumentException(
                     "claw4j.cache.cleanup-interval 必须为正：" + cleanupInterval
                             + "。它由 @Scheduled 直接读取原文，归一回默认只会让调度器与配置对不上");
         }
-        embeddingModel = (embeddingModel == null || embeddingModel.isBlank())
-                ? DEFAULT_EMBEDDING_MODEL : embeddingModel.trim();
-        embeddingDimensions = (embeddingDimensions == null || embeddingDimensions <= 0)
-                ? DEFAULT_EMBEDDING_DIMENSIONS : embeddingDimensions;
     }
 
     public static CacheProperties defaults() {
-        return new CacheProperties(null, null, null, null, null);
+        return new CacheProperties(null, null, null);
     }
 }

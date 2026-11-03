@@ -1,22 +1,10 @@
 package io.github.claw4j.agent.cache;
 
-import com.openai.client.OpenAIClient;
-import com.openai.client.OpenAIClientImpl;
-import com.openai.core.ClientOptions;
-import com.openai.credential.BearerTokenCredential;
-import io.github.claw4j.agent.model.ModelProperties;
+import io.github.claw4j.agent.model.EmbeddingAutoConfiguration;
 import io.github.claw4j.agent.model.QwenModelCondition;
-import io.github.claw4j.capability.secret.SpringSecretResolver;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
-import io.github.claw4j.secret.SecretResolver;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.openai.OpenAiEmbeddingModel;
-import org.springframework.ai.openai.OpenAiEmbeddingOptions;
-import org.springframework.ai.openai.http.okhttp.SpringAiOpenAiHttpClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -26,7 +14,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
-import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
@@ -35,22 +22,27 @@ import javax.sql.DataSource;
 /**
  * 语义缓存的装配（M3-05）。
  *
- * <p><b>为什么整份配置挂 {@link QwenModelCondition} 上</b>：向量要走通义的
- * {@code text-embedding-v3}（DeepSeek 没有 embedding 接口），而且票面要求
- * **复用 {@code claw4j.model.qwen.*} 那套凭据**，不新增一组。所以只有配了 qwen key
- * 才有这个能力——只配 DeepSeek 的环境里，缓存整套不装，对话照常。
- * 这比"装一个会在第一次请求时才失败的缓存"好：失败点前移到装配期，且能解释为什么没有它。
+ * <p><b>为什么整份配置挂 {@link QwenModelCondition} 上</b>：缓存靠向量判断"这个问题问过没有"，
+ * 而向量只有通义有（DeepSeek 没有 embedding 接口）。所以配了 qwen key 才有这个能力——
+ * 只配 DeepSeek 的环境里，缓存整套不装，对话照常。这比"装一个会在第一次请求时才失败的缓存"好：
+ * 失败点前移到装配期，且能解释为什么没有它。
+ *
+ * <p><b>向量模型不在这里装配了</b>（P10）：它现在由 {@link EmbeddingAutoConfiguration} 提供，
+ * 条件只有"配了 qwen key"，不含 {@code claw4j.cache.enabled}。原因是知识库也要用它，
+ * 而"关掉缓存"是一个成本开关，不该顺带关掉一个功能。这里只**消费**它。
+ * 缓存自己的条件仍然是"有向量能力才装"——它是可选优化，不该成为启动失败的原因。
  *
  * <p><b>为什么开关用 {@code @ConditionalOnProperty} 而不是 properties 里一个 boolean</b>：
  * 同一个键在两处判断，迟早会不一致（pitfalls 第十条）。这里只留一处，而且它挂在**类上**：
- * 关掉之后四个 bean（向量模型、存储、清理任务、Advisor）一个都不装。
- * 挂在某个方法上是不够的——那样"配了关"仍然留着每小时跑一次的删除任务和一个用不上的
- * 向量模型，配置看起来生效了，实际只关掉了一半。
+ * 关掉之后三个 bean（存储、清理任务、Advisor）一个都不装。
+ * 挂在某个方法上是不够的——那样"配了关"仍然留着每小时跑一次的删除任务与一条 Advisor，
+ * 配置看起来生效了，实际只关掉了一半。
  *
  * <p><b>缓存不参与可用性</b>：向量算不出来时 {@link CacheAdvisor} 退化成"没命中"，
  * 库写不进去只影响省成本，都不会让这一轮答不了话。它是成本优化，不是依赖。
  */
-@AutoConfiguration(afterName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
+@AutoConfiguration(after = EmbeddingAutoConfiguration.class,
+        afterName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
 @ConditionalOnClass({SemanticCache.class, JdbcTemplate.class, EmbeddingModel.class})
 @ConditionalOnBean(DataSource.class)
 @Conditional(QwenModelCondition.class)
@@ -60,53 +52,6 @@ import javax.sql.DataSource;
 // 而依赖别人的 @EnableScheduling（比如 spring-ai-session 不在 classpath 时）会漏开。
 @EnableScheduling
 public class CacheAutoConfiguration {
-
-    private static final Logger log = LoggerFactory.getLogger(CacheAutoConfiguration.class);
-
-    /**
-     * 向量模型。用 {@code OpenAiEmbeddingModel} 是因为通义提供的是 OpenAI 兼容端点
-     * （{@code /compatible-mode/v1}），与 {@code qwenChatModel} 走同一套凭据。
-     *
-     * <p>{@code metadataMode} 必须显式给：Builder 上它没有默认值，不给就是 NPE，
-     * 而那个 NPE 出现在第一次 {@code embed} 调用时，看起来像"通义挂了"。
-     *
-     * <p>维度写死在配置里（默认 1024），与迁移里 {@code vector(1024)} 成对。
-     * 不一致时 Postgres 直接报错——这是想要的：静默截断会让两个不同的问题看起来很相似。
-     */
-    @Bean
-    @ConditionalOnMissingBean(EmbeddingModel.class)
-    public EmbeddingModel cacheEmbeddingModel(ModelProperties model, CacheProperties cache,
-                                              Environment environment) {
-        ModelProperties.Qwen qwen = model.getQwen();
-        SecretResolver secrets = SpringSecretResolver.of(environment);
-        SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()
-                .timeout(qwen.getReadTimeout())
-                .build();
-        ClientOptions options = ClientOptions.builder()
-                .baseUrl(qwen.getBaseUrl())
-                // 与聊天模型同一个接缝：每次请求现取，真值不进 ClientOptions（P08）。
-                .credential(BearerTokenCredential.create(() -> qwen.apiKey().render(secrets)))
-                .httpClient(httpClient)
-                .timeout(qwen.getReadTimeout())
-                // 重试关掉：向量算不出来就退化成"没命中"，在这里重试三轮只是拖慢一次提问。
-                .maxRetries(0)
-                .checkJacksonVersionCompatibility(false)
-                .build();
-        OpenAIClient client = new OpenAIClientImpl(options);
-
-        log.info("已装配向量模型：baseUrl={}, model={}, dimensions={}, 凭据={}",
-                qwen.getBaseUrl(), cache.embeddingModel(), cache.embeddingDimensions(),
-                qwen.apiKey().text());
-
-        return OpenAiEmbeddingModel.builder()
-                .openAiClient(client)
-                .metadataMode(MetadataMode.EMBED)
-                .options(OpenAiEmbeddingOptions.builder()
-                        .model(cache.embeddingModel())
-                        .dimensions(cache.embeddingDimensions())
-                        .build())
-                .build();
-    }
 
     /**
      * 缓存存储。用主 {@code JdbcTemplate} 而不是另开连接池：这里的 SQL 是我们自己写的，
@@ -136,11 +81,11 @@ public class CacheAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(CacheAdvisor.class)
-    public CacheAdvisor cacheAdvisor(SemanticCache cache, EmbeddingModel cacheEmbeddingModel,
+    public CacheAdvisor cacheAdvisor(SemanticCache cache, EmbeddingModel embeddings,
                                      CacheProperties properties,
                                      ObjectProvider<ToolPermissionRegistry> permissions,
                                      ObjectProvider<MeterRegistry> meterRegistry) {
-        return new CacheAdvisor(cache, cacheEmbeddingModel, properties,
+        return new CacheAdvisor(cache, embeddings, properties,
                 permissions.orderedStream().toList(), meterRegistry.getIfAvailable());
     }
 }
