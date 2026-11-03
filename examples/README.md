@@ -8,10 +8,15 @@
 
 | 目录 | 层 | 启用方式 |
 | --- | --- | --- |
+| `agents/` | 人设（Persona）：这个部署是谁 | `claw4j.agent.directory=examples/agents` + `claw4j.agent.default=sales` |
 | `scripts/` | 三层：Script Package | `claw4j.scripts.directory=examples/scripts` |
 | `skills/` | Skill | `claw4j.skills.directory=examples/skills` |
 | `subagents/` | Subagent | `claw4j.subagents.directory=examples/subagents` |
 | `mcp/` | 二层：MCP server（跨进程） | `claw4j.capability.mcp.servers`（三个 server 都写在 `application-local.yml` 里） |
+
+`agents/` 与其余几层不是一回事：那几层是"给这个 agent 加能力"，人设是"这个 agent 是谁"。
+同一个 jar 换一份人设，就从销售助手变成运维助手——两份定义在 `agents/sales.md` 与 `agents/ops.md`，
+共用的业务口径在 `agents/glossary/metrics.md`（**引用，不是抄写**：改一处，两个助手下一轮都变）。
 
 四层里**只有 MCP 那一层是协议层面的语言无关**（对端可以是任何语言写的程序）；
 脚本包、Skill、Subagent 的语言无关来自文件格式与本项目的接缝，Spring AI 没有对应抽象。

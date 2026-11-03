@@ -1,6 +1,6 @@
 # P15 · 多 agent 配置：同一份代码，两次部署只改配置
 
-**Status:** ready-for-agent
+**Status:** done（2026-11-03 实现，未提交）
 **Blocked by:** None（P09 的 tools profile 已落地，是这张票的一层）
 
 ## 背景
@@ -49,24 +49,35 @@ String）、`claw4j.subagents.directory`（单个 String）。per-agent 覆盖�
 
 ## 验收判据
 
-- [ ] **同一份 jar、两份配置**：仓库里给出 sales 与 ops 两份配置样例，用同一套代码启动，
-      断言两边的系统提示词不同、可用技能集合不同、`tools.profile` 可以不同。
-      要有自动化用例，不能只靠人眼看两份 yml
-- [ ] `AgentAutoConfiguration` 里不再有硬编码人设；没配时的行为是**显式选定**的那一种
-      （失败或明确默认），且启动日志能答出"这次用的是哪份人设"
-- [ ] **口径只有一个源**：`examples` 里的口径从 Skill / Subagent 正文里抽出来，
-      改一处生效于所有引用处；用例断言"同一个口径在两份 agent 配置下取到同一段原文"
-- [ ] **时间上下文**：判定落在**发给模型的提示词**上（拦截并断言含当天日期与显式时区），
-      不落在"模型答得对不对"上——后者是 A06 评测的事，不是这张票的判据。
-      至少一条用例覆盖跨零点或跨时区；时区不依赖容器 `systemDefault`
-- [ ] **覆盖可追溯**：能答出"这个 agent 的这一条从哪一层来"（全局默认 / agent 覆盖），
-      继承关系不是读代码才知道的
-- [ ] **选不到 agent 不许静默降级**：点名了不存在的 agent 要启动失败并列出可用的那些
-- [ ] P09 的能力轴在同一条链上继续生效：per-agent 的 profile 不能绕过未分档校验
-      （新加的 agent 若没声明档位，仍然启动失败并点名）
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，agent 行覆盖率不低于 60%
-- [ ] **门禁余量**（见 Comments）：`claw4j-agent` 与 `claw4j-app` 的测试文件都已到 10 个上限，
-      判断逻辑要落在 `claw4j-core`（尚有 2 个文件余量）或复用未满 20 条的现有文件
+- [x] **同一份 jar、两份配置**：`examples/agents/sales.md` 与 `ops.md` 是两份人设，同一套代码只改
+      `claw4j.agent.default` 就换一个人格。证据：`ApplicationAssemblyTest#twoDeploymentsDifferOnlyByConfig`
+      （断言两份的系统提示词不同、`tier` 分别是 MESSAGING / FULL、拼出的提示词不相等）。
+      **技能集合这一小项没有新做**：`claw4j.skills.directory` 本来就是配置项
+      （`SkillToolAutoConfiguration:38`），两次部署指向不同目录即成立，这张票没动它，见 Comments
+- [x] `AgentAutoConfiguration` 里不再有硬编码人设：常量已删，内容搬进 `BuiltinPersona` 并标明
+      它是"没配目录时的兜底"；日志在 `chatClient` 里打「这个部署的 agent 是 X（…），人设来自 …；
+      时区 …；工具档位 …（来自 …）」。证据：`SemanticCacheTest#builtinPersonaWhenNoDirectory`
+- [x] **口径只有一个源**：`examples/agents/glossary/metrics.md` 被 sales 与 ops 共同引用；
+      `weekly-sales/SKILL.md` 里那三条抄写的口径已删，改成指向它。证据：
+      `ApplicationAssemblyTest#glossaryIsSharedAcrossAgents`（两份 agent 取到同一段原文与同一个出处）、
+      `PersonaCatalogTest#glossaryIsReadFromTheReferencedFile`。**子 Agent 那一份没动**，见 Comments
+- [x] **时间上下文**：判定落在**发给模型的提示词**上——`SemanticCacheTest#agentContextIsComposedPerTurn`
+      拦下 advisor 改写后的请求，断言 system 里有正文、口径、日期与时区。
+      跨时区由 `PromptCompositionTest#zoneComesFromTheGivenInstant`（同一瞬间换成 UTC 得 12:28）；
+      "每轮重算"由 `#timeIsRecomputedPerTurn` 单独钉。时区来自 `claw4j.agent.zone`，
+      不读 `ZoneId.systemDefault()`
+- [x] **覆盖可追溯**：档位来源在启动日志里直接写「人设文件的 tier」或「claw4j.tools.profile」；
+      行为由 `PersonaCatalogTest#tierOverridesGlobalProfile` / `#absentTierDefersToGlobal` 钉住
+- [x] **选不到 agent 不许静默降级**：`PersonaCatalogTest#unknownDefaultFailsAndListsCandidates`、
+      `#ambiguousDirectoryFailsAndListsCandidates`、`#missingDirectoryFails`、`#emptyDirectoryFails`，
+      装配层由 `ApplicationAssemblyTest#unknownPersonaFailsAtAssembly` 再验一次
+- [x] P09 的能力轴在同一条链上继续生效：per-agent 的 tier 只是 `profileOf` 的一个入参，
+      走的仍是 `collectToolCallbacks` 那一条；未分档校验由 P09 的
+      `ApplicationAssemblyTest#toolWithoutTierFailsAtAssembly` 继续盯着，没有因为多一层而放宽
+- [x] `./scripts/verify.sh` 全绿：**527 条用例、失败 0、跳过 0**，行覆盖率 core 88.8% /
+      capability 84.9% / **agent 61.8%**（≥60%）。见 Comments 里那段"差点破线"
+- [x] **门禁余量**：core 8 → 10 个测试文件（`PersonaCatalogTest` / `PromptCompositionTest`），
+      agent 与 app 都仍是 10 个、没新增文件；agent 的新用例加进未满的 `SemanticCacheTest`（15 → 18）
 
 ## 不做
 
@@ -96,3 +107,38 @@ String）、`claw4j.subagents.directory`（单个 String）。per-agent 覆盖�
 - 与 P09 的关系：这张票是**层**，P09 是**轴**。profile 从全局变成可 per-agent 之后，
   "未分档就启动失败"那条校验必须跟着下沉到每一个 agent，不能因为多了一层就放宽。
 - 拆票说明：M8 其余六张（P10–P14、P16）尚未拆，见 `.scratch/m8-durable/spec.md` 的 Comments。
+- 2026-11-03 实现完成。**结构问题选了"同形"**：主 Agent 与子 Agent 都是
+  「一份 md = front matter + 正文」，解析器 `FrontMatter` 从 `agent/subagent` **下沉到 core**
+  （`io.github.claw4j.markdown`）。理由不是整齐：两套解析就是两套失败姿势，
+  同一份写错的 front matter 在一处报错、在另一处静默——而"静默"在这个项目里每次都是
+  "配置看着生效了、实际没生效"。下沉的副产物是它有了 core 的单测（`PersonaCatalogTest` 里那几条
+  front matter 边界用例）。
+- **人设模型落在 core**（`io.github.claw4j.persona`：`Persona` / `PersonaCatalog` /
+  `PromptComposition` / `GlossarySection`），agent 只留三个薄件
+  （`AgentProperties` / `AgentContextAdvisor` / `BuiltinPersona`）。
+  这不是分层洁癖，是门禁逼出来的：`claw4j-agent` 与 `claw4j-app` 都已 10 个测试文件、
+  agent 里还有四个文件在 20 条用例上限，纯逻辑放在那里等于没法测。
+- **时间必须每轮算**，所以挪出了 `defaultSystem`（装配期定死）改用 `AgentContextAdvisor`
+  （`ORDER = HIGHEST_PRECEDENCE + 2`，在入站拦截之后、其余之前）。
+  查过一个真风险：语义缓存的 key 只取**最后一条用户消息**（`CacheAdvisor#questionOf`），
+  不取 system，所以动态时间不会让缓存永不命中；精确到分钟也是为此留的余量。
+- **三个如实交代**：
+  1. **技能集合那一小项没有新做**。`claw4j.skills.directory` 本来就是配置项，
+     两次部署指向不同目录即成立；这张票没动它，也没给出两份技能目录的样例。
+     判据里那一小项按"已具备、本票未涉及"记，不当作已完成。
+  2. **子 Agent 的口径没动**（`examples/subagents/metric-glossary.md` 仍在自己正文里写着）。
+     原因是真的：子 Agent 有独立上下文窗口，`SubagentRunner` 只把
+     `definition.systemPrompt()` 放进去，父的口径不会跟过去。
+     要消掉这处重复，得给 `SubagentDefinition` 加 `glossary` 并让 runner 拼进去——
+     那是另一件事，不在本票范围，也不该在这一票里顺手做。
+  3. **agent 覆盖率差点破线**：第一次全量跑出来 60.9%（P09 后是 62.0%），离 60% 只剩 0.9 个点。
+     原因是新增的 advisor 与装配在 agent 模块内没有测试执行到——`claw4j-app` 的端到端执行
+     **不计入** agent 的覆盖率（各模块各用各的 `jacoco.exec`）。补了 3 条到 `SemanticCacheTest`
+     才回到 61.8%。那 3 条放在这个文件里是因为文件数已满，理由写在文件里的注释：
+     它们与缓存测的是同一件事——请求进入模型之前被改成了什么。
+- **两个设计决定**（票里留给实现的）：
+  - `tier` **只覆盖档位、不覆盖 allow / deny**。档位是"这个助手允许多宽"，排除项是
+    "这套部署额外不要什么"。让排除项跟着人设走，会出现"同一个助手换个部署就少了几个工具"。
+  - 没配目录时**保留内置人设**（`BuiltinPersona`），而不是启动失败。
+    一个只跑 HTTP 的最小部署不该为了能起来先去造一个目录；代价是"有一份谁也没注意到的默认"，
+    所以启动日志必须说清用的是内置的还是配的。

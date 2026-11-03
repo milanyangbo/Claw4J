@@ -6,14 +6,27 @@ import io.github.claw4j.agent.cache.CacheProperties;
 import io.github.claw4j.agent.cache.SemanticCache;
 import io.github.claw4j.agent.cache.SemanticCacheCleanup;
 import io.github.claw4j.agent.model.ModelProperties;
+import io.github.claw4j.agent.persona.AgentContextAdvisor;
+import io.github.claw4j.agent.persona.AgentProperties;
+import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.persona.PersonaCatalog;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
+import org.springframework.ai.chat.client.advisor.api.StreamAdvisorChain;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingRequest;
@@ -21,8 +34,12 @@ import org.springframework.ai.embedding.EmbeddingResponse;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
+import reactor.core.publisher.Flux;
 
 import javax.sql.DataSource;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -30,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -306,6 +324,124 @@ class SemanticCacheTest {
     }
 
     /** 一轮请求的三种身份：默认只读、guest 只读一张表、换个人但同角色。 */
+    // ---------------------------------------------------------------- 人设与提示词（P15）
+
+    /**
+     * 这两条放在这个文件里而不是单开一个：{@code claw4j-agent} 的测试文件数已到上限（10），
+     * 而它们与缓存测的是同一件事——**请求进入模型之前被改成了什么**。
+     * 缓存在这一步算 key，人设在下一步换系统提示词。
+     *
+     * <p>不起容器：{@code personaCatalog} 与 {@code agentContextAdvisor} 都是普通的 bean 方法，
+     * 直接调就能回答"这个部署是谁、每轮拼出什么"。真失败点在读目录那一刻，不在容器里。
+     */
+    @Test
+    @DisplayName("每轮拼的系统提示词：人设 + 口径 + 时间，缺一样都不完整")
+    void agentContextIsComposedPerTurn(@TempDir Path agents) throws IOException {
+        Files.createDirectories(agents.resolve("glossary"));
+        Files.writeString(agents.resolve("glossary/metrics.md"), "成交额 = sum(order_item.amount)");
+        Files.writeString(agents.resolve("sales.md"),
+                "---\nname: sales\ndescription: 销售助手\ntier: messaging\n"
+                        + "glossary:\n  - glossary/metrics.md\n---\n\n你是销售侧的助手。\n");
+
+        AgentProperties properties = new AgentProperties(agents.toString(), "sales", null);
+        AgentAutoConfiguration configuration = new AgentAutoConfiguration();
+        PersonaCatalog.Catalog catalog = configuration.personaCatalog(properties);
+        AgentContextAdvisor advisor = configuration.agentContextAdvisor(catalog, properties);
+
+        AtomicReference<String> systemPrompt = new AtomicReference<>();
+        advisor.adviseCall(
+                ChatClientRequest.builder().prompt(new Prompt("上周卖得怎么样")).build(),
+                capturingChain(systemPrompt));
+
+        assertThat(advisor.persona().name()).isEqualTo("sales");
+        assertThat(systemPrompt.get())
+                .as("人设正文、口径、时间三样都在：%s", systemPrompt.get())
+                .contains("你是销售侧的助手。")
+                .contains("成交额 = sum(order_item.amount)")
+                .contains("glossary/metrics.md")
+                .contains("Asia/Shanghai");
+    }
+
+    @Test
+    @DisplayName("流式那一侧也走同一次拼装：不是只有非流式才有人设")
+    void agentContextIsComposedForStreaming(@TempDir Path agents) throws IOException {
+        Files.writeString(agents.resolve("sales.md"),
+                "---\nname: sales\ndescription: 销售助手\n---\n\n你是销售侧的助手。\n");
+
+        AgentProperties properties = new AgentProperties(agents.toString(), "sales", null);
+        AgentAutoConfiguration configuration = new AgentAutoConfiguration();
+        AgentContextAdvisor advisor = configuration.agentContextAdvisor(
+                configuration.personaCatalog(properties), properties);
+
+        AtomicReference<String> systemPrompt = new AtomicReference<>();
+        advisor.adviseStream(
+                ChatClientRequest.builder().prompt(new Prompt("你好")).build(),
+                capturingStreamChain(systemPrompt));
+
+        assertThat(systemPrompt.get()).contains("你是销售侧的助手。");
+    }
+
+    @Test
+    @DisplayName("没配人设目录：用内置那份，没有口径——不是「没人设」，是一份明确的最小默认")
+    void builtinPersonaWhenNoDirectory() {
+        PersonaCatalog.Catalog catalog = new AgentAutoConfiguration()
+                .personaCatalog(AgentProperties.defaults());
+
+        assertThat(catalog.selected().name()).isEqualTo(BuiltinPersona.NAME);
+        assertThat(catalog.selected().systemPrompt()).isNotBlank();
+        assertThat(catalog.glossary()).isEmpty();
+    }
+
+    /** 只做一件事的链：把 advisor 改写后的请求抓下来，不真的往下走。 */
+    private static CallAdvisorChain capturingChain(AtomicReference<String> captured) {
+        return new CallAdvisorChain() {
+            @Override
+            public ChatClientResponse nextCall(ChatClientRequest request) {
+                captured.set(systemTextOf(request));
+                return null;
+            }
+
+            @Override
+            public List<CallAdvisor> getCallAdvisors() {
+                return List.of();
+            }
+
+            @Override
+            public CallAdvisorChain copy(CallAdvisor advisor) {
+                return this;
+            }
+        };
+    }
+
+    private static StreamAdvisorChain capturingStreamChain(AtomicReference<String> captured) {
+        return new StreamAdvisorChain() {
+            @Override
+            public Flux<ChatClientResponse> nextStream(ChatClientRequest request) {
+                captured.set(systemTextOf(request));
+                return Flux.empty();
+            }
+
+            @Override
+            public List<StreamAdvisor> getStreamAdvisors() {
+                return List.of();
+            }
+
+            @Override
+            public StreamAdvisorChain copy(StreamAdvisor advisor) {
+                return this;
+            }
+        };
+    }
+
+    /** 改写后的第一条 system 消息。没有 system 时返回空串，让断言自己去红。 */
+    private static String systemTextOf(ChatClientRequest request) {
+        return request.prompt().getInstructions().stream()
+                .filter(message -> message instanceof SystemMessage)
+                .map(message -> ((SystemMessage) message).getText())
+                .findFirst()
+                .orElse("");
+    }
+
     private static InboundMessage message(String userId, String text) {
         return new InboundMessage(Principal.readOnly(userId), "chat-1", text);
     }

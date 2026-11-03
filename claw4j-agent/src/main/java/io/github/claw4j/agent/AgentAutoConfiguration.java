@@ -5,6 +5,9 @@ import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.agent.persona.AgentContextAdvisor;
+import io.github.claw4j.agent.persona.AgentProperties;
+import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.run.RunBudget;
 import io.github.claw4j.agent.run.RunDelivery;
 import io.github.claw4j.agent.run.RunStore;
@@ -15,6 +18,8 @@ import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolProfile;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import io.github.claw4j.persona.Persona;
+import io.github.claw4j.persona.PersonaCatalog;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
@@ -33,6 +38,8 @@ import org.springframework.context.annotation.Bean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -49,22 +56,40 @@ import io.github.claw4j.agent.model.ModelConfiguration;
  * 不必要求调用方把 io.github.claw4j.agent 加进组件扫描路径。
  */
 @AutoConfiguration
-@EnableConfigurationProperties({ToolSearchProperties.class, ToolsProperties.class})
+@EnableConfigurationProperties({ToolSearchProperties.class, ToolsProperties.class, AgentProperties.class})
 public class AgentAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(AgentAutoConfiguration.class);
 
     /**
-     * 默认系统提示词。刻意写得**中性**：这里是骨架，不是某个业务助手，业务口径由插件连同工具一起带进来
-     * （示例销售插件就是这么做的）。所以这里只留一条所有场景都成立的规矩——先查再答，查不到就问。
+     * 这次生效的人设：配了目录就从目录里选，没配就用内置的那份最小人设。
      *
-     * <p>改这两句要连带跑真模型用例：措辞会直接改变模型"先调工具还是先编"的倾向，
-     * 而 {@code ApplicationAssemblyTest} 的判据正是"那个数有没有从库里出来"。
+     * <p>它在装配期定一次，这是有意的——"换一个人设"要重启，与 P09 换档位同一条理由：
+     * 热切换会让"已经在跑的 run"和"新配置"出现两种真相，恢复时读哪一份说不清。
+     *
+     * <p>但**内容**（时间那一行）不能在这里定死：那是 {@link AgentContextAdvisor} 每轮算的。
+     * 两件事分开之后，"人设是配置"与"时间是活的"各自成立，不会互相绑住。
      */
-    private static final String SYSTEM_PROMPT = """
-            你是 Claw4J，一个接入企业协作通道的 Agent，通过调用工具完成用户交代的活。
-            回答事实性问题前先确认口径；工具能查到的先查，查不到或不确定时向用户提问，不要猜。
-            """;
+    @Bean
+    public PersonaCatalog.Catalog personaCatalog(AgentProperties agent) {
+        if (!agent.hasDirectory()) {
+            return PersonaCatalog.single(BuiltinPersona.get(), List.of());
+        }
+        return PersonaCatalog.load(Path.of(agent.directory()), agent.defaultName());
+    }
+
+    /**
+     * 每轮拼系统提示词的 Advisor。
+     *
+     * <p>它是个普通 Advisor bean，{@link #chatClient} 里那条
+     * {@code ObjectProvider<Advisor>} 会自动收进去——不需要在装配方法里点名。
+     * 这正是 ADR-0007 说的"加一条能力只是加一个 bean"。
+     */
+    @Bean
+    public AgentContextAdvisor agentContextAdvisor(PersonaCatalog.Catalog personas, AgentProperties agent) {
+        // Clock 必须带时区：容器里默认通常是 UTC，晚上八点之后"今天"在模型那里是明天。
+        return new AgentContextAdvisor(personas.selected(), personas.glossary(), Clock.system(agent.zone()));
+    }
 
     /**
      * 具体用哪个 ChatModel 由 ModelConfiguration 决定：有 key 装真实模型，
@@ -83,11 +108,14 @@ public class AgentAutoConfiguration {
                                  ObjectProvider<ToolTierRegistry> tierRegistries,
                                  ToolIndex toolIndex,
                                  ToolSearchProperties toolSearch,
-                                 ToolsProperties toolPolicy) {
+                                 ToolsProperties toolPolicy,
+                                 AgentProperties agent,
+                                 PersonaCatalog.Catalog personas) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
+        ToolProfile profile = profileOf(personas.selected(), toolPolicy);
         List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
                 meterRegistry.getIfAvailable(), runBudget.getIfAvailable(), audit.getIfAvailable(),
-                toolPolicy.toProfile(), tierRegistries.orderedStream().toList());
+                profile, tierRegistries.orderedStream().toList());
 
         // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
         // 拿到的是框架内建的那个，用的是 40/150 的默认值，这里定的预算根本不生效
@@ -96,10 +124,19 @@ public class AgentAutoConfiguration {
         // ToolIndex 是必填参数而不是 ObjectProvider：循环只有"检索"这一种，
         // 没有索引时唯一的出路是启动就失败，而不是悄悄退化成全塞。
         var toolCallingAdvisor = ToolSearch.toolLoop(toolSearch, toolIndex, observations);
+
+        // "这次用的是哪份人设、档位来自哪一层"必须能从日志里读出来。
+        // 内置默认尤其要说：一份谁也没注意到的默认人设，比一份写错的配置更难查——
+        // 前者没有任何报错，只是说话的方式不对。
+        log.info("这个部署的 agent 是 {}（{}），人设来自 {}；时区 {}；工具档位 {}（来自 {}）",
+                personas.selected().name(), personas.selected().description(),
+                agent.hasDirectory() ? agent.directory() : "内置默认（未配 claw4j.agent.directory）",
+                agent.zone(), profile.tier(),
+                personas.selected().tier().isPresent() ? "人设文件的 tier" : "claw4j.tools.profile");
+
         return ChatClient.builder(chatModel, observations, null, null, toolCallingAdvisor)
-                .defaultSystem(SYSTEM_PROMPT)
-                // 容器里所有 Advisor 按 order 挂上来。脱敏、记忆后续都只是加一个 bean（ADR-0007）。
-                // 顺序由各自的 order 决定，这里不排：鉴权要落在工具循环内部，那条约束写在它自己身上。
+                // 没有 defaultSystem：系统提示词由 AgentContextAdvisor 每轮拼（人设 + 口径 + 现在的时间）。
+                // 放在这里的话，时间会在装配那一刻定死，进程跑一周还是启动那天。
                 .defaultAdvisors(advisors.orderedStream().toList())
                 // 工具同理：容器里所有来源都挂上，这里不点名任何工具类。
                 // 没有工具时是空数组，工具循环照常工作（只是无工具可检索）。
@@ -107,6 +144,21 @@ public class AgentAutoConfiguration {
                 // 只把"找工具"那一个交给模型，查到谁再注入谁。
                 .defaultToolCallbacks(tools)
                 .build();
+    }
+
+    /**
+     * 档位从哪来：人设写了就用它的，没写就用全局那份。
+     *
+     * <p>只覆盖档位、不覆盖 allow / deny：前者是"这个助手允许多宽"（销售助手永远不该跑脚本，
+     * 哪怕部署的全局档位是 full），后者是"这套部署额外排除什么"，属于部署级的事实。
+     * 让 allow / deny 跟着 agent 走的话，"同一个助手换个部署就少了几个工具"，
+     * 而那正是 per-agent 配置最容易变得说不清的地方。
+     */
+    private static ToolProfile profileOf(Persona persona, ToolsProperties tools) {
+        ToolProfile global = tools.toProfile();
+        return persona.tier()
+                .map(tier -> new ToolProfile(tier, global.allow(), global.deny()))
+                .orElse(global);
     }
 
     /**

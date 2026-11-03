@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.subagent;
+package io.github.claw4j.markdown;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 一份 markdown 的 front matter 与正文。
@@ -25,8 +26,14 @@ import java.util.Set;
  *   <li>既不是 {@code key: value} 也不是列表项的行（比如折叠写法的多行文本）直接失败：
  *       静默丢掉它，等于让一个人以为自己的配置生效了。</li>
  * </ul>
+ *
+ * <p><b>为什么在 core 而不在 agent</b>：现在有两个消费方——{@code SubagentDefinition}
+ * （一份 md = 一个子 Agent）与 {@code PersonaCatalog}（一份 md = 这个部署的一个人设）。
+ * 两套解析就是两套失败姿势：同一份写错的 front matter，在子 Agent 那边报错、在主 Agent
+ * 这边静默，而"静默"在这个项目里每次都是同一个后果——配置看着生效了，实际没生效。
+ * 放在 core 是因为它只用 JDK，且 {@code domain} 之外的包不受框架依赖约束。
  */
-final class FrontMatter {
+public final class FrontMatter {
 
     private static final String DELIMITER = "---";
 
@@ -37,7 +44,7 @@ final class FrontMatter {
     private FrontMatter(Map<String, String> values, Map<String, List<String>> items, String body) {
         this.values = Map.copyOf(values);
         this.items = items.entrySet().stream()
-                .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+                .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
         this.body = body;
     }
 
@@ -46,7 +53,7 @@ final class FrontMatter {
      *                 这样"列表写在别的键下面"会当场报错而不是变成一段看起来正常的值
      * @param source   只用于报错时指明是哪一份定义
      */
-    static FrontMatter parse(String markdown, Path source, Set<String> listKeys) {
+    public static FrontMatter parse(String markdown, Path source, Set<String> listKeys) {
         Objects.requireNonNull(markdown, "markdown");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(listKeys, "listKeys");
@@ -114,21 +121,21 @@ final class FrontMatter {
     }
 
     /** 这一节到底写没写。用来把"没写"与"写了但空着"分开——两者的后果完全不同。 */
-    boolean has(String key) {
+    public boolean has(String key) {
         return values.containsKey(key);
     }
 
     /** 同行写的值。写了节名却没给值时是空串，不是 null。 */
-    String value(String key) {
+    public String value(String key) {
         return values.get(key);
     }
 
     /** {@code - 名字} 逐行写的那些项，按文件里的顺序。 */
-    List<String> items(String key) {
+    public List<String> items(String key) {
         return List.copyOf(items.getOrDefault(key, List.of()));
     }
 
-    String body() {
+    public String body() {
         return body;
     }
 

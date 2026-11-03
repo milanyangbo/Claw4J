@@ -65,6 +65,22 @@ claw4j:
       api-key: secret:qwen_api_key
       model: ${QWEN_MODEL:qwen-plus}
 
+  # ---- 这个部署是哪个 agent（P15） ----
+  # 三样东西以前都没有配置入口：系统提示词是 Java 常量（改一个字要重新编译）、
+  # 业务口径被抄在各份 Skill 与子 Agent 的正文里、时间压根没进提示词。
+  # 现在都从这一段来——"同一个 jar 两次部署只改配置"靠的就是它。
+  agent:
+    # 人设目录：顶层每份 *.md 是一个 agent（front matter 是配置，正文是系统提示词），
+    # 子目录放口径。不配就用内置的最小可用人设，启动日志会说清用的是哪一个。
+    directory: ${CLAW4J_AGENT_DIRECTORY:}
+    # 目录里用哪一个。只有一份时可以不写；多份不写就启动失败，并把候选列出来。
+    # 不猜：一个进程只跑一个 agent，猜错的表现是"这个部署怎么说话像销售"，没有报错。
+    default: ${CLAW4J_AGENT_DEFAULT:}
+    # "今天"按哪个时区算。默认取业务时区而不是技术默认——
+    # 容器里 ZoneId.systemDefault() 通常是 UTC，差八小时会让晚上八点之后的"今天"变成明天。
+    # 时间由 AgentContextAdvisor **每轮**算，不是启动时算一次。
+    zone: ${CLAW4J_AGENT_ZONE:Asia/Shanghai}
+
   # ---- 通道：谁能进来 ----
   channel:
     http:

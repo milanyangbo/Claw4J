@@ -2,6 +2,8 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
+import io.github.claw4j.agent.persona.AgentProperties;
+import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.channel.wecom.WecomReplySender;
@@ -14,8 +16,11 @@ import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolProfile;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import io.github.claw4j.persona.PersonaCatalog;
+import io.github.claw4j.persona.PromptComposition;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
 import org.springframework.ai.tool.ToolCallback;
@@ -35,14 +40,18 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -400,6 +409,84 @@ class ApplicationAssemblyTest {
                 return items.stream();
             }
         };
+    }
+
+    // ---------------------------------------------------------------- 多 agent 配置（P15）
+
+    /**
+     * 这一组不起容器：{@code personaCatalog} 是个普通 bean 方法，
+     * 直接调它就能回答"这个部署是哪个 agent"，而真正的失败点在读目录那一刻。
+     *
+     * <p>用 {@code @TempDir} 现写两份人设而不是读 {@code examples/}：
+     * 示例目录会随人改，用例跟着它变就等于没有判据。
+     */
+    @Test
+    @DisplayName("同一份代码两份配置：一个变销售助手、一个变运维助手，差别只在 claw4j.agent.default")
+    void twoDeploymentsDifferOnlyByConfig(@TempDir Path agents) throws IOException {
+        Files.writeString(agents.resolve("sales.md"),
+                "---\nname: sales\ndescription: 销售助手\ntier: messaging\n---\n\n你是销售侧的助手。\n");
+        Files.writeString(agents.resolve("ops.md"),
+                "---\nname: ops\ndescription: 运维助手\ntier: full\n---\n\n你是运维侧的助手。\n");
+
+        AgentAutoConfiguration configuration = new AgentAutoConfiguration();
+        PersonaCatalog.Catalog sales = configuration.personaCatalog(
+                new AgentProperties(agents.toString(), "sales", null));
+        PersonaCatalog.Catalog ops = configuration.personaCatalog(
+                new AgentProperties(agents.toString(), "ops", null));
+
+        assertThat(sales.selected().systemPrompt()).contains("销售侧");
+        assertThat(ops.selected().systemPrompt()).contains("运维侧");
+        assertThat(sales.selected().tier())
+                .as("销售助手永远不该跑脚本：人设里的 tier 覆盖全局档位")
+                .contains(ToolTier.MESSAGING);
+        assertThat(ops.selected().tier()).contains(ToolTier.FULL);
+
+        ZonedDateTime now = ZonedDateTime.parse("2026-11-03T20:28:00+08:00");
+        assertThat(PromptComposition.compose(sales.selected(), sales.glossary(), now))
+                .as("人设不同，拼出来的提示词当然不同")
+                .isNotEqualTo(PromptComposition.compose(ops.selected(), ops.glossary(), now));
+    }
+
+    @Test
+    @DisplayName("人设口径是引用：两份 agent 引用同一份口径，拿到的就是同一段原文")
+    void glossaryIsSharedAcrossAgents(@TempDir Path agents) throws IOException {
+        Files.createDirectories(agents.resolve("glossary"));
+        Files.writeString(agents.resolve("glossary/metrics.md"), "成交额 = sum(order_item.amount)");
+        for (String name : List.of("sales", "ops")) {
+            Files.writeString(agents.resolve(name + ".md"),
+                    "---\nname: " + name + "\ndescription: " + name
+                            + "\nglossary:\n  - glossary/metrics.md\n---\n\n你是" + name + "侧的助手。\n");
+        }
+
+        AgentAutoConfiguration configuration = new AgentAutoConfiguration();
+        PersonaCatalog.Catalog sales = configuration.personaCatalog(
+                new AgentProperties(agents.toString(), "sales", null));
+        PersonaCatalog.Catalog ops = configuration.personaCatalog(
+                new AgentProperties(agents.toString(), "ops", null));
+
+        assertThat(sales.glossary()).isNotEmpty();
+        assertThat(ops.glossary().getFirst().text()).isEqualTo(sales.glossary().getFirst().text());
+        assertThat(sales.glossary().getFirst().source()).isEqualTo("glossary/metrics.md");
+    }
+
+    @Test
+    @DisplayName("没配人设目录：用内置那份，而且答得出来是内置的——不静默")
+    void builtinPersonaWhenNoDirectory() {
+        assertThat(new AgentAutoConfiguration().personaCatalog(AgentProperties.defaults()).selected().name())
+                .isEqualTo(BuiltinPersona.NAME);
+    }
+
+    @Test
+    @DisplayName("点名的人设不存在：启动期失败并列出候选，不挑一个看起来像的顶上")
+    void unknownPersonaFailsAtAssembly(@TempDir Path agents) throws IOException {
+        Files.writeString(agents.resolve("sales.md"),
+                "---\nname: sales\ndescription: 销售助手\n---\n\n你是销售侧的助手。\n");
+
+        assertThatThrownBy(() -> new AgentAutoConfiguration()
+                .personaCatalog(new AgentProperties(agents.toString(), "ops", null)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ops")
+                .hasMessageContaining("sales");
     }
 
     private static boolean mentions(String answer, String amount) {

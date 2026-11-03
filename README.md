@@ -103,7 +103,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 
 ## 集成
 
-五种能力 + 一条新通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
+六种能力 + 一条新通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
 能整份照抄的模板与三种"静默失效"的写法在 [`docs/design/extension-points.md`](docs/design/extension-points.md)。
 
 | 你要加的东西 | 写什么 | 依赖 |
@@ -113,6 +113,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | 一个脚本包 | 一个目录（`package.properties` + 入口脚本），配 `claw4j.scripts.directory` | 无 |
 | 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | 无（纯文本） |
 | 一个子 Agent | 一份 `*.md`（front matter + 正文），配 `claw4j.subagents.directory` | 无（纯文本） |
+| **一个 agent（人设）** | 一份 `*.md`（front matter + 正文）+ 可选口径，配 `claw4j.agent.directory` 与 `claw4j.agent.default` | 无（纯文本） |
 | 一条通道 | `ChatChannel` 实现 + 自己的端点 | `claw4j-core`，**不带任何 IM SDK** |
 
 ### 1. 一个工具：三个文件
@@ -250,7 +251,36 @@ tools:
 `querySales` + 脚本包 `summarize`）、继承全部再减（`incident-triage` 用 `disallowedTools` 减掉两个）。
 白名单点了容器里没有的工具、或点了 `Task` 自己，都是**启动失败**。
 
-### 6. 一条通道
+### 6. 一个 agent（人设）
+
+**这一段决定"这个部署是谁"。** 同一个 jar，两次部署只改配置，一个变销售助手、一个变运维助手。
+
+```markdown
+---
+name: sales
+description: 销售助手：成交额、区域对比、订单明细。只读，不跑脚本
+tier: messaging
+glossary:
+  - glossary/metrics.md
+---
+
+你是销售侧的助手。别人问你卖得怎么样，你查库回答，不评价好坏，也不跑脚本。
+```
+
+配 `--claw4j.agent.directory=examples/agents --claw4j.agent.default=sales`。
+
+- `tier` 覆盖全局 `claw4j.tools.profile`，**只覆盖档位、不覆盖 allow / deny**：档位是"这个助手允许多宽"，
+  排除项是"这套部署额外不要什么"。销售助手永远不该跑脚本，哪怕部署的全局档位是 `full`。
+- `glossary` 是**引用**，几份人设可以指向同一个文件。口径改一处，所有引用它的 agent 同时变——
+  同一段话抄两遍的后果是可预见的：改一处必漏一处，而漏掉的那处会让两个助手对同一个数给出两种说法。
+- **时间不用写进正文**：框架每轮拼一句"现在是几点、哪个时区"。写在正文里的时间是死的，
+  而进程跑一周之后它还是启动那天。时区取 `claw4j.agent.zone`（默认 `Asia/Shanghai`），
+  不取容器默认——那里通常是 UTC，晚上八点之后"今天"就已经差一天。
+
+不配这个目录也能跑，用的是内置的最小可用人设。目录里有多份却没写 `default` 是**启动失败**，
+并列出候选：一个进程只有一个 agent，猜错的表现是"这个部署怎么说话像销售"，没有任何报错。
+
+### 7. 一条通道
 
 ```java
 @AutoConfiguration

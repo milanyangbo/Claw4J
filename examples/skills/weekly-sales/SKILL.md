@@ -5,11 +5,13 @@ description: 出一份上周各区成交额周报。当用户问“上周卖得�
 
 # 上周成交额周报
 
-## 口径（先确认，再动手）
+## 口径
 
-- 成交额 = `sum(order_item.amount)`，`status <> 'CANCELLED'`，已取消的订单不计入。
-- 上周 = 半开区间 `[date_trunc('week', current_date) - interval '7 days', date_trunc('week', current_date))`。
-- 区域代码：`east`=华东，`south`=华南，`north`=华北。写中文区域名不会报错、只会返回 0 行。
+成交额、上周、区域代码按**部门口径**算——那一段由部署的人设给出（`examples/agents/glossary/metrics.md`），
+这里不再抄一遍。同一句话抄在两个地方，改一处必漏一处，而漏掉的那一处会让两份周报对不上。
+
+**如果这次对话里没有看到那段口径，先问一句"按哪个口径"，不要自己挑一个。**
+宁可多问一轮，也不要交一份算法来路不明的周报。
 
 ## 步骤
 
