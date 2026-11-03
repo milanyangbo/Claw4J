@@ -2,6 +2,8 @@ package io.github.claw4j.example.sales;
 
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -12,17 +14,19 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import java.util.List;
 import java.util.Map;
 
 /**
  * 示例插件的装配。**这个类就是"第三方工具插件长什么样"的答案**，可以整份照抄。
  *
- * <p>它做三件事，与框架之间只通过两个契约打交道：
+ * <p>它做四件事，与框架之间只通过三个契约打交道：
  * <ol>
  *   <li>把 {@link SalesTools} 暴露成一个 {@code ToolCallbackProvider} —— Agent 侧只认这个类型，
  *       不认识 {@code querySales}；</li>
  *   <li>登记这些工具会碰到哪些表 —— Agent 侧的鉴权 Advisor 只认 {@link ToolPermissionRegistry}；</li>
- *   <li>两者都<b>不让位</b>：容器里可以有来自好几个来源的 provider 与 registry，收集方按列表收。</li>
+ *   <li>登记这些工具属于哪个能力档 —— 清单组装处只认 {@link ToolTierRegistry}（P09）；</li>
+ *   <li>四者都<b>不让位</b>：容器里可以有来自好几个来源的 provider 与两张表，收集方按列表收。</li>
  * </ol>
  *
  * <p>为什么这个类不在 {@code claw4j-capability} 里：它是一份业务示例，不是框架能力。
@@ -37,6 +41,9 @@ import java.util.Map;
 @ConditionalOnProperty(prefix = "claw4j.example.sales", name = "enabled",
         havingValue = "true", matchIfMissing = true)
 public class SalesExampleAutoConfiguration {
+
+    /** 工具名。权限表与档位表都按它登记，写两份字面量迟早会漂。 */
+    private static final String TOOL_NAME = "querySales";
 
     /**
      * 真实的数据源实现：只读事务 + 行上限。没有 {@code JdbcClient} 就不注册，
@@ -95,7 +102,25 @@ public class SalesExampleAutoConfiguration {
     @ConditionalOnBean(ReadOnlySqlExecutor.class)
     public ToolPermissionRegistry salesToolPermissionRegistry() {
         return ToolPermissionRegistry.of(Map.of(
-                "querySales", ToolPermission.read(
+                TOOL_NAME, ToolPermission.read(
                         "sales_order", "order_item", "customer", "region")));
+    }
+
+    /**
+     * 档位：{@link ToolTier#MESSAGING}。
+     *
+     * <p><b>"查表"必须留在 {@code messaging} 档里</b>——这不是随手定的，ADR-0020 的原话是
+     * 「把工具策略切到 messaging 档，run_script 与 draft_script 不在工具清单里，
+     * 读消息与查表都不受影响」。把业务只读工具推到 {@code coding} 或 {@code full}，
+     * 就等于让"只做消息与问答"的部署连数据都查不了，而它恰恰是最常见的落地形态。
+     *
+     * <p><b>这一段是给第三方插件作者的示范</b>：新增工具必须同时登记权限与档位。
+     * 少了档位不是"默认最宽"，是**启动失败并点名这个工具**——那是有意的，
+     * 因为"它出现在哪个档"应当是一个被人做过的决定。
+     */
+    @Bean
+    @ConditionalOnBean(ReadOnlySqlExecutor.class)
+    public ToolTierRegistry salesToolTierRegistry() {
+        return ToolTierRegistry.sameFor(List.of(TOOL_NAME), ToolTier.MESSAGING);
     }
 }

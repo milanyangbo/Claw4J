@@ -1,6 +1,8 @@
 package io.github.claw4j.capability.mcp;
 
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -47,5 +49,23 @@ public class McpToolAutoConfiguration {
     @ConditionalOnBean(McpServerEndpoint.class)
     public ToolPermissionRegistry mcpToolPermissionRegistry(McpToolProvider provider) {
         return ToolPermissionRegistry.of(provider.permissions());
+    }
+
+    /**
+     * 档位：{@link ToolTier#FULL}。
+     *
+     * <p>外部 server 的能力清单是**运行时**从远端拉来的，部署者没有机会逐条审过它到底会做什么；
+     * 而 MCP 的连接与清单都在装配期完成（见 {@link McpToolProvider}），
+     * 这里能拿到的只有"这一次连上之后有哪些名字"。所以整批归到最宽的那一档，
+     * 而不是逐条判断——逐条判断要对着一个随时会变的外部清单做决定。
+     *
+     * <p>代价写在明处：一个 {@code messaging} 部署里，MCP 工具一个都不会出现，
+     * 包括那些只读的。要让某个 server 进更低的档，是它自己的配置该回答的问题，
+     * 那时按 server 声明的档在这里取最小值即可——本票不做。
+     */
+    @Bean
+    @ConditionalOnBean(McpServerEndpoint.class)
+    public ToolTierRegistry mcpToolTierRegistry(McpToolProvider provider) {
+        return ToolTierRegistry.sameFor(provider.permissions().keySet(), ToolTier.FULL);
     }
 }

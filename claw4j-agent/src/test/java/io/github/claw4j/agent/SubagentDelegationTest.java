@@ -9,6 +9,8 @@ import io.github.claw4j.agent.subagent.SubagentRunner;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
@@ -19,6 +21,7 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 
 import java.io.IOException;
@@ -28,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,6 +48,49 @@ class SubagentDelegationTest {
 
     @TempDir
     Path directory;
+
+    /**
+     * P09 的父子一致性：子 Agent 的工具集来自与父**同一个**收集方法、同一份档位策略。
+     *
+     * <p>这一条盯的是一种很具体的失效：如果子那一侧用了"不过滤"的默认值，
+     * 一个 {@code messaging} 部署只要让模型派个活，就能让子 Agent 把 {@code run_script} 拿到手——
+     * 父那边挡得再严也没用。它不报错、日志上看不出来，只表现为"说好了不许跑脚本，结果跑了"。
+     */
+    @Test
+    @DisplayName("子 Agent 拿到的也是筛过的清单：messaging 部署里它没有 run_script（P09）")
+    void subagentToolsRespectTheDeploymentProfile() {
+        List<ToolCallback> tools = SubagentAutoConfiguration.subagentToolCallbacks(
+                providerOf(List.of(new RecordingTool("run_script", "跑了"),
+                        new RecordingTool("querySales", "128400"))),
+                providerOf(List.of()),
+                null,
+                new ToolsProperties(ToolTier.MESSAGING, List.of(), List.of()),
+                List.of(ToolTierRegistry.sameFor(Set.of("run_script"), ToolTier.CODING),
+                        ToolTierRegistry.sameFor(Set.of("querySales"), ToolTier.MESSAGING)));
+
+        assertThat(tools)
+                .extracting(callback -> callback.getToolDefinition().name())
+                .as("父子两处必须用同一份档位策略，否则派活就成了绕过档位的口子")
+                .containsExactly("querySales");
+    }
+
+    /**
+     * 只要一个可枚举的 {@code ObjectProvider}：收集方法只用到 {@code orderedStream()}。
+     * 其余入口在这里不该被走到——走到就说明装配依赖了"单例"语义，而那正是要避免的。
+     */
+    private static <T> ObjectProvider<T> providerOf(List<T> items) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject() {
+                throw new UnsupportedOperationException("清单收集只走 orderedStream");
+            }
+
+            @Override
+            public Stream<T> stream() {
+                return items.stream();
+            }
+        };
+    }
 
     @Test
     @DisplayName("目录按文件名排序读，非 md 文件不进清单")
@@ -264,6 +311,10 @@ class SubagentDelegationTest {
         DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
         beans.registerSingleton("lookup", new RecordingTool("lookup", "128400"));
         SubagentAutoConfiguration configuration = new SubagentAutoConfiguration();
+        // 两个工具的档位都要先登记（P09）：装配期会问清单里每一个工具属于哪一档，
+        // 容器里少一条就是启动失败。这里用默认的全档，所以"有哪些工具"与之前一致。
+        beans.registerSingleton("lookupTier", ToolTierRegistry.sameFor(List.of("lookup"), ToolTier.MESSAGING));
+        beans.registerSingleton("taskTier", configuration.subagentTierRegistry());
 
         ToolCallback task = configuration.subagentToolCallback(
                 directory.toString(),
@@ -272,6 +323,8 @@ class SubagentDelegationTest {
                 beans.getBeanProvider(ToolCallbackProvider.class),
                 beans.getBeanProvider(ObservationRegistry.class),
                 beans.getBeanProvider(MeterRegistry.class),
+                beans.getBeanProvider(ToolTierRegistry.class),
+                ToolsProperties.defaults(),
                 new AuthorizationAdvisor(List.of()),
                 new RegexToolIndex(),
                 ToolSearchProperties.defaults());
@@ -287,7 +340,10 @@ class SubagentDelegationTest {
                 // 没有 run 预算：这一层验的是"两种形态都被收到"，不是"额度怎么扣"
                 null,
                 // 审计同理：这一条只关心清单里有什么（P07）
-                null))
+                null,
+                // 档位用默认（full）：这条验的是"两种形态都被收到"，不是"怎么筛"
+                ToolsProperties.defaults().toProfile(),
+                beans.getBeanProvider(ToolTierRegistry.class).orderedStream().toList()))
                 .extracting(callback -> callback.getToolDefinition().name())
                 .contains("lookup", SubagentDelegation.TOOL_NAME);
 

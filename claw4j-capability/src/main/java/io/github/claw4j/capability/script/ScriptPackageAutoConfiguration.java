@@ -1,6 +1,8 @@
 package io.github.claw4j.capability.script;
 
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -79,5 +81,20 @@ public class ScriptPackageAutoConfiguration {
     @Bean
     public ToolPermissionRegistry scriptPackagePermissionRegistry(ScriptPackageToolProvider provider) {
         return ToolPermissionRegistry.of(provider.permissions());
+    }
+
+    /**
+     * 档位：{@link ToolTier#CODING}，跟"跑脚本"这件事同一档。
+     *
+     * <p>用 {@code provider.permissions().keySet()} 当工具名清单，而不是另抄一份：
+     * 脚本包的名字来自 {@code examples/scripts} 下的目录名，抄一份就会在"加了一个包"时漂移，
+     * 而漂移的表现是启动失败并点名——它拦得住，但没必要给自己找一个必然会遇到的失败。
+     *
+     * <p>注意这是"名字清单"而不是"任何名字都算 full"的兜底：后者会让别处的未声明校验
+     * 永远通过，而这套机制的价值全在那条校验上。
+     */
+    @Bean
+    public ToolTierRegistry scriptPackageTierRegistry(ScriptPackageToolProvider provider) {
+        return ToolTierRegistry.sameFor(provider.permissions().keySet(), ToolTier.CODING);
     }
 }

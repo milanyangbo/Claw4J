@@ -2,6 +2,8 @@ package io.github.claw4j.agent.session;
 
 import com.zaxxer.hikari.HikariDataSource;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import org.slf4j.Logger;
@@ -32,6 +34,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import javax.sql.DataSource;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -215,6 +218,17 @@ public class SessionMemoryConfiguration implements DisposableBean {
     public ToolPermissionRegistry recallSessionPermission() {
         return ToolPermissionRegistry.of(
                 Map.of(RecallSessionTool.TOOL_NAME, RecallSessionTool.permission()));
+    }
+
+    /**
+     * 召回工具的档位：{@link ToolTier#MINIMAL}。
+     *
+     * <p>它读的是"我自己刚才说过什么"，不出网、不碰业务表，与读进程状态同一类。
+     * 把它归进更高的档会让"只聊天"的部署丢掉长对话的连贯性，而那不是一项业务能力。
+     */
+    @Bean
+    public ToolTierRegistry recallSessionTierRegistry() {
+        return ToolTierRegistry.sameFor(List.of(RecallSessionTool.TOOL_NAME), ToolTier.MINIMAL);
     }
 
     /**

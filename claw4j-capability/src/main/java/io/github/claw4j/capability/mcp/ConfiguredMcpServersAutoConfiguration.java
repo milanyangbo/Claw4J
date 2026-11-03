@@ -2,6 +2,8 @@ package io.github.claw4j.capability.mcp;
 
 import io.github.claw4j.capability.secret.SpringSecretResolver;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -63,6 +65,19 @@ public class ConfiguredMcpServersAutoConfiguration {
     public ToolPermissionRegistry configuredMcpToolPermissionRegistry(
             @Qualifier("configuredMcpToolProvider") McpToolProvider provider) {
         return ToolPermissionRegistry.of(provider.permissions());
+    }
+
+    /**
+     * 档位：{@link ToolTier#FULL}，与 {@link McpToolAutoConfiguration} 那条同一个判断
+     * （理由写在那里）：外部清单运行时才知道，整批归最宽的一档。
+     *
+     * <p>两条并行来源各出一张档位表，与各出一张权限表是同一件事——
+     * 装配侧收的是"所有登记表"，不认某一份。
+     */
+    @Bean
+    public ToolTierRegistry configuredMcpTierRegistry(
+            @Qualifier("configuredMcpToolProvider") McpToolProvider provider) {
+        return ToolTierRegistry.sameFor(provider.permissions().keySet(), ToolTier.FULL);
     }
 
     /**

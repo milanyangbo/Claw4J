@@ -1,6 +1,8 @@
 package io.github.claw4j.capability.skill;
 
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -8,6 +10,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,5 +43,17 @@ public class SkillToolAutoConfiguration {
     @Bean
     public ToolPermissionRegistry skillPermissionRegistry() {
         return ToolPermissionRegistry.of(Map.of(AgentSkills.TOOL_NAME, AgentSkills.permission()));
+    }
+
+    /**
+     * 档位：{@link ToolTier#MESSAGING}。
+     *
+     * <p>技能是"读一份写好的做法"，读的是本地 {@code SKILL.md}，不执行代码、不出网。
+     * 它比 {@code MINIMAL} 高一档是因为内容由部署自己提供——一个只做问答的部署要不要
+     * 让自己的业务话术进到模型手里，是一个决定，不是必然。
+     */
+    @Bean
+    public ToolTierRegistry skillTierRegistry() {
+        return ToolTierRegistry.sameFor(List.of(AgentSkills.TOOL_NAME), ToolTier.MESSAGING);
     }
 }

@@ -2,8 +2,11 @@ package io.github.claw4j.agent.subagent;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.ToolSearchProperties;
+import io.github.claw4j.agent.ToolsProperties;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.model.ChatModel;
@@ -17,6 +20,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -58,6 +62,8 @@ public class SubagentAutoConfiguration {
                                              ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                              ObjectProvider<ObservationRegistry> observationRegistry,
                                              ObjectProvider<MeterRegistry> meterRegistry,
+                                             ObjectProvider<ToolTierRegistry> tierRegistries,
+                                             ToolsProperties toolPolicy,
                                              AuthorizationAdvisor authorizationAdvisor,
                                              // 工具循环只有一种（检索），它要索引与检索参数；
                                              // 两个 bean 都由 AgentAutoConfiguration 提供。
@@ -66,27 +72,52 @@ public class SubagentAutoConfiguration {
         var definitions = SubagentCatalog.load(Path.of(directory));
         var observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         var runner = new SubagentRunner(chatModel, observations,
-                // 与 Agent 装配用的是同一个收集方法：工具回调与 provider 两种形态都要收。
-                // 只收单回调形态时，querySales（来自 provider）在子那一侧就"没有这个工具"，
-                // 而它明明在父的清单里——症状与 01 号票那个一模一样。
-                // 计量也跟着一起来：子 Agent 调的工具同样是真实成本，不该只在父那一侧可见。
-                () -> AgentAutoConfiguration.collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                                // 预算传 null：子的工具上下文里没有父这一轮的 runId
-                                // （SubagentRunner 目前只把身份传下去），传了也扣不到。
-                                // 于是"子调的工具扣父的额度"还没有接上，那是 A10 的事——
-                                // 在此之前，子那一侧只有轮内的 3 / 6 那条护栏。
-                                meterRegistry.getIfAvailable(), null,
-                                // 审计同理（P07）：子链没有 runId，写不进任何一件事的审计行。
-                                // 与预算那一条同一个原因，不是"忘了接"。
-                                null)
-                        .stream()
-                        .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(
-                                callback.getToolDefinition().name()))
-                        .toList(),
+                () -> subagentToolCallbacks(toolCallbacks, toolCallbackProviders,
+                        meterRegistry.getIfAvailable(), toolPolicy,
+                        tierRegistries.orderedStream().toList()),
                 authorizationAdvisor,
                 toolIndex,
                 toolSearch);
         return new SubagentDelegation(definitions, runner);
+    }
+
+    /**
+     * 子 Agent 能用的工具集：与父同一个收集方法、同一份档位策略，只去掉 {@code Task} 自己。
+     *
+     * <p>抽成静态方法是让这条逻辑**能被直接问**（P09）：否则要验"子那边有没有被档位过滤"，
+     * 只能起一个完整的上下文再想办法从 runner 里把清单掏出来。可测性在这里不是副产品，
+     * 它决定了"父子两处过滤是否一致"这件事能不能被钉住。
+     *
+     * <p>三个 {@code null} 的理由与父侧不同，逐条记在这里：
+     * <ul>
+     *   <li>预算：子的工具上下文里没有父这一轮的 runId（{@link SubagentRunner} 目前只把身份传下去），
+     *       传了也扣不到——"子调的工具扣父的额度"是 A10 的事；</li>
+     *   <li>审计：同理，子链没有 runId，写不进任何一件事的审计行；</li>
+     *   <li>指标：由调用方给，没有 actuator 时它就是 {@code null}。</li>
+     * </ul>
+     *
+     * <p><b>过滤掉 {@code Task} 自己</b>：定义里白名单写了它按定义错误处理（见
+     * {@link SubagentDefinition}），这里再把"继承全部工具"那条路上也出现的它去掉，
+     * 于是嵌套委派两条路都堵住了。
+     */
+    public static List<ToolCallback> subagentToolCallbacks(ObjectProvider<ToolCallback> toolCallbacks,
+                                                           ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
+                                                           MeterRegistry meterRegistry,
+                                                           ToolsProperties toolPolicy,
+                                                           List<ToolTierRegistry> tierRegistries) {
+        // 与 Agent 装配用的是同一个收集方法：工具回调与 provider 两种形态都要收。
+        // 只收单回调形态时，querySales（来自 provider）在子那一侧就"没有这个工具"，
+        // 而它明明在父的清单里——症状与 01 号票那个一模一样。
+        //
+        // 档位在这里同一个理由（P09）：子 Agent 拿到的必须是**父被允许的那份清单**里的一批。
+        // 用另一份策略的话，一个 messaging 部署可以靠"派给子 Agent"把手跑脚本的口子打开。
+        return AgentAutoConfiguration.collectToolCallbacks(toolCallbacks, toolCallbackProviders,
+                        meterRegistry, null, null,
+                        toolPolicy.toProfile(), tierRegistries)
+                .stream()
+                .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(
+                        callback.getToolDefinition().name()))
+                .toList();
     }
 
     /**
@@ -100,5 +131,17 @@ public class SubagentAutoConfiguration {
     public ToolPermissionRegistry subagentPermissionRegistry() {
         return ToolPermissionRegistry.of(Map.of(
                 SubagentDelegation.TOOL_NAME, SubagentDelegation.permission()));
+    }
+
+    /**
+     * 委派工具的档位：{@link ToolTier#MESSAGING}。
+     *
+     * <p>派活本身不碰外部世界，但它把"能干什么"这件事交给子 Agent —— 而子 Agent 拿的是
+     * 同一份筛过的清单（见上面的 {@code collectToolCallbacks} 调用），所以它不该比
+     * "直接用工具"更受限。{@code MINIMAL} 那种"只聊天"的部署里没有它。
+     */
+    @Bean
+    public ToolTierRegistry subagentTierRegistry() {
+        return ToolTierRegistry.sameFor(List.of(SubagentDelegation.TOOL_NAME), ToolTier.MESSAGING);
     }
 }

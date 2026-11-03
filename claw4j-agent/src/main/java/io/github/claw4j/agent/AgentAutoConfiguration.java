@@ -12,6 +12,9 @@ import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolProfile;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
@@ -27,11 +30,13 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Consumer;
+import java.util.Set;
 import io.github.claw4j.agent.model.ModelConfiguration;
 
 /**
@@ -44,8 +49,10 @@ import io.github.claw4j.agent.model.ModelConfiguration;
  * 不必要求调用方把 io.github.claw4j.agent 加进组件扫描路径。
  */
 @AutoConfiguration
-@EnableConfigurationProperties(ToolSearchProperties.class)
+@EnableConfigurationProperties({ToolSearchProperties.class, ToolsProperties.class})
 public class AgentAutoConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentAutoConfiguration.class);
 
     /**
      * 默认系统提示词。刻意写得**中性**：这里是骨架，不是某个业务助手，业务口径由插件连同工具一起带进来
@@ -73,11 +80,15 @@ public class AgentAutoConfiguration {
                                  ObjectProvider<MeterRegistry> meterRegistry,
                                  ObjectProvider<RunBudget> runBudget,
                                  ObjectProvider<ToolCallAudit> audit,
+                                 ObjectProvider<ToolTierRegistry> tierRegistries,
                                  ToolIndex toolIndex,
-                                 ToolSearchProperties toolSearch) {
+                                 ToolSearchProperties toolSearch,
+                                 ToolsProperties toolPolicy) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                meterRegistry.getIfAvailable(), runBudget.getIfAvailable(), audit.getIfAvailable());
+                meterRegistry.getIfAvailable(), runBudget.getIfAvailable(), audit.getIfAvailable(),
+                toolPolicy.toProfile(), tierRegistries.orderedStream().toList());
+
         // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
         // 拿到的是框架内建的那个，用的是 40/150 的默认值，这里定的预算根本不生效
         // （细节见 ToolCallBudget 的类注释）。预算只有一个落点：ToolSearch.toolLoop。
@@ -126,6 +137,18 @@ public class AgentAutoConfiguration {
     }
 
     /**
+     * 检索工具的档位：{@link ToolTier#MINIMAL}。
+     *
+     * <p><b>它必须在每一档都出现</b>：清单里其余工具都是"按需检索才看得到"的，
+     * 把检索工具自己挡掉之后，模型面前就是一个空清单，表现出来是"它什么都不肯做"。
+     * 这也是 {@link ToolProfile#select} 那条"筛空即失败"兜住的情况——但能从源头避免就不该靠兜底。
+     */
+    @Bean
+    public ToolTierRegistry toolSearchTierRegistry() {
+        return ToolTierRegistry.sameFor(List.of(ToolSearch.TOOL_NAME), ToolTier.MINIMAL);
+    }
+
+    /**
      * 把容器里所有工具来源收成一个列表。
      *
      * <p><b>两种注册形态都要收</b>：{@code ToolCallbackProvider} 导出"一组工具"，
@@ -153,22 +176,64 @@ public class AgentAutoConfiguration {
      * @param budget 可以为 null：没有装配 run 存储时（{@code claw4j.run.enabled=false}）
      *               工具照常调用，只是这一轮没有额度可扣
      * @param audit  可以为 null：同上，没有 run 存储就没有可写的审计落点
+     * @param profile 这个部署的工具策略（P09）。**必填**：给它一个"不过滤"的默认值等于让
+     *               某条装配路径漏传参数时静默全开，而这条路径正是父子两个 Agent 共用的那一条
+     * @param tierRegistries 各模块声明的档位登记表。查不到档位的工具会让这次收集直接失败
      */
     public static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
                                                           ObjectProvider<ToolCallbackProvider> providers,
                                                           MeterRegistry registry,
                                                           RunBudget budget,
-                                                          ToolCallAudit audit) {
+                                                          ToolCallAudit audit,
+                                                          ToolProfile profile,
+                                                          List<ToolTierRegistry> tierRegistries) {
         List<ToolCallback> collected = new ArrayList<>();
+        callbacks.orderedStream().forEach(collected::add);
+        providers.orderedStream()
+                .forEach(provider -> collected.addAll(List.of(provider.getToolCallbacks())));
+
+        // 先筛再包（P09）：被挡掉的工具不该连包装对象都造出来。筛的是名字，
+        // 所以重名不会被这里合并——重名是配置错误，该在清单断言上红。
+        ToolProfile.Selection selection = profile.select(
+                collected.stream().map(callback -> callback.getToolDefinition().name()).toList(),
+                tierRegistries);
+        report(profile, selection);
+        Set<String> kept = Set.copyOf(selection.kept());
+
         // 一律包一层：没有 registry 时它只记"这一轮调过哪些工具"，不报指标。
         // 语义缓存判断副作用靠的就是这份记录，所以它不能跟着 actuator 一起缺席。
-        Consumer<ToolCallback> add = callback ->
-                collected.add(new MeteredToolCallback(callback, registry, budget, audit));
-        callbacks.orderedStream().forEach(add);
-        providers.orderedStream()
-                .forEach(provider -> List.of(provider.getToolCallbacks()).forEach(add));
-        return List.copyOf(collected);
+        return collected.stream()
+                .filter(callback -> kept.contains(callback.getToolDefinition().name()))
+                // 显式转型，否则 stream 的元素类型被推断成 MeteredToolCallback，
+                // 与返回类型 List<ToolCallback> 对不上（它不是泛型类，推断不出父类型）。
+                .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, budget, audit))
+                .toList();
     }
+
+    /**
+     * 档位与清单的落点必须留痕：出了问题第一个要回答的是"这个部署到底开了什么"。
+     *
+     * <p>只在真的挡掉东西时打 INFO——默认档下每次启动都刷一行"挡掉 0 个"，
+     * 于是真正的告警会淹没在同一句话里。
+     *
+     * <p>`unused` 用 WARN 单独打：它既可能是"这个部署没装那个模块"（正常），
+     * 也可能是"配置里拼错了"（不正常）。两者长得一样，所以列出来让人自己看，
+     * 但**不能因此启动失败**——裁剪部署时针对某个模块的 deny 条目本来就该落空。
+     */
+    private static void report(ToolProfile profile, ToolProfile.Selection selection) {
+        if (selection.droppedAnything()) {
+            log.info("工具档位 {}：清单 {} 个，挡掉 {} 个（档位 {} / allow {} / deny {}）",
+                    profile.tier(), selection.kept().size(),
+                    selection.byTier().size() + selection.byAllow().size() + selection.byDeny().size(),
+                    selection.byTier(), selection.byAllow(), selection.byDeny());
+        }
+        if (!selection.unused().isEmpty()) {
+            log.warn("claw4j.tools 的 allow / deny 里提到了清单里不存在的工具 {}："
+                    + "要么这个部署没装提供它的模块（正常），要么名字拼错了（不正常）——"
+                    + "拼错的话那一条永远不生效。", selection.unused());
+        }
+    }
+
 
     /**
      * 鉴权 Advisor：容器里所有 {@link ToolPermissionRegistry} 都由它消费，

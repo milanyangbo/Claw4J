@@ -12,7 +12,7 @@
 
 | 扩展点 | 你要提供 | 依赖 | 参照实现 |
 | --- | --- | --- | --- |
-| Java 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` | `claw4j-core`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
+| Java 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` + `ToolTierRegistry` | `claw4j-core`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
 | MCP server | 一段配置（或一个 `McpServerEndpoint` bean）；server 本身可以是任何语言 | 宿主侧 `claw4j-capability`；server 侧什么都不要 | [`application-local.yml.example`](../../claw4j-app/src/main/resources/application-local.yml.example)、[`claw4j-example-mcp-server`](../../claw4j-example-mcp-server)、[`examples/mcp/`](../../examples/mcp) |
 | 脚本包 | 一个目录（`package.properties` + 入口脚本） | 无（子进程 + 沙箱） | [`examples/scripts/`](../../examples/scripts) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](../../examples/skills/weekly-sales) |
@@ -35,7 +35,7 @@ public class JiraTools {
 }
 ```
 
-**2. 自动配置**——把它变成容器里的两个 bean：
+**2. 自动配置**——把它变成容器里的三个 bean：
 
 ```java
 @AutoConfiguration
@@ -52,6 +52,13 @@ public class JiraToolsAutoConfiguration {
                 "jiraSearchIssues", ToolPermission.read(),
                 "jiraCreateIssue", ToolPermission.of("create_issue")));
     }
+
+    // 档位：这些工具最低需要哪一档才出现（P09）。读工单不碰代码，所以是 messaging。
+    @Bean
+    public ToolTierRegistry jiraToolTiers() {
+        return ToolTierRegistry.sameFor(
+                List.of("jiraSearchIssues", "jiraCreateIssue"), ToolTier.MESSAGING);
+    }
 }
 ```
 
@@ -61,11 +68,12 @@ public class JiraToolsAutoConfiguration {
 com.acme.jira.JiraToolsAutoConfiguration
 ```
 
-### 谁收这两个 bean
+### 谁收这三个 bean
 
 `AgentAutoConfiguration` 收工具用的是 `ObjectProvider<ToolCallbackProvider>`（连同单个
-`ToolCallback` 一起），收权限用的是 `ObjectProvider<ToolPermissionRegistry>`；
-鉴权与语义缓存两条链路各自按**列表**消费权限表。所以**加一个来源只是加一个 bean**，
+`ToolCallback` 一起），收权限用的是 `ObjectProvider<ToolPermissionRegistry>`，
+收档位用的是 `ObjectProvider<ToolTierRegistry>`；鉴权与语义缓存两条链路各自按**列表**
+消费权限表，清单组装处按**列表**消费档位表。所以**加一个来源只是加几个 bean**，
 没有任何一处需要点名你的工具类。
 
 ### 权限是必填项，漏了就是拒绝
@@ -79,6 +87,29 @@ MCP 那边默认按 server 一份，`servers.<名字>.tools.<工具名>` 可以�
 第三方 server 常把只读查询与写动作装在同一个进程里（`list_inbox` 与 `send_email`）：
 只按 server 声明时，这类 server 只有"写动作也被只读身份调用"与"整条不可用"两个结局。
 覆盖只影响被点名的工具；点名了 server 没导出的工具名，启动就失败。
+
+### 档位也是必填项，漏了是**起不来**
+
+这一条与上一条方向相反：权限漏了是"拒绝"（系统照跑，只是那个工具调不动），
+档位漏了是**启动失败并点名是哪个工具**（P09）。
+
+方向不同是有意的。权限漏了有一个安全的兜底（拒绝），而档位漏了没有：
+按"出现"兜底等于让新工具默认拥有最宽的能力，按"不出现"兜底则会让一个刚加的工具
+在所有部署里静默消失、没人知道少了什么。两种都不是能接受的默认，所以只剩"说出来"。
+
+档位是累进的：`minimal < messaging < coding < full`。工具声明它**最低**需要哪一档，
+部署用 `claw4j.tools.profile` 选一档，声明档不高于所选档的工具才进清单。
+分档的口径只有一条：**这个工具会不会碰到代码、出网、碰别人的数据**——
+只跟自己和对话有关的是 `minimal`，业务只读与消息类是 `messaging`，
+跑脚本是 `coding`，外部 MCP 是 `full`。
+
+两个整批归档的场合，因为名字要到运行时才知道：脚本包跟 `coding`，MCP 跟 `full`。
+它们用 `ToolTierRegistry.sameFor(自己导出的名字, 档)`，**不要写成"任何名字都算"**——
+那种实现会让"没登记档位就失败"这条校验永远通过。
+
+部署侧还有两个收窄手段（`claw4j.tools.allow` / `deny`），它们**不能越过档位**：
+`allow` 是白名单，只能把档位里的东西再筛少；想"messaging 档但要一个脚本"，
+只能调高 `profile` 再 `deny` 别的。
 
 ### 加一个开关
 

@@ -21,6 +21,8 @@ import io.github.claw4j.domain.port.ApprovalLedger;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.port.RoleDirectory;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -312,6 +314,22 @@ public class RunPersistenceConfiguration {
     }
 
     /**
+     * 三个定时任务工具的档位：{@link ToolTier#MESSAGING}。
+     *
+     * <p>定时任务属于"把一件事排到以后做"，不碰代码也不碰外部系统本身——
+     * 它比 {@code MINIMAL} 多一层"这个部署允许自己安排事情"，但不需要跑脚本的能力。
+     *
+     * <p>与工具本身同一个开关：{@code claw4j.schedule.enabled=false} 时三者一起不在场，
+     * 于是档位表里也不该留着它们。
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "claw4j.schedule", name = "enabled",
+            havingValue = "true", matchIfMissing = true)
+    public ToolTierRegistry scheduleTierRegistry() {
+        return ToolTierRegistry.sameFor(ScheduleTools.permissions().keySet(), ToolTier.MESSAGING);
+    }
+
+    /**
      * 计划工具：模型用它把"打算怎么干"写进 run，也用它把某一步标成已做或跳过。
      *
      * <p>注册成单个 {@code ToolCallback} 而不是 provider：它是<b>一个</b>工具，
@@ -332,5 +350,17 @@ public class RunPersistenceConfiguration {
     @Bean
     public ToolPermissionRegistry runPlanPermissionRegistry() {
         return ToolPermissionRegistry.of(Map.of(UpdatePlanTool.TOOL_NAME, UpdatePlanTool.permission()));
+    }
+
+    /**
+     * 计划工具的档位：{@link ToolTier#MINIMAL}。
+     *
+     * <p>它写的是"打算怎么干"，落在自己的 run 上，既不出网也不碰别人的数据。
+     * 把它归进更高的档会让"只聊天"的部署失去外置计划的能力——
+     * 而那正是长对话不丢线索的机制，与部署做不做业务无关。
+     */
+    @Bean
+    public ToolTierRegistry runPlanTierRegistry() {
+        return ToolTierRegistry.sameFor(List.of(UpdatePlanTool.TOOL_NAME), ToolTier.MINIMAL);
     }
 }

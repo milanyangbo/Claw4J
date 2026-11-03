@@ -108,7 +108,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 
 | 你要加的东西 | 写什么 | 依赖 |
 | --- | --- | --- |
-| 一个工具 | `@Tool` 方法 + 两个 bean + `AutoConfiguration.imports` | `claw4j-core`、`spring-ai-client-chat` |
+| 一个工具 | `@Tool` 方法 + 三个 bean + `AutoConfiguration.imports` | `claw4j-core`、`spring-ai-client-chat` |
 | 一个 MCP server | 一段 YAML；server 用任何语言写，宿主侧不写代码 | 宿主侧 `claw4j-capability`；**server 侧零依赖** |
 | 一个脚本包 | 一个目录（`package.properties` + 入口脚本），配 `claw4j.scripts.directory` | 无 |
 | 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | 无（纯文本） |
@@ -135,13 +135,24 @@ public class JiraToolsAutoConfiguration {
                 "jiraSearchIssues", ToolPermission.read(),
                 "jiraCreateIssue", ToolPermission.of("create_issue")));
     }
+
+    /** 最低需要哪一档才出现。漏了是**启动失败并点名**，不是"默认全开"。 */
+    @Bean
+    public ToolTierRegistry jiraToolTiers() {
+        return ToolTierRegistry.sameFor(
+                List.of("jiraSearchIssues", "jiraCreateIssue"), ToolTier.MESSAGING);
+    }
 }
 ```
 
 再把类名写进 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`，一个文件一行。
 
-**硬规矩：这两个 bean 都不要写 `@ConditionalOnMissingBean`。** 那条条件的语义是"容器里已经有了就让位"，
+**硬规矩一：这三个 bean 都不要写 `@ConditionalOnMissingBean`。** 那条条件的语义是"容器里已经有了就让位"，
 而容器里本来就有别的来源——让位的结果是你这一方的工具**静默消失**：不报错，只是模型手上没它，于是它开始编答案。
+
+**硬规矩二：档位必须登记，而且它不是"可选的美化"。** 装配期会问清单里每一个工具属于哪一档，
+查不到就启动失败并点名；`claw4j.tools.profile` 切到 `messaging` 之后，声明为 `coding` 的工具
+根本不在清单里（连检索都搜不到），而不是等调了才被拒。
 
 插件 jar 进 classpath 有两条路：加一条 Maven 依赖（要重新构建发版），或者
 `java -cp app.jar -Dloader.path=/opt/claw4j/plugins org.springframework.boot.loader.launch.PropertiesLauncher`

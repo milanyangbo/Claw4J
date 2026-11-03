@@ -3,6 +3,8 @@ package io.github.claw4j.capability.generator;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.github.claw4j.capability.script.ExecutionListeners;
 import io.github.claw4j.capability.script.ScriptPackageAutoConfiguration;
 import io.github.claw4j.capability.script.ScriptPackageRegistry;
@@ -99,6 +101,19 @@ public class GeneratorAutoConfiguration {
     @Bean
     public ToolPermissionRegistry skillGeneratorPermissionRegistry(SkillGenerator generator) {
         return ToolPermissionRegistry.of(new SkillGeneratorToolProvider(generator).permissions());
+    }
+
+    /**
+     * 档位：{@link ToolTier#CODING}。
+     *
+     * <p>交草稿与跑脚本分开管（动作名一个是 {@code draft_script}、一个是 {@code run_script}），
+     * 但档位上是同一档：会写脚本的部署就在 {@code coding}，而"不碰代码"的部署两样都不该有。
+     * 拆成两档的话，"能写不能跑"这个组合要么没人用，要么得再补一条 deny，得不偿失。
+     */
+    @Bean
+    public ToolTierRegistry skillGeneratorTierRegistry(SkillGenerator generator) {
+        return ToolTierRegistry.sameFor(
+                new SkillGeneratorToolProvider(generator).permissions().keySet(), ToolTier.CODING);
     }
 
     /**

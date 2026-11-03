@@ -1,5 +1,6 @@
 package io.github.claw4j.app;
 
+import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.agent.session.SessionKeys;
@@ -10,12 +11,16 @@ import io.github.claw4j.domain.port.ApprovalDecider;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolProfile;
+import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -47,8 +52,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 一个完整功能：整机装配。
@@ -314,6 +321,87 @@ class ApplicationAssemblyTest {
     }
 
     /** 金额可能被写成 128,400 或 ￥128400：去掉分隔符再比，比的就是那个数。 */
+    /**
+     * P09：档位决定的是**清单**，不是"调了被拒"。
+     *
+     * <p>直接调清单组装方法而不是起一个完整上下文：这里要问的是"筛完之后剩哪些名字"，
+     * 而完整上下文会把答案混进几十个 bean 里。两条用例合起来就是这个机制的判据——
+     * 一条证明该挡的挡掉了、不该挡的还在，一条证明"没声明档"不是默认放行。
+     */
+    @Test
+    @DisplayName("messaging 档：脚本类不在清单里，元工具与查数工具都在（P09）")
+    void messagingProfileFiltersTheManifestNotTheExecution() {
+        List<ToolCallback> manifest = AgentAutoConfiguration.collectToolCallbacks(
+                providerOf(List.of(tool("toolSearchTool"), tool("querySales"), tool("run_script"))),
+                providerOf(List.of()),
+                null, null, null,
+                new ToolProfile(ToolTier.MESSAGING, Set.of(), Set.of()),
+                List.of(ToolTierRegistry.sameFor(Set.of("toolSearchTool"), ToolTier.MINIMAL),
+                        ToolTierRegistry.sameFor(Set.of("querySales"), ToolTier.MESSAGING),
+                        ToolTierRegistry.sameFor(Set.of("run_script"), ToolTier.CODING)));
+
+        assertThat(manifest)
+                .extracting(callback -> callback.getToolDefinition().name())
+                .as("run_script 是 coding 档的：messaging 部署里它连检索都搜不到，不是调了才被拒")
+                .containsExactly("toolSearchTool", "querySales");
+    }
+
+    @Test
+    @DisplayName("清单里有没登记档位的工具：装配期失败并点名（P09）")
+    void toolWithoutTierFailsAtAssembly() {
+        assertThatThrownBy(() -> AgentAutoConfiguration.collectToolCallbacks(
+                providerOf(List.of(tool("mystery"))),
+                providerOf(List.of()),
+                null, null, null,
+                ToolProfile.unrestricted(),
+                List.of()))
+                .as("默认出现正是这套机制要避免的事：没声明就起不来，不是默默归进最宽那档")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("mystery");
+    }
+
+    /**
+     * 一个只有名字的工具。清单组装只看 {@code getToolDefinition().name()}，
+     * 所以这段桩足以回答"它有没有被留下"。
+     */
+    private static ToolCallback tool(String name) {
+        return new ToolCallback() {
+            private final ToolDefinition definition = ToolDefinition.builder()
+                    .name(name)
+                    .description(name)
+                    .inputSchema("{\"type\":\"object\",\"properties\":{}}")
+                    .build();
+
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return definition;
+            }
+
+            @Override
+            public String call(String toolInput) {
+                return "ok";
+            }
+        };
+    }
+
+    /**
+     * 只要一个可枚举的 {@code ObjectProvider}：收集方法只用到 {@code orderedStream()}。
+     * 其余入口在这里不该被走到——走到就说明装配依赖了"单例"语义，而那正是要避免的。
+     */
+    private static <T> ObjectProvider<T> providerOf(List<T> items) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject() {
+                throw new UnsupportedOperationException("清单收集只走 orderedStream");
+            }
+
+            @Override
+            public Stream<T> stream() {
+                return items.stream();
+            }
+        };
+    }
+
     private static boolean mentions(String answer, String amount) {
         String normalized = answer.replace(",", "").replace("，", "").replace(" ", "");
         return normalized.contains(amount);
@@ -429,6 +517,18 @@ class ApplicationAssemblyTest {
         ToolPermissionRegistry noticePermission() {
             return ToolPermissionRegistry.of(Map.of(TOOL,
                     ToolPermission.requiringApproval(ToolPermission.READ)));
+        }
+
+        /**
+         * 档位同样要登记（P09）：装配期对**清单里每一个**工具都要问"你属于哪一档"，
+         * 探针工具也不例外。这条恰好是那条校验有用的证据——它在这个测试里第一次就抓到了
+         * 一个没登记档的工具，而不是等到某个部署里悄悄多出一个能力。
+         *
+         * <p>给 {@code full}：这是探针，不该影响任何档位语义，只求在跑这条用例的默认档下出现。
+         */
+        @Bean
+        ToolTierRegistry noticeTier() {
+            return ToolTierRegistry.sameFor(List.of(TOOL), ToolTier.FULL);
         }
     }
 
