@@ -1,6 +1,6 @@
 # P15 · 多 agent 配置：同一份代码，两次部署只改配置
 
-**Status:** done（2026-11-03 实现，未提交）
+**Status:** done（2026-11-03 实现，`630c327`）
 **Blocked by:** None（P09 的 tools profile 已落地，是这张票的一层）
 
 ## 背景

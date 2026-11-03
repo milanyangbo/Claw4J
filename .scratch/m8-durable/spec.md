@@ -133,7 +133,11 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   `${ENV_VAR}` 占位符（`McpServerProperties:99`）——但两者都在配置绑定时就解析成真值；
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
-  P15（已拆，`P15-multi-agent-config.md`，未开工）。P15 排在 P09 之后，因为它依赖 profile 这一层。
-  写 P15 票时核到的三条硬事实都落到了具体代码位置：人设是 `AgentAutoConfiguration:64` 的
-  Java 常量、口径被抄在 Skill 与 Subagent 的正文里、时间上下文完全不存在
-  （`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
+  P15（已实现，`630c327`）、P11（已拆，`P11-mcp-server.md`，未开工）。
+  P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
+  人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
+  时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
+  写 P11 票时查到两件改变实现形态的事，都写进了票面：`spring.ai.mcp.server.stdio` 默认 false
+  （只引依赖得到的是"stdio 没开、也没有别的传输"，不是"什么都没发生"）；server 侧的
+  `ToolCallbackConverterAutoConfiguration` 会把容器里四个 `ToolCallbackProvider` 原样暴露，
+  绕过 P09 的档位、包装与鉴权。所以这张票不引 server starter，自己装配 `McpSyncServer`。
