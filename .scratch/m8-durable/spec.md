@@ -135,7 +135,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   `${ENV_VAR}` 占位符（`McpServerProperties:99`）——但两者都在配置绑定时就解析成真值；
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
-  P15（已实现，`630c327`）、P11（已实现，`f3dba26`）。
+  P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已拆，`P12-dingtalk-channel.md`，未开工）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -143,3 +143,16 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   （只引依赖得到的是"stdio 没开、也没有别的传输"，不是"什么都没发生"）；server 侧的
   `ToolCallbackConverterAutoConfiguration` 会把容器里四个 `ToolCallbackProvider` 原样暴露，
   绕过 P09 的档位、包装与鉴权。所以这张票不引 server starter，自己装配 `McpSyncServer`。
+- 2026-11-03 拆 P12。ADR 把两张写在一句里（「P12 / P13 · 钉钉 / Slack 通道」），
+  **按书写顺序取 P12 = 钉钉**，这是本票唯一的推断，其余都核过。
+  写票时核到的三件改变实现形态的事：
+  1. 钉钉有三条都叫"接收消息"的路（机器人 HTTP 回调 / 企业事件订阅 / Stream），
+     只有第一条的载荷里有『谁说了什么』。第二条虽是加密 JSON、能照抄企微那份加解密，
+     但推的是通讯录与群事件——接完会发现收不到业务消息。
+  2. 机器人回调是**明文 JSON + header 签名**（`HmacSHA256(appSecret, timestamp + "\n" + appSecret)`），
+     与企微的加密 XML 不是一类；`senderStaffId` 在机器人未发布上线时**不返回**。
+  3. `createAt` 是毫秒、企微的 `CreateTime` 是秒（P06 记过照抄会得到 1970 年，这次方向相反）；
+     钉钉换 token 有效期内返回同一张，企微那段"平台先一步废掉"的重试逻辑不能照抄。
+- **channel 模块的测试文件已经满了**（10 个）。P12 若不能新增文件，只能合并腾槽
+  （`FeishuOutboundDeliveryTest` 1 条并进 `FeishuChannelWiringTest`）或塞进未满的文件。
+  这条约束在 P12 票里写成了三条出路，开工前先定。
