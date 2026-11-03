@@ -121,7 +121,9 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
 - **依赖边**（按 ADR-0020 的描述推出来的真实依赖，不是优先级）：
   - P08、P09、P12、P13 互不依赖，可并行；
   - P10 的分词方案**已定**（应用侧切 bigram，实测数据在票面第一节），不再是阻塞项；
-  - P14 依赖 P07 的审计口径（三条时间线不许混）；
+  - P14 依赖 P07 的审计口径（三条时间线不许混）；**已定：根 span 是 run，step 是 span 的属性**
+  （`claw4j.step.seq`），不做请求级 traceparent 透传；SDK 直连 OTel 1.35.0、走 HTTP 不走 gRPC，
+  两条都是离线仓库实测出来的，见票面第一节；
   - P15 依赖 P09 的 profile（工具策略是它的一层）。
 - **实现中发现与本目录或 ADR 不一致时，先回来改文档再写代码**——它们是已接受的裁决。
 - 每一张票收票时把"验收框逐条勾 + 证据落到方法名/文件名"，不要只写 Comments：
@@ -141,7 +143,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
   P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，`9389e07`）、
-  P10（已实现，`58fc525`）、P13（已实现，未提交）。
+  P10（已实现，`58fc525`）、P13（已实现，`74237fe`）、P14（已拆，`P14-observability-otel.md`，未开工）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -230,3 +232,22 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   4. **协议细节值得写成"数"而不是"曾经"**：3 秒应答、60 分钟 95% 失败率会停订阅、同频道 1 秒 1 条、
      签名窗口 5 分钟、时间戳是秒、`text` 建议 ≤4000（与 `MessageSplitter` 的默认值正好一致）。
      这些数写进票面与 README 之后，下一个人不必再查一遍文档，也不必猜我们抄的是哪一家。
+- 2026-11-03/04 拆 P14（可观测与 OTel 导出）。四件事决定实现形态，其中前两件是**离线仓库实测**得来的，
+  不是查文档：
+  1. **Boot 4.1.2 的 OTel 支持在离线环境里不可用**。它管着 `opentelemetry.version=1.62.0`、
+     `micrometer-tracing.version=1.7.2`，也管 `spring-boot-starter-opentelemetry` 三个坐标，
+     但本地仓库一个 jar 都没有（`micrometer-tracing` 只有 1.5.6）。而 `opentelemetry-sdk:1.35.0` +
+     `opentelemetry-exporter-otlp:1.35.0` 的整条链离线解析成功（临时 pom 实测，依赖树在票里）。
+     所以直连 SDK、显式版本，与 P11 不用 mcp-server starter 同一条理由。
+  2. **只能走 HTTP，不能走 gRPC**。jar 里两个 exporter 都有，但运行时依赖只带
+     `exporter-sender-okhttp`——`OtlpGrpcSpanExporter` 编译得过、启动时找不到 sender。
+     这是「本地跑得起来、换台机器就炸」的那类错，写进票面。
+  3. **根 span 是 run 不是请求**。五个通道都把 `agent.reply` 丢进 `ThreadPoolTaskExecutor`，
+     请求的 trace 在入池那一刻就断；而 run 跨通道、跨重试、跨 resume。子 agent 那边也核过：
+     `SubagentRunner` 没有 `AgentPort` / `RunStore`，所以它不会长出第二棵树。
+  4. **step 不做 span，做 span 的属性**。给一行 step 开 span，duration 只是一次 INSERT；
+     而 `APPROVAL` 会挂几小时。改成「动作 span 关闭前写 `claw4j.step.seq`」，代价是
+     `ToolCallAudit#executed` 要返回 `Optional<Step>`（现在 void）——那也正是审计行与 span
+     唯一能对上号的地方。
+  另外把两条容易被忽略的机制写进了判据：采样必须 `ParentBased(TraceIdRatioBased)`（裸 ratio 会
+  出现「有 run 无 tool」），provider 关闭前必须 flush（丢的恰好是出事前那几秒）。
