@@ -1,0 +1,98 @@
+# P15 · 多 agent 配置：同一份代码，两次部署只改配置
+
+**Status:** ready-for-agent
+**Blocked by:** None（P09 的 tools profile 已落地，是这张票的一层）
+
+## 背景
+
+ADR-0020 对这件的判据只有一句：**同一份代码两次部署只改配置，一个变销售助手、一个变运维助手。**
+
+现在做不到。而且缺的不是一处，是三处各缺一块，分布在三个不同的位置：
+
+1. **人设是 Java 常量**。`AgentAutoConfiguration:64` 的 `SYSTEM_PROMPT` 是三行硬编码文本。
+   改一个字要重新编译发版，而"销售助手"与"运维助手"的差别首先就长在这里。
+2. **口径没有独立的源**。业务口径现在被抄在每份 Skill 与每个 Subagent 的正文里：
+   `examples/skills/weekly-sales/SKILL.md` 第一节就是「口径（先确认，再动手）」，
+   `examples/subagents/metric-glossary.md` 整份都在解释口径。
+   两份部署口径不同 = 同一段话抄两遍，改一处必漏一处。
+3. **时间上下文根本不存在**。整个 `claw4j-agent` 主代码没有任何"今天几号"进入提示词。
+   `weekly-sales` 的相对时间是靠 SQL 里的 `current_date` 兜的——等于口径顺带依赖了数据库时钟；
+   而 `ScheduleStore.zoneOf(null)` 兜底 `ZoneId.systemDefault()`，容器里通常是 UTC，"今天"会差一天。
+   语义缓存那边的注释已经记着这个坑（「上周」与「上上周」相似度 0.995，单靠阈值挡不住），
+   但那只解决了缓存键，模型自己仍然没有时钟。
+
+工具与技能则都是**全局一份**：`claw4j.tools.profile`（P09）、`claw4j.skills.directory`（单个
+String）、`claw4j.subagents.directory`（单个 String）。per-agent 覆盖无处表达。
+
+## 必须先回答的一个结构问题
+
+`SubagentDefinition` 已经是「一份 md = name / description / systemPrompt / tools / disallowedTools」。
+主 Agent 的定义若另起一种形状，就会长出**两套人设配置**——而 ADR 把 tools profile 与提示词分层
+合并成这一张票，正是为了避免这件事。
+
+实现要先回答：**主 Agent 与子 Agent 是不是同一套定义形状？** 两条路都成立，但必须写明选了哪条：
+
+- **同形**：主 Agent 也用一份 md（或同一组键）。好处是解析、校验、失败消息只有一处。
+  代价是"子 Agent 的工具白名单"与"主 Agent 的工具策略"语义不同，同一份形状要容下两种语义。
+- **不同形**：主 Agent 走 `claw4j.agent.*`，子 Agent 保持现状。
+  代价是要在两处回答"人设从哪来、工具怎么裁"，并且要能说清**为什么这不会变成两套口径写法**。
+
+## 三个不替实现决定的点
+
+1. **"两次部署"与"一个进程多份"**：判据只要求跨进程可配。进程内是否支持多份、按什么选
+   （通道 / 角色 / 会话），可以不做；做了就必须是**配置里显式写明的映射**——
+   靠猜来选的话，"为什么这个用户看到销售人设"这个问题永远答不出来。
+2. **没配人设时怎么办**：删掉常量之后有三种出路（启动失败 / 一段明确的默认 / 取 md 里的默认）。
+   选哪个都行，但**不许静默退回"上一次那份"**，且选定后启动日志里要看得见。
+3. **口径怎么组合**：独立的口径文件、按层叠加（全局 + agent）、还是引用 Skill 的某一节。
+   判据只有一条：**改一处，所有引用它的地方都变**，且能答出"这句出自哪份口径"。
+
+## 验收判据
+
+- [ ] **同一份 jar、两份配置**：仓库里给出 sales 与 ops 两份配置样例，用同一套代码启动，
+      断言两边的系统提示词不同、可用技能集合不同、`tools.profile` 可以不同。
+      要有自动化用例，不能只靠人眼看两份 yml
+- [ ] `AgentAutoConfiguration` 里不再有硬编码人设；没配时的行为是**显式选定**的那一种
+      （失败或明确默认），且启动日志能答出"这次用的是哪份人设"
+- [ ] **口径只有一个源**：`examples` 里的口径从 Skill / Subagent 正文里抽出来，
+      改一处生效于所有引用处；用例断言"同一个口径在两份 agent 配置下取到同一段原文"
+- [ ] **时间上下文**：判定落在**发给模型的提示词**上（拦截并断言含当天日期与显式时区），
+      不落在"模型答得对不对"上——后者是 A06 评测的事，不是这张票的判据。
+      至少一条用例覆盖跨零点或跨时区；时区不依赖容器 `systemDefault`
+- [ ] **覆盖可追溯**：能答出"这个 agent 的这一条从哪一层来"（全局默认 / agent 覆盖），
+      继承关系不是读代码才知道的
+- [ ] **选不到 agent 不许静默降级**：点名了不存在的 agent 要启动失败并列出可用的那些
+- [ ] P09 的能力轴在同一条链上继续生效：per-agent 的 profile 不能绕过未分档校验
+      （新加的 agent 若没声明档位，仍然启动失败并点名）
+- [ ] `./scripts/verify.sh` 全绿，跳过 0，agent 行覆盖率不低于 60%
+- [ ] **门禁余量**（见 Comments）：`claw4j-agent` 与 `claw4j-app` 的测试文件都已到 10 个上限，
+      判断逻辑要落在 `claw4j-core`（尚有 2 个文件余量）或复用未满 20 条的现有文件
+
+## 不做
+
+- **不做热切换 agent**：改配置要重启。与 P09 同一条理由——热切换会让"已经在跑的 run"
+  与"新配置"出现两种真相，恢复时读哪一份说不清
+- **不做提示词模板引擎**（条件、循环、变量求值）：只要分层与覆盖，不要一门语言
+- 不做 agent 的可视化编辑、注册中心、跨进程分发
+
+## Comments
+
+- 现状核对（2026-11-03，写票前逐个看过，不是凭印象）：
+  - `AgentAutoConfiguration:64` 的 `SYSTEM_PROMPT` 是 `private static final String`，三行；
+    在 `chatClient` bean 里被 `.defaultSystem(SYSTEM_PROMPT)` 用在唯一那个 `ChatClient` 上
+  - `ChatClientAgentPort` 持有单个 `ChatClient`（5 个重载构造器，都接同一个类型）——
+    "按 agent 选"如果要落到运行期，改动点在它
+  - `claw4j.skills.directory` 与 `claw4j.subagents.directory` 都是单个 string 占位符
+    （`SkillToolAutoConfiguration:38`），不是 List
+  - `ScheduleStore.zoneOf` 对空时区兜底 `ZoneId.systemDefault()`（第 243 行起）
+  - `examples/subagents/` 已有 5 份 md（含 `metric-glossary.md` 这份纯口径解释），
+    `examples/skills/` 有 1 份（`weekly-sales`，第一节就是口径）
+- **门禁余量（硬约束，开工前先看）**：`claw4j-agent` 10 个测试文件（上限 10），
+  其中 `ChatPipelineTest` / `InboundSecurityTest` / `ModelAndToolSelectionTest` /
+  `SessionMemoryTest` 四条都已在 20 条用例上限；`claw4j-app` 同样 10 个文件。
+  所以这张票**不能在 agent 或 app 新增测试文件**，也不能往那四个文件里加用例。
+  可用的是 `claw4j-core`（8 个文件，还能加 2 个）与 agent 里未满的
+  （`ToolCallAuditTest` 13 / `RecallSessionTest` 8 / `SemanticCacheTest` 15 / `ScheduleToolsTest` 14）。
+- 与 P09 的关系：这张票是**层**，P09 是**轴**。profile 从全局变成可 per-agent 之后，
+  "未分档就启动失败"那条校验必须跟着下沉到每一个 agent，不能因为多了一层就放宽。
+- 拆票说明：M8 其余六张（P10–P14、P16）尚未拆，见 `.scratch/m8-durable/spec.md` 的 Comments。

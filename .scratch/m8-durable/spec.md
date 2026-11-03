@@ -125,8 +125,15 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
 - 2026-11-03 建目录与 spec。范围按 ADR-0020 的 M8 段（P08–P16，九张），
   **只拆了 P08 一张**：其余八张的验收判据 ADR 原文每张只有三五行，一次扩完等于由我编细节，
   按需逐张拆更靠得住。要一次拆完说一句，我按同一套形式补。
-- 写 spec 时核过的现状（避免文档比代码走得远）：模型 key 是 `application.yml` 的
+- 写 spec 时核过的现状（避免文档比代码走得远）。**P08 之前的快照**：模型 key 与 MCP 的
+  `env` / `headers` 三项已被 P08 改成句柄，下面只剩脚本那一条仍准。原文如下——
+  模型 key 是 `application.yml` 的
   `${DEEPSEEK_API_KEY:}` 占位符，配空则启动失败（`RealChatModelCondition`）；
   MCP 的 `env` 是 `Map<String, String>`（允许直写真值），`headers` 的 javadoc 要求写
   `${ENV_VAR}` 占位符（`McpServerProperties:99`）——但两者都在配置绑定时就解析成真值；
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
+- 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
+  P15（已拆，`P15-multi-agent-config.md`，未开工）。P15 排在 P09 之后，因为它依赖 profile 这一层。
+  写 P15 票时核到的三条硬事实都落到了具体代码位置：人设是 `AgentAutoConfiguration:64` 的
+  Java 常量、口径被抄在 Skill 与 Subagent 的正文里、时间上下文完全不存在
+  （`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
