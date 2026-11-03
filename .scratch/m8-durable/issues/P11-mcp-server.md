@@ -1,6 +1,6 @@
 # P11 · 反向 MCP server：把自己的工具交出去
 
-**Status:** done（2026-11-03 实现，未提交）
+**Status:** done（2026-11-03 实现，`f3dba26`）
 **Blocked by:** None（P09 的工具清单已落地，是这张票的前置）
 
 ## 背景

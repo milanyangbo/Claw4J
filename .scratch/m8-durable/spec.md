@@ -71,10 +71,12 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
 - **P10 的中文分词是前置条件，不是实现细节**：Postgres 默认分词器对中文失效
   （`to_tsvector('simple', 中文)` 切不出词）。开工前要先定 pg_bigm、应用侧抽词、还是外部检索，
   否则"混合检索"名不副实。这条写进票里，不许在实现中途发现。
-- **P11 用的 starter 本地有，但还没进依赖**：根 pom 的 `spring-ai.version` 是 2.0.2，本地仓库里有
-  `spring-ai-starter-mcp-server:2.0.2`，而它**没有被任何模块声明**——P11 要加的就是这一行
-  （版本跟着 BOM，不引第三方实现）。注意 `spring-ai-starter-mcp-server-webmvc` 本地只有
-  1.1.5 / 1.1.6，真要 webmvc 变体得联网拉，离线构建会直接失败。
+- **P11 最后没有引 server starter**（实现后的实际状态，`f3dba26`）：本地仓库里
+  `spring-ai-starter-mcp-server:2.0.2` 一直在，但它的 `ToolCallbackConverterAutoConfiguration`
+  会把容器里四个 `ToolCallbackProvider` 原样暴露，绕过 P09 的档位、`MeteredToolCallback` 与
+  鉴权注册表；而 `spring.ai.mcp.server.stdio` 默认 false，引了依赖也不等于能用。所以改成自己
+  装配 `McpSyncServer`（`mcp-core` 已随 client starter 传递进来）。真要 webmvc 变体还得注意
+  本地只有 1.1.5 / 1.1.6，离线构建会失败。
 - **P14 的三件事不许合并**：审计是"谁让谁做了什么"（合规、落库可查，P07 已做），
   评测是"这个回答好不好"（质量、跑真值集，A06），观测是"现在系统怎么样"（Ops、可聚合）。
 - **P15 合成一张票**：tools profile 与提示词分层分开会长出两套"人设"配置，它们是同一件事。
@@ -133,7 +135,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   `${ENV_VAR}` 占位符（`McpServerProperties:99`）——但两者都在配置绑定时就解析成真值；
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
-  P15（已实现，`630c327`）、P11（已实现，未提交，见 `P11-mcp-server.md`）。
+  P15（已实现，`630c327`）、P11（已实现，`f3dba26`）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
