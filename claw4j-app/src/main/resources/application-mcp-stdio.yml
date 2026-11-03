@@ -9,7 +9,7 @@
 #     一帧 JSON 中间插进一行日志，客户端报的是"连不上"，而 server 侧一片正常——
 #     这个形状在 claw4j-example-mcp-server 的 logback.xml 里已经记过一遍（第一次跑就挂在那）。
 #     所以横幅关掉，日志换一份出口是 stderr 的配置（logback-mcp-stdio.xml）。
-#   - 这个进程是在给一个客户端当工具，不是在当服务：三个通道与调度都关掉，
+#   - 这个进程是在给一个客户端当工具，不是在当服务：四个通道与调度都关掉，
 #     免得一个本地客户端拉起一整套对外服务；servlet 容器也不起，
 #     否则本机已经跑着一个 claw4j 时，这里会因为端口被占而起不来。
 #
@@ -33,6 +33,11 @@ claw4j:
     feishu:
       enabled: false
     wecom:
+      enabled: false
+    # 钉钉这一条即使开着也装配不起来（它挂在"是个 servlet 应用"这个条件上），
+    # 但写出来是让"这份 profile 关掉了哪些东西"这句话完整——漏掉一个，
+    # 下次有人加通道时会照着这份清单补，而清单少一行就没人发现。
+    dingtalk:
       enabled: false
   schedule:
     enabled: false

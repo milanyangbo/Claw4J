@@ -1,5 +1,6 @@
 package io.github.claw4j.channel.feishu.sdk;
 
+import io.github.claw4j.channel.feishu.FeishuOutboundDelivery;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.port.AgentPort;
@@ -14,6 +15,8 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,6 +30,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>唯一的正例（凭据齐全 → 真连上）不写在这里：它会在跑测试时去连飞书，
  * 让回归依赖网络与一个真实应用的状态。
+ *
+ * <p>最后一条用例（主动投递）严格说不属于"装配条件"，但它就在这里——理由写在它自己的注释里：
+ * channel 模块的测试文件有<b>名额上限</b>（10 个），而只有一条用例的文件腾出来的正好是
+ * 下一个通道要用的槽位。
  */
 @ExtendWith(OutputCaptureExtension.class)
 class FeishuChannelWiringTest {
@@ -156,6 +163,31 @@ class FeishuChannelWiringTest {
         new FeishuChannelProperties().validate();
 
         assertThat(output).doesNotContain("一个人都没登记");
+    }
+
+    /**
+     * 主动投递（A05）：一个 chat_id 加一段文本，交给本来就在的回推。
+     *
+     * <p>原来它单独一个文件（{@code FeishuOutboundDeliveryTest}），只有这一条——
+     * 而 channel 模块的测试文件是<b>有名额上限</b>的（10 个，脚本卡着），
+     * 钉钉通道那条要新建文件，槽位只能从"只有一条用例的文件"里腾。
+     * 放这里而不是删掉：投递实现本来就是这个装配的一个产物，
+     * 而它值得一条用例的地方在于两件事不能被改错——通道名必须与
+     * {@code agent_run_delivery.channel} 那一列同口径（错了的表现是"登记了地址，
+     * 但永远没有实现能送"），地址必须原样交给回推（错了会推到一个拼出来的地址上，
+     * 而那种错在日志里看着像"发成功了"）。
+     */
+    @Test
+    @DisplayName("主动投递：通道名与库里那一列同口径，地址原样交给回推")
+    void outboundDeliveryHandsTheAddressToTheReplySender() {
+        List<String> sent = new ArrayList<>();
+        FeishuOutboundDelivery delivery = new FeishuOutboundDelivery(
+                (chatId, text) -> sent.add(chatId + "|" + text));
+
+        delivery.send("oc_zhang", "华东上周成交 128400");
+
+        assertThat(delivery.channel()).isEqualTo("feishu");
+        assertThat(sent).containsExactly("oc_zhang|华东上周成交 128400");
     }
 
     /** 通道只需要一个 AgentPort 在场；这一份用例不验它做什么。 */    private static final class NoopAgent implements AgentPort {

@@ -20,7 +20,7 @@
 
 | 要点 | 说明 |
 | --- | --- |
-| **三条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
+| **四条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）、钉钉机器人（给企业内，**明文 JSON + header 验签**）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
 | **五种能力来源，对模型是一回事** | Java `@Tool`、MCP server（stdio / HTTP 都行）、受限脚本包、Agent Skill、子 Agent |
 | **也能反过来当 MCP server** | `claw4j.mcp.server.expose` 点名几个工具，Claude Code 这类客户端就能像用别的工具一样调它们；交出去的只能是模型能用的那一份里的 |
 | **流式与同步同源** | Advisor 必须同时实现 Call 和 Stream，只写一个会在流式路径上静默不生效 |
@@ -127,7 +127,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   同理，它也不扣 run 预算。
 
 `mcp-stdio` 那份 profile 只做一件事：把 stdout 让给协议。日志改走 stderr、横幅关掉、容器不起、
-三个通道与调度关掉——一帧 JSON 中间插进一行启动日志，客户端报的是"连不上"。
+四个通道与调度关掉——一帧 JSON 中间插进一行启动日志，客户端报的是"连不上"。
 
 ## 集成
 
@@ -313,11 +313,11 @@ glossary:
 
 ```java
 @AutoConfiguration
-@ConditionalOnProperty(prefix = "acme.channel.dingtalk", name = "enabled", havingValue = "true")
-public class DingTalkChannelAutoConfiguration {
+@ConditionalOnProperty(prefix = "acme.channel.telegram", name = "enabled", havingValue = "true")
+public class TelegramChannelAutoConfiguration {
     @Bean(initMethod = "start", destroyMethod = "stop")
-    public DingTalkChannel dingTalkChannel(AgentPort agentPort) {
-        return new DingTalkChannel(agentPort, ...);   // 收消息 → 认出是谁 → 交给 AgentPort → 回推
+    public TelegramChannel telegramChannel(AgentPort agentPort) {
+        return new TelegramChannel(agentPort, ...);   // 收消息 → 认出是谁 → 交给 AgentPort → 回推
     }
 }
 ```
@@ -326,9 +326,19 @@ public class DingTalkChannelAutoConfiguration {
 这三条写进了 [`ChatChannel`](claw4j-core/src/main/java/io/github/claw4j/channel/spi/ChatChannel.java) 的契约；
 "ACK 之后怎么办"（去重、认人、异步、分段回推、失败也回一句）在
 [`channel.kernel`](claw4j-core/src/main/java/io/github/claw4j/channel/kernel)——它在 `claw4j-core` 里，
-所以接 Telegram 不必把飞书 SDK 拖进 classpath。飞书与企业微信都是凭据齐全才装配，缺一个整个通道退让、HTTP 照常。
-两家的差别只在"怎么收"与"怎么发"：飞书是 SDK 长连接，企业微信是自己验签解密的回调端点；
-一个平台一个包，编排层不认识它们中的任何一个。
+所以接 Telegram 不必把飞书 SDK 拖进 classpath。飞书、企业微信、钉钉都是凭据齐全才装配，
+缺一个整个通道退让、HTTP 照常。
+三家的差别只在"怎么收"与"怎么发"：飞书是 SDK 长连接，企业微信是自己验签解密的加密 XML 回调，
+钉钉是自己验签的明文 JSON 回调；一个平台一个包，编排层不认识它们中的任何一个。
+
+**钉钉这一条要说清一句话**：报文是明文的，所以 header 里那个签名是<b>唯一的门</b>。
+验签与"时间戳相差不超过 1 小时"两条缺一不可——只验签名不验时间戳，等于让一对截获的
+`(timestamp, sign)` 永远可用。这一条由 `DingtalkChannelTest` 用两条反例钉着
+（签名错的报文合法、签名对但时间戳在两小时前）。
+
+**调用量是有限的**：钉钉对机器人有调用量上限（超了会返回 20001 一类
+"受调用量影响服务暂停"的错误码，要升级套餐或买增购包）。一个企业里人人来问的部署，
+这件事要提前知道，而不是等第一次被限流。会话按人隔离，但调用次数按企业算。
 
 ## 配置
 
@@ -342,6 +352,7 @@ public class DingTalkChannelAutoConfiguration {
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 否 | 两个都配才装配长连接通道 |
 | `WECOM_CORP_ID` / `WECOM_CORP_SECRET` / `WECOM_AGENT_ID` | 否 | 企业微信自建应用，三个都配才有出站 |
 | `WECOM_TOKEN` / `WECOM_ENCODING_AES_KEY` | 否 | 回调的签名与解密；与上面三个**一起**齐了才装配通道 |
+| `DINGTALK_CLIENT_ID` / `DINGTALK_CLIENT_SECRET` / `DINGTALK_ROBOT_CODE` | 否 | 钉钉机器人，三个都配才装配。**client-secret 同时是验签的密钥**，配错既发不出也收不进 |
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用 |
 
 `claw4j.*` 的每个键都有明确的拥有者，`application.yml` 里逐项写了默认值与"动它之前要知道什么"。
@@ -364,7 +375,7 @@ public class DingTalkChannelAutoConfiguration {
 | --- | --- |
 | `claw4j-core` | 契约与不变量：`domain`（端口、`Principal`、权限登记表）+ `channel.spi` + `channel.kernel`。**编译期只有 slf4j**，接插件与接通道都只认这一个坐标（[ADR-0015](docs/adr/0015-one-core-artifact.md)） |
 | `claw4j-agent` | ChatClient 装配、模型路由、Advisor 链、会话与缓存。不认识任何通道，也不认识任何工具类 |
-| `claw4j-channel` | 入站出站适配（HTTP+SSE、飞书长连接、企业微信回调），按平台分包 |
+| `claw4j-channel` | 入站出站适配（HTTP+SSE、飞书长连接、企业微信回调、钉钉回调），按平台分包 |
 | `claw4j-capability` | 能力来源的接缝：MCP、脚本包、Skill、子 Agent、生成器，加一个平台无关的 `system` 工具 |
 | `claw4j-example-sales` | **示例插件**：一个业务工具 + 四张业务表 + 种子数据，不依赖 `claw4j-capability` |
 | `claw4j-example-mcp-server` | **示例插件**：`java -jar` 就能跑的 Java MCP server，不依赖 Claw4J 任何模块 |

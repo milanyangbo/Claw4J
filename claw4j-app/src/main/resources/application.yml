@@ -5,9 +5,14 @@
 #     与 docs/design/ 下，两边不重复写——两处写同一件事，早晚改一处漏一处。
 #   - claw4j.* 的每个键都有明确的拥有者：某个 @ConfigurationProperties 类，或装配类上的
 #     @ConditionalOnProperty。在这里加一个没人读的键，就是又一处"配了不生效"。
-#   - 凭据一律写**句柄**：`secret:<名字>`，名字是环境变量名的小写写法（P08、ADR-0002）。
-#     真值在发请求那一刻才由出口解析，配置、日志、审计、模型上下文里都只有名字。
+#   - 模型 key 与 MCP 的 env / headers 写**句柄**：`secret:<名字>`，名字是环境变量名的小写写法
+#     （P08、ADR-0002）。真值在发请求那一刻才由出口解析，配置、日志、审计、模型上下文里都只有名字。
 #     裸写明文会在启动时失败并点名是哪一行——不靠"看着像凭据"来判断。
+#   - 通道凭据（feishu / wecom / dingtalk 里的 secret 类）**不在上面那条规则里**：
+#     它们是 `${FEISHU_APP_SECRET:}` 这样的环境变量占位，真值在绑定时由 Spring 替换。
+#     两边差一层不是疏忽：解析句柄的 SpringSecretResolver 在 claw4j-capability，而 channel
+#     不依赖它（ChannelBoundaryTest 钉着这条边）。要让通道也用句柄，得先把 SecretResolver
+#     接口下沉到 core——那是另一件事，P12 的 Comments 里记着这个偏差。
 
 spring:
   application:
@@ -142,6 +147,25 @@ claw4j:
       encoding-aes-key: ${WECOM_ENCODING_AES_KEY:}
       # 这里只登记"谁是谁"（成员 UserID），**不写 tables/actions**：授权共用上面 http 那份，
       # 角色名必须对得上，错一个就启动失败。UserID 是真人，填在 application-local.yml。
+      roles:
+        read-only:
+          users: []
+
+    # ---- 钉钉（P12）：入站是公网回调地址，报文是**明文 JSON**、签名在 header 里 ----
+    # 与上面两条最大的不同：报文不加密，所以验签是唯一的门。少一道就是"公网端点直连模型"。
+    # 三样齐了才装配（client-id / client-secret / robot-code），少一样整份退让、只跑 HTTP。
+    # 回调地址固定是 /api/dingtalk/callback：开发者后台"机器人 → 消息接收地址"填它。
+    # client-secret 同时干两件事——换 token、**验签**：配错它既有"发不出去"也有"所有回调被拒"。
+    dingtalk:
+      enabled: ${CLAW4J_DINGTALK_ENABLED:true}
+      client-id: ${DINGTALK_CLIENT_ID:}
+      client-secret: ${DINGTALK_CLIENT_SECRET:}
+      # RobotCode 通常与 Client ID 同值，但它是一个独立配置项（换机器人不必换应用凭据）。
+      robot-code: ${DINGTALK_ROBOT_CODE:}
+      # 这里只登记"谁是谁"（企业内 userId），**不写 tables/actions**：授权共用上面 http 那份，
+      # 角色名必须对得上，错一个就启动失败。userId 是真人，填在 application-local.yml。
+      # 注意这里没有"默认角色"：机器人没发布上线时钉钉不返回 senderStaffId，
+      # 那种情况会记一条"钉钉没给身份"的 WARN，不是"这个人没登记"。
       roles:
         read-only:
           users: []

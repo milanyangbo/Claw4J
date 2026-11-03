@@ -1,6 +1,6 @@
 # P12 · 钉钉通道：第四个入口，这次验签在 header 里
 
-**Status:** ready-for-agent
+**Status:** done（2026-11-03 实现，未提交）
 **Blocked by:** None（P06 的通道模板已落地，`InboundDispatcher` 与 `OutboundDelivery` 都现成）
 
 ## 背景
@@ -65,35 +65,35 @@ ADR-0020 对这一对（P12 / P13）只有一句话：「扩展点已经就绪�
 
 ## 验收判据
 
-- [ ] **验签真的挡住了**：`sign` 对不上或 `timestamp` 与当前差超过 1 小时，这条回调**不处理**
+- [x] **验签真的挡住了**：`sign` 对不上或 `timestamp` 与当前差超过 1 小时，这条回调**不处理**
       （不进编排、不调模型），且**返回 200 而不是 5xx**——5xx 会让钉钉重推一条同样验不过的消息。
       用例要有一条"签名错但报文合法"的反例。
-- [ ] **只处理该处理的**：`msgtype` 不是 `text`（图片 / 语音 / 文件 / 富文本）回一句"打成文字"，
+- [x] **只处理该处理的**：`msgtype` 不是 `text`（图片 / 语音 / 文件 / 富文本）回一句"打成文字"，
       不交给模型；`conversationType=2` 按上面第 2 点选定的方式处理，不能静默丢弃。
-- [ ] **认人与拒绝**：`senderStaffId` 在 `claw4j.channel.dingtalk.roles.*.users` 里没有登记时，
+- [x] **认人与拒绝**：`senderStaffId` 在 `claw4j.channel.dingtalk.roles.*.users` 里没有登记时，
       回"没有权限"，这句话**不进模型、不花 token**；登记了的人拿到 `Principal`（表与动作来自
       共用的 `claw4j.channel.http.roles`，角色名对不上就启动失败，与 P06 同构）。
-- [ ] **身份缺失与未登记要分开**：`senderStaffId` 为空（机器人未发布上线、或外部群成员）时，
+- [x] **身份缺失与未登记要分开**：`senderStaffId` 为空（机器人未发布上线、或外部群成员）时，
       日志要说清是"钉钉没给身份"，不是"这个人没登记"——两者在 IM 里长得一样，排查成本却差很远。
-- [ ] **重推只答一次**：同一个 `msgId` 十分钟内重推，第二次只 ACK 不执行。注意 `msgId` 是加密串，
+- [x] **重推只答一次**：同一个 `msgId` 十分钟内重推，第二次只 ACK 不执行。注意 `msgId` 是加密串，
       官方文档对它写的是"暂无使用场景"——**它的稳定性没有被文档保证**，所以实现时若发现重推
       换了 `msgId`，去重就失效；这一条要如实写进票的 Comments，不假装验证过。
-- [ ] **先回执后答案**：钉钉单聊没有"正在输入"，对话框在十几秒里没有任何动静与"没收到"分不清。
+- [x] **先回执后答案**：钉钉单聊没有"正在输入"，对话框在十几秒里没有任何动静与"没收到"分不清。
       回执排在去重与认人之后（`InboundDispatcher` 的第五件事，P06 已经做好），发失败只记日志。
-- [ ] **发送侧**：token 缓存且提前换（`expireIn` 7200 秒）；`flowControlledStaffIdList` /
+- [x] **发送侧**：token 缓存且提前换（`expireIn` 7200 秒）；`flowControlledStaffIdList` /
       `send.too.fast` 这类限流要能被看见（记 WARN 或抛出，别吞）；`errcode` 非 0 一律抛，
       **不吞成"发出去了"**。
-- [ ] **默认关，且关着时行为不变**：配置不齐（`client-id` / `client-secret` / `robot-code` 缺一样）
+- [x] **默认关，且关着时行为不变**：配置不齐（`client-id` / `client-secret` / `robot-code` 缺一样）
       整份退让，一个 bean 都不注册，只跑 HTTP；`enabled=false` 同理。既有 539 条用例全过。
-- [ ] **主动投递可用**：`OutboundDelivery.channel()` 是 `dingtalk`，与 `agent_run_delivery.channel`
+- [x] **主动投递可用**：`OutboundDelivery.channel()` 是 `dingtalk`，与 `agent_run_delivery.channel`
       同口径；"在别处做完之后推回钉钉"这条路上有它的位置（P06 踩过的坑：条件要按**名字**判，
       不能按 `OutboundDelivery` 类型判，否则两个同类型 bean 谁先装配谁赢）。
-- [ ] **结构规则跟着加**：`channel.dingtalk` 不依赖实现子包、也不依赖 JDK / slf4j / 自家代码以外的东西，
+- [x] **结构规则跟着加**：`channel.dingtalk` 不依赖实现子包、也不依赖 JDK / slf4j / 自家代码以外的东西，
       两条规则与飞书、企微那四条同构（`ChannelBoundaryTest` 6 → 8 条）。
-- [ ] **真模型闭环**：app 层一条，真回调（真签名）→ 真模型 → 记录器收到答案。回推那一层换替身，
+- [x] **真模型闭环**：app 层一条，真回调（真签名）→ 真模型 → 记录器收到答案。回推那一层换替身，
       断言"先回执、答案里有 ```128400```"（与 P06 那条同形）。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%。
-- [ ] **门禁余量**：`claw4j-channel` 现在是 **10 个测试文件（上限 10）**，本票**不能新增测试文件**。
+- [x] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%。
+- [x] **门禁余量**：`claw4j-channel` 现在是 **10 个测试文件（上限 10）**，本票**不能新增测试文件**。
       见下面 Comments 的三条出路。
 
 ## 不做
@@ -165,3 +165,43 @@ ADR-0020 对这一对（P12 / P13）只有一句话：「扩展点已经就绪�
 - 拆票说明：M8 其余四张（P10、P13、P14、P16）尚未拆。P13 是 Slack，与本票同一句话拆出来的
   另一半——ADR 写的是「P12 / P13 · 钉钉 / Slack 通道」，**按书写顺序取 P12 = 钉钉**，
   若要反过来，说一句即可（这一条是本票唯一的推断，其余都核过）。
+
+### 实现记录（2026-11-03）
+
+三个留给实现选的，选的是：
+
+1. **回复走 `batchSend`（私聊），不维护 `sessionWebhook` 短缓存。** 那张表会过期，
+   而"过期之后是回落还是发不出去"是另一种偶发收不到；`batchSend` 与 `OutboundDelivery`
+   （A05 主动投递）本来是同一条路，少一套状态。代价是回不了群——所以第 2 条选了"群里不作答"，
+   两条正好互相成立：既然只在单聊答，就不需要回群的能力。
+2. **群聊一律回一句"私聊我"，不进模型。** 文案里带理由（能查哪些数据是按人算的），
+   因为用户一定会问"为什么群里不理我"。外部群成员没有 `senderStaffId`，
+   那种情况连这句都发不出去，只记日志。
+3. **凭据与既有通道一致：环境变量占位**，**并把 `application.yml` 顶部那句注释改准确**。
+   没让钉钉第一个用 `secret:` 句柄：解析句柄的 `SpringSecretResolver` 在 capability，
+   channel 不依赖它（`ChannelBoundaryTest` 钉着这条边），要用句柄得先把 `SecretResolver`
+   接口下沉到 core——那是另一件事。所以那句改成了"模型 key 与 MCP 的 env/headers 写句柄；
+   通道凭据是环境变量占位，两边差一层的原因见 P12"。
+
+实现时定下的一处协议细节：`conversationType` 是**字符串** `"1"` / `"2"`。取字段用 `asString`，
+所以对面真发成数字也读得到；写成 `int` 比较的话群聊会被当成单聊，症状是"群里问一句、
+答案私聊发给了提问的人"，不报错。
+
+**如实交代（四条）**：
+
+- **没有连过真的钉钉。** 验签与发送都对着测试里自己写的假服务（JDK `HttpServer` 假扮
+  `accessToken` 与 `batchSend`），签名是照协议另写一份、不是调生产代码。真凭据联调没做，
+  仓库里没有钉钉应用。
+- **`msgId` 的稳定性没有文档保证**（官方写的是"暂无使用场景，可忽略"）。去重按它做，
+  所以如果重推换了 `msgId`，同一个问题会被回答两次。这一条**没验证过**，
+  只能等真实联调时看那条"同一 eventId 重复投递"的日志出不出现。
+- **群聊裁剪是第一版**：不做 `openConversationId`，群里永远得不到答案（只收到"私聊我"）。
+- **时间戳校验依赖这台机器的时钟**。容器时间漂了的表现是"所有回调被拒"，
+  WARN 里带了那个 `timestamp`，排查从它开始。
+
+门禁腾槽：按票里第一条出路做——把只有 1 条用例的 `FeishuOutboundDeliveryTest` 并进
+`FeishuChannelWiringTest`（9 → 10），删掉原文件，腾出的槽位给 `DingtalkChannelTest`。
+diff 碰到了飞书的既有测试文件，但那条用例的断言一模一样地搬了过去，不是重写。
+
+用例分布：`DingtalkChannelTest` 18 条（回调 11、投递 1、发送 3、装配 3）、
+`ChannelBoundaryTest` 6 → 8、`ApplicationAssemblyTest` 17 → 18（多一条真模型闭环）。

@@ -135,7 +135,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   `${ENV_VAR}` 占位符（`McpServerProperties:99`）——但两者都在配置绑定时就解析成真值；
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
-  P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已拆，`P12-dingtalk-channel.md`，未开工）。
+  P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，未提交，见 `P12-dingtalk-channel.md`）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -156,3 +156,8 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
 - **channel 模块的测试文件已经满了**（10 个）。P12 若不能新增文件，只能合并腾槽
   （`FeishuOutboundDeliveryTest` 1 条并进 `FeishuChannelWiringTest`）或塞进未满的文件。
   这条约束在 P12 票里写成了三条出路，开工前先定。
+  实现时选了第一条：`FeishuOutboundDeliveryTest` 并进 `FeishuChannelWiringTest`（9 → 10）后删掉，
+  槽位给 `DingtalkChannelTest`（18 条）。那条用例的断言原样搬过去，不是重写。
+- P12 实现后 app 那一侧又顶到了上限：`ApplicationAssemblyTest` 从 17 条加到 18 条时，
+  连同三个探针配置类一共 21 个（脚本按 `@Test` 子串数，`@TestConfiguration` 也算），
+  于是把企业微信与钉钉的两个记录器合进一个 `ChannelProbes`（两个列表仍然分开）。

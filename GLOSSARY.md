@@ -114,12 +114,23 @@ _Avoid_: Proxy（旧代码里的含义）、Gateway、Bot
 **Inbound 编排（`channel.kernel`）**:
 平台回调进来之后、Agent 算完之后，那两段与平台无关的逻辑：立刻 ACK、按幂等键去重、认出是谁、
 异步算、分段回推、失败也回一句。它只认 `InboundEvent`（五列：事件 id、会话语义、发送人、文本、
-收到时间）与 `ReplySender`，所以飞书、Telegram、Slack 共用同一份实现——三家的回调在这五列上
+收到时间）与 `ReplySender`，所以飞书、企业微信、钉钉共用同一份实现——三家的回调在这五列上
 逐个对得上，差别只在参数（窗口几秒、单条上限多少）。
 住在 `claw4j-core`。那个模块是零框架的：编译期只有 slf4j 一条依赖，外加一段
 validate 阶段的 enforcer（不许 Spring / Spring AI / 厂商 SDK），**不带任何 IM SDK**。
 `claw4j-domain` 在 ADR-0015 里并进了同一个 jar——契约与不变量本来就该是一个坐标。
 _Avoid_: 飞书调度器、"入站调度"（它现在不绑任何平台）
+
+**机器人回调（Robot Callback）**:
+钉钉的入站那条路：用户 @ 机器人或私聊它时，钉钉往一个公网地址 POST 一条**明文 JSON**，
+header 带 `timestamp` 与 `sign`（`Base64(HmacSHA256(appSecret, timestamp + "\n" + appSecret))`）。
+钉钉有三条听起来都像"接收消息"的路，只有这一条的载荷里有"谁说了什么"：事件订阅那条
+（加密 JSON + `msg_signature`，加密布局与企微几乎一样）推的是通讯录与群事件，
+Stream 那条要一个本地没有的 SDK。**选错的代价不是多写代码，是拿一条收不到业务消息的路去接**——
+装好、日志干净、就是没人能提问。
+报文是明文的，所以那个签名是唯一的门，且必须连带校验时间戳（相差 1 小时以上即非法）：
+签名覆盖的是时间戳而不是报文，这一对可以配上任意报文重放。
+_Avoid_: MCP 回调、webhook（那个词在钉钉里指"自定义机器人"，只能推不能收）
 
 **Session**:
 一次用户会话的完整事件流，是记忆、压缩和追踪的作用域。用户换个 Channel 进来，只要 Session 相同，上下文就连续。

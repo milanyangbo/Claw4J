@@ -9,6 +9,8 @@ import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.capability.mcp.expose.McpExposure;
 import io.github.claw4j.capability.mcp.expose.McpExposureProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
+import io.github.claw4j.channel.dingtalk.DingtalkReplySender;
+import io.github.claw4j.channel.dingtalk.client.DingtalkChannel;
 import io.github.claw4j.channel.wecom.WecomReplySender;
 import io.github.claw4j.channel.wecom.client.WecomChannel;
 import io.github.claw4j.domain.ApprovalVerdict;
@@ -44,6 +46,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import javax.crypto.Cipher;
+import javax.crypto.Mac;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
@@ -88,7 +91,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 但它在模型之前就被挡下了。判据是"接上了没有"，不是"规则对不对"。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Import({ApplicationAssemblyTest.ApprovalProbe.class, ApplicationAssemblyTest.WecomProbe.class})
+@Import({ApplicationAssemblyTest.ApprovalProbe.class, ApplicationAssemblyTest.ChannelProbes.class})
 class ApplicationAssemblyTest {
 
     /** 种子里华东区上周 = 54000 + 74400。这个数只有真查了库才拿得到。 */
@@ -111,6 +114,16 @@ class ApplicationAssemblyTest {
 
     private static final String WECOM_NONCE = "assembly-nonce";
 
+    // ---- 钉钉那份配置（P12）：同上，真值来自环境变量，测试里给一组固定值 ----
+
+    private static final String DINGTALK_CLIENT_ID = "dingassembly-client";
+
+    private static final String DINGTALK_CLIENT_SECRET = "dingassembly-secret";
+
+    private static final String DINGTALK_ROBOT_CODE = "dingassembly-robot";
+
+    private static final String DINGTALK_USER = "assembly-dingtalk";
+
     /** 容器要在 Spring 建上下文之前起好：DynamicPropertySource 要读它的端口。 */
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
@@ -128,7 +141,7 @@ class ApplicationAssemblyTest {
         // 而这条用例要真点一次按钮，所以名单在这里给——它本来就是部署的事。
         registry.add("claw4j.approval.approvers[0]", () -> "approver-1");
         // 企业微信（P06）：五样齐了通道才装配。凭据是假的没关系——那条用例里
-        // 回推的实现被换成了一个记录器（{@link WecomProbe}），不会真去连企业微信。
+        // 回推的实现被换成了一个记录器（{@link ChannelProbes#WECOM_SENT}），不会真去连企业微信。
         registry.add("claw4j.channel.wecom.corp-id", () -> WECOM_CORP_ID);
         registry.add("claw4j.channel.wecom.corp-secret", () -> "assembly-secret");
         registry.add("claw4j.channel.wecom.agent-id", () -> "1000002");
@@ -136,6 +149,12 @@ class ApplicationAssemblyTest {
         registry.add("claw4j.channel.wecom.encoding-aes-key", () -> WECOM_AES_KEY);
         // 认人：企业微信只登记"谁是谁"，角色名去共用的授权表里取
         registry.add("claw4j.channel.wecom.roles.admin.users[0]", () -> WECOM_USER);
+        // 钉钉（P12）：三样齐了通道才装配。同样把回推换成记录器（{@link ChannelProbes#DINGTALK_SENT}），
+        // 不会真去连钉钉——但验签、解析、编排、回推这一整条链是真的。
+        registry.add("claw4j.channel.dingtalk.client-id", () -> DINGTALK_CLIENT_ID);
+        registry.add("claw4j.channel.dingtalk.client-secret", () -> DINGTALK_CLIENT_SECRET);
+        registry.add("claw4j.channel.dingtalk.robot-code", () -> DINGTALK_ROBOT_CODE);
+        registry.add("claw4j.channel.dingtalk.roles.admin.users[0]", () -> DINGTALK_USER);
     }
 
     @LocalServerPort
@@ -316,7 +335,7 @@ class ApplicationAssemblyTest {
     @Test
     @DisplayName("真模型闭环：企业微信里问一句，回调进来、真模型算完、结果推回同一个成员")
     void aWecomMessageIsAnsweredThroughTheCallback() throws Exception {
-        WecomProbe.SENT.clear();
+        ChannelProbes.WECOM_SENT.clear();
         String plain = "<xml><ToUserName><![CDATA[" + WECOM_CORP_ID + "]]></ToUserName>"
                 + "<FromUserName><![CDATA[" + WECOM_USER + "]]></FromUserName>"
                 + "<CreateTime>1700000000</CreateTime><MsgType><![CDATA[text]]></MsgType>"
@@ -327,11 +346,41 @@ class ApplicationAssemblyTest {
 
         assertThat(ack).as("回调必须当场回空串：五秒内不回，企业微信会重推").isEmpty();
         awaitWecomSends(2);
-        assertThat(WecomProbe.SENT.getFirst())
+        assertThat(ChannelProbes.WECOM_SENT.getFirst())
                 .as("先一句回执：那十几秒里用户至少知道有人接了")
                 .isEqualTo(WECOM_USER + "|" + WecomChannel.RECEIPT_REPLY);
-        assertThat(mentions(WecomProbe.SENT.get(1), EAST_LAST_WEEK))
-                .as("答案里该出现库里的 128400，实际：%s", WecomProbe.SENT.get(1))
+        assertThat(mentions(ChannelProbes.WECOM_SENT.get(1), EAST_LAST_WEEK))
+                .as("答案里该出现库里的 128400，实际：%s", ChannelProbes.WECOM_SENT.get(1))
+                .isTrue();
+    }
+
+    /**
+     * 真模型闭环（P12）：钉钉里问一句，回调进来、验签过、真模型算完、结果推回同一个人。
+     *
+     * <p>与企业微信那条同形，但<b>验的那一道门完全不同</b>：钉钉的报文是明文，
+     * 签名在 header 里、算法是 HMAC-SHA256。所以这里走的是真 HTTP 加真 header 签名——
+     * 少了它，这个端点就是一个"公网上谁都能往里塞话"的入口，而整条链看上去照样正常。
+     *
+     * <p>签名是<b>照协议另写一份</b>（见 {@link #dingtalkSign}）：用生产的那份去签、
+     * 再用它去验，两边一起错也照样绿。
+     */
+    @Test
+    @DisplayName("真模型闭环：钉钉回调进来（真签名）、真模型算完、结果推回同一个人")
+    void aDingtalkMessageIsAnsweredThroughTheCallback() throws Exception {
+        ChannelProbes.DINGTALK_SENT.clear();
+        String body = "{\"msgId\":\"assembly-dingtalk-1\",\"senderStaffId\":\"" + DINGTALK_USER + "\","
+                + "\"conversationType\":\"1\",\"msgtype\":\"text\","
+                + "\"text\":{\"content\":\"" + QUESTION + "\"},\"createAt\":1700000000000}";
+
+        String ack = dingtalkCallback(body);
+
+        assertThat(ack).as("回调必须当场回空串：钉钉等不到响应会重推").isEmpty();
+        awaitDingtalkSends(2);
+        assertThat(ChannelProbes.DINGTALK_SENT.getFirst())
+                .as("先一句回执：那十几秒里用户至少知道有人接了")
+                .isEqualTo(DINGTALK_USER + "|" + DingtalkChannel.RECEIPT_REPLY);
+        assertThat(mentions(ChannelProbes.DINGTALK_SENT.get(1), EAST_LAST_WEEK))
+                .as("答案里该出现库里的 128400，实际：%s", ChannelProbes.DINGTALK_SENT.get(1))
                 .isTrue();
     }
 
@@ -617,10 +666,55 @@ class ApplicationAssemblyTest {
     /** 等推送。真模型要十几秒，所以给足上限，但一拿到就走，不白等。 */
     private static void awaitWecomSends(int count) throws InterruptedException {
         long deadline = System.nanoTime() + Duration.ofSeconds(90).toNanos();
-        while (System.nanoTime() < deadline && WecomProbe.SENT.size() < count) {
+        while (System.nanoTime() < deadline && ChannelProbes.WECOM_SENT.size() < count) {
             Thread.sleep(100);
         }
-        assertThat(WecomProbe.SENT).as("等不到第 %d 条推送", count).hasSizeGreaterThanOrEqualTo(count);
+        assertThat(ChannelProbes.WECOM_SENT).as("等不到第 %d 条推送", count).hasSizeGreaterThanOrEqualTo(count);
+    }
+
+    // ---------------------------------------------------------------- 钉钉（P12）
+
+    /**
+     * 发一条钉钉回调，返回平台的应答文本。
+     *
+     * <p>走真 HTTP：{@code @LocalServerPort} 那个端口上挂着真正的控制器。
+     * 签名放在 header 里（钉钉就是这么发的），与企业微信放在 query 里正好相反——
+     * 这一点如果搞错，症状是"所有回调都被拒"，所以这条用例顺便把它钉住。
+     */
+    private String dingtalkCallback(String body) throws Exception {
+        String timestamp = String.valueOf(System.currentTimeMillis());
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port
+                        + "/api/dingtalk/callback"))
+                .header("Content-Type", "application/json")
+                .header("timestamp", timestamp)
+                .header("sign", dingtalkSign(timestamp))
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .timeout(Duration.ofSeconds(20))
+                .build();
+        return new String(http.send(request, HttpResponse.BodyHandlers.ofByteArray()).body(),
+                StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 钉钉的签名：{@code Base64(HmacSHA256(key=appSecret, data=timestamp + "\n" + appSecret))}。
+     *
+     * <p>注意 key 与 data 里都有 appSecret——它不是"用密钥签一段报文"的常规形状，
+     * 照常规写会算出一串永远对不上的值。
+     */
+    private static String dingtalkSign(String timestamp) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(DINGTALK_CLIENT_SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        byte[] digest = mac.doFinal((timestamp + "\n" + DINGTALK_CLIENT_SECRET)
+                .getBytes(StandardCharsets.UTF_8));
+        return Base64.getEncoder().encodeToString(digest);
+    }
+
+    private static void awaitDingtalkSends(int count) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(90).toNanos();
+        while (System.nanoTime() < deadline && ChannelProbes.DINGTALK_SENT.size() < count) {
+            Thread.sleep(100);
+        }
+        assertThat(ChannelProbes.DINGTALK_SENT).as("等不到第 %d 条推送", count).hasSizeGreaterThanOrEqualTo(count);
     }
 
     /**
@@ -685,24 +779,35 @@ class ApplicationAssemblyTest {
     }
 
     /**
-     * 把企业微信的回推换成一个记录器（P06）。
+     * 把两个 IM 通道的回推都换成记录器（P06 / P12）。
      *
-     * <p>它注册成 {@link WecomReplySender}，而自动配置那边是 {@code @ConditionalOnMissingBean}，
-     * 于是这个替身赢：真实实现会去连企业微信，而这条用例要问的是
-     * "推回来的那段文字是什么、推给了谁"——不是"企业微信的接口通不通"。
+     * <p>它们注册成 {@link WecomReplySender} 与 {@link DingtalkReplySender}，而自动配置那边
+     * 都是 {@code @ConditionalOnMissingBean}，于是这两个替身赢：真实实现会去连企业微信／钉钉，
+     * 而这两条用例要问的是"推回来的那段文字是什么、推给了谁"——不是"接口通不通"。
      *
-     * <p>这也说明"回推"这一层是可换的：换成记录器之后，整条链路上除了那一次真模型调用，
-     * 没有一处还需要外部世界。
+     * <p><b>两份记录器写在同一个配置类里</b>，而不是各占一个：它们做的是同一件事，
+     * 而这份用例所在的文件已经贴着方法数上限（10 文件 / 20 方法，脚本卡着）——
+     * 每多一个探针配置类就少一个能写用例的位置。
+     *
+     * <p><b>两个列表不共用</b>：共用的表现是"企业微信那条用例偶尔会看到钉钉的推送"，
+     * 而那要看并行与执行顺序——那种红最难查，因为它不是每次都红。
      */
     @TestConfiguration
-    static class WecomProbe {
+    static class ChannelProbes {
 
         /** 顺序有意义：回执在前、答案在后。存成 {@code userId|text}，断言里一眼看出推给了谁。 */
-        static final List<String> SENT = Collections.synchronizedList(new ArrayList<>());
+        static final List<String> WECOM_SENT = Collections.synchronizedList(new ArrayList<>());
+
+        static final List<String> DINGTALK_SENT = Collections.synchronizedList(new ArrayList<>());
 
         @Bean
         WecomReplySender wecomReplySender() {
-            return (userId, text) -> SENT.add(userId + "|" + text);
+            return (userId, text) -> WECOM_SENT.add(userId + "|" + text);
+        }
+
+        @Bean
+        DingtalkReplySender dingtalkReplySender() {
+            return (userId, text) -> DINGTALK_SENT.add(userId + "|" + text);
         }
     }
 }

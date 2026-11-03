@@ -18,7 +18,8 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * {@code claw4j-core} 模块里（M6 搬出去，ADR-0015 又把 {@code claw4j-domain} 并进了同一个 jar），
  * 它们的边界由那个模块的 {@code CoreBoundaryTest} 用<b>白名单</b>守着——
  * "只许依赖 JDK、slf4j、domain 与自家代码"，比本类这几条更严。
- * 本类只守这个模块里的平台实现（飞书、HTTP）不反向依赖 Agent 与能力。
+ * 本类只守这个模块里的平台实现（飞书、企业微信、钉钉、HTTP）不反向依赖 Agent 与能力，
+ * 以及每个平台的适配层不认识自己的实现子包。
  */
 @AnalyzeClasses(packages = "io.github.claw4j.channel", importOptions = ImportOption.DoNotIncludeTests.class)
 class ChannelBoundaryTest {
@@ -92,4 +93,27 @@ class ChannelBoundaryTest {
     static final ArchRule wecomDispatchLayerDoesNotReachIntoItsClientSubpackage =
             noClasses().that().resideInAPackage("io.github.claw4j.channel.wecom")
                     .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.wecom.client..");
+
+    /**
+     * 钉钉这一侧的同一条界，第三次写。
+     *
+     * <p>三条规则长得一样、守的也是同一件事，但<b>不合并成一个 {@code resideInAnyPackage}</b>：
+     * 合并之后失败信息里那个类名不再直接指向是哪个通道破了界，而这条规则唯一的价值
+     * 就是"破了界的时候一眼看出破了哪条"。三个包、两行样板，换这一点是划算的。
+     *
+     * <p>钉钉这条还有一层额外意义：它的适配层里有 {@code DingtalkReplySender}，
+     * 而实现那份要用 HMAC 与 HTTP——一旦适配层伸手去 client 包里拿
+     * {@code DingtalkSignature}，{@code DingtalkInboundEvent} 一编译就得有加密在场，
+     * 那条"五个字段"的接口就再也编不进一个只有 JDK 的地方。
+     */
+    @ArchTest
+    static final ArchRule dingtalkDispatchLayerDependsOnNothingButItsOwnContracts =
+            noClasses().that().resideInAPackage("io.github.claw4j.channel.dingtalk")
+                    .should().dependOnClassesThat().resideOutsideOfPackages(
+                            "java..", "org.slf4j..", "io.github.claw4j..");
+
+    @ArchTest
+    static final ArchRule dingtalkDispatchLayerDoesNotReachIntoItsClientSubpackage =
+            noClasses().that().resideInAPackage("io.github.claw4j.channel.dingtalk")
+                    .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.dingtalk.client..");
 }
