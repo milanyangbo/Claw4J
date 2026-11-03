@@ -71,6 +71,8 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
 - **P10 的中文分词是前置条件，不是实现细节**：Postgres 默认分词器对中文失效
   （`to_tsvector('simple', 中文)` 切不出词）。开工前要先定 pg_bigm、应用侧抽词、还是外部检索，
   否则"混合检索"名不副实。这条写进票里，不许在实现中途发现。
+  **已定：应用侧切 bigram。** 镜像里没有 pg_bigm（要自建镜像）、pg_trgm 的 `similarity`
+  对长文档只有 0.083 因而做不了 rank、引中文分词库会丢精确匹配——三条的实测都在票面第一节。
 - **P11 最后没有引 server starter**（实现后的实际状态，`f3dba26`）：本地仓库里
   `spring-ai-starter-mcp-server:2.0.2` 一直在，但它的 `ToolCallbackConverterAutoConfiguration`
   会把容器里四个 `ToolCallbackProvider` 原样暴露，绕过 P09 的档位、`MeteredToolCallback` 与
@@ -115,7 +117,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   （P08–P16，含 P12 / P13），不另起编号、不补空号。
 - **依赖边**（按 ADR-0020 的描述推出来的真实依赖，不是优先级）：
   - P08、P09、P12、P13 互不依赖，可并行；
-  - P10 被中文分词方案卡住，方案定不下来就不开工；
+  - P10 的分词方案**已定**（应用侧切 bigram，实测数据在票面第一节），不再是阻塞项；
   - P14 依赖 P07 的审计口径（三条时间线不许混）；
   - P15 依赖 P09 的 profile（工具策略是它的一层）。
 - **实现中发现与本目录或 ADR 不一致时，先回来改文档再写代码**——它们是已接受的裁决。
@@ -135,7 +137,8 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   `${ENV_VAR}` 占位符（`McpServerProperties:99`）——但两者都在配置绑定时就解析成真值；
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
-  P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，未提交，见 `P12-dingtalk-channel.md`）。
+  P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，`9389e07`）、
+  P10（已拆，`P10-knowledge-retrieval.md`，未开工）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -161,3 +164,19 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
 - P12 实现后 app 那一侧又顶到了上限：`ApplicationAssemblyTest` 从 17 条加到 18 条时，
   连同三个探针配置类一共 21 个（脚本按 `@Test` 子串数，`@TestConfiguration` 也算），
   于是把企业微信与钉钉的两个记录器合进一个 `ChannelProbes`（两个列表仍然分开）。
+- 2026-11-03 拆 P10，卡点已解。四条路都在本机 `pgvector/pgvector:pg16` 上实测过
+  （临时容器，跑完已删），不是查文档得来的：
+  1. 默认分词器确认失效——`to_tsvector('simple', '华东区的退货政策怎么规定的')` 得到
+     `'华东区的退货政策怎么规定的':1`，整句一个 token。
+  2. **镜像里没有 pg_bigm / zhparser / pgroonga**（`pg_available_extensions` 只有 vector 0.8.7
+     与 pg_trgm 1.6）。用它就得自建镜像，而这个项目的镜像已经被网络卡过一次。
+  3. `pg_trgm` 做不了 rank：`similarity('退货政策', 一段长文档)` = 0.0833，分母随文档变长而变大，
+     阈值没法跨长度统一；`word_similarity` = 0.4 但无词频加权。
+  4. 应用侧 bigram 交给 `simple` 分词器可行：12 个 token、多词 AND 命中、不相关词不命中、
+     单字用 `退:*` 前缀命中、`ts_rank` = 0.268330；生成列 `to_tsvector('simple', bigrams)`
+     与 GIN 索引都建得出来（生成列要求 immutable，这一条不验就可能在实现时才发现建不了表）。
+  另两个结构问题也定了：**embedding 模型从 cache 的装配里提出来**（现在"关掉缓存"会连带
+  关掉知识库要用的向量模型），**检索做成工具而不是 advisor 自动注入**（鉴权、审计、分级
+  三件事都落在工具这一条路上）。
+  顺带纠一处自己写错的：先前打算写"空 tsquery 是全部命中"，实测 `@@` 为 `false`
+  ——退化成"一条都不命中"，比响亮地报错更难查。
