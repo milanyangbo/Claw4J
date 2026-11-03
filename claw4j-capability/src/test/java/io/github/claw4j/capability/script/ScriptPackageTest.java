@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -131,6 +132,20 @@ class ScriptPackageTest {
         assertThatThrownBy(() -> callbackFor(pkg).call("{\"argument\":\"leak.txt\"}"))
                 .isInstanceOf(ToolExecutionException.class)
                 .hasCauseInstanceOf(SandboxViolationException.class);
+    }
+
+    @Test
+    @DisplayName("脚本子进程的环境只有 PATH：P08 换凭据机制，不许把往子进程递 env 的口子打开")
+    void scriptEnvironmentCarriesOnlyPath() {
+        Map<String, String> env = SandboxPolicy.defaults().environment();
+
+        assertThat(env.keySet().stream().filter(key -> !"PATH".equals(key)).toList())
+                .as("白名单只有 PATH：换一种凭据解析方式，不是给脚本层开一条新的环境变量通道")
+                .isEmpty();
+        assertThat(env)
+                .as("宿主环境里有 DEEPSEEK_API_KEY 时也不给脚本——真值只去它该去的出口")
+                .doesNotContainKey("DEEPSEEK_API_KEY")
+                .doesNotContainKey("QWEN_API_KEY");
     }
 
     @Test

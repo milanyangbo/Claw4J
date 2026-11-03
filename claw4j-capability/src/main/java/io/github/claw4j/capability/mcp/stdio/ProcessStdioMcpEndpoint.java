@@ -2,14 +2,18 @@ package io.github.claw4j.capability.mcp.stdio;
 
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.capability.mcp.McpServerEndpoint;
+import io.github.claw4j.secret.SecretResolver;
+import io.github.claw4j.secret.SecretValue;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.client.transport.StdioClientTransport;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpClientTransport;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * 一个<b>真的跨 OS 进程</b>的 MCP 端点：起一个子进程，用它的 stdin/stdout 说 MCP 协议。
@@ -34,13 +38,20 @@ import java.util.Objects;
  *
  * <p><b>环境变量只给显式列出的那些</b>：不传就是空表，子进程拿不到应用进程的环境，
  * 于是应用的模型 key、数据库口令都不会漏过去。需要 {@code PATH} / {@code HOME}
- * 就在 {@code env} 里写明——"给出去了什么"在这份配置里是看得见的，
+ * 就在 {@code inherit-env} 里写明——"给出去了什么"在这份配置里是看得见的，
  * 而不是"继承了一切"这种说不清的状态。
+ *
+ * <p><b>凭据是句柄，真值在起进程那一刻才换出来</b>（P08）：{@link #openTransport()} 是
+ * "给子进程的环境"这条路的唯一出口，句柄在这里才变成值。之后这个值进入子进程的环境，
+ * 我们的对象里仍然只有名字——配置、日志、审计里都不会出现它。
  *
  * <p>每次 {@link #openTransport()} 起一个新进程，于是"会话丢失重新初始化"
  * 拿到的是一条干净的连接（{@code McpConnection} 会关掉旧的再要一条新的）。
  */
 public final class ProcessStdioMcpEndpoint {
+
+    /** 没有真值的解析器：三参 {@code of} 那条路不配任何 {@code env}，走到它就是配错了。 */
+    private static final SecretResolver NO_SECRETS = name -> Optional.empty();
 
     private final String name;
 
@@ -48,13 +59,22 @@ public final class ProcessStdioMcpEndpoint {
 
     private final List<String> args;
 
-    private final Map<String, String> env;
+    /** 从父进程透传哪些变量<b>名</b>。值在出口现取，不留在这里。 */
+    private final List<String> inheritEnv;
 
-    private ProcessStdioMcpEndpoint(String name, String command, List<String> args, Map<String, String> env) {
+    /** 显式给出的变量：值是句柄，不是真值。 */
+    private final Map<String, SecretValue> env;
+
+    private final SecretResolver secrets;
+
+    private ProcessStdioMcpEndpoint(String name, String command, List<String> args, List<String> inheritEnv,
+                                    Map<String, SecretValue> env, SecretResolver secrets) {
         this.name = Objects.requireNonNull(name, "name");
         this.command = Objects.requireNonNull(command, "command").strip();
         this.args = List.copyOf(Objects.requireNonNull(args, "args"));
+        this.inheritEnv = List.copyOf(Objects.requireNonNull(inheritEnv, "inheritEnv"));
         this.env = Map.copyOf(Objects.requireNonNull(env, "env"));
+        this.secrets = Objects.requireNonNull(secrets, "secrets");
         if (this.command.isEmpty()) {
             throw new IllegalArgumentException("MCP server " + name + " 的 command 是空的："
                     + "没有要起的程序，也就没有 server。命令写错在这里就失败，"
@@ -69,15 +89,20 @@ public final class ProcessStdioMcpEndpoint {
         }
     }
 
-    /** @param env 子进程拿到的环境；不传任何值时子进程没有环境变量（含 PATH） */
+    /**
+     * @param inheritEnv 从父进程透传哪些变量名（默认只该有 {@code PATH}）
+     * @param env        显式给出的变量，值是句柄；不传任何值时子进程没有环境变量（含 PATH）
+     * @param secrets    句柄的解析器，只在 {@link #openTransport()} 里被用到
+     */
     public static ProcessStdioMcpEndpoint of(String name, String command, List<String> args,
-                                            Map<String, String> env) {
-        return new ProcessStdioMcpEndpoint(name, command, args, env);
+                                             List<String> inheritEnv, Map<String, SecretValue> env,
+                                             SecretResolver secrets) {
+        return new ProcessStdioMcpEndpoint(name, command, args, inheritEnv, env, secrets);
     }
 
     /** 不给环境变量的简版：子进程拿不到应用进程的环境，这是默认该有的样子。 */
     public static ProcessStdioMcpEndpoint of(String name, String command, List<String> args) {
-        return of(name, command, args, Map.of());
+        return of(name, command, args, List.of("PATH"), Map.of(), NO_SECRETS);
     }
 
     public String name() {
@@ -113,12 +138,44 @@ public final class ProcessStdioMcpEndpoint {
      *
      * <p>进程是<b>懒起</b>的：只有端点被连接（第一次列工具）或重连时才会真的 fork，
      * 于是"配了一个永远不会被连的端点"不会在启动时留下一堆僵尸进程。
+     *
+     * <p>环境在<b>这一行</b>才成形：句柄换真值、透传按名字现取。这是 P08 三个出口里的第二个。
      */
     public McpClientTransport openTransport() {
         ServerParameters parameters = ServerParameters.builder(command)
                 .args(args)
-                .env(env)
+                .env(environment(System.getenv(), inheritEnv, env, secrets))
                 .build();
         return new StdioClientTransport(parameters, McpJsonDefaults.getMapper());
+    }
+
+    /**
+     * 子进程拿到的环境变量：先按名字从 {@code parent} 透传，再用显式给出的覆盖。
+     *
+     * <p>顺序是有意的。透传解决的是"连启动器都找不到"（{@code npx} / {@code uvx} 要靠
+     * {@code PATH}，包缓存要靠 {@code HOME}）；显式给出的那些用来<b>收紧</b>或补一个
+     * 父进程没有的键（比如只给子进程一份专用 token）。反过来先显式再透传，会让
+     * "我明明写了"的那一份被父进程的同名变量顶掉。
+     *
+     * <p>{@code parent} 是参数而不是直接读 {@code System.getenv()}：这一条要能测，
+     * 而"从本进程真读一遍"是测不了"父进程有 PATH 但没有 HOME"这种形状的。
+     *
+     * <p>显式那一份的值是句柄，在这里才换成真值（{@link SecretValue#render}）。
+     */
+    public static Map<String, String> environment(Map<String, String> parent, List<String> inheritEnv,
+                                                  Map<String, SecretValue> declared, SecretResolver secrets) {
+        Map<String, String> env = new LinkedHashMap<>();
+        for (String key : inheritEnv) {
+            if (key == null || key.isBlank()) {
+                throw new IllegalArgumentException("MCP server 的 inherit-env 里有空项：" + inheritEnv
+                        + "。空的名字透传不了任何东西，多半是 YAML 里多了一个破折号。");
+            }
+            String value = parent.get(key);
+            if (value != null) {
+                env.put(key, value);
+            }
+        }
+        declared.forEach((key, value) -> env.put(key, value.render(secrets)));
+        return env;
     }
 }

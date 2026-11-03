@@ -7,6 +7,10 @@ import io.github.claw4j.capability.mcp.http.HttpMcpEndpoint;
 import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
 import io.github.claw4j.domain.principal.Approval;
 import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.secret.SecretResolver;
+import io.github.claw4j.secret.SecretValue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -23,32 +27,39 @@ import java.util.Set;
  * <p><b>每一条检查都在启动时失败，且报错带 server 名</b>。理由与 {@code McpToolProvider}
  * 的 fail-fast 同源：配错了而不报，最后看到的现象是"模型说它没这个能力"，
  * 离真正的原因（yml 少了一行）隔着一整条链路。带名字是为了"配了五个 server、错的是哪个"不用猜。
+ *
+ * <p><b>凭据是句柄，这里只验形状与"在不在"</b>（P08）：{@code env} 与 {@code headers} 的值
+ * 必须是 {@code secret:<名字>}（或显式常量 {@code plain:<文本>}），配了明文在装配期就失败并点名
+ * 到 {@code servers.<名字>.env.<键>}。真值不在这里取——stdin 那一支在起子进程时取，
+ * http 那一支在每次请求写 header 时取。
  */
 final class McpEndpoints {
+
+    private static final Logger log = LoggerFactory.getLogger(McpEndpoints.class);
 
     private McpEndpoints() {
     }
 
     /** 按配置顺序造出全部端点。{@code enabled: false} 的直接跳过，不算错。 */
-    static List<McpServerEndpoint> from(McpServerProperties properties) {
+    static List<McpServerEndpoint> from(McpServerProperties properties, SecretResolver resolver) {
         List<McpServerEndpoint> endpoints = new ArrayList<>();
         properties.getServers().forEach((name, server) -> {
             if (server.enabled()) {
-                endpoints.add(of(name, server));
+                endpoints.add(of(name, server, resolver));
             }
         });
         return List.copyOf(endpoints);
     }
 
     /** 一个 server 的配置 → 一个端点。传输不同，构造出来的东西不同，但类型是同一个。 */
-    static McpServerEndpoint of(String name, Server server) {
+    static McpServerEndpoint of(String name, Server server, SecretResolver resolver) {
         requireName(name);
         ToolPermission permission = permission(server.permission());
         Map<String, ToolPermission> tools = toolPermissions(name, server.tools());
         return switch (server.transport()) {
-            case STDIO -> stdio(name, server).endpoint(permission, tools);
-            case HTTP -> http(name, server, false).endpoint(permission, tools);
-            case SSE -> http(name, server, true).endpoint(permission, tools);
+            case STDIO -> stdio(name, server, resolver).endpoint(permission, tools);
+            case HTTP -> http(name, server, false, resolver).endpoint(permission, tools);
+            case SSE -> http(name, server, true, resolver).endpoint(permission, tools);
         };
     }
 
@@ -56,50 +67,55 @@ final class McpEndpoints {
      * stdio 那一路。返回具体类型而不是 {@link McpServerEndpoint}，是为了让"命令与参数到底
      * 拼成了什么"可断言——这一层最容易出的错就是 YAML 里少一个破折号，而报错在进程另一边。
      */
-    static ProcessStdioMcpEndpoint stdio(String name, Server server) {
+    static ProcessStdioMcpEndpoint stdio(String name, Server server, SecretResolver resolver) {
         requireName(name);
         if (server.command() == null || server.command().isBlank()) {
             throw new IllegalArgumentException("MCP server " + name + " 是 transport: stdio，但没有 command："
                     + "不知道要起哪个程序。连别人的服务请用 transport: http 并写 url。");
         }
-        return ProcessStdioMcpEndpoint.of(name, server.command(), server.args(), environment(System.getenv(), server));
+        Map<String, SecretValue> env = handleValues(name, "env", server.env(), resolver);
+        return ProcessStdioMcpEndpoint.of(name, server.command(), server.args(), server.inheritEnv(), env, resolver);
     }
 
     /** http / sse 那一路。同样返回具体类型，好让"连的是哪个地址"可断言。 */
-    static HttpMcpEndpoint http(String name, Server server, boolean sse) {
+    static HttpMcpEndpoint http(String name, Server server, boolean sse, SecretResolver resolver) {
         requireName(name);
         if (server.url() == null || server.url().isBlank()) {
             throw new IllegalArgumentException("MCP server " + name + " 是 transport: " + (sse ? "sse" : "http")
                     + "，但没有 url：不知道要连哪儿。要起本地进程请用 transport: stdio 并写 command。");
         }
-        return HttpMcpEndpoint.of(name, server.url(), server.endpoint(), server.headers(), sse);
+        Map<String, SecretValue> headers = handleValues(name, "headers", server.headers(), resolver);
+        return HttpMcpEndpoint.of(name, server.url(), server.endpoint(), headers, sse, resolver);
     }
 
     /**
-     * 子进程拿到的环境变量：先按名字从 {@code parent} 透传，再用显式给出的覆盖。
+     * 一组配置值 → 一组句柄值：形状在这里校验，真值不在。
      *
-     * <p>顺序是有意的。透传解决的是"连启动器都找不到"（{@code npx} / {@code uvx} 要靠
-     * {@code PATH}，包缓存要靠 {@code HOME}）；显式给出的那些用来<b>收紧</b>或补一个
-     * 父进程没有的键（比如只给子进程一份专用 token）。反过来先显式再透传，会让
-     * "我明明写了"的那一份被父进程的同名变量顶掉。
+     * <p>启动期顺手探一次"在不在"（{@link SecretValue#requireResolvable}）：一个配了句柄却
+     * 没给真值的 server，应该在启动时就失败，而不是等到模型第一次调它的工具。
+     * 探的时候只问在不在，不保留值——真值仍然每次出口现取。
      *
-     * <p>{@code parent} 是参数而不是直接读 {@code System.getenv()}：这一条要能测，
-     * 而"从本进程真读一遍"是测不了"父进程有 PATH 但没有 HOME"这种形状的。
+     * @param field {@code env} 或 {@code headers}，用来把报错点名到具体那一行
      */
-    static Map<String, String> environment(Map<String, String> parent, Server declared) {
-        Map<String, String> env = new LinkedHashMap<>();
-        for (String key : declared.inheritEnv()) {
+    static Map<String, SecretValue> handleValues(String serverName, String field, Map<String, String> declared,
+                                            SecretResolver resolver) {
+        Map<String, SecretValue> values = new LinkedHashMap<>();
+        declared.forEach((key, raw) -> {
             if (key == null || key.isBlank()) {
-                throw new IllegalArgumentException("MCP server 的 inherit-env 里有空项：" + declared.inheritEnv()
-                        + "。空的名字透传不了任何东西，多半是 YAML 里多了一个破折号。");
+                throw new IllegalArgumentException("MCP server " + serverName + " 的 " + field
+                        + " 里有一个空的键：多半是 YAML 的缩进或冒号写错了。");
             }
-            String value = parent.get(key);
-            if (value != null) {
-                env.put(key, value);
-            }
+            String where = "claw4j.capability.mcp.servers." + serverName + "." + field + "." + key;
+            SecretValue value = SecretValue.parse(raw, where, true);
+            value.requireResolvable(resolver);
+            values.put(key, value);
+        });
+        if (!values.isEmpty()) {
+            // 只打名字：日志会被转发、会被贴进工单，而这一行恰好知道"哪些句柄在这个 server 上"。
+            log.info("MCP server {} 的 {} 用了句柄 {}", serverName, field,
+                    values.values().stream().map(SecretValue::handles).flatMap(List::stream).distinct().toList());
         }
-        env.putAll(declared.env());
-        return env;
+        return values;
     }
 
     private static void requireName(String name) {

@@ -41,13 +41,18 @@ export JAVA_HOME=~/soft/jdk-21.jdk/Contents/Home
 
 ## 凭据
 
-一律走环境变量，不写进仓库（ADR-0002、ADR-0006）。仓库根目录放一个 `.env`（已被忽略）：
+真值一律走环境变量，不写进仓库（ADR-0002、ADR-0006）。仓库根目录放一个 `.env`（已被忽略）：
 
 ```bash
 DEEPSEEK_API_KEY=sk-xxxxxxxx
 # QWEN_API_KEY=sk-xxxxxxxx   # 备用模型
 CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16   # 国内拉不到官方镜像时
 ```
+
+**配置里写的是句柄，不是 key**（P08）：`claw4j.model.deepseek.api-key: secret:deepseek_api_key`
+——句柄名是环境变量名的小写写法，真值在发请求那一刻才被换出来，于是配置、日志、审计、
+模型上下文里只有名字。写了句柄却没有对应变量，启动就失败，报错只说名字。
+`env` / `headers` 里也一样；非凭据常量用 `plain:` 前缀。
 
 `application-local.yml` 里那行 `spring.config.import: optional:file:./.env[.properties],optional:file:../.env[.properties]`
 是把 `.env` 接进 Boot 的原因——Spring Boot 默认**不**读 `.env`，那是 docker compose 的约定。

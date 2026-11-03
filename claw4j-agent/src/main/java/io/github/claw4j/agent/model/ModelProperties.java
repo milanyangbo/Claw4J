@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.model;
 
+import io.github.claw4j.secret.SecretValue;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
@@ -7,7 +8,11 @@ import java.time.Duration;
 /**
  * 模型供应商的凭据、开关与路由顺序。
  *
- * <p>凭据一律从环境变量来，yaml 里只写占位符 —— 真实 key 不进版本库（ADR-0006）。
+ * <p><b>凭据是句柄，不是值</b>（P08）：yaml 里写 {@code api-key: secret:deepseek_api_key}，
+ * 真值在发请求那一刻才由 {@code SecretResolver} 从部署环境换出来。于是这个类、
+ * 它的 toString、它的日志，从头到尾都拿不到 key —— 它们只知道"这次用的是哪把钥匙"。
+ * 在这之前是 {@code ${DEEPSEEK_API_KEY:}}：Spring 在绑定期就解成真值，字段活到进程结束，
+ * 任何能读到配置的组件都能随手取走（ADR-0006 的取向没变，变的是真值活多久）。
  *
  * <p><b>没有"要不要 mock"的开关</b>：ADR-0011 取消了 mock 兜底，一个 key 都没有就启动失败，
  * 于是那个三态字段没有存在的理由——留着它就是一处"配了也不生效"的入口。
@@ -55,7 +60,8 @@ public class ModelProperties {
      */
     public abstract static class Provider {
 
-        private String apiKey = "";
+        /** 句柄，不是 key。取值只能经 {@link #apiKey()} 拿到，而它只肯吐出名字。 */
+        private SecretValue apiKey = SecretValue.absent();
 
         /**
          * 端点与模型名的默认值只活在 application.yml（ADR-0006）。
@@ -92,12 +98,23 @@ public class ModelProperties {
         /** 环境变量前缀，只用于启动失败时告诉人去哪里配。 */
         public abstract String envPrefix();
 
-        public String getApiKey() {
+        /**
+         * 这一家用的凭据句柄。空（{@code isAbsent()}）表示这一家没配。
+         *
+         * <p><b>不提供 {@code String} 形态的 getter</b>：一旦有 {@code getApiKey()} 返回字符串，
+         * 下一个人就会拿它去拼 header，本票做的事就退回原样了。要真值只有一个入口——
+         * {@code apiKey().render(resolver)}，而它只该出现在装配类的出口。
+         */
+        public SecretValue apiKey() {
             return apiKey;
         }
 
+        /**
+         * 绑定时校验形状，不等出口：一个写成明文的 key 在这里就失败，并点名是哪一个配置项。
+         * 校验失败的消息不回显原值（它多半就是真 key），只说要什么形状。
+         */
         public void setApiKey(String apiKey) {
-            this.apiKey = apiKey == null ? "" : apiKey.trim();
+            this.apiKey = SecretValue.parse(apiKey, "claw4j.model." + name() + ".api-key", false);
         }
 
         public String getBaseUrl() {

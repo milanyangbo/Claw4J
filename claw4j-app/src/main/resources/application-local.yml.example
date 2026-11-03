@@ -55,6 +55,8 @@ claw4j:
   # 所以从仓库根目录起才对。从别处起（systemd、容器）就换成绝对路径。
   # 子进程的环境默认**只有 PATH**：应用的模型 key 与数据库口令不会漏过去；
   # 需要 HOME 之类的变量，就在那个 server 的 inherit-env 里显式写。
+  # 要给子进程一份专用凭据就写 env：值是**句柄**（secret:<名字>，对应同名环境变量），
+  # 非凭据常量写 plain:<文本>；裸写会被拒并点名到 servers.<名字>.env.<键>（P08）。
   capability:
     mcp:
       # 下面那段"别人写的"里有一个 npx 起的 server。要打开它，先把这两行一起解注释：
@@ -124,6 +126,8 @@ claw4j:
         #   url: https://mcp.deepwiki.com   # endpoint 不填就走 SDK 默认的 /mcp
         #   permission:
         #     action: read
-        #   # 要连需要凭据的端点时，把下面两行解注释（值从环境变量来）：
+        #   # 要连需要凭据的端点时，把下面两行解注释。头里写的是**句柄**（P08）：
+        #   #   secret:deepwiki_token 对应环境变量 DEEPWIKI_TOKEN，真值在**每次请求**时才换出来；
+        #   #   裸写 "Bearer xxx" 会在启动时被拒，并点名 servers.deepwiki.headers.Authorization。
         #   # headers:
-        #   #   Authorization: "Bearer ${DEEPWIKI_TOKEN}"
+        #   #   Authorization: "Bearer secret:deepwiki_token"

@@ -3,9 +3,12 @@ package io.github.claw4j.agent.model;
 import com.openai.client.OpenAIClient;
 import com.openai.client.OpenAIClientImpl;
 import com.openai.core.ClientOptions;
+import com.openai.credential.BearerTokenCredential;
 import io.github.claw4j.agent.model.DeepSeekModelCondition;
 import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.agent.model.QwenModelCondition;
+import io.github.claw4j.capability.secret.SpringSecretResolver;
+import io.github.claw4j.secret.SecretResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
@@ -20,6 +23,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.core.env.Environment;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.client.reactive.JdkClientHttpConnector;
 import org.springframework.web.client.RestClient;
@@ -54,9 +58,10 @@ public class ModelConfiguration {
 
     @Bean(DEEPSEEK_BEAN)
     @Conditional(DeepSeekModelCondition.class)
-    public ChatModel deepSeekChatModel(ModelProperties properties) {
+    public ChatModel deepSeekChatModel(ModelProperties properties, Environment environment) {
         ModelProperties.DeepSeek config = properties.getDeepseek();
-        requireConfigured(config);
+        SecretResolver secrets = SpringSecretResolver.of(environment);
+        requireConfigured(config, secrets);
 
         // 超时是必须项：不设的话，同步调用会在 Tomcat 请求线程上无限等。
         // 两个路径语义不同：
@@ -75,12 +80,15 @@ public class ModelConfiguration {
 
         DeepSeekApi api = DeepSeekApi.builder()
                 .baseUrl(config.getBaseUrl())
-                .apiKey(config.getApiKey())
+                // 每建一次请求取一次真值。DeepSeekApi 把 ApiKey 接到 RestClient / WebClient 的
+                // defaultHeaders 上，那个 consumer 是**每次请求**执行的，所以这里给一个 lambda
+                // 就够——真值不会在构造时被取出来存进某个字段，轮换凭据也不必重启进程。
+                .apiKey(() -> config.apiKey().render(secrets))
                 .restClientBuilder(RestClient.builder().requestFactory(requestFactory))
                 .webClientBuilder(WebClient.builder().clientConnector(webClientConnector))
                 .build();
 
-        logModel("DeepSeek", config.getBaseUrl(), config.getModel(),
+        logModel("DeepSeek", config.getBaseUrl(), config.getModel(), config.apiKey().text(),
                 config.getConnectTimeout(), config.getReadTimeout());
 
         return DeepSeekChatModel.builder()
@@ -112,9 +120,10 @@ public class ModelConfiguration {
      */
     @Bean(QWEN_BEAN)
     @Conditional(QwenModelCondition.class)
-    public ChatModel qwenChatModel(ModelProperties properties) {
+    public ChatModel qwenChatModel(ModelProperties properties, Environment environment) {
         ModelProperties.Qwen config = properties.getQwen();
-        requireConfigured(config);
+        SecretResolver secrets = SpringSecretResolver.of(environment);
+        requireConfigured(config, secrets);
 
         SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()
                 .timeout(config.getReadTimeout())
@@ -122,7 +131,10 @@ public class ModelConfiguration {
 
         ClientOptions options = ClientOptions.builder()
                 .baseUrl(config.getBaseUrl())
-                .apiKey(config.getApiKey())
+                // 与 DeepSeek 那一路同理，只是接缝不同：SDK 的 Credential 接受 Supplier，
+                // 每次请求 authenticate 时现取。不用 apiKey(String)：那个重载会把真值
+                // 钉进 ClientOptions，而那个对象活到进程结束。
+                .credential(BearerTokenCredential.create(() -> config.apiKey().render(secrets)))
                 .httpClient(httpClient)
                 .timeout(config.getReadTimeout())
                 .maxRetries(0)
@@ -133,7 +145,7 @@ public class ModelConfiguration {
 
         OpenAIClient client = new OpenAIClientImpl(options);
 
-        logModel("通义（OpenAI 兼容端点）", config.getBaseUrl(), config.getModel(),
+        logModel("通义（OpenAI 兼容端点）", config.getBaseUrl(), config.getModel(), config.apiKey().text(),
                 config.getConnectTimeout(), config.getReadTimeout());
 
         return OpenAiChatModel.builder()
@@ -151,17 +163,23 @@ public class ModelConfiguration {
     /**
      * 配置缺一半就启动失败，并且说清去哪配。
      * 静默拿空端点、空模型名去请求，表现出来的是"调用成功但回答为空"，极难排查。
+     *
+     * <p><b>句柄在这里探一次真值</b>（P08）：只问在不在，不取值。一个跑起来之后才在第 200 次
+     * 请求上失败的系统，比起不来的系统更难查——所以缺失发生在启动期，报错只说句柄名。
      */
-    private static void requireConfigured(ModelProperties.Provider config) {
-        if (config.getApiKey().isEmpty()) {
+    private static void requireConfigured(ModelProperties.Provider config, SecretResolver secrets) {
+        if (config.apiKey().isAbsent()) {
             // 一个 key 都没读到。最常见的原因不是"没配"，而是"配了但没读进来"：
             // .env 只有在 local profile 下才被 import，而 IDEA 默认不激活它。
             throw new IllegalStateException(
                     "没有配置任何 API key，应用拒绝启动（ADR-0011 起不再降级到 mock 模型）。二选一："
                             + "① 仓库根目录放 .env 并用 local profile 启动（.env 由它 import）；"
                             + "② 直接设环境变量 DEEPSEEK_API_KEY 或 QWEN_API_KEY"
-                            + "（IDEA：Run Configuration → Environment variables）。");
+                            + "（IDEA：Run Configuration → Environment variables）。"
+                            + "配置里写的是句柄，不是 key：claw4j.model.deepseek.api-key: secret:deepseek_api_key");
         }
+        // 配了句柄却没有真值：在这里失败，别等到第一次提问。
+        config.apiKey().requireResolvable(secrets);
         if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()
                 || config.getModel() == null || config.getModel().isBlank()) {
             throw new IllegalStateException(
@@ -172,12 +190,12 @@ public class ModelConfiguration {
     }
 
     /**
-     * 用了哪个模型必须在日志里看得见，否则"到底有没有连上真实模型"只能靠猜。
-     * 只打 baseUrl 与 model，不打 key。
+     * 用了哪个模型、哪把钥匙必须在日志里看得见，否则"到底有没有连上真实模型""这次用的是哪个句柄"
+     * 只能靠猜。打的是<b>句柄名</b>，不是真值——日志会被转发、会被贴进工单。
      */
-    private static void logModel(String label, String baseUrl, String model,
+    private static void logModel(String label, String baseUrl, String model, String apiKeyHandle,
                                  java.time.Duration connectTimeout, java.time.Duration readTimeout) {
-        log.info("已装配 {} 真实模型：baseUrl={}, model={}, connectTimeout={}, readTimeout={}",
-                label, baseUrl, model, connectTimeout, readTimeout);
+        log.info("已装配 {} 真实模型：baseUrl={}, model={}, 凭据={}, connectTimeout={}, readTimeout={}",
+                label, baseUrl, model, apiKeyHandle, connectTimeout, readTimeout);
     }
 }

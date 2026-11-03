@@ -124,18 +124,27 @@ claw4j:
           url: https://mcp.deepwiki.com
           # endpoint 不填走 SDK 默认（http → /mcp，sse → /sse）
           # headers:
-          #   Authorization: "Bearer ${MCP_TOKEN}"     # 凭据写成占位符，值不进仓库
+          #   Authorization: "Bearer secret:mcp_token"   # 头里写句柄，不写值（见下）
         everything:                    # 走 stdio：起一个子进程
           command: npx
           args: ["-y", "@modelcontextprotocol/server-everything"]
           inherit-env: [PATH, HOME]    # 没点名的变量子进程一个都看不到
+          # env:                         # 要给它一份专用凭据时写这里
+          #   MCP_TOKEN: secret:mcp_token
+          #   HOME: plain:/tmp/isolated   # 非凭据常量用 plain: 显式标出来
           permission:
             action: read               # 默认就是 read；能写东西的 server 要显式写
 ```
 
+**凭据是句柄，不是值**（P08）：`env` 与 `headers` 的值要么是 `secret:<名字>`
+（`<名字>` 是环境变量名的小写写法，`secret:mcp_token` 对应 `MCP_TOKEN`），要么是
+`plain:<文本>`（非凭据常量）。真值只在出口换出来——起子进程那一刻、或者每次写 http 头那一刻——
+所以配置、日志、审计、模型上下文里从头到尾只有名字。裸写明文会在启动时被拒，报错点名到
+`servers.<名字>.env.<键>` / `.headers.<键>`；写了句柄却没有对应环境变量，同样是启动失败。
+
 键的名字与默认值在 `McpServerProperties` 里；`McpEndpoints` 负责把它翻成端点，那里也是
 **配错就当场失败**的地方：stdio 没 `command`、http 没 `url`、`url` 不是 http(s)、
-`inherit-env` 里有空项——每条失败消息都带 server 名，因为配置化之后一次会配好几个。
+`inherit-env` 里有空项、凭据位裸写明文——每条失败消息都带 server 名，因为配置化之后一次会配好几个。
 
 装配条件看的是**配置**（`ConfiguredMcpServersAutoConfiguration.ServersConfigured` 读 Environment），
 不是容器里有没有某个 bean。写成 `@ConditionalOnBean` 会踩上面第三种失效：条件按声明顺序求值，

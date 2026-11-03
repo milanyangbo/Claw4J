@@ -159,3 +159,13 @@ M1-07 用真实 key + 真库把两家各跑了一遍。**两个 bug 都只在真
 > **2026-10-24 取代**：隔离已取消。ADR-0011 之后回归基线本身就是真模型，
 > 原来那个隔离在 profile 里的真模型用例进常规回归，`-Preal-model` 一并删除。
 > 仍然有效的是"主模型由 `CLAW4J_MODEL_PRIMARY` 决定，与运行时同一个开关"这一句。
+
+**2026-11-03 修订（P08）：key 的位置从"占位符"改成"句柄"。**
+上面那句"两家的 key 都在 `.env`"没变，变的是**配置里写什么**：
+原来是 `api-key: ${DEEPSEEK_API_KEY:}`，Spring 在配置绑定期就把它解成真值，
+于是真值以字符串形态活到进程结束——任何能读到配置的组件都拿得到，也答不出"这次用的是哪把钥匙"。
+现在是 `api-key: secret:deepseek_api_key`：配置对象只持有名字，真值在发请求那一刻
+（`DeepSeekApi` 的 `ApiKey` 回调、`OpenAIClient` 的 `BearerTokenCredential`）才换出来。
+"有没有 key 决定装不装"那条规则因此改成"句柄能不能换出真值"，条件仍是同一个
+`SpringBootCondition`（`RealChatModelCondition`），因为 `@ConditionalOnProperty`
+判断不了"这一步取不取得到"。写明文或写错句柄形状都在启动期失败并点名配置项。

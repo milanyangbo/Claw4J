@@ -91,12 +91,16 @@ public class McpServerProperties {
      * @param transport 传输方式。写错一个不存在的值在绑定期就失败，不会悄悄退化成 stdio
      * @param command   stdio：起哪个程序。**argv 数组的第一个元素，不经任何命令解释器**（ADR-0002）
      * @param args      stdio：原样交给它的参数。空项会在起进程之前被拒绝
-     * @param env       stdio：显式给出的环境变量；同名键覆盖 {@code inheritEnv} 透传进来的值
+     * @param env       stdio：显式给出的环境变量，<b>值是句柄不是真值</b>（{@code secret:<名字>}；
+     *                  非凭据常量写 {@code plain:<文本>}，裸写会被拒并点名到具体一行）；
+     *                  同名键覆盖 {@code inheritEnv} 透传进来的值
      * @param inheritEnv stdio：从本进程透传哪些变量**名**。默认只给 {@code PATH}——
      *                  不给它连启动器都找不到，给多了应用的模型 key 就漏过去了
      * @param url       http / sse：base URI，例如 {@code https://mcp.example.com}
      * @param endpoint  http / sse：base URI 之后的路径。不填走 SDK 默认（{@code /mcp}、{@code /sse}）
-     * @param headers   http / sse：每次请求都带的头。凭据写成 {@code ${ENV_VAR}} 占位符，值不进仓库
+     * @param headers   http / sse：每次请求都带的头，<b>值是句柄</b>，可以带前后缀
+     *                  （{@code Authorization: "Bearer secret:deepwiki_token"}）；
+     *                  真值在每次写头那一刻才换出来（P08）
      * @param permission 这个 server 导出的工具**默认**需要什么权限。默认只读且不碰任何业务表
      * @param tools      按工具覆盖 {@code permission}：键是工具名，值是它自己的权限。
      *                   没点名的工具仍走 {@code permission}；点名了一个 server 不导出的工具名

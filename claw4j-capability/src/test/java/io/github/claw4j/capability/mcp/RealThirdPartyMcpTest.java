@@ -3,6 +3,7 @@ package io.github.claw4j.capability.mcp;
 import io.github.claw4j.capability.mcp.McpServerProperties.Permission;
 import io.github.claw4j.capability.mcp.McpServerProperties.Server;
 import io.github.claw4j.capability.mcp.McpServerProperties.Transport;
+import io.github.claw4j.secret.SecretResolver;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -12,6 +13,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,6 +46,9 @@ class RealThirdPartyMcpTest {
      */
     private static final Duration TIMEOUT = Duration.ofSeconds(120);
 
+    /** 这两条都不带凭据：一个零参数、一个公开端点，句柄解析器只需回答“没有”。 */
+    private static final SecretResolver NO_SECRETS = name -> Optional.empty();
+
     @Test
     @DisplayName("stdio：npm 上的第三方 server，工具清单拿得到，工具真的能调")
     void thirdPartyStdioServerWorks() {
@@ -53,7 +58,7 @@ class RealThirdPartyMcpTest {
                 new Permission("read", List.of()), Map.of(), true);
 
         try (McpToolProvider provider = new McpToolProvider(
-                List.of(new McpConnection(McpEndpoints.of("everything", server), TIMEOUT, TIMEOUT)))) {
+                List.of(new McpConnection(McpEndpoints.of("everything", server, NO_SECRETS), TIMEOUT, TIMEOUT)))) {
 
             assertThat(provider.toolNames())
                     .as("everything server 的参考工具集里一定有 echo")
@@ -77,7 +82,7 @@ class RealThirdPartyMcpTest {
                 "https://mcp.deepwiki.com", null, Map.of(), new Permission("read", List.of()), Map.of(), true);
 
         try (McpToolProvider provider = new McpToolProvider(
-                List.of(new McpConnection(McpEndpoints.of("deepwiki", server), TIMEOUT)))) {
+                List.of(new McpConnection(McpEndpoints.of("deepwiki", server, NO_SECRETS), TIMEOUT)))) {
 
             assertThat(provider.toolNames())
                     .as("DeepWiki 的工具都是「读某个仓库的文档」，不需要凭据就能列出来")

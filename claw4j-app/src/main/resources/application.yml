@@ -5,7 +5,9 @@
 #     与 docs/design/ 下，两边不重复写——两处写同一件事，早晚改一处漏一处。
 #   - claw4j.* 的每个键都有明确的拥有者：某个 @ConfigurationProperties 类，或装配类上的
 #     @ConditionalOnProperty。在这里加一个没人读的键，就是又一处"配了不生效"。
-#   - 凭据一律走环境变量占位符，真实值不进仓库（ADR-0002）。
+#   - 凭据一律写**句柄**：`secret:<名字>`，名字是环境变量名的小写写法（P08、ADR-0002）。
+#     真值在发请求那一刻才由出口解析，配置、日志、审计、模型上下文里都只有名字。
+#     裸写明文会在启动时失败并点名是哪一行——不靠"看着像凭据"来判断。
 
 spring:
   application:
@@ -49,15 +51,18 @@ claw4j:
   # ---- 模型：一个 key 都没有就启动失败（ADR-0011，没有 mock 兜底） ----
   # 两家都配时 primary 决定谁先上，另一家是备。主家没配 key 时也启动失败，
   # 不会悄悄拿备用那家顶上——"我以为在用千问、其实还在 DeepSeek"要靠失败暴露。
+  # api-key 写的是句柄（P08）：secret:deepseek_api_key 对应环境变量 DEEPSEEK_API_KEY
+  #（本机也可以写进 .env，它由 local profile 导入；句柄名与变量名是同一个东西的两种写法）。
+  # 句柄取不到真值时启动失败，报错只说名字、不说值。
   model:
     primary: ${CLAW4J_MODEL_PRIMARY:deepseek}
     deepseek:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-      api-key: ${DEEPSEEK_API_KEY:}
+      api-key: secret:deepseek_api_key
       model: ${DEEPSEEK_MODEL:deepseek-chat}
     qwen:
       base-url: ${QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-      api-key: ${QWEN_API_KEY:}
+      api-key: secret:qwen_api_key
       model: ${QWEN_MODEL:qwen-plus}
 
   # ---- 通道：谁能进来 ----

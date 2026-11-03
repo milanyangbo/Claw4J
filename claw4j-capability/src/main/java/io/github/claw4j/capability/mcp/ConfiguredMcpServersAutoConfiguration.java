@@ -1,5 +1,6 @@
 package io.github.claw4j.capability.mcp;
 
+import io.github.claw4j.capability.secret.SpringSecretResolver;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -10,6 +11,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Condition;
 import org.springframework.context.annotation.ConditionContext;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.core.env.Environment;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 
 /**
@@ -38,10 +40,14 @@ public class ConfiguredMcpServersAutoConfiguration {
     /**
      * 每个配置条目一条连接。与会话层同一个 fail-fast：连接与工具清单都在建这个 bean 时完成，
      * 于是"配了一个连不上的 server"是启动失败，不是等到用户问起才变成"模型说它没这个能力"。
+     *
+     * <p>凭据句柄也在这里探一次（P08）：配了 {@code secret:xxx} 却没有 {@code XXX} 这个环境变量，
+     * 启动就失败并点名是哪个 server 的哪个键——比第一次工具调用时才发现好查得多。
+     * 探的时候只问在不在，真值仍然在出口（起子进程 / 写 header）现取。
      */
     @Bean
-    public McpToolProvider configuredMcpToolProvider(McpServerProperties properties) {
-        return new McpToolProvider(McpEndpoints.from(properties).stream()
+    public McpToolProvider configuredMcpToolProvider(McpServerProperties properties, Environment environment) {
+        return new McpToolProvider(McpEndpoints.from(properties, SpringSecretResolver.of(environment)).stream()
                 .map(endpoint -> new McpConnection(endpoint,
                         properties.getRequestTimeout(), properties.getInitializationTimeout()))
                 .toList());

@@ -3,9 +3,13 @@ package io.github.claw4j.capability.mcp;
 import io.github.claw4j.capability.mcp.McpServerProperties.Permission;
 import io.github.claw4j.capability.mcp.McpServerProperties.Server;
 import io.github.claw4j.capability.mcp.McpServerProperties.Transport;
+import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
 import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.secret.MissingSecretException;
+import io.github.claw4j.secret.SecretResolver;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
+import io.modelcontextprotocol.common.McpTransportContext;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -15,10 +19,13 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.StandardEnvironment;
 
+import java.net.URI;
+import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -29,8 +36,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>这里<b>不连任何 server</b>，也不起任何进程：断言的是"配置翻译出来的形状"与
  * "配错时的失败"。真连第三方要出网、要装 Node，那是演示（{@code application-local.yml} 里
  * 那段注释着的配置）的活，不是门禁的活——一条每天跑、结果取决于公网状态的用例，红了也说明不了是谁的问题。
+ *
+ * <p>P08 之后这里多了一类断言：{@code env} 与 {@code headers} 里写的是句柄，配了真值写法
+ * （裸写明文）或句柄取不到真值，都在装配期红，且报错点名到具体那一行。
  */
 class McpServersConfigTest {
+
+    /** 一份够用的假环境：句柄名 → 真值。真值故意用一眼能认出的串，好断言它没被打印出去。 */
+    private static final SecretResolver SECRETS = name -> Optional.ofNullable(
+            Map.of("mcp_token", "token-live-1234", "home_dir", "/tmp/isolated").get(name));
 
     @Test
     @DisplayName("stdio：命令与参数原样成为 argv，不经任何解释器")
@@ -38,7 +52,7 @@ class McpServersConfigTest {
         Server server = stdio("npx", List.of("-y", "@modelcontextprotocol/server-everything"),
                 List.of("PATH"), Map.of());
 
-        assertThat(McpEndpoints.stdio("everything", server).commandLine())
+        assertThat(McpEndpoints.stdio("everything", server, SECRETS).commandLine())
                 .isEqualTo("npx -y @modelcontextprotocol/server-everything");
     }
 
@@ -46,9 +60,9 @@ class McpServersConfigTest {
     @DisplayName("环境变量：先按名字透传，显式写的那份再覆盖上去")
     void explicitEnvironmentOverridesWhatWasInherited() {
         Map<String, String> parent = Map.of("PATH", "/usr/bin", "HOME", "/Users/someone");
-        Server server = stdio("npx", List.of(), List.of("PATH", "HOME"), Map.of("HOME", "/tmp/isolated"));
+        Server server = stdio("npx", List.of(), List.of("PATH", "HOME"), Map.of("HOME", "secret:home_dir"));
 
-        Map<String, String> env = McpEndpoints.environment(parent, server);
+        Map<String, String> env = environment(parent, server);
 
         assertThat(env)
                 .as("PATH 透传、HOME 被显式值顶掉：反过来的顺序会让“我明明写了”的那份失效")
@@ -61,7 +75,7 @@ class McpServersConfigTest {
     void missingParentVariableIsAbsentRatherThanBlank() {
         Server server = stdio("npx", List.of(), List.of("PATH", "MCP_TOKEN"), Map.of());
 
-        assertThat(McpEndpoints.environment(Map.of("PATH", "/usr/bin"), server))
+        assertThat(environment(Map.of("PATH", "/usr/bin"), server))
                 .as("空值会被子进程当成“有这个变量但它是空的”，与“没有这个变量”是两种下游行为")
                 .containsOnlyKeys("PATH");
     }
@@ -71,9 +85,47 @@ class McpServersConfigTest {
     void blankInheritEntryIsRejected() {
         Server server = stdio("npx", List.of(), List.of("PATH", " "), Map.of());
 
-        assertThatThrownBy(() -> McpEndpoints.environment(Map.of("PATH", "/usr/bin"), server))
+        assertThatThrownBy(() -> environment(Map.of("PATH", "/usr/bin"), server))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("inherit-env 里有空项");
+    }
+
+    @Test
+    @DisplayName("env 的值只能是句柄：裸写明文与句柄缺失都在装配期红，报错点名到那一行")
+    void envValueMustBeAHandle() {
+        Server plain = stdio("npx", List.of(), List.of("PATH"), Map.of("MCP_TOKEN", "token-live-1234"));
+
+        assertThatThrownBy(() -> McpEndpoints.stdio("demo", plain, SECRETS))
+                .as("报错里不能有原值：写错位的那一行很可能就是真凭据")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("claw4j.capability.mcp.servers.demo.env.MCP_TOKEN")
+                .hasMessageNotContaining("token-live-1234");
+
+        Server missing = stdio("npx", List.of(), List.of("PATH"), Map.of("MCP_TOKEN", "secret:absent"));
+
+        assertThatThrownBy(() -> McpEndpoints.stdio("demo", missing, SECRETS))
+                .as("句柄写了却没有真值：启动期就失败，别等第一次调用")
+                .isInstanceOf(MissingSecretException.class)
+                .hasMessageContaining("secret:absent")
+                .hasMessageContaining("claw4j.capability.mcp.servers.demo.env.MCP_TOKEN");
+    }
+
+    @Test
+    @DisplayName("headers 的值是句柄，真值只在出口换：端点手里是名字，请求头上是真值")
+    void headersKeepHandlesUntilTheExit() {
+        Server server = http("https://mcp.example.com", null,
+                Map.of("Authorization", "Bearer secret:mcp_token"));
+
+        var endpoint = McpEndpoints.http("demo", server, false, SECRETS);
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(endpoint.target() + "/mcp"));
+
+        // 出口那一行：每次请求，customizer 现取现换。这条断言走的是生产同一个回调。
+        endpoint.requestCustomizer().customize(request, "POST", URI.create(endpoint.target() + "/mcp"),
+                "{}", McpTransportContext.EMPTY);
+
+        assertThat(request.build().headers().firstValue("Authorization"))
+                .as("配置里只有句柄，到了请求头上才有真值")
+                .hasValue("Bearer token-live-1234");
     }
 
     @Test
@@ -81,7 +133,7 @@ class McpServersConfigTest {
     void httpUsesTheStreamableTransport() {
         Server server = http("https://mcp.deepwiki.com", null, Map.of());
 
-        var endpoint = McpEndpoints.http("deepwiki", server, false);
+        var endpoint = McpEndpoints.http("deepwiki", server, false, SECRETS);
 
         assertThat(endpoint.target()).isEqualTo("https://mcp.deepwiki.com");
         assertThat(endpoint.openTransport())
@@ -94,14 +146,15 @@ class McpServersConfigTest {
     void sseSwitchesTheTransport() {
         Server server = http("https://mcp.example.com", "/sse", Map.of());
 
-        assertThat(McpEndpoints.http("legacy", server, true).openTransport())
+        assertThat(McpEndpoints.http("legacy", server, true, SECRETS).openTransport())
                 .isInstanceOf(HttpClientSseClientTransport.class);
     }
 
     @Test
     @DisplayName("权限默认只读且不带任何表：外部能力碰不到业务库")
     void defaultPermissionIsReadWithoutTables() {
-        McpServerEndpoint endpoint = McpEndpoints.of("deepwiki", http("https://mcp.deepwiki.com", null, Map.of()));
+        McpServerEndpoint endpoint =
+                McpEndpoints.of("deepwiki", http("https://mcp.deepwiki.com", null, Map.of()), SECRETS);
 
         assertThat(endpoint.name()).isEqualTo("deepwiki");
         assertThat(endpoint.permission())
@@ -116,7 +169,7 @@ class McpServersConfigTest {
                 List.of("PATH"), null, null, Map.of(), new Permission("send_email", List.of("customer")),
                 Map.of(), true);
 
-        assertThat(McpEndpoints.of("mail", server).permission())
+        assertThat(McpEndpoints.of("mail", server, SECRETS).permission())
                 .isEqualTo(ToolPermission.of("send_email", "customer"));
     }
 
@@ -125,7 +178,7 @@ class McpServersConfigTest {
     void stdioWithoutCommandFailsOnTheSpot() {
         Server server = stdio("  ", List.of(), List.of("PATH"), Map.of());
 
-        assertThatThrownBy(() -> McpEndpoints.stdio("half-done", server))
+        assertThatThrownBy(() -> McpEndpoints.stdio("half-done", server, SECRETS))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("MCP server half-done")
                 .hasMessageContaining("没有 command");
@@ -136,7 +189,7 @@ class McpServersConfigTest {
     void httpWithoutUrlFailsOnTheSpot() {
         Server server = http(null, null, Map.of());
 
-        assertThatThrownBy(() -> McpEndpoints.http("nowhere", server, false))
+        assertThatThrownBy(() -> McpEndpoints.http("nowhere", server, false, SECRETS))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("MCP server nowhere")
                 .hasMessageContaining("没有 url");
@@ -145,7 +198,8 @@ class McpServersConfigTest {
     @Test
     @DisplayName("url 写成文件路径或少了协议：拒绝，而不是等到连接超时")
     void nonHttpUrlIsRejected() {
-        assertThatThrownBy(() -> McpEndpoints.http("typo", http("mcp.deepwiki.com", null, Map.of()), false))
+        assertThatThrownBy(
+                () -> McpEndpoints.http("typo", http("mcp.deepwiki.com", null, Map.of()), false, SECRETS))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("不是 http(s) 地址");
     }
@@ -158,7 +212,8 @@ class McpServersConfigTest {
         properties.getServers().put("off", new Server(Transport.HTTP, null, List.of(), Map.of(), List.of("PATH"),
                 "https://mcp.example.com", null, Map.of(), new Permission("read", List.of()), Map.of(), false));
 
-        assertThat(McpEndpoints.from(properties)).extracting(McpServerEndpoint::name).containsExactly("on");
+        assertThat(McpEndpoints.from(properties, SECRETS))
+                .extracting(McpServerEndpoint::name).containsExactly("on");
     }
 
     @Test
@@ -196,7 +251,7 @@ class McpServersConfigTest {
                 new Permission("read", List.of()),
                 Map.of("send_email", new Permission("send_email", List.of("customer"))), true);
 
-        McpServerEndpoint endpoint = McpEndpoints.of("mail", server);
+        McpServerEndpoint endpoint = McpEndpoints.of("mail", server, SECRETS);
 
         assertThat(endpoint.permissionFor("list_inbox"))
                 .as("没点名的工具不能被旁边的覆盖带跑")
@@ -214,7 +269,7 @@ class McpServersConfigTest {
                 "https://mcp.example.com", null, Map.of(), new Permission("read", List.of()),
                 Map.of(" ", new Permission("send_email", List.of())), true);
 
-        assertThatThrownBy(() -> McpEndpoints.of("mail", server))
+        assertThatThrownBy(() -> McpEndpoints.of("mail", server, SECRETS))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("MCP server mail")
                 .hasMessageContaining("空的工具名");
@@ -257,6 +312,12 @@ class McpServersConfigTest {
         assertThat(properties.getRequestTimeout())
                 .as("单次调用与握手是两个量级，不能共用一个值")
                 .isEqualTo(Duration.ofSeconds(30));
+    }
+
+    /** 出口那一行：把配置里的 env 段落翻成"子进程真的能看到的变量"。 */
+    private static Map<String, String> environment(Map<String, String> parent, Server server) {
+        return ProcessStdioMcpEndpoint.environment(parent, server.inheritEnv(),
+                McpEndpoints.handleValues("test", "env", server.env(), SECRETS), SECRETS);
     }
 
     private static ApplicationContextRunner runner() {

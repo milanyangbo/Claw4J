@@ -3,9 +3,12 @@ package io.github.claw4j.agent.cache;
 import com.openai.client.OpenAIClient;
 import com.openai.client.OpenAIClientImpl;
 import com.openai.core.ClientOptions;
+import com.openai.credential.BearerTokenCredential;
 import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.agent.model.QwenModelCondition;
+import io.github.claw4j.capability.secret.SpringSecretResolver;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.secret.SecretResolver;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +26,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
@@ -71,14 +75,17 @@ public class CacheAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(EmbeddingModel.class)
-    public EmbeddingModel cacheEmbeddingModel(ModelProperties model, CacheProperties cache) {
+    public EmbeddingModel cacheEmbeddingModel(ModelProperties model, CacheProperties cache,
+                                              Environment environment) {
         ModelProperties.Qwen qwen = model.getQwen();
+        SecretResolver secrets = SpringSecretResolver.of(environment);
         SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()
                 .timeout(qwen.getReadTimeout())
                 .build();
         ClientOptions options = ClientOptions.builder()
                 .baseUrl(qwen.getBaseUrl())
-                .apiKey(qwen.getApiKey())
+                // 与聊天模型同一个接缝：每次请求现取，真值不进 ClientOptions（P08）。
+                .credential(BearerTokenCredential.create(() -> qwen.apiKey().render(secrets)))
                 .httpClient(httpClient)
                 .timeout(qwen.getReadTimeout())
                 // 重试关掉：向量算不出来就退化成"没命中"，在这里重试三轮只是拖慢一次提问。
@@ -87,8 +94,9 @@ public class CacheAutoConfiguration {
                 .build();
         OpenAIClient client = new OpenAIClientImpl(options);
 
-        log.info("已装配向量模型：baseUrl={}, model={}, dimensions={}",
-                qwen.getBaseUrl(), cache.embeddingModel(), cache.embeddingDimensions());
+        log.info("已装配向量模型：baseUrl={}, model={}, dimensions={}, 凭据={}",
+                qwen.getBaseUrl(), cache.embeddingModel(), cache.embeddingDimensions(),
+                qwen.apiKey().text());
 
         return OpenAiEmbeddingModel.builder()
                 .openAiClient(client)

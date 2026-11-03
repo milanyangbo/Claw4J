@@ -175,7 +175,9 @@ claw4j:
 - **两个超时分开调**：`request-timeout`（单次调用，默认 30s）与 `initialization-timeout`（握手，默认 60s）。
   接 `npx` / `uvx` 这类启动器时**两个都要调大**：`npx -y @modelcontextprotocol/server-everything` 本机实测
   冷启动 **36 秒**，只调 `initialization-timeout` 没用——默认 30 秒的 `request-timeout` 会先超时。
-- 凭据写成占位符：`headers: { Authorization: "Bearer ${MCP_TOKEN}" }`。
+- **凭据写句柄，不写值**：`headers: { Authorization: "Bearer secret:mcp_token" }`。
+  `secret:<名字>` 里是环境变量名的小写写法，真值在每次请求（或起子进程）那一刻才换出来；
+  非凭据常量用 `plain:` 前缀。裸写明文会在启动时被拒并点名到那一行。
 - 配错在**启动时**失败并点名 server（stdio 没 `command`、http 没 `url`、`url` 不是 http(s)）；
   **连上了但清单为空也是失败**——"通了但一件能力都没有"不该靠调用方去发现。
 

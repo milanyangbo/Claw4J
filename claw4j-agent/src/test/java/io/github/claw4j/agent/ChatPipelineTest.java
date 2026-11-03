@@ -42,6 +42,8 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.StandardEnvironment;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
@@ -203,10 +205,11 @@ class ChatPipelineTest {
                 .isNotBlank();
 
         ModelProperties properties = new ModelProperties();
-        properties.getDeepseek().setApiKey(apiKey);
+        // 配的是句柄，真值在测试自己的 Environment 里（P08 之后模型装配只认这一条路）。
+        properties.getDeepseek().setApiKey("secret:deepseek_api_key");
         properties.getDeepseek().setBaseUrl("https://api.deepseek.com");
         properties.getDeepseek().setModel("deepseek-chat");
-        ChatModel model = new ModelConfiguration().deepSeekChatModel(properties);
+        ChatModel model = new ModelConfiguration().deepSeekChatModel(properties, keyInEnvironment(apiKey));
 
         List<String> executedSql = new CopyOnWriteArrayList<>();
         ToolCallback querySales = MethodToolCallbackProvider.builder()
@@ -524,10 +527,11 @@ class ChatPipelineTest {
                 .isNotBlank();
 
         ModelProperties properties = new ModelProperties();
-        properties.getDeepseek().setApiKey(apiKey);
+        // 配的是句柄，真值在测试自己的 Environment 里（P08 之后模型装配只认这一条路）。
+        properties.getDeepseek().setApiKey("secret:deepseek_api_key");
         properties.getDeepseek().setBaseUrl("https://api.deepseek.com");
         properties.getDeepseek().setModel("deepseek-chat");
-        ChatModel model = new ModelConfiguration().deepSeekChatModel(properties);
+        ChatModel model = new ModelConfiguration().deepSeekChatModel(properties, keyInEnvironment(apiKey));
 
         FakeRuns runs = new FakeRuns();
         ChatClientAgentPort port = new ChatClientAgentPort(client(model, List.of(), List.of()), null, runs);
@@ -854,6 +858,19 @@ class ChatPipelineTest {
 
     private static InboundMessage message(String chatId, String text) {
         return new InboundMessage(Principal.readOnly("u-1"), chatId, text);
+    }
+
+    /**
+     * 真模型用例的真值放在这里，而不是放进 {@code ModelProperties}（P08）。
+     *
+     * <p>属性名照句柄的换算规则写（{@code secret:deepseek_api_key} → {@code DEEPSEEK_API_KEY}），
+     * 于是这几条用例走的就是生产那条路：配置只有名字，真值在出口被问出来。
+     */
+    private static StandardEnvironment keyInEnvironment(String apiKey) {
+        StandardEnvironment environment = new StandardEnvironment();
+        environment.getPropertySources().addFirst(
+                new MapPropertySource("real-model-key", Map.of("DEEPSEEK_API_KEY", apiKey)));
+        return environment;
     }
 
     /** 带着 runId 再说一句：客户端把上一轮回答里的 runId 带回来（A02 的 resume 入口）。 */

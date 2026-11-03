@@ -280,9 +280,16 @@ class SemanticCacheTest {
                 // 装配前提是"有库、有向量模型"，这些都给它，于是下面能关掉只能是开关本身
                 .withBean(DataSource.class, () -> mock(DataSource.class))
                 .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
-                .withBean(ModelProperties.class, ModelProperties::new)
+                .withBean(ModelProperties.class, () -> {
+                    ModelProperties properties = new ModelProperties();
+                    properties.getQwen().setApiKey("secret:qwen_api_key");
+                    properties.getQwen().setBaseUrl("http://127.0.0.1:9/v1");
+                    return properties;
+                })
+                // 句柄在属性里、真值在环境里（P08）：两处都写，走的才是生产那条路。
                 .withPropertyValues(
-                        "claw4j.model.qwen.api-key=test-key",
+                        "claw4j.model.qwen.api-key=secret:qwen_api_key",
+                        "QWEN_API_KEY=test-key",
                         "claw4j.model.qwen.base-url=http://127.0.0.1:9/v1");
 
         // 先证明"开着时确实装了"。没有这一半，条件写错成"永不匹配"时，下半条照样绿

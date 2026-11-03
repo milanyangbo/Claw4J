@@ -2,6 +2,8 @@ package io.github.claw4j.capability.mcp.http;
 
 import io.github.claw4j.capability.mcp.McpServerEndpoint;
 import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.secret.SecretResolver;
+import io.github.claw4j.secret.SecretValue;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.customizer.McpSyncHttpClientRequestCustomizer;
@@ -24,9 +26,10 @@ import java.util.Objects;
  * 会话靠 {@code Mcp-Session-Id} 头（SDK 自己收发，我们不管）；后者是"开一条长连接收，
  * 另一个端点发"。协议版本 2025 起前者是标准，后者留着是为了接那些只给 {@code /sse} 的老 server。
  *
- * <p><b>凭据走 {@code headers}</b>，不在这里读环境变量：配置里写
- * {@code Authorization: "Bearer ${DEEPWIKI_TOKEN}"}，Spring 在绑定阶段就把占位符解开了，
- * 于是"用了哪个 secret"这件事留在配置与部署里，这个类不需要知道任何具体的变量名。
+ * <p><b>凭据走 {@code headers}，值是句柄</b>（P08）：配置里写
+ * {@code Authorization: "Bearer secret:deepwiki_token"}，真值在<b>每一次请求</b>写头那一刻才换出来
+ * （见 {@link #requestCustomizer()}）。在这之前是 {@code ${DEEPWIKI_TOKEN}}——Spring 在配置绑定期
+ * 就把它解成真值，于是这个对象手里握着的是一把能活到进程结束的钥匙。
  */
 public final class HttpMcpEndpoint {
 
@@ -36,15 +39,20 @@ public final class HttpMcpEndpoint {
 
     private final String path;
 
-    private final Map<String, String> headers;
+    /** 每次请求都带的头：值是句柄，不是真值。 */
+    private final Map<String, SecretValue> headers;
+
+    private final SecretResolver secrets;
 
     private final boolean sse;
 
-    private HttpMcpEndpoint(String name, String baseUri, String path, Map<String, String> headers, boolean sse) {
+    private HttpMcpEndpoint(String name, String baseUri, String path, Map<String, SecretValue> headers,
+                            SecretResolver secrets, boolean sse) {
         this.name = Objects.requireNonNull(name, "name");
         this.baseUri = Objects.requireNonNull(baseUri, "baseUri").strip();
         this.path = path == null ? "" : path.strip();
         this.headers = Map.copyOf(Objects.requireNonNull(headers, "headers"));
+        this.secrets = Objects.requireNonNull(secrets, "secrets");
         this.sse = sse;
         if (!this.baseUri.startsWith("http://") && !this.baseUri.startsWith("https://")) {
             throw new IllegalArgumentException("MCP server " + name + " 的 url 不是 http(s) 地址：" + this.baseUri
@@ -60,12 +68,13 @@ public final class HttpMcpEndpoint {
      * @param name    server 名，只用于日志与报错
      * @param baseUri base URI，例如 {@code https://mcp.example.com}
      * @param path    路径，留空则用 SDK 的默认值（Streamable HTTP 是 {@code /mcp}，SSE 是 {@code /sse}）
-     * @param headers 每次请求都带的头，用来放凭据
+     * @param headers 每次请求都带的头，值是句柄
+     * @param secrets 句柄的解析器，只在写 header 时被用到
      * @param sse     true 走旧版 SSE 传输，false 走 Streamable HTTP
      */
-    public static HttpMcpEndpoint of(String name, String baseUri, String path, Map<String, String> headers,
-                                     boolean sse) {
-        return new HttpMcpEndpoint(name, baseUri, path, headers, sse);
+    public static HttpMcpEndpoint of(String name, String baseUri, String path, Map<String, SecretValue> headers,
+                                     boolean sse, SecretResolver secrets) {
+        return new HttpMcpEndpoint(name, baseUri, path, headers, secrets, sse);
     }
 
     public String name() {
@@ -124,9 +133,17 @@ public final class HttpMcpEndpoint {
      * <p>用 SDK 给的 customizer 而不是自造一个 {@link HttpRequest.Builder}：那个 builder
      * 还要带 {@code Accept}、会话 id、协议版本这些由传输自己决定的东西，预置一份等于把
      * SDK 的握手细节抄一份出来，它一升级就对不上。
+     *
+     * <p><b>这里是 P08 三个出口里的第三个</b>：customizer 每次请求执行一次，句柄就在这个
+     * 回调里换真值。于是凭据轮换不必重启进程，而我们的对象里从头到尾只有名字。
+     *
+     * <p><b>它是 public 的，为的是这条性质能被测到</b>（{@code McpServersConfigTest} 直接调它，
+     * 断言请求头里是真值、而端点对象里仍是句柄）。它只读句柄、不吐真值，
+     * 拿到它自己拼一条传输也不会多出泄漏面。
      */
-    private McpSyncHttpClientRequestCustomizer requestCustomizer() {
-        return (builder, method, endpoint, body, context) -> headers.forEach(builder::header);
+    public McpSyncHttpClientRequestCustomizer requestCustomizer() {
+        return (builder, method, endpoint, body, context) ->
+                headers.forEach((name, value) -> builder.header(name, value.render(secrets)));
     }
 
     @Override
