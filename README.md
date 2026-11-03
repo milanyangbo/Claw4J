@@ -22,6 +22,7 @@
 | --- | --- |
 | **三条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
 | **五种能力来源，对模型是一回事** | Java `@Tool`、MCP server（stdio / HTTP 都行）、受限脚本包、Agent Skill、子 Agent |
+| **也能反过来当 MCP server** | `claw4j.mcp.server.expose` 点名几个工具，Claude Code 这类客户端就能像用别的工具一样调它们；交出去的只能是模型能用的那一份里的 |
 | **流式与同步同源** | Advisor 必须同时实现 Call 和 Stream，只写一个会在流式路径上静默不生效 |
 | **权限卡在模型之前** | 角色到"可见表 × 可执行动作"的映射在配置里；越权与套取提示词的消息不花 token、不进历史 |
 | **委派不提权** | 子 Agent 独立上下文与预算，只把结论带回来，用的是父的身份、照样过鉴权 |
@@ -101,15 +102,43 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 所以 `schedule_task` 永远不比这个人现在能做的更多——把这个角色删掉（或把某个工具的动作收走），
 任务下一次到点就失败并自动停用，同时通知任务主人。
 
+### 当 MCP server 用
+
+同一个 jar 换一个 profile，就从"服务"变成"工具"——Claude Code / Codex 这类客户端可以把这里的
+业务工具当成自己的工具调：
+
+```bash
+java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
+     --spring.profiles.active=mcp-stdio \
+     --claw4j.mcp.server.expose=querySales
+```
+
+客户端的 `.mcp.json` 就是一条 `command`（把上面那串原样抄进 `args`）。
+
+三件要记住的事：
+
+- **交出去的只能是模型能用的那一份里的**。档位（`claw4j.tools.profile`）与 allow / deny 在上面照常生效；
+  写着需要审批的工具、或者动作不是 `read` 的工具，启动就失败并点名——外部客户端没有人能点按钮，
+  也没有 run 可以挂起。
+- **客户端是另一个身份**。它的动作只有 `read`，能读哪些表由 `claw4j.mcp.server.tables` 决定，
+  与 `channel.http.roles` 那张授权表无关（客户端没有 IM 身份，拿它去查角色表只能靠猜）。
+  收窄之后，工具要读的表对不上就在调用时被拒，且工具一次都不会执行。
+- **不落审计**。审计是 run 级的（P07），外部调用没有 run——只留一行日志，不假装它是别的东西。
+  同理，它也不扣 run 预算。
+
+`mcp-stdio` 那份 profile 只做一件事：把 stdout 让给协议。日志改走 stderr、横幅关掉、容器不起、
+三个通道与调度关掉——一帧 JSON 中间插进一行启动日志，客户端报的是"连不上"。
+
 ## 集成
 
-六种能力 + 一条新通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
+七种能力 + 一条新通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
 能整份照抄的模板与三种"静默失效"的写法在 [`docs/design/extension-points.md`](docs/design/extension-points.md)。
 
 | 你要加的东西 | 写什么 | 依赖 |
 | --- | --- | --- |
 | 一个工具 | `@Tool` 方法 + 三个 bean + `AutoConfiguration.imports` | `claw4j-core`、`spring-ai-client-chat` |
 | 一个 MCP server | 一段 YAML；server 用任何语言写，宿主侧不写代码 | 宿主侧 `claw4j-capability`；**server 侧零依赖** |
+| **把自己暴露成 MCP server** | 配 `claw4j.mcp.server.expose` 点名要交出去的工具，用 `application-mcp-stdio.yml` 那份 profile 起 | 无（`mcp-core` 已随客户端那一层进来） |
 | 一个脚本包 | 一个目录（`package.properties` + 入口脚本），配 `claw4j.scripts.directory` | 无 |
 | 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | 无（纯文本） |
 | 一个子 Agent | 一份 `*.md`（front matter + 正文），配 `claw4j.subagents.directory` | 无（纯文本） |
@@ -392,7 +421,9 @@ Claw4J 是企业里那一层：多用户身份、权限在模型之前裁决、�
 - **插件与核心的版本兼容口径没定义**：没有任何版本校验，插件依赖旧版 `claw4j-core` 而核心接口一变，
   就是运行期 `NoSuchMethodError`，而不是启动时一句"这个插件要求核心 ≥ x.y"。现在只能靠"同时升级"。
 - **MCP 的凭据只有"静态请求头"**：需要浏览器跳转、刷新 token、按用户授权的端点（OAuth 授权码流）接不了。
-- **MCP 只支持 stdio 与 http/sse**：没有 WebSocket，也没有"宿主反向被调用"那一半。
+- **MCP 的出口只有 stdio**：`spring-ai-starter-mcp-server-webmvc` 的 2.0.2 不在本地仓库里，
+  离线构建拉不到，所以反向 HTTP / SSE 那一半没做；也没有 WebSocket。stdio 天生只对一个客户端。
+  另外外部调用**没有 run**，因此不落审计、不扣 run 预算，只留一行日志。
 
 ## License
 

@@ -12,6 +12,7 @@ import io.github.claw4j.agent.run.RunBudget;
 import io.github.claw4j.agent.run.RunDelivery;
 import io.github.claw4j.agent.run.RunStore;
 import io.github.claw4j.agent.session.SessionCompactor;
+import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
@@ -92,30 +93,52 @@ public class AgentAutoConfiguration {
     }
 
     /**
+     * 这个部署的工具清单：**模型能用哪些工具**，以及它是按哪一档筛出来的（P11 起它有两个消费者）。
+     *
+     * <p>在此之前清单只是 {@link #chatClient} 里的一个局部变量，拼完交给 {@code ChatClient} 就没人见过。
+     * 有了第二个出口（把自己暴露成 MCP server）之后，两条路各自收一遍工具，等于把 P09 的档位、
+     * 计量包装、权限登记各自再实现一遍，而漂了不会报错——外部客户端看到的是一个看起来正常、
+     * 其实绕过了三道门的清单。
+     *
+     * <p>所以清单提成 bean，模型与 MCP 两个出口吃同一份。这不是"为了复用"，
+     * 是为了让"外部看到的"能写成"模型能用的"的子集——一句话可以断言，两份各自算就不行。
+     *
+     * @param toolPolicy 全局档位策略；人设文件里的 {@code tier} 覆盖它（只覆盖档位，不覆盖 allow / deny）
+     */
+    @Bean
+    public ToolCatalog toolCatalog(ObjectProvider<ToolCallback> toolCallbacks,
+                                   ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
+                                   ObjectProvider<MeterRegistry> meterRegistry,
+                                   ObjectProvider<RunBudget> runBudget,
+                                   ObjectProvider<ToolCallAudit> audit,
+                                   ObjectProvider<ToolTierRegistry> tierRegistries,
+                                   ToolsProperties toolPolicy,
+                                   PersonaCatalog.Catalog personas) {
+        ToolProfile profile = profileOf(personas.selected(), toolPolicy);
+        List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
+                meterRegistry.getIfAvailable(), runBudget.getIfAvailable(), audit.getIfAvailable(),
+                profile, tierRegistries.orderedStream().toList());
+        return new ToolCatalog(personas.selected().name(), profile, tools);
+    }
+
+    /**
      * 具体用哪个 ChatModel 由 ModelConfiguration 决定：有 key 装真实模型，
      * 一个都没有就启动失败（ADR-0011，没有 mock 兜底）。这里只管装配，不关心模型从哪来。
+     *
+     * <p>工具来自 {@link #toolCatalog}，不在这里再收一遍：那个 bean 同时也是 MCP server 的工具来源，
+     * 两处各收一次就是两份清单，而两份一定会漂。
      */
     @Bean
     @ConditionalOnMissingBean(ChatClient.class)
     public ChatClient chatClient(ChatModel chatModel,
                                  ObjectProvider<Advisor> advisors,
-                                 ObjectProvider<ToolCallback> toolCallbacks,
-                                 ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                  ObjectProvider<ObservationRegistry> observationRegistry,
-                                 ObjectProvider<MeterRegistry> meterRegistry,
-                                 ObjectProvider<RunBudget> runBudget,
-                                 ObjectProvider<ToolCallAudit> audit,
-                                 ObjectProvider<ToolTierRegistry> tierRegistries,
+                                 ToolCatalog catalog,
                                  ToolIndex toolIndex,
                                  ToolSearchProperties toolSearch,
-                                 ToolsProperties toolPolicy,
                                  AgentProperties agent,
                                  PersonaCatalog.Catalog personas) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
-        ToolProfile profile = profileOf(personas.selected(), toolPolicy);
-        List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                meterRegistry.getIfAvailable(), runBudget.getIfAvailable(), audit.getIfAvailable(),
-                profile, tierRegistries.orderedStream().toList());
 
         // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
         // 拿到的是框架内建的那个，用的是 40/150 的默认值，这里定的预算根本不生效
@@ -131,7 +154,7 @@ public class AgentAutoConfiguration {
         log.info("这个部署的 agent 是 {}（{}），人设来自 {}；时区 {}；工具档位 {}（来自 {}）",
                 personas.selected().name(), personas.selected().description(),
                 agent.hasDirectory() ? agent.directory() : "内置默认（未配 claw4j.agent.directory）",
-                agent.zone(), profile.tier(),
+                agent.zone(), catalog.profile().tier(),
                 personas.selected().tier().isPresent() ? "人设文件的 tier" : "claw4j.tools.profile");
 
         return ChatClient.builder(chatModel, observations, null, null, toolCallingAdvisor)
@@ -142,7 +165,7 @@ public class AgentAutoConfiguration {
                 // 没有工具时是空数组，工具循环照常工作（只是无工具可检索）。
                 // 这份清单永远不会被整份塞进提示词：工具循环先把它们索引进 ToolIndex，
                 // 只把"找工具"那一个交给模型，查到谁再注入谁。
-                .defaultToolCallbacks(tools)
+                .defaultToolCallbacks(catalog.tools())
                 .build();
     }
 

@@ -1,0 +1,38 @@
+# 当 MCP server 用的那一份（P11）。
+#
+# 用法：
+#   java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
+#        --spring.profiles.active=mcp-stdio --claw4j.mcp.server.expose=querySales
+#
+# 这一份要解决的是 stdio 的硬约束，不是"少起几个组件"那么轻：
+#   - **stdout 是协议通道**。Boot 的启动横幅、日志、Tomcat 的输出默认都往 stdout 走；
+#     一帧 JSON 中间插进一行日志，客户端报的是"连不上"，而 server 侧一片正常——
+#     这个形状在 claw4j-example-mcp-server 的 logback.xml 里已经记过一遍（第一次跑就挂在那）。
+#     所以横幅关掉，日志换一份出口是 stderr 的配置（logback-mcp-stdio.xml）。
+#   - 这个进程是在给一个客户端当工具，不是在当服务：三个通道与调度都关掉，
+#     免得一个本地客户端拉起一整套对外服务；servlet 容器也不起，
+#     否则本机已经跑着一个 claw4j 时，这里会因为端口被占而起不来。
+#
+# 库与模型仍然要配：交出去的工具真去查表、真去调模型，不是空壳。
+
+spring:
+  main:
+    banner-mode: "off"
+    # 没有容器就没有端口、没有 Actuator 端点。这个进程不对外，只对着一个客户端的管道说话。
+    web-application-type: none
+  logging:
+    config: classpath:logback-mcp-stdio.xml
+
+claw4j:
+  mcp:
+    server:
+      enabled: true
+  channel:
+    http:
+      enabled: false
+    feishu:
+      enabled: false
+    wecom:
+      enabled: false
+  schedule:
+    enabled: false

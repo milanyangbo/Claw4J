@@ -1,6 +1,6 @@
 # P11 · 反向 MCP server：把自己的工具交出去
 
-**Status:** ready-for-agent
+**Status:** done（2026-11-03 实现，未提交）
 **Blocked by:** None（P09 的工具清单已落地，是这张票的前置）
 
 ## 背景
@@ -62,32 +62,31 @@ ADR-0020 对这件的判据是一句话：**把 claw4j 配成一个 MCP server�
 
 ## 验收判据
 
-- [ ] **清单一致**：`listTools` 返回的名字集合等于配置里 expose 的集合，且其中每一个都在
-      P09 筛过之后的清单里。反例必须能红：expose 写了一个被 deny 掉的名字，它不能出现。
-- [ ] **档位跟着走**：`claw4j.tools.profile=messaging` 时 `run_script` / `draft_script` 不在 `listTools` 里，
-      即使 expose 里写了。这一条把 P09 与 P11 钉在一起，不是"再过滤一次"而是"同一份清单"。
-- [ ] **鉴权在暴露层自己这一道**：外部调用用的是暴露层给定的身份，`ToolPermission.grantedTo` 为假时
-      返回一条明确的拒绝（`isError=true`），且**工具没有被执行**——用一个探针工具计数断言为 0。
-      只有"返回了拒绝文本、工具照跑"是不能接受的。
-- [ ] **审批不在这条路上**：`ToolPermission.needsApproval()` 的工具写进 expose 是启动失败并点名，
-      不是"调用时返回等你批"。外部客户端没有人能点按钮，也没有 run 可以挂起，
-      把它暴露出去等于给一条绕过审批的路径。
-- [ ] **来历不明的工具不暴露**：expose 里的名字查不到权限登记（或查不到档位）时启动失败并点名，
-      与 P09 的"未分档即失败"同构。理由一样：暴露出去之后没有第二道门。
-- [ ] **默认关，且关着时行为不变**：`claw4j.mcp.server.enabled` 缺省 false，
-      容器里没有 `McpSyncServer`，既有 527 条用例全过。开启但 expose 为空时启动失败
-      （连上了却一件能力都没有，与 `claw4j-example-mcp-server` 那条"工具清单为空等于失败"同构）。
-- [ ] **协议层真的通**：用 `claw4j-capability` 测试侧已有的管道 stdio 设施
-      （`InProcessStdioMcpServer` / `PipedStdioClientTransport`）起一个真 `McpClient`，
-      完成 initialize → `listTools` → `callTool` 一轮。断言落在 MCP 客户端视角，
-      不是在服务端调了一下自己的方法。
-- [ ] **stdout 干净**：stdio 形态的日志出口指向 stderr、横幅关闭。这一条**不做真进程端到端**
-      （要真库与真模型 key，而 MCP 这条路本身不调模型）：以那一份 logback 配置与启动参数为准，
-      并在 README 的启动命令里写出来。如实记，不当成"已验证"。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%。
-- [ ] **门禁余量**：core / agent / capability / app 都已 10 个测试文件（上限 10），
-      **不能新增测试文件**。可用的是 capability 的 `McpToolTest`（11 条，可加到 20）
-      与 app 的 `ApplicationAssemblyTest`（14 条，可加到 20）。
+- [x] **清单一致**：`listTools` 返回的名字就是 `claw4j.mcp.server.expose` 点名的那些，一个不多一个不少；
+      名字写错或已被档位挡掉的不出现。证据：`McpToolTest#exposedToolsReachTheClient`（只有 `peek`）、
+      `#unknownNameIsSkipped`（点 `ghost` 只交 `peek`）
+- [x] **档位跟着走**：MCP 侧没有第二道档位判断——它消费的就是 P09 筛完的那份 `ToolCatalog`。
+      证据：`ApplicationAssemblyTest#messagingManifestCannotExposeCodingTools`（messaging 清单里没有
+      `run_script`，expose 写了也交不出去）、`#theToolManifestIsOneBeanForBothExits`（清单是一个 bean，
+      两个出口吃同一份）。**没有另造一条"切到 messaging 再看 listTools"的端到端**：MCP 侧没有任何
+      档位代码可测，那样做只是把 P09 的用例再抄一遍
+- [x] **鉴权在暴露层自己这一道**：`#narrowTablesRefuseTheCallAndTheToolNeverRuns`——客户端只能读
+      `region`、工具要读 `sales_order`，结果是 `isError` 且探针计数为 0（拒绝落在执行之前）
+- [x] **审批不在这条路上**：`#approvalToolIsRefusedAtAssembly`，启动期失败并点名
+- [x] **来历不明的工具不暴露**：`#unregisteredToolIsRefusedAtAssembly`（没登记权限）、
+      `#nonReadToolIsRefusedAtAssembly`（动作不是 read）。两条都是启动期失败，不是调用时拒绝
+- [x] **默认关，且关着时行为不变**：`ApplicationAssemblyTest#mcpServerIsOffUnlessConfigured`
+      （容器里没有 `McpSyncServer`）；开着但 expose 为空 → `#emptyExposureFailsAtAssembly`
+- [x] **协议层真的通**：`#exposedToolsReachTheClient` / `#clientCallGoesThroughTheExposedTool` 起的是
+      真 `McpSyncServer` + 真 `McpSyncClient`，走 `PipedStdioClientTransport` 的管道与真 JSON-RPC 帧，
+      完成 initialize → listTools → callTool；`#toolFailureBecomesAnErrorResult` 钉住工具报错的形状
+- [x] **stdout 干净（只做到配置层面）**：`application-mcp-stdio.yml`（横幅关、`logging.config` 指向
+      `logback-mcp-stdio.xml`、容器不起、三个通道与调度关）+ `logback-mcp-stdio.xml`（根出口 stderr）；
+      README 的启动命令就是这两份的用法。**没有起过一次真 jar 去连客户端**，见 Comments 的如实交代
+- [x] `./scripts/verify.sh` 全绿：**539 条用例、失败 0、跳过 0**，core 88.8% / capability 85.6% /
+      agent 61.8%，均 ≥60%
+- [x] **门禁余量**：没有新增测试文件（四个模块仍是 10 个）；用例进 `McpToolTest`（11 → 20）与
+      `ApplicationAssemblyTest`（14 → 17）
 
 ## 不做
 
@@ -126,3 +125,31 @@ ADR-0020 对这件的判据是一句话：**把 claw4j 配成一个 MCP server�
   配置原样回显给客户端。
 - 拆票说明：M8 其余五张（P10、P12、P13、P14、P16）尚未拆，P10 仍被中文分词方案卡着，
   见 `.scratch/m8-durable/spec.md` 的 Comments。
+- 2026-11-03 实现完成。三个留给实现的点选了这些：
+  - **暴露规则用显式名单**（`claw4j.mcp.server.expose`，默认空）。按动作自动推导的话，
+    `toolSearch` 这类元工具的 action 也是 `read`，会被推导进来——而它对一个"自己本来就有工具列表"
+    的客户端毫无用处。显式的代价是插件工具默认不出现，但那本来就是"交出去什么要有人做决定"。
+  - **身份与 `Principal.readOnly` 同形**：`mcp:<客户端自报名>`、角色 `mcp-client`、动作只有 `read`，
+    表范围可配 `claw4j.mcp.server.tables`（默认 `*`）。它不查 IM 的角色表：客户端没有 open_id / UserID。
+  - **进程形态用 profile**（`mcp-stdio`），不逐个写配置键：横幅关、日志走 stderr、
+    `web-application-type: none`、三个通道与调度关。这样"当工具用"与"当服务用"的差异集中在一个文件里。
+- 落点：暴露层在 `claw4j-capability`（`mcp/expose` 下 `McpExposure` 纯函数 +
+  `McpServerExposureAutoConfiguration` 装配），清单 bean 在 `claw4j-agent`；
+  `ToolCatalog` 这个记录放在 capability 的 `tool` 包，因为 agent 依赖 capability、
+  而 core 不能拿 Spring AI 的类型。
+- **"不引 starter"落到了代码**：`McpServerExposureAutoConfiguration` 自己
+  `McpServer.sync(transport).tools(specs).build()`，工具来源只有 `ToolCatalog` 一处。
+  核对过 2.1.0 的 SDK：`Tool.Builder#inputSchema(McpJsonMapper, String)` 直接吃工具定义里那串 schema；
+  `CallToolResult` 在 2.1.0 上只有 builder（`addTextContent` + `isError`），0.14 那种
+  `(String, Boolean)` 构造器已经没有了——按 0.14 的签名写会编不过（这一点是实测的，不是查文档）。
+- 两处如实交代：
+  1. **没有起过真 jar 去连客户端**。判据 8 只做到配置层面（那两份文件 + README 的命令）。
+     真进程要真库与真模型 key，而 MCP 这条路本身不调模型——这个验证留给第一次真用，不在这里假装做过。
+  2. **`mcp-stdio` 这个 profile 没有进自动化**。`@SpringBootTest` 加载它会去读测试进程的 stdin；
+     `web-application-type: none` 也没有任何用例跑过。它的第一次真实验证就是用户第一次起它。
+- 写用例时纠正过一个自己的误判：**检索工具不在 `ToolCatalog` 里**。P09 用例里那个
+  `"toolSearchTool"` 是桩；真实实现里它是 `ToolSearch.toolLoop` 内部注入的那一个，
+  不是容器里的 `ToolCallback` bean。这一点写进了 `theToolManifestIsOneBeanForBothExits` 的注释——
+  下次有人想"把检索工具也交出去"，会先看到这句话。
+- 与 P09 的关系：这张票没有新增一条轴，只在既有清单上多开一个出口。
+  `messagingManifestCannotExposeCodingTools` 就是"没有第二份清单"的判据。

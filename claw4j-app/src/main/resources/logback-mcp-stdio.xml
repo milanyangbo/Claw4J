@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  这一份配置只为 mcp-stdio 这个 profile 存在（P11）：**stdout 是 MCP 的协议通道**。
+
+  Spring Boot 默认把日志打到 stdout。当这个进程被 Claude Code 之类当 MCP server 拉起时，
+  协议帧与日志共用同一条出口，客户端解析失败——报的是"连不上"，而 server 侧一切正常，
+  因为它确实正常。第一次跑 claw4j-example-mcp-server 时就是这么挂的（见那边 logback.xml 的注释）。
+
+  所以根出口改到 stderr，格式收短：stderr 上留下的是给人看的东西，协议帧一个字节都不该跑到那里去。
+  与默认那一份分开写，是因为"日志去 stderr"只对当 server 用的进程成立；
+  普通部署仍然希望日志在 stdout（容器与日志采集默认读它）。
+-->
+<configuration>
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDERR"/>
+    </root>
+</configuration>

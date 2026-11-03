@@ -133,7 +133,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   `${ENV_VAR}` 占位符（`McpServerProperties:99`）——但两者都在配置绑定时就解析成真值；
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
-  P15（已实现，`630c327`）、P11（已拆，`P11-mcp-server.md`，未开工）。
+  P15（已实现，`630c327`）、P11（已实现，未提交，见 `P11-mcp-server.md`）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。

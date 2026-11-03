@@ -6,6 +6,9 @@ import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.capability.mcp.expose.McpExposure;
+import io.github.claw4j.capability.mcp.expose.McpExposureProperties;
+import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.channel.wecom.WecomReplySender;
 import io.github.claw4j.channel.wecom.client.WecomChannel;
 import io.github.claw4j.domain.ApprovalVerdict;
@@ -18,6 +21,8 @@ import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.github.claw4j.persona.PersonaCatalog;
 import io.github.claw4j.persona.PromptComposition;
+import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
+import io.modelcontextprotocol.server.McpSyncServer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -30,6 +35,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -161,6 +167,18 @@ class ApplicationAssemblyTest {
     /** 到点跑一轮的那条腿（P04）：真模型闭环那条直接调它，不等 30 秒的扫描。 */
     @Autowired
     private ScheduleScanner scheduleScanner;
+
+    /**
+     * 工具清单（P11）：模型那一侧与 MCP 那一侧吃同一份。
+     *
+     * <p>注入它本身就是一条守卫——这个 bean 哪天退回成 {@code chatClient} 里的局部变量，
+     * MCP 那边就只能再收一遍工具，而"两份清单会漂"正是这张票要避免的形状。
+     */
+    @Autowired
+    private ToolCatalog toolCatalog;
+
+    @Autowired
+    private ApplicationContext context;
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
@@ -367,6 +385,53 @@ class ApplicationAssemblyTest {
                 .as("默认出现正是这套机制要避免的事：没声明就起不来，不是默默归进最宽那档")
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("mystery");
+    }
+
+    @Test
+    @DisplayName("工具清单是一个 bean：模型与 MCP 吃同一份，不是各自再收一遍（P11）")
+    void theToolManifestIsOneBeanForBothExits() {
+        // 注意清单里没有检索工具：它不是容器里的 ToolCallback，是工具循环（ToolSearch.toolLoop）
+        // 自己注入的那一个。P09 的用例里那个 "toolSearchTool" 是桩，不是真实 bean。
+        assertThat(toolCatalog.names())
+                .as("清单来自容器里所有工具来源：示例业务工具与平台工具都在，说明这一份就是模型那一份")
+                .contains("querySales", "systemStatus", "update_plan");
+        assertThat(toolCatalog.profile().tier())
+                .as("默认档位是 full：升级前后清单一样，这是 P09 定下的默认")
+                .isEqualTo(ToolTier.FULL);
+        assertThat(toolCatalog.agent())
+                .as("清单要答得出它属于哪个 agent——没配目录时是内置那份")
+                .isNotBlank();
+    }
+
+    @Test
+    @DisplayName("MCP server 默认关：没配 claw4j.mcp.server.enabled 时容器里没有它（P11）")
+    void mcpServerIsOffUnlessConfigured() {
+        assertThat(context.getBeanNamesForType(McpSyncServer.class))
+                .as("默认关意味着连 transport 都不注册，不是“注册了但没启动”——后者会占着 stdin/stdout")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("messaging 档的清单里没有 run_script：MCP 侧写它也没用，交不出去（P09 + P11）")
+    void messagingManifestCannotExposeCodingTools() {
+        List<ToolCallback> manifest = AgentAutoConfiguration.collectToolCallbacks(
+                providerOf(List.of(tool("querySales"), tool("run_script"))),
+                providerOf(List.of()),
+                null, null, null,
+                new ToolProfile(ToolTier.MESSAGING, Set.of(), Set.of()),
+                List.of(ToolTierRegistry.sameFor(Set.of("querySales"), ToolTier.MESSAGING),
+                        ToolTierRegistry.sameFor(Set.of("run_script"), ToolTier.CODING)));
+        ToolCatalog catalog = new ToolCatalog("messaging", ToolProfile.unrestricted(), manifest);
+
+        List<SyncToolSpecification> specifications = McpExposure.specifications(catalog,
+                List.of(ToolPermissionRegistry.of(Map.of(
+                        "querySales", ToolPermission.read("sales_order"),
+                        "run_script", ToolPermission.read()))),
+                new McpExposureProperties(false, "test", List.of("querySales", "run_script"), Set.of("*")));
+
+        assertThat(specifications).extracting(specification -> specification.tool().name())
+                .as("MCP 侧没有第二次档位判断——它只交清单里有的，清单里没有的连名字都换不成工具")
+                .containsExactly("querySales");
     }
 
     /**
