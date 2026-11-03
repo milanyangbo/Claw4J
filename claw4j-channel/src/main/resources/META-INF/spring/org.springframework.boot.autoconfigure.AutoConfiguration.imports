@@ -2,3 +2,4 @@ io.github.claw4j.channel.http.HttpChannelAutoConfiguration
 io.github.claw4j.channel.feishu.sdk.FeishuChannelAutoConfiguration
 io.github.claw4j.channel.wecom.client.WecomChannelAutoConfiguration
 io.github.claw4j.channel.dingtalk.client.DingtalkChannelAutoConfiguration
+io.github.claw4j.channel.slack.client.SlackChannelAutoConfiguration

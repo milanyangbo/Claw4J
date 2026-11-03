@@ -116,4 +116,25 @@ class ChannelBoundaryTest {
     static final ArchRule dingtalkDispatchLayerDoesNotReachIntoItsClientSubpackage =
             noClasses().that().resideInAPackage("io.github.claw4j.channel.dingtalk")
                     .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.dingtalk.client..");
+
+    /**
+     * Slack 这一侧的同一条界，第四次写。
+     *
+     * <p>这个包的形状与前三份不完全一样：它多了一个 {@code SlackConversation}——
+     * 把"频道 + 线程"压成 {@code conversationId} 的纯字符串规则。那东西留在适配层里是有意的：
+     * 编与解必须成对，而解码那一半在 {@code client} 包里（发送器要用）。
+     * 反过来说，如果把它塞进 {@code client}，适配层就得伸进子包去拿它——这条规则会红。
+     *
+     * <p>同样不合并成 {@code resideInAnyPackage}：四个包、八行样板，换"破了界时一眼看出破了哪条"。
+     */
+    @ArchTest
+    static final ArchRule slackDispatchLayerDependsOnNothingButItsOwnContracts =
+            noClasses().that().resideInAPackage("io.github.claw4j.channel.slack")
+                    .should().dependOnClassesThat().resideOutsideOfPackages(
+                            "java..", "org.slf4j..", "io.github.claw4j..");
+
+    @ArchTest
+    static final ArchRule slackDispatchLayerDoesNotReachIntoItsClientSubpackage =
+            noClasses().that().resideInAPackage("io.github.claw4j.channel.slack")
+                    .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.slack.client..");
 }

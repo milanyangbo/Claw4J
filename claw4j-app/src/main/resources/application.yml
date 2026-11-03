@@ -8,7 +8,7 @@
 #   - 模型 key 与 MCP 的 env / headers 写**句柄**：`secret:<名字>`，名字是环境变量名的小写写法
 #     （P08、ADR-0002）。真值在发请求那一刻才由出口解析，配置、日志、审计、模型上下文里都只有名字。
 #     裸写明文会在启动时失败并点名是哪一行——不靠"看着像凭据"来判断。
-#   - 通道凭据（feishu / wecom / dingtalk 里的 secret 类）**不在上面那条规则里**：
+#   - 通道凭据（feishu / wecom / dingtalk / slack 里的 secret 类）**不在上面那条规则里**：
 #     它们是 `${FEISHU_APP_SECRET:}` 这样的环境变量占位，真值在绑定时由 Spring 替换。
 #     两边差一层不是疏忽：解析句柄的 SpringSecretResolver 在 claw4j-capability，而 channel
 #     不依赖它（ChannelBoundaryTest 钉着这条边）。要让通道也用句柄，得先把 SecretResolver
@@ -179,6 +179,26 @@ claw4j:
       # 角色名必须对得上，错一个就启动失败。userId 是真人，填在 application-local.yml。
       # 注意这里没有"默认角色"：机器人没发布上线时钉钉不返回 senderStaffId，
       # 那种情况会记一条"钉钉没给身份"的 WARN，不是"这个人没登记"。
+      roles:
+        read-only:
+          users: []
+
+    # ---- Slack（P13）：入站是 Events API 的公网回调，报文是**明文 JSON**、签名在 header 里 ----
+    # 与钉钉最大的不同：签名覆盖**整个原始报文**（v0:timestamp:body），所以控制器收的是字符串，
+    # 反序列化再拼回去就验不过。时间戳是**秒**、窗口 5 分钟（钉钉是毫秒、1 小时）。
+    # 两样齐了才装配（signing-secret / bot-token），少一样整份退让、只跑 HTTP。
+    # 请求地址固定是 /api/slack/events：App 后台 → Event Subscriptions → Request URL 填它，
+    # 并在同一页订阅 app_mention 与 message.im（**两个都要**：私聊不走 app_mention）。
+    # 两把凭据各管一头，不要混：signing-secret 只验签，bot-token（xoxb- 开头、长期有效）只发消息。
+    slack:
+      enabled: ${CLAW4J_SLACK_ENABLED:true}
+      signing-secret: ${SLACK_SIGNING_SECRET:}
+      bot-token: ${SLACK_BOT_TOKEN:}
+      # 同频道两条消息之间的最小间隔，默认 1 秒（Slack 的 chat.postMessage 限流）。
+      # 调小不会更快，只会撞 429；而撞上之后 InboundDispatcher 会停在第 2 段，用户收到半截答案。
+      min-interval: 1s
+      # 这里只登记"谁是谁"（Slack user id，U 开头），**不写 tables/actions**：授权共用上面 http 那份，
+      # 角色名必须对得上，错一个就启动失败。user id 是真人，填在 application-local.yml。
       roles:
         read-only:
           users: []

@@ -141,7 +141,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
   P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，`9389e07`）、
-  P10（已实现，`58fc525`）、P13（已拆，`P13-slack-channel.md`，未开工）。
+  P10（已实现，`58fc525`）、P13（已实现，未提交）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -214,3 +214,19 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
      `{"ok":false}`（照抄钉钉/企微那套"200 就当成功"的写法，会得到一个永远成功的发送器）。
   另外把两处门禁余量也写清了：`claw4j-channel` 与 `claw4j-app` 都已 10 个测试文件，
   app 那个 `ApplicationAssemblyTest` 还已经 20 条顶格——**P13 想加闭环用例，必须先腾两个槽**。
+- 2026-11-03 P13 实现。四件事记在这里，因为下两张票（P14、P16）会碰到同样的形状：
+  1. **"不做"的理由要写清是哪一种**。P12 拒 Stream 模式是"做不了"（本地仓库没 SDK）；
+     P13 拒 Socket Mode 是"不该做"——JDK 自带 WebSocket，写法上做得出来，但官方建议生产用 HTTP、
+     上架必须 HTTP，而且它是"我们连出去推"，`InboundDispatcher` 那套一处也用不上。
+     两张票的理由不同，票面里各写各的，别把它们都记成"没有 SDK"。
+  2. **第一个会收到自己消息的通道**。Slack 把应用发出去的消息再推回来（`bot_id`），
+     被编辑的消息也推（`subtype`）。不先挡就是无限循环，而且不报错、只在账单上体现。
+     以后接任何"应用以自己身份发言"的平台（Discord、Teams），第一件事都是问"它会不会把我的话推回来"。
+  3. **门禁腾槽这次两处都是"同主题合并"，且第二次合并比第一次便宜**。
+     `ApprovalControllerTest` + `RunQueryControllerTest` → `HttpEndpointsTest`（两条同口径的
+     401 用例顺手并成一条，净省一条）；`ProcessBoundaryTest` + `MigrationCompositionTest` →
+     `BuildContractTest`（两份守的都是"不会在运行时报错、只在某天以另一种形态暴露"的约定）。
+     代价都是 diff 碰到别人的测试文件，断言原样搬运。
+  4. **协议细节值得写成"数"而不是"曾经"**：3 秒应答、60 分钟 95% 失败率会停订阅、同频道 1 秒 1 条、
+     签名窗口 5 分钟、时间戳是秒、`text` 建议 ≤4000（与 `MessageSplitter` 的默认值正好一致）。
+     这些数写进票面与 README 之后，下一个人不必再查一遍文档，也不必猜我们抄的是哪一家。

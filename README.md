@@ -20,7 +20,7 @@
 
 | 要点 | 说明 |
 | --- | --- |
-| **四条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）、钉钉机器人（给企业内，**明文 JSON + header 验签**）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
+| **五条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）、钉钉机器人（给企业内，**明文 JSON + header 验签**）、Slack（给团队，**整包验签 + 答案回线程**）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
 | **五种能力来源，对模型是一回事** | Java `@Tool`、MCP server（stdio / HTTP 都行）、受限脚本包、Agent Skill、子 Agent |
 | **知识库检索带出处** | 一份文档目录 + 两路检索（向量 + 中文关键词），按 RRF 排名融合，每段都带「文档 + 第几段」；文档块**不进**缓存表 |
 | **也能反过来当 MCP server** | `claw4j.mcp.server.expose` 点名几个工具，Claude Code 这类客户端就能像用别的工具一样调它们；交出去的只能是模型能用的那一份里的 |
@@ -328,15 +328,25 @@ public class TelegramChannelAutoConfiguration {
 这三条写进了 [`ChatChannel`](claw4j-core/src/main/java/io/github/claw4j/channel/spi/ChatChannel.java) 的契约；
 "ACK 之后怎么办"（去重、认人、异步、分段回推、失败也回一句）在
 [`channel.kernel`](claw4j-core/src/main/java/io/github/claw4j/channel/kernel)——它在 `claw4j-core` 里，
-所以接 Telegram 不必把飞书 SDK 拖进 classpath。飞书、企业微信、钉钉都是凭据齐全才装配，
+所以接 Telegram 不必把飞书 SDK 拖进 classpath。飞书、企业微信、钉钉、Slack 都是凭据齐全才装配，
 缺一个整个通道退让、HTTP 照常。
-三家的差别只在"怎么收"与"怎么发"：飞书是 SDK 长连接，企业微信是自己验签解密的加密 XML 回调，
-钉钉是自己验签的明文 JSON 回调；一个平台一个包，编排层不认识它们中的任何一个。
+四家的差别只在"怎么收"与"怎么发"：飞书是 SDK 长连接，企业微信是自己验签解密的加密 XML 回调，
+钉钉是自己验签的明文 JSON 回调，Slack 是 Events API 的明文 JSON 回调；一个平台一个包，
+编排层不认识它们中的任何一个。
 
 **钉钉这一条要说清一句话**：报文是明文的，所以 header 里那个签名是<b>唯一的门</b>。
 验签与"时间戳相差不超过 1 小时"两条缺一不可——只验签名不验时间戳，等于让一对截获的
 `(timestamp, sign)` 永远可用。这一条由 `DingtalkChannelTest` 用两条反例钉着
 （签名错的报文合法、签名对但时间戳在两小时前）。
+
+**Slack 有三句话要说**。① 它的签名覆盖**整个原始报文**（`v0:timestamp:body`），不只是时间戳，
+所以控制器收的是 `String`——反序列化再序列化一遍就永远验不过，而症状看起来像密钥配错。
+② **3 秒收不到 2xx 的代价不只是重推**：60 分钟内失败率超过 95%，整个事件订阅会被平台临时禁用，
+所以这个端点里只做验签、解析、交给 `InboundDispatcher` 三件很轻的事。
+③ **Slack 会把我们自己发出去的消息再推回来**（带 `bot_id`），被编辑的消息也会（`subtype`）。
+不先挡这两样，一次提问会变成一问一答的无限循环——它不报错，只在账单上体现，
+这是前四个通道都没有过的问题。另外答案默认回**线程**（`thread_ts` 是原消息的 ts），
+不然回执加答案会把频道刷满；这一整套由 `SlackChannelTest` 钉着。
 
 **调用量是有限的**：钉钉对机器人有调用量上限（超了会返回 20001 一类
 "受调用量影响服务暂停"的错误码，要升级套餐或买增购包）。一个企业里人人来问的部署，
@@ -355,6 +365,7 @@ public class TelegramChannelAutoConfiguration {
 | `WECOM_CORP_ID` / `WECOM_CORP_SECRET` / `WECOM_AGENT_ID` | 否 | 企业微信自建应用，三个都配才有出站 |
 | `WECOM_TOKEN` / `WECOM_ENCODING_AES_KEY` | 否 | 回调的签名与解密；与上面三个**一起**齐了才装配通道 |
 | `DINGTALK_CLIENT_ID` / `DINGTALK_CLIENT_SECRET` / `DINGTALK_ROBOT_CODE` | 否 | 钉钉机器人，三个都配才装配。**client-secret 同时是验签的密钥**，配错既发不出也收不进 |
+| `SLACK_SIGNING_SECRET` / `SLACK_BOT_TOKEN` | 否 | Slack，两个都配才装配。**两把各管一头**：signing-secret 只验签，bot-token（`xoxb-` 开头、长期有效）只发消息。混了的表现是"回调全被拒"或"收得到发不出" |
 | `CLAW4J_RAG_ENABLED` | 否 | 打开知识库。**开了就必须配目录**，否则启动失败（空知识库比失败更糟） |
 | `CLAW4J_RAG_DIRECTORY` | 否 | 文档目录，启动后同步一次，按文件内容哈希跳过没变的 |
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用 |
