@@ -1,5 +1,7 @@
 package io.github.claw4j.app;
 
+import io.github.claw4j.plugin.CoreVersion;
+import io.github.claw4j.plugin.PluginContract;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -9,6 +11,11 @@ import com.tngtech.archunit.lang.ArchRule;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -16,29 +23,39 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 import java.util.stream.Stream;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 两条"构建与库结构"的契约：Java 侧不自己拼命令行（ADR-0002），以及跨 jar 的迁移合成一套 schema。
+ * 三条"构建与装配"的契约：Java 侧不自己拼命令行（ADR-0002）、跨 jar 的迁移合成一套 schema、
+ * 以及插件声明的核心区间必须对得上（P16）。
  *
  * <p><b>为什么合成一份</b>：它们本来各占一个文件，但问的是同一类问题——<b>那些不会在运行时
  * 报错、只在某天以另一种形态暴露的约定</b>。手写 shell 的代价是"1.x 把宿主机交出去"；
- * 迁移版本号撞车的代价是"少建一张表，而启动日志完全正常"。两者都只能靠在构建里钉住，
- * 而两条都小（一条 {@code @ArchTest}、两条 SQL 断言），分开放的唯一后果是占两个文件位。
+ * 迁移版本号撞车的代价是"少建一张表，而启动日志完全正常"；插件版本对不上的代价是
+ * "某次调用突然 {@code NoSuchMethodError}"，日志里没有一行提到版本。三者都只能靠在构建与
+ * 启动期钉住。</p>
  *
  * <p>合并的直接原因是硬约束：{@code claw4j-app} 与别处一样卡在 10 个测试文件，
- * P13 要给 Slack 的真模型闭环留一个位置。
+ * P13 要给 Slack 的真模型闭环留一个位置。第三条（P16）进来时用的就是这些空位——
+ * 它守的是同一个家族的东西，而 {@code claw4j-capability} 的文件名额已经满了。</p>
  *
- * <p><b>它们只能在 app 模块</b>：别的模块的架构测试只扫得见自己，而这两条都要扫全部模块
- * （前者要扫所有 {@code src/main/java}，后者要扫 classpath 上所有 {@code db/migration}）。
+ * <p><b>它们只能在 app 模块</b>：别的模块的架构测试只扫得见自己，而前两条都要扫全部模块
+ * （前者要扫所有 {@code src/main/java}，后者要扫 classpath 上所有 {@code db/migration}）；
+ * 第三条守的装配本身也发生在 app。</p>
  */
 @Testcontainers
 @AnalyzeClasses(packages = "io.github.claw4j", importOptions = ImportOption.DoNotIncludeTests.class)
@@ -166,5 +183,139 @@ class BuildContractTest {
     private static DriverManagerDataSource dataSource() {
         return new DriverManagerDataSource(
                 POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+    }
+
+    // ---------------------------------------------------------------- 插件版本契约（P16）
+
+    /**
+     * 现场造 classpath 的根。每条用例一个目录，JUnit 跑完就删。
+     *
+     * <p>造 jar 而不是只造目录，是这组判据的重点：**插件在另一个 jar 里**。
+     * 目录形态在开发期就能跑通，jar 形态失败的方式不一样——扫不到资源是静默空结果，
+     * 于是"什么都没发生"看起来和"全部通过"一模一样。
+     */
+    @TempDir
+    Path temp;
+
+    private static final String CORE_VERSION = "0.1.0-SNAPSHOT";
+
+    @Test
+    @DisplayName("插件声明的区间匹配时照常启动：不抛，也不留一条违规")
+    void aMatchingDeclarationStartsQuietly() throws IOException {
+        // 不抛就是结论：postProcessBeanFactory 的返回值是 void，唯一的失败形态是异常
+        gate(coreVersion("core-ok"), descriptorDir("plugin-ok", "sales", ">=0.1.0 <0.2.0"))
+                .postProcessBeanFactory(null);
+    }
+
+    @Test
+    @DisplayName("不匹配就起不来，一句话说完：插件名、区间、当前核心、来源都在")
+    void aMismatchStopsStartupAndSaysEverything() throws IOException {
+        Path plugin = descriptorJar("plugin-bad", "sales", ">=0.2.0");
+
+        assertThatThrownBy(() -> gate(coreVersion("core-bad"), plugin).postProcessBeanFactory(null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("插件 sales")
+                .hasMessageContaining(">=0.2.0")
+                .hasMessageContaining(CORE_VERSION)
+                .hasMessageContaining("sales.jar");
+    }
+
+    @Test
+    @DisplayName("两个插件都不匹配时一次全报：升核心的人不想修一个重启一次")
+    void twoMismatchesAreReportedTogether() throws IOException {
+        Path sales = descriptorJar("plugin-two-sales", "sales", ">=0.2.0");
+        Path jira = descriptorJar("plugin-two-jira", "jira", ">=0.3.0");
+
+        assertThatThrownBy(() -> gate(coreVersion("core-two"), sales, jira).postProcessBeanFactory(null))
+                .hasMessageContaining("插件 sales")
+                .hasMessageContaining("插件 jira");
+    }
+
+    @Test
+    @DisplayName("写错的比较符是硬失败：=>0.1.0 不能被当成没条件")
+    void aMalformedRangeStopsStartup() throws IOException {
+        Path plugin = descriptorDir("plugin-typo", "sales", "=>0.1.0");
+
+        assertThatThrownBy(() -> gate(coreVersion("core-typo"), plugin).postProcessBeanFactory(null))
+                .hasMessageContaining("读不成一个区间")
+                .hasMessageContaining("=>0.1.0");
+    }
+
+    @Test
+    @DisplayName("缺 requires-core 也是硬失败：不按任意版本兜底")
+    void aDescriptorWithoutTheKeyStopsStartup() throws IOException {
+        Path meta = Files.createDirectories(temp.resolve("plugin-nokey").resolve("META-INF"));
+        Files.writeString(meta.resolve("claw4j-plugin.properties"), "name=sales\n", StandardCharsets.UTF_8);
+
+        assertThatThrownBy(() -> gate(coreVersion("core-nokey"), temp.resolve("plugin-nokey"))
+                .postProcessBeanFactory(null))
+                .hasMessageContaining("没有声明 " + PluginContract.KEY_REQUIRES_CORE);
+    }
+
+    @Test
+    @DisplayName("核心版本读不到就失败：读不到当成已知，是这类闸最常见的死法")
+    void aMissingCoreVersionStopsStartup() throws IOException {
+        Path plugin = descriptorDir("plugin-nocore", "sales", ">=0.1.0 <0.2.0");
+
+        assertThatThrownBy(() -> gate(plugin).postProcessBeanFactory(null))
+                .hasMessageContaining(PluginContractGate.CORE_VERSION_RESOURCE);
+    }
+
+    @Test
+    @DisplayName("一个描述文件都没有时照常启动：宿主自己的模块就是这样")
+    void anEmptyClasspathBootsFine() throws IOException {
+        gate(coreVersion("core-empty")).postProcessBeanFactory(null);
+    }
+
+    @Test
+    @DisplayName("这道闸确实被注册进了容器，而且是以 BeanFactoryPostProcessor 的身份")
+    void theAutoConfigurationRegistersTheGateAsABeanFactoryPostProcessor() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(PluginContractAutoConfiguration.class))
+                .run(context -> assertThat(context.getBeansOfType(BeanFactoryPostProcessor.class).values())
+                        .as("非静态 @Bean 会让它退化成普通 bean，那时这条就红")
+                        .anyMatch(PluginContractGate.class::isInstance));
+    }
+
+    private PluginContractGate gate(Path... roots) {
+        URL[] urls = new URL[roots.length];
+        for (int i = 0; i < roots.length; i++) {
+            try {
+                urls[i] = roots[i].toUri().toURL();
+            } catch (IOException broken) {
+                throw new IllegalStateException(broken);
+            }
+        }
+        return new PluginContractGate(new PathMatchingResourcePatternResolver(new URLClassLoader(urls, null)));
+    }
+
+    private Path coreVersion(String directory) throws IOException {
+        Path meta = Files.createDirectories(temp.resolve(directory).resolve("META-INF"));
+        Files.writeString(meta.resolve("claw4j-core.properties"),
+                "version=" + CORE_VERSION + "\n", StandardCharsets.UTF_8);
+        return temp.resolve(directory);
+    }
+
+    private Path descriptorDir(String directory, String name, String requiresCore) throws IOException {
+        Path meta = Files.createDirectories(temp.resolve(directory).resolve("META-INF"));
+        Files.writeString(meta.resolve("claw4j-plugin.properties"),
+                descriptor(name, requiresCore), StandardCharsets.UTF_8);
+        return temp.resolve(directory);
+    }
+
+    private Path descriptorJar(String directory, String name, String requiresCore) throws IOException {
+        Path root = Files.createDirectories(temp.resolve(directory));
+        Path jar = root.resolve(name + ".jar");
+        try (OutputStream out = Files.newOutputStream(jar); JarOutputStream jarOut = new JarOutputStream(out)) {
+            jarOut.putNextEntry(new JarEntry("META-INF/claw4j-plugin.properties"));
+            jarOut.write(descriptor(name, requiresCore).getBytes(StandardCharsets.UTF_8));
+            jarOut.closeEntry();
+        }
+        return jar;
+    }
+
+    private static String descriptor(String name, String requiresCore) {
+        return "name=" + name + System.lineSeparator()
+                + PluginContract.KEY_REQUIRES_CORE + "=" + requiresCore + System.lineSeparator();
     }
 }

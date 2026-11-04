@@ -55,6 +55,8 @@
              插件版本在 pluginManagement 里没有版本就解析不出来（构建直接失败）。
              这个版本就是此前一直跑的那个（构建日志里那行 maven-surefire-plugin:3.5.4）。 -->
         <maven-surefire.version>3.5.4</maven-surefire.version>
+        <!-- 理由同上一行：要为它配 propertiesEncoding，不写版本 pluginManagement 里解析不出来。 -->
+        <maven-resources.version>3.4.0</maven-resources.version>
         <!-- 覆盖率红线：docs/agents/testing.md 第二节的第三条界限。0.8.13 支持 JDK 21 的 class 文件版本。
              换版本先确认它能读 21 的字节码，否则报的是"无法插桩"，看起来像测试全挂。 -->
         <jacoco.version>0.8.13</jacoco.version>
@@ -164,6 +166,20 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-enforcer-plugin</artifactId>
                     <version>${maven-enforcer.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <version>${maven-resources.version}</version>
+                    <configuration>
+                        <!--
+                          被过滤的 .properties 有独立编码，与普通资源分开设置：不写这一行，
+                          properties 走 ISO-8859-1，文件里的中文注释在产物里就是乱码。
+                          它不会报错——值本身常常是 ASCII——所以只能靠这一行提前挡住。
+                          P16 起了第一份被过滤的 properties（claw4j-core 的版本号）。
+                        -->
+                        <propertiesEncoding>UTF-8</propertiesEncoding>
+                    </configuration>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>

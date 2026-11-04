@@ -304,3 +304,25 @@ io.opentelemetry:opentelemetry-exporter-otlp:jar:1.62.0 has not been downloaded 
   没有显式条目时只能靠顺序。
 
 判据：改完 BOM 顺序**必须跑一次 `dependency:tree` 看版本**，不要凭"应该盖掉了"下结论。
+
+## 十七、`<resources>` 一写下去，整个 `src/main/resources` 就换了处理方式
+
+P16 要让核心报出自己的版本号，而两条"免费"的路都不通：jar 清单里没有 `Implementation-Version`，
+`META-INF/maven/.../pom.properties` 又有、却只存在于 jar 里（`target/classes` 下没有，开发态读不到）。
+于是自己生成一份被 Maven 过滤的 `META-INF/claw4j-core.properties`。
+
+两条都是加完才发现的：
+
+- **只写一条 `filtering=true` 的 `<resource>`，等于把整个目录都过滤了**。这个仓库的
+  `src/main/resources` 里躺着 Flyway 的 `db/migration/V*.sql`，SQL 里一旦出现 `${`，
+  过滤会把它替换成空串——迁移照样"成功"，内容缺了一块。所以必须两条：一条 `filtering=true`
+  + `includes` 点名那个文件，一条 `filtering=false` + 同一个 `excludes`。
+- **被过滤的 `.properties` 有独立编码，与普通资源不是一回事**。不配 `propertiesEncoding` 时
+  它走 ISO-8859-1，文件里的中文注释进产物就是乱码。而它**不报错**——值本身常常是 ASCII，
+  构建只打一行 `The encoding used to copy filtered properties files has not been set`。
+  这一项只能配在 **`maven-resources-plugin` 的 `<configuration>`** 里：POM 的 `<resource>` 元素
+  没有这个字段，写进去 POM 直接解析失败（`Unrecognised tag: 'propertiesEncoding'`）。
+
+判据：加完 `<resources>` 之后别看构建绿不绿，去看产物——
+`unzip -l <jar> | grep '\.sql'`（迁移还在不在）与 `cat target/classes/META-INF/x.properties`
+（中文还在不在）。

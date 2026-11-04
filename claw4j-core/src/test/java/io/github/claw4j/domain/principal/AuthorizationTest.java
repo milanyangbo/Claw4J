@@ -1,24 +1,46 @@
 package io.github.claw4j.domain.principal;
 
+import io.github.claw4j.domain.ApprovalVerdict;
+import io.github.claw4j.domain.ApproverRoster;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 一次工具调用的权限判定：工具名查登记表 → 动作轴 → 表轴。
+ * 鉴权的两个分量：**谁能做**（决策）与**谁能批**（名单）。
  *
- * <p>判定错了不会抛异常、不会打日志，只是某次越权调用被放过去（或者某次该跑的查询被拦住），
- * 所以这几条都得钉住。放行那一侧刻意不从「给定一个权限对象」开始，而是从工具名查起，
- * 这样「根本没查登记表」的实现无法通过。
+ * <p>它们是同一个问题的两端，本来分在两个文件里（{@code AuthorizationDecisionTest} 与
+ * {@code ApproverRosterTest}），P16 因为 `claw4j-core` 的测试文件数顶格而合到这里。
+ * 合并时断言一条没改，只加了 import。
+ *
+ * <p>合在一起的另一个理由：这两件事错起来的形态是同一种——**不抛异常、不打日志**。
+ * 判定错了是某次越权被放过去，名单错了是审批等于没装，两者都只会在事后审计里露出来。
+ *
+ * <h2>一、一次工具调用的权限判定</h2>
+ *
+ * <p>工具名查登记表 → 动作轴 → 表轴。放行那一侧刻意不从"给定一个权限对象"开始，
+ * 而是从工具名查起，这样"根本没查登记表"的实现无法通过。
+ *
+ * <h2>二、谁能批</h2>
+ *
+ * <p>三个方向都要钉住，因为错法各有一条：漏了名单 → 谁都能批（审批等于没装）；
+ * 漏了自批 → 审批人给自己盖章（审批等于没装，且更隐蔽）；把两者合成一句 →
+ * 名单里的人收到"你不能批"，他会去翻自己的名字有没有拼错，而真正的原因是这一条该别人批。
+ *
+ * <p>用 JUnit 的断言而不是 AssertJ：core 不依赖 AssertJ（它连 Spring 都不依赖，
+ * 见 {@code claw4j-core/pom.xml} 的 enforcer）。
  */
-class AuthorizationDecisionTest {
+class AuthorizationTest {
 
     /** 能读两张业务表，动作只有读。 */
     private static Principal analyst() {
@@ -153,5 +175,47 @@ class AuthorizationDecisionTest {
         // 反方向也要验：有动作授权的人，这条权限本身是授予的——审批在更后面才拦。
         Principal mailer = Principal.of("u-mailer", "mailer", Set.of("customer"), Set.of("send_email"));
         assertTrue(mailer.canUse(heavy));
+    }
+
+    // ---------------------------------------------------------------- 谁能批（原 ApproverRosterTest）
+
+    @Test
+    @DisplayName("不在名单里的人批不了任何一条：与「这一条有什么问题」是两件事")
+    void someoneOutsideTheRosterCannotApproveAnything() {
+        ApproverRoster roster = new ApproverRoster(Set.of("ethan"));
+
+        assertEquals(Optional.of(ApprovalVerdict.NOT_APPROVER), roster.refuse("wang", "ethan"));
+        assertEquals(Optional.of(ApprovalVerdict.NOT_APPROVER), roster.refuse(null, "ethan"),
+                "没有身份也是不在名单里");
+    }
+
+    @Test
+    @DisplayName("名单是空的时候谁都批不了：忘配置的后果是卡住，不是谁都能点头")
+    void anEmptyRosterLetsNobodyApprove() {
+        ApproverRoster roster = new ApproverRoster(Set.of());
+
+        assertTrue(roster.nobody());
+        assertEquals(Optional.of(ApprovalVerdict.NOT_APPROVER), roster.refuse("ethan", "wang"));
+    }
+
+    @Test
+    @DisplayName("提问人批自己的请求被拒，而且这一档与「不是审批人」分开：他可能就在名单里")
+    void theRequesterCannotApproveTheirOwnRequest() {
+        ApproverRoster roster = new ApproverRoster(Set.of("ethan", "wang"));
+
+        assertEquals(Optional.of(ApprovalVerdict.SELF_APPROVAL), roster.refuse("ethan", "ethan"));
+        assertEquals(Optional.empty(), roster.refuse("wang", "ethan"),
+                "同一条请求换个人就批得了——否则这条用例只是把审批关掉了");
+    }
+
+    @Test
+    @DisplayName("空白项不算数、两边空白会被裁掉：从聊天里复制来的名字不该让门变宽或变窄")
+    void blankEntriesAreDroppedAndNamesAreTrimmed() {
+        ApproverRoster roster = new ApproverRoster(new LinkedHashSet<>(List.of("ethan", " ", "")));
+
+        assertEquals(Set.of("ethan"), roster.approvers());
+        assertEquals(Optional.empty(), roster.refuse(" ethan ", "wang"), "裁掉空白之后仍然是同一个人");
+        assertTrue(new ApproverRoster(Set.of(" ", "")).nobody(), "只填了空白的名单等于没填");
+        assertFalse(new ApproverRoster(Set.of("ethan")).nobody());
     }
 }

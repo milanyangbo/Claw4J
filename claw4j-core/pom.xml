@@ -48,6 +48,31 @@
     </dependencies>
 
     <build>
+        <!--
+          P16：插件版本契约要读"当前核心是哪个版本"，而清单里没有 Implementation-Version、
+          META-INF/maven/.../pom.properties 又只存在于 jar 里（target/classes 下没有，
+          于是开发态永远读不到）。所以自己生成一份，两种形态都在。
+
+          过滤**必须按 includes 收窄到这一个文件**：src/main/resources 里躺着 Flyway 的
+          db/migration/V*.sql，整个目录一起过滤会把 SQL 里出现的 ${ 替换成空串，
+          而那是一次"看起来迁移过了"的静默损坏。
+        -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>META-INF/claw4j-core.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>META-INF/claw4j-core.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <!--
               ArchUnit 拦的是"源码里 import 了框架"，这条拦的是"POM 里声明了框架依赖"。

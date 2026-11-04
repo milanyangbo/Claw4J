@@ -143,7 +143,8 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
   P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，`9389e07`）、
-  P10（已实现，`58fc525`）、P13（已实现，`74237fe`）、P14（已实现，未提交）。
+  P10（已实现，`58fc525`）、P13（已实现，`74237fe`）、P14（已实现，`d62e0c0`）、
+  P16（已实现，未提交）。**P08–P16 九张全部有票、全部实现**，M8 到此收口。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -266,3 +267,36 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   4. **门禁的数字要重数一遍再写进票**。P13/P14 两次都把 `@Testcontainers` / `@BeforeAll`
      算成了用例（脚本按 `@Test` 子串数），于是"6 + 6 = 12"实际是 10 条。
      文件数那条（10 个）没受影响，但"合并省下几条"这种描述会失真。
+- 2026-11-04 拆 P16（插件版本契约）。三件事决定实现形态，都是在本机实测过的，不是查文档：
+  1. **"核心版本"没有现成的读法**。jar 清单里没有 `Implementation-Version`（`getImplementationVersion()`
+     恒为 null）；`META-INF/maven/.../pom.properties` 有 `version=0.1.0-SNAPSHOT`，但只存在于 jar 里，
+     `target/classes` 下没有——按它读，开发态永远读不到，而"读不到"最后一定退化成"跳过校验"。
+     所以改成一份被 Maven 过滤的 `META-INF/claw4j-core.properties`，实测在 `target/classes` 里就是真版本。
+     **过滤必须按 `includes` 收窄到这一个文件**：整个 `src/main/resources` 一起过滤会把 Flyway 的
+     `V*.sql` 也过一遍，`${` 出现在 SQL 里就是一次"看起来迁移过了"的静默损坏。
+  2. **契约文件的语法可以直接写成可读的区间**。`requires-core=>=0.1.0 <0.2.0` 用 `Properties`
+     原样读出，不需要转义；而 `classpath*:META-INF/claw4j-plugin.properties` 在一个只含该文件的
+     临时 jar 上能扫到，URI 是 `jar:file:/...!/META-INF/...`。后者让"插件在另一个 jar 里"这件事
+     可以在单元测试里复现，不用等部署才验。
+  3. **校验点必须是 `BeanFactoryPostProcessor`，不是普通 bean**。普通 bean 与插件的 bean 谁先创建
+     由依赖关系决定，而插件在 `@Bean` 方法体里第一次碰到已删除的方法时就 `NoSuchMethodError` 了——
+     "版本不对"那句话永远轮不到。代价是 BFPP 里不能创建 bean，只能读资源。
+  另外两条判断也定了：**只比数字三段、限定符不参与**（`0.1.0-SNAPSHOT` 等价 `0.1.0`，
+  否则同一个 reactor 里构建的示例插件会当场校验不过，而它明明就是这版核心编出来的）；
+  **没声明的插件不校验**（运行期与宿主自身模块区分不出来），补一条构建期的兜——
+  示例插件自己断言"我声明的区间接纳当前核心版本"，核心升 minor 时构建就红。
+- 2026-11-04 P16 实现。三件事记在这里，第一件是这轮最贵的：
+  1. **门禁的"文件数"数的是 `*.java`，不是 `*Test.java`**。写票时按后者数 `claw4j-capability`，
+     得到 8 个空位；门禁按前者数，实际 10 个——多出来的是两个 MCP 测试替身
+     （`InProcessStdioMcpServer` / `PipedStdioClientTransport`，public 类，一个文件一个）。
+     于是"直接新增一个测试文件"变成 11 个，第一次跑门禁就红。P13/P14 的错法是把
+     `@Testcontainers` 数成用例，这次是**漏数非测试类的 `.java`**；合起来一句：
+     门禁怎么数，你就怎么数。
+  2. **闸因此从 capability 挪到 app**。capability 里没有能合法合并的一对（8 个测试类跨包、
+     都用到包内可见类型），而 app 的职责原文就是"启动、配置与容器编排"，
+     它的 `BuildContractTest` 本来就在守"不会在运行时报警、只在某天以另一种形态暴露"那一类约定。
+     代价写进了票面的已知局限：**自己另起一套 Spring 启动的用法人拿不到这道闸**。
+  3. **报错里不能改写版本号**。一条用例当场红了：消息打印的是解析后的 `0.1.0`，
+     而构件是 `0.1.0-SNAPSHOT`——`CoreVersion` 为了比较丢掉限定符，报错就不能再用它。
+     改成 `checkAll(CoreVersion, String coreText, Map)`：一个比较、一个照抄。
+     这类"内部表示与对外表述不一致"的坑，只有把断言写在消息上才会露出来。
