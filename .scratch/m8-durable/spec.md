@@ -143,7 +143,7 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
   脚本侧 `SandboxPolicy.environment()` 只返回 `PATH`，这一条已经是对的。
 - 2026-11-03 拆票进度：P08（已实现，`4234aab`）、P09（已实现，`5913a77`）、
   P15（已实现，`630c327`）、P11（已实现，`f3dba26`）、P12（已实现，`9389e07`）、
-  P10（已实现，`58fc525`）、P13（已实现，`74237fe`）、P14（已拆，`P14-observability-otel.md`，未开工）。
+  P10（已实现，`58fc525`）、P13（已实现，`74237fe`）、P14（已实现，未提交）。
   P15 排在 P09 之后，因为它依赖 profile 这一层；写 P15 票时核到的三条硬事实都落到了具体代码位置：
   人设是 `AgentAutoConfiguration:64` 的 Java 常量、口径被抄在 Skill 与 Subagent 的正文里、
   时间上下文完全不存在（`weekly-sales` 的相对时间靠 SQL 的 `current_date` 兜）。
@@ -251,3 +251,18 @@ M7 把"一件事能做完、企业在用"补齐了：run / step 是第一等身�
      唯一能对上号的地方。
   另外把两条容易被忽略的机制写进了判据：采样必须 `ParentBased(TraceIdRatioBased)`（裸 ratio 会
   出现「有 run 无 tool」），provider 关闭前必须 flush（丢的恰好是出事前那几秒）。
+- 2026-11-04 P14 实现。四件事记在这里，前三件会再出现：
+  1. **dependencyManagement 是"先声明的 BOM 赢"，不是后声明的**。把 `opentelemetry-bom`
+     放在 Boot BOM 之后时版本纹丝不动（仍 1.62.0），移到前面立刻全链 1.35.0。
+     而且**只给直接依赖写 `<version>` 不够**：传递依赖仍按 BOM 解析，报错信息只会说
+     "1.62.0 没下载过"，看起来像网络问题。判据固定成"改完 BOM 必须 `dependency:tree` 看版本"，
+     已写进 `docs/design/pitfalls.md` 第十六条。
+  2. **观测与审计的分界落在"返回 seq"这一件事上**。`ToolCallAudit#executed` 从 `void` 改成
+     返回 `Optional<Step>`，span 上写 `claw4j.step.seq`——`agent_step` 表一行没改，
+     也没加 `trace_id` 列。以后谁想问"trace 能不能直接查库"，答案是"按 seq 反查，别再存一份"。
+  3. **端口这一层看不到的东西不要编**。票面写 `gen_ai.route`，但路由名在 `MeteredChatModel` 里，
+     `ChatClientAgentPort` 拿不到；于是改用响应里的 `gen_ai.response.model`，并在实现记录里
+     写明替换理由。同理 `claw4j.owner` 只放权限指纹——trace 会出内网。
+  4. **门禁的数字要重数一遍再写进票**。P13/P14 两次都把 `@Testcontainers` / `@BeforeAll`
+     算成了用例（脚本按 `@Test` 子串数），于是"6 + 6 = 12"实际是 10 条。
+     文件数那条（10 个）没受影响，但"合并省下几条"这种描述会失真。

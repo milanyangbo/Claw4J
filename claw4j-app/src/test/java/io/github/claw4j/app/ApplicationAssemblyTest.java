@@ -2,6 +2,7 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
+import io.github.claw4j.agent.observability.RunTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
@@ -411,7 +412,7 @@ class ApplicationAssemblyTest {
         List<ToolCallback> manifest = AgentAutoConfiguration.collectToolCallbacks(
                 providerOf(List.of(tool("toolSearchTool"), tool("querySales"), tool("run_script"))),
                 providerOf(List.of()),
-                null, null, null,
+                null, null, null, RunTracer.NONE,
                 new ToolProfile(ToolTier.MESSAGING, Set.of(), Set.of()),
                 List.of(ToolTierRegistry.sameFor(Set.of("toolSearchTool"), ToolTier.MINIMAL),
                         ToolTierRegistry.sameFor(Set.of("querySales"), ToolTier.MESSAGING),
@@ -429,7 +430,7 @@ class ApplicationAssemblyTest {
         assertThatThrownBy(() -> AgentAutoConfiguration.collectToolCallbacks(
                 providerOf(List.of(tool("mystery"))),
                 providerOf(List.of()),
-                null, null, null,
+                null, null, null, RunTracer.NONE,
                 ToolProfile.unrestricted(),
                 List.of()))
                 .as("默认出现正是这套机制要避免的事：没声明就起不来，不是默默归进最宽那档")
@@ -476,7 +477,7 @@ class ApplicationAssemblyTest {
         List<ToolCallback> manifest = AgentAutoConfiguration.collectToolCallbacks(
                 providerOf(List.of(tool("querySales"), tool("run_script"))),
                 providerOf(List.of()),
-                null, null, null,
+                null, null, null, RunTracer.NONE,
                 new ToolProfile(ToolTier.MESSAGING, Set.of(), Set.of()),
                 List.of(ToolTierRegistry.sameFor(Set.of("querySales"), ToolTier.MESSAGING),
                         ToolTierRegistry.sameFor(Set.of("run_script"), ToolTier.CODING)));

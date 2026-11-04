@@ -1,13 +1,24 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredChatModel;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.agent.observability.ObservabilityAutoConfiguration;
+import io.github.claw4j.agent.observability.OtelRunTracer;
+import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.run.Run;
+import io.github.claw4j.agent.run.RunStatus;
+import io.github.claw4j.agent.run.RunStore;
+import io.github.claw4j.agent.run.Step;
+import io.github.claw4j.agent.run.StepInput;
+import io.github.claw4j.agent.run.StepKind;
 import io.github.claw4j.agent.run.RunLauncher;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.agent.schedule.ScheduleStore;
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundDelivery;
@@ -16,23 +27,39 @@ import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.sdk.common.CompletableResultCode;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.data.EventData;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
+import io.opentelemetry.sdk.trace.export.SpanExporter;
+import io.opentelemetry.sdk.trace.samplers.Sampler;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import reactor.core.publisher.Flux;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -187,6 +214,218 @@ class ObservabilityTest {
 
         assertThat(tool.calls()).as("被拒的那次不该真的碰到工具").isZero();
         assertThat(counter("claw4j.tool.calls", "tool", "querySales", "outcome", "denied")).isEqualTo(1);
+    }
+
+    // ---- trace：一条 run 连到它的每个 step（P14） ----
+    //
+    // 这一组用的是**真的** OtelRunTracer 加 SimpleSpanProcessor（同步导出），不是替身：
+    // 父子关系是 OTel 的 Context 给的，拿替身验"我传了父 id"只能证明代码执行到那一行，
+    // 证明不了层级真的成立。收 span 的 exporter 是几十行的假货——它只把 SpanData 收进列表。
+
+    /** 收下来的 span。SimpleSpanProcessor 是同步的：end() 一返回，它就已经在这里了。 */
+    private final List<SpanData> spans = new CopyOnWriteArrayList<>();
+
+    @Test
+    @DisplayName("一条 run 一个 trace：tool 挂在它那一轮 model.turn 下，model.turn 挂在 run 下（P14）")
+    void oneRunIsOneTraceWithActionsNestedUnderTheirTurn() {
+        RunTracer tracer = tracer();
+        RunStore runs = runStore(new ArrayList<>());
+        AtomicInteger round = new AtomicInteger();
+        ChatModel model = new FixedChatModel(prompt -> round.getAndIncrement() == 0
+                ? ChatPipelineTest.requestTool("querySales", "{}")
+                : withUsage(12, 34));
+
+        tracedPort(model, runs, tracer, new RecordingTool("querySales", "128400"))
+                .reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "上周华东成交额"));
+
+        SpanData run = spanOf("run");
+        SpanData turn = spanOf("model.turn");
+        SpanData tool = spanOf("tool.querySales");
+
+        assertThat(turn.getParentSpanId()).isEqualTo(run.getSpanId());
+        assertThat(tool.getParentSpanId())
+                .as("工具要挂在它那一轮下面，不是与它并列——只数个数的话，三个都挂根上也能绿")
+                .isEqualTo(turn.getSpanId());
+        assertThat(tool.getTraceId()).isEqualTo(turn.getTraceId()).isEqualTo(run.getTraceId());
+        assertThat(run.getAttributes().get(AttributeKey.stringKey("claw4j.run.id"))).isEqualTo("run-1");
+        assertThat(tool.getAttributes().get(AttributeKey.stringKey("claw4j.tool"))).isEqualTo("querySales");
+        assertThat(registry.getMeters()).extracting(meter -> meter.getId().getName())
+                .as("trace 不新增计数器：同一次工具调用不该被 counter 与 span 各记一遍，两份口径迟早会漂")
+                .containsExactly("claw4j.tool.calls");
+    }
+
+    @Test
+    @DisplayName("动作 span 上带审计行序号：拿它加 runId 能反查回 agent_step 那一行（P14）")
+    void everyActionSpanCarriesTheSeqOfTheStepItWrote() {
+        RunTracer tracer = tracer();
+        List<Step> written = new ArrayList<>();
+        RunStore runs = runStore(written);
+        AtomicInteger round = new AtomicInteger();
+        ChatModel model = new FixedChatModel(prompt -> round.getAndIncrement() == 0
+                ? ChatPipelineTest.requestTool("querySales", "{}")
+                : withUsage(12, 34));
+
+        tracedPort(model, runs, tracer, new RecordingTool("querySales", "128400"))
+                .reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "上周华东成交额"));
+
+        int toolSeq = seqOf(spanOf("tool.querySales"));
+        int turnSeq = seqOf(spanOf("model.turn"));
+
+        assertThat(written).extracting(Step::kind)
+                .as("先落工具那一行，收尾时再落模型轮")
+                .containsExactly(StepKind.TOOL_CALLS, StepKind.MODEL_TURN);
+        assertThat(written.get(toolSeq - 1).kind()).isEqualTo(StepKind.TOOL_CALLS);
+        assertThat(written.get(turnSeq - 1).kind()).isEqualTo(StepKind.MODEL_TURN);
+        assertThat(turnSeq).as("写死成 1 就查到工具那一行了，这条会红").isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("失败也留痕：工具抛异常那段是 ERROR，模型抛异常时 run 那段也是（P14）")
+    void failuresEndTheirSpanAsErrors() {
+        RunTracer tracer = tracer();
+        RunStore runs = runStore(new ArrayList<>());
+        MeteredToolCallback failing = new MeteredToolCallback(new RecordingTool("querySales", "128400") {
+            @Override
+            public String call(String toolInput) {
+                throw new IllegalStateException("库挂了");
+            }
+        }, null, null, new ToolCallAudit(runs), tracer);
+
+        assertThatThrownBy(() -> failing.call("{}",
+                new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"))))
+                .isInstanceOf(IllegalStateException.class);
+
+        SpanData tool = spanOf("tool.querySales");
+        assertThat(tool.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
+        assertThat(tool.getEvents()).extracting(EventData::getName).contains("exception");
+        assertThat(tool.getAttributes().get(AttributeKey.stringKey("claw4j.outcome"))).isEqualTo("error");
+        assertThat(tool.getAttributes().get(AttributeKey.stringKey("claw4j.error.type")))
+                .isEqualTo("IllegalStateException");
+
+        ChatModel broken = new FixedChatModel(prompt -> {
+            throw new IllegalStateException("模型服务 503");
+        });
+        ChatClientAgentPort port = tracedPort(broken, runs, tracer);
+        assertThatThrownBy(() -> port.reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "问")))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(spanOf("run").getStatus().getStatusCode())
+                .as("回答失败的那一轮，这件事本身要标失败；否则图上它是一次正常结束")
+                .isEqualTo(StatusCode.ERROR);
+    }
+
+    @Test
+    @DisplayName("默认不导：没开观测时容器里没有 provider；开了却没配端点也一个都不建（P14）")
+    void tracingIsOffUntilAnEndpointIsConfigured() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ObservabilityAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(SdkTracerProvider.class);
+                    assertThat(context).doesNotHaveBean(RunTracer.class);
+                });
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ObservabilityAutoConfiguration.class))
+                .withPropertyValues("claw4j.observability.enabled=true")
+                .run(context -> {
+                    assertThat(context)
+                            .as("开着却没端点：不造 provider，于是也不会有出站请求")
+                            .doesNotHaveBean(SdkTracerProvider.class);
+                    assertThat(context.getBean(RunTracer.class))
+                            .as("但埋点得有个东西可调：三处 open 不能为此写判空")
+                            .isSameAs(RunTracer.NONE);
+                });
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ObservabilityAutoConfiguration.class))
+                .withPropertyValues("claw4j.observability.enabled=true",
+                        "claw4j.observability.endpoint=http://localhost:4318")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(SdkTracerProvider.class);
+                    assertThat(context.getBean(RunTracer.class)).isNotSameAs(RunTracer.NONE);
+                });
+    }
+
+    /** 一个只收 span 的 exporter。provider 用 alwaysOn：这一组验的是层级，不是采样。 */
+    private RunTracer tracer() {
+        SpanExporter exporter = new SpanExporter() {
+
+            @Override
+            public CompletableResultCode export(Collection<SpanData> batch) {
+                spans.addAll(batch);
+                return CompletableResultCode.ofSuccess();
+            }
+
+            @Override
+            public CompletableResultCode flush() {
+                return CompletableResultCode.ofSuccess();
+            }
+
+            @Override
+            public CompletableResultCode shutdown() {
+                return CompletableResultCode.ofSuccess();
+            }
+        };
+        return new OtelRunTracer(SdkTracerProvider.builder()
+                .setSampler(Sampler.alwaysOn())
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                .build());
+    }
+
+    /**
+     * 一条真会画 span 的链路：门、工具包装、审计全用**同一个** tracer。
+     *
+     * <p>同一个而不是各造一个：父子靠 Context 接得上，但两套 provider 的 span 会进两条
+     * 不同的导出链，断言时得按 provider 分开收——没有理由为省一行把它搞复杂。
+     */
+    private ChatClientAgentPort tracedPort(ChatModel model, RunStore runs, RunTracer tracer,
+                                           ToolCallback... tools) {
+        ToolCallAudit audit = new ToolCallAudit(runs);
+        List<ToolCallback> wrapped = new ArrayList<>();
+        for (ToolCallback tool : tools) {
+            wrapped.add(new MeteredToolCallback(tool, registry, null, audit, tracer));
+        }
+        ChatClient client = ChatPipelineTest.clientBuilder(model)
+                .defaultToolCallbacks(wrapped)
+                .build();
+        return new ChatClientAgentPort(client, null, runs, null, null, tracer);
+    }
+
+    /**
+     * 只回答三件事的 run 存储：开出来是哪一件、现在还是 running、append 落第几行。
+     *
+     * <p>真库那一半在 app 的 {@code RunLifecycleTest}；这里要验的是"span 上写的是不是那个 seq"，
+     * 而 seq 由存储分配——所以替身按 append 的次数递增，与真库同一个口径。
+     */
+    private static RunStore runStore(List<Step> written) {
+        RunStore runs = mock(RunStore.class);
+        Run run = new Run("run-1", "u-1@fp", "fp", "上周华东成交额", RunStatus.RUNNING,
+                NotifyPolicy.DEFAULT, null, null, Instant.now());
+        when(runs.start(anyString(), anyString(), anyString(), any())).thenReturn(Optional.of(run));
+        when(runs.find(anyString())).thenReturn(Optional.of(run));
+        when(runs.append(any())).thenAnswer(call -> {
+            StepInput input = call.getArgument(0);
+            Step step = new Step(input.runId(), written.size() + 1, input.kind(), input.input(),
+                    input.toolNames(), input.resultSummary(), input.status(), Instant.now());
+            written.add(step);
+            return Optional.of(step);
+        });
+        return runs;
+    }
+
+    private SpanData spanOf(String name) {
+        List<SpanData> matched = spans.stream().filter(span -> span.getName().equals(name)).toList();
+        assertThat(matched)
+                .as("应该恰好有一段 %s，实际收到 %s", name,
+                        spans.stream().map(SpanData::getName).toList())
+                .hasSize(1);
+        return matched.getFirst();
+    }
+
+    private static int seqOf(SpanData span) {
+        String value = span.getAttributes().get(AttributeKey.stringKey("claw4j.step.seq"));
+        assertThat(value).as("%s 上应该带审计行序号", span.getName()).isNotNull();
+        return Integer.parseInt(value);
     }
 
     // ---- 定时任务到点跑不跑（P04） ----

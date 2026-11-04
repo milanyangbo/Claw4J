@@ -376,6 +376,33 @@ claw4j:
     # 一块文档最多多少字符。短段落会合并，超过就断开。
     max-chars: 800
 
+  # ---- 观测：trace 走 OTLP，默认一段都不导（P14）----
+  # 与上面 rag 同一条约定：默认关，配了才装。关着时容器里没有 provider、没有 exporter，
+  # 也不起线程——一个空转的 provider 会带起 batch 线程与连接池，"关"不该只是少发几条数据。
+  #
+  # **开了却没配 endpoint 时一条也不导**，启动日志会点名缺哪一项。不回落
+  # "localhost:4318"：那样每 5 秒一条连接被拒，人去查网络，而真正缺的那项没人说。
+  #
+  # 指标仍走下面 management 那套（actuator + Prometheus），**trace 只走 OTLP**：
+  # 两套导出器各配一遍端点是运维负担，而 metrics 那条路已经能用。
+  #
+  # 根 span 是 run（不是请求）：五个通道都把回答丢进线程池，请求的 trace 在入池那一刻就断了；
+  # 而 run 跨通道、跨重试、跨重启。每个动作 span 上带 `claw4j.step.seq`，
+  # 拿它加 `claw4j.run.id` 能反查回 agent_step 那一行。
+  observability:
+    enabled: ${CLAW4J_OBSERVABILITY_ENABLED:false}
+    # OTLP HTTP 的地址，例如 http://localhost:4318（带上 /v1/traces 也认）。
+    # **不走 gRPC**：exporter 的运行时依赖只带 HTTP sender，gRPC 那个编译得过、启动时找不到实现。
+    endpoint: ${OTLP_ENDPOINT:}
+    service-name: ${OTEL_SERVICE_NAME:claw4j}
+    # 采样比例。实现是 ParentBased(TraceIdRatioBased)——裸 ratio 会出现"有 run、没有 tool"，
+    # 而那种缺口在图上看起来像工具没被调用。
+    sample-ratio: 1.0
+    # 单次导出的超时。collector 不在同机时留一次重试的余量。
+    timeout: PT10S
+    # batch 队列上限。满了会丢，丢的时候 OTel 自己打日志（不另加计数器，见 P14 判据 10）。
+    max-queue-size: 2048
+
   # ---- 能力层：配了目录才有这一层，不配就没有 ----
   # claw4j.skills.directory / claw4j.scripts.directory / claw4j.subagents.directory /
   # claw4j.generator.staging-directory（另有 review-directory / published-directory / audit-file 子键）

@@ -138,6 +138,29 @@
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
 
+        <!--
+          trace 导出（P14）。**版本由根 pom 的 opentelemetry-bom 管**，这里不写 <version>。
+
+          为什么不在这一层写版本：只给直接依赖钉 1.35.0 压不住传递依赖（sdk-logs、
+          exporter-otlp-common、exporter-sender-okhttp、sdk-extension-autoconfigure-spi
+          仍按 Boot BOM 的 1.62.0 解析），而 1.62.0 的 jar 本地一个都没有，离线构建直接红。
+          整份 BOM 只能放在根 pom（app 也要用到这两个构件，模块内的管理不往下传）。
+
+          两个 jar 都要显式声明：
+          - opentelemetry-sdk：provider / sampler / batch processor。
+          - opentelemetry-exporter-otlp：OTLP 那一个。它的运行时依赖只带
+            `exporter-sender-okhttp`（HTTP），没有 gRPC sender——所以只能走 HTTP，
+            见 OtelRunTracer 的类注释。
+        -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

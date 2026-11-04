@@ -2,6 +2,8 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactor;
+import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.agent.observability.RunTracer;
 import io.github.claw4j.agent.run.Budget;
 import io.github.claw4j.agent.run.DeliveryTarget;
 import io.github.claw4j.agent.run.Run;
@@ -30,6 +32,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -66,6 +69,42 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     /** recap 里每一步与目标的字符上限。 */
     private static final int RECAP_CHARS = 120;
 
+    /**
+     * 根 span 的名字：**一次 run 的执行体**（P14）。
+     *
+     * <p>不是"一次请求"：五个通道都把 {@code agent.reply} 丢进线程池，请求的 trace 在入池那一刻就断了；
+     * 而 run 跨通道、跨重试、跨进程重启（resume 时还是同一个 runId）。根放在 run 上，
+     * trace 的边界才与库里那张表的边界是同一件事。
+     */
+    private static final String RUN_SPAN = "run";
+
+    /** 一轮动作的 span：包住 {@code call()} 与收尾。工具 span 都挂在它下面。 */
+    private static final String TURN_SPAN = "model.turn";
+
+    /** 这件事是哪一件。与 {@code MeteredToolCallback.ATTR_STEP_SEQ} 一起，能把 span 反查回库。 */
+    private static final String ATTR_RUN_ID = "claw4j.run.id";
+
+    /**
+     * 谁的这件事——**只放权限指纹，不放 userId**。
+     *
+     * <p>trace 会进第三方后端，而"哪个员工问了什么"本身是内部信息。指纹能回答
+     * "这两个 span 是同一个人吗"（那正是排查时要问的），却反推不出是谁——
+     * 与审计表里存 userId 的区别正是"审计归自己、trace 可能出去"。
+     */
+    private static final String ATTR_OWNER = "claw4j.owner";
+
+    /** 这一轮的审计行序号。span 与库唯一能对上号的地方。 */
+    private static final String ATTR_STEP_SEQ = "claw4j.step.seq";
+
+    /** 这一轮花掉的 token。拿不到时**不写**——写 0 会被读成"没花钱"。 */
+    private static final String ATTR_TOKENS = "claw4j.tokens";
+
+    /** 这一轮是哪个模型答的。取响应里的 model id，不是我们配的路由名（那一个在这一层看不到）。 */
+    private static final String ATTR_MODEL = "gen_ai.response.model";
+
+    /** 接上来的那一轮标一下：同一个 runId 会有多条 trace，这一条是"继续"，不是"开头"。 */
+    private static final String ATTR_RESUMED = "claw4j.run.resumed";
+
     private final ChatClient chatClient;
 
     /**
@@ -93,6 +132,13 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      */
     private final RunDelivery delivery;
 
+    /**
+     * trace（P14）。默认是空实现：没开观测时这里一次 {@code open} 就是一次内联掉的方法调用，
+     * 埋点代码与开着的时候逐字相同——**"关着"不该是另一条代码路径**，
+     * 否则那条路径平时不跑，等开了观测才第一次执行。
+     */
+    private final RunTracer tracer;
+
     public ChatClientAgentPort(ChatClient chatClient) {
         this(chatClient, null, null, null, null);
     }
@@ -112,11 +158,21 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
                                RunBudget budget, RunDelivery delivery) {
+        this(chatClient, compactor, runs, budget, delivery, RunTracer.NONE);
+    }
+
+    /**
+     * @param tracer 为 null 时按空实现处理：装配里它走 {@code ObjectProvider}，
+     *               没开观测的部署拿不到 bean，而"少一个 bean"不该让门都装不上
+     */
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
+                               RunBudget budget, RunDelivery delivery, RunTracer tracer) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
         this.runs = runs;
         this.budget = budget;
         this.delivery = delivery;
+        this.tracer = tracer == null ? RunTracer.NONE : tracer;
     }
 
     /**
@@ -181,24 +237,40 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         String masked = PiiRedactor.mask(message.text());
         Opened opened = openRun(message, owner, masked);
         String runId = opened == null ? null : opened.run().id();
-        // 进门先看额度：上一轮已经把额度烧完的 run，这一轮不该再调一次模型——
-        // 调了也只是再花一份钱去换一个"还是得停"的结论。
-        Optional<Budget> overBudget = exhaustedSpent(runId);
-        if (overBudget.isPresent()) {
-            return new Turn(runId, stopForBudget(message, runId, overBudget.get()).text());
-        }
-        long startedAt = System.nanoTime();
-        try {
-            ChatResponse response = promptOf(message.principal(), owner, promptText(opened, masked), runId)
-                    .call()
-                    .chatResponse();
-            String text = textOf(response);
-            log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
-            closeTurn(runId, masked, text, answeredAt, tokensOf(response), elapsedMillis(startedAt));
-            return new Turn(runId, text);
-        } catch (RuntimeException | Error failure) {
-            fail(runId);
-            throw failure;
+        // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
+        try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
+                runAttributes(runId, message.principal(), opened))) {
+            // 进门先看额度：上一轮已经把额度烧完的 run，这一轮不该再调一次模型——
+            // 调了也只是再花一份钱去换一个"还是得停"的结论。
+            Optional<Budget> overBudget = exhaustedSpent(runId);
+            if (overBudget.isPresent()) {
+                // 停下来这件事本身要留痕：图上"这里少了一轮模型"与"模型一轮就答完了"
+                // 长得一样，而这句属性是唯一分得开它们的东西。
+                run.attribute(MeteredToolCallback.ATTR_OUTCOME, "budget_exhausted");
+                return new Turn(runId, stopForBudget(message, runId, overBudget.get()).text());
+            }
+            long startedAt = System.nanoTime();
+            try {
+                ChatResponse response;
+                String text;
+                // 一轮的 span 包住 call() **与收尾**：seq 要先落库才拿得到，
+                // 所以这段 duration 含那一次 INSERT（几十毫秒）。反过来（先关 span 再写 seq）
+                // 会让属性丢掉——已 end 的 span 上 setAttribute 是静默的空操作。
+                try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
+                    response = promptOf(message.principal(), owner, promptText(opened, masked), runId)
+                            .call()
+                            .chatResponse();
+                    text = textOf(response);
+                    log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
+                    stampTurn(turn, closeTurn(runId, masked, text, answeredAt,
+                            tokensOf(response), elapsedMillis(startedAt)), response);
+                }
+                return new Turn(runId, text);
+            } catch (RuntimeException | Error failure) {
+                run.failed(failure);
+                fail(runId);
+                throw failure;
+            }
         }
     }
 
@@ -211,32 +283,42 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         String masked = PiiRedactor.mask(message.text());
         Opened opened = openRun(message, owner, masked);
         String runId = opened == null ? null : opened.run().id();
-        Optional<Budget> overBudget = exhaustedSpent(runId);
-        if (overBudget.isPresent()) {
-            onChunk.accept(stopForBudget(message, runId, overBudget.get()));
-            onChunk.accept(OutboundMessage.of(message.chatId(), "", runId));
-            return;
-        }
-        StringBuilder answer = new StringBuilder();
-        long startedAt = System.nanoTime();
-        try {
-            promptOf(message.principal(), owner, promptText(opened, masked), runId)
-                    .stream()
-                    .content()
-                    // 每一块都带 runId：调用方可能只收到最后一块，收到中间块的也要能查到同一件事
-                    .doOnNext(chunk -> {
-                        log.debug("出站分块 chatId={} runId={} chunk={}", message.chatId(), runId, chunk);
-                        answer.append(chunk == null ? "" : chunk);
-                        onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk, runId));
-                    })
-                    .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "", runId)))
-                    .blockLast();
-            // 流式的 token 记 0：汇总 usage 只在最后一帧上，而它未必到得了这一层
-            // （与"不拿估算值冒充真实值"同一个口径）。耗时照记——它不需要模型报。
-            closeTurn(runId, masked, answer.toString(), addressOf(message), 0L, elapsedMillis(startedAt));
-        } catch (RuntimeException | Error failure) {
-            fail(runId);
-            throw failure;
+        try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
+                runAttributes(runId, message.principal(), opened))) {
+            Optional<Budget> overBudget = exhaustedSpent(runId);
+            if (overBudget.isPresent()) {
+                run.attribute(MeteredToolCallback.ATTR_OUTCOME, "budget_exhausted");
+                onChunk.accept(stopForBudget(message, runId, overBudget.get()));
+                onChunk.accept(OutboundMessage.of(message.chatId(), "", runId));
+                return;
+            }
+            StringBuilder answer = new StringBuilder();
+            long startedAt = System.nanoTime();
+            try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
+                try {
+                    promptOf(message.principal(), owner, promptText(opened, masked), runId)
+                            .stream()
+                            .content()
+                            // 每一块都带 runId：调用方可能只收到最后一块，收到中间块的也要能查到同一件事
+                            .doOnNext(chunk -> {
+                                log.debug("出站分块 chatId={} runId={} chunk={}", message.chatId(), runId, chunk);
+                                answer.append(chunk == null ? "" : chunk);
+                                onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk, runId));
+                            })
+                            .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "", runId)))
+                            .blockLast();
+                    // 流式的 token 记 0：汇总 usage 只在最后一帧上，而它未必到得了这一层
+                    // （与"不拿估算值冒充真实值"同一个口径）。耗时照记——它不需要模型报。
+                    stampTurn(turn, closeTurn(runId, masked, answer.toString(), addressOf(message),
+                            0L, elapsedMillis(startedAt)), null);
+                } catch (RuntimeException | Error failure) {
+                    // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
+                    turn.failed(failure);
+                    run.failed(failure);
+                    fail(runId);
+                    throw failure;
+                }
+            }
         }
     }
 
@@ -281,19 +363,29 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         Run run = reopened.get();
         String prompt = recap(run, runs.stepsOf(runId)) + "[审批有结论] " + note;
         long startedAt = System.nanoTime();
-        try {
-            ChatResponse response = promptOf(principal.get(), run.owner(), prompt, runId)
-                    .call()
-                    .chatResponse();
-            String text = textOf(response);
-            // 这一轮没有"就地回答"的地址：没有人正盯着一个请求等结果，
-            // 于是结果按通知策略送到登记过的每一个地方（A05）。
-            closeTurn(runId, "[审批] " + note, text, null, tokensOf(response), elapsedMillis(startedAt));
-            return Optional.ofNullable(text);
-        } catch (RuntimeException | Error failure) {
-            fail(runId);
-            log.error("审批放行后 run {} 的续跑失败", runId, failure);
-            return Optional.empty();
+        // 续跑也是一次"执行这件事"：单独一条 trace，但根还是 run。不包的话这一轮的
+        // model.turn 会成为一条没有根的 trace——图上表现为"有个模型轮不知道属于哪件事"。
+        try (RunTracer.SpanScope span = tracer.open(RUN_SPAN,
+                runAttributes(runId, principal.get(), null))) {
+            try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
+                try {
+                    ChatResponse response = promptOf(principal.get(), run.owner(), prompt, runId)
+                            .call()
+                            .chatResponse();
+                    String text = textOf(response);
+                    // 这一轮没有"就地回答"的地址：没有人正盯着一个请求等结果，
+                    // 于是结果按通知策略送到登记过的每一个地方（A05）。
+                    stampTurn(turn, closeTurn(runId, "[审批] " + note, text, null,
+                            tokensOf(response), elapsedMillis(startedAt)), response);
+                    return Optional.ofNullable(text);
+                } catch (RuntimeException | Error failure) {
+                    turn.failed(failure);
+                    span.failed(failure);
+                    fail(runId);
+                    log.error("审批放行后 run {} 的续跑失败", runId, failure);
+                    return Optional.empty();
+                }
+            }
         }
     }
 
@@ -444,10 +536,10 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      * 这件事停在 {@link RunStatus#BUDGET_EXHAUSTED}——它与 done 的下一步完全不同
      * （追加预算继续 vs 没有了），混成一个状态的话没人知道该重试还是该换做法。
      */
-    private void closeTurn(String runId, String input, String answer, DeliveryTarget answeredAt,
-                           long tokens, long millis) {
+    private Optional<Step> closeTurn(String runId, String input, String answer, DeliveryTarget answeredAt,
+                                     long tokens, long millis) {
         if (runs == null || runId == null) {
-            return;
+            return Optional.empty();
         }
         // 这一轮被某道门拦下并挂起了（P02）：<b>不收尾</b>。
         //
@@ -459,9 +551,9 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         // 比事实多一步（模型下一轮就会跳过那件没做完的事）。
         if (isSuspended(runId)) {
             log.debug("run {} 这一轮停在等审批，不收尾", runId);
-            return;
+            return Optional.empty();
         }
-        runs.append(new StepInput(runId, StepKind.MODEL_TURN, input, null,
+        Optional<Step> written = runs.append(new StepInput(runId, StepKind.MODEL_TURN, input, null,
                 summary(answer), StepStatus.DONE));
         if (budget != null) {
             budget.chargeTurn(runId, tokens, millis);
@@ -469,7 +561,9 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         Optional<Budget> spent = budget == null ? Optional.empty() : budget.spent(runId);
         if (spent.isPresent() && budget.exhausted(spent.get())) {
             runs.finish(runId, RunStatus.BUDGET_EXHAUSTED);
-            return;
+            // 这一步是落下来的：span 上仍要带上它的序号——"这一轮把额度烧完了"正是
+            // 最想按 (run_id, seq) 回库核对的那一轮。
+            return written;
         }
         // 全文进 run：step 上的那份是截断摘要，回答"这一步得到了什么"；
         // 查结果的人要的是完整答案，而异步场景里没有一次请求在等着接它（A05）。
@@ -477,6 +571,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         if (delivery != null) {
             delivery.announce(runId, RunStatus.DONE, answer, answeredAt);
         }
+        return written;
     }
 
     /** 这一轮里有没有人把这件事实停下来了。读不到 run 时按"没有"处理（照常收尾）。 */
@@ -580,6 +675,53 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      *              只在工具上下文里放的话，Advisor 拦下工具调用时手里没有 runId，
      *              这一等就只能挂在库里没有落点的位置上
      */
+    /**
+     * 把这一轮的结论写到 {@code model.turn} 上（P14）：审计行序号、花掉的 token、哪个模型答的。
+     *
+     * <p><b>三个值都"没有就不写"</b>：seq 落不下去（存储降级）时写 0 会让人以为第一行就是它；
+     * token 拿不到时写 0 与"这轮没花钱"分不开；模型名同理。**空属性是诚实的，
+     * 补一个看起来合理的默认值才是**——后者的代价是某天有人按这个数字判断成本。
+     *
+     * @param response 可为 null（流式那一侧拿不到汇总 usage）
+     */
+    private static void stampTurn(RunTracer.SpanScope turn, Optional<Step> step, ChatResponse response) {
+        step.ifPresent(written -> turn.attribute(ATTR_STEP_SEQ, Integer.toString(written.seq())));
+        long tokens = tokensOf(response);
+        if (tokens > 0) {
+            turn.attribute(ATTR_TOKENS, Long.toString(tokens));
+        }
+        String model = modelOf(response);
+        if (model != null && !model.isBlank()) {
+            turn.attribute(ATTR_MODEL, model);
+        }
+    }
+
+    /** 响应里报的模型名。不是我们配的路由名——路由在 {@code MeteredChatModel} 那一层，这里看不到。 */
+    private static String modelOf(ChatResponse response) {
+        return response == null || response.getMetadata() == null
+                ? null : response.getMetadata().getModel();
+    }
+
+    /**
+     * 根 span 的属性：哪件事、谁的（指纹）、是不是接上来的。
+     *
+     * <p><b>没有 runId 时不写这一格</b>：没装 run 存储的部署里它确实是 null，
+     * 而写一个空串会让"这件事"与"空"在图上长得一样。
+     */
+    private static Map<String, String> runAttributes(String runId, Principal principal, Opened opened) {
+        Map<String, String> attributes = new LinkedHashMap<>();
+        if (runId != null) {
+            attributes.put(ATTR_RUN_ID, runId);
+        }
+        if (principal != null) {
+            attributes.put(ATTR_OWNER, PermissionFingerprint.shortOf(principal));
+        }
+        if (opened != null && opened.resumed()) {
+            attributes.put(ATTR_RESUMED, "true");
+        }
+        return attributes;
+    }
+
     private ChatClient.ChatClientRequestSpec promptOf(Principal principal, String owner, String masked,
                                                       String runId) {
         // 归属键由调用方算好再传进来：一轮请求里会话 id、run 的 owner 都是它，

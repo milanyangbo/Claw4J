@@ -1,6 +1,6 @@
 # P14 · 可观测与 OTel 导出：一条 run 连到它的每个 step 与每次工具调用
 
-**Status:** ready-for-agent
+**Status:** done（2026-11-04 实现，未提交）
 **Blocked by:** P07（审计口径已落地，`agent_step` 的六列是这张票要对齐的那份事实）
 
 ## 背景
@@ -190,31 +190,54 @@ Batch 队列里最后几条在进程退出时直接消失，而丢的恰好是�
 
 ## 验收判据
 
-- [ ] **层级是真的父子**：一条 run 产生一个 trace，`tool.*` 的 parentSpanId 等于它所在那一轮
+- [x] **层级是真的父子**：一条 run 产生一个 trace，`tool.*` 的 parentSpanId 等于它所在那一轮
       `model.turn` 的 spanId，`model.turn` 的 parent 是 `run`。
       断言的是 id 关系，不是「有 N 个 span」——只数个数的话，把三个 span 都挂在 root 下也能绿。
-- [ ] **step 能反查**：每个动作 span 上的 `claw4j.step.seq` 加上 `claw4j.run.id`，能在
+      证据：`ObservabilityTest#oneRunIsOneTraceWithActionsNestedUnderTheirTurn`：断言的是 `tool.spanId ← model.turn.spanId ← run.spanId` 三条 id 关系与同一个 traceId，不是"有 3 个 span"。
+
+- [x] **step 能反查**：每个动作 span 上的 `claw4j.step.seq` 加上 `claw4j.run.id`，能在
       `RunStore#stepsOf(runId)` 里找到对应那一行，且 `kind` 与 span 名对得上
       （`model.turn` ↔ `MODEL_TURN`，`tool.*` ↔ `TOOL_CALLS`）。反例：seq 写死成 1 → 红。
-- [ ] **失败也留痕**：工具抛异常时，`tool.*` span 的 status 是 `ERROR` 且带 exception 事件，
+      证据：`ObservabilityTest#everyActionSpanCarriesTheSeqOfTheStepItWrote`：`claw4j.step.seq` 反查 `written.get(seq - 1)`，`kind` 与 span 名对得上（`model.turn` ↔ `MODEL_TURN`，`tool.*` ↔ `TOOL_CALLS`）；断言 `turnSeq == 2`，写死成 1 就会红。
+
+- [x] **失败也留痕**：工具抛异常时，`tool.*` span 的 status 是 `ERROR` 且带 exception 事件，
       `run` span 也是 `ERROR`。反例：只在成功路径 `close()` → 失败时 span 没有 error 状态。
-- [ ] **默认不导**：不配 `claw4j.observability.enabled` 时，容器里没有 `SdkTracerProvider`，
+      证据：`ObservabilityTest#failuresEndTheirSpanAsErrors`：工具抛异常 → span status `ERROR` + `exception` 事件 + `claw4j.outcome=error` + `claw4j.error.type`；模型抛异常 → `run` span 也是 `ERROR`。
+
+- [x] **默认不导**：不配 `claw4j.observability.enabled` 时，容器里没有 `SdkTracerProvider`，
       `RunTracer` 是 `NONE`，跑一轮**不产生任何出站请求**。
-- [ ] **开了但没配 endpoint**：`enabled=true` + `endpoint` 空 → 仍然不建 exporter，
+      证据：`ObservabilityTest#tracingIsOffUntilAnEndpointIsConfigured` 第一段：不配 `enabled` 时容器里既没有 `SdkTracerProvider` 也没有 `RunTracer`，跑一轮不产生任何出站请求。
+
+- [x] **开了但没配 endpoint**：`enabled=true` + `endpoint` 空 → 仍然不建 exporter，
       并且启动日志里点名缺哪一项（「开了却没配」必须能自己说出来，否则运维会去查网络）。
-- [ ] **导出真的发出**：起一个假的 OTLP collector（JDK `HttpServer`，收 `/v1/traces`），
+      证据：同上第二段：`enabled=true` 无端点 → 仍没有 `SdkTracerProvider`，`RunTracer` 是 `NONE`，启动日志点名缺 `claw4j.observability.endpoint`（`ObservabilityAutoConfiguration#runTracer` 里那条 WARN）。
+
+- [x] **导出真的发出**：起一个假的 OTLP collector（JDK `HttpServer`，收 `/v1/traces`），
       断言收到 ≥1 个请求、body 非空、`Content-Type` 是 `application/x-protobuf`。
       反例：把 exporter 换成 `SpanExporter.composite()` 空集合 → 这条红。
-- [ ] **退出前 flush**：`close()` 之后假 collector 收到的 span 数等于 `close()` 之前内存里的数量
+      证据：`TraceExportTest#spansReachTheCollectorAsOtlpHttp`：假 collector 收到 `/v1/traces`、`Content-Type: application/x-protobuf`、body 非空。
+
+- [x] **退出前 flush**：`close()` 之后假 collector 收到的 span 数等于 `close()` 之前内存里的数量
       （Batch 队列没有留在手里）。
-- [ ] **采样生效**：`sample-ratio=0` → 0 条；`1.0` → 全量；父子一致（不会出现「有子无父」）。
-- [ ] **观测不写业务库**：开 trace 前后各跑一条同样的问题，`agent_step` 的行数与内容不变
+      证据：`TraceExportTest#closingFlushesWhatIsStillInTheQueue`：三段 span 在毫秒内结束（远早于默认 5 秒批次），`close()` 之后收端数得到 3 段。
+
+- [x] **采样生效**：`sample-ratio=0` → 0 条；`1.0` → 全量；父子一致（不会出现「有子无父」）。
+      证据：`TraceExportTest#aZeroRatioExportsNothing`：`sample-ratio=0` → 收端一条都没有；另两条用 1.0 → 全量。父子一致靠 `Sampler.parentBased(TraceIdRatioBased)`（`OtelRunTracer#providerOf`），不是裸 ratio。
+
+- [x] **观测不写业务库**：开 trace 前后各跑一条同样的问题，`agent_step` 的行数与内容不变
       （trace 不是审计的第二份副本）。
-- [ ] **不重复造指标**：不新增任何 `claw4j.*` 计数器——同一次工具调用不该同时被 counter 与 span
+      证据：`RunLifecycleTest#tracingAddsNothingToTheAuditTables`：开 trace 与不开各跑一轮，`agent_step` 的行数、`kind`、`status`、`result_summary` 逐项相同；先断言 span 真的画了，否则这条只证明"什么都没发生"。
+
+- [x] **不重复造指标**：不新增任何 `claw4j.*` 计数器——同一次工具调用不该同时被 counter 与 span
       各记一遍，而两份口径迟早会漂。
-- [ ] **模型与工具的现有行为不变**：`ObservabilityTest` 原有的 16 条一条不改地通过
+      证据：`ObservabilityTest#oneRunIsOneTraceWithActionsNestedUnderTheirTurn` 最后一句：跑完一轮之后 registry 里只有 `claw4j.tool.calls`，没有新增计数器。
+
+- [x] **模型与工具的现有行为不变**：`ObservabilityTest` 原有的 16 条一条不改地通过
       （trace 是在外面套一层，不是改里面的逻辑）。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%。
+      证据：`ObservabilityTest` 20 条全过，原有 16 条一条没改（只加了 4 条与导入），`MeteredToolCallback` 的两个 `call` 重载行为不变（`count` 口径与审计落点照旧）。
+
+- [x] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%。
+      证据：2026-11-04 跑过：**632 条用例、失败 0、跳过 0**。覆盖率 core 90.2% / channel 75.8% / capability 85.6% / **agent 65.4%** / example-sales 93.8% / example-mcp-server 75.0%；七个模块都是 10 个测试文件、单文件最大 20 条。
 
 ## 不做的事
 
@@ -267,3 +290,47 @@ Batch 队列里最后几条在进程退出时直接消失，而丢的恰好是�
 
 ## Comments
 
+### 实现记录（2026-11-04）
+
+落点与票面一致，多出两个文件：`ObservabilityProperties`（六个配置键）与
+`OtlpConfiguredCondition`（端点非空才造 provider）。埋点三处全部到位：
+`ChatClientAgentPort#answer` / `#stream`（根 `run` + 一轮 `model.turn`）、
+`MeteredToolCallback` 的两个 `call` 重载（`tool.<名字>`）。
+
+**票面没写、实现时补的三处**，都记在这里而不是留给下一个人猜：
+
+1. **`resume` 也包了 `run` span**。票面只说"根 span = `answer` 与 `stream` 的执行体"，
+   但审批放行之后的续跑同样是一次执行。不包的话那一轮的 `model.turn` 会变成一条**没有根**
+   的 trace——图上表现为"有个模型轮不知道属于哪件事"，比不画更费人。
+   属性里没有 `claw4j.run.resumed`（那一格只在"用户说继续、接上旧 run"时有意义）。
+2. **`gen_ai.route` 改成 `gen_ai.response.model`**。路由名只存在于 `MeteredChatModel`，
+   `ChatClientAgentPort` 这一层看不到它；拿不到就不写，而不是把响应里的 model id
+   冒充成"路由"。响应里的 model 是同一件事的可得事实，名字必须诚实。
+3. **`claw4j.owner` 只放权限指纹**，不放 `SessionKeys.ownerOf` 那个 `userId@指纹`。
+   trace 会进第三方后端，员工 id 不该跟着走；指纹足够回答排查时要问的那句
+   "这两段是同一个人吗"。
+
+**BOM 的位置比票面写的更麻烦**。票面写"显式 `<version>1.35.0</version>`"，
+实测**不够**：只钉直接依赖时，传递依赖（sdk-logs、exporter-otlp-common、
+exporter-sender-okhttp、sdk-extension-autoconfigure-spi）仍按 Boot BOM 的 1.62.0 解析，
+离线构建直接红。于是改成在根 pom import 整份 `opentelemetry-bom`，
+而且**必须放在 Boot BOM 之前**——放在后面时版本纹丝不动（1.62.0）。
+"先声明的那份说了算"这条已写进 `docs/design/pitfalls.md` 第十六条，
+判据是改完必须 `dependency:tree` 看一遍。
+
+**子 Agent 显式传 `RunTracer.NONE`**：子链没有 run，画出来的 `tool.*` 会挂在
+`tool.Task` 下面却永远没有 `claw4j.step.seq`——半截 trace 比没有更费人。
+
+**门禁余量**：app 的两个文件合成 `RunLifecycleTest` 后是 **10 条**，不是票面写的 12 条
+（票面按"6 + 6"算，把 `@Testcontainers` 与 `@BeforeAll` 那两行也算成了用例）。文件数仍是 10。
+
+**如实交代（四条）**：
+
+- **没有连过真的 collector**。`TraceExportTest` 里的 collector 是 JDK `HttpServer`
+  假扮的，收得到、看 Content-Type、按 span 名数个数；真后端（Tempo / Jaeger / 云厂商）
+  的鉴权头、gzip、批量大小都没验过。
+- **span 里数个数靠"名字在 body 里出现几次"**，不是解析 protobuf。前提
+  （名字唯一、不压缩）写在测试的类注释里；换成带压缩的 exporter，这条判据会失效而不会报错。
+- **`traceparent` 透传、metrics 的 OTLP 导出、MDC 关联、prompt/response 进 span**
+  按票面四条不做，代码里一行都没有。
+- **采样是进程内的**，多副本时每个副本各自按 ratio 决定（票面已知局限里那条，未改）。

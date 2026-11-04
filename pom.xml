@@ -45,6 +45,9 @@
              删掉这一行就回到 BOM 管理。换版本时记得 2.x 改过包名
              （org.testcontainers.containers.* → org.testcontainers.<module>.*）。 -->
         <testcontainers.version>1.21.4</testcontainers.version>
+        <!-- OTel 的版本（P14）。Boot 4.1.2 的 BOM 指向 1.62.0，而本地仓库里那一份一个 jar 都没有，
+             离线门禁会红。这里换整份 BOM，理由写在 dependencyManagement 里那条注释上。 -->
+        <opentelemetry.version>1.35.0</opentelemetry.version>
         <lark-oapi.version>2.8.7</lark-oapi.version>
         <archunit.version>1.5.1</archunit.version>
         <maven-enforcer.version>3.6.3</maven-enforcer.version>
@@ -60,6 +63,27 @@
 
     <dependencyManagement>
         <dependencies>
+            <!--
+              trace 导出（P14）。**必须放在 Boot BOM 之前**：Maven 的依赖管理是
+              "先声明的那份说了算"，后 import 的 BOM 盖不掉前面已经定下的版本。
+              实测过——放在 Boot 之后时 `opentelemetry-exporter-otlp` 仍解析成 1.62.0，
+              而本地仓库一个 1.62.0 的 jar 都没有，离线构建直接红。
+
+              （下面 testcontainers 那段写的是"后声明的 BOM 赢"，那边之所以成立，
+              是因为它还额外写了 testcontainers / junit-jupiter 的显式条目——
+              显式条目压过任何 import。这里没有显式条目，所以只能靠顺序。）
+
+              只给直接依赖写 <version> 也不够：传递依赖（sdk-logs、exporter-otlp-common、
+              exporter-sender-okhttp、sdk-extension-autoconfigure-spi）仍按 1.62.0 解析。
+              所以整份 BOM 换版本，且放在所有 import 之前。
+            -->
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-bom</artifactId>
+                <version>${opentelemetry.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>

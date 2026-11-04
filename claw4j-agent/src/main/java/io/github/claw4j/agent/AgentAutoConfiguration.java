@@ -5,6 +5,7 @@ import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.agent.observability.RunTracer;
 import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
@@ -111,13 +112,14 @@ public class AgentAutoConfiguration {
                                    ObjectProvider<MeterRegistry> meterRegistry,
                                    ObjectProvider<RunBudget> runBudget,
                                    ObjectProvider<ToolCallAudit> audit,
+                                   ObjectProvider<RunTracer> tracer,
                                    ObjectProvider<ToolTierRegistry> tierRegistries,
                                    ToolsProperties toolPolicy,
                                    PersonaCatalog.Catalog personas) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
         List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
                 meterRegistry.getIfAvailable(), runBudget.getIfAvailable(), audit.getIfAvailable(),
-                profile, tierRegistries.orderedStream().toList());
+                tracer.getIfAvailable(() -> RunTracer.NONE), profile, tierRegistries.orderedStream().toList());
         return new ToolCatalog(personas.selected().name(), profile, tools);
     }
 
@@ -248,9 +250,15 @@ public class AgentAutoConfiguration {
      * 放在这里而不是每个工具自己写，理由与预算相同：漏一条路径的表现是
      * "有些调用在审计里不存在"，而那正是审计最不该有的样子。
      *
+     * <p><b>trace 同理</b>（P14）：{@code tool.<名字>} 这段 span 的 duration 只有挂在这里
+     * 才是一次真实调用的耗时。**必填而不是 {@code ObjectProvider}</b>：给它一个"没有就不画"
+     * 的默认值，等于让某条装配路径漏传参数时静默少一段——而那种缺失在图上看起来
+     * 与"这个工具没被调"完全一样。
+     *
      * @param budget 可以为 null：没有装配 run 存储时（{@code claw4j.run.enabled=false}）
      *               工具照常调用，只是这一轮没有额度可扣
      * @param audit  可以为 null：同上，没有 run 存储就没有可写的审计落点
+     * @param tracer 埋点入口。没有开观测时传 {@link RunTracer#NONE}，**不要传 null 让它去猜**
      * @param profile 这个部署的工具策略（P09）。**必填**：给它一个"不过滤"的默认值等于让
      *               某条装配路径漏传参数时静默全开，而这条路径正是父子两个 Agent 共用的那一条
      * @param tierRegistries 各模块声明的档位登记表。查不到档位的工具会让这次收集直接失败
@@ -260,6 +268,7 @@ public class AgentAutoConfiguration {
                                                           MeterRegistry registry,
                                                           RunBudget budget,
                                                           ToolCallAudit audit,
+                                                          RunTracer tracer,
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries) {
         List<ToolCallback> collected = new ArrayList<>();
@@ -281,7 +290,7 @@ public class AgentAutoConfiguration {
                 .filter(callback -> kept.contains(callback.getToolDefinition().name()))
                 // 显式转型，否则 stream 的元素类型被推断成 MeteredToolCallback，
                 // 与返回类型 List<ToolCallback> 对不上（它不是泛型类，推断不出父类型）。
-                .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, budget, audit))
+                .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, budget, audit, tracer))
                 .toList();
     }
 
@@ -376,12 +385,18 @@ public class AgentAutoConfiguration {
                                ObjectProvider<SessionCompactor> compactor,
                                ObjectProvider<RunStore> runs,
                                ObjectProvider<RunBudget> budget,
-                               ObjectProvider<RunDelivery> delivery) {
+                               ObjectProvider<RunDelivery> delivery,
+                               ObjectProvider<RunTracer> tracer) {
         // run、预算、投递都走 ObjectProvider 而不是直接注入：没配存储时它们是缺席而不是失败，
         // 门照常住着，只是"这件事做完了没有"没人记、也没人在看额度（与压缩器同一个判断）。
         // 三者同进同出：预算与收件地址都是 run 的属性，没有 run 就没有可扣的额度、
         // 也没有"送到哪儿"。
+        //
+        // trace 也一样（P14）：没开观测时传空实现，埋点代码仍然逐字相同地跑一遍——
+        // 那不是浪费，是让"开着"与"关着"走同一条路，否则关着的那条路平时不执行，
+        // 等开了观测才第一次跑。
         return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(), runs.getIfAvailable(),
-                budget.getIfAvailable(), delivery.getIfAvailable());
+                budget.getIfAvailable(), delivery.getIfAvailable(),
+                tracer.getIfAvailable(() -> RunTracer.NONE));
     }
 }

@@ -3,6 +3,7 @@ package io.github.claw4j.agent.audit;
 import io.github.claw4j.agent.approval.CallFingerprint;
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.run.RunStore;
+import io.github.claw4j.agent.run.Step;
 import io.github.claw4j.agent.run.StepAudit;
 import io.github.claw4j.agent.run.StepInput;
 import io.github.claw4j.agent.run.StepKind;
@@ -14,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -108,16 +110,26 @@ public class ToolCallAudit {
     /**
      * 真跑了一次（工具自己抛了异常也算"跑过"：越权与报错是两件事，混在一起就分不出该改配置还是该修工具）。
      *
+     * <p><b>返回落下来的那一行</b>（P14）：调用方要的是它的 {@code seq}。观测那一侧
+     * 把 {@code claw4j.step.seq} 写在工具 span 上，于是 trace 里的每一段都能按
+     * {@code (run_id, seq)} 反查到库里那一行——这是审计与观测**唯一**能对上号的地方，
+     * 也是这两件事仍然分开（表里不加 trace_id 列）的前提。
+     *
+     * <p>不返回 {@code seq} 的话，只能让 trace 里再存一份工具名加时间戳去猜，
+     * 而猜出来的对应关系在并发下会错位——错位的表现是"这一行审计对应到了别人的 span"，
+     * 它看起来完全正常。
+     *
      * @param failure 工具抛出的异常类型名；null 表示正常返回。
      *                只记类型不记 message：message 里常有数据（一条贴了 SQL 的报错就够搬走一张表）
+     * @return 落下来的那一行；空表示没落（没装存储、降级、或没有 runId）
      */
-    public void executed(String runId, Principal principal, String toolName, String argsJson,
-                         String failure) {
+    public Optional<Step> executed(String runId, Principal principal, String toolName, String argsJson,
+                                   String failure) {
         if (isBlank(runId) || isBlank(toolName)) {
-            return;
+            return Optional.empty();
         }
         String digest = digestOf(toolName, argsJson);
-        write(new StepInput(runId, StepKind.TOOL_CALLS, null, toolName,
+        return write(new StepInput(runId, StepKind.TOOL_CALLS, null, toolName,
                 failure == null ? null : "工具抛出 " + failure,
                 failure == null ? StepStatus.DONE : StepStatus.FAILED,
                 StepAudit.executed(userOf(principal), roleOf(principal), digest,
@@ -159,20 +171,27 @@ public class ToolCallAudit {
                 StepStatus.FAILED, audit));
     }
 
-    /** 落一行。写不进去只记一条 debug：审计缺一行不该把一次调用打成失败。 */
-    private void write(StepInput input) {
+    /**
+     * 落一行。写不进去只记一条 debug：审计缺一行不该把一次调用打成失败。
+     *
+     * @return 落下来的那一行（调用方拿它的 seq）；空表示没落
+     */
+    private Optional<Step> write(StepInput input) {
         if (runs == null) {
-            return;
+            return Optional.empty();
         }
         try {
-            if (runs.append(input).isEmpty()) {
+            Optional<Step> written = runs.append(input);
+            if (written.isEmpty()) {
                 log.debug("审计这一行没落下去：run={} tool={}", input.runId(), input.toolNames());
             }
+            return written;
         }
         catch (RuntimeException failure) {
             // 存储降级（库没迁、连接断了）在 store 那一层已经消化成空值；
             // 能走到这里的是更意外的东西，仍然不该影响这一次工具调用。
             log.debug("写审计行时出错：run={} tool={}", input.runId(), input.toolNames(), failure);
+            return Optional.empty();
         }
     }
 

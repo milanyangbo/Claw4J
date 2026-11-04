@@ -23,6 +23,7 @@
 | **五条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）、钉钉机器人（给企业内，**明文 JSON + header 验签**）、Slack（给团队，**整包验签 + 答案回线程**）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
 | **五种能力来源，对模型是一回事** | Java `@Tool`、MCP server（stdio / HTTP 都行）、受限脚本包、Agent Skill、子 Agent |
 | **知识库检索带出处** | 一份文档目录 + 两路检索（向量 + 中文关键词），按 RRF 排名融合，每段都带「文档 + 第几段」；文档块**不进**缓存表 |
+| **一条 run 一个 trace** | 配一个 OTLP 端点就把整条链路导出去：根 span 是 **run**（不是请求——请求在进线程池那一刻就断了，而 run 跨通道、跨重试、跨重启），每个动作 span 带 `claw4j.step.seq`，按 `(run_id, seq)` 能反查回审计那一行；**默认不导**，也不新增任何计数器 |
 | **也能反过来当 MCP server** | `claw4j.mcp.server.expose` 点名几个工具，Claude Code 这类客户端就能像用别的工具一样调它们；交出去的只能是模型能用的那一份里的 |
 | **流式与同步同源** | Advisor 必须同时实现 Call 和 Stream，只写一个会在流式路径上静默不生效 |
 | **权限卡在模型之前** | 角色到"可见表 × 可执行动作"的映射在配置里；越权与套取提示词的消息不花 token、不进历史 |
@@ -368,6 +369,7 @@ public class TelegramChannelAutoConfiguration {
 | `SLACK_SIGNING_SECRET` / `SLACK_BOT_TOKEN` | 否 | Slack，两个都配才装配。**两把各管一头**：signing-secret 只验签，bot-token（`xoxb-` 开头、长期有效）只发消息。混了的表现是"回调全被拒"或"收得到发不出" |
 | `CLAW4J_RAG_ENABLED` | 否 | 打开知识库。**开了就必须配目录**，否则启动失败（空知识库比失败更糟） |
 | `CLAW4J_RAG_DIRECTORY` | 否 | 文档目录，启动后同步一次，按文件内容哈希跳过没变的 |
+| `CLAW4J_OBSERVABILITY_ENABLED` / `OTLP_ENDPOINT` | 否 | trace 导出，**两个都要**：只开开关不配端点时一条都不导，启动日志会点名缺哪一项（不回落 `localhost:4318`，否则表现成"连不上"而不是"没配"）。指标仍走 actuator，trace 只走 OTLP |
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用 |
 
 `claw4j.*` 的每个键都有明确的拥有者，`application.yml` 里逐项写了默认值与"动它之前要知道什么"。

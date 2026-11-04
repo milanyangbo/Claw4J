@@ -278,3 +278,29 @@ Spring 把它包成"数据库连不上"——看起来像迁移、配置或 JDBC
 Flyway 遇到同版本、同校验和的两份不会报错，它去重——也就是说"搬完了"的假象能一直活到某天
 两份的内容不再一样，那时才会以一句与"谁和谁撞了"无关的话报出来。
 `unzip -l <jar> | grep '\.sql'` 看一眼归属，比读依赖树更有用。
+
+## 十六、dependencyManagement 里"后声明的 BOM 赢"是错的，先声明的才算
+
+加 OpenTelemetry 依赖（P14）时踩的。当时按"后 import 的 BOM 盖掉前面的"把
+`opentelemetry-bom` 放在 Boot BOM **之后**，结果 `opentelemetry-exporter-otlp` 仍解析成
+Boot BOM 的 `1.62.0`——而本地仓库一个 1.62.0 的 jar 都没有，离线构建直接红：
+
+```
+Cannot access central ... in offline mode and the artifact
+io.opentelemetry:opentelemetry-exporter-otlp:jar:1.62.0 has not been downloaded from it before
+```
+
+移到 Boot BOM **之前**，整条链立刻变成 1.35.0（`dependency:tree` 逐个确认过）。
+结论：**同一份 dependencyManagement 里，先声明的那份说了算**，后 import 的 BOM
+不会覆盖已经定下的版本。
+
+两条要一起记住：
+
+- **只给直接依赖写 `<version>` 不够**。传递依赖（sdk-logs、exporter-otlp-common、
+  exporter-sender-okhttp、sdk-extension-autoconfigure-spi）仍然按 BOM 解析，
+  于是会出现"我明明写了 1.35.0，报错却是 1.62.0"。
+- **显式条目压过任何 import**。仓库里 testcontainers 那段注释写"后声明的赢"，
+  它之所以看起来成立，是因为那里还额外写了 `testcontainers` / `junit-jupiter` 的显式条目。
+  没有显式条目时只能靠顺序。
+
+判据：改完 BOM 顺序**必须跑一次 `dependency:tree` 看版本**，不要凭"应该盖掉了"下结论。
