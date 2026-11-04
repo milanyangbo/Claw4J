@@ -190,8 +190,9 @@
                       与 real-mcp（要 Node、要能出网，去连真的第三方 MCP server）。
 
                       为什么是"排除"而不是在测试里 assume：assume 出来的结果是 skipped，
-                      而跳过的绿和通过的绿在报表里长得一模一样——这条仓库有条闸专门
-                      把 skipped 判成失败（scripts/assert-no-skipped-tests.sh），
+                      而跳过的绿和通过的绿在报表里长得一模一样——`scripts/verify.sh` 有一条
+                      专门把 `skipped != 0` 判成失败（原先那个 assert-no-skipped-tests.sh
+                      在 2026-10-26 并进了 verify.sh，引用别写回旧名字），
                       用 assume 就等于给这条闸开一个口子。排除是"这次没选它"，
                       报表里根本不会出现，也就没有"它到底跑了没有"这个疑问。
 

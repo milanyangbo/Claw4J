@@ -1,6 +1,6 @@
 # P12 · 钉钉通道：第四个入口，这次验签在 header 里
 
-**Status:** done（2026-11-03 实现，未提交）
+**Status:** done（2026-11-03 实现，`9389e07`）
 **Blocked by:** None（P06 的通道模板已落地，`InboundDispatcher` 与 `OutboundDelivery` 都现成）
 
 ## 背景

@@ -1,6 +1,6 @@
 # 06 · 核心只有一个 artifact：`claw4j-channel-core` → `claw4j-core`，`claw4j-domain` 并进来
 
-**Status:** in-progress
+**Status:** resolved
 
 ## 为什么
 
@@ -52,3 +52,34 @@ ADR-0010 自己给过拆模块的判据：**独立发布周期、独立 schema/�
 - `claw4j-core` 的依赖树里没有 Spring、没有任何厂商 SDK（enforcer 在 `validate` 阶段就拦）。
 - 门禁全绿，覆盖率不掉到 60% 以下。
 - fat jar 起得来，三个 MCP server 照样 `started`——**模块改名不该改变运行时行为**。
+
+---
+
+## 收尾核对（2026-11-04，状态从 `in-progress` 改为 `resolved`）
+
+这张票的实质工作早已完成，只是状态一直挂着 `in-progress`——`docs/agents/review.md` 说的
+第一大类缺陷（文档落后于代码）在我自己的票上出现了一次。按判据逐条核对现状：
+
+- **`claw4j-domain` 目录消失** ✓ 根 `pom.xml` 的 `<modules>` 里只有 `claw4j-core`，
+  `scripts/verify.sh` 的 `MODULES` 也是七个模块。
+- **全仓搜不到 `claw4j-domain` 这个坐标** ✓ 只剩四处历史叙述（`claw4j-core/pom.xml` 的
+  enforcer 注释、`domain/package-info.java`、根 `pom.xml` 的模块注释、
+  `ChannelBoundaryTest` 的类注释），都不是可解析的坐标。
+- **core 的依赖树没有 Spring / 厂商 SDK** ✓ 规则在 `claw4j-core/pom.xml` 的
+  `bannedDependencies`（`validate` 阶段），六个模块都依赖 `claw4j-core` 这一个坐标。
+- **门禁全绿** ✓ 最近一次：646 条用例、跳过 0，core 行覆盖率 90.2%。
+- **fat jar 起得来、三个 MCP server 照样 `started`** ✓ 但**不是自动化断言**，是
+  `spec.md` 的「冒烟记录（2026-10-28，四张票全部落地之后）」那一行：
+  `claw4j-demo` / `claw4j-github` / `claw4j-mail` 三个都 `MCP server started`，
+  那次起的 fat jar 已经是本票改名之后的形态。仓库里 `ApplicationAssemblyTest#mcpServerIsOffUnlessConfigured`
+  验的是反向（默认关闭），所以这条判据下次再想确认一次，仍然只能手工起。
+
+### 与票面写法的两处差异（规则没放松，形态变了）
+
+1. 票面第 5 条写 `KernelBoundaryTest` 改名 `CoreBoundaryTest`。**实际类名是
+   `CoreBoundariesTest`**（复数），位置在 `io.github.claw4j`（不是某个子包）。
+2. 票面第 5 条写 `DomainBoundaryTest` **原样保留**。实际没有单独的文件：它那条规则
+   （`io.github.claw4j.domain..` 只许依赖 `java..` 与自身）成了
+   `CoreBoundariesTest#domainStaysFrameworkFree` 的第一条——**比 core 的白名单更严**
+   （连 slf4j 也不许），所以约束强度没降，只是从"两个文件"变成"一个文件里的两条"。
+   合并的直接原因是 core 的测试文件名额（10 个，已满）。
