@@ -110,7 +110,11 @@ public final class CoreVersionRange {
             this.symbol = symbol;
         }
 
-        /** 按最长前缀认：{@code >=} 必须比 {@code >} 先匹配，否则 "{@code >=0.1.0}" 会被读成 ">{@code =0.1.0}"。 */
+        /**
+         * 取开头的运算符。<b>顺序即优先级</b>：枚举按声明顺序遍历，所以 {@code >=}/{@code <=}
+         * 必须排在 {@code >}/{@code <} 前面，否则 "{@code >=0.1.0}" 会被读成 ">{@code =0.1.0}"。
+         * 这里没有按长度排序——两个字符的只有那两个，摆在前头就是这个意思；改动枚举时别调换。
+         */
         static Operator leading(String token) {
             for (Operator operator : values()) {
                 if (token.startsWith(operator.symbol)) {

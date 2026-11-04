@@ -21,7 +21,8 @@ import java.util.TreeMap;
  * 未知的键忽略，留给后来的版本往前加字段。
  *
  * <p><b>这里只做判断，不做 IO，也不抛</b>：读文件、扫 classpath、让启动停下来是
- * {@code claw4j-capability} 那边的事。判断能一次给全部违规（而不是第一条就抛），
+ * {@code claw4j-app} 那边的事（它要发在启动路径上，而 core 连 Spring 都不依赖）。
+ * 判断能一次给全部违规（而不是第一条就抛），
  * 是因为升级核心的人想知道"是不是只有这一个"——修一个重启一次，是另一种折磨。
  */
 public final class PluginContract {

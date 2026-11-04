@@ -11,10 +11,13 @@ import com.tngtech.archunit.lang.ArchRule;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -24,6 +27,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -200,11 +204,15 @@ class BuildContractTest {
     private static final String CORE_VERSION = "0.1.0-SNAPSHOT";
 
     @Test
-    @DisplayName("插件声明的区间匹配时照常启动：不抛，也不留一条违规")
-    void aMatchingDeclarationStartsQuietly() throws IOException {
-        // 不抛就是结论：postProcessBeanFactory 的返回值是 void，唯一的失败形态是异常
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("插件声明的区间匹配时照常启动：只写一行 info，不打 WARN")
+    void aMatchingDeclarationStartsQuietly(CapturedOutput output) throws IOException {
+        // 不抛只是结论的一半：还要证明它真走了成功分支，否则"没有 WARN"只是因为什么都没发生
         gate(coreVersion("core-ok"), descriptorDir("plugin-ok", "sales", ">=0.1.0 <0.2.0"))
                 .postProcessBeanFactory(null);
+
+        assertThat(output.toString()).contains("插件版本契约成立");
+        assertThat(output.toString()).as("匹配路径上不该有 WARN").doesNotContain("WARN");
     }
 
     @Test
@@ -249,7 +257,9 @@ class BuildContractTest {
 
         assertThatThrownBy(() -> gate(coreVersion("core-nokey"), temp.resolve("plugin-nokey"))
                 .postProcessBeanFactory(null))
-                .hasMessageContaining("没有声明 " + PluginContract.KEY_REQUIRES_CORE);
+                .hasMessageContaining("没有声明 " + PluginContract.KEY_REQUIRES_CORE)
+                // 缺键时也得说清是哪一份文件缺的——不然"哪个插件"要靠人去 classpath 里翻
+                .hasMessageContaining("plugin-nokey");
     }
 
     @Test
@@ -269,12 +279,17 @@ class BuildContractTest {
 
     @Test
     @DisplayName("这道闸确实被注册进了容器，而且是以 BeanFactoryPostProcessor 的身份")
-    void theAutoConfigurationRegistersTheGateAsABeanFactoryPostProcessor() {
+    void theAutoConfigurationRegistersTheGateAsABeanFactoryPostProcessor() throws NoSuchMethodException {
         new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(PluginContractAutoConfiguration.class))
                 .run(context -> assertThat(context.getBeansOfType(BeanFactoryPostProcessor.class).values())
-                        .as("非静态 @Bean 会让它退化成普通 bean，那时这条就红")
+                        .as("配置类里得真的产出一个 BFPP 类型的 bean")
                         .anyMatch(PluginContractGate.class::isInstance));
+
+        assertThat(Modifier.isStatic(PluginContractAutoConfiguration.class
+                .getDeclaredMethod("pluginContractGate").getModifiers()))
+                .as("static 不是为了让闸生效（非静态也生效），是为了不让容器为拿到它而提前实例化配置类")
+                .isTrue();
     }
 
     private PluginContractGate gate(Path... roots) {

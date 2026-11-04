@@ -170,7 +170,7 @@ claw4j-core/src/main/java/io/github/claw4j/plugin/
     PluginContract.java                      Map<来源, Properties> → List<Violation>（不抛、不碰 IO）
 claw4j-app/src/main/java/io/github/claw4j/app/
     PluginContractGate.java                  BFPP：扫 classpath → 读核心版本 → 判 → 抛
-    PluginContractAutoConfiguration.java     装配（`@Bean static`，BFPP 必须是静态方法）
+    PluginContractAutoConfiguration.java     装配（`@Bean static`；非静态不失效，但要让配置类被提前实例化）
 claw4j-app/src/main/resources/META-INF/spring/
     ...AutoConfiguration.imports             一行；app 此前没有这个文件
 claw4j-example-sales/src/main/resources/META-INF/
@@ -187,8 +187,10 @@ claw4j-example-sales/src/main/resources/META-INF/
 票面原先写的是放 `claw4j-capability`（照 P08 的先例：纯契约在 core、Spring 适配在 capability）。
 实现时改掉了，原因是硬约束：**capability 的测试文件名额满了**——它有 10 个 `.java`，
 其中两个是 MCP 的测试替身（`InProcessStdioMcpServer`、`PipedStdioClientTransport`，都是 public 类，
-一个文件只能放一个），剩下八个测试类两两不同包、各自用到包内可见的类型，**没有一处能合法合并**。
-硬塞进去就是第 11 个文件，门禁直接红。
+一个文件只能放一个），剩下八个测试类分在五个包里。同包能凑成一对的只有 `mcp` 那两个
+（`McpToolTest` 与 `McpServersConfigTest`），而它们是两个主题——工具清单与权限登记、端点怎么装；
+第三个 `RealThirdPartyMcpTest` 带 `@Tag("real-mcp")`。所以不是"没处可挪"，是"要挪就得为名额硬凑"，
+而一个为名额造出来的杂物间，比换一个落点更难维护。硬塞进去就是第 11 个文件，门禁直接红。
 
 代价如实写：**自己另起一套 Spring 启动的用法人不会自动获得这道闸**，要自己调一次判断。
 这条已写进"已知局限"。
@@ -205,11 +207,13 @@ claw4j-example-sales/src/main/resources/META-INF/
 
 ## 验收判据
 
-- [x] **匹配就照常启动**：`requires-core=>=0.1.0 <0.2.0` + 核心 `0.1.0-SNAPSHOT` → 上下文正常起来，
-      且不产生任何 WARN。反例：判定写成"必须严格相等" → 这条红。
-      证据：`BuildContractTest#aMatchingDeclarationStartsQuietly`（目录形态）与
-      `PluginContractTest#acceptsAReleaseVersionInsideTheRange`（纯判定）。方法是 `void`，
-      唯一的失败形态是异常，所以"不抛"就是结论。
+- [x] **匹配就照常启动，且不产生 WARN**：`requires-core=>=0.1.0 <0.2.0` + 核心 `0.1.0-SNAPSHOT`
+      → 不抛，输出里只有一行 `插件版本契约成立`，不含 `WARN`。反例：判定写成"必须严格相等" → 这条红；
+      把 `LOG.info` 改成 `LOG.warn` → 这条也红（实测过，不是推的）。
+      证据：`BuildContractTest#aMatchingDeclarationStartsQuietly(CapturedOutput)`，靠
+      `@ExtendWith(OutputCaptureExtension.class)` 抓输出。先断言"含那行 info"，因为
+      "没有 WARN"在"什么都没发生"时同样成立。
+      纯判定那一侧是 `PluginContractTest#acceptsAVersionInsideTheRange`。
 - [x] **不匹配就起不来，且消息说得清**：区间改成 `>=0.2.0` → 启动失败，消息里同时出现
       插件名、`>=0.2.0`、`0.1.0-SNAPSHOT`、描述文件的来源。反例：只抛 `IllegalStateException("版本不匹配")` → 红。
       证据：`BuildContractTest#aMismatchStopsStartupAndSaysEverything` 四条 `hasMessageContaining`
@@ -259,7 +263,8 @@ claw4j-example-sales/src/main/resources/META-INF/
 - [x] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%。
       证据：core 90.2% / channel 75.8% / capability 85.6% / agent 65.4% /
       example-sales 93.8% / example-mcp-server 75.0% / **app 80.8%**（此前是 n/a——app 第一次有
-      被统计的主代码类，就是这道闸）；七个模块都是 10 个测试文件、单文件最大 20 条。
+      被统计的主代码类，就是这道闸）；七个模块的测试文件都不超过 10 个
+      （core / channel / capability / agent / app 各 10，两个示例各 2），单文件最大 20 条。
 
 ## 不做的事
 
@@ -291,8 +296,8 @@ claw4j-example-sales/src/main/resources/META-INF/
 **票面原先算错了 capability 的余量**：写票时按 `*Test.java` 数，得到 8 个；
 门禁数的是 `*.java`，实际是 **10 个**（8 个测试类 + 2 个 MCP 测试替身）。
 这一错把"直接新增"变成了"必须换地方"，也正是它把落点从 capability 挪到了 app。
-两个替身都是 public 类（一个文件一个），其余八个测试类两两不同包、都用到包内可见的类型——
-没有一处能合法合并，所以 capability 是真的满。
+两个替身都是 public 类（一个文件一个），其余八个测试类分在五个包里，同包可凑的只有 `mcp` 那两个，
+而它们主题不同。所以 capability 是真的满——除非愿意为腾一个名额把两个不相干的主题并进一个文件。
 
 core 的 `CoreBoundariesTest` 会继续守着"`io.github.claw4j.plugin` 只能用 JDK"，
 新增的三个类只用 `java.util`，连 slf4j 都不碰。
@@ -332,8 +337,11 @@ core 的 `CoreBoundariesTest` 会继续守着"`io.github.claw4j.plugin` 只能�
 ### 实现记录（2026-11-04）
 
 **落点与票面不同的一处**：闸从 `claw4j-capability` 挪到了 `claw4j-app`，理由见「落点」那一节——
-capability 的测试文件是真满（10 个，其中 2 个是 public 的 MCP 测试替身，剩 8 个跨包且都用到
-包内可见类型，没有一处能合法合并）。判断留在 core，于是"能不能拦"与"在哪拦"分开：
+capability 的测试文件是真满（10 个：2 个是 public 的 MCP 测试替身，一个文件一个，替身不能并进
+测试类；8 个测试类里 `mcp` 包确实有三个，但 `RealThirdPartyMcpTest` 带 `@Tag("real-mcp")`——
+并进常规类会让一个类里一半方法在默认构建里跑、一半不在，边界就浑了；而 `McpToolTest` 与
+`McpServersConfigTest` 是两个主题）。
+所以不是"没处可挪"，是"要挪就得为名额硬凑"。判断留在 core，于是"能不能拦"与"在哪拦"分开：
 纯计算 3 个类在 `claw4j-core/plugin`，扫描与抛在 `claw4j-app`。
 
 **三处票面没写、实现时补的**：
@@ -362,3 +370,23 @@ capability 的测试文件是真满（10 个，其中 2 个是 public 的 MCP �
 - **`0.1.0-SNAPSHOT` 与 `0.1.0` 等价**是刻意的取舍，不是没做。它的反面（预发布也算不兼容）
   会把同一个 reactor 里的插件挡在门外，见结构问题 4。
 - **阈值只有一个**：本票没有"容忍 N 个不匹配"之类的口子，也没有开关。写错区间就是起不来。
+
+### 复审后的修补（2026-11-04，独立 code-review 之后）
+
+两轴审了一遍，改掉的东西里有两件是**真错的**，不是措辞问题：
+
+1. **`CoreVersion.segment` 的判数字方式改了**（票面外，行为变更，在此登记）：
+   原来用 `Character.isDigit`，它对全角数字返回 true，而 `Integer.parseInt` **也认全角**——
+   实测 `parseInt("１２３") == 123`。也就是说旧写法下 `０.１.０` 会被静静读成 `0.1.0` 并**放行**。
+   第一版注释把它写成"会走到 parseInt 才炸、报数字太大"，方向是反的；复审时改对了，并把范围
+   收窄到 ASCII：读不进去要报错，读进去但读错了更难查。
+2. **`theAutoConfigurationRegistersTheGateAsABeanFactoryPostProcessor` 原来是假绿**。
+   它的说明写着"非静态 `@Bean` 会让它退化成普通 bean，那时这条就红"——实测去掉 `static`，
+   用例照绿、闸照跑（`插件版本契约成立` 那行照样打印）。Spring 的真实行为是：为了拿到非静态
+   `@Bean` 返回的 BFPP，先实例化配置类，然后照常当 BFPP 调用。所以注释改成"非静态不失效，
+   代价是配置类被提前实例化"，断言换成反射查方法修饰符的 `static`——验过两端：静态绿、去掉红。
+
+另外三处是措辞与自洽：判据 1 的"不产生 WARN"从"验不了"改成真验（`OutputCaptureExtension`，
+把 `LOG.info` 变异成 `LOG.warn` 会红）；判据 13 的"七个模块都是 10 个"改成实际数字；
+"capability 没有一处能合法合并"改成"同包能凑一对，但那是为名额造杂物间"（`mcp` 包确实有三个类，
+原话说过头了）。

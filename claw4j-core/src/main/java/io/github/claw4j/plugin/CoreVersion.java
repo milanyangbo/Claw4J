@@ -42,7 +42,11 @@ public record CoreVersion(int major, int minor, int patch) implements Comparable
     }
 
     private static int segment(String part, String raw) {
-        if (part.isEmpty() || !part.chars().allMatch(Character::isDigit)) {
+        // 用 c >= '0' && c <= '9' 而不是 Character.isDigit：后者对全角数字（U+FF10 起）也返回 true，
+        // 而 Integer.parseInt 认它——实测 parseInt("１２３") == 123。于是 "０.１.０" 会被静静读成
+        // "0.1.0" 并放行：一份打成全角的声明文件不会报错，只会被当成另一个版本。
+        // 这类"读进去了、读错了"比读不进去难查得多，所以在这里就把范围收窄到 ASCII。
+        if (part.isEmpty() || !part.chars().allMatch(c -> c >= '0' && c <= '9')) {
             throw new IllegalArgumentException("版本号 \"" + raw + "\" 里有一段不是数字：" + part);
         }
         try {

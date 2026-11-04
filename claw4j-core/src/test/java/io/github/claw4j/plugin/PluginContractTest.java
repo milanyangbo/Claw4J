@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 插件版本契约的判定（P16）：区间怎么读、版本怎么比、哪一侧失败。
  *
  * <p>这一份只验纯计算，不碰 classpath：读文件、扫 jar、让启动停下来在
- * {@code claw4j-capability} 的 {@code PluginContractGateTest} 里。
+ * {@code claw4j-app} 的 {@code BuildContractTest} 里。
  *
  * <p>用 JUnit 的断言而不是 AssertJ —— core 不依赖 AssertJ（它连 Spring 都不依赖）。
  */
@@ -44,8 +44,10 @@ class PluginContractTest {
     }
 
     @Test
-    @DisplayName("区间内的正式版通过")
-    void acceptsAReleaseVersionInsideTheRange() {
+    @DisplayName("区间内的版本通过")
+    void acceptsAVersionInsideTheRange() {
+        // 这里的核心版本是 0.1.0-SNAPSHOT。预发布为什么算作 0.1.0 由下一条专门验，
+        // 这条只证明"区间本身是放行的"。
         assertEquals(List.of(), check(declared("sales", ">=0.1.0 <0.2.0")));
     }
 
@@ -117,6 +119,12 @@ class PluginContractTest {
     void rejectsANonNumericVersion() {
         assertEquals(1, check(declared("sales", ">=1.x")).size());
         assertEquals(1, check(declared("sales", ">=0.1.0.0")).size(), "四段数字不是一个版本号");
+
+        // 全角数字：Character.isDigit 认它，Integer.parseInt 也认它（parseInt("１２３") == 123），
+        // 于是旧写法下 "０.１.０" 会被读成 "0.1.0" 直接放行——不报错，只是判成了另一个版本。
+        List<PluginContract.Violation> wide = check(declared("sales", ">=０.１.０"));
+        assertEquals(1, wide.size());
+        assertTrue(wide.get(0).message().contains("不是数字"), wide.get(0).message());
     }
 
     @Test
