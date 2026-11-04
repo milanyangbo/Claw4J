@@ -26,6 +26,9 @@
         <module>claw4j-example-sales</module>
         <module>claw4j-example-mcp-server</module>
         <module>claw4j-app</module>
+        <!-- 评测集与判分（A06）。放在 app 之后：它的执行器要起整机，而"起整机"这件事
+             只有 app 装配得出来。判分本身不依赖 app——那一层只有三个类，见模块的 pom。 -->
+        <module>claw4j-eval</module>
     </modules>
 
     <properties>
@@ -186,8 +189,11 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire.version}</version>
                     <!--
-                      两组"要外部世界"的用例默认不跑：real-cli（本机装了 gh / himalaya / xurl）
-                      与 real-mcp（要 Node、要能出网，去连真的第三方 MCP server）。
+                      三组"不属于回归基线"的用例默认不跑：
+
+                      - real-cli（本机装了 gh / himalaya / xurl）
+                      - real-mcp（要 Node、要能出网，去连真的第三方 MCP server）
+                      - eval（评测集：五十条真模型调用，一次十几分钟。A06）
 
                       为什么是"排除"而不是在测试里 assume：assume 出来的结果是 skipped，
                       而跳过的绿和通过的绿在报表里长得一模一样——`scripts/verify.sh` 有一条
@@ -196,15 +202,19 @@
                       用 assume 就等于给这条闸开一个口子。排除是"这次没选它"，
                       报表里根本不会出现，也就没有"它到底跑了没有"这个疑问。
 
-                      它们依赖本机装了什么、以及公网今天连不连得上，不属于回归基线
-                      （票面：真实外部调用不进 CI）。
+                      它们依赖本机装了什么、公网今天连不连得上、以及愿不愿意为一次评分花钱，
+                      不属于回归基线（票面：真实外部调用不进 CI）。
 
-                      本机想跑：./mvnw test -Preal-cli
+                      eval 那一组另有两条防线，否则"排除"就等于"没人管"：
+                      用例集自洽由 EvalCaseSetTest 守着（不调模型，进回归），
+                      判分口径由 EvalScorerTest 守着（同样进回归）。
+
+                      本机想跑：./mvnw test -Preal-cli、./scripts/eval.sh
                     -->
                     <configuration>
                         <!-- 默认排除这两组；profile 里换成不存在的组名来放开。
                              "空"在 surefire 里会被当成没设置（于是继承这一份，照样排除）。 -->
-                        <excludedGroups>real-cli,real-mcp</excludedGroups>
+                        <excludedGroups>real-cli,real-mcp,eval</excludedGroups>
                     </configuration>
                 </plugin>
             </plugins>
@@ -332,6 +342,33 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <groups>real-cli,real-mcp</groups>
+                            <excludedGroups>no-such-group</excludedGroups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          评测（A06）。照抄上面那份的形状，不发明第二套机制：
+          默认那份把 eval 排除了，而 includeTags 与 excludeTags 同时命中时排除优先，
+          所以必须把 excludedGroups 一起换成一个不存在的组名，光写 groups 是顶不掉的。
+
+          用法一律走脚本（它负责载入 .env、给定过滤条件、打印摘要）：
+          全跑、按类别跑、单条跑三种都在 scripts/eval.sh 的头部注释里。
+
+          不要在全仓上 -Peval：那只会跑带 eval 标签的那一个类，其余全被跳过，
+          而"跳过"在这里是合法的（includeTags 的效果），看起来却像全绿。
+        -->
+        <profile>
+            <id>eval</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>eval</groups>
                             <excludedGroups>no-such-group</excludedGroups>
                         </configuration>
                     </plugin>

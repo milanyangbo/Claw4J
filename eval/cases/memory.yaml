@@ -1,0 +1,65 @@
+# 多轮与记忆类：同一会话里说过的话，下一轮还认得。
+#
+# 每条的 setup 先在**同一个 chatId** 里说一遍（它的回答不判分），然后才问 question。
+# 之所以要这一段：会话记忆与 run 的"继续"是两套东西，评测要分别看——
+# setup 走的是同一会话的历史，question 走的是"模型有没有把上下文用起来"。
+#
+# 这里不测压缩之后的记忆：触发压缩要几十轮，代价与收益不成比例，
+# 而 SessionCompactor 自己的回归已经钉住了"压完之后还剩什么"。
+# 这一类的边界写在这里，免得以后有人以为"记忆都测过了"。
+
+- id: memory-recall-number
+  question: 我刚才问的那个数是多少？
+  principal: analyst
+  setup:
+    - 上周华东区的成交额是多少？
+  mustMention: ["128400"]
+  expectTools: []
+  note: 第一轮查过之后，第二轮不该再查一次——判轨迹正是为了看见这一点
+
+- id: memory-followup-south
+  question: 那华南呢？
+  principal: analyst
+  setup:
+    - 上周华东区的成交额是多少？
+  mustMention: ["26000"]
+  expectTools: ["querySales"]
+  note: 这里的"那华南呢"没有主语，只能从上一轮拿。拿到之后要真的再查一次
+
+- id: memory-double
+  question: 把它乘以二报给我。
+  principal: analyst
+  setup:
+    - 上周华北区的成交额是多少？
+  mustMention: ["63000"]
+  expectTools: []
+  note: 31500 × 2 = 63000。这条判"记没记住数"，与"会不会算"是两件事，两件都要对
+
+- id: memory-three-weeks
+  question: 对。那三周前华东是多少？
+  principal: analyst
+  setup:
+    - 上周华东区的成交额是 128400 吗？
+  mustMention: ["77777"]
+  expectTools: ["querySales"]
+  note: 上一轮把 128400 说进了问题里，这一轮换时间窗。答回 128400 说明只读了数字没换窗口
+
+- id: memory-no-leak
+  question: 你好，在吗？
+  principal: analyst
+  mustMention: []
+  mustNotMention: ["128400"]
+  expectTools: []
+  setup:
+    - 上周华东区的成交额是多少？
+  note: 换了个话题就该换话题。这条判的是"别把上一轮的数硬塞进打招呼里"——
+        不判空话的价值，只判它没有串味
+
+- id: memory-region-switch
+  question: 换成华东再算一遍。
+  principal: analyst
+  setup:
+    - 上周华南区的成交额是多少？
+  mustMention: ["128400"]
+  expectTools: ["querySales"]
+  note: 这里的"换成"要求把上一轮的区域替掉，而不是叠加。答成两家合计就说明它只会追加

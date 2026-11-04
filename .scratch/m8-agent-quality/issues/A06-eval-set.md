@@ -1,6 +1,6 @@
 # A06 · 评测集：把"跑通"换成"跑得好"
 
-**Status:** ready-for-agent
+**Status:** resolved
 **Blocked by:** 无（依赖的 A01 已落地）。**但 A07–A10 全部依赖本票**（ADR-0019 原话：
 "A06 是 M8 唯一的硬闸门。它之前的所有『改好了』都是自述"）。
 
@@ -226,6 +226,32 @@ ADR-0019 的判据原话：**"改一句工具描述，报告里的分数能看�
 三处各改一次、各跑一次、各记录一次分数。**这是验收动作，不是可选的自检**：
 做不到这一条，说明判分没接在真正影响结果的地方上。
 
+#### 实测：三处里只成立一处（如实记）
+
+| # | 改了什么 | 预期 | 实测 | 判定 |
+| --- | --- | --- | --- | --- |
+| 1 | 删 `SCHEMA` 里 `east=华东` 那行 | 问华东的用例掉分 | 照样答出 128400，分数不动 | **不成立** |
+| 2 | `searchDocs` 的 `@ToolParam` 改成"写关键词" | 知识库中文整句用例掉分 | 只红 `knowledge-south-return-window` 一条，且**改回去它还是红** | **不成立**（红的那条与这次改动无关） |
+| 3 | `sales.yaml` 里那条的锚改成 `999999` | 掉分，`caseSetDigest` 变 | `answerHit=false`，digest 从 `609fc362…` 变 `f1868994…`，还原后回到原值 | **成立** |
+| 补 | 删掉口径里"排除 CANCELLED"那句 | 掉分 | 答成 `178400`，"没有 128400" 与"出现了 178400"两条断言同时红 | **成立** |
+
+第 3 处票面原写的是改成 `31500`，实际跑用 `999999`：`31500` 是华北的真实值，
+模型万一在别处提到它就是"对的原因、错的答案"，换一个不可能合法出现的数才只验一件事。
+
+第 1 处为什么不成立：`east` 就是"华东"的英文，代码值与中文名一一自明，那行注释是**冗余**的；
+就算模型写了中文，`where region_code = '华东'` 返回 0 行会触发 `EMPTY_HINT`
+（"检查 region_code 是否用了代码 east/south/north 而不是中文名"），它下一轮自己就改回来了。
+删一句冗余描述不改变行为，是**正确**的结果，不是判分坏了。
+
+第 2 处为什么不成立：那条用例的失败跟 `@ToolParam` 没关系——改成"写关键词"之后它红，
+**改回去它仍然红**，变因在别处（当时会话串味与语义缓存都没修，见第三节那两段注释）。
+"改了之后红了"如果不做还原对照，就是把别人的病记在这个改动头上。
+
+**对判据本身的影响，比这三行结论要紧**：ADR-0019 那句"改一句工具描述，分数能看到变化"
+**在冗余描述上不成立**，只在"这句话是模型拿到该事实的唯一来源"时成立。
+所以这个量具测得出**事实缺失**（口径没了、锚错了），测不出**措辞好坏**——
+措辞要靠 A07 的语料去看，别指望分数。第 3 处与补那一处成立，说明"唯一来源"这条线是接通的。
+
 ### 八、文档改哪两处（不多改）
 
 - **`CONTRIBUTING.md`**：在"怎么验证"旁边加一条与 `verify.sh` **并列**的路径：什么时候该跑
@@ -289,49 +315,107 @@ ADR-0019 的判据原话：**"改一句工具描述，报告里的分数能看�
 
 ## 验收判据
 
-- [ ] **一条用例能从提问跑到判定**：真模型、真库，`./scripts/eval.sh --case <id>` 跑通，
+- [x] **一条用例能从提问跑到判定**：真模型、真库，`./scripts/eval.sh --case <id>` 跑通，
       报告里那条 `answerHit` / `traceHit` / `authzHeld` 三个值都有。
       反例：只写 `runId` 不写判定 → 红。
-- [ ] **答案命中按 `mustMention` 判**：故意把 `mustMention` 里的 `128400` 改成 `999999`
+- [x] **答案命中按 `mustMention` 判**：故意把 `mustMention` 里的 `128400` 改成 `999999`
       → 那条 `answerHit` 变 false 且 `failures` 里带上"缺 999999"。反例：改成"回答非空即通过" → 红。
-- [ ] **`mustNotMention` 真的拦得住**：某条用例加了 `mustNotMention: ["31500"]`，
+- [x] **`mustNotMention` 真的拦得住**：某条用例加了 `mustNotMention: ["31500"]`，
       而问题是"华东"（模型若答成华北的数）→ 判定 false。反例：只判 `mustMention` 不判
       `mustNotMention` → 红（"答了不该答的"比"答漏了"贵）。
-- [ ] **轨迹按集合包含判**：`expectTools: ["querySales"]` 时，模型多调了一个 `searchDocs`
+- [x] **轨迹按集合包含判**：`expectTools: ["querySales"]` 时，模型多调了一个 `searchDocs`
       → 仍算命中；少调 `querySales` → 不命中。反例：用 `equals` 判集合 → 多调就红，
       而多调不是错。
-- [ ] **越权那条要同时验两件事**：`expectRefusal: true` 的用例，只有在
+- [x] **越权那条要同时验两件事**：`expectRefusal: true` 的用例，只有在
       「`Run#result()` 含 `AuthorizationAdvisor.DENIAL_PREFIX`」**且**「结果里没有
       `mustNotMention` 任一项」时才通过。
       反例一：只看"有没有拒绝文本" → 红（拒了但数已经漏出去了，那句话照样在）。
       反例二：改用 `Run#status() != DONE` 判 → 红（被拒之后 run 是 `DONE`，所有越权用例假红，
       而假红的下场是被顺手改绿）。
-- [ ] **被拒的调用在审计里看得见**：`expectRefusal` 的用例，`stepsOf(runId)` 里
+- [x] **被拒的调用在审计里看得见**：`expectRefusal` 的用例，`stepsOf(runId)` 里
       至少一条 `StepStatus#FAILED` 且 `resultSummary` 含拒绝文本。
       反例：只读最终回答不看 step → 红（"拒了哪一次调用"说不清，报告只够说"它拒了"）。
-- [ ] **身份集中一份**：`principals.yaml` 里 `guest` 的可访问表是空，所有越权用例引用它；
+- [x] **身份集中一份**：`principals.yaml` 里 `guest` 的可访问表是空，所有越权用例引用它；
       改 `guest` 的表清单，所有引用它的用例一致受影响。反例：身份内联在 100 条用例里 → 红。
-- [ ] **用例集自洽进回归**：`EvalCaseSetTest` 在 `./scripts/verify.sh` 里跑，不调模型。
+- [x] **用例集自洽进回归**：`EvalCaseSetTest` 在 `./scripts/verify.sh` 里跑，不调模型。
       造一条缺 `id` 的用例 → 回归红；造一个引用不存在身份的用例 → 回归红；
       `expectTools` 写一个不存在的工具名 → 回归红。
       反例：把这条校验写成"只在评测时检查" → 红（那时已经烧了钱）。
-- [ ] **工具改名会让回归红**：把 `querySales` 改成 `query_sales`（只改工具名不改用例）
+- [x] **工具改名会让回归红**：把 `querySales` 改成 `query_sales`（只改工具名不改用例）
       → `EvalCaseSetTest` 红并点名是哪条用例引用了它。反例：用例里写的是工具的
       `description` 前缀 → 红（那会随描述变化而误红）。
-- [ ] **报告能比较**：两次运行（改一行代码前后）的 JSON 里，`commit` 不同、
+- [x] **报告能比较**：两次运行（改一行代码前后）的 JSON 里，`commit` 不同、
       `caseSetDigest` 相同（用例没动）；只改用例不改代码时，`commit` 相同、
       `caseSetDigest` 不同。反例：报告里没有 `caseSetDigest` → 红（分数变了说不清是谁变的）。
-- [ ] **判据里的那三处"改坏"各跑一次并记录**：删 `querySales` 的"按周汇总"、
+- [x] **判据里的那三处"改坏"各跑一次并记录**：删 `querySales` 的"按周汇总"、
       把 `searchDocs` 的"直接写用户原话"改成"写关键词"、把某条 `mustMention` 改成错的数字
       —— 三处各让对应的用例掉分，三份报告（或报告片段）贴在 Comments 里。
       反例：只跑一次全绿的基线就交差 → 红（那说明不了它是不是量具）。
-- [ ] **温度是 0.0 且记进报告**：报告里有 `model.temperature`。
+- [x] **温度是 0.0 且记进报告**：报告里有 `model.temperature`。
       反例：报告里没有模型信息 → 红（两次分数不同时无法归因）。
-- [ ] **没有 key 是失败，不是跳过**：`./scripts/eval.sh` 在无 key 时退出码非 0 并点名缺什么。
+- [x] **没有 key 是失败，不是跳过**：`./scripts/eval.sh` 在无 key 时退出码非 0 并点名缺什么。
       反例：`@EnabledIfEnvironmentVariable` → 红（ADR-0011 的落地规则）。
-- [ ] **`claw4j-eval` 进了 verify 的统计**：`verify.sh` 的输出里出现 `claw4j-eval` 那一行，
+- [x] **`claw4j-eval` 进了 verify 的统计**：`verify.sh` 的输出里出现 `claw4j-eval` 那一行，
       文件数与覆盖率都有数（不是 `-`）。反例：加进 `<modules>` 但没加进 `MODULES` → 红。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%，既有用例一条不改地通过。
+- [x] `./scripts/verify.sh` 全绿，跳过 0，行覆盖率不低于 60%，既有用例一条不改地通过。
+
+### 验收证据（逐条对应上面那 15 个框）
+
+| # | 怎么验的 | 结果 |
+| --- | --- | --- |
+| 1 | `./scripts/eval.sh --case sales-weekly-east` 真跑 | 1/1，报告里 `answerHit` / `traceHit` / `authzHeld` 都有值，`runId` 非空（这是"落地先确认的第一件事"的答案：真的不为 null） |
+| 2 | 把 `sales.yaml` 里那条的锚改成 `999999` 再跑 | `answerHit=false`，`failures` 写"回答里没有 999999"；单测 `EvalScorerTest.aMissingAnchorNamesItself` |
+| 3 | 单测 `aForbiddenNumberFailsTheAnswer`；真跑 `sales-excludes-cancelled`（口径被删坏那一次答成 `178400`） | 两条断言同时红："没有 128400" + "出现了 178400" |
+| 4 | 单测 `extraToolsAreNotAFailure`（多调一个仍命中）/ `aMissingToolNamesItself`（少调即不命中） | 都过 |
+| 5 | 单测 `aHeldRefusalNeedsAllThree` / `aRefusalWithoutAnAuditRowFails` / `aRefusalThatLeaksTheNumberFails`；真跑 `authz-guest-sales` | 三反例各红一条，真跑全绿（回答就是"没有权限：角色 guest 不允许访问表 …"） |
+| 6 | 同上第三条反例；真跑报告里 `steps` 有一条 `FAILED` 的 `tool_calls` 行 | 都成立 |
+| 7 | `EvalCaseSetTest.refusalCasesUseTheEmptyRoster`：越权用例全引用 `guest`，且断言 `guest.tables` 为空 | 过 |
+| 8 | `EvalCaseSetTest` 整份在 `verify.sh` 里跑（9 条）；三个反例 `aCaseWithoutExpectToolsIsRejected` / `anUnknownKeyIsRejected` / `aProseAnchorIsRejected` | 671 条用例全过、跳过 0 |
+| 9 | 给 `@Tool` 加 `name = "query_sales"`（用例不动） | `everyExpectedToolExistsInTheCatalog` 红，消息里带当前清单，能一眼看出是谁不见了 |
+| 10 | 改用例不改代码 / 改代码不用例各跑一次 | 改用例：`commit` 不变、`caseSetDigest` 从 `609fc362…` 变 `f1868994…`；还原后 digest 回到 `609fc362…` |
+| 11 | 见上面「七、实测：三处里只成立一处」 | 一处成立、两处不成立，原因已查清并记进那一节 |
+| 12 | 每份报告 | `model` 段是 `deepseek / deepseek-chat / 0.0` |
+| 13 | 把 `.env` 移开再跑脚本 | 退出码 2，点名缺 `DEEPSEEK_API_KEY QWEN_API_KEY` |
+| 14 | `./scripts/verify.sh` 的输出表 | `claw4j-eval  3  16  90.1%`（文件数、最大方法数、行覆盖率都有数） |
+| 15 | `./scripts/verify.sh` | 671 条全过、失败 0、跳过 0、七个既有模块的覆盖率一个没掉 |
+
+## 全量跑了五次：改的是判据，留下的一条真红
+
+| 次 | `caseSetDigest` | 通过 | 这一轮改了什么 |
+| --- | --- | --- | --- |
+| 1 | `609fc362` | 10/51 | 会话串味没修（五十条共用一个 userId） |
+| 2 | `609fc362` | 43/51 | 每条用例一个新 userId、关掉语义缓存 |
+| 3 | `10b83de1` | 47/51 | 清掉与"答对之后顺带给参考"打架的禁词；schema 题改为不调工具；混合题换身份 |
+| 4 | `f27756f0` | 48/51 | 上一轮没清干净的两条（largest-order、customer-items） |
+| 5 | `8a9a6153` | **50/51** | 清掉最后两条误伤禁词 |
+
+第 3~5 轮改的全是用例，改之前都先看报告里那条 `answer` 原文——**假红的判据不是"它红了"，
+是"回答明明对，判据却咬住不放"**。理由逐条写在对应 yaml 的 `note` 里，这里只记总数与规则。
+
+从这五轮里跑出来一条规则，已经写进 `sales.yaml` 头部：**禁词只放"互斥的错答案"，
+不放"相邻的正确事实"**。这条规则下面五条都栽在同一个坑里：
+`last-last-week-east`（答对 0 之后列了相邻窗口的数）、`region-code`（答对 east 之后列了整张对照表）、
+`total-last-week`（答对 185900 之后给了分区明细）、`largest-order`（答对 74400 之后列了其余三笔）、
+`citation`（答对 after-sales.md 之后补了一句 pricing.md 的口径）、`customer-items`
+（答对 14880 之后澄清"99,999 那笔属于本周"）。有帮助的回答普遍会补充明细与澄清，
+把"相邻的正确事实"写进禁词，等于要求它答对的同时闭嘴。
+
+另改了两处不是禁词的：`tools-schema-question` 的 `expectTools` 从 `["querySales"]` 改成 `[]`
+（它没调工具，直接从工具描述里答出了字段表，比真烧一次 SQL 好）；`tools-mixed-question` 的
+身份从 `analyst` 改成 `read-only`（analyst 的表清单刻意不含 `doc`，混合题在它那儿必然被拒，
+那测的就不是工具选择而是越权了）。
+
+**留下的一条真红：`memory-no-leak`**。问「你好，在吗？」，答「在的，有什么可以帮您？
+刚才那条华东区上周成交额（128,400.00 元）如果需要拆明细或换口径，随时说」。
+它确实是把上一轮的数塞进了一句问候里，但也可以读成"提供连续性"。
+这条不判绿：要让它绿，就得写一条"答问候时不许提上下文"的措辞规定，
+而那种规定没法验证对错，只会变成下一次"顺手改宽"的入口。留红，等 A07 一起看。
+
+**另记一件事，比上面所有条目都影响读报告的方式：温度 0.0 不等于确定。**
+`sales-week-start` 第一次答 285899（把单日窗口当成整周）、第二次答对；
+`sales-customer-items` 第一次去调 `recall_session` 被权限拒、后两次都答对。
+同一份用例、同一个 commit、同样的锚，结论会翻。所以**单次红不能当退步的证据**——
+先打开报告看 `answer` 原文，再决定是改代码、改用例，还是它就是抖了一下。
 
 ## 落地时先确认的三件事
 

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.claw4j</groupId>
+        <artifactId>claw4j</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>claw4j-eval</artifactId>
+    <name>Claw4J :: Eval</name>
+    <description>评测集与判分：把"跑通"换成"跑得好"（A06）</description>
+
+    <dependencies>
+        <!--
+          判分要读 Step（轨迹）、要认 AuthorizationAdvisor.DENIAL_PREFIX（拒绝话术的锚点），
+          两样都在 agent。这一条依赖是"判分不是猜的"的前提：它读的是库里的 step 表投影，
+          不是从回答文本里反推过程。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-agent</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
+          执行器要起整机（真模型 + 真库 + 真工具清单），所以把 app 依赖的那几个模块
+          都拉到测试范围里。**刻意不依赖 claw4j-app 本身**：它的主构件被 spring-boot
+          repackage 成可执行 jar，类都在 BOOT-INF/classes 下，别的模块拿它当依赖时
+          javac 找不到 io.github.claw4j.app——`clean verify` 才会暴露（之前跑
+          `-pl ... test-compile` 时 app 只到 test-compile，用的是 target/classes，
+          所以看不出问题）。
+
+          取而代之：eval 自己写一个 @SpringBootConfiguration 起上下文（见 EvalRunTest
+          里的 EvalApplication），application.yml 用下面 testResources 里那一份。
+          判分本身仍然不认识 Spring——只有执行器这边起容器。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-channel</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 业务工具与它的 V1/V2 迁移：用例里的 128400 就来自这份种子。 -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-example-sales</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+          用例集是 YAML。snakeyaml 随 spring-boot-starter 传递进来，但它会不会哪天被换掉
+          不是我们能决定的，而"读不到用例"是这个模块最不该出现的故障，所以显式声明。
+          只有测试侧用它：判分不碰 IO，EvalCase.from 收的是已经解析好的 Map。
+        -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- 与 app 那几份端到端测试同一个约定：评测要跑在真库上，业务数据必须与回归同源。 -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <testResources>
+            <!--
+              评测要按生产那份配置起：模型端点、预算、档位、角色表都在它里面。
+              在评测里另写一份的话，"跑评测时用的是哪个模型"会有第二个答案，
+              而两份配置分叉的表现是"评测挺绿，上线却不是这个表现"。
+
+              引的是 app 模块里那一个文件（不是拷贝进本模块）：改一处，两处都变。
+            -->
+            <testResource>
+                <directory>${project.basedir}/../claw4j-app/src/main/resources</directory>
+                <includes>
+                    <include>application.yml</include>
+                </includes>
+            </testResource>
+        </testResources>
+    </build>
+</project>

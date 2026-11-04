@@ -1,0 +1,162 @@
+# 取数类：口径、半开区间、汇总、跨表。
+#
+# 全部数字都来自 claw4j-example-sales 的 V2__business_seed.sql（日期相对"本周一"生成，
+# 所以这份用例集不会过期）。逐条核过：
+#   上周华东 = 54000 + 74400 = 128400（已取消的那单 50000 不计入）
+#   上周华南 = 26000，上周华北 = 31500，本周华东 = 99999，三周前华东 = 77777
+#   上上周（-14 至 -8 天）一行都没有 = 0
+#
+# mustMention 只放数字与标识符，不放自然语言短句——模型换个说法就假红，而假红比漏判
+# 更容易被顺手改绿。措辞类的判断留在报告里给人工看。
+#
+# mustNotMention 的准入条件比 mustMention 高：**只有"它出现就说明主答案错了"才写进去**，
+# 也就是"互斥的错答案"。全量跑出来五条假红都栽在这儿——答对之后补充明细、列相邻窗口、
+# 澄清"那个数属于本周"，全被禁词咬住。别再把"相邻的正确事实"往里放。
+
+- id: sales-weekly-east
+  question: 上周华东区的成交额是多少？
+  principal: analyst
+  mustMention: ["128400"]
+  mustNotMention: ["31500", "26000", "99999"]
+  expectTools: ["querySales"]
+  note: 半开区间 [本周一 - 7 天, 本周一)，跨 sales_order × order_item，排除 CANCELLED
+
+- id: sales-weekly-south
+  question: 上周华南区的成交额是多少？
+  principal: analyst
+  mustMention: ["26000"]
+  mustNotMention: ["128400"]
+  expectTools: ["querySales"]
+  note: 与华东同一条 SQL 换区域代码，答成 128400 说明区域条件没带上
+
+- id: sales-weekly-north
+  question: 上周华北区的成交额是多少？
+  principal: analyst
+  mustMention: ["31500"]
+  mustNotMention: ["128400"]
+  expectTools: ["querySales"]
+  note: 华北只有一单（上周一，SO-LAST-05）
+
+- id: sales-this-week-east
+  question: 本周华东区的成交额是多少？
+  principal: analyst
+  mustMention: ["99999"]
+  mustNotMention: ["128400"]
+  expectTools: ["querySales"]
+  note: 本周一那单。与 sales-weekly-east 成对：区间右端写错就会答成这个
+
+- id: sales-three-weeks-ago-east
+  question: 三周前华东区的成交额是多少？
+  principal: analyst
+  mustMention: ["77777"]
+  mustNotMention: ["128400", "99999"]
+  expectTools: ["querySales"]
+  note: 种子在 -21 天放了一行，专门用来分辨"上周"与"三周前"
+
+- id: sales-last-last-week-east
+  question: 上上周华东区的成交额是多少？
+  principal: analyst
+  mustMention: ["0"]
+  mustNotMention: []
+  expectTools: ["querySales"]
+  note: 空窗口题：上上周（-14 至 -8 天）一行都没有，正确的回答是 0。
+        这条改过两次，两次都是假红，记在这里免得以后有人再"顺手收紧"：
+        第一次禁了 128400 / 99999 / 77777，模型答对 0 之后按日期列了相邻窗口的数；
+        第二次只禁 128400，它又补了一句"如果你其实想问上周，是 128400"。
+        答对之后顺带给参考是模型的正常表现，包含式判分没有"主答案"这个概念，
+        所以禁词在这里只会制造假红。留下 mustMention 的 0 当唯一判据。
+        它判不出的东西要认：只说了 0 却把窗口解释错的回答，这条看不出来
+
+- id: sales-excludes-cancelled
+  question: 上周华东区一共卖出去多少钱？
+  principal: analyst
+  mustMention: ["128400"]
+  mustNotMention: ["178400"]
+  expectTools: ["querySales"]
+  note: 178400 = 128400 + 50000，是把 CANCELLED 那单也加进去之后的错数。
+        问题里刻意不提「取消」——口径只写在工具描述里，答成这个说明描述没被用上
+
+- id: sales-top-customer
+  question: 上周华东区下单金额最多的客户是哪一个？
+  principal: analyst
+  mustMention: ["128400"]
+  mustNotMention: ["C-EAST-02"]
+  expectTools: ["querySales"]
+  note: 跨 customer × sales_order × order_item。C-EAST-02 上周只有一张已取消的单，
+        答成它就是 0，所以"128400 出现"本身就说明选对了客户。
+        锚从客户代码改成金额：首轮全量时模型答的是客户名「华东客户一」，那也是对的，
+        把代码写成唯一正解等于强制它换一种写法——而客户名是中文短语，不能当锚（会随措辞漂）
+
+- id: sales-region-code
+  question: 华东区在 region 表里的 code 是什么？
+  principal: analyst
+  mustMention: ["east"]
+  mustNotMention: []
+  expectTools: ["querySales"]
+  note: 工具描述里给了 east=华东。这条同时证明"描述里那一行确实被读了"——
+        删掉它之后模型可能写 where region_code = '华东'，拿回 0 行。
+        首轮全量时它红了：答对 east 之后顺带把整张对照表列了出来（south、north 都在里面），
+        而原先 mustNotMention 禁了这两个。列出全表是对的，错的只会是"答成 south"，
+        那种情况 east 也不会出现在回答里，mustMention 已经挡住。所以去掉这条禁词。
+        另需如实记：第七节实测第 1 处证明删掉描述那一行它照样答对——这条的区分力很弱
+
+- id: sales-total-last-week
+  question: 上周三个区合计的成交额是多少？
+  principal: analyst
+  mustMention: ["185900"]
+  mustNotMention: []
+  expectTools: ["querySales"]
+  note: 185900 = 128400 + 26000 + 31500。答成 128400 说明只算了华东。
+        首轮全量时它红了：答对 185900 之后附了一张分区明细表，128400 就在表里，
+        而原先 mustNotMention 禁了 128400 —— 明细是加分项，不是错。
+        去掉禁词不降低强度："只算华东"的那种错，回答里根本不会出现 185900。
+        这条记的是"禁词与主锚重复时，禁词只会制造假红"
+
+- id: sales-largest-order
+  question: 上周金额最大的那一笔订单是多少钱？
+  principal: analyst
+  mustMention: ["74400"]
+  mustNotMention: []
+  expectTools: ["querySales"]
+  note: SO-LAST-02 的旗舰版 License 5 台。原先禁了 31500 / 26000（别的区的数），
+        第三轮全量时它答对 74400 之后补了一句"上周共 4 笔有效订单，其余三笔为 54,000、31,500、26,000"，
+        于是假红。禁词要放"互斥的错答案"，不放"相邻的正确事实"——答成 31500 时
+        74400 根本不会出现，主锚已经够了
+
+- id: sales-status-breakdown
+  question: 上周华东区的订单按状态分别有几笔？
+  principal: analyst
+  mustMention: ["PAID", "SHIPPED", "CANCELLED"]
+  expectTools: ["querySales"]
+  note: 三个状态各一笔。三样都是标识符，模型无法同义替换
+
+- id: sales-customer-items
+  question: 华东客户一上周买的旗舰版 License 单价是多少？
+  principal: analyst
+  mustMention: ["14880"]
+  mustNotMention: []
+  expectTools: ["querySales"]
+  note: 99999 是本周那单的金额，原想禁掉防串窗。第三轮全量它答对了 14880，
+        还主动澄清"华东客户二 11/02 那笔单价 99,999，那属于本周，不是上周"——
+        禁词把这句澄清判成了错，故去掉。
+        "华东客户一"是种子里的客户名（C-EAST-01），不是"客户一"这种指代。第一轮全量时
+        模型把它当指代，去调 recall_session，被权限拒掉，整轮变成一句拒绝；第二、三轮都答对了。
+        也就是说那次错是抖动，不是稳定弱项——单次红不能当结论，这条记的就是这件事
+
+- id: sales-week-start
+  question: 上周一这一天的成交额是多少？
+  principal: analyst
+  mustMention: ["31500"]
+  mustNotMention: ["128400"]
+  expectTools: ["querySales"]
+  note: 半开区间的左端点。边界算错（把上周一漏掉）会答成 0 或 128400 减掉它。
+        首轮全量答成 285899 = 上周整周 185900 + 本周一那单 99999，即把单日窗口当成了整段，
+        这条是真的红，留在红里当 A07 的输入
+
+- id: sales-week-end-exclusive
+  question: 本周一这一天的成交额是多少？
+  principal: analyst
+  mustMention: ["99999"]
+  mustNotMention: ["128400"]
+  expectTools: ["querySales"]
+  note: 右端点必须"不含"。写成闭区间时上周会把本周一算进去，那条在 sales-weekly-east 红

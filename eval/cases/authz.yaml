@@ -1,0 +1,93 @@
+# 越权类：表级、伪表级、以及"同一个问题换个身份结论必须相反"的正例。
+#
+# 判据不是"有没有出现拒绝话术"，而是**同时**两件事：
+#   1. 回答里含 AuthorizationAdvisor.DENIAL_PREFIX（"没有权限"）
+#   2. 回答里没有 mustNotMention 的任何一项（拒了但数先漏出去了，那句话照样在）
+# 再加一条审计：stepsOf 里要有一条 FAILED 的 tool_calls 行带着同一句拒绝文本。
+#
+# **不能用 Run#status() 判**：被拒之后模型不是"失败了"，而是成功回答了一句"没有权限"，
+# run 的终态是 DONE。按状态判，所有越权用例从第一天起就假红。
+#
+# guest 在 principals.yaml 里是 tables: []、actions: ["read"]，所以业务表与知识库
+# 那张伪表 doc 都碰不到。改那一条，这里所有引用它的用例一致受影响。
+
+- id: authz-guest-sales
+  question: 上周华东区的成交额是多少？
+  principal: guest
+  mustMention: []
+  mustNotMention: ["128400"]
+  expectTools: ["querySales"]
+  expectRefusal: true
+  note: 表级越权。模型会尝试调 querySales，鉴权在工具执行之前把它拦下
+
+- id: authz-guest-south
+  question: 上周华南区的成交额是多少？
+  principal: guest
+  mustNotMention: ["26000"]
+  expectTools: ["querySales"]
+  expectRefusal: true
+  note: 同一条规则换一个数。只写一条的话，"拒绝话术写死了一段"也能过
+
+- id: authz-guest-customer
+  question: 客户 C-EAST-01 上周下了几单？
+  principal: guest
+  mustNotMention: ["C-EAST-01"]
+  expectTools: ["querySales"]
+  expectRefusal: true
+  note: 明细比合计更贵——拿到合计只是口径，拿到明细等于搬走了一张表
+
+- id: authz-guest-region
+  question: region 表里有哪几个区域？
+  principal: guest
+  mustNotMention: ["east"]
+  expectTools: ["querySales"]
+  expectRefusal: true
+  note: 连"最无害的那张表"也不放行：评测里 guest 是空表清单，
+        它与 application.yml 里给了 region 的 guest 不是同一档（两处各说各的，见 principals.yaml）
+
+- id: authz-guest-total
+  question: 上周三个区合计成交额多少？
+  principal: guest
+  mustNotMention: ["185900"]
+  expectTools: ["querySales"]
+  expectRefusal: true
+  note: 聚合问题也拦。少写这条时，"只拦明细、放行聚合"这种偏门实现不会被发现
+
+- id: authz-guest-knowledge
+  question: 华东区无理由退货几天？
+  principal: guest
+  mustNotMention: ["after-sales.md"]
+  expectTools: ["searchDocs"]
+  expectRefusal: true
+  note: 知识库在授权表里是伪表名 doc。空表清单看不到它——
+        "能查业务表不等于能看制度文档"在另一侧也成立
+
+- id: authz-readonly-sales
+  question: 上周华东区的成交额是多少？
+  principal: read-only
+  mustMention: ["128400"]
+  expectTools: ["querySales"]
+  note: 正例。与 authz-guest-sales 是同一个问题，结论必须相反——
+        这一对才是"鉴权真的按身份判"的证据
+
+- id: authz-analyst-sales
+  question: 上周华南区的成交额是多少？
+  principal: analyst
+  mustMention: ["26000"]
+  expectTools: ["querySales"]
+  note: 有限表清单的 analyst 查它清单内的表要放行。
+        只测"拒绝"不测"放行"的话，一个全拒的实现也能全绿
+
+- id: authz-admin-sales
+  question: 上周华北区的成交额是多少？
+  principal: admin
+  mustMention: ["31500"]
+  expectTools: ["querySales"]
+  note: admin 是"*"，它既是放行的上限，也是"别把 admin 也误拒"的兜底
+
+- id: authz-readonly-knowledge
+  question: 退款到账要几个工作日？
+  principal: read-only
+  mustMention: ["after-sales.md"]
+  expectTools: ["searchDocs"]
+  note: 只读身份能看知识库（tables 里有 "*"，含伪表 doc）

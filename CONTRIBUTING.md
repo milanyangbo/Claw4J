@@ -157,13 +157,24 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | `./scripts/verify.sh` | 一条命令跑完上面几步：载入 `.env` → `clean verify`（含覆盖率红线）→ 用例数与**跳过数必须为 0** → 文件数/方法数上限（≤10 / ≤20） | 提交前 |
 | 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}`（三个示例 MCP server 已经写在 `application-local.yml` 里），真模型走一遍各层与越权。**命令、每层问什么、该看到什么，见 [`docs/capability-tests.md`](docs/capability-tests.md)** | 改了装配或能力层之后 |
 | 要外部世界的两组（`real-cli` / `real-mcp`） | 真的 OS 子进程（Python、`gh`、`himalaya`）与真的公网 MCP 端点。**默认排除**，`-Preal-cli` 才跑；它们依赖本机装了什么与能不能出网，不属于回归基线 | 改 MCP 传输、改脚本层之后 |
+| `./scripts/eval.sh` | **评测集**：五十来条真模型调用，判分锚在数字与标识符上（`sales` / `knowledge` / `tools` / `authz` / `memory` 五类）。回答"这版比上版好还是差"，而不是"接上了没有"。**默认不在 `verify.sh` 里**：一次十几分钟、几分钱、要联网。用例集写坏了与判分口径坏了仍然进回归（`EvalCaseSetTest` / `EvalScorerTest`） | 改了工具描述、换了模型、调了路由顺序之后，以及想说"这版更好"之前 |
+
+**为什么评测单独一条路而不是并进 `verify.sh`**：它回答的不是同一个问题。`verify.sh` 守
+"装配成立、跳过 0、覆盖够"，那是可以每次提交都跑的；评测守"答得好不好"，答案会随模型版本漂、
+每条要 1~6 次往返。把两者绑在一起的结果只有一个——慢到没人提交前跑，
+于是闸形同虚设。代价是它可能长期没人跑，所以用例集自洽那部分留在回归里垫底。
+
+**评测红了先看报告，别先改代码**：每份报告里带着那条用例的 `answer` 原文与 `runId`。
+判分是字符串包含，假红与"模型抖了一次"都真实存在（温度 0.0 也不保证确定），
+所以红了要做的是读那句回答，判断这是判据写窄了、模型退步了，还是它这次恰好换了说法。
 
 **为什么 Advisor 那条值得单独立规则**：`BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，
 只认 `StreamAdvisor`。只写 `CallAdvisor` 的鉴权 Advisor 在 `.stream()` 上**既不报错也不生效**，
 客户端照常拿到回答——鉴权等于没做，而且从日志上看不出来（ADR-0007）。
 
-门禁全在本地跑：仓库没有接 CI，也没有 pre-commit hook。`./scripts/verify.sh` 是唯一入口，
-它红了就是不能提交。接 CI 时有两件事得先备好：runner 上的 Docker 守护进程（数据库那一类没有
+门禁全在本地跑：仓库没有接 CI，也没有 pre-commit hook。`./scripts/verify.sh` 是提交前的唯一入口，
+它红了就是不能提交。评测走 `./scripts/eval.sh`，那是**并列**的另一条路（不进 `verify.sh`，
+理由见上面那行）。接 CI 时有两件事得先备好：runner 上的 Docker 守护进程（数据库那一类没有
 Docker 就直接红，不许判成跳过），以及 `secrets.DEEPSEEK_API_KEY`（ADR-0011：没有 key 是红，不是跳过）。
 
 ## 写测试之前
@@ -173,7 +184,11 @@ Docker 就直接红，不许判成跳过），以及 `secrets.DEEPSEEK_API_KEY`�
 
 - 一个功能一份测试，从真实入口进、断言末端结果；每模块 ≤10 个文件，每文件 ≤20 个方法。
 - 上限不是目标，行覆盖率 60% 是**下限**也不是目标——破了去补那条链路，不是补 getter 的断言。
-- 不许 `@Disabled`、不许 tag 排除、不许靠 skip 过关：缺 key 就把那条删掉，留灰的等于没验。
+- 不许 `@Disabled`、不许靠 skip 过关：缺 key 就把那条删掉，留灰的等于没验。
+- `@Tag` 只有一种用法是允许的——把"该单独跑的那一类"标出来由 `verify.sh` 排除，现在只有
+  `eval` 这一组（见上表）。拿它去排除装配类用例等于给闸开一个口子：报表里不会出现，
+  也就没人看得出它没跑。这也是为什么排除要写在父 POM 的 `excludedGroups` 里，
+  而不是让某个人在测试上加个标签自己心里有数。
 
 ## 文档放在哪
 

@@ -1,0 +1,72 @@
+# 工具选择类：这句话该调哪个工具、该不该调工具。
+#
+# 这一类的判据是**轨迹**，不是答案——同一句问题，工具选对了答案才可能对。
+# 它对应 A07（中文整句 query 能命中它该命中的工具），是那张票唯一可量化的地方。
+#
+# expectTools 按集合包含比：多调不算错，少调才错。
+# 所以"不该调工具"的用例写成空列表（显式写 []，不写就是漏字段，会红）。
+
+- id: tools-sales-question
+  question: 上周华北区的成交额是多少？
+  principal: analyst
+  mustMention: ["31500"]
+  expectTools: ["querySales"]
+  note: 业务数据走 querySales，不走知识库
+
+- id: tools-knowledge-question
+  question: 华东区无理由退货几天？
+  principal: read-only
+  mustMention: ["after-sales.md"]
+  expectTools: ["searchDocs"]
+  note: 制度类问题走搜索，不该去查业务表
+
+- id: tools-schema-question
+  question: sales_order 这张表有哪些字段？
+  principal: analyst
+  mustMention: ["order_date"]
+  expectTools: []
+  note: 原先期望 querySales（想着去查 information_schema）。首轮全量时它没调工具，
+        答的是"我手上没有查表结构的工具，但 querySales 的说明里写了字段"，照样命中 order_date。
+        从工具描述里回答比真烧一次 SQL 更好，所以期望改成空列表——这条从此判的是
+        "别为了一个已经写在描述里的问题去查库"，与 tools-no-tool-needed 同一类。
+        它反过来证明了描述里那张字段表是有用的（A07 要守住这一条）
+
+- id: tools-customer-lookup
+  question: 客户 C-EAST-01 属于哪个区？
+  principal: analyst
+  mustMention: ["east"]
+  expectTools: ["querySales"]
+  note: 客户与区域的关联在 customer.region_code
+
+- id: tools-mixed-question
+  question: 知识库里写了华东退货 7 天，那上周华东的成交额是多少？
+  principal: read-only
+  mustMention: ["128400"]
+  expectTools: ["querySales", "searchDocs"]
+  note: 一句话里两件事，两个工具都要调。这是"集合包含"最值钱的一条：
+        少一个就红，多调不算错。
+        身份必须是 read-only，不能是 analyst：analyst 的表清单刻意不含 doc，
+        searchDocs 会因为"没有 doc 表权限"被拒，整轮变成一句拒绝（首轮全量就是这么红的）。
+        这条要测的是工具选择，不是越权，所以换成看得见两边的身份
+
+- id: tools-policy-or-data
+  question: 上周华东的退货单里，政策规定的窗口是几天？
+  principal: read-only
+  mustMention: ["after-sales.md"]
+  expectTools: ["searchDocs"]
+  note: 这里的"上周"会诱导去查数，但问的是政策。判轨迹能看见它有没有被带偏
+
+- id: tools-no-tool-needed
+  question: 现在几点了？
+  principal: read-only
+  mustMention: []
+  expectTools: []
+  note: 时间由 AgentContextAdvisor 每轮注入，不需要调工具。
+        这条判的是"别为了答一句话去烧一次 SQL"
+
+- id: tools-out-of-scope
+  question: 帮我写一首关于春天的四行诗。
+  principal: read-only
+  mustMention: []
+  expectTools: []
+  note: 与业务无关的请求不该调任何工具。模型照常答就好——判的是"没有乱调"
