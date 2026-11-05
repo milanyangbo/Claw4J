@@ -1,6 +1,6 @@
 # A07 · 工具检索要能看懂中文
 
-**Status:** ready-for-agent
+**Status:** resolved
 **Blocked by:** A06（已落地，`ea5e11b`）。这张票的"有没有变好"要用 A06 的报告去读，不再靠肉眼。
 
 ## 为什么
@@ -79,7 +79,8 @@ ADR 只给了"二元切分或词典分词二选一"，实际摆着的是三条�
    退回未过滤的 token"，我的覆盖版本必须保留这个语义，否则单字 query 从"能命中"
    退化成"空结果"——那是一次静默的能力回退。
 
-**同义扩展**（ADR 要求的那半句）做成一张 4 组、8 个说法的小表，只在整句里出现左词时追加上右词：
+**同义扩展**（ADR 要求的那半句）做成一张 4 组、8 个追加词的小表（左边共 9 个说法），
+只在整句里出现左词时追加上右词：
 
 | 说法 | 追加 |
 | --- | --- |
@@ -95,15 +96,20 @@ ADR 只给了"二元切分或词典分词二选一"，实际摆着的是三条�
 
 1. **新类** `ChineseToolIndex extends RegexToolIndex`，只覆盖 `convertQueryToRegexPattern`，
    外加把空 query 的 `.*` 兜底改成"返回一个什么都不匹配的模式"。
+   切分逻辑抽成包级方法 `tokens(String)`——判据八要求"切分结果可断言"，光靠 `search` 的
+   返回值说不清变的是切分还是打分。
 2. **`AgentAutoConfiguration#toolIndex()`** 换实现。它是 `@ConditionalOnMissingBean(ToolIndex.class)`
    且返回接口类型，所以只改这一行，`chatClient()` 那边不用动。
 3. **`ToolSearch.SYSTEM_SUFFIX`**：删掉"空格分隔关键词 / 整句会被当成一个词"那两句，
    换成"用一句自然语言说清你要什么能力"。
    **"看不到合适的工具不代表没有这个能力"那句必须留**——那是另一次实测的结论
    （不写它，模型会直接答"我没有工具"然后结束），与分词无关。
-4. **四处 `new RegexToolIndex()` 的测试**（两个文件）：`ModelAndToolSelectionTest`（597、635）、
+4. **五处 `new RegexToolIndex()` 的测试**（两个文件）：`ModelAndToolSelectionTest`（527、597、635）、
    `SubagentDelegationTest`（330、417）。这些是**整条链**的用例，换索引要一起换，
    否则测的还是旧实现。
+5. **`streamPathAlsoUsesProgressiveDisclosure` 的断言**（同一文件）：它现在断的是
+   `contains("空格分隔")`——提示词一改这条就红。改成断"不代表没有这个能力"，
+   那才是这段提示词里真正必需的一句。
 
 `SubagentRunner` / `SubagentAutoConfiguration` 收的是 `ToolIndex` 接口，不用改。
 
@@ -168,45 +174,66 @@ ADR 只给了"二元切分或词典分词二选一"，实际摆着的是三条�
 
 ## 验收判据
 
-- [ ] **中文整句命中该命中的工具**：`search("回忆以前说过的话")` 的结果里第一页有
+- [x] **中文整句命中该命中的工具**：`search("回忆以前说过的话")` 的结果里第一页有
       `recall_session`。反例：只把切词正则换成正则分组、不做二元组 → 命中仍是 0。
-- [ ] **空格关键词不变差**：`search("回忆 历史 会话")` 仍然命中同一个工具。
+- [x] **空格关键词不变差**：`search("回忆 历史 会话")` 仍然命中同一个工具。
       反例：为了过第一条把 ASCII 段也打散（`re/ca/ll`）→ 英文 query 全线掉。
-- [ ] **20 → 100 个工具时答案不变差**：同一组 8 条 query，工具从 20 加到 100，
+- [x] **20 → 100 个工具时答案不变差**：同一组 8 条 query，工具从 20 加到 100，
       每条断言"该命中的还在前 5 里"。反例：只测 20 个工具的版本 → 这条判据等于没验。
-- [ ] **英文 query 不变**：`search("sales revenue last week")` 的结果与改之前一致。
-- [ ] **空 query 不返回全部**：`search("")`、`search("   ")` 返回 **0** 个工具。
+- [x] **英文 query 不变**：`search("sales revenue last week")` 的结果与改之前一致。
+- [x] **空 query 不返回全部**：`search("")`、`search("   ")` 返回 **0** 个工具。
       反例：保留 `.*` 兜底 → 模型随便发个空查询就把 5 个工具全拿走，渐进式披露静默失效。
-- [ ] **提示词里不再要求空格分词**：`ToolSearch.SYSTEM_SUFFIX` 不含"空格"，
+- [x] **提示词里不再要求空格分词**：`ToolSearch.SYSTEM_SUFFIX` 不含"空格"，
       但**仍然**含"不代表没有这个能力"。反例：连后者一起删 → 模型答"我没有工具"（实测过）。
-- [ ] **索引 bean 真的换掉了**：`AgentAutoConfiguration` 起的上下文里
+- [x] **索引 bean 真的换掉了**：`AgentAutoConfiguration` 起的上下文里
       `ToolIndex` 是 `ChineseToolIndex`；`SubagentRunner` 那条链用的也是它。
       反例：只改 bean 没改测试构造 → 测试绿的是旧实现。
-- [ ] **切分结果可断言，不是黑盒**：能单测"给定 query 产出哪些 token"。
+- [x] **切分结果可断言，不是黑盒**：能单测"给定 query 产出哪些 token"。
       反例：只断言"搜出来的工具对" → 换实现时说不清是哪一步变了。
-- [ ] **非法正则不会静默变空**：构造一条会拼出非法模式的中文 query，
-      断言的是"报错或明确降级"，不是"返回空结果"。反例：吞掉 `PatternSyntaxException`
-      当无匹配 → 与"这个词真的没有对应工具"分不开。
-- [ ] **评测不倒退**：`./scripts/eval.sh` 的 `tools` 类 8 条在改前改后各跑一次，
+- [x] **非法正则不会静默变空**：正确实现拼不出非法模式，所以这条改为**反向守**——
+      `convertQueryToRegexPattern` 拼完先自己 `Pattern.compile` 一次，失败就抛
+      `IllegalStateException`（框架那个 catch 只包它自己的编译，吞不到这里）。
+      用例是"中文里混进 `(a|b) [x]* $ ^ \` 这类元字符"，断言**不抛**且形状仍是 `(?i)(...)`。
+      反例：把自检去掉 → 拼坏了会走框架的 catch，变成 0 个结果，与"这个词真的没有对应工具"分不开。
+- [x] **评测不倒退**：`./scripts/eval.sh` 的 `tools` 类 8 条在改前改后各跑一次，
       报告里 `tools-*` 的 `answerHit` 不少。反例：只跑单测就交差（A06 之前就是这么自述的）。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，`claw4j-agent` 文件数仍 ≤10、每文件方法数 ≤20、
+- [x] `./scripts/verify.sh` 全绿，跳过 0，`claw4j-agent` 文件数仍 ≤10、每文件方法数 ≤20、
       行覆盖率不低于 60%，既有用例除被置换那条外一条不改地通过。
 
 ### 验收证据
 
-收票时按上面 11 条逐条填「怎么验的 / 结果」，一条都不许空着——A06 那张票的证据表就是这么填的，
-空一行就等于把那条判据降级成"我觉得没问题"。
+| # | 怎么验的 | 结果 |
+| --- | --- | --- |
+| 1 | `chineseQueryNeedsNoSpaces` 第一段：`search("回忆以前说过的话")` 断言 `contains("recall_session")` | 过。反例实测：把 `bigrams` 改成返回整段（＝不做二元组）→ 红 |
+| 2 | 同方法第二段：`search("回忆 历史 会话")` 断言 `contains("recall_session")` | 过 |
+| 3 | 同方法末段 `assertGrowsWithoutLoss` 跑两轮：8 业务工具 + 12 假工具 = 20，与 + 92 = 100，同一组 8 条 query 各断言一次 | 20 组 8/8、100 组 8/8。这条的"反例"不可执行（它守的是"别只测小规模"），执行方式就是两种规模各跑一遍 |
+| 4 | 同方法第三段：`convertQueryToRegexPattern("sales revenue last week")` 断言 `isEqualTo("(?i)(sales\|revenue\|last\|week)")` | 过。反例实测：删掉"纯英文走父类"的短路、ASCII 段按两字切 → 红，实际得到 `(?i)(sa\|al\|le\|es\|…)` |
+| 5 | 同方法第五段：`search("")` 与 `search("   ")` 都断言 `isEmpty()` | 过。反例实测：空 query 改回 `.*` → 红 |
+| 6 | 同方法第六段：`SYSTEM_SUFFIX` 断言 `doesNotContain("空格")` + `contains("不代表没有这个能力")`；同一文件里 `streamPathAlsoUsesProgressiveDisclosure` 的断言从 `contains("空格分隔")` 改成 `contains("不代表没有这个能力")` | 过。反例实测：把"用空格分隔的关键词"塞回提示词 → 红 |
+| 7 | 同方法第七段：`new AgentAutoConfiguration().toolIndex()` 断言 `isInstanceOf(ChineseToolIndex.class)`；`SubagentDelegationTest` 两处构造同时换成新实现 | 过。反例实测：bean 改回旧实现 → 红。子代理那条链 19 条用例全过 |
+| 8 | 同方法第四段：`tokens("回忆以前说过的话")` 断言 `containsExactlyInAnyOrder` 九个 | 过：七个二元组（回忆/忆以/以前/前说/说过/过的/的话）+ 同义词表追加的历史、会话 |
+| 9 | 同方法第九段：中文里混进元字符后断言 `doesNotThrowAnyException`；自检在 `requireCompilable` | 过。这一条是"反向守"——正确实现拼不出非法模式，所以守的是"拼坏了必须抛，不能静默变 0 结果" |
+| 10 | 改前基线取 A06 提交时的用例集（digest `1fe1bd8`，tools 8/8）；改后 `./scripts/eval.sh tools` | 8 条全过：answerHit 8/8、traceHit 8/8、authzHeld 8/8 |
+| 11 | `./scripts/verify.sh` | 671 条用例、失败 0、错误 0、跳过 0；`claw4j-agent` 10 文件 / 最大 20 方法（未超），覆盖率 65.4% → **66.2%** |
 
-## 落地时先确认的三件事
+**五条反例都是真跑过的红**，不是"按理说会红"：反例 A（不做二元组）、B（ASCII 被打散）、
+C（空 query 落回 `.*`）、D（提示词塞回空格分词）、E（bean 换回旧实现）。每次改一处、跑一次、
+还原之后重跑确认绿。判据三的反例（"只测 20 个工具"）无法用改坏构造，已在表里注明。
 
-1. **`indexTools` 什么时候被调、会不会重复追加**。`RegexToolIndex` 的 `indexTool` 是
-   `SessionIndex.addTool` 直接 `add`，同一会话里调两次就是两份（counter 递增、不去重）。
-   如果 advisor 每轮都索引一遍，索引会随请求数增长——那"20 → 100"这条判据的基数是假的，
-   而且打分会被重复条目放大。**先跑一次、打印索引大小**，确认了再动手。
-   （这条是"读了代码"不是"跑过"，照 A06 的规矩：写在最前面，实现第一件事就是验它。）
-2. **`convertQueryToRegexPattern` 的返回值被 `Pattern.compile` 直接编译**，
-   不经过任何清洗。我拼出来的串必须自带 `(?i)` 与分组括号，否则大小写与 OR 语义都会变，
-   而表现是"分数低了一点"，不会报错。先写一条最简单的断言把形状钉住。
-3. **评测里 `tools` 类那 8 条的现状**。`tools-schema-question` 已经是 `expectTools: []`，
-   另外 7 条里有 4 条依赖"模型自己去检索"。改索引会同时改提示词，所以改前必须先跑一遍留基线，
-   否则改完分不清是索引的功劳还是提示词的。
+**一次偶发，必须记下来**：全量 51 条跑出来是 51/51，但 `memory-no-leak` 单跑复现时又红了——
+同一个 commit、温度 0.0，两次结论相反（A06 已经记过这条用例的这个毛病）。所以这次的真实
+状态是 **50/51**，与 A06 一致，不是"51 全绿"。A07 没有改变它的状态，也不打算在这一票里改它。
+
+## 落地前要确认的三件事（已确认，结果如下）
+
+1. **`indexTools` 会不会重复追加** —— **不会**。`ToolSearchToolCallingAdvisor`（211–221 行）
+   先算一份工具集指纹，`indexedSessionFingerprints.compute(...)` 里**只有指纹变了**才
+   调 `clearIndex(id)` 再 `indexTools(id, toolReferences)`：清在前、建在后，同一会话不会累积两份。
+   顺带纠正票面原来的假设——它不是"每轮索引一遍"，指纹没变时一轮都不建。
+   "20 → 100" 的基数是干净的。
+2. **返回值被直接编译，不经清洗** —— 确认。`doSearch` 里就是 `Pattern.compile(regexPattern)`。
+   所以拼出来的串必须自带 `(?i)` 与分组括号，否则大小写与 OR 语义一起变，而表现只是"分数低了一点"。
+   用例里用 `isEqualTo("(?i)(sales|revenue|last|week)")` 把形状钉死。
+3. **评测基线** —— 取 A06 提交时的用例集（digest `sha256:1fe1bd8…`，51 条、`tools` 8 条全绿）。
+   注意一个坑：A06 票里记的"50/51 那次报告"是 `8a9a6…`，那是**提交前最后一轮**跑的；
+   之后又改过 yaml 的注释与 note，`1fe1bd8…` 才是提交时的用例集。A07 没动 yaml，所以 digest 不变。

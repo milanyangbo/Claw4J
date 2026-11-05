@@ -43,13 +43,13 @@ import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.ai.tool.toolsearch.ToolReference;
 import org.springframework.ai.tool.toolsearch.ToolSearchRequest;
-import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 import java.util.ArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
@@ -524,7 +524,7 @@ class ModelAndToolSelectionTest {
     void missingSessionIdFailsLoudly() {
         ChatClient client = ChatClient.builder(new FixedChatModel("好的"),
                         ObservationRegistry.NOOP, null, null,
-                        ToolSearch.toolLoop(ToolSearchProperties.defaults(), new RegexToolIndex(),
+                        ToolSearch.toolLoop(ToolSearchProperties.defaults(), new ChineseToolIndex(),
                                 ObservationRegistry.NOOP))
                 .defaultToolCallbacks(new RecordingTool("lookup", "128400", "查询销售成交额"))
                 .build();
@@ -588,32 +588,138 @@ class ModelAndToolSelectionTest {
                 .containsExactly(ToolSearch.TOOL_NAME);
         assertThat(textsOf(first))
                 .as("检索提示词也要追加到流式的系统消息上，否则模型会说「我没有工具」")
-                .contains("空格分隔");
+                .contains("不代表没有这个能力");
     }
 
+    /**
+     * 中文检索原本要求模型自己用空格分词；现在整句直接能命中。
+     *
+     * <p><b>一条方法里放多段不是"一条测多件事"</b>：它们同一个入口（{@code ToolIndex#search}）、
+     * 同一种断言形状（结果里有没有那个工具），差的只是输入——与 {@code retryableClassificationTable}
+     * 拿一张表跑多行是同一个写法。门禁把测试文件数（10）与方法数（20）都顶到上限了，
+     * 这一族用例只能置换、不能新增。
+     *
+     * <p><b>为什么断言"在前 5 里"而不是"第一个就是它"</b>：二元组的假阳性是真实的，
+     * 排序能压住大部分但不是全部；断言"不许出现别的"会给自己埋假红（A06 那一轮已经交过学费）。
+     */
     @Test
-    @DisplayName("中文检索查询要空格分词：整句会被当成一个词，什么都匹配不到")
-    void chineseQueryNeedsSpaces() {
-        RegexToolIndex index = new RegexToolIndex();
-        index.indexTool("chat-1", ToolReference.builder()
-                .toolName("recall_session")
-                .summary("按关键词检索历史对话：回忆、说过什么、以前的结论")
-                .build());
+    @DisplayName("中文检索：整句能命中，关键词不变差，工具从 20 加到 100 也不变差")
+    void chineseQueryNeedsNoSpaces() {
+        ChineseToolIndex index = new ChineseToolIndex();
+        List<ToolReference> tools = List.of(
+                ToolReference.builder().toolName("recall_session")
+                        .summary("按关键词检索历史对话：回忆、之前说过什么、以前的结论").build(),
+                ToolReference.builder().toolName("querySales")
+                        .summary("查询销售成交额与订单明细，可按地区与时间统计").build(),
+                ToolReference.builder().toolName("searchDocs")
+                        .summary("在知识库里检索文档：退货政策、定价口径、售后流程").build(),
+                ToolReference.builder().toolName("systemStatus")
+                        .summary("查看系统运行状态、服务健康度与版本信息").build(),
+                ToolReference.builder().toolName("sendEmail")
+                        .summary("给客户发送邮件通知，支持附件").build(),
+                ToolReference.builder().toolName("createTicket")
+                        .summary("创建工单并指派负责人跟进").build(),
+                ToolReference.builder().toolName("scheduleMeeting")
+                        .summary("预约会议室，安排日程与参会人").build(),
+                ToolReference.builder().toolName("runScript")
+                        .summary("在沙箱里执行脚本，用于批量处理数据").build());
 
-        assertThat(foundTools(index, "回忆 历史 会话"))
-                .as("空格分隔的关键词能命中")
-                .containsExactly("recall_session");
-        assertThat(foundTools(index, "回忆以前说过的话"))
-                .as("整句里没有任何一个 token 与描述相等，一个都匹配不到——"
-                        + "这就是系统提示词必须要求空格分词的原因，不是措辞偏好")
-                .isEmpty();
+        // 一、整句命中。改之前这条是 0 个：整句是一个 token，当子串去描述里找什么都找不到。
+        index.indexTools("chat-1", tools);
+        assertThat(foundTools(index, "chat-1", "回忆以前说过的话"))
+                .as("中文整句不该空手而归")
+                .contains("recall_session");
+
+        // 二、原来那套空格关键词不能因此变差——这条守的是"修好中文顺手弄坏英文写法"。
+        assertThat(foundTools(index, "chat-1", "回忆 历史 会话"))
+                .as("空格分隔的关键词仍然命中同一个工具")
+                .contains("recall_session");
+
+        // 三、英文 query 逐字不变：没有中文就走父类，正则形状与原来完全一致。
+        //     反例是把 ASCII 段也打散成 re|ca|ll —— 那样英文检索全线掉。
+        assertThat(index.convertQueryToRegexPattern("sales revenue last week"))
+                .as("没有中文时原样交回父类，一个 token 都不该被拆开")
+                .isEqualTo("(?i)(sales|revenue|last|week)");
+
+        // 四、切分本身可断言，不是黑盒：光看"搜出来的是不是它"说不清变的是切分还是排序。
+        //     七个二元组之后是同义词表追加的两个词（整句里出现了"回忆"）。
+        assertThat(index.tokens("回忆以前说过的话"))
+                .as("相邻两字一组；单字不单独成词，含停用字的“过的”照样保留")
+                .containsExactlyInAnyOrder(
+                        "回忆", "忆以", "以前", "前说", "说过", "过的", "的话", "历史", "会话");
+
+        // 五、空 query 不能返回全部。父类返回 .* 会把五个工具一起交出去，
+        //     模型随便发个空查询就把渐进式披露静默关掉了，而日志上一切正常。
+        assertThat(foundTools(index, "chat-1", ""))
+                .as("空查询一个工具都不给").isEmpty();
+        assertThat(foundTools(index, "chat-1", "   "))
+                .as("全是空白的查询同样一个都不给").isEmpty();
+
+        // 六、提示词与索引必须一起改：只改索引，等于留着一段教模型绕一个已不存在的限制。
         assertThat(ToolSearch.SYSTEM_SUFFIX)
-                .as("提示词里不写清楚，中文场景下模型会照着「一句话描述」去写，然后每次都检索不到")
-                .contains("空格");
+                .as("索引能认整句之后，提示词里不该还要求模型自己分词")
+                .doesNotContain("空格")
+                .as("但“看不到工具不代表没有这个能力”必须留着——不写它模型会直接答“我没有工具”")
+                .contains("不代表没有这个能力");
+
+        // 七、默认 bean 真的换掉了。只改测试构造等于测的还是旧实现。
+        assertThat(new AgentAutoConfiguration().toolIndex())
+                .as("装配出来的索引必须是新实现")
+                .isInstanceOf(ChineseToolIndex.class);
+
+        // 八、20 → 100：同一组 query，工具变多之后答案不变差。
+        //     真实清单加起来不到 20 个（注解式 3 个 + 手工构造的若干 + MCP），
+        //     100 个只能用跟业务无关的假工具造——这正是 ADR-0021「行为不随工具数量变化」要的动作。
+        List<ToolReference> fillers = new ArrayList<>();
+        for (int n = 0; n < 92; n++) {
+            fillers.add(ToolReference.builder()
+                    .toolName("filler_" + n)
+                    .summary("第 " + n + " 号假工具：用于验证工具变多时排序是否稳定")
+                    .build());
+        }
+        List<String> queries = List.of(
+                "回忆以前说过的话",
+                "上周华东区的成交额是多少",
+                "无理由退货的政策写在哪份文档里",
+                "系统现在运行状态正常吗",
+                "给客户发一封邮件",
+                "帮我建一个工单安排人跟进",
+                "约一个会议室开会",
+                "跑个脚本批量处理数据");
+        List<String> expected = List.of(
+                "recall_session", "querySales", "searchDocs", "systemStatus",
+                "sendEmail", "createTicket", "scheduleMeeting", "runScript");
+
+        List<ToolReference> twenty = new ArrayList<>(tools);
+        twenty.addAll(fillers.subList(0, 12));
+        assertGrowsWithoutLoss(index, "grow-20", twenty, queries, expected);
+
+        List<ToolReference> hundred = new ArrayList<>(tools);
+        hundred.addAll(fillers);
+        assertGrowsWithoutLoss(index, "grow-100", hundred, queries, expected);
+
+        // 九、拼坏正则的表现是"0 个结果"，不是报错——框架把 PatternSyntaxException 吞成了空响应，
+        //     与"这个词真的没有对应工具"分不开。这条把那条路堵死：正则元字符混在中文里，
+        //     产出的必须仍然是合法正则（拼坏了 convertQueryToRegexPattern 会自己抛）。
+        assertThatCode(() -> index.convertQueryToRegexPattern("回忆 (a|b) [x]* $ ^ \\ 中的 * 号"))
+                .as("中文里混进正则元字符不能把模式拼坏")
+                .doesNotThrowAnyException();
     }
 
-    private static List<String> foundTools(RegexToolIndex index, String query) {
-        return index.search(new ToolSearchRequest("chat-1", query, 5, null))
+    /** 把一批工具索引进一个新会话，逐条 query 断言目标还留在前 5 里。 */
+    private static void assertGrowsWithoutLoss(ChineseToolIndex index, String sessionId,
+                                               List<ToolReference> tools,
+                                               List<String> queries, List<String> expected) {
+        index.indexTools(sessionId, tools);
+        for (int i = 0; i < queries.size(); i++) {
+            assertThat(foundTools(index, sessionId, queries.get(i)))
+                    .as("%d 个工具时「%s」仍应命中 %s", tools.size(), queries.get(i), expected.get(i))
+                    .contains(expected.get(i));
+        }
+    }
+
+    private static List<String> foundTools(ChineseToolIndex index, String sessionId, String query) {
+        return index.search(new ToolSearchRequest(sessionId, query, 5, null))
                 .toolReferences()
                 .stream()
                 .map(ToolReference::toolName)
@@ -632,7 +738,7 @@ class ModelAndToolSelectionTest {
 
     private static ChatClient client(FixedChatModel model, List<ToolCallback> tools,
                                      ToolPermissionRegistry registry, ToolSearchProperties properties) {
-        ToolIndex index = new RegexToolIndex();
+        ToolIndex index = new ChineseToolIndex();
         List<ToolPermissionRegistry> registries = List.of(registry,
                 // 与装配里那个 bean 同一条：检索工具自己按 read 放行
                 ToolPermissionRegistry.of(Map.of(ToolSearch.TOOL_NAME, ToolPermission.read())));

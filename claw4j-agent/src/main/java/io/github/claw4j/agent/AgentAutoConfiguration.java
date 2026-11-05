@@ -31,7 +31,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
-import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -187,16 +186,22 @@ public class AgentAutoConfiguration {
     }
 
     /**
-     * 工具检索用的索引。默认是内存里的正则索引：把查询切成关键词，在工具名与描述里匹配。
+     * 工具检索用的索引：把查询切成关键词，在工具名与描述里匹配。
+     *
+     * <p><b>为什么是中文那一版而不是框架的 {@code RegexToolIndex}</b>：后者只按空白与标点切词，
+     * 中文整句进去是**一个** token，当子串匹配等于什么都不匹配。这件事的代价不止"命中率低"——
+     * 系统提示词当时得反过来要求模型自己用空格分词，等于把实现的缺陷教给模型。
+     * 换成 {@link ChineseToolIndex} 之后那段提示词才删得掉（见 {@link ToolSearch#SYSTEM_SUFFIX}）。
      *
      * <p>选它而不是向量索引（{@code VectorToolIndex}）是因为这一版的判据是"提示词里的工具定义 token
-     * 降下来、选工具还不选错"，正则索引已经够回答这个问题，而且不需要 embedding 调用、
-     * 不新增一张表。换成 pgvector 时替换这个 bean 即可——装配那边只认 {@link ToolIndex}。
+     * 降下来、选工具还不选错"，词面匹配已经够回答这个问题，而且不需要 embedding 调用、
+     * 不新增一张表。工具数到几百、需要 TF-IDF 与倒排索引时，换的落点也只有这一个 bean：
+     * 装配那边只认 {@link ToolIndex}，下面的判据不用重写。
      */
     @Bean
     @ConditionalOnMissingBean(ToolIndex.class)
     public ToolIndex toolIndex() {
-        return new RegexToolIndex();
+        return new ChineseToolIndex();
     }
 
     /**

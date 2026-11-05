@@ -21,7 +21,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 
@@ -327,7 +326,7 @@ class SubagentDelegationTest {
                 beans.getBeanProvider(ToolTierRegistry.class),
                 ToolsProperties.defaults(),
                 new AuthorizationAdvisor(List.of()),
-                new RegexToolIndex(),
+                new ChineseToolIndex(),
                 ToolSearchProperties.defaults());
 
         assertThat(task.getToolDefinition().name()).isEqualTo(SubagentDelegation.TOOL_NAME);
@@ -414,7 +413,7 @@ class SubagentDelegationTest {
                 Map.of(ToolSearch.TOOL_NAME, ToolPermission.read()));
         return new SubagentRunner(model, ObservationRegistry.NOOP, () -> tools,
                 new AuthorizationAdvisor(List.of(registry, searchTool)),
-                new RegexToolIndex(),
+                new ChineseToolIndex(),
                 ToolSearchProperties.defaults());
     }
 
