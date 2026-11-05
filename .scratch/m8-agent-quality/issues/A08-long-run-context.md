@@ -1,8 +1,25 @@
 # A08 · 长 run 的上下文：压缩可以丢细节，不能丢进度与失败
 
-**Status:** ready-for-agent
+**Status:** closed（2026-11-05，见 [ADR-0024](../../docs/adr/0024-no-task-progress-prefix.md)）
 **Blocked by:** A03（已落地：`UpdatePlanTool` + `RunStore#planOf`，计划已经在库里）、
 A06（已落地，`ea5e11b`）。这张票的"有没有变好"要读 A06 的报告，不靠肉眼。
+
+> **关闭理由（2026-11-05）**：实现写完了、门禁也全绿，但**实测找不到它能生效的场景**。
+>
+> `ChatClientAgentPort` 每轮收尾都调 `runs.finish(runId, RunStatus.DONE, answer)`——
+> **run 的寿命是一轮，不是一段对话**。连问两句之后，该 `owner` 下
+> `status in ('running', 'suspended')` 的行数是 0，这条由守门测试
+> `RunLifecycleTest#anAnsweredTurnLeavesNothingUnfinished` 钉住。
+>
+> 于是"还剩几步"在普通多轮里没有载体：按 `runId` 拿到的是刚开的空 run（`planOf` 为空），
+> 按 session 又查不到未收尾的 run。唯一有内容的续跑路径，`promptText` 已经用 `recap`
+> 把目标 + 计划 + 最近 5 步拼进提示词，每次从库里重新渲染，压缩影响不到它。
+>
+> 之前以为"改成按会话查"能补上普通多轮那一格——这个判断是错的，原因就是上面那行 `finish`。
+> **压缩丢的是"用户之前说过什么"，那是摘要的活**；摘要压得不好该改策略或阈值，
+> 不是在旁边加一条永远无法验证的前缀。完整判断见 ADR-0024。
+>
+> 下面的现状分析与验收标准保留作决策依据，**不再执行**；实现已从工作区撤销，未合并。
 
 ## 为什么
 

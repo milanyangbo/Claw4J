@@ -158,6 +158,36 @@ class RunLifecycleTest {
     }
 
     @Test
+    @DisplayName("一轮就是一件事、答完即收尾：跨轮不存在「还没做完的 run」")
+    void anAnsweredTurnLeavesNothingUnfinished() {
+        Principal principal = Principal.readOnly("u-1");
+        String owner = SessionKeys.ownerOf(principal);
+        ChatClientAgentPort port = new ChatClientAgentPort(
+                ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs, budget);
+
+        OutboundMessage first = port.reply(new InboundMessage(principal, "chat-1", "华东上周成交额是多少？"));
+        OutboundMessage second = port.reply(new InboundMessage(principal, "chat-1", "那华南呢？"));
+
+        assertThat(runs.find(first.runId()).orElseThrow().status())
+                .as("答完就是 done：run 的寿命是一轮，不是一段对话")
+                .isEqualTo(RunStatus.DONE);
+        assertThat(second.runId())
+                .as("第二轮是新开的一件——openRun 只在消息带回 runId 时才续跑")
+                .isNotEqualTo(first.runId());
+
+        Integer unfinished = jdbc.queryForObject(
+                "select count(*) from claw4j_run.agent_run"
+                        + " where owner = ? and status in ('running', 'suspended')",
+                Integer.class, owner);
+        assertThat(unfinished)
+                .as("会话里没有「没做完的事」可钉：A08 那种进度前缀，按 run 传的是刚开的空 run，"
+                        + "按 session 又查不到未收尾的 run——两条路都拿不到内容。"
+                        + "真要跨轮记住的是对话本身，那是压缩摘要的活。"
+                        + "哪天这里不是 0，说明 run 的寿命变了，那条前缀才有重新讨论的余地")
+                .isZero();
+    }
+
+    @Test
     @DisplayName("一轮的 token 与耗时记到 run 上：模型报多少记多少，不估算")
     void tokensAndWallClockOfATurnAreChargedToTheRun() {
         Principal principal = Principal.readOnly("u-1");

@@ -14,6 +14,8 @@
 - `A07-chinese-tool-index.md`：工具检索对中文整句有解（现在 `RegexToolIndex` 按空白切词，
   "回忆以前说过的话"命中 0 个工具）。
 - `A08-long-run-context.md`：压缩可以丢细节，不能丢"还剩几步没做"和"上一次为什么失败"。
+  **已关闭**（2026-11-05）：run 的寿命是一轮，答完即 `done`，普通多轮里没有"没做完的事"可钉；
+  详见 [ADR-0024](../../docs/adr/0024-no-task-progress-prefix.md)。
 - `A09-diagnosable-failure.md`：工具失败要把结构化原因回灌模型一次，只允许一次重试。
 - `A10-subagent-budget.md`：子 run 挂 `parent_run_id`，消耗计入父 run 的预算。
 
