@@ -18,6 +18,7 @@ import io.github.claw4j.domain.principal.ToolPermission;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.session.CreateSessionRequest;
@@ -258,113 +259,143 @@ class ToolGovernanceTest {
                 .hasMessageContaining("决定");
     }
 
-    // ---------------------------------------------------------------- 召回那一半（跨会话）
+    // ---------------------------------------------------------------- 召回那一半（只在本段对话里）
 
-    private static final String OLD_SESSION = "claw4j:user:u-1";
+    /** 这个身份在一条通道的一个 chat 里。键一律由 {@link SessionKeys} 派生，不手拼。 */
+    private static String sessionOf(String userId, String channel, String chatId) {
+        return SessionKeys.sessionIdOf(Principal.readOnly(userId), channel, chatId);
+    }
 
-    private static final String OTHER_SESSION = "claw4j:user:u-1:topic-2";
+    /** 当前这一段对话。 */
+    private static final String CURRENT_SESSION = sessionOf("u-1", "web", "chat-a");
+
+    /** 同一个人的**另外两段**对话：网页上的另一个 chat，以及一个项目群。 */
+    private static final String PRIVATE_ELSEWHERE = sessionOf("u-1", "web", "chat-b");
+
+    private static final String GROUP_ELSEWHERE = sessionOf("u-1", "feishu", "oc_group");
 
     /**
-     * 会话表里 {@code user_id} 存的是归属键而不是裸 userId（见 {@link SessionKeys#ownerOf}）。
-     * 假仓库也照这个形状建数据：造一条裸 userId 的记录，测的就是一个不会出现的世界。
+     * 在假仓库里登记一段会话，归属键从会话 id 的前缀取。
+     *
+     * <p><b>为什么每次都要登记</b>：真库里 {@code findEventsByUserId} 靠 {@code ai_session.user_id}
+     * 把事件找出来；假仓库照抄了这条路径。不登记的话，"改回按 user_id 查"这个反例
+     * 会因为假仓库什么都没有而红，而不是因为泄露——那种红是假红，它挡不住真正的回退。
      */
-    private static final String OWNER_U1 = SessionKeys.ownerOf(Principal.readOnly("u-1"));
+    private static void open(FakeSessions sessions, String sessionId) {
+        int from = SessionKeys.PREFIX.length();
+        int to = sessionId.indexOf(SessionKeys.SESSION_SEPARATOR, from);
+        sessions.create(CreateSessionRequest.builder()
+                .id(sessionId)
+                .userId(sessionId.substring(from, to))
+                .build());
+    }
 
     @Test
-    @DisplayName("另一个会话里说过的口径，这一轮问起来能召回到")
-    void recallsWhatWasSaidInAnotherSession() {
+    @DisplayName("只召回本段对话（含压缩归档过的）：同一个人的私聊与群聊都带不回来")
+    void recallsOnlyThisConversation() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
-        sessions.create(CreateSessionRequest.builder().id(OTHER_SESSION).userId(OWNER_U1).build());
-        sessions.append(OLD_SESSION, "华东区的成交口径按签约主体算，不按开票主体");
-        sessions.append(OTHER_SESSION, "华南那边的口径还是按开票主体");
+        open(sessions, CURRENT_SESSION);
+        open(sessions, PRIVATE_ELSEWHERE);
+        open(sessions, GROUP_ELSEWHERE);
+        sessions.append(CURRENT_SESSION, "华东区的成交口径按签约主体算，不按开票主体");
+        sessions.appendArchived(CURRENT_SESSION, "华东区那批单子按出库时间归月，不看开票日");
+        sessions.append(PRIVATE_ELSEWHERE, "华东上周成交额 128,400.00，先别外传");
+        sessions.append(GROUP_ELSEWHERE, "群里说过：华东那边先按开票主体报");
 
-        String recalled = tool(sessions).call("{\"query\":\"华东,口径\"}",
-                toolContext(Principal.readOnly("u-1")));
+        String recalled = tool(sessions).call("{\"query\":\"华东\"}",
+                toolContext(Principal.readOnly("u-1"), CURRENT_SESSION));
 
+        assertThat(recalled).contains("按签约主体算");
         assertThat(recalled)
-                .as("跨会话召回没把另一个会话的内容带回来，等于这个工具什么都没做")
-                .contains(OLD_SESSION)
-                .contains("按签约主体算");
+                .as("归档过的那句也在：压缩把原文折成摘要之后，它是这个工具唯一的价值来源")
+                .contains("按出库时间归月");
         assertThat(recalled)
-                .as("默认是任意命中：只讲了「口径」的那段也会被带回来")
-                .contains(OTHER_SESSION);
+                .as("私聊里的数字被带进群聊，就是一次没人复核的泄露——听众不一样，权限指纹挡不住")
+                .doesNotContain("128,400")
+                .doesNotContain("先按开票主体报");
     }
 
     @Test
     @DisplayName("match_mode 真的传下去了：all 只留同时命中全部关键词的那段")
     void matchModeNarrowsTheResults() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
-        sessions.append(OLD_SESSION, "华东区的成交口径按签约主体算");
-        sessions.append(OLD_SESSION, "华南那边的口径还是按开票主体");
+        open(sessions, CURRENT_SESSION);
+        sessions.append(CURRENT_SESSION, "华东区的成交口径按签约主体算");
+        sessions.append(CURRENT_SESSION, "华南那边的口径还是按开票主体");
 
         String onlyBoth = tool(sessions).call("{\"query\":\"华东,口径\",\"match_mode\":\"all\"}",
-                toolContext(Principal.readOnly("u-1")));
+                toolContext(Principal.readOnly("u-1"), CURRENT_SESSION));
 
         assertThat(onlyBoth).contains("按签约主体算").doesNotContain("华南");
     }
 
     @Test
-    @DisplayName("换一个 userId 就看不到：召回按当前身份查，不是按工具实例上写死的那个人")
+    @DisplayName("换一个身份就看不到：这段会话不属于他就拒，不退化成照样查")
     void anotherUserSeesNothing() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
-        sessions.append(OLD_SESSION, "华东区的成交口径按签约主体算");
+        open(sessions, CURRENT_SESSION);
+        sessions.append(CURRENT_SESSION, "华东区的成交口径按签约主体算");
 
         String recalled = tool(sessions).call("{\"query\":\"华东\"}",
-                toolContext(Principal.readOnly("u-2")));
+                toolContext(Principal.readOnly("u-2"), CURRENT_SESSION));
 
         assertThat(recalled)
-                .as("u-2 看到了 u-1 的历史——这是这个工具唯一真正的安全边界")
+                .as("u-2 拿到了 u-1 那一段的会话 id 也查不出东西——这是这个工具唯一的边界")
                 .doesNotContain("签约主体")
-                .contains("没有找到");
+                .contains("不属于当前身份");
     }
 
     @Test
-    @DisplayName("同一个人被降权后，旧会话召不回来：归属键里带着权限指纹")
+    @DisplayName("同一个人被降权后，旧会话召不回来：会话键里带着权限指纹")
     void downgradedUserLosesItsOwnHistory() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
-        sessions.append(OLD_SESSION, "上周华东区成交额 99,999.00");
+        open(sessions, CURRENT_SESSION);
+        sessions.append(CURRENT_SESSION, "上周华东区成交额 99,999.00");
 
         Principal downgraded = Principal.of("u-1", "guest",
                 Set.of("region"), Set.of(ToolPermission.READ));
 
-        String recalled = tool(sessions).call("{\"query\":\"成交额\"}", toolContext(downgraded));
+        String recalled = tool(sessions).call("{\"query\":\"成交额\"}",
+                toolContext(downgraded, CURRENT_SESSION));
 
         assertThat(recalled)
                 .as("降权之后还念得出高权限时看到的数字，权限就等于没收回去")
                 .doesNotContain("99,999")
-                .contains("没有找到");
+                .contains("不属于当前身份");
     }
 
     @Test
-    @DisplayName("没有身份就不查：宁可不回答，也不能退化成查某个人")
-    void refusesWithoutPrincipal() {
+    @DisplayName("缺身份或缺口令就不查：宁可不回答，也不猜成「某个人的所有会话」")
+    void refusesWithoutIdentityOrSession() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
-        sessions.append(OLD_SESSION, "华东区的成交口径按签约主体算");
+        open(sessions, CURRENT_SESSION);
+        sessions.append(CURRENT_SESSION, "华东区的成交口径按签约主体算");
 
-        assertThat(tool(sessions).call("{\"query\":\"华东\"}", null))
+        assertThat(tool(sessions).call("{\"query\":\"华东\"}", new ToolContext(
+                Map.of(ChatMemory.CONVERSATION_ID, CURRENT_SESSION))))
                 .contains("没有携带身份")
                 .doesNotContain("签约主体");
         assertThat(tool(sessions).call("{\"query\":\"华东\"}"))
                 .as("单参入口没有 ToolContext，同样按没身份处理")
                 .contains("没有携带身份");
+        assertThat(tool(sessions).call("{\"query\":\"华东\"}",
+                new ToolContext(Map.of(ContextKeys.PRINCIPAL, Principal.readOnly("u-1")))))
+                .as("按 principal 猜会话，就是改回按 user_id 查：那正是私聊漏进群聊的那条路")
+                .contains("没有携带会话标识")
+                .doesNotContain("签约主体");
     }
 
     @Test
     @DisplayName("一条长对话不会把上下文吃满：条数与总字数都封顶")
     void truncatesWhatItBringsBack() {
         FakeSessions sessions = new FakeSessions();
-        sessions.create(CreateSessionRequest.builder().id(OLD_SESSION).userId(OWNER_U1).build());
+        open(sessions, CURRENT_SESSION);
         for (int i = 0; i < 40; i++) {
-            sessions.append(OLD_SESSION, "华东口径第 " + i + " 段：" + "按签约主体算。".repeat(60));
+            sessions.append(CURRENT_SESSION, "华东口径第 " + i + " 段：" + "按签约主体算。".repeat(60));
         }
 
         String recalled = tool(sessions).call("{\"query\":\"华东口径\"}",
-                toolContext(Principal.readOnly("u-1")));
+                toolContext(Principal.readOnly("u-1"), CURRENT_SESSION));
 
         assertThat(recalled.length())
                 .as("条数封顶后仍可能是一条一万字，整段必须再按字符裁一次")
@@ -377,14 +408,16 @@ class ToolGovernanceTest {
     void badArgumentsComeBackAsAdvice() {
         FakeSessions sessions = new FakeSessions();
         RecallSessionTool tool = tool(sessions);
-        ToolContext context = toolContext(Principal.readOnly("u-1"));
+        ToolContext context = toolContext(Principal.readOnly("u-1"), CURRENT_SESSION);
 
         assertThat(tool.call("{\"match_mode\":\"all\"}", context))
-                .as("query 必填，框架抛的是 IllegalArgumentException")
+                .as("query 必填")
                 .contains("召回参数不合法");
         assertThat(tool.call("{\"query\":\"华东\",\"since\":\"上周\"}", context))
                 .contains("召回参数不合法");
         assertThat(tool.call("{\"query\":\"华东\",\"page\":\"第一页\"}", context))
+                .contains("召回参数不合法");
+        assertThat(tool.call("{\"query\":\"华东\",\"match_mode\":\"大部分\"}", context))
                 .contains("召回参数不合法");
     }
 
@@ -523,8 +556,11 @@ class ToolGovernanceTest {
         return new RecallSessionTool(sessions);
     }
 
-    private static ToolContext toolContext(Principal principal) {
-        return new ToolContext(Map.of(ContextKeys.PRINCIPAL, principal));
+    private static ToolContext toolContext(Principal principal, String sessionId) {
+        return new ToolContext(Map.of(
+                ContextKeys.PRINCIPAL, principal,
+                // 宿主（ChatClientAgentPort）写进去的那一把键，工具只认这一个。
+                ChatMemory.CONVERSATION_ID, sessionId));
     }
 
     /**
@@ -554,12 +590,22 @@ class ToolGovernanceTest {
         }
 
         void append(String sessionId, String text) {
+            append(sessionId, text, false);
+        }
+
+        /** 压缩归档过的事件：{@code excludeArchived} 默认 false，所以它们必须还能被召回。 */
+        void appendArchived(String sessionId, String text) {
+            append(sessionId, text, true);
+        }
+
+        private void append(String sessionId, String text, boolean archived) {
             events.computeIfAbsent(sessionId, key -> new ArrayList<>())
                     .add(SessionEvent.builder()
                             .id("e-" + (++eventSequence))
                             .sessionId(sessionId)
                             .timestamp(Instant.now().plusSeconds(eventSequence))
                             .message(new UserMessage(text))
+                            .archived(archived)
                             .build());
         }
 

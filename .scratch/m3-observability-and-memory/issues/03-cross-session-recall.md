@@ -7,6 +7,10 @@
 
 **Status:** resolved
 
+> **2026-11-05 修订：召回范围从"这个人的所有会话"改成"当前这一段会话"。**
+> 会话键那时已经按"通道 + chatId"分段（ADR-0025），而召回还按 `owner` 查，
+> 于是私聊里的内容能被取到群聊里。见文末「隔离修复」。
+
 **Demo:** 会话 A 里问"华东区的口径是什么"，得到答案；换一个会话 B 问"上次华东区的口径怎么定的"，
 回答里带上会话 A 的内容。
 
@@ -84,4 +88,48 @@ GET 9090/actuator/metrics/claw4j.tool.calls  → tool=recall_session, outcome=ok
   所以"按 userId 查事件"必然查得到它。实测 `u-intruder` 那句"只找到你这条提问本身"就是它。
   没有正确性问题，只是白占一点上下文。要修得有"排除当前 sessionId"的能力，
   而当前一个用户只有一段会话，排掉就等于全排掉——等会话维度加上去再说。
+
+## 隔离修复（2026-11-05）
+
+会话键已经按"人 + 权限 + 通道 + chatId"分段（ADR-0025），但这个工具还在按 `owner` 查
+（`findEventsByUserId`，`WHERE user_id = ?`）。结果是：自动拼上下文那条路被分段挡住了，
+**工具这道后门还开着**——网页私聊里查到的 128,400，在项目群里让模型"回忆一下"就能取出来。
+
+改动只有一处，但换掉了整个查询：
+
+```text
+原先  findEventsByUserId(SessionKeys.ownerOf(who), filter)   ← 这个人的所有会话
+现在  getEvents(sessionId, filter)                            ← 只有当前这一段
+```
+
+- 为什么不给框架那个工具加个过滤：`EventFilter` 里**没有会话字段**
+  （字段只有 from/to/messageTypes/keywords/matchMode/pattern/page/pageSize/excludeArchived/synthetic），
+  `CrossSessionRecallTools` 也没有暴露 sessionId 入参。按会话收窄只能自己查。
+- 会话 id 由 `ChatClientAgentPort` 写进工具上下文的 `ChatMemory.CONVERSATION_ID`，
+  与框架自己的 `SessionEventTools` 是同一把键。**模型手上没有参数能改它**——
+  "查别人的聊天记录"这条路不存在，而不是"存在但被拒绝"。
+- 身份仍核一次：`sessionId` 必须以 `claw4j:user:<当前身份的 owner>:` 开头，核不上就拒。
+  它不参与查询（范围由会话定），防的是宿主传错或将来有人把别人的 id 递进来。
+- 输出从框架的 JSON 改成文本行（`- 时间 说话人：正文`）：会话恒等于当前这一段，
+  每条都重复的 `sessionId` 与四个键名只是白花 token。
+- 顺带解决文末那条记账的一半：仍然会命中本轮刚发的那条提问（它本来就在这一段里），
+  但它不再是"按人查"撞出来的，而是这一段里真实存在的一句。
+
+**反例（三条都真跑，跑完复原）**：
+
+1. 把 `getEvents(sessionId, …)` 换回 `findEventsByUserId(owner, …)` →
+   `recallsOnlyThisConversation` 变红，实际输出里出现"华东上周成交额 128,400.00，先别外传"。
+   只有这一条红，其余 19 条全绿——正好说明别的用例对"范围"这件事完全无感。
+2. 去掉归属校验（`belongsTo`）→ `anotherUserSeesNothing` 与 `downgradedUserLosesItsOwnHistory` 变红。
+3. 过滤器加 `.excludeArchived(true)` → `recallsOnlyThisConversation` 里那条"归档过的那句也在"变红。
+
+两条与"范围"相关的断言（本段能找到 / 别处找不到 / 归档的也算）合并进了同一个用例：
+`claw4j-agent` 每个测试文件的方法数上限是 20，拆成三条就超了——而拆文件同样不行，
+那个模块的文件位也是满的。合并的代价是失败时看断言名才能分出是哪一类，
+所以每条断言都带了 `as(...)`。
+
+第一次做反例时踩了个坑：假仓库的 `findEventsByUserId` 只从**登记过的会话**里找事件
+（真库靠 `ai_session.user_id`），而用例当时只 append 没 `create`，于是反例红的原因是
+"假仓库里什么都没有"，不是泄露。补了 `open(...)` 让每条用例都登记会话之后，
+反例才红在该红的地方。**假红比不红更糟**：它会让人以为防线有人守着。
 
