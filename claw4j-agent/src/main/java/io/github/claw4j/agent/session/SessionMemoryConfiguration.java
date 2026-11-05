@@ -1,6 +1,7 @@
 package io.github.claw4j.agent.session;
 
 import com.zaxxer.hikari.HikariDataSource;
+import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
@@ -34,6 +35,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import javax.sql.DataSource;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 
@@ -63,7 +65,7 @@ import java.util.Map;
 @ConditionalOnSingleCandidate(DataSource.class)
 @EnableScheduling
 @EnableConfigurationProperties({DataSourceProperties.class, SessionMemoryProperties.class,
-        SessionServiceProperties.class})
+        SessionServiceProperties.class, SessionResetProperties.class})
 public class SessionMemoryConfiguration implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(SessionMemoryConfiguration.class);
@@ -190,15 +192,15 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
-     * 跨会话召回工具（M3-03）。
+     * 召回工具（M3-03）：在这一段对话的历史里按关键词回查。
      *
      * <p>注册成 {@code ToolCallback} 就会被 {@code AgentAutoConfiguration#chatClient} 收进清单，
      * 调用方不需要知道有"回忆"这个能力。工具检索开着时它一样会先被索引、
      * 模型检索到了才看得见——不影响这里的装配。
      *
-     * <p><b>工具是单例，userId 不是</b>：这个 bean 上没有绑定任何人，每次调用都从
-     * {@code ToolContext} 里取当前身份再造一个召回器（见 {@link RecallSessionTool}）。
-     * 把身份绑在这个 bean 上，等于所有人的上下文里都装着第一个人的历史。
+     * <p><b>工具是单例，身份与会话都不是</b>：这个 bean 上没有绑定任何人、也没绑定哪一段对话，
+     * 每次调用都从 {@code ToolContext} 里取当前身份与会话 id（见 {@link RecallSessionTool}）。
+     * 把身份或会话绑在这个 bean 上，等于所有人的上下文里都装着第一个人的历史。
      *
      * <p>它拿到的是包了降级的 {@link FaultTolerantSessionService}：库挂的时候这里是
      * "没找到"，不是整轮 500。召回失败与记忆失败是同一类——都只影响这一段附加信息。
@@ -229,6 +231,42 @@ public class SessionMemoryConfiguration implements DisposableBean {
     @Bean
     public ToolTierRegistry recallSessionTierRegistry() {
         return ToolTierRegistry.sameFor(List.of(RecallSessionTool.TOOL_NAME), ToolTier.MINIMAL);
+    }
+
+    /**
+     * 会话段的指针（ADR-0026）。表在 {@code claw4j_session}，但这个 bean 用的是<b>主连接池</b>。
+     *
+     * <p>与会话仓储那一路不同：框架生成的 SQL 不带前缀，所以那边必须另开一个池把
+     * {@code currentSchema} 指过去；这里的 SQL 全在我们手里、表名写全限定，
+     * 不需要靠连接的 search_path。少一个 {@code DataSource} 的收益是实的——
+     * 容器里出现两个，{@code @ConditionalOnSingleCandidate(DataSource.class)} 就不再成立，
+     * 一整套 JDBC 自动配置会安静地不装配。
+     */
+    @Bean
+    @ConditionalOnMissingBean(ConversationPointerStore.class)
+    public ConversationPointerStore conversationPointerStore(JdbcTemplate jdbc) {
+        return new JdbcConversationPointerStore(jdbc);
+    }
+
+    /**
+     * 段怎么算：跨天或空闲，谁先到算谁。
+     *
+     * <p><b>时钟显式传 {@code systemUTC}</b>：逻辑日是按业务时区算的
+     * （{@link SessionResetProperties#logicalDayOf}），而 {@code Instant} 本身没有时区，
+     * 所以这里用哪个 {@code Clock} 不影响"今天是哪天"——影响它的只有 zone 参数。
+     * 写死 UTC 是为了让这一点在读代码时是显式的，不是靠"反正 systemDefault 也是对的"。
+     *
+     * <p>{@code MeterRegistry} 走 {@code ObjectProvider}：装不装 actuator 只影响
+     * 指针失败的计数报不报得出去，不影响该不该换段。
+     */
+    @Bean
+    @ConditionalOnMissingBean(ConversationPointers.class)
+    public ConversationPointers conversationPointers(ConversationPointerStore store,
+                                                     SessionResetProperties reset,
+                                                     AgentProperties agent,
+                                                     ObjectProvider<MeterRegistry> meterRegistry) {
+        return new ConversationPointers(store, reset, agent.zone(), Clock.systemUTC(),
+                meterRegistry.getIfAvailable());
     }
 
     /**

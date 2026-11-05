@@ -1,6 +1,6 @@
 # 01 · 会话段与指针：一段对话有开始也有结束
 
-**Status:** ready-for-agent
+**Status:** resolved（2026-11-05）
 **Blocked by:** 无（ADR-0026 已裁）
 
 ## 为什么
@@ -144,26 +144,88 @@ claw4j:
 
 ## 验收判据
 
-- [ ] **同一天连续两条，会话 id 相等**：同一 owner / 通道 / chatId，`now` 相差一小时，
+- [x] **同一天连续两条，会话 id 相等**：同一 owner / 通道 / chatId，`now` 相差一小时，
       两次 `sessionIdOf` 的段相同。反例：把段写成 `now` 的毫秒 → 每条消息都是新会话。
-- [ ] **空闲超过阈值后不相等**：`touched_at` 距今超过 `idle-minutes`，段必须换。
+      证据：`SessionMemoryTest#sessionIdFollowsIdentityAndPermissions`（`isEqualTo(today)`）。
+- [x] **空闲超过阈值后不相等**：`touched_at` 距今超过 `idle-minutes`，段必须换。
       反例：只在 `day_started` 变化时换段 → 这条红。
-- [ ] **跨过 `at-hour` 不相等**：`day_started` 不是今天（按 `claw4j.agent.zone`）时必须换。
+      证据：同一条用例的 `isNotEqualTo(today)`；真库上另一条在
+      `RunSchemaSqlTest#budgetColumnsAccumulateAndThePointerKeepsOneRow`。
+- [x] **跨过 `at-hour` 不相等**：`day_started` 不是今天（按 `claw4j.agent.zone`）时必须换。
       反例：用 UTC 的日期 → 东八区凌晨 0~8 点的行为错，而测试在 CI（UTC）上是绿的。
-- [ ] **`touched_at` 每次都刷新**：不换段的那次调用之后，`touched_at` 必须前进。
+      证据：同一条用例用东八区 03:59 与 04:00（相差一分钟，idle 不可能触发）断言不相等。
+- [x] **`touched_at` 每次都刷新**：不换段的那次调用之后，`touched_at` 必须前进。
       反例：轮换用 `do update … where 过期` → 这条红（而且是"120 分钟后每句话都换段"那种红）。
-- [ ] **轮换是一条语句**：用一个计数型 `JdbcTemplate` 替身断言一次调用只发一条 SQL。
+      证据：`RunSchemaSqlTest#budgetColumnsAccumulateAndThePointerKeepsOneRow` 的 `isAfter(tenAm)`。
+- [x] **轮换是一条语句**：用一个计数型 `JdbcTemplate` 替身断言一次调用只发一条 SQL。
       反例：写成"先 select 再 insert/update" → 计数 2 或 3，红。
-- [ ] **指针挂了不拦话**：store 抛异常时 `sessionIdOf` 仍返回一个可用的老形状 id，
+      证据：`SessionMemoryTest#sessionIdFollowsIdentityAndPermissions` 里
+      `verify(jdbc, times(1)).queryForObject(...)` + `verifyNoMoreInteractions(jdbc)`。
+- [x] **指针挂了不拦话**：store 抛异常时 `sessionIdOf` 仍返回一个可用的老形状 id，
       并计 `claw4j.session.pointer.failures`。反例：直接把异常抛出去 → 整轮 500。
-- [ ] **召回的身份校验没被段破坏**：带段的 id 仍以 `PREFIX + owner + ":"` 开头，
+      证据：同一条用例用 `SimpleMeterRegistry` 断言 `isEmpty()` 与计数为 1.0。
+- [x] **召回的身份校验没被段破坏**：带段的 id 仍以 `PREFIX + owner + ":"` 开头，
       `belongsTo` 通过；换成别人的 owner 仍拒绝。反例：段拼在 owner 前面 → 校验失效。
-- [ ] **审批续跑不重新起名**：`runs.sessionOf(runId)` 有值时，续跑用的就是那个带段的 id；
+      证据：`ToolGovernanceTest` 的 `CURRENT_SESSION` 改成带段，整个召回那一组 20 条仍全绿；
+      `anotherUserSeesNothing` / `downgradedUserLosesItsOwnHistory` 继续挡越权。
+- [x] **审批续跑不重新起名**：`runs.sessionOf(runId)` 有值时，续跑用的就是那个带段的 id；
       只有读不到才落到无段的老形状。反例：续跑重新走一遍指针 → 审批结果落进另一段对话。
-- [ ] **`claw4j.run.budget.idle-minutes` 不存在了**：配置里搜不到这个键，
+      证据：`ChatClientAgentPort#resume` 未改（`sessionOf(runId)` 优先、`sessionIdOf(owner, null, null)`
+      兜底）；**这一条是读代码确认的，没有反例**——续跑那条路没有可注入的入站消息，
+      要造它得先给 `RunResumer` 一条测试入口，不在本票范围。记在这里，不当成已验证。
+- [x] **`claw4j.run.budget.idle-minutes` 不存在了**：配置里搜不到这个键，
       `RunBudgetProperties` 也没有对应字段。反例：留着它 → 两处定义，下次改一处。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0；`claw4j-agent` 仍 10 文件 / 每文件 ≤20 方法，
-      行覆盖率不低于 60%。
+      证据：`grep -rn "run\.budget\.idle\|idle-minutes"` 在 `src/main` 里零命中
+      （只剩 `SessionResetProperties` 与注释里的"曾经存在"）；`RunBudgetProperties` 三个组件。
+      与上一条同样，**这是搜出来的，不是测出来的**。
+- [x] `./scripts/verify.sh` 全绿，跳过 0；`claw4j-agent` 仍 10 文件 / 每文件 ≤20 方法，
+      行覆盖率不低于 60%。证据：672 条、失败 0、跳过 0，agent 66.3%（10 文件 / 20 方法）。
+
+## 实现记录
+
+### 落在哪儿
+
+| 东西 | 位置 |
+| --- | --- |
+| 表 | `V17__conversation_pointer.sql`（`claw4j_session.conversation_pointer`） |
+| 一条语句 | `JdbcConversationPointerStore`：两条 SQL（带日历 / 只看空闲），`on conflict … case … returning` |
+| 判定与降级 | `ConversationPointers`：算 `freshSegment` / `idleBefore` / 逻辑日，吞异常 + 计数 + 一次 WARN |
+| 配置 | `SessionResetProperties`（`claw4j.session.reset.*`） |
+| 拼 id | `SessionKeys#sessionIdOf(owner, channel, chatId, segment)`，空段 = 老形状 |
+| 调用点 | `ChatClientAgentPort#sessionIdOf(message, owner)`，`reply` 与 `stream` 共用 |
+
+### 与票面的四处偏差
+
+1. **指针用主连接池 + 全限定表名**，不是会话那个池。会话池不注册成 bean（`SessionMemoryConfiguration`
+   的注释写了原因），而容器里出现第二个 `DataSource` 会安静地打掉一整套 JDBC 自动配置。
+   这里的 SQL 全在我们手里，不需要靠 `search_path`。
+2. **`atHour` 是 `Integer` 而不是 `int`**。`int` 在配置缺失时拿到 0，而 0 是合法值（每天零点换段），
+   于是"没配"与"配了 0 点"无法区分，默认值 4 永远用不上。
+3. **`RunBudget` 构造多一个 `idleMillis`**（三个调用点跟着改）。它没有直接注入
+   `SessionResetProperties`：`agent.run` 不该为了一个数去依赖 `agent.session`。
+4. **判据 7/8/9 的反例只做了 7 的一半**：7 用"把 `CURRENT_SESSION` 改成带段"验了正向，
+   8 与 9 是读代码 + 搜索确认。三条都写在上面，没有当成"跑过反例"。
+
+### 六条反例，跑完复原
+
+| # | 改坏什么 | 红了哪条 |
+| --- | --- | --- |
+| 1 | `segmentOf` 直接返回新段（不查库） | `SessionMemoryTest` …`[同一天连着说两句就换段…]` |
+| 2 | SQL 的日历分支去掉 `touched_at < ?` | `RunSchemaSqlTest` …`[空过阈值必须换段]` |
+| 3 | `logicalDayOf` 用 `ZoneOffset.UTC` | `SessionMemoryTest` …`[04:00 是逻辑日的分界点…]` |
+| 4 | SQL 的 `touched_at = excluded.touched_at` 改成读旧值 | `RunSchemaSqlTest` …`[不换段的那一次也要刷新 touched_at…]` |
+| 5 | `segmentOf` 里先 `queryForList` 再写 | `SessionMemoryTest` 的 `verifyNoMoreInteractions` |
+| 6 | 降级分支改成 `throw unreadable` | `SessionMemoryTest` 直接报 `IllegalStateException: 表还没迁` |
+
+反例 2 第一次就失败了一次：断言写的是"从最初那个时刻起 121 分钟"，而第二次访问已经把
+`touched_at` 推到了第 61 秒，于是 `touched_at < idleBefore` 落在等号上、不换段。
+判定是**严格小于**，"超过阈值"本来就该这样——错的是断言，不是实现。改成"从上次说话再空 121 分钟"。
+
+### 一个没关掉的东西
+
+票面第 107 行那个窗口还在：两条消息同时跨过 4:00 时，各自 `case` 出新段，后写的覆盖先写的。
+01 只做到"语句级原子"，做不到"整次访问原子"——那要 02 的 lane。**01 与 02 连着发版**。
+
 
 ## 收票时要补的三件事
 

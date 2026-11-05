@@ -13,6 +13,7 @@ import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.agent.schedule.ScheduleStore;
 import io.github.claw4j.agent.schedule.ScheduleTools;
+import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalCards;
@@ -96,7 +97,7 @@ import java.util.Map;
 @ConditionalOnProperty(prefix = "claw4j.run", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableScheduling
 @EnableConfigurationProperties({RunBudgetProperties.class, ApprovalProperties.class,
-        ScheduleProperties.class, AuditProperties.class})
+        ScheduleProperties.class, AuditProperties.class, SessionResetProperties.class})
 public class RunPersistenceConfiguration {
 
     @Bean
@@ -202,8 +203,10 @@ public class RunPersistenceConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(RunBudget.class)
-    public RunBudget runBudget(RunStore runs, RunBudgetProperties properties) {
-        return new RunBudget(runs, properties);
+    public RunBudget runBudget(RunStore runs, RunBudgetProperties properties,
+                               SessionResetProperties reset) {
+        // 空闲窗口从会话那边来（ADR-0026）：额度因换段清零，这里是"换不了段的旧数据"的兜底。
+        return new RunBudget(runs, properties, reset.idleMillis());
     }
 
     /**

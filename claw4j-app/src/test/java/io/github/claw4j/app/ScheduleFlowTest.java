@@ -9,6 +9,7 @@ import io.github.claw4j.agent.run.JdbcRunStore;
 import io.github.claw4j.agent.run.Run;
 import io.github.claw4j.agent.run.RunBudget;
 import io.github.claw4j.agent.run.RunBudgetProperties;
+import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.run.RunStatus;
 import io.github.claw4j.agent.schedule.Schedule;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
@@ -484,7 +485,8 @@ class ScheduleFlowTest {
      * 以及<b>每次运行单独计预算</b>（两次到点各记一笔，不是合成两笔）。
      */
     private ChatClientAgentPort toolCallingPort() {
-        RunBudget budget = new RunBudget(runs, RunBudgetProperties.defaults());
+        RunBudget budget = new RunBudget(runs, RunBudgetProperties.defaults(),
+                SessionResetProperties.defaults().idleMillis());
         ToolCallback metered = new MeteredToolCallback(new RecordingTool(seenPrincipals), null, budget);
         ChatClient chat = ChatClient.builder(new ToolThenAnswerModel(), ObservationRegistry.NOOP, null, null,
                         ToolCallingAdvisor.builder()

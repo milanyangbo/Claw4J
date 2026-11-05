@@ -9,10 +9,17 @@ import java.util.Objects;
  * 会话 id 怎么来。两把键，管两件事，不要混。
  *
  * <p><b>{@link #ownerOf} = 归属键</b>：{@code userId@权限指纹}。run 的 owner、
- * 审计、定时任务的归属、跨会话召回都用它。回答的是"这是谁的东西"。
+ * 审计、定时任务的归属都用它。回答的是"这是谁的东西"。
  *
- * <p><b>{@link #sessionIdOf} = 对话键</b>：{@code 前缀 + owner + 通道 + chatId}。
+ * <p><b>{@link #sessionIdOf} = 对话键</b>：{@code 前缀 + owner + 通道 + chatId + 段}。
  * 只用于对话历史（记忆 Advisor 的 sessionId）。回答的是"这是哪一段话"。
+ *
+ * <p><b>段是对话键的第三件事</b>（ADR-0026）：前两件回答"谁的""哪条通道的哪个地址"，
+ * 都是<b>不随时间变</b>的；段回答"第几世"，由 {@link ConversationPointers} 按
+ * 跨天 / 空闲轮换。没有段的时候，"一段对话"没有结束这个动作——记忆永不换新，
+ * 预算只能自己按空闲猜一套，用户也没有"开一段新对话"的手段。
+ * 段的形状与判定不在这两个方法里：这里只负责拼，判定在
+ * {@link ConversationPointers}，因为判定要读库。
  *
  * <p><b>为什么必须分开</b>：同一个人在网页私聊里问"华东成交额"答了 128,400，
  * 十分钟后在项目群里问"合同违约金怎么算"。如果两段共用一个会话，
@@ -62,11 +69,12 @@ public final class SessionKeys {
     }
 
     /**
-     * 归属键：{@code userId@权限指纹}。会话表的 {@code user_id} 列与跨会话召回都认它。
+     * 归属键：{@code userId@权限指纹}。会话表的 {@code user_id} 列、run 的归属、
+     * 审计、定时任务都认它，召回不认——召回按会话查（见 {@link RecallSessionTool}）。
      *
-     * <p>召回必须用同一个键：{@code CrossSessionRecallTools} 走
-     * {@code findEventsByUserId}（{@code WHERE user_id = ?}），传裸 userId 就两种权限都能查到，
-     * 换角色这个防线在那条路上等于没做。
+     * <p>它仍然要掺权限指纹：会话表的 {@code user_id} 存的就是它，而会话内容是按权限隔离的；
+     * 写裸 userId 会让"降权之后什么都想不起来"这条在存储这一层失效——
+     * 两段会话落在同一个 user_id 下，将来任何一条按 user_id 汇总的查询都会把它们混在一起。
      *
      * @throws IllegalArgumentException userId 为空时。空的后果不是"存不下"，
      *                                  而是所有人共用一个会话——那比没有记忆更糟，
@@ -101,6 +109,34 @@ public final class SessionKeys {
                 + SESSION_SEPARATOR + orPlaceholder(chatId);
     }
 
+    /**
+     * 带段的对话键：{@code claw4j:user:<owner>:<通道>:<chatId>:<段>}（ADR-0026）。
+     *
+     * <p>段是"这段对话的第几世"。它由 {@link ConversationPointers} 按时间给（跨天或空闲
+     * 就换一个），所以 <b>{@code sessionId} 从"一段对话的固定坐标"变成了"某一次的坐标"</b>：
+     * 换段之后记忆、预算、召回全都从零开始，而旧段还在库里只读。
+     *
+     * <p><b>空段 = 老形状</b>，这一支是刻意留的，只给两处用：审批续跑读不到 run 上的
+     * {@code session_id} 时的回落，以及段上线之前就存在的那些会话。它们<b>只读不写</b>——
+     * 新的一轮永远带段，因为不带段的话，换段就等于没发生过。
+     *
+     * <p><b>段拼在最后，不拼在 owner 前面</b>：召回的身份校验是
+     * {@code sessionId.startsWith(PREFIX + owner + ":")}（{@code RecallSessionTool}）。
+     * 拼在前面会让一个人的历史对另一个人成立，而那是一条静默的越权读。
+     *
+     * @param segment 空或 null 表示"不加段"（见上）
+     */
+    public static String sessionIdOf(String owner, String channel, String chatId, String segment) {
+        String base = sessionIdOf(owner, channel, chatId);
+        return segment == null || segment.isBlank() ? base : base + SESSION_SEPARATOR + segment;
+    }
+
+    /** 便捷入口：与三参版对称，指纹只算一次。 */
+    public static String sessionIdOf(Principal principal, String channel, String chatId,
+                                     String segment) {
+        return sessionIdOf(ownerOf(principal), channel, chatId, segment);
+    }
+
     /** 便捷入口：一轮请求里 owner 与 sessionId 都要算，指纹只算一次。 */
     public static String sessionIdOf(Principal principal, String channel, String chatId) {
         return sessionIdOf(ownerOf(principal), channel, chatId);
@@ -108,5 +144,14 @@ public final class SessionKeys {
 
     private static String orPlaceholder(String part) {
         return part == null || part.isBlank() ? NO_CHAT : part.trim();
+    }
+
+    /**
+     * 缺省落占位。给 {@link ConversationPointers} 用：它要拿同样规整过的三样去查指针，
+     * 两边对 {@code null} 与空串的处理必须一致——否则 {@code sessionId} 里的
+     * {@code "-"} 与指针行里的 {@code ""} 会是同一条对话的两个身份。
+     */
+    static String placeholder(String part) {
+        return orPlaceholder(part);
     }
 }

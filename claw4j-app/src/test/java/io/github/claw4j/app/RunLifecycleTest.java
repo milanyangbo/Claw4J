@@ -14,6 +14,7 @@ import io.github.claw4j.agent.run.RunDelivery;
 import io.github.claw4j.agent.run.RunStatus;
 import io.github.claw4j.agent.run.RunStore;
 import io.github.claw4j.agent.run.Step;
+import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -106,7 +107,8 @@ class RunLifecycleTest {
         jdbc.update("delete from claw4j_run.agent_step");
         jdbc.update("delete from claw4j_run.agent_run");
         runs = new JdbcRunStore(jdbc);
-        budget = new RunBudget(runs, RunBudgetProperties.defaults());
+        budget = new RunBudget(runs, RunBudgetProperties.defaults(),
+                SessionResetProperties.defaults().idleMillis());
     }
 
     // ---------------------------------------------------------------- 花了多少（A04）

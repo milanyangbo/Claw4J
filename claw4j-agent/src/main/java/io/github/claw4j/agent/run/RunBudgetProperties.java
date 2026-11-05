@@ -10,10 +10,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 三轮各调 6 次一共 18 次，全部放行。按 {@code session_id} 相同的行求和之后，
  * 同一个 6 才真的是"这段对话一共能烧多少"。
  *
- * <p><b>会话靠空闲过期，不靠"任务完成"</b>：与 OpenClaw 的 idle reset 同构
- * （{@code idleMinutes} 默认 120）。行业里没有哪个 Agent 框架去判定"用户这件事做完了"——
- * 判定不了，判错的代价是把人卡住。能判的只有"多久没动静"。
- * 所以 {@link #idleMillis()} 就是"一段会话的寿命"：连续几轮共享额度，隔了两小时再来重新开始。
+ * <p><b>会话什么时候结束，不在这里定义</b>：空闲阈值曾经是本类的一个字段
+ * （{@code claw4j.run.budget.idle-minutes}），那是"会话结束"的第二个定义——
+ * 段（ADR-0026）把它收走了，现在唯一的口径是 {@code claw4j.session.reset.idle-minutes}。
+ * 额度因为"换段"而清零，不再自己判一次空闲：两处都判的话，下一次改 idle 的人
+ * 只会改一处，另一处看起来还在生效。
  *
  * <p><b>工具调用取 6</b>：一件要调 20 次工具的事不是"该把上限调大"，
  * 是"该把它拆成几件事"，或者该用委派把中间过程隔离掉（ADR-0012）。
@@ -29,7 +30,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 真正该修的是让模型早点收尾的提示词与工具描述，不是这个数。
  */
 @ConfigurationProperties("claw4j.run.budget")
-public record RunBudgetProperties(int maxToolCalls, long maxTokens, long maxSeconds, long idleMinutes) {
+public record RunBudgetProperties(int maxToolCalls, long maxTokens, long maxSeconds) {
 
     public static final int DEFAULT_MAX_TOOL_CALLS = 6;
 
@@ -37,29 +38,20 @@ public record RunBudgetProperties(int maxToolCalls, long maxTokens, long maxSeco
 
     public static final long DEFAULT_MAX_SECONDS = 900L;
 
-    /** 一段会话多久没动静就算结束。OpenClaw 的 {@code idleMinutes} 默认也是 120。 */
-    public static final long DEFAULT_IDLE_MINUTES = 120L;
-
     public RunBudgetProperties {
         // 0 与"没配"落到同一个默认值上：这两者的区别不值得单独解释一层。
         maxToolCalls = maxToolCalls <= 0 ? DEFAULT_MAX_TOOL_CALLS : maxToolCalls;
         maxTokens = maxTokens <= 0 ? DEFAULT_MAX_TOKENS : maxTokens;
         maxSeconds = maxSeconds <= 0 ? DEFAULT_MAX_SECONDS : maxSeconds;
-        idleMinutes = idleMinutes <= 0 ? DEFAULT_IDLE_MINUTES : idleMinutes;
     }
 
     /** 全部走默认值。配置绑定在键缺失时传的就是 0，两条路落到同一处。 */
     public static RunBudgetProperties defaults() {
-        return new RunBudgetProperties(0, 0L, 0L, 0L);
+        return new RunBudgetProperties(0, 0L, 0L);
     }
 
     /** 耗时上限换算成毫秒：库里记的是毫秒，yml 里写秒（没有人想写 900000）。 */
     public long maxMillis() {
         return maxSeconds * 1000L;
-    }
-
-    /** 会话的空闲窗口，毫秒。聚合用量时只算这个窗口内动过的 run。 */
-    public long idleMillis() {
-        return idleMinutes * 60_000L;
     }
 }

@@ -17,6 +17,7 @@ import io.github.claw4j.agent.run.Step;
 import io.github.claw4j.agent.run.StepInput;
 import io.github.claw4j.agent.run.StepKind;
 import io.github.claw4j.agent.run.StepStatus;
+import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
@@ -28,6 +29,7 @@ import io.github.claw4j.domain.principal.Principal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
 
@@ -139,6 +141,16 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      */
     private final RunTracer tracer;
 
+    /**
+     * 这段对话现在叫什么（ADR-0026）。可以为 null——没有会话存储就没有"段"这回事，
+     * 于是 {@code sessionId} 退回加段之前的形状，与改造之前逐字相同。
+     *
+     * <p><b>它<b>不</b>属于 run 那一组</b>：run 回答"这件事做完了没有"，段回答
+     * "这是哪一段对话"。两者的寿命不同（run 一轮、段跨多轮），所以开关也不同——
+     * {@code claw4j.run.enabled=false} 时 run 相关的一整组缺席，段照常工作。
+     */
+    private final ConversationPointers pointers;
+
     public ChatClientAgentPort(ChatClient chatClient) {
         this(chatClient, null, null, null, null);
     }
@@ -167,12 +179,33 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
                                RunBudget budget, RunDelivery delivery, RunTracer tracer) {
+        this(chatClient, compactor, runs, budget, delivery, tracer, null);
+    }
+
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
+                               RunBudget budget, RunDelivery delivery, RunTracer tracer,
+                               ConversationPointers pointers) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
         this.runs = runs;
         this.budget = budget;
         this.delivery = delivery;
         this.tracer = tracer == null ? RunTracer.NONE : tracer;
+        this.pointers = pointers;
+    }
+
+    /**
+     * 这一轮的对话键：段由指针决定，指针缺席或读不到就是加段之前的形状。
+     *
+     * <p>抽出来是因为 {@code reply} 与 {@code stream} 两条路各要算一次，
+     * 而它们必须算出<b>同一个</b> id——一条消息走流式、下一条走非流式是常态，
+     * 两处各写一遍的话，"什么算同一段对话"就有了两个答案。
+     */
+    private String sessionIdOf(InboundMessage message, String owner) {
+        String segment = pointers == null
+                ? ""
+                : pointers.segmentOf(owner, message.channel(), message.chatId());
+        return SessionKeys.sessionIdOf(owner, message.channel(), message.chatId(), segment);
     }
 
     /**
@@ -236,7 +269,8 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         String owner = SessionKeys.ownerOf(message.principal());
         // 对话键与归属键是两把：owner 管"这是谁的东西"，sessionId 管"这是哪一段话"。
         // 群聊与私聊必须是两段——同一份权限下，听众可以完全不同（ADR-0025）。
-        String sessionId = SessionKeys.sessionIdOf(owner, message.channel(), message.chatId());
+        // 段由指针给（ADR-0026）：跨天或空闲就换一个，于是"这段对话什么时候结束"有了落点。
+        String sessionId = sessionIdOf(message, owner);
         String masked = PiiRedactor.mask(message.text());
         Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
@@ -283,7 +317,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         Objects.requireNonNull(onChunk, "onChunk");
 
         String owner = SessionKeys.ownerOf(message.principal());
-        String sessionId = SessionKeys.sessionIdOf(owner, message.channel(), message.chatId());
+        String sessionId = sessionIdOf(message, owner);
         String masked = PiiRedactor.mask(message.text());
         Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
@@ -764,6 +798,12 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         if (runId != null) {
             toolContext.put(ContextKeys.RUN_ID, runId);
         }
+        // 会话 id 也进工具上下文：recall_session 只查本段对话，它得知道"这一段"是哪一段。
+        // 键用框架的 ChatMemory.CONVERSATION_ID，与它自己的会话工具（SessionEventTools）
+        // 是同一个字符串——哪天换成框架那个工具，键名不必再改一次。
+        // 放这里而不是让工具自己按 principal 推：会话键里还有通道与 chatId，工具推不出来，
+        // 让它去猜就会退化成"这个人的所有会话"，而那正是私聊内容被带进群聊的那条路。
+        toolContext.put(ChatMemory.CONVERSATION_ID, sessionId);
         return chatClient.prompt(masked)
                 .toolContext(toolContext)
                 .advisors(spec -> {

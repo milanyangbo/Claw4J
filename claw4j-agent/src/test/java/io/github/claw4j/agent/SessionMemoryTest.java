@@ -1,10 +1,14 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.session.ConversationPointerStore;
+import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.FaultTolerantSessionService;
+import io.github.claw4j.agent.session.JdbcConversationPointerStore;
 import io.github.claw4j.agent.session.SessionCleanup;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
+import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
@@ -30,15 +34,20 @@ import org.springframework.ai.session.compaction.CompactionTrigger;
 import org.springframework.ai.session.compaction.RecursiveSummarizationCompactionStrategy;
 import org.springframework.ai.session.compaction.TokenCountTrigger;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.CannotCreateTransactionException;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
@@ -48,7 +57,12 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -238,7 +252,7 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("会话 id 跟着「人 + 权限 + 这一段对话」走：换权限换会话，换群也换会话")
+    @DisplayName("会话 id 跟着「人 + 权限 + 这一段对话 + 段」走：前四样稳定，段按时间换")
     void sessionIdFollowsIdentityAndPermissions() {
         Principal who = Principal.readOnly("u-1");
 
@@ -261,6 +275,104 @@ class SessionMemoryTest {
         assertThat(SessionKeys.sessionIdOf(who, "web", null))
                 .as("没有 chatId 的消息落在占位段，同通道共享——但不会串到别的通道去")
                 .isNotEqualTo(SessionKeys.sessionIdOf(who, "feishu", null));
+
+        // ---- 段：形状与回落（ADR-0026）。
+        String segmented = SessionKeys.sessionIdOf(who, "web", "c-1", "1762300000000-abcd");
+        assertThat(segmented)
+                .as("段拼在最后。拼在 owner 前面会让召回的身份校验（startsWith）对别人成立")
+                .startsWith(SessionKeys.PREFIX + "u-1@")
+                .endsWith(":web:c-1:1762300000000-abcd")
+                .isNotEqualTo(SessionKeys.sessionIdOf(who, "web", "c-1"));
+        assertThat(SessionKeys.sessionIdOf(who, "web", "c-1", ""))
+                .as("空段 = 加段之前的形状：审批续跑读不到 run 上的 session_id 时走这条")
+                .isEqualTo(SessionKeys.sessionIdOf(who, "web", "c-1"));
+
+        // ---- 段：什么时候换。判定在内存实现里，与生产 SQL 同语义；
+        // 真正的 SQL 语义（一条语句、每次都刷新 touched_at）由 RunSchemaSqlTest 用真库验。
+        ZoneId zone = ZoneId.of("Asia/Shanghai");
+        MemoryPointers store = new MemoryPointers();
+        Instant first = Instant.parse("2026-11-05T02:00:00Z");   // 东八区 11-05 10:00
+        String today = pointersAt(store, first, zone).segmentOf("u-1@fp", "web", "c-1");
+        assertThat(pointersAt(store, first.plusSeconds(3600), zone)
+                .segmentOf("u-1@fp", "web", "c-1"))
+                .as("同一天连着说两句就换段，等于每一句都是新对话：记忆与额度都不累积")
+                .isEqualTo(today);
+        assertThat(pointersAt(store, first.plusSeconds(3600 + 121 * 60), zone)
+                .segmentOf("u-1@fp", "web", "c-1"))
+                .as("空闲超过阈值必须换：不换的话这一段永远不会结束")
+                .isNotEqualTo(today);
+
+        // 东八区 03:59 与 04:00 只差一分钟，idle 不可能触发，能触发的只有日历。
+        MemoryPointers crossing = new MemoryPointers();
+        String beforeBreak = pointersAt(crossing, Instant.parse("2026-11-05T19:59:00Z"), zone)
+                .segmentOf("u-1@fp", "web", "c-1");
+        assertThat(pointersAt(crossing, Instant.parse("2026-11-05T20:00:00Z"), zone)
+                .segmentOf("u-1@fp", "web", "c-1"))
+                .as("04:00 是逻辑日的分界点。用 UTC 的日期来判断的话，东八区凌晨 0~8 点全错，"
+                        + "而 CI 跑在 UTC 上是绿的")
+                .isNotEqualTo(beforeBreak);
+
+        // ---- 一次访问只发一条 SQL。写成"先 select 再 insert/update"的话这里是 2~3 条，
+        // 而那个形状的代价不只是往返：两次调用之间的窗口正是并发下同一次轮换被做两遍的地方。
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        doReturn("seg-1").when(jdbc)
+                .queryForObject(anyString(), eq(String.class), any(Object[].class));
+        assertThat(new JdbcConversationPointerStore(jdbc).segmentOf(
+                new ConversationPointerStore.Key("u-1@fp", "web", "c-1"),
+                new ConversationPointerStore.Rotation("fresh", first, first.minusSeconds(7200),
+                        LocalDate.of(2026, 11, 5), true)))
+                .contains("seg-1");
+        verify(jdbc, times(1)).queryForObject(anyString(), eq(String.class), any(Object[].class));
+        verifyNoMoreInteractions(jdbc);
+
+        // ---- 指针挂了不拦话：退回加段之前的形状，并计数。
+        // 抛出去会把每一句话都打成 500，而根因只是少了一张表——两件事的代价差得太远。
+        SimpleMeterRegistry metrics = new SimpleMeterRegistry();
+        ConversationPointers broken = new ConversationPointers(
+                (key, rotation) -> {
+                    throw new IllegalStateException("表还没迁");
+                },
+                SessionResetProperties.defaults(), zone, Clock.fixed(first, zone), metrics);
+        assertThat(broken.segmentOf("u-1@fp", "web", "c-1"))
+                .as("降级之后所有对话退到同一个永不过期的 id，也就是回到改造之前的行为")
+                .isEmpty();
+        assertThat(metrics.get(ConversationPointers.FAILURE_METRIC).counter().count())
+                .as("这个计数不为 0 就说明段当前没生效；少记一笔可以，不让它变成静默")
+                .isEqualTo(1.0);
+    }
+
+    private static ConversationPointers pointersAt(MemoryPointers store, Instant now, ZoneId zone) {
+        return new ConversationPointers(store, SessionResetProperties.defaults(), zone,
+                Clock.fixed(now, zone), null);
+    }
+
+    /**
+     * 指针的内存实现：语义与 {@code JdbcConversationPointerStore} 的两条 SQL 对齐——
+     * 过期就换段、没过期就沿用并刷新 touched_at。
+     *
+     * <p>它不替代 SQL 那条用例，只让"时间怎么驱动段"能单独验：那三段的输入是时刻，
+     * 不是数据库。反过来说，<b>它红了不代表生产也红</b>——两边是同一套语义的两个实现，
+     * 所以真正的 SQL 仍然由 {@code RunSchemaSqlTest} 在真 Postgres 上验。
+     */
+    private static final class MemoryPointers implements ConversationPointerStore {
+
+        private final Map<Key, Row> rows = new LinkedHashMap<>();
+
+        @Override
+        public Optional<String> segmentOf(Key key, Rotation rotation) {
+            Row old = rows.get(key);
+            boolean stale = old == null
+                    || old.touched().isBefore(rotation.idleBefore())
+                    || (rotation.dailyGate() && !old.day().equals(rotation.today()));
+            Row next = stale
+                    ? new Row(rotation.freshSegment(), rotation.now(), rotation.today())
+                    : new Row(old.segment(), rotation.now(), old.day());
+            rows.put(key, next);
+            return Optional.of(next.segment());
+        }
+
+        private record Row(String segment, Instant touched, LocalDate day) {
+        }
     }
 
     @Test

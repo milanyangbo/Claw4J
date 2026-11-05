@@ -12,6 +12,7 @@ import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.run.RunBudget;
 import io.github.claw4j.agent.run.RunDelivery;
 import io.github.claw4j.agent.run.RunStore;
+import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.port.AgentPort;
@@ -391,7 +392,8 @@ public class AgentAutoConfiguration {
                                ObjectProvider<RunStore> runs,
                                ObjectProvider<RunBudget> budget,
                                ObjectProvider<RunDelivery> delivery,
-                               ObjectProvider<RunTracer> tracer) {
+                               ObjectProvider<RunTracer> tracer,
+                               ObjectProvider<ConversationPointers> pointers) {
         // run、预算、投递都走 ObjectProvider 而不是直接注入：没配存储时它们是缺席而不是失败，
         // 门照常住着，只是"这件事做完了没有"没人记、也没人在看额度（与压缩器同一个判断）。
         // 三者同进同出：预算与收件地址都是 run 的属性，没有 run 就没有可扣的额度、
@@ -400,8 +402,11 @@ public class AgentAutoConfiguration {
         // trace 也一样（P14）：没开观测时传空实现，埋点代码仍然逐字相同地跑一遍——
         // 那不是浪费，是让"开着"与"关着"走同一条路，否则关着的那条路平时不执行，
         // 等开了观测才第一次跑。
+        // 段（ADR-0026）也走 ObjectProvider，但它与 run 那一组不同进同出：
+        // run 回答"这件事做完了没有"，段回答"这是哪一段对话"。关掉 run 存储时，
+        // 对话照样该有开始与结束——那是记忆与预算的事，不是记账的事。
         return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(), runs.getIfAvailable(),
                 budget.getIfAvailable(), delivery.getIfAvailable(),
-                tracer.getIfAvailable(() -> RunTracer.NONE));
+                tracer.getIfAvailable(() -> RunTracer.NONE), pointers.getIfAvailable());
     }
 }

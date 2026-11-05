@@ -12,9 +12,14 @@ import java.util.Optional;
  * "跨轮累计"从来没有发生过：三轮各调 6 次一共 18 次，全部放行。
  * 挂到会话上，"这段对话一共能烧多少"才有地方记。
  *
- * <p><b>会话什么时候结束：靠空闲，不靠"任务完成"</b>。行业里没有哪个 Agent 框架去判定
- * 用户这件事做完了——判不了，而判错的代价是把人卡住。能判的只有"多久没动静"。
- * OpenClaw 的 {@code idleMinutes}（默认 120）做的是同一件事，这里同名同值。
+ * <p><b>会话什么时候结束：由段说了算，这里只跟着它</b>（ADR-0026）。空闲阈值
+ * （{@code claw4j.session.reset.idle-minutes}，默认 120）在会话那一边；
+ * 换段之后 {@code session_id} 变了，这份额度自然从 0 开始——所以本类不再自己判一次空闲。
+ * 两处都判的话，下一次改 idle 的人只会改一处，另一处看起来还在生效。
+ *
+ * <p><b>为什么还留着一个空闲窗口</b>：{@code spent(runId)} 是"这条 run 所属那段会话用了多少"，
+ * 而旧数据（段上线之前建的 run）的 {@code session_id} 永远不变、永远不会换段。
+ * 给一个窗口，那些行才不会把额度永久钉死。新数据走换段，窗口对它们是恒真的。
  *
  * <p><b>读不到用量时放行，不拦活</b>：库没迁、连不上，或者这个 runId 已经不在了，
  * {@link #spent} 就是空。那种情况下预算管不住，而管不住的失败姿势应该是
@@ -36,9 +41,13 @@ public final class RunBudget {
 
     private final RunBudgetProperties caps;
 
-    public RunBudget(RunStore runs, RunBudgetProperties caps) {
+    /** 空闲窗口，毫秒。只对"不换段的旧会话"有意义，见类注释最后一段。 */
+    private final long idleMillis;
+
+    public RunBudget(RunStore runs, RunBudgetProperties caps, long idleMillis) {
         this.runs = Objects.requireNonNull(runs, "runs");
         this.caps = Objects.requireNonNull(caps, "caps");
+        this.idleMillis = idleMillis;
     }
 
     /**
@@ -48,7 +57,7 @@ public final class RunBudget {
      * 这就是"什么时候算完"的答案——不问任务做没做完，只问人还有没有在说。
      */
     public Optional<Budget> spent(String runId) {
-        return runs.spent(runId, Instant.now().minusMillis(caps.idleMillis()));
+        return runs.spent(runId, Instant.now().minusMillis(idleMillis));
     }
 
     /** 三项里有没有一项已经撞线。 */

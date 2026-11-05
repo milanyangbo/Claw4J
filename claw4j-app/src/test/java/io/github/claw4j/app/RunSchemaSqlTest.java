@@ -16,6 +16,9 @@ import io.github.claw4j.agent.run.StepKind;
 import java.time.Instant;
 import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.agent.run.UpdatePlanTool;
+import io.github.claw4j.agent.session.ConversationPointerStore;
+import io.github.claw4j.agent.session.JdbcConversationPointerStore;
+import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.ApprovalLedger;
 import org.flywaydb.core.Flyway;
@@ -30,7 +33,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.Timestamp;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 
@@ -82,6 +87,7 @@ class RunSchemaSqlTest {
 
     @BeforeEach
     void freshTables() {
+        jdbc.update("delete from claw4j_session.conversation_pointer");
         jdbc.update("delete from claw4j_run.approval_request");
         jdbc.update("delete from claw4j_run.agent_step");
         jdbc.update("delete from claw4j_run.agent_run");
@@ -353,8 +359,8 @@ class RunSchemaSqlTest {
      * 后一种写法在两轮并发时会用旧值覆盖新值，表现是额度凭空多出来。
      */
     @Test
-    @DisplayName("用量三项各自累加：默认 0，换一个实例读也是加过的数")
-    void budgetColumnsAccumulateOnTheRunRow() {
+    @DisplayName("用量与会话指针都只在库里长一行：前者累加，后者每次刷新 touched_at")
+    void budgetColumnsAccumulateAndThePointerKeepsOneRow() {
         Run run = runs.start("u-1@fp-1", "fp-1", "对齐三张表的口径").orElseThrow();
         // EPOCH = 窗口永不过期：这条 run 没有会话归属（没 attachSession），
         // 读的就是它自己那一行，这正是这里要验的 SQL 累加
@@ -369,6 +375,58 @@ class RunSchemaSqlTest {
         assertThat(restarted.find(run.id()).orElseThrow().spent())
                 .as("读 run 时也带上用量：停在 budget_exhausted 的 run 只能靠它回答'为什么停'")
                 .isEqualTo(new Budget(3, 1_500L, 3_500L));
+
+        // ---- 会话指针（ADR-0026 / V17）：同一行反复改值，不是每次插一行。
+        // 这里验的是那条 on conflict ... case ... returning 在真 Postgres 上的行为——
+        // 内存实现（SessionMemoryTest）能验"时间怎么驱动段"，但验不到 SQL 本身。
+        ConversationPointerStore pointers = new JdbcConversationPointerStore(jdbc);
+        ZoneId zone = ZoneId.of("Asia/Shanghai");
+        Instant tenAm = Instant.parse("2026-11-05T02:00:00Z");   // 东八区 11-05 10:00
+        ConversationPointerStore.Key key =
+                new ConversationPointerStore.Key("u-1@fp-1", "web", "c-1");
+
+        String first = pointers.segmentOf(key, rotation(tenAm, zone, "s-1")).orElseThrow();
+        String again = pointers.segmentOf(key, rotation(tenAm.plusSeconds(60), zone, "s-2"))
+                .orElseThrow();
+        assertThat(again)
+                .as("同一天连着两句必须是同一段：换段等于换对话，每句都换就没有'这段对话'了")
+                .isEqualTo(first);
+
+        assertThat(jdbc.queryForObject("select touched_at from claw4j_session.conversation_pointer"
+                        + " where owner = ? and channel = ? and chat_id = ?",
+                Timestamp.class, key.owner(), key.channel(), key.chatId()).toInstant())
+                .as("不换段的那一次也要刷新 touched_at。不刷新的话空闲是从这一段的第一句话算起的，"
+                        + "120 分钟之后每句话都会换段——而那一刻之前一切正常")
+                .isAfter(tenAm);
+
+        // 从"上一次说话"（10:01）再空 121 分钟。从 10:00 起算会差一分钟——
+        // 判定是严格小于（超过阈值才算空闲），边界上不换段是对的。
+        assertThat(pointers.segmentOf(key,
+                rotation(tenAm.plusSeconds(60 + 121 * 60), zone, "s-3")).orElseThrow())
+                .as("空过阈值必须换段")
+                .isNotEqualTo(first);
+
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_session.conversation_pointer where owner = ?",
+                Integer.class, key.owner()))
+                .as("换段是同一行改值。插一行的话这个键会越积越多，"
+                        + "而查询'当前段'只能靠 order by，早晚会拿到错的那一行")
+                .isEqualTo(1);
+    }
+
+    /**
+     * 一次访问带来的那一组参数，交给指针 store。
+     *
+     * <p>与 {@code SessionResetProperties} 的默认口径一致：120 分钟空闲、4 点换日、
+     * 日历参与判定。写在这里而不是复用那个类，是因为这条用例要验的是
+     * <b>SQL 对这四个入参的反应</b>，不是配置怎么绑定。
+     */
+    private static ConversationPointerStore.Rotation rotation(Instant now, ZoneId zone,
+                                                              String segment) {
+        return new ConversationPointerStore.Rotation(segment, now,
+                now.minus(Duration.ofMinutes(SessionResetProperties.DEFAULT_IDLE_MINUTES)),
+                now.atZone(zone).minusHours(SessionResetProperties.DEFAULT_AT_HOUR).toLocalDate(),
+                true);
     }
 
     // ---------------------------------------------------------------- 审批（P01）

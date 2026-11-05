@@ -266,8 +266,15 @@ class ToolGovernanceTest {
         return SessionKeys.sessionIdOf(Principal.readOnly(userId), channel, chatId);
     }
 
-    /** 当前这一段对话。 */
-    private static final String CURRENT_SESSION = sessionOf("u-1", "web", "chat-a");
+    /**
+     * 当前这一段对话。<b>带段</b>（ADR-0026）：召回的身份校验是前缀匹配
+     * （{@code startsWith(PREFIX + owner + ":")}），段拼在最后不能影响它。
+     *
+     * <p>故意不给这个常量一个"无段"的形状：如果哪天有人把段拼到 owner 前面，
+     * 下面几条召回用例里"换一个人就看不到"会先红——那正是把越权读变成报错的唯一办法。
+     */
+    private static final String CURRENT_SESSION = SessionKeys.sessionIdOf(
+            Principal.readOnly("u-1"), "web", "chat-a", "1762300000000-abcd");
 
     /** 同一个人的**另外两段**对话：网页上的另一个 chat，以及一个项目群。 */
     private static final String PRIVATE_ELSEWHERE = sessionOf("u-1", "web", "chat-b");

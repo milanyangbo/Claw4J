@@ -60,8 +60,9 @@ psql "$DATABASE_URL" -c "select run_id, channel, channel_ref
 `X-Claw4j-Chat-Id`（可选，不填按用户分）。
 
 **一段对话最多烧多少**：预算按会话累计（ADR-0025），三项分别是工具调用 6 次 / token 10 万 /
-耗时 900 秒（`claw4j.run.budget.*` 可调）。空闲 `claw4j.run.budget.idle-minutes`（默认 120）
-没动静就整段从 0 重新开始——与 OpenClaw 的 idle reset 同构。三项里任何一项撞线，
+耗时 900 秒（`claw4j.run.budget.*` 可调）。一段对话由**段**（ADR-0026）界定：
+跨了逻辑日（默认 4 点）或空闲 `claw4j.session.reset.idle-minutes`（默认 120）就换段，
+换段即换对话，三项从 0 重新开始——与 OpenClaw 的 idle reset 同构。三项里任何一项撞线，
 这一轮就停在那儿：不再调模型，回答里写明是哪一项用完了，库里那一行是 `budget_exhausted`。
 
 ```bash
@@ -71,8 +72,8 @@ psql "$DATABASE_URL" -c "select session_id, tool_calls, tokens, millis, touched_
   from claw4j_run.agent_session_budget order by touched_at desc limit 5"
 psql "$DATABASE_URL" -c "select id, status, budget_used, budget_tokens, budget_ms
   from claw4j_run.agent_run order by created_at desc limit 5"
-# 换一段对话（换 chatId、换通道）就是另一份额度；隔了 idle-minutes 再来也是。
-# 定时任务的 chatId 固定，两次运行落在同一段会话里合成累计，跨过 idle 才清零。
+# 换一段对话（换 chatId、换通道、或跨天/空闲换段）就是另一份额度。
+# 定时任务的 chatId 固定，两次运行落在同一段会话里合成累计，换段才清零。
 ```
 
 ## 0. 起实例
@@ -272,7 +273,8 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | 3 | 同上 | 时间窗正确性 | `t '三周前华东的成交额是多少'` | **77777** |
 | 3 | 同上 | 只读护栏 | `t '用 querySales 执行 delete from sales_order'` | 拒绝执行；门禁 `./mvnw -pl claw4j-example-sales test -Dtest=SalesQueryTest` 也钉着 |
 | 4 | `recall_session` | 会话记忆 | `t '记住：以后我说“口径”指的是排除已取消订单的成交额'` 后 `t '我刚才说的“口径”是什么'` | 第二轮答得出来 |
-| 4 | 同上 | 记忆按「人 + 权限」隔离，不按会话（降权后是另一段会话） | `t '用 recall_session 查一下我早些时候问过哪些口径'` | 能列出上一条；`hit recall_session` +1 |
+| 4 | 同上 | 记忆按「人 + 权限 + 对话」隔离（降权后是另一段会话） | `t '用 recall_session 查一下我早些时候问过哪些口径'` | 能列出上一轮那条；`hit recall_session` +1 |
+| 4 | 同上 | **召回不跨对话**：私聊里的数字不会被群聊取走 | `t '记住：上周华东成交额 128,400，先别外传'`，再换一段对话：`t '用 recall_session 查一下华东成交额'`（换 `-H 'X-Claw4j-Chat-Id: group-a'`） | 第二段答"本段对话里没有找到"；**回答里不出现 128,400** |
 | 5 | `propose_script` | 交脚本草稿（**需先配 `claw4j.generator.*`**） | `t '写一个脚本包，统计 examples/scripts 下有几个包'` | `.claw4j/staging/` 出现候选包；`hit propose_script` +1 |
 | 6 | `update_plan` | 计划外置：写进 run，不放在上下文里 | `t '把华东的口径对齐分成三步做，先列个计划'` | 回答列出三步；`hit update_plan` +1 |
 | 6 | 同上 | 压缩之后仍读得到"还剩什么没做" | `t '接着做，还剩哪几步'`（带上一条返回的 `runId`） | 答得出未完成项的序号；`hit update_plan` +1 |
