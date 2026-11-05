@@ -691,7 +691,7 @@ class ChatPipelineTest {
          * <b>不模仿"降级"</b>——降级那条路由真库那份测试钉着，这里够主链路跑起来就行。
          */
         @Override
-        public Optional<Budget> spent(String runId) {
+        public Optional<Budget> spent(String runId, java.time.Instant idleBefore) {
             return Optional.ofNullable(spent.get(runId));
         }
 

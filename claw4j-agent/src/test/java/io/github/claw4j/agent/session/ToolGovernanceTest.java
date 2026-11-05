@@ -488,7 +488,7 @@ class ToolGovernanceTest {
         }
 
         @Override
-        public Optional<Budget> spent(String runId) {
+        public Optional<Budget> spent(String runId, java.time.Instant idleBefore) {
             throw new UnsupportedOperationException("审计不该读用量");
         }
 

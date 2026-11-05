@@ -140,14 +140,19 @@ class RunLifecycleTest {
     void exhaustedRunStopsWithAnOutcomeInTheDatabase() {
         Principal principal = Principal.readOnly("u-1");
         Run run = runs.start(SessionKeys.ownerOf(principal), "fp-1", "对齐三张表的口径").orElseThrow();
+        InboundMessage message = new InboundMessage(
+                principal, "chat-budget", "接着做", Instant.now(), null, run.id());
+        // 会话键必须在第一次扣费之前写上：预算按会话累计，先扣后挂的那几笔
+        // 落在 run 行上，而判据读的是会话行——看起来像"一次都没花"（ADR-0025）。
+        runs.attachSession(run.id(),
+                SessionKeys.sessionIdOf(principal, message.channel(), message.chatId()));
         for (int i = 0; i < 6; i++) {
             assertThat(budget.chargeToolCall(run.id())).isTrue();
         }
         ChatClientAgentPort port = new ChatClientAgentPort(
                 ChatClient.builder(new NeverCalled()).build(), null, runs, budget);
 
-        OutboundMessage answer = port.reply(new InboundMessage(
-                principal, "chat-1", "接着做", Instant.now(), null, run.id()));
+        OutboundMessage answer = port.reply(message);
 
         assertThat(answer.text()).contains("预算用尽").contains("工具调用 6/6 次");
         // 判据是库里那两个数：状态与"为什么停"，都不是回执的措辞。
@@ -196,7 +201,7 @@ class RunLifecycleTest {
                 ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs, budget);
 
         port.reply(new InboundMessage(
-                principal, "chat-1", "上周华东成交额", Instant.now(), null, run.id()));
+                principal, "chat-tokens", "上周华东成交额", Instant.now(), null, run.id()));
 
         Budget spent = budget.spent(run.id()).orElseThrow();
         assertThat(spent.tokens()).as("12 + 34：模型报什么就记什么，不拿估算值补").isEqualTo(46L);

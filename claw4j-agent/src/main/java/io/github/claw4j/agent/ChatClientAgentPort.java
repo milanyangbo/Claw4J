@@ -234,8 +234,11 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      */
     private Turn answer(InboundMessage message, DeliveryTarget answeredAt) {
         String owner = SessionKeys.ownerOf(message.principal());
+        // 对话键与归属键是两把：owner 管"这是谁的东西"，sessionId 管"这是哪一段话"。
+        // 群聊与私聊必须是两段——同一份权限下，听众可以完全不同（ADR-0025）。
+        String sessionId = SessionKeys.sessionIdOf(owner, message.channel(), message.chatId());
         String masked = PiiRedactor.mask(message.text());
-        Opened opened = openRun(message, owner, masked);
+        Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
         // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
@@ -257,7 +260,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                 // 所以这段 duration 含那一次 INSERT（几十毫秒）。反过来（先关 span 再写 seq）
                 // 会让属性丢掉——已 end 的 span 上 setAttribute 是静默的空操作。
                 try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
-                    response = promptOf(message.principal(), owner, promptText(opened, masked), runId)
+                    response = promptOf(message.principal(), owner, sessionId, promptText(opened, masked), runId)
                             .call()
                             .chatResponse();
                     text = textOf(response);
@@ -280,8 +283,9 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         Objects.requireNonNull(onChunk, "onChunk");
 
         String owner = SessionKeys.ownerOf(message.principal());
+        String sessionId = SessionKeys.sessionIdOf(owner, message.channel(), message.chatId());
         String masked = PiiRedactor.mask(message.text());
-        Opened opened = openRun(message, owner, masked);
+        Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal(), opened))) {
@@ -296,7 +300,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             long startedAt = System.nanoTime();
             try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
-                    promptOf(message.principal(), owner, promptText(opened, masked), runId)
+                    promptOf(message.principal(), owner, sessionId, promptText(opened, masked), runId)
                             .stream()
                             .content()
                             // 每一块都带 runId：调用方可能只收到最后一块，收到中间块的也要能查到同一件事
@@ -361,6 +365,12 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             return Optional.of(budget.outcomeText(overBudget.get(), runId));
         }
         Run run = reopened.get();
+        // 这条路上没有入站消息，算不出会话键，只能回读：续跑的回答要落回
+        // "当初提问的那段对话"。老数据没有归属就退到无通道占位段——
+        // 至少不会把审批结果写进另一个人的另一段对话里。
+        String sessionId = runs.sessionOf(runId)
+                .filter(id -> !id.isBlank())
+                .orElseGet(() -> SessionKeys.sessionIdOf(run.owner(), null, null));
         String prompt = recap(run, runs.stepsOf(runId)) + "[审批有结论] " + note;
         long startedAt = System.nanoTime();
         // 续跑也是一次"执行这件事"：单独一条 trace，但根还是 run。不包的话这一轮的
@@ -369,7 +379,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                 runAttributes(runId, principal.get(), null))) {
             try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
-                    ChatResponse response = promptOf(principal.get(), run.owner(), prompt, runId)
+                    ChatResponse response = promptOf(principal.get(), run.owner(), sessionId, prompt, runId)
                             .call()
                             .chatResponse();
                     String text = textOf(response);
@@ -403,7 +413,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      * 而"另开一个"绝不意味着接上别人的：那是 {@code RunStore#resume} 用
      * {@code owner} 挡住的，这里连重试都不做。
      */
-    private Opened openRun(InboundMessage message, String owner, String masked) {
+    private Opened openRun(InboundMessage message, String owner, String sessionId, String masked) {
         if (runs == null) {
             return null;
         }
@@ -430,6 +440,9 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         // 而只凭权限指纹反推不出角色与可访问表——所以进门这一下就要整份存下来。
         if (opened != null) {
             runs.attachPrincipal(opened.run().id(), message.principal());
+            // 会话键在开 run 之后补写：预算是按会话判的（ADR-0025），
+            // 没有它这条 run 就只能按自己那一行算——也就是"每轮 6 次"的旧行为。
+            runs.attachSession(opened.run().id(), sessionId);
         }
         // 收件地址在进门时登记，接上旧事时也登记：后者正是"换一个通道接着做"的那一次，
         // 不登记它，结果就只能回到第一次提问的那个通道（A05）。
@@ -722,14 +735,14 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         return attributes;
     }
 
-    private ChatClient.ChatClientRequestSpec promptOf(Principal principal, String owner, String masked,
-                                                      String runId) {
-        // 归属键由调用方算好再传进来：一轮请求里会话 id、run 的 owner 都是它，
-        // 三处各算一遍的话，指纹口径一改就可能只改到一半，而表现是"会话记得住、run 查不到"。
+    private ChatClient.ChatClientRequestSpec promptOf(Principal principal, String owner, String sessionId,
+                                                      String masked, String runId) {
+        // 归属键与对话键都由调用方算好再传进来：一轮请求里 run 的 owner、会话 id
+        // 都要用，各算一遍的话，口径一改就可能只改到一半，而表现是"会话记得住、run 查不到"。
         // 压缩必须发生在"这一轮拼提示词"之前：记忆 Advisor 在 before 阶段读事件，
         // 压完紧接着就被读到。放在 after 里等于压给下一轮用，而下一轮可能已经超了。
         if (compactor != null) {
-            compactor.compactIfNeeded(SessionKeys.sessionIdOfOwner(owner));
+            compactor.compactIfNeeded(sessionId);
         }
         // 入站就脱敏（ADR-0011 里真模型测试抓到的那个缺陷）：
         // 会话记忆是在 Advisor 链的 before 阶段最早那一步把用户消息写进库的，
@@ -755,8 +768,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                 .toolContext(toolContext)
                 .advisors(spec -> {
                     spec.param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal)
-                            .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY,
-                                    SessionKeys.sessionIdOfOwner(owner))
+                            .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY, sessionId)
                             // 外键用归属键而不是裸 userId：跨会话召回走 user_id 精确匹配，
                             // 传裸 userId 的话"换角色即换会话"在召回那条路上等于没做（见 SessionKeys）。
                             .param(SessionMemoryAdvisor.USER_ID_CONTEXT_KEY, owner);

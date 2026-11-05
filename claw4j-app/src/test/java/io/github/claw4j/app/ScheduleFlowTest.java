@@ -388,9 +388,10 @@ class ScheduleFlowTest {
                 String.class);
         assertThat(runIds).as("每次到点都是新的一件").hasSize(2);
         for (String runId : runIds) {
-            assertThat(runs.spent(runId).orElseThrow().toolCalls())
-                    .as("预算按 run 记：两轮各 1 次，不是合成 2 次")
-                    .isEqualTo(1);
+            assertThat(runs.spent(runId, java.time.Instant.EPOCH).orElseThrow().toolCalls())
+                    .as("定时任务的 chatId 固定，两次运行落在同一段会话里，预算是合成 2；"
+                            + "跨了 idle-minutes 就清零，所以它不会把第二天的运行卡住")
+                    .isEqualTo(2);
             assertThat(runs.find(runId).orElseThrow().owner())
                     .isEqualTo(SessionKeys.ownerOf(OWNER_PRINCIPAL));
         }

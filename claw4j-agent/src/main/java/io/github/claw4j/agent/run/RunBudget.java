@@ -1,16 +1,20 @@
 package io.github.claw4j.agent.run;
 
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
- * 一次 run 的预算：三项按 run 累计，跨轮不重置（A04）。
+ * 一段会话的预算：三项按会话累计，空闲超时即重置（A04，ADR-0025 改挂会话）。
  *
- * <p><b>预算挂在 run 上而不是挂在轮上</b>：一轮的预算管不住一件跨轮的事——
- * 三轮各调 6 次工具，每一轮都在上限之内，而这件事一共烧了 18 次。
- * 累计之后同一个数才真的是"这件事最多烧多少"。轮内的 3 / 6（{@code ToolCallBudget}）
- * 还在，但它降级成一条默认护栏：它拦的是"一轮之内绕圈"，
- * 而"整件事烧多少"由这里说了算。
+ * <p><b>为什么挂在会话上而不是 run 上</b>：run 的寿命是一轮——每轮收尾都
+ * {@code finish(runId, DONE)}，下一轮开的是新 run。按 run 记的数在每轮开头都是 0/6，
+ * "跨轮累计"从来没有发生过：三轮各调 6 次一共 18 次，全部放行。
+ * 挂到会话上，"这段对话一共能烧多少"才有地方记。
+ *
+ * <p><b>会话什么时候结束：靠空闲，不靠"任务完成"</b>。行业里没有哪个 Agent 框架去判定
+ * 用户这件事做完了——判不了，而判错的代价是把人卡住。能判的只有"多久没动静"。
+ * OpenClaw 的 {@code idleMinutes}（默认 120）做的是同一件事，这里同名同值。
  *
  * <p><b>读不到用量时放行，不拦活</b>：库没迁、连不上，或者这个 runId 已经不在了，
  * {@link #spent} 就是空。那种情况下预算管不住，而管不住的失败姿势应该是
@@ -22,8 +26,8 @@ import java.util.Optional;
  * 被拒的那一次不该被记成用掉的量——否则"还剩几次"这个数会凭空少一次，
  * 而它正是决定下一次给不给的那一个数。
  *
- * <p><b>子 Agent 那一侧还没有 runId</b>：委派发生在工具内部，工具上下文里没有
- * 父这一轮的 runId（{@code SubagentRunner} 目前只传身份），所以子调的工具
+ * <p><b>子 Agent 那一侧还没有 sessionId</b>：委派发生在工具内部，工具上下文里没有
+ * 父这一轮的会话键（{@code SubagentRunner} 目前只传身份），所以子调的工具
  * 现在不扣父的预算。那是 A10 的事，不是这里漏了一条。
  */
 public final class RunBudget {
@@ -37,9 +41,14 @@ public final class RunBudget {
         this.caps = Objects.requireNonNull(caps, "caps");
     }
 
-    /** 已经用掉多少。空表示"读不到"（没有这个 run，或存储降级）。 */
+    /**
+     * 这段会话在空闲窗口内已经用掉多少。空表示"读不到"（没有这个 run，或存储降级）。
+     *
+     * <p>窗口起点是"现在减去空闲时长"：超过它没动过的会话视为已结束，计数从 0 重新开始。
+     * 这就是"什么时候算完"的答案——不问任务做没做完，只问人还有没有在说。
+     */
     public Optional<Budget> spent(String runId) {
-        return runs.spent(runId);
+        return runs.spent(runId, Instant.now().minusMillis(caps.idleMillis()));
     }
 
     /** 三项里有没有一项已经撞线。 */

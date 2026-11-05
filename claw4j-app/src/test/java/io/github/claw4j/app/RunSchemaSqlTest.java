@@ -12,6 +12,8 @@ import io.github.claw4j.agent.run.Step;
 import io.github.claw4j.agent.run.StepAudit;
 import io.github.claw4j.agent.run.StepInput;
 import io.github.claw4j.agent.run.StepKind;
+
+import java.time.Instant;
 import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.agent.run.UpdatePlanTool;
 import io.github.claw4j.domain.ContextKeys;
@@ -94,8 +96,8 @@ class RunSchemaSqlTest {
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'claw4j_run'"
                         + " order by table_name", String.class))
-                .containsExactly("agent_run", "agent_run_delivery", "agent_schedule", "agent_step",
-                        "approval_request", "audit_trail");
+                .containsExactly("agent_run", "agent_run_delivery", "agent_schedule", "agent_session_budget",
+                        "agent_step", "approval_request", "audit_trail");
 
         // 约束不是装饰：没有它，任何字符串都能当状态写进去，
         // "做到第几步"会在某天读出一个没人认得的状态——那时候没人知道该重试还是该重开。
@@ -354,13 +356,15 @@ class RunSchemaSqlTest {
     @DisplayName("用量三项各自累加：默认 0，换一个实例读也是加过的数")
     void budgetColumnsAccumulateOnTheRunRow() {
         Run run = runs.start("u-1@fp-1", "fp-1", "对齐三张表的口径").orElseThrow();
-        assertThat(runs.spent(run.id()).orElseThrow()).isEqualTo(Budget.NONE);
+        // EPOCH = 窗口永不过期：这条 run 没有会话归属（没 attachSession），
+        // 读的就是它自己那一行，这正是这里要验的 SQL 累加
+        assertThat(runs.spent(run.id(), Instant.EPOCH).orElseThrow()).isEqualTo(Budget.NONE);
 
         runs.charge(run.id(), 2, 1_200L, 3_000L);
         runs.charge(run.id(), 1, 300L, 500L);
 
         RunStore restarted = new JdbcRunStore(jdbc);
-        assertThat(restarted.spent(run.id()).orElseThrow())
+        assertThat(restarted.spent(run.id(), Instant.EPOCH).orElseThrow())
                 .isEqualTo(new Budget(3, 1_500L, 3_500L));
         assertThat(restarted.find(run.id()).orElseThrow().spent())
                 .as("读 run 时也带上用量：停在 budget_exhausted 的 run 只能靠它回答'为什么停'")

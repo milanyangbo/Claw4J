@@ -9,6 +9,7 @@
 **Status:** resolved
 
 - [x] 一次 run 跨 3 轮共调 7 次工具 → 第 7 次被拒（今天每轮重置，7 次全放行）
+  —— **2026-11-05 复核：这条从来没有成立过**，见下方修正与 ADR-0025
 - [x] 超预算：写明结局并停下，不抛要人猜的异常
 - [x] 超预算写结局后可从库里回读，与 A01 的 run 状态一致
 - [x] 落地后 `heartbeat` 的重估条件成立一半（另一半是 P07），ADR-0021 的待重开条目被引用
@@ -56,3 +57,15 @@
   现在的做法是调大上限后 `resume`（`budget_exhausted` 不是 `suspended`，
   `resume` 的 where 条件放得进去），要一张额度表是另一张票的事；
   ADR-0016 里那句"run 之上另有**步数**上限"本票没有落，步数由工具调用次数间接约束。
+- 2026-11-05 **上面第一条判据从来没成立过；预算改挂会话**（[ADR-0025](../../../docs/adr/0025-session-scoped-budget.md)）。
+  run 的寿命是一轮：`ChatClientAgentPort` 每轮收尾都 `finish(runId, DONE)`，
+  下一轮 `openRun` 新开一件。所以"跨 3 轮的第 7 次被拒"在当时的实现里不可能发生——
+  三轮各 6 次、一共 18 次，每一次都落在新 run 的 0/6 之内。
+  V8 的列注释、`RunBudget` 类注释、`application.yml` 三处都写着"跨轮不重置"，
+  **那句话当时描述的是意图，不是行为**；三处已按实际情况改写。
+  现在的做法：`claw4j_run.agent_session_budget` 按 `session_id` 累计三项，
+  空闲 `claw4j.run.budget.idle-minutes`（默认 120，与 OpenClaw 的 idleMinutes 同值）清零；
+  会话键同时加了通道 + chatId，群聊与私聊是两段（同一条 ADR）。
+  定时任务走的是同一条 `reply`，chatId 固定，所以两次运行落在同一段会话里、预算合成 2；
+  跨过 idle 就清零，不会把第二天的那次卡住（要"每次运行单独计"得先给 run 一个来源字段）。
+  代价与未决项（换通道记忆断、recall_session 尚未按会话过滤）记在 ADR 的 Consequences。

@@ -6,41 +6,57 @@ import io.github.claw4j.domain.principal.Principal;
 import java.util.Objects;
 
 /**
- * 会话 id 怎么来。
+ * 会话 id 怎么来。两把键，管两件事，不要混。
  *
- * <p><b>会话属于"一个人在某份权限下的身份"</b>，既不属于通道，也不只属于人：
- * 会话 id = 前缀 + {@code userId} + 权限指纹（见 {@link #ownerOf}）。
+ * <p><b>{@link #ownerOf} = 归属键</b>：{@code userId@权限指纹}。run 的 owner、
+ * 审计、定时任务的归属、跨会话召回都用它。回答的是"这是谁的东西"。
  *
- * <p><b>为什么掺权限指纹</b>：会话记忆是"把上一次的答案原样带进下一次提示词"。
- * 如果一个人被降权，而他历史里躺着降权之前查出来的数字，那么他换一个权限再问同一句话，
- * 模型会直接从上下文里念出那些数字——不查库、不鉴权、没有任何一处报错，
- * 因为记忆读取本来就早于工具调用。ADR-0007 画的权限边界在"会话"这一层被绕过去了。
+ * <p><b>{@link #sessionIdOf} = 对话键</b>：{@code 前缀 + owner + 通道 + chatId}。
+ * 只用于对话历史（记忆 Advisor 的 sessionId）。回答的是"这是哪一段话"。
+ *
+ * <p><b>为什么必须分开</b>：同一个人在网页私聊里问"华东成交额"答了 128,400，
+ * 十分钟后在项目群里问"合同违约金怎么算"。如果两段共用一个会话，
+ * 群里有二十个人，其中三个没有华东数据的权限——模型只要顺嘴引用一次那个数字，
+ * 就是一次没人复核的泄露。权限指纹挡不住这一层：它保证"权限一样才共享"，
+ * 而这里两个人的权限一样，<b>听众不一样</b>。
+ *
+ * <p><b>为什么不只按 chatId、还要带通道</b>：{@code chatId} 是通道侧寻址键，
+ * 不同通道各自编号，撞车是常事（飞书的 {@code oc_xxx} 与网页的某个 id 完全可能相同）。
+ * 带上通道之后，"哪条通道的哪一段会话"才是唯一的。这与 OpenClaw 的
+ * session key（{@code agent:<agentId>:<channel>:<peer>}）是同一个形状，
+ * 它的 {@code dmScope: per-channel-peer} 就是"按通道 + 对端分开"的档位，
+ * 也是它文档里对多发送者场景的推荐值。
+ *
+ * <p><b>代价要记账</b>：同一个人从网页切到飞书私聊，讲过的口径要重讲一遍。
+ * 这是照 OpenClaw 的默认行为选的——它把"跨通道共享"做成显式配置（{@code identityLinks}），
+ * 默认不共享。共享是声明出来的，不是猜出来的。Claw4J 现在没有这个配置项，
+ * 所以这条路上的行为就是"换通道 = 换一段对话"，与"换人就断开"是同一个方向的安全取舍。
+ *
+ * <p><b>权限指纹仍然在会话键里</b>：会话记忆是"把上一次的答案原样带进下一次提示词"。
+ * 一个人被降权后，若历史里躺着降权前查出来的数字，模型会直接从上下文里念出来——
+ * 不查库、不鉴权、没有任何一处报错，因为记忆读取本来就早于工具调用。
  * 掺进指纹之后，权限变了就是另一段会话：他会"什么都想不起来"，而不是"还记得不该记的"。
  *
- * <p><b>为什么不用角色名当指纹</b>：角色名会改、会复用、也可能两个角色其实是同一份权限。
+ * <p><b>不用角色名当指纹</b>：角色名会改、会复用、也可能两个角色其实是同一份权限。
  * 按 {@code tables + actions} 算出来的指纹只认"能看见什么"，这份判定与语义缓存
  * （{@code CacheAdvisor}）用的是同一个口径，两处不会打架。
- *
- * <p><b>为什么仍然不掺 {@code chatId}</b>：{@code chatId} 是 M0 就定下来的
- * <b>通道侧寻址键</b>（HTTP 的请求头、飞书的 chat_id），同一段对话换一条通道进来时它就会变。
- * 一旦把它编进会话主键，"换通道"和"换会话"就成了同一件事：员工从网页切到飞书，
- * 讲过的口径要重讲一遍，而存储明明是共享的 Postgres（ADR-0005）。
- *
- * <p><b>代价要记账</b>：权限一调整，历史就断了；老数据（那些不含 {@code @} 的会话 id）
- * 也再读不到——这是刻意选的，因为它只丢记忆，不泄数据。一个人在两段对话里问两件事，
- * 记忆仍然混在一起，那笔账照旧记着（等真实的
- * 多话题数据再定，到那时加维度的做法是加前缀而不是把 chatId 接回来）。
  *
  * <p>前缀不是装饰：会话表里还可能存别的命名空间（按工具、按技能），
  * 裸 id 进去之后，两种主键混在一张表里就没法分辨了。
  */
 public final class SessionKeys {
 
-    /** 会话 id 的命名空间。换会话维度时改这里加后缀，不要回去用 {@code chatId}。 */
+    /** 会话 id 的命名空间。换会话维度时改这里加后缀，不要在这里去掉通道与会话 id。 */
     public static final String PREFIX = "claw4j:user:";
 
     /** 权限指纹与 userId 之间的分隔。库里 {@code ai_session.user_id} 存的就是这个形状。 */
     static final String OWNER_SEPARATOR = "@";
+
+    /** 通道与 chatId 之间的分隔，以及缺 chatId 时的占位。 */
+    static final String SESSION_SEPARATOR = ":";
+
+    /** 没有 chatId 的通道（脚本、内部调用）落在这里：同一通道内共享，跨通道不共享。 */
+    static final String NO_CHAT = "-";
 
     private SessionKeys() {
     }
@@ -67,18 +83,30 @@ public final class SessionKeys {
     }
 
     /**
-     * 会话 id：{@code claw4j:user:<userId>@<权限指纹>}。
+     * 对话键：{@code claw4j:user:<owner>:<通道>:<chatId>}。
      *
-     * <p>拆出 {@link #sessionIdOfOwner} 是为了让调用方只算一次指纹：
-     * 一轮请求里会话 id 与 {@code user_id} 都要用，各算一遍的话，
-     * 指纹口径一改就可能只改到一半——表现是"记得住，但召回查不到"。
+     * <p>拆出 {@link #ownerOf} 是为了让调用方只算一次指纹：一轮请求里会话 id 与
+     * {@code user_id} 都要用，各算一遍的话，指纹口径一改就可能只改到一半——
+     * 表现是"记得住，但召回查不到"。
+     *
+     * @param owner   必须来自 {@link #ownerOf}，不要自己拼 {@code userId@x}
+     * @param channel 这条消息从哪来（{@code InboundMessage#channel()}）
+     * @param chatId  这一段对话在通道里的地址（{@code InboundMessage#chatId()}）；
+     *                为空时落到 {@link #NO_CHAT}，表示"这条通道上不区分会话"
      */
-    public static String sessionIdOf(Principal principal) {
-        return sessionIdOfOwner(ownerOf(principal));
+    public static String sessionIdOf(String owner, String channel, String chatId) {
+        Objects.requireNonNull(owner, "owner");
+        return PREFIX + owner
+                + SESSION_SEPARATOR + orPlaceholder(channel)
+                + SESSION_SEPARATOR + orPlaceholder(chatId);
     }
 
-    /** 由 {@link #ownerOf} 的结果拼会话 id。参数必须来自它，不要自己拼 {@code userId@x}。 */
-    public static String sessionIdOfOwner(String owner) {
-        return PREFIX + owner;
+    /** 便捷入口：一轮请求里 owner 与 sessionId 都要算，指纹只算一次。 */
+    public static String sessionIdOf(Principal principal, String channel, String chatId) {
+        return sessionIdOf(ownerOf(principal), channel, chatId);
+    }
+
+    private static String orPlaceholder(String part) {
+        return part == null || part.isBlank() ? NO_CHAT : part.trim();
     }
 }

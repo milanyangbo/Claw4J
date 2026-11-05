@@ -59,17 +59,20 @@ psql "$DATABASE_URL" -c "select run_id, channel, channel_ref
 三个请求头：`X-Claw4j-User`（必填）、`X-Claw4j-Role`（角色，不填走默认 `read-only`）、
 `X-Claw4j-Chat-Id`（可选，不填按用户分）。
 
-**一件事最多烧多少**：预算按 run 累计（A04），三项分别是工具调用 6 次 / token 10 万 /
-耗时 900 秒（`claw4j.run.budget.*` 可调）。三项里任何一项撞线，这一件事就停在那儿：
-不再调模型，回答里写明是哪一项用完了，库里那一行是 `budget_exhausted`。
+**一段对话最多烧多少**：预算按会话累计（ADR-0025），三项分别是工具调用 6 次 / token 10 万 /
+耗时 900 秒（`claw4j.run.budget.*` 可调）。空闲 `claw4j.run.budget.idle-minutes`（默认 120）
+没动静就整段从 0 重新开始——与 OpenClaw 的 idle reset 同构。三项里任何一项撞线，
+这一轮就停在那儿：不再调模型，回答里写明是哪一项用完了，库里那一行是 `budget_exhausted`。
 
 ```bash
-# 同一件事连着问到工具调用用完（默认第 7 次被拒），之后再问会拿到：
+# 同一段对话里连着问（同一通道 + 同一 chatId），第 7 次工具调用会被拒：
 # "预算用尽（工具调用 6/6 次）：这件事停在这里（run xxxxxxxx），没有再调用模型。"
+psql "$DATABASE_URL" -c "select session_id, tool_calls, tokens, millis, touched_at
+  from claw4j_run.agent_session_budget order by touched_at desc limit 5"
 psql "$DATABASE_URL" -c "select id, status, budget_used, budget_tokens, budget_ms
   from claw4j_run.agent_run order by created_at desc limit 5"
-# 换另一个人问、或者不带 runId 问，都是另一件事、另一份额度——
-# 定时任务每次运行也各开一个 run，各计各的（P04 起）。
+# 换一段对话（换 chatId、换通道）就是另一份额度；隔了 idle-minutes 再来也是。
+# 定时任务的 chatId 固定，两次运行落在同一段会话里合成累计，跨过 idle 才清零。
 ```
 
 ## 0. 起实例

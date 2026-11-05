@@ -161,8 +161,9 @@ class SessionMemoryTest {
         FixedChatModel model = new FixedChatModel("华东上周成交 128400");
         ChatClientAgentPort port = port(model, sessions);
 
+        // 同一段对话里的两轮：chatId 相同，才该带上上一句（ADR-0025）
         port.reply(message("chat-a", "上周华东成交额"));
-        port.reply(message("chat-b", "那华南呢"));
+        port.reply(message("chat-a", "那华南呢"));
 
         List<Message> secondTurn = model.prompts().getLast().getInstructions();
         String sent = secondTurn.stream().map(Message::getText).collect(Collectors.joining("\n"));
@@ -171,23 +172,35 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("会话属于人而不是通道：换 chatId 还是同一段记忆")
-    void memoryFollowsThePrincipalNotTheChatId() {
+    @DisplayName("会话跟着「这一段对话」走：同一段的两轮共享，换一段就断（ADR-0025）")
+    void memoryFollowsTheConversationNotJustThePrincipal() {
         MapSessionService sessions = new MapSessionService();
         FixedChatModel model = new FixedChatModel("记住了");
         ChatClientAgentPort port = port(model, sessions);
         Principal principal = Principal.readOnly("u-1");
 
         port.reply(new InboundMessage(principal, "web-chat", "我叫 Ethan"));
-        port.reply(new InboundMessage(principal, "feishu-chat", "我叫什么"));
+        port.reply(new InboundMessage(principal, "web-chat", "我叫什么"));
 
-        String secondTurn = model.prompts().getLast().getInstructions().stream()
+        String sameConversation = model.prompts().getLast().getInstructions().stream()
                 .map(Message::getText)
                 .collect(Collectors.joining("\n"));
         assertThat(sessions.createdIds())
-                .as("同一段对话从网页切到飞书，只应有一个会话")
+                .as("同一段对话的两轮落在同一个会话里，否则它连上一句都记不住")
                 .hasSize(1);
-        assertThat(secondTurn).contains("我叫 Ethan");
+        assertThat(sameConversation).contains("我叫 Ethan");
+
+        port.reply(new InboundMessage(principal, "feishu-chat", "我叫什么"));
+
+        String otherConversation = model.prompts().getLast().getInstructions().stream()
+                .map(Message::getText)
+                .collect(Collectors.joining("\n"));
+        assertThat(sessions.createdIds())
+                .as("换一段对话就是另一段记忆")
+                .hasSize(2);
+        assertThat(otherConversation)
+                .as("两段串了的话，群里就能看见私聊里说过的内容——那是没人复核的泄露")
+                .doesNotContain("我叫 Ethan");
     }
 
     @Test
@@ -219,26 +232,35 @@ class SessionMemoryTest {
     @Test
     @DisplayName("userId 为空的身份不许开会话：否则所有人共用一个，还记得是别人的")
     void blankUserIdIsRejected() {
-        assertThatThrownBy(() -> SessionKeys.sessionIdOf(Principal.readOnly(" ")))
+        assertThatThrownBy(() -> SessionKeys.sessionIdOf(Principal.readOnly(" "), "web", "c-1"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("userId");
     }
 
     @Test
-    @DisplayName("会话 id 跟着「人 + 权限」走：同一份权限稳定，换一份权限就换会话")
+    @DisplayName("会话 id 跟着「人 + 权限 + 这一段对话」走：换权限换会话，换群也换会话")
     void sessionIdFollowsIdentityAndPermissions() {
         Principal who = Principal.readOnly("u-1");
 
-        assertThat(SessionKeys.sessionIdOf(who))
+        assertThat(SessionKeys.sessionIdOf(who, "web", "c-1"))
                 .as("每次都不一样的话，这个人永远记不住上一轮，而且没有任何报错")
-                .isEqualTo(SessionKeys.sessionIdOf(Principal.readOnly("u-1")))
+                .isEqualTo(SessionKeys.sessionIdOf(Principal.readOnly("u-1"), "web", "c-1"))
                 .startsWith(SessionKeys.PREFIX + "u-1@");
 
         Principal downgraded = Principal.of("u-1", "guest",
                 Set.of("region"), Set.of(ToolPermission.READ));
-        assertThat(SessionKeys.sessionIdOf(downgraded))
+        assertThat(SessionKeys.sessionIdOf(downgraded, "web", "c-1"))
                 .as("权限变了却还是同一段会话，历史里那些高权限数字会被原样念出来")
-                .isNotEqualTo(SessionKeys.sessionIdOf(who));
+                .isNotEqualTo(SessionKeys.sessionIdOf(who, "web", "c-1"));
+
+        assertThat(SessionKeys.sessionIdOf(who, "feishu", "oc_group"))
+                .as("私聊与群聊必须是两段：同一份权限下听众可以完全不同，"
+                        + "群里有二十个人，而私聊只有他自己")
+                .isNotEqualTo(SessionKeys.sessionIdOf(who, "web", "c-1"));
+
+        assertThat(SessionKeys.sessionIdOf(who, "web", null))
+                .as("没有 chatId 的消息落在占位段，同通道共享——但不会串到别的通道去")
+                .isNotEqualTo(SessionKeys.sessionIdOf(who, "feishu", null));
     }
 
     @Test
@@ -260,7 +282,7 @@ class SessionMemoryTest {
     @DisplayName("聊得久了历史被压成摘要：事件不再线性增长，省下的 token 记在指标里")
     void longConversationGetsCompacted() {
         MapSessionService sessions = new MapSessionService();
-        String sessionId = SessionKeys.sessionIdOf(Principal.readOnly("u-1"));
+        String sessionId = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), "web", "c-1");
         sessions.create(CreateSessionRequest.builder().id(sessionId).userId("u-1").build());
         for (int i = 0; i < 200; i++) {
             sessions.appendEvent(event(sessionId, i));

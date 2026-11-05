@@ -110,6 +110,24 @@ public class JdbcRunStore implements RunStore {
                 PrincipalSnapshot.encode(principal), runId));
     }
 
+    /** 记下这条 run 属于哪一段会话（ADR-0025）。没记上就退回按 run 自己那一行算。 */
+    @Override
+    public void attachSession(String runId, String sessionId) {
+        if (runId == null || sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        guard("记下 run 的会话", () -> jdbc.update(
+                "update claw4j_run.agent_run set session_id = ? where id = ?", sessionId, runId));
+    }
+
+    @Override
+    public Optional<String> sessionOf(String runId) {
+        return guard("读 run 的会话", () -> jdbc.query(
+                        "select session_id from claw4j_run.agent_run where id = ?",
+                        (row, index) -> row.getString(1), runId).stream().findFirst().orElse(null))
+                .flatMap(Optional::ofNullable);
+    }
+
     /**
      * 接上一个 run：只改状态，不插新行——"接上"不是"再来一次"。
      *
@@ -266,14 +284,49 @@ public class JdbcRunStore implements RunStore {
     }
 
     /**
-     * 读用量。三列一次读完：判"还能不能继续"要同时看三项，
-     * 分三次读的话，中间那次读到的可能是已经被别人改动过的数。
+     * 读用量：按这条 run 所属的那段会话，取窗口内的累计（ADR-0025）。
+     *
+     * <p><b>为什么不能按 run 行求和</b>：每轮都写新的 {@code updated_at}，
+     * 两小时前那几轮会掉出时间窗，累计值从 5 掉回 3——额度"回血"，
+     * 而预算最要紧的性质是只增不减。所以窗口内的计数单独存一行，过期整行清零。
+     *
+     * <p><b>清零就是"上一段对话结束了"</b>：不判"用户这件事做完了"——那是判不了的，
+     * 判错的代价是把人卡住。与 OpenClaw 的 idle reset 同一个做法。
      */
     @Override
-    public Optional<Budget> spent(String runId) {
-        return guard("读一个 run 的用量", () -> jdbc.query(
-                "select budget_used, budget_tokens, budget_ms from claw4j_run.agent_run where id = ?",
-                this::budgetOf, runId).stream().findFirst().orElse(null));
+    public Optional<Budget> spent(String runId, Instant idleBefore) {
+        return guard("读一段会话的用量", () -> {
+            List<String> session = jdbc.query(
+                    "select session_id from claw4j_run.agent_run where id = ?",
+                    (row, index) -> row.getString(1), runId);
+            if (session.isEmpty()) {
+                return null;
+            }
+            String sessionId = session.get(0);
+            if (sessionId == null || sessionId.isBlank()) {
+                // 加列之前的老 run：退回按它自己那一行算，与改之前的行为一致。
+                return jdbc.query(
+                        "select budget_used, budget_tokens, budget_ms from claw4j_run.agent_run where id = ?",
+                        this::budgetOf, runId).stream().findFirst().orElse(null);
+            }
+            Instant now = Instant.now();
+            jdbc.update("insert into claw4j_run.agent_session_budget"
+                            + " (session_id, touched_at, window_started_at) values (?, ?, ?)"
+                            + " on conflict (session_id) do nothing",
+                    sessionId, timestamp(now), timestamp(now));
+            jdbc.update("update claw4j_run.agent_session_budget"
+                            + " set tool_calls = 0, tokens = 0, millis = 0, window_started_at = ?"
+                            + " where session_id = ? and touched_at < ?",
+                    timestamp(now), sessionId, timestamp(idleBefore));
+            return sessionBudget(sessionId);
+        });
+    }
+
+    private Budget sessionBudget(String sessionId) {
+        return jdbc.query("select tool_calls, tokens, millis"
+                                + " from claw4j_run.agent_session_budget where session_id = ?",
+                        (row, index) -> new Budget(row.getInt(1), row.getLong(2), row.getLong(3)),
+                        sessionId).stream().findFirst().orElse(null);
     }
 
     /**
@@ -284,14 +337,35 @@ public class JdbcRunStore implements RunStore {
      *
      * <p>加完再读一次是为了把结果交回去：调用方要用它判"这一轮是不是刚好撞线"，
      * 让它自己拿旧值加一遍等于把算术推回给调用方。
+     *
+     * <p><b>同时写两处</b>：run 那一行是审计（"这一条 run 里调了几次"），
+     * 会话那一行是判据（"这段对话一共还剩多少"）。两处口径不同，不能只留一个。
+     * 会话行不做过期检查——调用链上 {@link #spent} 一定先跑过（进门看额度、
+     * 以及每次工具调用前），清零已经在那里做过。
      */
     @Override
     public Optional<Budget> charge(String runId, int toolCalls, long tokens, long millis) {
         return guard("记一笔用量", () -> {
+            Instant now = Instant.now();
             jdbc.update("update claw4j_run.agent_run set budget_used = budget_used + ?,"
                             + " budget_tokens = budget_tokens + ?, budget_ms = budget_ms + ?, updated_at = ?"
                             + " where id = ?",
-                    toolCalls, tokens, millis, timestamp(Instant.now()), runId);
+                    toolCalls, tokens, millis, timestamp(now), runId);
+            List<String> session = jdbc.query(
+                    "select session_id from claw4j_run.agent_run where id = ?",
+                    (row, index) -> row.getString(1), runId);
+            String sessionId = session.isEmpty() ? null : session.get(0);
+            if (sessionId != null && !sessionId.isBlank()) {
+                jdbc.update("insert into claw4j_run.agent_session_budget"
+                                + " (session_id, tool_calls, tokens, millis, touched_at, window_started_at)"
+                                + " values (?, ?, ?, ?, ?, ?)"
+                                + " on conflict (session_id) do update set"
+                                + " tool_calls = claw4j_run.agent_session_budget.tool_calls + excluded.tool_calls,"
+                                + " tokens = claw4j_run.agent_session_budget.tokens + excluded.tokens,"
+                                + " millis = claw4j_run.agent_session_budget.millis + excluded.millis,"
+                                + " touched_at = excluded.touched_at",
+                        sessionId, toolCalls, tokens, millis, timestamp(now), timestamp(now));
+            }
             count("charged");
             return jdbc.query(
                     "select budget_used, budget_tokens, budget_ms from claw4j_run.agent_run where id = ?",

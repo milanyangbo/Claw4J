@@ -3,6 +3,7 @@ package io.github.claw4j.agent.run;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.principal.Principal;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -51,6 +52,32 @@ public interface RunStore {
      * @param principal 发起人。整份存下来——只存指纹反推不出角色与可访问表
      */
     void attachPrincipal(String runId, Principal principal);
+
+    /**
+     * 记下这条 run 属于哪一段会话（ADR-0025）。
+     *
+     * <p><b>单独一条 update，不并进 {@link #start}</b>：会话键由通道与 chatId 派生，
+     * 那是"这一轮从哪来"的信息，与"这件事是什么"分开更清楚；
+     * 而且并进 start 会让定时任务、子 run 这些没有会话的调用点被迫造一个假键。
+     *
+     * <p>没记下来的后果：这条 run 不参与会话预算累计，退回按它自己那一行算——
+     * 也就是改之前的行为。少算一段，不拦错人。
+     */
+    default void attachSession(String runId, String sessionId) {
+        // 默认什么都不做：这条 run 就不会参与会话累计，退回按它自己那一行算——
+        // 也就是改动之前的行为。故意不抛异常：替身与降级部署都靠这条默认路径，
+        // 而"少算一段"比"这一轮直接失败"轻。
+    }
+
+    /**
+     * 这条 run 属于哪一段会话。空表示没记下来（加列之前的老数据、存储降级）。
+     *
+     * <p>审批续跑那条路上没有入站消息，算不出会话键，只能回读——
+     * 续跑的结果要写回"当初提问的那段对话"，否则人点完批准，答案落到别处去了。
+     */
+    default Optional<String> sessionOf(String runId) {
+        return Optional.empty();
+    }
 
     /**
      * 接上一个已经存在的 run：不新建，序号接着涨（A02）。
@@ -173,8 +200,15 @@ public interface RunStore {
      * 都是空。调用方（{@link RunBudget}）对两者的动作一样——管不住就不拦。
      * 用 {@link Budget#NONE} 去表示"读不到"会把"少记一笔"说成"一点没花"，
      * 而那正是预算最怕听见的那种话。
+     *
+     * <p><b>读的是"这段会话"的累计，不是这一条 run</b>（ADR-0025）：run 活一轮，
+     * 按它记的数每轮都从 0 开始。所以先由 run 反查它属于哪段会话，再取那段会话
+     * 在窗口内的累计。{@code idleBefore} 之前没动过的会话视为已结束，计数清零——
+     * 这就是"空闲即新会话"，与 OpenClaw 的 idle reset 同构。
+     *
+     * @param idleBefore 窗口起点（现在减去空闲时长）。早于它的活动不算同一段对话
      */
-    Optional<Budget> spent(String runId);
+    Optional<Budget> spent(String runId, Instant idleBefore);
 
     /**
      * 往上加一笔用量（A04）。三项各自累加，不传绝对值——
