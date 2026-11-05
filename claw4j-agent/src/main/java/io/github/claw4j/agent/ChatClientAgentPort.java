@@ -220,10 +220,26 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      * 两处各写一遍的话，"什么算同一段对话"就有了两个答案。
      */
     private String sessionIdOf(InboundMessage message, String owner) {
-        String segment = pointers == null
+        String conversation = conversationOf(message);
+        // 调用方自带会话标识的那条路（定时任务）不走指针：它的"段"就是触发时刻本身，
+        // 每次运行天然是一个新的。指针只服务"人"这条路——那里才有"上次说到哪儿"。
+        String segment = pointers == null || message.conversationId() != null
                 ? ""
-                : pointers.segmentOf(owner, message.channel(), message.chatId());
-        return SessionKeys.sessionIdOf(owner, message.channel(), message.chatId(), segment);
+                : pointers.segmentOf(owner, message.channel(), conversation);
+        return SessionKeys.sessionIdOf(owner, message.channel(), conversation, segment);
+    }
+
+    /**
+     * 这段对话的身份：调用方给了就用它，没给就按 {@code chatId} 派生（ADR-0026 决定三）。
+     *
+     * <p><b>为什么 chatId 不再兼任</b>：它同时要回答"结果送到哪儿"——审批卡片、续跑结果、
+     * 通知策略的推送全走它。而定时任务要的是"跑在自己的会话里，结果仍送到原来那个地方"。
+     * 一个字段担两件事时，改哪一件都会把另一件弄坏：把 chatId 换成 {@code cron:<taskId>}，
+     * 审批卡片就会推进一个不存在的会话，而这一轮看起来一切正常。
+     */
+    private static String conversationOf(InboundMessage message) {
+        String explicit = message.conversationId();
+        return explicit == null || explicit.isBlank() ? message.chatId() : explicit;
     }
 
     /**
@@ -267,7 +283,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             return work.get();
         }
         String address = ConversationLane.addressOf(SessionKeys.ownerOf(message.principal()),
-                message.channel(), message.chatId());
+                message.channel(), conversationOf(message));
         try {
             return lane.run(address, work);
         } catch (LaneBusyException busy) {
@@ -363,7 +379,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             return;
         }
         String address = ConversationLane.addressOf(SessionKeys.ownerOf(message.principal()),
-                message.channel(), message.chatId());
+                message.channel(), conversationOf(message));
         try {
             lane.run(address, () -> {
                 streamInLane(message, onChunk);

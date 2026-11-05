@@ -28,6 +28,10 @@ import java.util.Objects;
  *                   它不影响回答，只影响"能不能被主动找回来"
  * @param notifyPolicy 这一件事的通知策略（A05）。交互式提问是 {@code done_only}，
  *                   定时任务传 {@code silent}——到点自己跑一趟的事不该每趟都推一条
+ * @param conversationId 这段对话的身份（ADR-0026）。null 表示"按 {@code chatId} 派生"，
+ *                   也就是所有有人说话的通道；非 null 时以它为准，<b>投递仍用 {@code chatId}</b>。
+ *                   定时的任务传 {@code cron:<taskId>:<触发时刻>}：它跑在自己的会话里，
+ *                   不往用户那段对话里塞记录，也不吃用户那份预算
  */
 public record InboundMessage(Principal principal,
                              String chatId,
@@ -36,7 +40,8 @@ public record InboundMessage(Principal principal,
                              String eventId,
                              String runId,
                              String channel,
-                             NotifyPolicy notifyPolicy) {
+                             NotifyPolicy notifyPolicy,
+                             String conversationId) {
 
     public InboundMessage {
         Objects.requireNonNull(principal, "principal");
@@ -49,20 +54,25 @@ public record InboundMessage(Principal principal,
     }
 
     public InboundMessage(Principal principal, String chatId, String text, Instant receivedAt,
+                          String eventId, String runId, String channel, NotifyPolicy notifyPolicy) {
+        this(principal, chatId, text, receivedAt, eventId, runId, channel, notifyPolicy, null);
+    }
+
+    public InboundMessage(Principal principal, String chatId, String text, Instant receivedAt,
                           String eventId, String runId, String channel) {
-        this(principal, chatId, text, receivedAt, eventId, runId, channel, NotifyPolicy.DEFAULT);
+        this(principal, chatId, text, receivedAt, eventId, runId, channel, NotifyPolicy.DEFAULT, null);
     }
 
     public InboundMessage(Principal principal, String chatId, String text, Instant receivedAt,
                           String eventId, String runId) {
-        this(principal, chatId, text, receivedAt, eventId, runId, null, NotifyPolicy.DEFAULT);
+        this(principal, chatId, text, receivedAt, eventId, runId, null, NotifyPolicy.DEFAULT, null);
     }
 
     public InboundMessage(Principal principal, String chatId, String text, Instant receivedAt, String eventId) {
-        this(principal, chatId, text, receivedAt, eventId, null, null, NotifyPolicy.DEFAULT);
+        this(principal, chatId, text, receivedAt, eventId, null, null, NotifyPolicy.DEFAULT, null);
     }
 
     public InboundMessage(Principal principal, String chatId, String text) {
-        this(principal, chatId, text, Instant.now(), null, null, null, NotifyPolicy.DEFAULT);
+        this(principal, chatId, text, Instant.now(), null, null, null, NotifyPolicy.DEFAULT, null);
     }
 }

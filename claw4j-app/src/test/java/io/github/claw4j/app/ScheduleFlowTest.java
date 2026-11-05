@@ -20,6 +20,7 @@ import io.github.claw4j.agent.schedule.ScheduleTools;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
+import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.port.RoleDirectory;
 import io.github.claw4j.domain.principal.Principal;
@@ -390,14 +391,48 @@ class ScheduleFlowTest {
         assertThat(runIds).as("每次到点都是新的一件").hasSize(2);
         for (String runId : runIds) {
             assertThat(runs.spent(runId, java.time.Instant.EPOCH).orElseThrow().toolCalls())
-                    .as("定时任务的 chatId 固定，两次运行落在同一段会话里，预算是合成 2；"
-                            + "跨了 idle-minutes 就清零，所以它不会把第二天的运行卡住")
-                    .isEqualTo(2);
+                    .as("每次运行是自己的会话（cron:<taskId>:<时刻>），额度各 1。"
+                            + "以前它借用创建者那段对话，两次会合成 2——那 2 次还记在用户头上")
+                    .isEqualTo(1);
             assertThat(runs.find(runId).orElseThrow().owner())
                     .isEqualTo(SessionKeys.ownerOf(OWNER_PRINCIPAL));
         }
         assertThat(seenPrincipals).as("工具在谁的身份下被放行")
                 .hasSize(2).containsOnly(OWNER_PRINCIPAL.userId());
+    }
+
+    @Test
+    @DisplayName("定时任务跑在自己的会话里：不占用户那段记录，投递仍在原地址（ADR-0026）")
+    void eachFiringOwnsASessionApartFromTheCreator() {
+        Recorder delivery = new Recorder();
+        String id = dueTask(DAILY_NINE, NotifyPolicy.DEFAULT);
+        ScriptedModel model = new ScriptedModel("用户那句话的回答", "任务这一轮的回答");
+
+        // 创建者在这段 chatId 里先说一句：它落在用户自己的会话上
+        port(model).reply(new InboundMessage(OWNER_PRINCIPAL, "oc_sched", "早上好"));
+        scannerWith(model, delivery).scan();
+
+        List<String> sessions = jdbc.queryForList(
+                "select session_id from claw4j_run.agent_run", String.class);
+        assertThat(sessions)
+                .as("两条 run 落在两段会话里：一条是用户的，一条是任务自己的")
+                .hasSize(2)
+                .doesNotHaveDuplicates();
+        assertThat(sessions)
+                .filteredOn(session -> session.contains(":cron:"))
+                .as("任务那条的会话形如 …:cron:<taskId>:<触发时刻>。"
+                        + "它会话里出现 oc_sched 的话，就还是借用创建者那段对话")
+                .singleElement()
+                .satisfies(session -> assertThat(session)
+                        .contains(":cron:" + id + ":")
+                        .doesNotContain("oc_sched"));
+
+        assertThat(jdbc.queryForObject(
+                "select channel_ref from claw4j_run.agent_schedule where id = ?", String.class, id))
+                .as("会话标识换了，收件地址不能跟着换——审批卡片、续跑结果、推送全走 chatId。"
+                        + "把 chatId 直接改成 cron:<taskId> 的话，卡片会推进一个不存在的会话，"
+                        + "而这一轮看起来一切正常")
+                .isEqualTo("oc_sched");
     }
 
     // ---- 下面是把各条用例拼起来的零件 ----

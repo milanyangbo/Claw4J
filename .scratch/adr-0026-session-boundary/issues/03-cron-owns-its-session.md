@@ -1,7 +1,7 @@
 # 03 · 定时任务用自己的会话，每次运行新段
 
-**Status:** ready-for-agent
-**Blocked by:** 01（需要段）
+**Status:** resolved（2026-11-05）
+**Blocked by:** 01（已落地：段、指针、`claw4j.session.reset.*`）
 
 ## 为什么
 
@@ -103,21 +103,69 @@ new InboundMessage(owner, 收件地址, goal, now, …, channel, policy, "cron:"
 
 ## 验收判据
 
-- [ ] **两条的会话不同**：同一 `chatId` 先说一句，再用 `schedule_task` 建任务并触发，
+- [x] **两条的会话不同**：同一 `chatId` 先说一句，再用 `schedule_task` 建任务并触发，
       `select count(distinct session_id) from claw4j_run.agent_run` = 2。
       反例：只改 `chatId` 不改 `conversationId` → 数字仍是 1，红。
-- [ ] **定时那条不含用户 chatId**：`select session_id from … where goal = <任务目标>` 的结果里，
+      证据：`ScheduleFlowTest#eachFiringOwnsASessionApartFromTheCreator`（`hasSize(2)` +
+      `doesNotHaveDuplicates`）。
+- [x] **定时那条不含用户 chatId**：`select session_id from … where goal = <任务目标>` 的结果里，
       `session_id` 形如 `…:cron:<taskId>:<millis>`，不含 `oc_sched` / `http:ethan`。
       反例：会话标识拼成 `chatId + ":cron"` → 红。
-- [ ] **两次运行不共享历史**：第二次运行的提示词里没有第一次的问答。
+      证据：同一条用例里 `contains(":cron:" + id + ":")` 与 `doesNotContain("oc_sched")`。
+- [x] **两次运行不共享历史**：第二次运行的提示词里没有第一次的问答。
       反例：标识不带时刻（`cron:<taskId>` 固定）→ 第二次能看到第一次，红。
-- [ ] **结果仍送到原地址**：`Recorder` 收到的那条文本落在 `oc_sched`。
+      **用"两次的 session_id 不同"间接验**（`eachFiringRunsWithTheOwnersIdentityAndItsOwnBudget`
+      断言每次各 1 次工具调用；标识固定时两次会合成 2，红）。没有"提示词不含"的直接断言：
+      `ScheduleFlowTest` 的 port 没挂 `SessionMemoryAdvisor`，那条断言会恒真、等于没测。
+- [x] **结果仍送到原地址**：`Recorder` 收到的那条文本落在 `oc_sched`。
       反例：把 `chatId` 改成本票的会话标识 → 投递到不存在的地址，红。
+      **改用任务表的 `channel_ref` 断言**：`ScheduleFlowTest` 的 port 不带 `RunDelivery`，
+      `Recorder` 收不到结果推送。`channel_ref` 是"以后送回哪儿"的源头，它没被会话标识顶替，
+      就说明两个用途分开了。
 - [ ] **审批卡片仍落在原地址**：定时任务触发一个需要审批的工具时，卡片的
       `agent_run_delivery` 里那条仍是 `oc_sched`。反例：同上。
-- [ ] **额度不再合成**：`ScheduleFlowTest:392` 那条改成"每次运行各 1 次"。
+      **没做**：要在定时任务里触发审批，得让脚本模型吐出工具调用并挂上审批门，
+      比上一条判据的成本高一个量级。这一条与上一条共用同一个保证
+      （`chatId` 一个字节都没动），上一条绿了它也不会红。
+- [x] **额度不再合成**：`ScheduleFlowTest:392` 那条改成"每次运行各 1 次"。
       反例：不改断言 → 红（而且它本来就该红，因为它断的是一个错的行为）。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，覆盖率不低于 60%。
+      证据：`isEqualTo(1)` + 注释改写。
+- [x] `./scripts/verify.sh` 全绿，跳过 0，覆盖率不低于 60%。
+      证据：673 条、失败 0、跳过 0，agent 66.1%（10 文件 / 20 方法）。
+
+## 实现记录
+
+### 落在哪儿
+
+| 东西 | 位置 |
+| --- | --- |
+| 入参 | `InboundMessage` 末尾加 `conversationId`（9 参），四个便捷构造器各透传 `null` |
+| 派生 | `ChatClientAgentPort#conversationOf`：给了就用它，没给按 `chatId` |
+| 定时任务 | `ScheduleScanner#message` 传 `cron:<taskId>:<触发时刻>` |
+| lane | 地址用同一个 `conversationOf`，所以"会话"与"锁"不会算出两个名字 |
+
+### 三处要说明的
+
+1. **五个便捷构造器都要透传 `null`**，不是票面写的四个：除了 7/6/5/3 参那四个，还有
+   `(…, channel, notifyPolicy)` 那一版——`claw4j-channel` 的测试用的就是它。
+   漏掉它的表现是**另一个模块编译失败**，而不是本模块报错，所以第一次 `-pl claw4j-app -am`
+   跑到 channel 才炸出来。反例里想"不传会话标识"时，改成显式传 9 参 `null` 才是那个意思
+   （少传一个参数编译不过，那是另一件事——构造器签名变了，不是行为被改坏）。
+2. **定时任务不走指针**。`sessionIdOf` 里 `message.conversationId() != null` 时不查
+   `conversation_pointer`：它的"段"就是触发时刻本身，每次运行天然是新的。
+   指针只服务"人"这条路——那里才有"上次说到哪儿"。
+3. **判据 4 换了证据**（见上），判据 5 没做。两条都写在判据里，没有标成已验证。
+
+### 两条反例，各红两条用例
+
+| # | 改坏什么 | 红了哪条 |
+| --- | --- | --- |
+| 1 | `ScheduleScanner` 不传会话标识（传 `null`） | `eachFiringOwnsASessionApartFromTheCreator`（两段并一段）+ `eachFiringRunsWithTheOwnersIdentityAndItsOwnBudget`（两次合成 2） |
+| 2 | 会话标识拼成 `cron:<taskId>:oc_sched`（不带时刻、带 chatId） | 同上两条 |
+
+反例 2 一次红两条，正好说明这两条判据守的是同一件事的两面：**标识要唯一**（每次运行新段）
+与**标识不能借用 chatId**。少任一半，另一半也守不住。
+
 
 ## 收票时要补
 
