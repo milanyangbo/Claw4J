@@ -11,6 +11,7 @@ import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.port.InboundMessage;
+import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -50,6 +51,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -169,20 +175,67 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("第二轮请求真的带上了第一轮的问题与回答")
-    void secondTurnCarriesTheFirstTurnToTheModel() {
+    @DisplayName("并发两条要排队：第二条等第一条说完，才看得见它的答案（ADR-0026）")
+    void concurrentMessagesAreSerialized() throws Exception {
         MapSessionService sessions = new MapSessionService();
-        FixedChatModel model = new FixedChatModel("华东上周成交 128400");
-        ChatClientAgentPort port = port(model, sessions);
+        CountDownLatch firstInside = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        FixedChatModel model = new FixedChatModel(prompt -> {
+            // 看最后一条（这一轮的提问），不看整段：第二轮的提示词里带着第一轮的原话，
+            // 按整段判断的话，重问的那句会被认成第一轮。
+            String asked = prompt.getInstructions().getLast().getText();
+            if (!asked.contains("上周华东成交额")) {
+                return ChatPipelineTest.answer("华南上周成交 66400");
+            }
+            firstInside.countDown();
+            try {
+                releaseFirst.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return ChatPipelineTest.answer("华东上周成交 128400");
+        });
+        ConversationLane lane = new ConversationLane(Duration.ZERO);
+        ChatClientAgentPort port = port(model, sessions, lane);
 
-        // 同一段对话里的两轮：chatId 相同，才该带上上一句（ADR-0025）
-        port.reply(message("chat-a", "上周华东成交额"));
-        port.reply(message("chat-a", "那华南呢"));
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<OutboundMessage> first =
+                    pool.submit(() -> port.reply(message("chat-a", "上周华东成交额")));
+            assertThat(firstInside.await(5, TimeUnit.SECONDS))
+                    .as("第一条没进模型，后面的断言都无从谈起").isTrue();
 
-        List<Message> secondTurn = model.prompts().getLast().getInstructions();
-        String sent = secondTurn.stream().map(Message::getText).collect(Collectors.joining("\n"));
-        assertThat(sent).contains("上周华东成交额").contains("华东上周成交 128400");
-        assertThat(secondTurn).hasSizeGreaterThanOrEqualTo(3);
+            // 同一段对话的第二条，此刻第一条还占着锁。等的上限是 0，
+            // 所以它立刻拿到那句话，而不是排到第一条后面去。
+            Future<OutboundMessage> second =
+                    pool.submit(() -> port.reply(message("chat-a", "那华南呢")));
+            assertThat(second.get(5, TimeUnit.SECONDS).text())
+                    .as("等不到就抛 500 或干脆沉默，用户只会以为机器人坏了")
+                    .isEqualTo(ConversationLane.BUSY_REPLY);
+            assertThat(model.prompts())
+                    .as("第二条在第一条说完之前就调了模型：它拼提示词时 128400 还没落库，"
+                            + "而这个失败长得像「模型偶尔会忘事」")
+                    .hasSize(1);
+
+            releaseFirst.countDown();
+            first.get(5, TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        // 锁空出来之后，她重问一次。这一轮必须看得见上一轮的数字。
+        assertThat(port.reply(message("chat-a", "那华南呢")).text()).contains("66400");
+        String secondTurn = model.prompts().get(1).getInstructions().stream()
+                .map(Message::getText).collect(Collectors.joining("\n"));
+        assertThat(secondTurn)
+                .as("第二条的提示词里必须有第一条的答案，否则它只能重查一遍或者反问")
+                .contains("128400");
+        assertThat(sessions.createdIds())
+                .as("两条 run 落在同一段会话里；分成两段的话，记忆根本无处共享")
+                .hasSize(1);
+        assertThat(lane.size())
+                .as("用完不回收，这张锁表会随对话数一直长——一个跑半年的进程里没人清理它")
+                .isZero();
     }
 
     @Test
@@ -501,12 +554,17 @@ class SessionMemoryTest {
     }
 
     private static ChatClientAgentPort port(ChatModel model, SessionService sessions) {
+        return port(model, sessions, null);
+    }
+
+    private static ChatClientAgentPort port(ChatModel model, SessionService sessions,
+                                            ConversationLane lane) {
         ChatClient chat = ChatPipelineTest.clientBuilder(model)
                 .defaultAdvisors(SessionMemoryAdvisor.builder(sessions)
                         .order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
                         .build())
                 .build();
-        return new ChatClientAgentPort(chat);
+        return new ChatClientAgentPort(chat, null, null, null, null, null, null, lane);
     }
 
     private static InboundMessage message(String chatId, String text) {

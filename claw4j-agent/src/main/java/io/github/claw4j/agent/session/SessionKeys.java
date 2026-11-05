@@ -147,11 +147,12 @@ public final class SessionKeys {
     }
 
     /**
-     * 缺省落占位。给 {@link ConversationPointers} 用：它要拿同样规整过的三样去查指针，
-     * 两边对 {@code null} 与空串的处理必须一致——否则 {@code sessionId} 里的
-     * {@code "-"} 与指针行里的 {@code ""} 会是同一条对话的两个身份。
+     * 缺省落占位。给 {@link ConversationPointers} 与 {@code ConversationLane} 用：
+     * 它们要拿同样规整过的三样去查指针、拼锁键，两边对 {@code null} 与空串的处理必须一致——
+     * 否则 {@code sessionId} 里的 {@code "-"} 与指针行里的 {@code ""} 会是同一条对话的两个身份，
+     * 而锁键上差一个字符就是两把不同的锁。
      */
-    static String placeholder(String part) {
+    public static String placeholder(String part) {
         return orPlaceholder(part);
     }
 }

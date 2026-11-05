@@ -40,6 +40,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * {@link AgentPort} 的默认实现：把入站消息喂给 ChatClient，把回答包成出站消息。
@@ -151,6 +152,16 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      */
     private final ConversationPointers pointers;
 
+    /**
+     * 一段对话的串行化（ADR-0026 决定二）。可以为 null——没有它时两条并发消息各跑各的，
+     * 也就是改造之前的行为。这不是"降级更好"，是让只装配了 ChatClient 的调用方
+     * （例子、测试）不必凭空造一个调度器。
+     *
+     * <p><b>它包在最外层</b>，不是包在 {@code promptOf} 里：套在里面时 run 已经开出来了，
+     * 审计里会多出一条并行的事，而"这段对话同时只有一个 run"这句话就不成立了。
+     */
+    private final ConversationLane lane;
+
     public ChatClientAgentPort(ChatClient chatClient) {
         this(chatClient, null, null, null, null);
     }
@@ -185,6 +196,12 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
                                RunBudget budget, RunDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers) {
+        this(chatClient, compactor, runs, budget, delivery, tracer, pointers, null);
+    }
+
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
+                               RunBudget budget, RunDelivery delivery, RunTracer tracer,
+                               ConversationPointers pointers, ConversationLane lane) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
         this.runs = runs;
@@ -192,6 +209,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         this.delivery = delivery;
         this.tracer = tracer == null ? RunTracer.NONE : tracer;
         this.pointers = pointers;
+        this.lane = lane;
     }
 
     /**
@@ -229,8 +247,33 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     @Override
     public OutboundMessage reply(InboundMessage message) {
         Objects.requireNonNull(message, "message");
-        Turn turn = answer(message, addressOf(message));
+        Turn turn = inLane(message, () -> answer(message, addressOf(message)));
         return OutboundMessage.of(message.chatId(), turn.text(), turn.runId());
+    }
+
+    /**
+     * 这一轮在它所在对话的锁里跑（ADR-0026 决定二）。
+     *
+     * <p><b>为什么必须串行</b>：会话记忆在 {@code before} 读、在 {@code after} 写。
+     * 两条消息并发时，第二条拼提示词的那一刻第一条的答案还没落库——上下文里有问题、
+     * 没有答案。而它长得像"模型偶尔会忘事"，不会有人想到根因是并发。
+     *
+     * <p><b>拿不到就回一句话，不抛</b>：已经 ACK 的消息没有任何回音，用户只会以为
+     * 机器人坏了。也不重试、不排队到磁盘——单实例是既定形态（ADR-0009），
+     * 跨进程的队列属于 A12。
+     */
+    private Turn inLane(InboundMessage message, Supplier<Turn> work) {
+        if (lane == null) {
+            return work.get();
+        }
+        String address = ConversationLane.addressOf(SessionKeys.ownerOf(message.principal()),
+                message.channel(), message.chatId());
+        try {
+            return lane.run(address, work);
+        } catch (LaneBusyException busy) {
+            log.warn("这段对话还在处理上一句，这一句没等到：chatId={}", message.chatId());
+            return new Turn(null, ConversationLane.BUSY_REPLY);
+        }
     }
 
     /**
@@ -252,7 +295,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             // 如实返回空，让调度器记一次失败——它会在三次之后停掉这条任务。
             return Optional.empty();
         }
-        return Optional.ofNullable(answer(message, null).text());
+        return Optional.ofNullable(inLane(message, () -> answer(message, null)).text());
     }
 
     /** 这一轮的结果：落在哪个 run 上、回答是什么。 */
@@ -315,7 +358,28 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     public void stream(InboundMessage message, Consumer<OutboundMessage> onChunk) {
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(onChunk, "onChunk");
+        if (lane == null) {
+            streamInLane(message, onChunk);
+            return;
+        }
+        String address = ConversationLane.addressOf(SessionKeys.ownerOf(message.principal()),
+                message.channel(), message.chatId());
+        try {
+            lane.run(address, () -> {
+                streamInLane(message, onChunk);
+                return null;
+            });
+        } catch (LaneBusyException busy) {
+            // 与 reply 同一条口径：说话，不沉默。最后那一帧空文本是"这一路结束"的约定，
+            // 没有它，调用方的流永远不会完成。
+            log.warn("这段对话还在处理上一句，这一路流式没等到：chatId={}", message.chatId());
+            onChunk.accept(OutboundMessage.of(message.chatId(), ConversationLane.BUSY_REPLY, null));
+            onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
+        }
+    }
 
+    /** 真正的流式那一轮。锁由 {@link #stream} 拿——放在这里就晚了，run 已经开出来了。 */
+    private void streamInLane(InboundMessage message, Consumer<OutboundMessage> onChunk) {
         String owner = SessionKeys.ownerOf(message.principal());
         String sessionId = sessionIdOf(message, owner);
         String masked = PiiRedactor.mask(message.text());
@@ -380,6 +444,28 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         if (runs == null || runId == null || runId.isBlank()) {
             return Optional.empty();
         }
+        String address = runs.sessionAddressOf(runId).orElse(null);
+        if (lane == null || address == null) {
+            if (address == null) {
+                // 加列之前建的 run：没有地址就没有可以抢的锁。不加锁比"永远不执行"好——
+                // 这条路上没有入站消息，除了这里没人能推动它。
+                log.debug("run {} 没有记对话地址（加列之前建的），这一轮不加锁", runId);
+            }
+            return doResume(runId, note);
+        }
+        try {
+            // **锁在 reopen 之前拿**：拿不到就不把 run 拉起来，它继续挂着等下一次审批动作。
+            // 反过来（先 reopen 再等锁）会让一条 run 卡在 running 而没人收尾——
+            // 那比"这次没执行"难查得多，因为它看起来是成功过的。
+            return lane.run(address, () -> doResume(runId, note));
+        } catch (LaneBusyException busy) {
+            log.warn("run {} 的对话正在处理别的消息，这次续跑没有执行", runId);
+            return Optional.of(ConversationLane.BUSY_REPLY);
+        }
+    }
+
+    /** 续跑本体。锁由 {@link #resume} 拿——它要先从 run 上读到地址才知道锁哪一把。 */
+    private Optional<String> doResume(String runId, String note) {
         Optional<Run> reopened = runs.reopen(runId);
         if (reopened.isEmpty()) {
             log.warn("run {} 不在等待状态，审批放行也不会把它拉起来", runId);
@@ -477,6 +563,10 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             // 会话键在开 run 之后补写：预算是按会话判的（ADR-0025），
             // 没有它这条 run 就只能按自己那一行算——也就是"每轮 6 次"的旧行为。
             runs.attachSession(opened.run().id(), sessionId);
+            // 对话地址（ADR-0026 决定二）：审批续跑没有入站消息，靠这一列去抢同一把锁。
+            // 与会话键分开存——那个随段轮换，这个不随，两件事混在一列里就会一起错。
+            runs.attachAddress(opened.run().id(),
+                    ConversationLane.addressOf(owner, message.channel(), message.chatId()));
         }
         // 收件地址在进门时登记，接上旧事时也登记：后者正是"换一个通道接着做"的那一次，
         // 不登记它，结果就只能回到第一次提问的那个通道（A05）。

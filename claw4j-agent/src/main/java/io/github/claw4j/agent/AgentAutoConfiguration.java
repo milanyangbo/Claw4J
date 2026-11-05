@@ -393,7 +393,8 @@ public class AgentAutoConfiguration {
                                ObjectProvider<RunBudget> budget,
                                ObjectProvider<RunDelivery> delivery,
                                ObjectProvider<RunTracer> tracer,
-                               ObjectProvider<ConversationPointers> pointers) {
+                               ObjectProvider<ConversationPointers> pointers,
+                               AgentProperties properties) {
         // run、预算、投递都走 ObjectProvider 而不是直接注入：没配存储时它们是缺席而不是失败，
         // 门照常住着，只是"这件事做完了没有"没人记、也没人在看额度（与压缩器同一个判断）。
         // 三者同进同出：预算与收件地址都是 run 的属性，没有 run 就没有可扣的额度、
@@ -405,8 +406,12 @@ public class AgentAutoConfiguration {
         // 段（ADR-0026）也走 ObjectProvider，但它与 run 那一组不同进同出：
         // run 回答"这件事做完了没有"，段回答"这是哪一段对话"。关掉 run 存储时，
         // 对话照样该有开始与结束——那是记忆与预算的事，不是记账的事。
+        //
+        // lane 不是可选项：它是"一段对话同时只有一个 run"那条正确性保证本身。
+        // 不装配它，并发两条消息就会各跑各的，而失败长相是"模型偶尔会忘事"。
         return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(), runs.getIfAvailable(),
                 budget.getIfAvailable(), delivery.getIfAvailable(),
-                tracer.getIfAvailable(() -> RunTracer.NONE), pointers.getIfAvailable());
+                tracer.getIfAvailable(() -> RunTracer.NONE), pointers.getIfAvailable(),
+                new ConversationLane(properties.laneWait()));
     }
 }

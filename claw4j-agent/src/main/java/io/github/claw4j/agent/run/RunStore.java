@@ -70,6 +70,32 @@ public interface RunStore {
     }
 
     /**
+     * 记下这条 run 的"对话地址"（ADR-0026 决定二）。
+     *
+     * <p><b>与 {@link #attachSession} 是两件事</b>：那个记"哪一段会话"
+     * （{@code claw4j:user:…:<段>}，会随段轮换而变，给记忆与预算用）；
+     * 这个记"哪条对话"（{@code addr:<owner>|<通道>|<chatId>}，不随段变，用来抢 lane 那把锁）。
+     *
+     * <p><b>为什么要多存一份</b>：审批续跑没有入站消息，手上只有 {@code session_id}
+     * 那一串。反解要按 {@code :} 切，而 {@code chatId} 里出现冒号是可能的——
+     * 解析错的方式是"锁到了另一条对话上"，不报错。
+     */
+    default void attachAddress(String runId, String address) {
+        // 默认什么都不做：这条 run 就不会在续跑时抢锁，退回"各跑各的"。
+        // 替身与降级部署靠这条默认路径，而"少了串行化"比"这一轮直接失败"轻。
+    }
+
+    /**
+     * 这条 run 当初在哪条对话里。空表示没记下来（加列之前的老数据、存储降级）。
+     *
+     * <p>空的时候续跑<b>不加锁</b>：那条路上只有审批能推动它，而"放弃执行"
+     * 比"上一把抢不到的锁"糟得多——前者是永远不做，后者只是这一次没排上。
+     */
+    default Optional<String> sessionAddressOf(String runId) {
+        return Optional.empty();
+    }
+
+    /**
      * 这条 run 属于哪一段会话。空表示没记下来（加列之前的老数据、存储降级）。
      *
      * <p>审批续跑那条路上没有入站消息，算不出会话键，只能回读——

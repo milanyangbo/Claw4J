@@ -120,6 +120,29 @@ public class JdbcRunStore implements RunStore {
                 "update claw4j_run.agent_run set session_id = ? where id = ?", sessionId, runId));
     }
 
+    /** 记下这条 run 的对话地址（ADR-0026 决定二）：续跑靠它抢同一把 lane 锁。 */
+    @Override
+    public void attachAddress(String runId, String address) {
+        if (runId == null || address == null || address.isBlank()) {
+            return;
+        }
+        guard("记下 run 的对话地址", () -> jdbc.update(
+                "update claw4j_run.agent_run set session_address = ? where id = ?", address, runId));
+    }
+
+    /** 这条 run 当初在哪条对话里。空 = 加列之前建的，或者存储降级（续跑时就不加锁）。 */
+    @Override
+    public Optional<String> sessionAddressOf(String runId) {
+        if (runId == null || runId.isBlank()) {
+            return Optional.empty();
+        }
+        return guard("读一条 run 的对话地址", () -> jdbc.query(
+                "select session_address from claw4j_run.agent_run where id = ?",
+                (row, index) -> row.getString(1), runId).stream()
+                .filter(address -> address != null && !address.isBlank())
+                .findFirst().orElse(null));
+    }
+
     @Override
     public Optional<String> sessionOf(String runId) {
         return guard("读 run 的会话", () -> jdbc.query(

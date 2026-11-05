@@ -555,9 +555,9 @@ class ApplicationAssemblyTest {
 
         AgentAutoConfiguration configuration = new AgentAutoConfiguration();
         PersonaCatalog.Catalog sales = configuration.personaCatalog(
-                new AgentProperties(agents.toString(), "sales", null));
+                new AgentProperties(agents.toString(), "sales", null, null));
         PersonaCatalog.Catalog ops = configuration.personaCatalog(
-                new AgentProperties(agents.toString(), "ops", null));
+                new AgentProperties(agents.toString(), "ops", null, null));
 
         assertThat(sales.selected().systemPrompt()).contains("销售侧");
         assertThat(ops.selected().systemPrompt()).contains("运维侧");
@@ -585,9 +585,9 @@ class ApplicationAssemblyTest {
 
         AgentAutoConfiguration configuration = new AgentAutoConfiguration();
         PersonaCatalog.Catalog sales = configuration.personaCatalog(
-                new AgentProperties(agents.toString(), "sales", null));
+                new AgentProperties(agents.toString(), "sales", null, null));
         PersonaCatalog.Catalog ops = configuration.personaCatalog(
-                new AgentProperties(agents.toString(), "ops", null));
+                new AgentProperties(agents.toString(), "ops", null, null));
 
         assertThat(sales.glossary()).isNotEmpty();
         assertThat(ops.glossary().getFirst().text()).isEqualTo(sales.glossary().getFirst().text());
@@ -608,7 +608,7 @@ class ApplicationAssemblyTest {
                 "---\nname: sales\ndescription: 销售助手\n---\n\n你是销售侧的助手。\n");
 
         assertThatThrownBy(() -> new AgentAutoConfiguration()
-                .personaCatalog(new AgentProperties(agents.toString(), "ops", null)))
+                .personaCatalog(new AgentProperties(agents.toString(), "ops", null, null)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("ops")
                 .hasMessageContaining("sales");

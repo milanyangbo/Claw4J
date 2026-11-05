@@ -376,6 +376,13 @@ class RunSchemaSqlTest {
                 .as("读 run 时也带上用量：停在 budget_exhausted 的 run 只能靠它回答'为什么停'")
                 .isEqualTo(new Budget(3, 1_500L, 3_500L));
 
+        // ---- 对话地址（ADR-0026 决定二）：审批续跑没有入站消息，只能靠这一列找回地址。
+        // 与会话键分开存：那个随段轮换，这个不随——混成一列的话，续跑会锁到另一段对话上。
+        runs.attachAddress(run.id(), "addr:u-1@fp-1|web|c-1");
+        assertThat(new JdbcRunStore(jdbc).sessionAddressOf(run.id()).orElseThrow())
+                .as("读不回来就退化成不加锁，而那个失败是「审批续跑和用户同时写一段会话」")
+                .isEqualTo("addr:u-1@fp-1|web|c-1");
+
         // ---- 会话指针（ADR-0026 / V17）：同一行反复改值，不是每次插一行。
         // 这里验的是那条 on conflict ... case ... returning 在真 Postgres 上的行为——
         // 内存实现（SessionMemoryTest）能验"时间怎么驱动段"，但验不到 SQL 本身。
