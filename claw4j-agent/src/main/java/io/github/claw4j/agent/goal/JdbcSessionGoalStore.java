@@ -52,14 +52,21 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
             + " (session_key, status, objective, token_budget) values (?, 'active', ?, ?)"
             + " on conflict (session_key) do nothing" + RETURNING;
 
-    /** 改写：只动 objective 与 revision。状态与用量一个字都不碰。 */
+    /**
+     * 改写：只动 objective 与 revision。状态与用量一个字都不碰。
+     *
+     * <p>{@code status <> 'complete'} 是照 OpenAI 的排错表：{@code goal is already complete}
+     * 的意思是"目标必须先被显式 resume 才能编辑、暂停或阻塞"。
+     * 少了这一句，一次误触就能把一件已经收了尾的事改回"还在做的样子"，
+     * 而它的用量与完成时间都留在原处——那种行看起来正常，对不上账。
+     */
     private static final String EDIT = "update claw4j_session.conversation_goal"
             + " set objective = ?, revision = revision + 1, updated_at = now()"
-            + " where session_key = ?" + RETURNING;
+            + " where session_key = ? and status <> 'complete'" + RETURNING;
 
     /**
-     * 改状态。{@code status <> 'complete'} 写在 SQL 里：已完成是终态，
-     * 恢复它等于把一件收尾的事重新打开，那不是恢复、是新建。
+     * 改状态。{@code status <> 'complete'} 写在 SQL 里：达成之后不能直接 pause / block，
+     * 要先 resume（原文的排错表：{@code goal is already complete}）。
      */
     private static final String SET_STATUS = "update claw4j_session.conversation_goal"
             + " set status = ?, status_note = ?, revision = revision + 1, updated_at = now()"
@@ -71,11 +78,17 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * <p>{@code status = 'budget_limited'} 判的是更新之前的那一行：PostgreSQL 保证同一条
      * update 里所有 set 表达式读的都是同一份旧快照，所以这一句与 {@code status = 'active'}
      * 不会互相看到对方刚写进去的值。
+     *
+     * <p><b>没有 {@code status <> 'complete'} 那一句</b>：完成的也能 resume。
+     * 原文的状态表把 {@code complete} 写成"保持达成，直到你显式地用 {@code /goal resume}
+     * 再次推进同一个目标"；命令表里也写着 resume "恢复已暂停、已阻塞、受限或<b>已完成</b>的目标"。
+     * 我此前照着"终态"两个字把这一支堵了，而那句"终止状态"讲的是
+     * <b>不能直接 edit / pause / block</b>（见 {@link #EDIT} 与 {@link #SET_STATUS}），不是不能恢复。
      */
     private static final String RESUME = "update claw4j_session.conversation_goal"
             + " set tokens_used = case when status = 'budget_limited' then 0 else tokens_used end,"
             + " status = 'active', status_note = ?, revision = revision + 1, updated_at = now()"
-            + " where session_key = ? and status <> 'complete'" + RETURNING;
+            + " where session_key = ? and status <> 'active'" + RETURNING;
 
     /**
      * 记账，并在撞上预算的同一条语句里进 {@code budget_limited}。

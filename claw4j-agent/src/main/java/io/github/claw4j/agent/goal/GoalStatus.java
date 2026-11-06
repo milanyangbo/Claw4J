@@ -33,7 +33,12 @@ public enum GoalStatus {
     /** 为将来的用量限制状态保留，本仓库暂时进不去。 */
     USAGE_LIMITED("usage_limited", "用量受限"),
 
-    /** 达成。终态：要开始别的目标得先 {@code /goal clear}。 */
+    /**
+     * 达成。**不是终态**：{@code /goal resume} 能从它继续推进同一件事。
+     *
+     * <p>要开始<b>别的</b>目标才需要 {@code /goal clear}。原文："它保持达成状态，
+     * 直到你显式地用 {@code /goal resume} 或控制台里的 Resume 再次推进同一个目标"。
+     */
     COMPLETE("complete", "已达成");
 
     private final String column;
@@ -58,11 +63,28 @@ public enum GoalStatus {
     /**
      * 能不能被 {@code /goal resume} 拉回活跃。
      *
-     * <p>OpenClaw 的原话是"恢复已暂停、已阻塞、用量受限或预算受限的目标"——
-     * 也就是<b>除 {@link #COMPLETE} 之外都能</b>。已完成是终态，恢复它等于把一件
-     * 已经收尾的事重新打开，那不是恢复、是新建。
+     * <p><b>每一个状态都能</b>。原文的命令表："{@code /goal resume [note]}：恢复已暂停、
+     * 已阻塞、受限或<b>已完成</b>的目标"；状态那一节也写着 {@code complete} "保持达成状态，
+     * 直到你显式地用 {@code /goal resume} 再次推进同一个目标"。
+     *
+     * <p>唯一没有动作的是 {@link #ACTIVE} 自己——它已经是活跃的。
+     * 我此前把 {@code COMPLETE} 写成"终态、不能恢复"，读到的是另一句：
+     * 那句讲的是<b>不能在达成之后直接 edit / pause / block</b>（要先把目标 resume），
+     * 不是"不能 resume"。两句话挨着，读反了。
      */
     public boolean resumable() {
+        return this != ACTIVE;
+    }
+
+    /**
+     * 能不能在达成之后直接改（edit / pause / block）。
+     *
+     * <p>不能。原文的排错表："{@code Goal error: goal is already complete}：
+     * 目标必须先被显式 resume 才能编辑、暂停或阻塞。要开始不同的目标就清除它"。
+     * 这不是"完成之后什么都不许做"，而是"想接着弄它就先 resume"——
+     * 不然一次误触就把一件已经收了尾的事改回进行中。
+     */
+    public boolean mutableWhenComplete() {
         return this != COMPLETE;
     }
 

@@ -90,8 +90,9 @@ ADR-0024 与 ADR-0026 已经把"答完之后"这件事交给会话了，run 作�
 
 ### 五、预算是 goal 的属性
 
-`budget_limited` 是 goal 的状态，不是 run 的状态。窗口随 `goal start` / `goal resume` 打开，
-随 `complete` / `clear` 关闭。
+`budget_limited` 是 goal 的状态，不是 run 的状态。**只有 `/goal resume` 会开新窗口，
+而且只对 `budget_limited` 开**——其余状态（含 `complete`）恢复时用量继续累计；
+`clear` 把目标整个删掉，那才是这一份账的终点。
 
 保留"一轮最多 N 次工具调用"这道闸，但它**不是额度**，是失控熔断，理由不对称：
 OpenClaw 有 `agents.defaults.timeoutSeconds`（默认 48 小时）兜住跑飞，我们没有 per-run 超时，

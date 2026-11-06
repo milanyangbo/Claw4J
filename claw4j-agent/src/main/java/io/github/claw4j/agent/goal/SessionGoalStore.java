@@ -36,11 +36,14 @@ public interface SessionGoalStore {
     /**
      * 改写目标内容。**状态与用量不变**，{@code revision} 加一。
      *
+     * <p><b>达成之后不能改</b>：原文的排错表 {@code Goal error: goal is already complete}
+     * ——"目标必须先被显式 resume 才能编辑、暂停或阻塞"。
+     *
      * <p>OpenClaw 的原话："重新表述当前目标；状态和 Token 统计保持不变"。
      * 这条最容易被实现成"先 clear 再 start"，而那样 token 用量会归零——
      * 一个"改个措辞"的动作把额度还回去了。
      *
-     * @return 改后的那一行；空表示没有目标、或没写进去
+     * @return 改后的那一行；空表示没有目标、目标已达成、或没写进去
      */
     Optional<SessionGoal> edit(String sessionKey, String objective);
 
@@ -61,13 +64,16 @@ public interface SessionGoalStore {
      * fresh budget window." 所以清零只发生在 {@code budget_limited} 上——
      * 无条件清零等于"暂停一下就能白拿一份额度"。
      *
+     * <p><b>完成的也能恢复</b>：命令表里 resume 的作用对象是"已暂停、已阻塞、受限<b>或已完成</b>"。
+     * 它恢复的是同一个目标（内容、创建时间、用量都不动）；想换一件事才要 {@code clear}。
+     * 唯一不动的是本来就活跃的那一个。
+     *
      * <p>判定放在 SQL 里（{@code case when status = 'budget_limited'}）而不是先读再写：
      * 先读再写会留下"读的时候还在额度里、写的时候已经超了"的窗口，
      * 那个窗口里恢复出来的目标带着一个已经超支的用量，下一轮立刻又停下。
      *
      * @param note 可以为 null（等于把上一条说明清掉）
-     * @return 改后的那一行；空表示没有目标、目标是终态（{@link GoalStatus#COMPLETE}）、
-     *         或没写进去
+     * @return 改后的那一行；空表示没有目标、目标本来就是 {@code active}、或没写进去
      */
     Optional<SessionGoal> resume(String sessionKey, String note);
 

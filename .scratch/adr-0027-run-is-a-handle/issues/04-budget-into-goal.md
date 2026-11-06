@@ -38,9 +38,10 @@ OpenClaw 没有这种"会话累计额度表"。它有：
 - `drop table claw4j_run.agent_session_budget`；
 - 删 `RunBudget` 里三项累计的实现，只留"这一轮有没有超 goal 预算"这一问。
 
-窗口：`goal start` 与 `goal resume` 打开窗口；`complete` / `clear` 关闭。
-`resume` 时如果当前是 `budget_limited`，**`tokens_used` 归零**（OpenClaw：fresh budget window），
-其余状态 resume 时不清零（OpenClaw："Token accounting continues unless the budget was reached"）。
+窗口：**只有 `resume` 会开新窗口，而且只对 `budget_limited` 开**——那时 `tokens_used` 归零
+（OpenClaw：fresh budget window）；其余状态 resume 时用量继续累计（OpenClaw："Token accounting
+continues unless the budget was reached"）。`complete` 不关窗口（它能被 resume 回来接着推），
+`clear` 才把这一份账整个删掉。
 
 ### 3. 工具调用次数上限：改名成熔断
 
@@ -110,7 +111,7 @@ OpenClaw 没有这种"会话累计额度表"。它有：
 | 表 | `V22__drop_session_budget.sql`：`drop table claw4j_run.agent_session_budget` |
 | 记账 | `SessionGoalStore#addTokens` 改成返回那一行，并在**同一条 SQL** 里撞线进 `budget_limited`：`JdbcSessionGoalStore.ADD_TOKENS` 的 `case when status not in ('complete','budget_limited') and token_budget is not null and tokens_used + ? >= token_budget` |
 | 收尾记账 | `ChatClientAgentPort#closeTurn` → `chargeGoal(scope, tokens)`；撞线时打一行 INFO（`used/budget`） |
-| 恢复 | `SessionGoalStore#resume`（新方法）：`set tokens_used = case when status = 'budget_limited' then 0 else tokens_used end, status = 'active'`；`GoalCommand` 的 resume 支改调它 |
+| 恢复 | `SessionGoalStore#resume`（新方法）：`set tokens_used = case when status = 'budget_limited' then 0 else tokens_used end, status = 'active'`（`where status <> 'active'`，票 02 复核时从 `<> 'complete'` 改正——完成的也能恢复）；`GoalCommand` 的 resume 支改调它 |
 | 熔断 | `ToolCallBudget.toolCallingManager(registry, totalCalls)`；`claw4j.agent.tool-call-limit` 落在 `AgentProperties`（同一个 `claw4j.agent` 前缀）；父与子两条链都传它 |
 | 熔断话术 | `ChatClientAgentPort#cappedText`：看 `ToolCallLimitExceededException.FINISH_REASON`（公开常量，不做文本匹配），命中就换成 `TOOL_CALL_CAPPED` |
 | 删掉 | `RunBudget`、`RunBudgetProperties`、`RunStore#spent|charge` 与 JDBC 实现、`MeteredToolCallback` 的扣额分支、`ChatClientAgentPort` 的进门看额度与 `stopForBudget`、`elapsedMillis` |

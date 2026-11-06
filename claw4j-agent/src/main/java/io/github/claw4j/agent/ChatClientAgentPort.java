@@ -576,6 +576,13 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      * 这一条是"叫停能生效"的唯一保证——注入只判"有没有行"的话，用户按了暂停，
      * 下一轮模型还在往那个方向推进，而界面上写着"已暂停"。
      *
+     * <p><b>四个分句逐句照原文</b>（{@code English: Active goal: <objective> — advance;
+     * keep active until fully achieved; block only after the same blocker on 3 consecutive turns;
+     * after update_goal, provide the requested visible final.}）：推进、达成前保持活跃、
+     * 同一个阻塞连续三轮才标 blocked、{@code update_goal} 之后仍要给最终回答。
+     * 少一句就会长出对应的坏行为——尤其最后一句：模型标完 {@code complete} 就收工，
+     * 用户看到的是一个状态变了、但没有回答的一轮。
+     *
      * <p><b>折成一行</b>：目标原文可能有七行，而这里要的是一行上下文。
      * 折行只影响注入，库里存的仍是原文。
      */
@@ -586,7 +593,8 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
         return goals.of(sessionId)
                 .filter(SessionGoal::injected)
                 .map(goal -> "活跃目标：" + oneLine(goal.objective(), GOAL_CHARS)
-                        + " — 推进目标或更新其状态（get_goal/update_goal）。\n")
+                        + " — 推进它；没完全达成之前保持活跃；同一个阻塞连续三个轮次都在才标 blocked；"
+                        + "update_goal 之后仍要给出用户要的最终回答。\n")
                 .orElse("");
     }
 

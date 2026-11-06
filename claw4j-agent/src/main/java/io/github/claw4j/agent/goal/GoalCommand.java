@@ -148,19 +148,27 @@ public sealed interface GoalCommand {
                         .orElse("目标没写进去（库连不上，或者迁移没跑过）。"));
     }
 
+    /**
+     * 改写目标内容。
+     *
+     * <p><b>达成之后不能改</b>：{@link SessionGoalStore#edit} 的语句里带 {@code status <> 'complete'}，
+     * 照原文的排错表——"目标必须先被显式 resume 才能编辑、暂停或阻塞"。
+     * 所以失败时要分辨"没有目标"、"已经达成"与"写不进去"三种，
+     * 不然用户会对着一个完好的系统反复重试。
+     */
     private static String edit(SessionGoalStore goals, String sessionKey, String objective) {
         return goals.edit(sessionKey, objective)
                 .map(changed -> "目标已改写（状态与用量都没动）。\n" + GoalTools.render(changed))
-                .orElseGet(() -> goals.of(sessionKey)
-                        .map(ignored -> "没改成（库连不上，或者迁移没跑过）。")
-                        .orElse("这个会话还没有目标。用法：/goal <目标>"));
+                .orElseGet(() -> explainMiss(goals, sessionKey));
     }
 
     /**
      * 恢复。
      *
-     * <p>已完成的目标不能恢复：那是终态，OpenClaw 的原文是"目标处于终止状态。
-     * 启动或恢复其他目标前，请先将其清除"。恢复它等于把一件收尾的事重新打开。
+     * <p><b>完成的也能恢复</b>：原文的命令表写着 resume"恢复已暂停、已阻塞、受限或<b>已完成</b>
+     * 的目标"，状态那一节也写着 {@code complete}"保持达成，直到你显式地用 {@code /goal resume}
+     * 再次推进同一个目标"。恢复了之后目标内容、创建时间都不动，用量继续累计
+     * ——那正合"同一个目标再推一次"，而不是新建一件。
      *
      * <p><b>从 {@code budget_limited} 恢复会开新窗口</b>：用量清零、预算不变
      * （"Resuming starts a new budget window at the current fresh token count"）。
@@ -172,32 +180,43 @@ public sealed interface GoalCommand {
         if (current.isEmpty()) {
             return "这个会话还没有目标。用法：/goal <目标>";
         }
-        if (!current.get().status().resumable()) {
-            return "这个目标已经达成了，不能恢复。要开始别的事得先 /goal clear。";
-        }
-        if (current.get().status() == GoalStatus.ACTIVE) {
-            // 原文的 resume 是"恢复已暂停、已阻塞、用量受限或预算受限的目标"。
-            // 打在活跃目标上什么都不该发生：跟着改一格 revision 的话，
-            // "谁最后改的"就多出一条没有改动的痕迹。
+        GoalStatus was = current.get().status();
+        if (was == GoalStatus.ACTIVE) {
+            // 已经是活跃的，没有可恢复的。不跟着改一格 revision：
+            // revision 记的是"谁改过它"，空按钮不该留下一道痕迹。
             return "这个目标本来就是活跃的，没动它。\n" + GoalTools.render(current.get());
         }
-        boolean freshWindow = current.get().status() == GoalStatus.BUDGET_LIMITED;
         return goals.resume(sessionKey, note)
-                .map(changed -> freshWindow
-                        ? "目标恢复为活跃，额度开了新窗口（用量从 0 起算）。接下来的轮次会重新把它带进上下文。"
-                        : "目标恢复为活跃，接下来的轮次会重新把它带进上下文。")
-                .orElseGet(() -> goals.of(sessionKey)
-                        .map(ignored -> "没能改（库连不上，或者迁移没跑过）。")
-                        .orElse("这个会话还没有目标。用法：/goal <目标>"));
+                .map(changed -> switch (was) {
+                    case BUDGET_LIMITED -> "目标恢复为活跃，额度开了新窗口（用量从 0 起算）。"
+                            + "接下来的轮次会重新把它带进上下文。";
+                    case COMPLETE -> "目标重新开始推进了（之前达成的记录没动，用量接着累计）。"
+                            + "接下来的轮次会重新把它带进上下文。";
+                    default -> "目标恢复为活跃，接下来的轮次会重新把它带进上下文。";
+                })
+                .orElseGet(() -> explainMiss(goals, sessionKey));
     }
 
     private static String setStatus(SessionGoalStore goals, String sessionKey, GoalStatus status,
                                     String note, String done) {
         return goals.setStatus(sessionKey, status, note)
                 .map(changed -> done)
-                .orElseGet(() -> goals.of(sessionKey)
-                        .map(ignored -> "没能改（库连不上，或者迁移没跑过）。")
-                        .orElse("这个会话还没有目标。用法：/goal <目标>"));
+                .orElseGet(() -> explainMiss(goals, sessionKey));
+    }
+
+    /**
+     * 一次写没生效，说清楚是哪一种。
+     *
+     * <p><b>不能一律说"库连不上"</b>：三种原因里两种是用户该知道的
+     * （没有目标、已经达成），一种是运维该知道的。混成一句话的代价是
+     * 用户对着一个完好的系统反复重试——而它其实只需要一句 {@code /goal resume}。
+     */
+    private static String explainMiss(SessionGoalStore goals, String sessionKey) {
+        return goals.of(sessionKey)
+                .map(existing -> existing.status() == GoalStatus.COMPLETE
+                        ? "这个目标已经达成了，先 /goal resume 才能改它；要换一件事做则 /goal clear。"
+                        : "没能改（库连不上，或者迁移没跑过）。")
+                .orElse("这个会话还没有目标。用法：/goal <目标>");
     }
 
     private static GoalCommand start(String objective) {

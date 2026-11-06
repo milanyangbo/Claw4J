@@ -140,6 +140,8 @@ public final class GoalTools implements ToolCallbackProvider {
                     "把目标标记为 complete 或 blocked。**只有目标确实达成时才标 complete**；"
                             + "**只有同一个阻塞条件至少连续三个目标轮次都出现**，才标 blocked——"
                             + "一般性的困难、或者「还没打磨好」不算阻塞。"
+                            + "额度快用完**不是**把没做完的活标成达成的理由。"
+                            + "改目标状态**不会替你回一句话**：用户要的那个最终回答仍然要由你给出。"
                             + "暂停、恢复、清除、改写目标都不归你：那是用户用 /goal 按的按钮。",
                     """
                             {
@@ -212,7 +214,7 @@ public final class GoalTools implements ToolCallbackProvider {
             text.append("状态说明：").append(goal.note()).append('\n');
         }
         text.append("命令：/goal edit <objective>、/goal pause");
-        if (goal.status().resumable() && goal.status() != GoalStatus.ACTIVE) {
+        if (goal.status().resumable()) {
             text.append("、/goal resume");
         }
         return text.append("、/goal complete、/goal clear").toString();

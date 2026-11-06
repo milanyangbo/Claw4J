@@ -214,6 +214,44 @@ class RunLifecycleTest {
                 .isEqualTo(40L);
     }
 
+    /**
+     * 达成的目标：能 resume，但 resume 之前不能改（照 OpenClaw 的命令表与排错表）。
+     *
+     * <p><b>写在真库上，因为要验的是那三条 SQL 的 {@code where}</b>：
+     * {@code RESUME} 只挡 {@code active}、{@code EDIT} 与 {@code SET_STATUS} 挡 {@code complete}。
+     * 用内存替身验的是我写的 if，不是那三条语句——这一条最初就是绿的，
+     * 因为反例改的是 SQL，而那条用例走的是替身。
+     *
+     * <p>原文两处：「{@code /goal resume}」恢复"已暂停、已阻塞、受限<b>或已完成</b>的目标"；
+     * 排错表里那句 {@code Goal error: goal is already complete} 说的是"必须先显式 resume
+     * 才能编辑、暂停或阻塞"。我把后一句读成了"不能恢复"，两者正好相反。
+     */
+    @Test
+    @DisplayName("达成的目标：能 resume 回来，但 resume 之前 edit / pause 都被挡住")
+    void aCompletedGoalCanBeResumedButNotChangedInPlace() {
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, null);
+        String key = "claw4j:user:u-1@fp-1:-:done";
+        goals.start(key, "把三张表的口径对齐", 100L);
+        goals.addTokens(key, 40L);
+        goals.setStatus(key, GoalStatus.COMPLETE, "推上去并验证过");
+
+        assertThat(goals.edit(key, "换个说法"))
+                .as("达成之后直接改写会把一件收了尾的事改回进行中的样子")
+                .isEmpty();
+        assertThat(goals.setStatus(key, GoalStatus.PAUSED, "等等"))
+                .as("同上：pause 也要先 resume")
+                .isEmpty();
+
+        var resumed = goals.resume(key, null).orElseThrow();
+
+        assertThat(resumed.status()).isEqualTo(GoalStatus.ACTIVE);
+        assertThat(resumed.objective()).as("恢复同一个目标，不是新建一件").isEqualTo("把三张表的口径对齐");
+        assertThat(resumed.tokensUsed())
+                .as("不是限额那一路，所以不开新窗口：额度接着算")
+                .isEqualTo(40L);
+        assertThat(goals.edit(key, "换个说法")).as("resume 回来之后就能改了").isPresent();
+    }
+
     // ---------------------------------------------------------------- 送到哪（A05）
 
     @Test
@@ -424,6 +462,9 @@ class RunLifecycleTest {
         jdbc.update("delete from claw4j_session.ai_session_event");
         jdbc.update("delete from claw4j_session.ai_session");
         jdbc.update("delete from claw4j_session.conversation_pointer");
+        // 目标也要清：{@code start} 是 {@code on conflict do nothing}，
+        // 上一轮留下的那一行会让这一轮的 start 静默失败，于是用例读到的是别人留下的状态。
+        jdbc.update("delete from claw4j_session.conversation_goal");
     }
 
     // ---------------------------------------------------------------- 装配

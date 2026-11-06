@@ -177,3 +177,38 @@ prune()            -- 30 天 + 10 万行
 
 - `logging.audit.messages` 与 `executionIdentity`：OpenClaw 两个默认都是 off，我们不做。
 - 没有 CLI：查现有 HTTP 端点或直接 SQL。
+
+## 复核修正（2026-11-06，对着 openclaw/openclaw 的源码与文档逐条核）
+
+逐条对 `docs/gateway/audit.md` 与 `docs/cli/audit.md`。
+结论：**口径都对，漏了一个字段。**
+
+### 漏的那一个：`schemaVersion: 1`
+
+原文（§Record families）：
+
+> Every record carries a stable event id, a monotonic owner sequence, a lifecycle timestamp,
+> actor, action, status, `schemaVersion: 1`, and `redaction: "metadata_only"`.
+
+八样里做了七样（`id` → `event_id`、`seq`、`at`、`actor`、`action`、`status`、`redaction`），
+`schemaVersion` 漏了。补在 `V23__audit_schema_version.sql`：
+`schema_version smallint not null default 1` + `check (schema_version = 1)`。
+
+它是一条**读侧承诺**——"这一行按第 1 版字段解释"。将来把 `message.*` 族补上时，
+旧的读代码靠它区分"老行没有这个字段"与"这个字段是空的"。没有它，
+加列之后所有历史行都被当成新格式解释，而那种错不报错，只让统计数字悄悄偏掉。
+
+### 三处仍然与原文不同（都不是口径）
+
+| 它怎么写 | 我们怎么写 | 为什么 |
+| --- | --- | --- |
+| 每个清理事务最多删 1024 行，"然后安排更多工作直到清完" | 一条 DELETE 删干净 | 这是它在 SQLite 单写者上的实现约束（长事务会把整个 Gateway 卡住）。我们一条 DELETE 不阻塞进程，分批只会多几次往返。**上限、时机、顺序三项一致。** |
+| 查询侧"never return records older than 30 days"（物理清理没跑也按 30 天截断） | 还没有查询入口 | 这一票只做写入与留存。做查询（CLI 或端点）时必须把这条 30 天截断带上——记在这里，别到时候只查表。 |
+| `logging.audit.executionIdentity`（默认 off）与 `logging.audit.messages`（默认 off） | 都没做 | 前者的前提是一套"执行身份信封"（ingress / principal / sponsor / HMAC 假名），我们没有；后者要先把 outbound 投递建模成 queued / platform-started / finished 三段，而我们的投递是同步一次调用。两个都默认 off，不做不影响"默认行为对齐"。 |
+
+### 顺带确认对上的几处（免得下次又怀疑）
+
+- status 七值词表逐字一致：`started / succeeded / failed / cancelled / timed_out / blocked / unknown`。
+- `kind` 二分（`agent_run` / `tool_action`）与四类 action 名逐字一致。
+- 30 天 + 10 万行 + "启动、每小时、之后的写入"三处清理，一致（我们换的是"之后的写入"的粒度，见上）。
+- "关掉的是采集，不是留存"（retention maintenance keeps running even when collection is disabled）——`AuditLedger.enabled` 只挡写入，清理照跑，一致。

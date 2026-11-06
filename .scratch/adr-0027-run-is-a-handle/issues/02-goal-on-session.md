@@ -213,3 +213,86 @@ OpenClaw 的 goal 是会话状态，不是"删除"。
 | `docs/design/session-memory.md` | 一节"会话目标"：六态、只有 active 注入、`/new` 换段即无目标 |
 | `docs/adr/0027` | 落地顺序第 2 步标"已落地（02）" |
 | `docs/agents/guardrails.md` | 记一条：`/goal start` 不收预算参数（照 OpenClaw），要设预算只能让模型调 `create_goal` |
+
+## 复核修正（2026-11-06，对着 openclaw/openclaw 的源码与文档逐条核）
+
+用户的要求是「跟 OpenClaw 的设计对齐就行，不要按自己想法来写」。核完发现两处**读反**，
+一处**原文有、我没写**，都已改。
+
+### 一、`/goal resume` 能不能恢复已达成（读反，改的是行为）
+
+我原来写的是"已达成是终态，不能恢复"，引的是这么一句："目标处于终止状态。启动或恢复其他目标前，
+请先将其清除"。**那句讲的是别的动作**——`docs/tools/goal.md` 的排错表：
+
+> `Goal error: goal is already complete` | The goal must be **explicitly resumed before editing,
+> pausing, or blocking** it. Clear it to start a different objective.
+
+也就是说"达成之后不能直接 edit / pause / block"，**不是说不能 resume**。同一个文件里两处正面写着：
+
+> `/goal resume [note]` | Resume a paused, blocked, limited, or **completed** goal.
+>
+> `complete`: the goal was achieved. It stays complete until you explicitly use `/goal resume`
+> or **Resume** in the Control UI to pursue the same objective again. Resuming preserves its
+> identity, creation time, and conversation history. Token accounting continues unless the budget
+> was reached, in which case resume starts a fresh budget window.
+
+改法：
+
+| 位置 | 改成 |
+| --- | --- |
+| `GoalStatus#resumable()` | `this != ACTIVE`（此前是 `!= COMPLETE`） |
+| `JdbcSessionGoalStore.RESUME` | `where session_key = ? and status <> 'active'`（此前是 `<> 'complete'`） |
+| `GoalStatus#mutableWhenComplete()` | 新增：`!= COMPLETE`，给 edit / pause / block 用 |
+| `JdbcSessionGoalStore.EDIT` | 补上 `and status <> 'complete'`——此前**漏了**，达成之后照样能改 |
+| `SET_STATUS` | 不变（本来就挡 complete，这一条是对的，只是理由写错了） |
+| `GoalCommand#resume` | 四种状态各说一句；complete 走"之前达成的记录没动，用量接着累计" |
+| `GoalCommand#explainMiss` | 新增：失败时分辨"没有目标 / 已达成（先 resume）/ 写不进去"三种 |
+
+### 二、注入那一行少了两个分句（原文有，我没写）
+
+原文（`docs/tools/goal.md` §Goal context on every turn）：
+
+> `Active goal: <objective> — advance; keep active until fully achieved; block only after the
+> same blocker on 3 consecutive turns; after update_goal, provide the requested visible final.`
+
+我原来只有"推进目标或更新其状态"。补齐后是四个分句，`ChatClientAgentPort#activeGoalLine`：
+
+> 活跃目标：<objective> — 推进它；没完全达成之前保持活跃；同一个阻塞连续三个轮次都在才标 blocked；
+> update_goal 之后仍要给出用户要的最终回答。
+
+最后一句不是客套：模型标完 `complete` 就收工的话，用户看到的是"状态变了、但没有回答"的一轮。
+`update_goal` 的工具描述也补了同一句，外加原文的"额度快用完不是把没做完的活标成达成的理由"。
+
+### 三、三个反例，各红一条
+
+| # | 改坏什么 | 红了哪条 |
+| --- | --- | --- |
+| 1 | `RESUME` 改回 `and status <> 'complete'` | `RunLifecycleTest#aCompletedGoalCanBeResumedButNotChangedInPlace`（`NoSuchElementException`） |
+| 2 | `EDIT` 去掉 `and status <> 'complete'` | 同一条（`Expecting empty but was present`） |
+| 3 | 注入行改回旧的那一句 | `ChatPipelineTest#aCompletedGoalCanBeResumed`（少了"连续三个轮次"那三个分句） |
+
+**反例 1 第一次是绿的**——因为那条用例当时走的是内存替身，我改的是 SQL。
+于是补了一条走真库的 `aCompletedGoalCanBeResumedButNotChangedInPlace`（`RunLifecycleTest`），
+它才真的红。「结果一致 ≠ 走同一段代码」，这个坑这个仓库已经踩过一次。
+
+顺带修了一处测试卫生问题：`RunLifecycleTest#freshSessionTables` **没清 `conversation_goal`**，
+而 `start` 是 `on conflict do nothing`，于是上一轮留下的那一行会让这一轮的 `start` 静默失败，
+用例读到的是别人留下的状态。
+
+### 四、OpenClaw 有、我们**故意没有**的四样（连同理由）
+
+| 它有什么 | 我们为什么没有 |
+| --- | --- |
+| `id`（`goalId`） | 它存在的三个理由在我们这里都不成立：①resume 之后身份不变——我们的 `session_key` 本来就稳定；②UI 控件指向 goalId 防"点了旧按钮改了新目标"——我们没有 Control UI；③幂等收据（`operationId` + `goalId` + 24 小时有效期）——我们没有跨请求重放。 |
+| `tokenStart` / `tokenStartFresh` | 它要"以目标创建时的 fresh token 计数为基线"，因为它的用量是**读会话总量**再减基线。我们是**按轮增量累加**（`tokens_used + ?`），建目标之前的那些轮天然不计入，等价而且不用等 fresh 快照。 |
+| `continuationTurns` | 那是自动续跑的计数，而自动续跑我们没做（见下）。 |
+| `pausedAt` / `blockedAt` / `completedAt` / `usageLimitedAt` / `budgetLimitedAt` 五个状态时间 | 它要按各自状态的起点算 UI 上的"冻结计时器"。我们没有那个计时器，而每次状态变化都会 bump `updated_at`——"这个状态从什么时候开始"从这一列就读得到，只是不分列。 |
+
+### 五、这一票之后仍然没做（都是能力缺口，不是口径偏差）
+
+- **自动续跑（automatic continuation）**：OpenClaw 在每轮正常收尾后，如果目标还 `active`，
+  会往后续队列排一个隐藏的 nudge（"Advance the active goal; keep it active until fully
+  achieved."），不是一次性重试、也不是固定几轮。**我们没有这个**：目标只影响提示词，
+  不会自己拉下一轮。这是一件独立的事，不在本票范围内，也不在 05 里。
+- 失败的一轮不自动 pause（原文：run 以错误或超时结束时目标转 `paused` 并记一条说明）。
+- `/goal edit` 在 `active` 执行中的那套"中断→等落地→pause→edit→resume"（Control UI 的替换流程）。

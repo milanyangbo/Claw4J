@@ -512,7 +512,8 @@ class ToolGovernanceTest {
         assertThat(goals.of("c-goal").orElseThrow().note()).isEqualTo("等 CI 环境");
 
         // ---- 从 blocked 恢复是正常的；再按一次 resume 才是什么都不该发生
-        //（原文的 resume 只针对"已暂停、已阻塞、用量受限、预算受限"这四个态）。
+        //（原文的命令表把 resume 的作用对象列成"已暂停、已阻塞、受限或已完成"——
+        // 除了"已经是活跃的"，别的都能恢复）。
         assertThat(GoalCommand.execute(new GoalCommand.Resume(null), goals, "c-goal"))
                 .contains("目标恢复为活跃");
         long afterResume = goals.of("c-goal").orElseThrow().revision();
@@ -564,10 +565,14 @@ class ToolGovernanceTest {
                     tokenBudget, 0, 1, NOW, NOW)));
         }
 
+        /**
+         * 改写：达成之后不能改，与 {@code JdbcSessionGoalStore.EDIT} 的
+         * {@code status <> 'complete'} 同一条规则（原文：{@code goal is already complete}）。
+         */
         @Override
         public Optional<SessionGoal> edit(String sessionKey, String objective) {
             SessionGoal current = rows.get(sessionKey);
-            if (current == null) {
+            if (current == null || current.status() == GoalStatus.COMPLETE) {
                 return Optional.empty();
             }
             return Optional.of(put(new SessionGoal(sessionKey, current.status(), objective,
@@ -606,11 +611,16 @@ class ToolGovernanceTest {
                     current.revision() + (capped ? 1 : 0), current.createdAt(), NOW)));
         }
 
-        /** 恢复：从 {@code budget_limited} 回来时开新窗口；其余状态用量不动。 */
+        /**
+         * 恢复：从 {@code budget_limited} 回来时开新窗口；其余状态用量不动。
+         *
+         * <p>已达成的不挡——完成的也能 resume（原文的命令表把 {@code completed} 列在
+         * resume 的作用对象里）。挡它的是 edit / pause / block。
+         */
         @Override
         public Optional<SessionGoal> resume(String sessionKey, String note) {
             SessionGoal current = rows.get(sessionKey);
-            if (current == null || current.status() == GoalStatus.COMPLETE) {
+            if (current == null || current.status() == GoalStatus.ACTIVE) {
                 return Optional.empty();
             }
             long used = current.status() == GoalStatus.BUDGET_LIMITED ? 0L : current.tokensUsed();

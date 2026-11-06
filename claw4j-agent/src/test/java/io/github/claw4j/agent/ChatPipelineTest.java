@@ -471,6 +471,82 @@ class ChatPipelineTest {
         assertThat(sent.getLast()).as("恢复之后重新注入").contains("活跃目标：让 CI 变绿");
     }
 
+    /**
+     * 达成的目标能 resume（ADR-0027 决定三，照 OpenClaw 的命令表）。
+     *
+     * <p><b>这一条此前是反的</b>：我把"达成之后不能直接 edit / pause / block"读成了
+     * "不能恢复"。原文两处写得很清楚——命令表里 resume 恢复"已暂停、已阻塞、受限<b>或已完成</b>
+     * 的目标"；状态那一节说 {@code complete}"保持达成，直到你显式地用 {@code /goal resume}
+     * 再次推进同一个目标"。两句挨着，我引了后一句却按前一句的意思实现。
+     *
+     * <p><b>恢复的是同一个目标</b>：内容、预算、已用 Token 都不动（只有 {@code budget_limited}
+     * 才开新窗口）。当成新建一件的话，"再推一次"会带着一份空账从头开始，
+     * 而用户以为额度还在。
+     */
+    @Test
+    @DisplayName("达成的目标能被 /goal resume 拉回来：同一个目标继续推，内容与用量都保留")
+    void aCompletedGoalCanBeResumed() {
+        InMemoryGoals goals = new InMemoryGoals();
+        List<String> sent = new ArrayList<>();
+        FixedChatModel model = new FixedChatModel(prompt -> {
+            sent.add(prompt.getInstructions().stream()
+                    .map(each -> each.getText() == null ? "" : each.getText())
+                    .reduce("", String::concat));
+            return answer("好");
+        });
+        ChatClientAgentPort port = port(model, new FakeRuns(), goals);
+        String key = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-1");
+
+        port.reply(message("chat-1", "/goal 让 CI 变绿"));
+        goals.addTokens(key, 1200);
+        port.reply(message("chat-1", "/goal complete 推上去并验证过"));
+
+        assertThat(port.reply(message("chat-1", "/goal resume")).text())
+                .as("完成的也能恢复")
+                .contains("重新开始推进");
+
+        SessionGoal resumed = goals.of(key).orElseThrow();
+        assertThat(resumed.status()).isEqualTo(GoalStatus.ACTIVE);
+        assertThat(resumed.objective()).as("恢复同一个目标，不是新建一件").isEqualTo("让 CI 变绿");
+        assertThat(resumed.tokensUsed())
+                .as("只有 budget_limited 才开新窗口：达成的目标再推一次，额度接着算")
+                .isEqualTo(1200);
+
+        port.reply(message("chat-1", "接着说"));
+        assertThat(sent.getLast())
+                .as("恢复之后重新注入，且四个分句都在——少一句就长出对应的坏行为")
+                .contains("活跃目标：让 CI 变绿")
+                .contains("没完全达成之前保持活跃")
+                .contains("连续三个轮次")
+                .contains("仍要给出用户要的最终回答");
+    }
+
+    /**
+     * 达成之后不能直接改（原文排错表：{@code Goal error: goal is already complete}）。
+     *
+     * <p><b>三个动作都要被挡，并且说清怎么继续</b>：edit、pause、block。
+     * 全回一句"库连不上"的话，用户会对着一个完好的系统反复重试——
+     * 而它其实只需要一句 {@code /goal resume}。
+     */
+    @Test
+    @DisplayName("达成的目标不能直接 edit / pause / block：要先把目标 resume 回来")
+    void aCompletedGoalMustBeResumedBeforeItCanBeChanged() {
+        InMemoryGoals goals = new InMemoryGoals();
+        ChatClientAgentPort port = port(new FixedChatModel("好"), new FakeRuns(), goals);
+        String key = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-1");
+
+        port.reply(message("chat-1", "/goal 让 CI 变绿"));
+        port.reply(message("chat-1", "/goal complete"));
+
+        for (String command : List.of("/goal edit 换个说法", "/goal pause", "/goal block 卡住了")) {
+            assertThat(port.reply(message("chat-1", command)).text())
+                    .as("达成之后要改它得先 resume：一次误触不该把收了尾的事改回进行中")
+                    .contains("先 /goal resume");
+        }
+        assertThat(goals.of(key).orElseThrow().status()).isEqualTo(GoalStatus.COMPLETE);
+        assertThat(goals.of(key).orElseThrow().objective()).isEqualTo("让 CI 变绿");
+    }
+
     private static ChatClientAgentPort port(FixedChatModel model, RunStore runs) {
         return port(model, runs, null);
     }
@@ -533,9 +609,16 @@ class ChatPipelineTest {
                     tokenBudget, 0, 1, NOW, NOW)));
         }
 
+        /** 改写：状态与用量不动；达成之后不能改（与 JDBC 的 {@code status <> 'complete'} 同规则）。 */
         @Override
         public Optional<SessionGoal> edit(String sessionKey, String objective) {
-            throw new UnsupportedOperationException("这一层不测改写");
+            SessionGoal current = rows.get(sessionKey);
+            if (current == null || current.status() == GoalStatus.COMPLETE) {
+                return Optional.empty();
+            }
+            return Optional.of(put(new SessionGoal(sessionKey, current.status(), objective,
+                    current.note(), current.tokenBudget(), current.tokensUsed(),
+                    current.revision() + 1, current.createdAt(), NOW)));
         }
 
         @Override
@@ -570,11 +653,16 @@ class ChatPipelineTest {
                     current.revision() + (capped ? 1 : 0), current.createdAt(), NOW)));
         }
 
-        /** 恢复：从 {@code budget_limited} 回来时开新窗口（用量清零），与 JDBC 那条语句一致。 */
+        /**
+         * 恢复：状态回活跃；**只有 {@code budget_limited} 才清零用量**，与 JDBC 那条语句一致。
+         *
+         * <p>已达成的不在这里挡——完成的也能 resume（OpenClaw 的命令表把 {@code completed}
+         * 列在 resume 的作用对象里）。挡它的是 edit / pause / block（见 {@code setStatus}）。
+         */
         @Override
         public Optional<SessionGoal> resume(String sessionKey, String note) {
             SessionGoal current = rows.get(sessionKey);
-            if (current == null || current.status() == GoalStatus.COMPLETE) {
+            if (current == null || current.status() == GoalStatus.ACTIVE) {
                 return Optional.empty();
             }
             long used = current.status() == GoalStatus.BUDGET_LIMITED ? 0L : current.tokensUsed();
