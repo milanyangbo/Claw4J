@@ -1,6 +1,6 @@
 package io.github.claw4j.agent.schedule;
 
-import io.github.claw4j.agent.run.RunLauncher;
+import io.github.claw4j.agent.TaskLauncher;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.principal.Principal;
@@ -52,7 +52,7 @@ public class ScheduleScanner {
     private final ScheduleStore store;
 
     /** 到点跑一轮的那条腿。可以为 null——那种部署里定时任务跑不起来，会被记成失败。 */
-    private final RunLauncher launcher;
+    private final TaskLauncher launcher;
 
     /** "这条任务现在还能不能按它主人的权限跑"（P05）。建的时候问的是同一个对象。 */
     private final ScheduleAuthorization authorization;
@@ -68,7 +68,7 @@ public class ScheduleScanner {
     /** 库读不到时只喊一次：一个后台任务每 30 秒重复一条同样的 WARN，等于把日志变成噪声。 */
     private boolean complained;
 
-    public ScheduleScanner(ScheduleStore store, RunLauncher launcher,
+    public ScheduleScanner(ScheduleStore store, TaskLauncher launcher,
                            ScheduleAuthorization authorization,
                            List<OutboundDelivery> deliveries,
                            ScheduleProperties properties, MeterRegistry registry) {

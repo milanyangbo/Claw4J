@@ -61,7 +61,7 @@ public class AuditLedger implements AuditSink {
 
     private static final String INSERT = """
             insert into claw4j_run.audit_event
-                (id, event_id, kind, action, status, error_code, run_id, session_key, agent_id,
+                (id, event_id, kind, action, status, error_code, turn_id, session_key, agent_id,
                  actor, actor_role, channel, tool_name, call_fingerprint, approval_id)
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             returning seq
@@ -128,7 +128,7 @@ public class AuditLedger implements AuditSink {
                     event.action().column(),
                     event.status().column(),
                     event.errorCode(),
-                    scope.runId(),
+                    scope.turnId(),
                     scope.sessionKey(),
                     scope.agentId(),
                     scope.actor(),

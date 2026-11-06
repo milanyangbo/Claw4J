@@ -11,7 +11,7 @@ import java.util.Objects;
  * 缺的只是一个与通道无关的收件地址。
  *
  * <p><b>它存在的意义全在那一个常量上</b>：{@link #CHANNEL} 必须与
- * {@code agent_run_delivery.channel} 那一列同口径。写错的表现不是报错，
+ * 审计里记的通道同口径。写错的表现不是报错，
  * 而是"在钉钉问、回推时找不到实现"——库里登记了一行永远没人能送的地址。
  *
  * <p>与另外两个通道还有一个不同：钉钉的"在哪儿问"与"往哪儿推"在这一版里是同一个标识
@@ -20,7 +20,7 @@ import java.util.Objects;
  */
 public class DingtalkOutboundDelivery implements OutboundDelivery {
 
-    /** 与 {@code agent_run_delivery.channel} 那一列、与 {@code InboundMessage#channel} 同口径。 */
+    /** 与 {@code InboundMessage#channel}、与审计里记的通道同口径。 */
     public static final String CHANNEL = "dingtalk";
 
     private final DingtalkReplySender sender;

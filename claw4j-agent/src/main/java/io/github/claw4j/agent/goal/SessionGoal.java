@@ -9,7 +9,7 @@ import java.util.Objects;
  * <p><b>它是会话状态，不是任务</b>：OpenClaw 的原话是"A goal is one durable objective
  * attached to the current OpenClaw session"，并且明确"A goal is not a task queue"。
  * 所以这里没有"第几步"、没有"进度百分比"、没有优先级——那些东西要么是
- * {@code agent_step} 的事，要么根本不该存在。
+ * 某一轮的事，要么根本不该存在。
  *
  * <p><b>{@code objective} 保留原文</b>：换行、缩进、连续空格都不动，只有首尾空白被裁掉。
  * 一句话的目标与七行的目标都该原样进去，因为"把换行折成空格"会让一份清单变成一段

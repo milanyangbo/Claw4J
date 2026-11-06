@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.run;
+package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalProperties;
@@ -7,8 +7,8 @@ import io.github.claw4j.agent.approval.JdbcApprovalLedger;
 import io.github.claw4j.agent.approval.RunApprovalGate;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
-import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
@@ -44,48 +44,41 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 
 /**
- * run / step 的装配：把 {@link JdbcRunStore} 接到主连接池上，表在 {@code claw4j_run}（V6）。
+ * 需要库的那几样东西的装配：审计、审批、投递、定时任务（ADR-0027）。
  *
- * <p><b>为什么用主连接池</b>：这两张表的 SQL 全在我们手里、全写全限定名，不需要靠连接的
+ * <p><b>这一层曾经叫 {@code RunPersistenceConfiguration}</b>，装配的核心是 run / step 两张表。
+ * 那两张表没了（run 只是一轮的句柄，不落库），于是这一层剩下的四样各自独立：
+ * 审计是一张事件流水、审批是一张请求表、投递是"把结果推到它开始的那段对话"、
+ * 定时任务是一张调度表。它们同批迁移、同一个 schema（{@code claw4j_run}），
+ * 但**没有一样需要另一张表做父亲**。
+ *
+ * <p><b>为什么用主连接池</b>：这些表的 SQL 全在我们手里、全写全限定名，不需要靠连接的
  * {@code currentSchema}。会话那边必须另开一个池，是因为它的 SQL 由框架生成、不带前缀；
  * 这里没有那个约束，而少一个 {@code DataSource} 的收益是实的——容器里出现两个，
  * {@code @ConditionalOnSingleCandidate(DataSource.class)} 就不再成立，
  * 一整套 JDBC 自动配置会安静地不装配（会话那边为此专门不把池注册成 bean）。
  *
- * <p><b>为什么默认开着但可关</b>：开着是因为 run 是审批、定时、审计的挂载点，
- * 默认没有它等于那些能力永远挂不上；可关（{@code claw4j.run.enabled=false}）是因为
+ * <p><b>默认开着但可关</b>：开着是因为这四样都要库，默认没有它等于审计、审批、
+ * 定时任务永远挂不上；可关（{@code claw4j.persistence.enabled=false}）是因为
  * 迁移默认是关着的（"没起数据库也能启动"是硬承诺），那种环境下每一句提问都会去撞一张不存在的表。
- * 撞上的后果由 {@link JdbcRunStore} 降级消化，但能显式关掉总比靠降级好。
  *
- * <p><b>计划工具跟着这一层一起装配</b>（A03）：计划是 step 的一种，没有 run 存储就没有
- * 可写的落点。于是 {@code claw4j.run.enabled=false} 时容器里没有 {@code update_plan}——
- * 模型面前少一个工具，比"调了才发现写不进去"好。
+ * <p><b>投递不依赖任何存储</b>：它只把结果推到"这一轮来自的那段对话"（ADR-0027 决定四）。
+ * 以前它要靠 run 上登记的收件地址，那条路随 run 一起没了——地址本来就在消息上。
  *
- * <p><b>预算也在这一层</b>（A04）：额度是 run 上的一个计数，没有 run 存储就无处可记，
- * 于是关掉这一层时工具调用照常发生、只是没人记账。这与"关掉 run 就不管预算了"是同一件事——
- * 记账与限流必须同进同出，否则会出现"没记账但被拦住"这种说不清的拒绝。
- *
- * <p><b>投递也在这一层</b>（A05）：收件地址与回答全文都落在 run 上，
- * 没有 run 存储就没有"送到哪儿"与"查得到什么"。关掉这一层时结果仍从请求里回去，
- * 只是"跨通道收"与"按 id 查"两件事同时不在场——它们本来就是同一件事的两半。
- *
- * <p><b>审批账本也在这一层</b>（P01）：审批表与 run / step 同一个 schema、同一批迁移，
- * 关掉这一层就没有"有人批过没有"这个问题可问。那时标了要审批的动作一律被拦——
+ * <p><b>审批账本在这一层</b>：审批表与审计、调度同一批迁移。关掉这一层就没有
+ * "有人批过没有"这个问题可问，那时标了要审批的动作一律被拦——
  * 没有审批设施的环境里，收紧的那一侧才是安全的。
  *
- * <p><b>定时任务也在这一层</b>（P04）：调度表与 run 同一批迁移，"到点"这件事的产物
- * 就是一个 run。关掉这一层时没有可跑的落点，于是扫描任务也不装配——
+ * <p><b>定时任务也在这一层</b>：调度表的"到点"产出的是一轮提问，不是一个 run。
+ * 关掉这一层时没有可跑的落点，于是扫描任务也不装配——
  * 让一个跑不起来的扫描器每 30 秒记一次失败，等于给运维制造噪声。
+ * 三个调度工具跟着一起进退：能建任务、却没有东西会跑它，
+ * 等于对用户说"已经定好了"而实际不会发生。
  *
- * <p><b>定时任务的三个工具跟着调度一起进退</b>（P05）：能建任务、却没有东西会跑它，
- * 等于对用户说"已经定好了"而实际不会发生——所以 {@code claw4j.schedule.enabled=false}
- * 时它们与扫描器一起消失，模型面前少三个工具。
- *
- * <p><b>审计也在这一层</b>（P07）：一次工具调用一行，写的就是 {@code agent_step}——
- * 另建一张审计表等于让同一件事有两个答案（ADR-0023）。它跟着 run 存储进出：
- * 没有存储就没有可写的行，两个接缝拿到的都是 null，判定照常、只是事后查不到。
- * 保留期（默认 90 天）也在这里：{@code AuditRetention} 删的是整件旧事，
- * step 跟着 run 级联，所以审计不会活得比它的执行记录更久。
+ * <p><b>审计在这一层</b>：一次动作一行，写的是 {@code audit_event}（ADR-0027 决定二）。
+ * 它跟着这一层进出：没有存储就没有可写的行，两个接缝拿到的都是 null，
+ * 判定照常、只是事后查不到。保留期（30 天 + 10 万行）在 {@link AuditLedger} 里，
+ * 照 OpenClaw 的固定上限，不做成部署参数。
  *
  * <p><b>这里自己开 {@code @EnableScheduling}</b>：缓存那边已经开过一次，重复一次无害
  * （与 {@code CacheAutoConfiguration} 同一个判断），而依赖别人开的话，只装了这一层的
@@ -94,25 +87,19 @@ import java.util.Map;
 @AutoConfiguration(afterName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
 @ConditionalOnClass({JdbcTemplate.class, DataSource.class})
 @ConditionalOnSingleCandidate(DataSource.class)
-@ConditionalOnProperty(prefix = "claw4j.run", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "claw4j.persistence", name = "enabled", havingValue = "true",
+        matchIfMissing = true)
 @EnableScheduling
 @EnableConfigurationProperties({ApprovalProperties.class,
         ScheduleProperties.class, AuditProperties.class, SessionResetProperties.class})
-public class RunPersistenceConfiguration {
-
-    @Bean
-    @ConditionalOnMissingBean(RunStore.class)
-    public RunStore runStore(JdbcTemplate jdbc, ObjectProvider<MeterRegistry> registry) {
-        // registry 缺席（没装 actuator）不是错误：照常落库，只是没有指标可报。
-        return new JdbcRunStore(jdbc, registry.getIfAvailable());
-    }
+public class AgentPersistenceConfiguration {
 
     /**
      * 审计账本（ADR-0027 决定二）：一行 = 一次动作的开始或结束，元数据 only。
      *
      * <p><b>它不再跟着 run 存储一起装</b>：审计与 run 是两件事——run 只是一轮的句柄，
      * 而审计要回答"谁在什么时候让谁做了什么"。所以它自己的开关是 {@code claw4j.audit.enabled}，
-     * 自己的上限是 30 天 / 10 万行，不随 {@code claw4j.run.enabled} 一起消失。
+     * 自己的上限是 30 天 / 10 万行，不随 {@code claw4j.persistence.enabled} 一起消失。
      */
     @Bean
     @ConditionalOnMissingBean(AuditLedger.class)
@@ -193,11 +180,11 @@ public class RunPersistenceConfiguration {
      * （HTTP 不能，它靠轮询），写死等于把"哪些通道支持推"这张表埋进 Agent 模块。
      */
     @Bean
-    @ConditionalOnMissingBean(RunDelivery.class)
-    public RunDelivery runDelivery(RunStore runs,
+    @ConditionalOnMissingBean(ConversationDelivery.class)
+    public ConversationDelivery conversationDelivery(
                                    ObjectProvider<OutboundDelivery> deliveries,
                                    ObjectProvider<MeterRegistry> registry) {
-        return new RunDelivery(runs, deliveries.orderedStream().toList(), registry.getIfAvailable());
+        return new ConversationDelivery(deliveries.orderedStream().toList(), registry.getIfAvailable());
     }
 
     /**
@@ -231,7 +218,7 @@ public class RunPersistenceConfiguration {
                                            ScheduleProperties properties,
                                            ObjectProvider<MeterRegistry> registry) {
         AgentPort port = agentPort.getIfAvailable();
-        RunLauncher launcher = port instanceof RunLauncher candidate ? candidate : null;
+        TaskLauncher launcher = port instanceof TaskLauncher candidate ? candidate : null;
         return new ScheduleScanner(schedules, launcher, authorization,
                 deliveries.orderedStream().toList(), properties, registry.getIfAvailable());
     }

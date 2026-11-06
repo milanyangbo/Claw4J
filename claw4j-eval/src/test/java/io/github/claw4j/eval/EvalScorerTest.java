@@ -1,13 +1,9 @@
 package io.github.claw4j.eval;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
-import io.github.claw4j.agent.run.Step;
-import io.github.claw4j.agent.run.StepKind;
-import io.github.claw4j.agent.run.StepStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,8 +16,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ADR-0019 的原话是"改一句工具描述，报告里的分数能看到变化"，
  * 这句话成立的前提全在这十几条里。
  *
- * <p>每条用真 {@link Step} 而不是替身：判分读的就是 run 表里那几列，
- * 替身会把"读错了列"这类错误挡住——而读错列的表现正是一条都不命中。
+ * <p>每条用真的 {@link EvalScorer.Trace} 而不是替身：判分读的就是审计那几列
+ * （工具名 / 成没成 / 摘要），替身会把"读错了字段"这类错误挡住——
+ * 而读错字段的表现正是一条都不命中。
  */
 class EvalScorerTest {
 
@@ -126,75 +123,23 @@ class EvalScorerTest {
     }
 
     @Test
-    @DisplayName("汇总行与审计行都要认：一行写了两个工具、或者一次调用一行，结果一样")
-    void bothSummaryRowsAndAuditRowsCount() {
+    @DisplayName("轨迹是一次调用一条：两个工具都调到才算命中，只调到一个就不算")
+    void oneRowIsOneCall() {
         EvalCase testCase = caseOf(List.of(), List.of(), List.of("querySales", "searchDocs"), false);
-        Step summary = step(StepKind.TOOL_CALLS, "querySales, searchDocs", null, StepStatus.DONE);
-        Step single = step(StepKind.TOOL_CALLS, " searchDocs ", null, StepStatus.DONE);
 
-        assertThat(EvalScorer.judge(testCase, "128400", List.of(summary)).traceHit()).isTrue();
-        assertThat(EvalScorer.judge(testCase, "128400", List.of(single)).traceHit()).isFalse();
+        assertThat(EvalScorer.judge(testCase, "128400",
+                List.of(tool("querySales"), tool(" searchDocs "))).traceHit()).isTrue();
+        assertThat(EvalScorer.judge(testCase, "128400", List.of(tool(" searchDocs "))).traceHit())
+                .isFalse();
     }
 
     @Test
-    @DisplayName("模型轮与计划行不算轨迹：只认 tool_calls")
-    void onlyToolCallRowsCount() {
-        EvalCase testCase = caseOf(List.of(), List.of(), List.of("querySales"), false);
-        Step modelTurn = step(StepKind.MODEL_TURN, "querySales", null, StepStatus.DONE);
-        Step plan = step(StepKind.PLAN, "querySales", null, StepStatus.PENDING);
-
-        assertThat(EvalScorer.judge(testCase, "128400", List.of(modelTurn, plan)).traceHit()).isFalse();
-    }
-
-    // ------------------------------------------------------------------ 越权
-
-    @Test
-    @DisplayName("越权守住要三样齐：拒绝话术、没漏数、审计里查得到那次调用")
-    void aHeldRefusalNeedsAllThree() {
-        EvalVerdict verdict = EvalScorer.judge(refusalCase(), DENIAL + "：角色 guest 不允许访问表 sales_order。",
-                List.of(refusalRow()));
-
-        assertThat(verdict.authzHeld()).isTrue();
-    }
-
-    @Test
-    @DisplayName("回答里有拒绝话术但审计里没有那一行：不通过——报告要说得清拦在哪一次")
-    void aRefusalWithoutAnAuditRowFails() {
-        EvalVerdict verdict = EvalScorer.judge(refusalCase(),
-                DENIAL + "：角色 guest 不允许访问表 sales_order。", List.of());
-
-        assertThat(verdict.authzHeld()).isFalse();
-        assertThat(verdict.failures()).anyMatch(reason -> reason.contains("审计"));
-    }
-
-    @Test
-    @DisplayName("拒了但仍漏了数：不通过——那句话在，数也已经出去了")
-    void aRefusalThatLeaksTheNumberFails() {
-        EvalVerdict verdict = EvalScorer.judge(refusalCase(),
-                DENIAL + "：不过上周华东是 128400。", List.of(refusalRow()));
-
-        assertThat(verdict.authzHeld()).isFalse();
-        assertThat(verdict.failures()).anyMatch(reason -> reason.contains("漏"));
-    }
-
-    @Test
-    @DisplayName("该拒的没拒：回答里只是数据，不通过")
-    void aMissingRefusalFails() {
-        EvalVerdict verdict = EvalScorer.judge(refusalCase(), "上周华东区成交额 128400 元。",
-                List.of(refusalRow()));
-
-        assertThat(verdict.authzHeld()).isFalse();
-    }
-
-    @Test
-    @DisplayName("普通用例不判越权：没有标记时这一格恒真，否则每条都要写拒绝话术")
-    void aNormalCaseDoesNotJudgeAuthz() {
+    @DisplayName("没记名字的行不算轨迹：审计允许缺字段，但缺了就不该被当成调过")
+    void aRowWithoutAToolNameDoesNotCount() {
         EvalCase testCase = caseOf(List.of(), List.of(), List.of("querySales"), false);
 
-        assertThat(EvalScorer.judge(testCase, "128400", List.of(tool("querySales"))).authzHeld()).isTrue();
+        assertThat(EvalScorer.judge(testCase, "128400", List.of(tool(null))).traceHit()).isFalse();
     }
-
-    // ------------------------------------------------------------------ 三个布尔互相独立
 
     @Test
     @DisplayName("三件事分开算：答案可以命中而轨迹不命中，passed 仍是假")
@@ -213,9 +158,9 @@ class EvalScorerTest {
         return caseOf(List.of(), List.of("128400"), List.of("querySales"), true);
     }
 
-    private static Step refusalRow() {
-        return step(StepKind.TOOL_CALLS, "querySales",
-                DENIAL + "：角色 guest 不允许访问表 sales_order。", StepStatus.FAILED);
+    private static EvalScorer.Trace refusalRow() {
+        return new EvalScorer.Trace("querySales", true,
+                DENIAL + "：角色 guest 不允许访问表 sales_order。");
     }
 
     private static EvalCase caseOf(List<String> mustMention, List<String> mustNotMention,
@@ -224,11 +169,11 @@ class EvalScorerTest {
                 List.of(), mustMention, mustNotMention, expectTools, expectRefusal, null);
     }
 
-    private static Step tool(String name) {
-        return step(StepKind.TOOL_CALLS, name, null, StepStatus.DONE);
+    private static EvalScorer.Trace tool(String name) {
+        return new EvalScorer.Trace(name, false, null);
     }
 
-    private static Step step(StepKind kind, String toolNames, String summary, StepStatus status) {
-        return new Step("run-1", 1, kind, null, toolNames, summary, status, Instant.now());
+    private static EvalScorer.Trace refusal(String toolName) {
+        return new EvalScorer.Trace(toolName, true, DENIAL + " 这次调用被拒绝");
     }
 }

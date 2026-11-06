@@ -4,8 +4,6 @@ import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.ApprovalDecider;
-import io.github.claw4j.domain.port.RunQuery;
-import io.github.claw4j.domain.port.RunView;
 import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -123,58 +121,18 @@ class HttpEndpointsTest {
         assertNull(response.getBody());
     }
 
-    // ---------------------------------------------------------------- 查一件已经做完的事（A05）
-
-    private static final String RUN_ID = "run-7";
-
-    @Test
-    @DisplayName("查 run：本人查自己的事，200，带上状态、全文与过程")
-    void ownerGetsTheRun() {
-        ResponseEntity<RunView> response = runController(new FixedQuery(Optional.of(view())))
-                .run(RUN_ID, "u-1", "read-only");
-
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        RunView body = response.getBody();
-        assertNotNull(body);
-        assertEquals("华东上周成交 128400", body.result(), "查结果的人要的是全文，不是截断摘要");
-        assertEquals("done", body.status());
-        assertEquals(NotifyPolicy.DONE_ONLY, body.notifyPolicy(), "没收到推送时，人得能看出这是正常的还是丢了");
-        assertEquals(1, body.steps().size());
-    }
-
-    @Test
-    @DisplayName("查 run：没有这个 run 或者不是你的，同一个 404，不替对方确认 id 存在")
-    void strangerAndMissingLookTheSame() {
-        ResponseEntity<RunView> response = runController(new FixedQuery(Optional.empty()))
-                .run(RUN_ID, "u-9", "read-only");
-
-        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
-        assertNull(response.getBody());
-    }
-
-    @Test
-    @DisplayName("查 run：没装配 run 存储时一律 404，控制器照样在")
-    void withoutARunStoreEverythingIs404() {
-        assertEquals(HttpStatus.NOT_FOUND,
-                runController(null).run(RUN_ID, "u-1", "read-only").getStatusCode());
-    }
-
     // ---------------------------------------------------------------- 两条共同的口径
 
     @Test
-    @DisplayName("认人失败：两条端点都回 401，不放匿名请求进来（与聊天那一侧同一个口径）")
-    void principalRejectionMapsTo401OnBothEndpoints() {
+    @DisplayName("认人失败回 401，不放匿名请求进来（与聊天那一侧同一个口径）")
+    void principalRejectionMapsTo401() {
         PrincipalRejectedException rejected = new PrincipalRejectedException("缺少 X-Claw4j-User 请求头");
 
         ResponseEntity<ApprovalController.ErrorResponse> approval =
                 approvalController(new FixedDecider()).onPrincipalRejected(rejected);
-        ResponseEntity<RunQueryController.ErrorResponse> run =
-                runController(new FixedQuery(Optional.of(view()))).onPrincipalRejected(rejected);
 
         assertEquals(HttpStatus.UNAUTHORIZED, approval.getStatusCode());
         assertEquals("缺少 X-Claw4j-User 请求头", approval.getBody().error());
-        assertEquals(HttpStatus.UNAUTHORIZED, run.getStatusCode());
-        assertEquals("缺少 X-Claw4j-User 请求头", run.getBody().error());
     }
 
     // ---------------------------------------------------------------- 夹具
@@ -189,26 +147,10 @@ class HttpEndpointsTest {
                 new HttpPrincipalResolver(new HttpChannelProperties()));
     }
 
-    /** @param query 为 null 表示容器里没有 run 存储——那个 bean 缺席时端点仍要在。 */
-    private static RunQueryController runController(RunQuery query) {
-        DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
-        if (query != null) {
-            beans.registerSingleton("runQuery", query);
-        }
-        return new RunQueryController(beans.getBeanProvider(RunQuery.class),
-                new HttpPrincipalResolver(new HttpChannelProperties()));
-    }
-
-    private static RunView view() {
-        return new RunView(RUN_ID, "上周华东成交额", "done", "华东上周成交 128400",
-                NotifyPolicy.DONE_ONLY,
-                List.of(new RunView.Step(1, "model_turn", "done", "华东上周成交 128400")));
-    }
-
     /** 只回答"收到的是什么"，不判资格：资格在 {@code ApprovalService} 那一侧。 */
     private static final class FixedDecider implements ApprovalDecider {
 
-        private Optional<Pending> pending = Optional.of(new Pending(APPROVAL_ID, "run-7", "u-9",
+        private Optional<Pending> pending = Optional.of(new Pending(APPROVAL_ID, "turn-7", "u-9",
                 "sendEmail", "to=张三", "pending", true, Instant.parse("2026-11-02T13:00:00Z")));
 
         private ApprovalVerdict verdict = ApprovalVerdict.GRANTED;
@@ -232,21 +174,6 @@ class HttpEndpointsTest {
         @Override
         public Optional<Pending> find(String approvalId) {
             return pending;
-        }
-    }
-
-    /** 一个只认人、不查库的回收口：归属判定由 agent 侧那份实现负责。 */
-    private static final class FixedQuery implements RunQuery {
-
-        private final Optional<RunView> answer;
-
-        FixedQuery(Optional<RunView> answer) {
-            this.answer = answer;
-        }
-
-        @Override
-        public Optional<RunView> find(String runId, Principal reader) {
-            return answer;
         }
     }
 }

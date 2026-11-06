@@ -7,13 +7,10 @@ import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.OtelRunTracer;
 import io.github.claw4j.agent.observability.RunTracer;
-import io.github.claw4j.agent.run.DeliveryTarget;
-import io.github.claw4j.agent.run.JdbcRunStore;
-import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunDelivery;
-import io.github.claw4j.agent.run.RunStatus;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.Step;
+import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.agent.channel.DeliveryTarget;
+import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.SessionMaintenance;
 import io.github.claw4j.agent.session.SessionMaintenanceProperties;
@@ -87,14 +84,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 库上的那一半不在这里：工具循环、鉴权、审批在 agent 模块各自的测试里。
  */
 @Testcontainers
-class RunLifecycleTest {
+class TurnFlowTest {
 
     @Container
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     private static JdbcTemplate jdbc;
-
-    private RunStore runs;
 
     @BeforeAll
     static void migrate() {
@@ -108,44 +103,10 @@ class RunLifecycleTest {
 
     @BeforeEach
     void freshTables() {
-        // 投递表先清：它按 run 的外键指着 agent_run。
-        jdbc.update("delete from claw4j_run.agent_step");
-        jdbc.update("delete from claw4j_run.agent_run");
         freshSessionTables();
-        runs = new JdbcRunStore(jdbc);
     }
 
     // ---------------------------------------------------------------- 花了多少（A04）
-
-    @Test
-    @DisplayName("一轮就是一件事、答完即收尾：跨轮不存在「还没做完的 run」")
-    void anAnsweredTurnLeavesNothingUnfinished() {
-        Principal principal = Principal.readOnly("u-1");
-        String owner = SessionKeys.ownerOf(principal);
-        ChatClientAgentPort port = new ChatClientAgentPort(
-                ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs);
-
-        OutboundMessage first = port.reply(new InboundMessage(principal, "chat-1", "华东上周成交额是多少？"));
-        OutboundMessage second = port.reply(new InboundMessage(principal, "chat-1", "那华南呢？"));
-
-        assertThat(runs.find(first.runId()).orElseThrow().status())
-                .as("答完就是 done：run 的寿命是一轮，不是一段对话")
-                .isEqualTo(RunStatus.DONE);
-        assertThat(second.runId())
-                .as("第二轮是新开的一件——openRun 只在消息带回 runId 时才续跑")
-                .isNotEqualTo(first.runId());
-
-        Integer unfinished = jdbc.queryForObject(
-                "select count(*) from claw4j_run.agent_run"
-                        + " where owner = ? and status in ('running', 'suspended')",
-                Integer.class, owner);
-        assertThat(unfinished)
-                .as("会话里没有「没做完的事」可钉：A08 那种进度前缀，按 run 传的是刚开的空 run，"
-                        + "按 session 又查不到未收尾的 run——两条路都拿不到内容。"
-                        + "真要跨轮记住的是对话本身，那是压缩摘要的活。"
-                        + "哪天这里不是 0，说明 run 的寿命变了，那条前缀才有重新讨论的余地")
-                .isZero();
-    }
 
     @Test
     @DisplayName("这一轮花掉的 token 记到目标上：撞上预算进 budget_limited，下一轮不再注入")
@@ -176,11 +137,10 @@ class RunLifecycleTest {
                 .as("受限的目标不再注入：额度用完还逼模型继续，等于没停")
                 .doesNotContain("活跃目标：");
         assertThat(jdbc.queryForObject(
-                "select status from claw4j_run.agent_run where id = "
-                        + "(select id from claw4j_run.agent_run order by created_at desc limit 1)",
-                String.class))
-                .as("这一轮本身照常跑完：额度状态在目标上，不在 run 上")
-                .isEqualTo("done");
+                "select status from claw4j_run.audit_event where action = 'agent.run.finished'"
+                        + " order by seq desc limit 1", String.class))
+                .as("这一轮本身照常跑完：额度状态在目标上，不在一轮上")
+                .isEqualTo("succeeded");
     }
 
     /**
@@ -258,7 +218,7 @@ class RunLifecycleTest {
     @DisplayName("结果推回它开始的那段对话：没有登记表，也不回退到「最近用过的通道」")
     void theResultGoesBackToTheConversationItStartedIn() {
         Recording feishu = new Recording("feishu");
-        RunDelivery delivery = delivery(feishu);
+        ConversationDelivery delivery = delivery(feishu);
 
         delivery.announce(new DeliveryTarget("feishu", "oc_zhang"), NotifyPolicy.DONE_ONLY, "口径对完了");
         // 没有实现推的通道（HTTP）不在 deliveries 里：它靠轮询，这不是失败
@@ -270,84 +230,16 @@ class RunLifecycleTest {
     }
 
     @Test
-    @DisplayName("silent 一句都不推，但结果落库、按 id 查得到（不打扰不等于丢了）")
-    void silentKeepsTheResultButSaysNothing() {
+    @DisplayName("silent 一句都不推：定时任务每跑一趟推一条，等于把自动化做成骚扰")
+    void silentSaysNothing() {
         Recording deliveryFeishu = new Recording("feishu");
-        RunDelivery delivery = delivery(deliveryFeishu);
-        Principal asker = Principal.readOnly("u-1");
-        Run run = runs.start(owner("u-1"), "fp-1", "每周一跑一遍口径核对",
-                NotifyPolicy.SILENT).orElseThrow();
+        ConversationDelivery delivery = delivery(deliveryFeishu);
 
-        runs.finish(run.id(), RunStatus.DONE, "这周没有对不上的地方");
         delivery.announce(new DeliveryTarget("feishu", "oc_zhang"), NotifyPolicy.SILENT,
                 "这周没有对不上的地方");
 
-        assertThat(deliveryFeishu.sent).as("定时任务每跑一趟推一条，等于把自动化做成骚扰").isEmpty();
-        assertThat(delivery.find(run.id(), asker)).get()
-                .satisfies(view -> {
-                    assertThat(view.result()).isEqualTo("这周没有对不上的地方");
-                    assertThat(view.notifyPolicy()).isEqualTo(NotifyPolicy.SILENT);
-                });
+        assertThat(deliveryFeishu.sent).isEmpty();
     }
-
-    @Test
-    @DisplayName("按 id 回收归 owner 判，不归通道判：本人查得到，换个人就是查不到")
-    void theRunBelongsToAPersonNotAChannel() {
-        RunDelivery delivery = delivery();
-        Run run = runs.start(owner("u-1"), "fp-1", "上周华东成交额").orElseThrow();
-        runs.finish(run.id(), RunStatus.DONE, "华东上周成交 128400");
-
-        assertThat(delivery.find(run.id(), Principal.readOnly("u-1")))
-                .hasValueSatisfying(view -> assertThat(view.status()).isEqualTo("done"));
-        assertThat(delivery.find(run.id(), Principal.readOnly("u-9")))
-                .as("别人的事与没有这件事给同一个答案，不替对方确认 id 存在")
-                .isEmpty();
-    }
-
-    @Test
-    @DisplayName("通知策略三档写死在约束里：拼错的那一次连库都进不去")
-    void unknownNotifyPolicyIsRejectedByTheDatabase() {
-        assertThatThrownBy(() -> jdbc.update(
-                "insert into claw4j_run.agent_run (id, owner, principal_digest, goal, status, notify_policy)"
-                        + " values ('r-bad', 'u-1@fp', 'fp', 'goal', 'running', 'slience')"))
-                .as("拼错的表现是「该说的一次没说」，那种错只在事后被发现")
-                .hasMessageContaining("ck_agent_run_notify_policy");
-    }
-
-    // ---------------------------------------------------------------- 观测不碰这两张表（P14）
-
-    @Test
-    @DisplayName("观测不写业务库：开了 trace 之后 agent_step 的行数与内容一模一样（P14）")
-    void tracingAddsNothingToTheAuditTables() {
-        Principal principal = Principal.readOnly("u-1");
-
-        Run plain = runs.start(owner("u-1"), "fp-1", "上周华东成交额").orElseThrow();
-        new ChatClientAgentPort(ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs)
-                .reply(new InboundMessage(principal, "chat-1", "上周华东成交额", Instant.now(), null));
-
-        List<SpanData> spans = new CopyOnWriteArrayList<>();
-        Run traced = runs.start(owner("u-1"), "fp-1", "上周华东成交额").orElseThrow();
-        new ChatClientAgentPort(ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs,
-                null, tracerInto(spans))
-                .reply(new InboundMessage(principal, "chat-1", "上周华东成交额", Instant.now(), null));
-
-        // 先证明真的画了：不然这条用例只证明了"什么都没发生"，而那种绿毫无意义。
-        assertThat(spans).isNotEmpty();
-
-        List<Step> tracedSteps = runs.stepsOf(traced.id());
-        List<Step> plainSteps = runs.stepsOf(plain.id());
-        assertThat(tracedSteps).hasSameSizeAs(plainSteps);
-        assertThat(tracedSteps).extracting(Step::kind)
-                .as("trace 不是审计的第二份副本（ADR-0020）：表里该只有那两类 step，一条不多")
-                .isEqualTo(plainSteps.stream().map(Step::kind).toList());
-        assertThat(tracedSteps).extracting(Step::status)
-                .isEqualTo(plainSteps.stream().map(Step::status).toList());
-        assertThat(tracedSteps).extracting(Step::resultSummary)
-                .as("摘要也不该因为开了 trace 而变化")
-                .isEqualTo(plainSteps.stream().map(Step::resultSummary).toList());
-    }
-
-    // ---------------------------------------------------------------- 旧会话怎么清（04）
 
     @Test
     @DisplayName("清理按「多久没动」判，不按「建了多久」：活跃桶的旧段走、当前段留")
@@ -488,13 +380,16 @@ class RunLifecycleTest {
                 return new FixedUsage(12, 34).call(prompt);
             }
         };
-        return new ChatClientAgentPort(ChatClient.builder(model).build(), null, runs,
-                null, null, null, null, null, new JdbcSessionGoalStore(jdbc, null));
+        // 带上真审计：这条用例要读"这一轮照常跑完了"那条事件（ADR-0027）。
+        return new ChatClientAgentPort(ChatClient.builder(model).build(), null,
+                null, null, null, null,
+                new ToolCallAudit(new AuditLedger(jdbc, null)),
+                new JdbcSessionGoalStore(jdbc, null));
     }
 
-    private RunDelivery delivery(OutboundDelivery... channels) {
-        // 没有 registry 时照常投递，只是没有指标——与 run 落库同一个降级口径。
-        return new RunDelivery(runs, List.of(channels), null);
+    private ConversationDelivery delivery(OutboundDelivery... channels) {
+        // 没有 registry 时照常投递，只是没有指标——能力不在场，不是失败。
+        return new ConversationDelivery(List.of(channels), null);
     }
 
     /** 把 span 收进列表的 tracer：这一条只关心"画了没有"，不关心画成什么样。 */

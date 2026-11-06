@@ -38,9 +38,8 @@ public class HttpChatController {
     /**
      * 本通道的标识，与 {@code OutboundDelivery#channel()} 同口径（A05）。
      *
-     * <p>HTTP 不能主动推——请求一答完连接就断了。登记它不是为了推送，
-     * 是为了让"这件事是从这个会话发起的"有据可查：换通道接着做的时候能认出同一件，
-     * 结果由 {@code GET /api/runs/{id}} 取回。
+     * <p>HTTP 不能主动推——请求一答完连接就断了。它在这里是为了让审计里
+     * "这一轮从哪个通道来"有值可查，不是为了推送：结果只从这次请求里回去。
      */
     static final String CHANNEL = "http";
 
@@ -67,10 +66,10 @@ public class HttpChatController {
                            @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
                            @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
         OutboundMessage answer = channel.ask(inbound(request, user, role, chatId));
-        // turnId 跟着回答一起出去：它是"这一轮"的编号，用来查、用来串日志（ADR-0027）。
+        // turnId 跟着回答一起出去：它是"这一轮"的编号，用来串日志（ADR-0027）。
         // <b>它不是续跑令牌</b>：拿它回来接不上任何东西——连续性靠会话，不靠这个 id。
-        // 没有装配 run 存储时它是 null——那是能力不在场，不是这一轮失败了。
-        return new AskResponse(answer.chatId(), answer.text(), answer.runId());
+        // 命令类回执没有编号，那是 null。
+        return new AskResponse(answer.chatId(), answer.text(), answer.turnId());
     }
 
     /**

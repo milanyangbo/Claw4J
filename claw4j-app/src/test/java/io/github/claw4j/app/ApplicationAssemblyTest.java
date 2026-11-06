@@ -314,13 +314,15 @@ class ApplicationAssemblyTest {
 
         scheduleScanner.scan();
 
-        List<Map<String, Object>> runs = jdbc.queryForList(
-                "select status, result from claw4j_run.agent_run where goal = ?", goal);
-        assertThat(runs).as("到点了应当开出一件事来").hasSize(1);
-        assertThat(runs.getFirst().get("status")).isEqualTo("done");
-        assertThat((String) runs.getFirst().get("result"))
-                .as("结果要落在 run 上：定时任务那一头没有任何请求在等着接它")
-                .isNotBlank();
+        // 到点了跑了一轮：审计里两条事件，会话落在任务自己的那段里（ADR-0027）。
+        List<Map<String, Object>> events = jdbc.queryForList(
+                "select action, status from claw4j_run.audit_event order by seq");
+        assertThat(events).as("到点了应当跑出一轮来")
+                .extracting(row -> row.get("action"))
+                .containsExactly("agent.run.started", "agent.run.finished");
+        assertThat(events.getLast().get("status"))
+                .as("结果要落下来：定时任务那一头没有任何请求在等着接它")
+                .isEqualTo("succeeded");
     }
 
     /**

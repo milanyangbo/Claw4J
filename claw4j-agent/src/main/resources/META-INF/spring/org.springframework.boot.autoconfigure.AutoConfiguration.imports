@@ -8,4 +8,4 @@ io.github.claw4j.agent.guard.GuardAutoConfiguration
 io.github.claw4j.agent.cache.CacheAutoConfiguration
 io.github.claw4j.agent.rag.RagAutoConfiguration
 io.github.claw4j.agent.observability.ObservabilityAutoConfiguration
-io.github.claw4j.agent.run.RunPersistenceConfiguration
+io.github.claw4j.agent.AgentPersistenceConfiguration

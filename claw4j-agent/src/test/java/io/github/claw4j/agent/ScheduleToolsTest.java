@@ -1,6 +1,6 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.run.DeliveryTarget;
+import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.schedule.Schedule;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleStore;
@@ -305,7 +305,7 @@ class ScheduleToolsTest {
 
     /** 模型那一侧看到的那份上下文：身份 + 这一轮的 run（工具靠它找收件地址）。 */
     private static ToolContext context(Principal principal) {
-        return new ToolContext(Map.of(ContextKeys.PRINCIPAL, principal, ContextKeys.RUN_ID, "run-1",
+        return new ToolContext(Map.of(ContextKeys.PRINCIPAL, principal, ContextKeys.TURN_ID, "run-1",
                 ContextKeys.CHANNEL, CHANNEL, ContextKeys.CHAT_REF, CHANNEL_REF));
     }
 

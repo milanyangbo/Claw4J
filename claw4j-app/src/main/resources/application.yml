@@ -281,12 +281,15 @@ claw4j:
       idle-minutes: 120
 
   # ---- run：一件"事"的执行记录（A01/A02/A03） ----
-  run:
-    # 关掉之后"继续"、审批、审计都没有挂载点。
+  persistence:
+    # 要不要装配"需要库的那几样东西"：审计、审批、投递配置、定时任务。
+    # 关掉之后这几样都没有落点——判了也不留痕、批了也查不到、到点也没人跑。
     #
-    # 这里曾经还有一段 claw4j.run.budget（工具调用 / token / 耗时三项按会话累计）。
-    # 它在 ADR-0027 之后没有了：额度是目标的 token 预算（goal.token_budget），
-    # 失控保护是 claw4j.agent.tool-call-limit，耗时只进指标不进库。
+    # 这个开关以前叫 claw4j.run.enabled，因为那时它装配的核心是 run / step 两张表。
+    # 那两张表在 ADR-0027 之后删了，run 只是一轮的句柄、不落库，于是名字跟着改对了。
+    #
+    # 迁移默认是关着的（"没起数据库也能启动"是硬承诺），所以这一层默认开着、
+    # 无库的部署显式关掉它——比让每一句提问去撞一张不存在的表好。
     enabled: true
 
   # ---- 审批：一次点头能放行多远、谁能点头（P02、P03） ----
@@ -431,7 +434,7 @@ claw4j:
   #
   # 根 span 是 run（不是请求）：五个通道都把回答丢进线程池，请求的 trace 在入池那一刻就断了；
   # 而 run 跨通道、跨重试、跨重启。每个动作 span 上带 `claw4j.step.seq`，
-  # 拿它加 `claw4j.run.id` 能反查回 agent_step 那一行。
+  # 拿它加 `claw4j.run.id` 能反查回 audit_event 那一行。
   observability:
     enabled: ${CLAW4J_OBSERVABILITY_ENABLED:false}
     # OTLP HTTP 的地址，例如 http://localhost:4318（带上 /v1/traces 也认）。

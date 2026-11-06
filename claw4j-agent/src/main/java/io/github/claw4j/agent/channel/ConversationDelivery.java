@@ -1,11 +1,7 @@
-package io.github.claw4j.agent.run;
+package io.github.claw4j.agent.channel;
 
-import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.OutboundDelivery;
-import io.github.claw4j.domain.port.RunQuery;
-import io.github.claw4j.domain.port.RunView;
-import io.github.claw4j.domain.principal.Principal;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -13,7 +9,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
  * 一轮的结果怎么回到人手里（ADR-0018，ADR-0027 决定四重写）。
@@ -21,7 +16,7 @@ import java.util.Optional;
  * <p><b>只有一件事：把结果推到"这一轮来自的那段对话"</b>。没有登记表，没有"按 runId
  * 查这个 run 登记过哪些地址"。
  *
- * <p>以前那套（{@code agent_run_delivery} 一对多、HTTP 发起飞书批准企微收结果）
+ * <p>以前那套（投递表一对多、HTTP 发起飞书批准企微收结果）
  * 建立在"一件事能跨请求活着"上。那个前提没了之后，它也站不住：一条消息只来自
  * 一段对话，而那段对话的地址就在消息上（{@code channel + chatId}）。
  * OpenClaw 的原文是 <b>"never falls back to lastChannel"</b>——结果回到它开始的地方，
@@ -31,14 +26,12 @@ import java.util.Optional;
  * {@link OutboundDelivery}）；结果本身早就落在 run 上了，收不到推送的人照样查得到。
  * 这是"投递"敢失败的前提——它从来不是结果的唯一副本。
  */
-public class RunDelivery implements RunQuery {
+public class ConversationDelivery {
 
     /** 投递指标的前缀。与 {@code claw4j.run.*} 同一条纪律：判据回读，不问措辞。 */
     public static final String METRIC = "claw4j.run.delivery";
 
-    private static final Logger log = LoggerFactory.getLogger(RunDelivery.class);
-
-    private final RunStore runs;
+    private static final Logger log = LoggerFactory.getLogger(ConversationDelivery.class);
 
     /** 各通道的推送实现。没有实现推的通道（HTTP）不在里面，它靠轮询。 */
     private final List<OutboundDelivery> deliveries;
@@ -46,8 +39,7 @@ public class RunDelivery implements RunQuery {
     /** 为 null 表示没装 actuator：照常投递，只是没有指标可报。 */
     private final MeterRegistry registry;
 
-    public RunDelivery(RunStore runs, List<OutboundDelivery> deliveries, MeterRegistry registry) {
-        this.runs = Objects.requireNonNull(runs, "runs");
+    public ConversationDelivery(List<OutboundDelivery> deliveries, MeterRegistry registry) {
         this.deliveries = deliveries == null ? List.of() : List.copyOf(deliveries);
         this.registry = registry;
     }
@@ -87,36 +79,6 @@ public class RunDelivery implements RunQuery {
             count("failed", "channel", target.channel());
             log.error("投递失败 channel={}（结果仍在库里，可查）", target.channel(), failure);
         }
-    }
-
-    /**
-     * 按 id 回收一轮（{@code GET /api/runs/{id}} 那一读，票 05 随 run 一起下线）。
-     *
-     * <p><b>不属于这个人的与没有这个 run 是同一个答案</b>：分成 403 与 404
-     * 等于替对方确认"这个 id 存在，只是不是你的"，而 run id 是唯一一个
-     * 能凭空试出别人在做什么事的入口。
-     */
-    @Override
-    public Optional<RunView> find(String runId, Principal reader) {
-        if (runId == null || runId.isBlank() || reader == null) {
-            return Optional.empty();
-        }
-        Optional<Run> found = runs.find(runId);
-        if (found.isEmpty()) {
-            return Optional.empty();
-        }
-        Run run = found.get();
-        if (!run.owner().equals(SessionKeys.ownerOf(reader))) {
-            count("rejected");
-            return Optional.empty();
-        }
-        List<RunView.Step> steps = runs.stepsOf(runId).stream()
-                .map(step -> new RunView.Step(step.seq(), step.kind().column(), step.status().column(),
-                        step.resultSummary()))
-                .toList();
-        count("read");
-        return Optional.of(new RunView(run.id(), run.goal(), run.status().column(), run.result(),
-                run.notifyPolicy(), steps));
     }
 
     private OutboundDelivery deliveryFor(String channel) {

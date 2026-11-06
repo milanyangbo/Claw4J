@@ -8,18 +8,8 @@ import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
 import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.session.SessionKeys;
-import io.github.claw4j.agent.run.Budget;
-import io.github.claw4j.agent.run.JdbcRunStore;
-import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunStatus;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.Step;
-import io.github.claw4j.agent.run.StepAudit;
-import io.github.claw4j.agent.run.StepInput;
-import io.github.claw4j.agent.run.StepKind;
 
 import java.time.Instant;
-import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.agent.session.ConversationPointerStore;
 import io.github.claw4j.agent.session.JdbcConversationPointerStore;
 import io.github.claw4j.agent.session.SessionResetProperties;
@@ -59,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>迁移也由这里跑：表是 {@code V6} 建的，用 {@link Flyway} 而不是手写 DDL。
  */
 @Testcontainers
-class RunSchemaSqlTest {
+class PersistenceSchemaTest {
 
     /** 和语义缓存那份用同一个镜像：同一批迁移里的 {@code V4} 要 {@code create extension vector}。 */
     @Container
@@ -77,8 +67,6 @@ class RunSchemaSqlTest {
 
     private static final String OTHER_DIGEST = "b".repeat(64);
 
-    private RunStore runs;
-
     @BeforeAll
     static void migrate() {
         Flyway.configure()
@@ -94,143 +82,21 @@ class RunSchemaSqlTest {
         jdbc.update("delete from claw4j_session.conversation_goal");
         jdbc.update("delete from claw4j_session.conversation_pointer");
         jdbc.update("delete from claw4j_run.approval_request");
-        jdbc.update("delete from claw4j_run.agent_step");
-        jdbc.update("delete from claw4j_run.agent_run");
-        runs = new JdbcRunStore(jdbc);
     }
 
     @Test
-    @DisplayName("V6/V9/V10/V12/V14 真的建了表：落在 claw4j_run 而不是 public，且状态受约束")
-    void migrationCreatesRunTablesInTheirOwnSchema() {
-        // audit_trail 是视图而不是表，但它出现在同一份目录里——顺着 information_schema 一起查，
-        // 是为了让"审计的读法真的存在"与"表落在对的 schema"用一条断言说清。
+    @DisplayName("V24 之后 claw4j_run 里只剩三张表：run 与 step 都不在了")
+    void migrationLeavesOnlyTheTablesThatSurvived() {
+        // 审计视图长在 step 上，随 step 一起删（V24）；agent_session_budget 在 V22 已经删了。
+        // 这条断言存在的理由是"兼容层"那个诱惑：留一张空表"以防有人要查历史"，
+        // 下一个人就会往里加一列。历史在 audit_event 上，不在 step 上。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'claw4j_run'"
                         + " order by table_name", String.class))
-                .as("V22 之后 agent_session_budget 不在了：额度是目标的属性，不挂会话")
-                .containsExactly("agent_run", "agent_schedule",
-                        "agent_step", "approval_request", "audit_event", "audit_trail");
-
-        // 约束不是装饰：没有它，任何字符串都能当状态写进去，
-        // "做到第几步"会在某天读出一个没人认得的状态——那时候没人知道该重试还是该重开。
-        assertThatThrownBy(() -> jdbc.update(
-                "insert into claw4j_run.agent_run (id, owner, principal_digest, goal, status)"
-                        + " values ('r-bad', 'u-1', 'fp', 'goal', 'almost-done')"))
-                .as("未知状态必须被拒")
-                .hasMessageContaining("ck_agent_run_status");
+                .as("run 只是一轮的句柄（ADR-0027），不落表")
+                .containsExactly("agent_schedule", "approval_request", "audit_event");
     }
 
-    @Test
-    @DisplayName("写进去能读回来：换一个 store 实例读（等价于进程重启之后）")
-    void writtenRunSurvivesAFreshStore() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "上周华东成交额").orElseThrow();
-
-        runs.append(new StepInput(run.id(), StepKind.MODEL_TURN, "上周华东成交额",
-                null, "华东上周成交 128400", StepStatus.DONE));
-        runs.finish(run.id(), RunStatus.DONE);
-
-        // 新实例、新连接：重启之后"这件事做到第几步"必须照样答得出来。
-        // 今天的答案是"答不出"——这正是 A01 存在的理由。
-        RunStore restarted = new JdbcRunStore(jdbc);
-        assertThat(restarted.find(run.id())).isPresent()
-                .get()
-                .satisfies(found -> {
-                    assertThat(found.status()).isEqualTo(RunStatus.DONE);
-                    assertThat(found.goal()).isEqualTo("上周华东成交额");
-                    assertThat(found.owner()).isEqualTo("u-1@fp-1");
-                });
-        List<Step> steps = restarted.stepsOf(run.id());
-        assertThat(steps).hasSize(1);
-        assertThat(steps.getFirst().seq()).isEqualTo(1);
-        assertThat(steps.getFirst().kind()).isEqualTo(StepKind.MODEL_TURN);
-    }
-
-    @Test
-    @DisplayName("序号由存储分配：第二步是 2，同一 run 内不会撞号")
-    void sequenceNumbersAreAssignedByTheStore() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "goal").orElseThrow();
-
-        runs.append(new StepInput(run.id(), StepKind.MODEL_TURN, "第一句", null, "答一", StepStatus.DONE));
-        runs.append(new StepInput(run.id(), StepKind.MODEL_TURN, "第二句", null, "答二", StepStatus.DONE));
-
-        assertThat(runs.stepsOf(run.id())).extracting(Step::seq).containsExactly(1, 2);
-
-        // 唯一键是"第几步"唯一的来源：撞号会让"做到第几步"给出两个答案。
-        assertThatThrownBy(() -> jdbc.update(
-                "insert into claw4j_run.agent_step (id, run_id, seq, kind, status)"
-                        + " values ('s-dup', ?, 1, 'model_turn', 'done')", run.id()))
-                .as("同一 run 内 seq 重复必须被拒")
-                .hasMessageContaining("uq_agent_step_run_seq");
-    }
-
-    @Test
-    @DisplayName("库没迁时降级：落不下去也不把提问打成 500")
-    void missingTablesDegradeInsteadOfFailing() {
-        // 同一个容器里另一个没跑迁移的库：模拟"表还没建"这种最常见的降级现场。
-        jdbc.execute("create database unrunnable");
-        JdbcTemplate unMigrated = new JdbcTemplate(new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl().replace(POSTGRES.getDatabaseName(), "unrunnable"),
-                POSTGRES.getUsername(), POSTGRES.getPassword()));
-        RunStore store = new JdbcRunStore(unMigrated);
-
-        assertThat(store.start("u-1@fp-1", "fp-1", "goal")).as("落不下去时返回空，不抛").isEmpty();
-        assertThatCode(() -> store.finish("whatever", RunStatus.DONE)).doesNotThrowAnyException();
-        assertThat(store.stepsOf("whatever")).isEmpty();
-    }
-
-    // ---------------------------------------------------------------- resume（A02）
-
-    /**
-     * 库不再接受 {@code suspended}（ADR-0027）。
-     *
-     * <p><b>这不是"少了一个可选值"</b>：那个状态配着 {@code reopen} / {@code resume} 一整套，
-     * 存在的理由是"一件事能跨请求活着"。删掉它之后，等审批的那一轮以 done 收尾
-     * （它回给用户的是"我需要你批准"），而批准之后是同一段对话里的下一轮。
-     *
-     * <p>V21 里那条 {@code update ... set status='done' where status='suspended'} 是配套的：
-     * 不迁数据就删枚举值，读回一行旧 suspended 会让 {@code RunStatus.fromColumn} 直接抛，
-     * 于是一条历史记录能让整个列表页 500。
-     */
-    @Test
-    @DisplayName("没有 suspended 这个状态：等审批不是一种能跨请求的状态")
-    void thereIsNoSuspendedStatus() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "发邮件").orElseThrow();
-
-        assertThatThrownBy(() -> jdbc.update(
-                "update claw4j_run.agent_run set status = 'suspended' where id = ?", run.id()))
-                .as("约束会拒绝它，而不是存下一个没人认得的状态")
-                .hasMessageContaining("ck_agent_run_status");
-    }
-    // ---------------------------------------------------------------- step 的状态约束（V7）
-
-    /**
-     * V7 那条按 kind 分支的约束。
-     *
-     * <p>它挡的不是"写错字"，是两种读法的混淆：一件已经发生的事不能被标成待做。
-     * "待做"是计划才有的状态，而计划那条路已经随 ADR-0027 换成会话目标了——
-     * 约束仍然留着：库里还有历史的 plan 行，约束对它们照样成立。
-     */
-    @Test
-    @DisplayName("已经发生的一步不能是待做：待做是计划才有的状态")
-    void modelTurnsCannotBePending() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "goal").orElseThrow();
-
-        assertThatThrownBy(() -> jdbc.update(
-                "insert into claw4j_run.agent_step (id, run_id, seq, kind, status)"
-                        + " values ('s-turn-pending', ?, 90, 'model_turn', 'pending')", run.id()))
-                .as("已经发生的一步不能是待做")
-                .hasMessageContaining("ck_agent_step_status");
-    }
-
-    // ---------------------------------------------------------------- 会话目标（ADR-0027）
-
-    /**
-     * 目标挂在会话上（{@code claw4j_session}），不是挂在 run 上。
-     *
-     * <p>这里的四条约束各有各的失败长相：状态词表错了是"存下一个没人认得的态"，
-     * 空白目标错了是注入那一行变成"活跃目标： — 推进目标…"（看起来一切正常），
-     * 预算 0 错了是"第一轮就预算受限"，主键错了是"一个会话两个目标、注入哪一行看运气"。
-     */
     @Test
     @DisplayName("六态之外写不进去；空白目标、0 预算、同一会话第二行都被库拒绝")
     void goalsAreSessionStateWithAClosedVocabulary() {
@@ -398,93 +264,6 @@ class RunSchemaSqlTest {
 
     // ---------------------------------------------------------------- 审计（P07）
 
-    /**
-     * 验收 2（P07）：按人、按时间、按结局都查得出来，而且行里带着"谁批的"。
-     *
-     * <p>查的是视图 {@code claw4j_run.audit_trail}——它就是"审计"在库里的形状。
-     * 视图存在的理由是不复制真相：它把 step 的列、run 的目标与审批那一侧的结论接在同一行上，
-     * 于是"谁在什么时候让谁做了什么、谁批的"是一条 select 而不是三张表的 join 作业。
-     */
-    @Test
-    @DisplayName("审计视图按人、按时间、按结局都查得出来，并且带着「谁批的」")
-    void theAuditViewAnswersWhoWhenAndHow() {
-        Run mine = runs.start("u-analyst@fp", "fp", "查上周成交额").orElseThrow();
-        Run other = runs.start("u-other@fp", "fp", "查昨天的成交额").orElseThrow();
-        granted("ap-1", "u-analyst", "querySales", DIGEST, "10 minutes");
-
-        runs.append(new StepInput(mine.id(), StepKind.TOOL_CALLS, null, "querySales", null,
-                StepStatus.DONE,
-                StepAudit.executed("u-analyst", "analyst", DIGEST, "{\"region\":\"华东\"}", "ap-1")));
-        runs.append(new StepInput(mine.id(), StepKind.TOOL_CALLS, null, "sendEmail",
-                "没有权限：角色 analyst 不允许执行 send_email 动作（工具 sendEmail）。",
-                StepStatus.FAILED,
-                StepAudit.rejected("u-analyst", "analyst", OTHER_DIGEST, "{\"to\":\"x@example.com\"}")));
-        runs.append(new StepInput(other.id(), StepKind.TOOL_CALLS, null, "querySales", null,
-                StepStatus.DONE,
-                StepAudit.executed("u-other", "analyst", DIGEST, null, null)));
-        // 把别人的那一行挪到十天前：时间过滤要能把它滤出去，而"最近一天"里只剩我的两条。
-        jdbc.update("update claw4j_run.agent_step set created_at = now() - interval '10 days'"
-                + " where run_id = ?", other.id());
-
-        assertThat(jdbc.queryForList(
-                "select tool from claw4j_run.audit_trail where actor = ? order by at", String.class,
-                "u-analyst")).containsExactly("querySales", "sendEmail");
-
-        assertThat(jdbc.queryForList(
-                "select actor from claw4j_run.audit_trail where outcome = ?", String.class, "rejected"))
-                .as("越权那一行按结局查得出来").containsExactly("u-analyst");
-
-        assertThat(jdbc.queryForList(
-                "select run_id from claw4j_run.audit_trail where at >= now() - interval '1 day'"
-                        + " order by at", String.class))
-                .as("按时间查：十天前那一条不该出现在最近一天里").hasSize(2).doesNotContain(other.id());
-
-        assertThat(jdbc.queryForMap("select approved_by, approval_status, goal from"
-                + " claw4j_run.audit_trail where approval_id = ?", "ap-1"))
-                .as("视图把审批那一侧接了过来：谁批的、什么结论、当时要干什么")
-                .containsEntry("approved_by", "approver-1")
-                .containsEntry("approval_status", "granted")
-                .containsEntry("goal", "查上周成交额");
-    }
-
-    /**
-     * 验收 1（P07）：<b>批准记录与执行记录一一对应</b>——库里的唯一索引是这句话的机器版本。
-     *
-     * <p>谓词里只算了 {@code executed}：等审批那一行也带着同一个编号（"这条停在谁身上"要能查），
-     * 它不是执行。少了那个谓词，一条"先等批、后执行"的正常流程会撞约束——那是惩罚正确的用法。
-     */
-    @Test
-    @DisplayName("一条批准只对应一条执行：第二条执行行被拒，等审批那一行不算")
-    void oneApprovalBacksExactlyOneExecution() {
-        Run run = runs.start("u-mailer@fp", "fp", "发一封周报").orElseThrow();
-        granted("ap-1", "u-mailer", "sendEmail", DIGEST, "10 minutes");
-        StepInput awaiting = new StepInput(run.id(), StepKind.TOOL_CALLS, null, "sendEmail",
-                "这个动作要先审批", StepStatus.FAILED,
-                StepAudit.awaiting("u-mailer", "mailer", DIGEST, "{\"to\":\"a\"}", "ap-1"));
-        StepInput executed = new StepInput(run.id(), StepKind.TOOL_CALLS, null, "sendEmail", null,
-                StepStatus.DONE,
-                StepAudit.executed("u-mailer", "mailer", DIGEST, "{\"to\":\"a\"}", "ap-1"));
-
-        assertThat(runs.append(awaiting)).as("等审批那一行与执行行可以共用一个编号").isPresent();
-        assertThat(runs.append(executed)).isPresent();
-
-        assertThat(runs.append(executed))
-                .as("第二条同编号的执行行被库拒，store 把它降级成空（与其它写失败同一个姿势）")
-                .isEmpty();
-        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.audit_trail"
-                + " where approval_id = ? and outcome = 'executed'", Integer.class, "ap-1"))
-                .isEqualTo(1);
-    }
-
-    /**
-     * 留存（ADR-0027 决定二）：30 天与 10 万行，两个都是照 OpenClaw 的固定上限。
-     *
-     * <p><b>判据是库的时钟，不是应用时间</b>：SQL 里用 {@code now()} 比，
-     * 于是"库里那一列与比较用的是同一个时钟"这件事不依赖应用服务器的时区设置。
-     *
-     * <p><b>上限按 {@code seq} 删，不按 {@code at} 删</b>：同一秒里写进来的几百条，
-     * 按时间删会随机丢一部分，而"账本上限"本来该是一个确定的位置。
-     */
     @Test
     @DisplayName("审计按 30 天与 10 万行清：一个按时钟，一个按账本序号")
     void theAuditLedgerPrunesByAgeAndSize() {

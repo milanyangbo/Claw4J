@@ -3,7 +3,6 @@ package io.github.claw4j.channel.http;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalDecider;
 import io.github.claw4j.domain.port.RoleDirectory;
-import io.github.claw4j.domain.port.RunQuery;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -86,20 +85,6 @@ public class HttpChannelAutoConfiguration {
                                                  HttpPrincipalResolver principalResolver,
                                                  HttpChannelProperties properties) {
         return new HttpChatController(channel, principalResolver, properties);
-    }
-
-    /**
-     * {@code GET /api/runs/{id}}（A05）：结果不跟"那一次请求"绑在一起之后，
-     * 客户端要有一个地方按 id 把它取回去。
-     *
-     * <p>{@link RunQuery} 走 {@code ObjectProvider} 进去：没有装配 run 存储时
-     * 端点仍在，只是全都 404——那是能力不在场，不是这个通道坏了。
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public RunQueryController runQueryController(ObjectProvider<RunQuery> runs,
-                                                 HttpPrincipalResolver principalResolver) {
-        return new RunQueryController(runs, principalResolver);
     }
 
     /**

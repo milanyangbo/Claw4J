@@ -104,7 +104,7 @@ public class ToolCallAudit {
         return write(AuditEvent.toolFinished(scope, toolName, digest,
                 failure == null ? AuditStatus.SUCCEEDED : AuditStatus.FAILED,
                 failure == null ? null : AuditEvent.TOOL_ERROR,
-                take(scope == null ? null : scope.runId(), toolName, digest)));
+                take(scope == null ? null : scope.turnId(), toolName, digest)));
     }
 
     /**

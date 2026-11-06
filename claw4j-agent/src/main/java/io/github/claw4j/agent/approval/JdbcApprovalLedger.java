@@ -1,6 +1,6 @@
 package io.github.claw4j.agent.approval;
 
-import io.github.claw4j.agent.run.PrincipalSnapshot;
+import io.github.claw4j.agent.approval.PrincipalSnapshot;
 import io.github.claw4j.domain.port.ApprovalLedger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,7 +17,7 @@ import java.util.UUID;
 /**
  * 审批账本的 JDBC 落点，表在 {@code claw4j_run.approval_request}（V10、V11）。
  *
- * <p><b>读失败按"没有批准"处理</b>，与 {@code JdbcRunStore} 的降级方向相反。
+ * <p><b>读失败按"没有批准"处理</b>，与账本那一层"写不进去就降级"的方向相反。
  * 那边落不进去只少一行审计（对话照常），这边读不出来却要决定"放不放一个还没人批过的动作"——
  * 同一个"降级"在两条路上指向两个方向，所以这里的 catch 里返回的是 {@link Optional#empty()}，
  * 不是"算了放过去"。审批这条链上，出错时收紧才是安全的那一侧。
@@ -62,7 +62,7 @@ public class JdbcApprovalLedger implements ApprovalLedger {
      */
     private static final String ASK_SQL =
             "insert into claw4j_run.approval_request"
-                    + " (id, run_id, owner, tool_name, args_digest, args_summary, status,"
+                    + " (id, turn_id, owner, tool_name, args_digest, args_summary, status,"
                     + " session_key, channel, chat_ref, principal_snapshot,"
                     + " requested_at, expires_at)"
                     + " values (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, now(),"
@@ -111,7 +111,7 @@ public class JdbcApprovalLedger implements ApprovalLedger {
         // 而"哪段对话、发起人是谁"是这一条请求自己的属性，不该寄存在别处。
         Origin origin = ask.origin();
         try {
-            jdbc.update(ASK_SQL, id, ask.runId(), ask.owner(), ask.toolName(), ask.argsDigest(),
+            jdbc.update(ASK_SQL, id, ask.turnId(), ask.owner(), ask.toolName(), ask.argsDigest(),
                     ask.argsSummary(),
                     origin == null ? null : origin.sessionKey(),
                     origin == null ? null : origin.channel(),

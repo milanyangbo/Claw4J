@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.run;
+package io.github.claw4j.agent;
 
 import io.github.claw4j.domain.port.InboundMessage;
 
@@ -16,7 +16,7 @@ import java.util.Optional;
  * 这里要开<b>新</b>的一件。合成一个接口的话，每个实现都要多写一个它用不到的方法，
  * 而那种方法通常长成"抛 UnsupportedOperation"的样子。
  */
-public interface RunLauncher {
+public interface TaskLauncher {
 
     /**
      * 用 {@code message.principal()} 的身份把 {@code message.text()} 跑一轮，开一个新的 run。

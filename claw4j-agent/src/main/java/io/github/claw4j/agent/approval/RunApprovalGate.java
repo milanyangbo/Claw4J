@@ -15,7 +15,7 @@ import java.util.Optional;
  *
  * <p><b>它只做两件事：登记一条请求，把卡片推到那段对话里</b>。
  *
- * <p>以前这里还做两件：往 {@code agent_step} 落一行 awaiting、把 {@code agent_run.status}
+ * <p>它不做两件事：不往步骤表落一行 awaiting、不改某一轮的状态
  * 改成 suspended。那两件事服务的是"这件事停在这里，等批准之后接着做"，
  * 而 OpenClaw 没有这种东西——它的审批是运行内等待，或「approval-pending + 系统事件唤醒会话」。
  * 唤醒的是<b>会话</b>，不是那一次运行（ADR-0027）。
@@ -25,7 +25,7 @@ import java.util.Optional;
  * "刚才我要调这个工具、现在批准了"。
  *
  * <p><b>卡片推到哪</b>：请求自己身上的 {@code channel + chat_ref}（V21）。
- * 以前要拿 {@code runId} 去 {@code agent_run_delivery} 查"这件事登记过哪些地址"，
+ * 以前要拿 {@code runId} 去一张投递表查"这件事登记过哪些地址"，
  * 那是"一件事能跨通道被找到"的遗留；现在一条请求只可能来自一段对话，地址就写在它身上。
  *
  * <p><b>推不出去不影响这一轮</b>：登记成了，对话里也带着审批编号，人照样能去接口批。
@@ -78,7 +78,7 @@ public class RunApprovalGate implements ApprovalGate {
             // 没有来处（子 Agent 那一层）：没有"哪段对话"可推。编号仍然回给调用方。
             return;
         }
-        ApprovalDecider.Pending card = new ApprovalDecider.Pending(approvalId, ask.runId(), ask.owner(),
+        ApprovalDecider.Pending card = new ApprovalDecider.Pending(approvalId, ask.turnId(), ask.owner(),
                 ask.toolName(), ask.argsSummary(), "pending", false, null);
         for (ApprovalCards sender : cards) {
             if (!sender.channel().equals(origin.channel())) {

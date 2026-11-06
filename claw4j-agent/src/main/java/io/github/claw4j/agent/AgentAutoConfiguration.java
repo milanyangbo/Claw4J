@@ -9,8 +9,7 @@ import io.github.claw4j.agent.observability.RunTracer;
 import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
-import io.github.claw4j.agent.run.RunDelivery;
-import io.github.claw4j.agent.run.RunStore;
+import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.capability.tool.ToolCatalog;
@@ -258,7 +257,7 @@ public class AgentAutoConfiguration {
      * 的默认值，等于让某条装配路径漏传参数时静默少一段——而那种缺失在图上看起来
      * 与"这个工具没被调"完全一样。
      *
-     * @param audit  可以为 null：没有装配 run 存储时（{@code claw4j.run.enabled=false}）
+     * @param audit  可以为 null：没有装配持久化那一层时（{@code claw4j.persistence.enabled=false}）
      *               就没有可写的审计落点，工具照常调用
      * @param tracer 埋点入口。没有开观测时传 {@link RunTracer#NONE}，**不要传 null 让它去猜**
      * @param profile 这个部署的工具策略（P09）。**必填**：给它一个"不过滤"的默认值等于让
@@ -384,28 +383,25 @@ public class AgentAutoConfiguration {
     @ConditionalOnMissingBean(AgentPort.class)
     public AgentPort agentPort(ChatClient chatClient,
                                ObjectProvider<SessionCompactor> compactor,
-                               ObjectProvider<RunStore> runs,
-                               ObjectProvider<RunDelivery> delivery,
+                               ObjectProvider<ConversationDelivery> delivery,
                                ObjectProvider<RunTracer> tracer,
                                ObjectProvider<ConversationPointers> pointers,
                                ObjectProvider<ToolCallAudit> audit,
                                ObjectProvider<io.github.claw4j.agent.goal.SessionGoalStore> goals,
                                AgentProperties properties) {
-        // run 与投递都走 ObjectProvider 而不是直接注入：没配存储时它们是缺席而不是失败，
-        // 门照常住着，只是"这件事做完了没有"没人记（与压缩器同一个判断）。
-        // 两者同进同出：收件地址跟着那次运行走，没有 run 就没有"送到哪儿"。
+        // 投递走 ObjectProvider 而不是直接注入：没配推送实现时它是缺席而不是失败，
+        // 门照常住着，只是结果只从请求里回去（ADR-0027：没有一个可推的地址就不推）。
         // 额度不在这条链上了——它是目标的属性（ADR-0027 决定五）。
         //
         // trace 也一样（P14）：没开观测时传空实现，埋点代码仍然逐字相同地跑一遍——
         // 那不是浪费，是让"开着"与"关着"走同一条路，否则关着的那条路平时不执行，
         // 等开了观测才第一次跑。
         // 段（ADR-0026）也走 ObjectProvider，但它与 run 那一组不同进同出：
-        // run 回答"这件事做完了没有"，段回答"这是哪一段对话"。关掉 run 存储时，
-        // 对话照样该有开始与结束——那是记忆与预算的事，不是记账的事。
+        // 段回答"这是哪一段对话"，与"这件事做完了没有"不是一回事——后者已经不存了。
         //
-        // lane 不是可选项：它是"一段对话同时只有一个 run"那条正确性保证本身。
+        // lane 不是可选项：它是"一段对话同时只有一轮在跑"那条正确性保证本身。
         // 不装配它，并发两条消息就会各跑各的，而失败长相是"模型偶尔会忘事"。
-        return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(), runs.getIfAvailable(),
+        return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(),
                 delivery.getIfAvailable(),
                 tracer.getIfAvailable(() -> RunTracer.NONE), pointers.getIfAvailable(),
                 new ConversationLane(properties.laneWait()), audit.getIfAvailable(),

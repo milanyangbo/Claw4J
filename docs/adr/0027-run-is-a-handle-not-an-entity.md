@@ -119,14 +119,20 @@ OpenClaw 有 `agents.defaults.timeoutSeconds`（默认 48 小时）兜住跑飞�
 
 1. 审计事件流水（`audit_event` 上线，`ToolCallAudit` 改写到它）—— **已落地**
 2. goal 挂会话（模型工具、`/goal` 命令族、每回合注入、`/new` 清目标）—— **已落地**
-3. 审批与投递按对话地址（拆掉续跑，删两个 `runId`）
-4. 预算并进 goal
-5. 删 `agent_run` / `agent_step` / `GET /api/runs` 与相关代码
+3. 审批与投递按对话地址（拆掉续跑，删两个 `runId`）—— **已落地**
+4. 预算并进 goal —— **已落地**
+5. 删 `agent_run` / `agent_step` / `GET /api/runs` 与相关代码 —— **已落地**（`V24`）
+
+五步都走完了。落地的终点：`claw4j_run` 只剩 `agent_schedule` / `approval_request` /
+`audit_event` 三张表；一轮的编号是本地生成的 `turnId`，不落表；`GET /api/runs` 没了，
+按 id 取值这个能力随之消失（记在 `docs/agents/guardrails.md` 的已知偏差里）。
 
 配置面同时收敛两处，都要在实施时删掉，留着就是"配了不生效"：
 
 - `claw4j.audit.retention`（90 天）删除。30 天 + 10 万行是照 OpenClaw 的**固定上限**，不是部署参数；
-- `claw4j.run.budget` 整段重写：token 额度归 goal，工具调用次数改名成熔断（票 04）。
+- `claw4j.run.budget` 整段重写：token 额度归 goal，工具调用次数改名成熔断（票 04）；
+- `claw4j.run.enabled` 改名成 `claw4j.persistence.enabled`——它管的是"要不要装审计 / 审批 / 调度
+  这几样需要库的东西"，而 run 已经不在里面了（票 05）。
 
 对既有文档的影响：
 

@@ -4,43 +4,21 @@
 
 | 接口 | 用途 |
 | --- | --- |
-| `POST /api/chat` | 同步，返回 `{"chatId":"...","text":"...","runId":"..."}` |
+| `POST /api/chat` | 同步，返回 `{"chatId":"...","text":"...","turnId":"..."}` |
 | `POST /api/chat/stream` | 流式，返回 SSE（`event:chunk` … `event:done`） |
 
-`runId` 是这件事在系统里的编号（ADR-0016）。没有装配 run 存储时它是 `null`——
-那是能力不在场，不是这一轮失败了。
-
-**接着上一件事做**：把上一轮拿到的 `runId` 放进请求体，同一句话就是"继续"：
-
-```bash
-# 把上一轮回答里的 runId 放进请求体，就是"接着做"：
-curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: read-only' \
-  -d '{"text":"继续做第二步","runId":"<上一轮返回的 runId>"}'
-# 回来的 runId 与带进去的相同，说明它是同一件事的续集
-
-接不上时（runId 不存在、不属于你、或那件事正在等审批）**不会报错**，
-而是另开一个 run 并返回一个新的 `runId`——绝不会接上别人的事。
-
-**结果随时取回**（A05）：`GET /api/runs/{id}` 返回这件事的状态、回答全文与全过程。
-它认的是人，不是通道——在飞书开的头，在 HTTP 上照样查得到；不属于你的与没有这件事
-回同一个 404，不替你确认这个 id 存在。
-
-```bash
-curl -s --noproxy '*' localhost:8080/api/runs/<runId> \
-  -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: read-only'
-# {"runId":"...","goal":"上周华东成交额","status":"done","result":"...","notifyPolicy":"done_only","steps":[...]}
-# result 是回答全文；steps[].summary 是截断摘要，两者长度不同、用途也不同
-```
+`turnId` 是**这一轮**的编号（ADR-0027）：本地生成，只用于串日志与认批次。
+**它不是续跑令牌**——拿它回来接不上任何东西。连续性靠会话：同一段对话里再说一句，
+模型看到的就是前文（`X-Claw4j-Chat-Id` 决定是不是同一段）。
 
 **要不要主动推**（A05）：`notifyPolicy` 是请求体里的可选字段，三档
-`done_only`（默认，做完了说一次）/ `state_changes`（状态变了就说）/ `silent`（一次都不说，等人来查）。
+`done_only`（默认，做完了说一次）/ `state_changes`（状态变了就说）/ `silent`（一次都不说）。
 定时任务（P04 起）用 `silent`：到点自己跑一趟的事每趟推一条，等于把自动化做成骚扰。
-推只影响"要不要找人"，不影响结果落库——**`silent` 下 `GET /api/runs/{id}` 照样查得到**。
+推只影响"要不要找人"，**不影响这一轮本身**——`silent` 下回答照样产出、审计照样留痕。
 拼错返回 400，不会静默退回默认（那个方向是"该说的一次没说"）。
 
 ```bash
-# 一件跑完放着的事：跑的时候不说话，结果等人来取
+# 一件跑完放着的事：跑的时候不说话，结果落在审计与通道里
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin' \
   -d '{"text":"核对上周口径","notifyPolicy":"silent"}'
@@ -56,8 +34,9 @@ psql "$DATABASE_URL" -c "select channel, channel_ref, goal from claw4j_run.agent
 ```
 
 ```bash
-# 那一轮从哪段对话来：run 上的 session_id 就是当时的会话键
-psql "$DATABASE_URL" -c "select id, session_id, status from claw4j_run.agent_run order by created_at desc limit 5"
+# 那一轮从哪段对话来、成没成：审计里那两条事件带 session_key 与 actor
+psql "$DATABASE_URL" -c "select turn_id, action, status, session_key, actor, at \
+  from claw4j_run.audit_event order by seq desc limit 10"
 ```
 
 三个请求头：`X-Claw4j-User`（必填）、`X-Claw4j-Role`（角色，不填走默认 `read-only`）、
@@ -128,11 +107,8 @@ except Exception: print(0)'; }
 
 ```bash
 # 那一轮的样子：done（它回给用户的是「我需要你批准」），没有 suspended 这个状态
-curl -s --noproxy '*' localhost:8080/api/runs/<runId> -H 'X-Claw4j-User: ethan' \
-  -H 'X-Claw4j-Role: admin'
-# {"turnId":"...","status":"done","steps":[...]}
 #
-# 批准之后发生的是同一段对话里的下一轮（新的一行 run），不是把这一行拉起来。
+# 批准之后发生的是同一段对话里的下一轮（新的 turn），不是把上一轮拉起来。
 # 这条请求自己的来处写在审批行上：
 psql "$DATABASE_URL" -c "select id, session_key, channel, chat_ref, status
   from claw4j_run.approval_request order by requested_at desc limit 3"
@@ -144,7 +120,7 @@ psql "$DATABASE_URL" -c "select id, owner, tool_name, left(args_digest,12) as di
 # 读一条请求现在的样子：卡片上有什么，这里就有什么（身份同样取自请求头）
 curl -s --noproxy '*' localhost:8080/api/approvals/<id> \
   -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin'
-# {"id":"...","runId":"...","owner":"ethan","toolName":"mail_send",
+# {"id":"...","turnId":"...","owner":"ethan","toolName":"mail_send",
 #  "argsSummary":"to=...","status":"pending","expired":false,"expiresAt":"..."}
 
 # 批 / 拒。请求体里没有"谁"——点按钮的人由通道认出来
@@ -171,8 +147,9 @@ curl -s --noproxy '*' -X POST localhost:8080/api/approvals/<id> \
 - **一次点头一次执行**：`consumed_at` 落过一次就再兑现不出第二条，并发下第二个调用拿不到。
 - **默认十分钟过期**（`claw4j.approval.ttl` 可调）：过期那条再也落不下结论，卡片就地显示"已过期"。
 
-批准之后按**发起人身份快照**（`agent_run.principal_snapshot`）续跑同一个 `runId`，不是用审批人的
-身份（那等于提权）；拒绝同样续跑，理由原样回灌，并明确告诉模型"不要再请求同一个操作"。
+批准之后按**发起人身份快照**（`approval_request.principal_snapshot`）回到**同一段对话**开新一轮，
+不是用审批人的身份（那等于提权）；拒绝也在那段对话里回一句"这次没执行、不要重试"，
+但**不调模型**——OpenClaw 的原文是"遭拒絕或逾時的核准為終止狀態"，拒绝是终态。
 
 自己跑一遍：`./mvnw -pl claw4j-app -am test -Dtest=ApprovalFlowTest`（真库 + 假模型，十一条：
 挂起、批准续跑、拒绝回灌、过期、换参数不放行、指纹不是幂等键、指纹忽略顺序、跨 run 复用一次、
@@ -181,10 +158,10 @@ curl -s --noproxy '*' -X POST localhost:8080/api/approvals/<id> \
 `FeishuApprovalTest`（九条）；真模型闭环那条在 `ApplicationAssemblyTest` 里。
 
 **到点自己干活**（P04、P05）：助手会自己醒来了，但没有引新组件——一张调度表 + 每 30 秒扫一次。
-**到点 = 创建一个 run**，鉴权、工具、预算、投递全部走那条现成的路；扫描器只做三件事：
+**到点 = 跑一轮**，鉴权、工具、额度、投递全部走那条现成的路；扫描器只做三件事：
 认领（`for update skip locked`，两个实例同时扫也只有一个人跑）、跑一轮、按 cron 推进下一次。
 **默认静默**（`notify_policy = silent`）：到点跑一趟的事每趟推一条，等于把自动化做成骚扰；
-结果在 run 上，用 `GET /api/runs/{id}` 取。
+结果落在它自己的那段会话里（`cron:<taskId>:<时刻>`），审计里两条事件可查。
 
 任务由对话里的三个工具建起来（P05）：`schedule_task` / `list_schedules` / `cancel_schedule`。
 建的那一刻就核三件事——cron 解析得了、要用的工具**主人现在都有**、这些工具里没有
@@ -201,7 +178,8 @@ curl -s --noproxy '*' -X POST localhost:8080/api/approvals/<id> \
   并往任务登记的通道推一条带最后错误的通知（HTTP 部署没有可推的通道时只留 WARN，
   库里的 `disabled_reason` 照样查得到）。**成功一次清零**——这里问的是"还连着坏吗"。
 - **cron 坏了、权限没了当场停用**：这三样再试三次也不会变好，攒三次只是晚三天才停。
-- **每次运行单独计预算**：每次到点都开一个新的 run，额度按 run 算（工具调用 / token / 耗时）。
+- **每次运行各走各的会话**：每次到点都是一个新会话（`cron:<taskId>:<时刻>`），
+  不往用户那段对话里塞记录，也不吃用户那份目标额度。
 
 ```bash
 # 调度表长什么样：谁的任务、下次什么时候、连着坏了几次、它要哪些工具
@@ -296,7 +274,7 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 - 三个调度工具要 `schedule_task` 动作（`read-only` 与 `admin` 有，`guest` 没有），且跟着 `claw4j.schedule.enabled` 一起进退：关掉调度时它们从工具清单里消失，不是被拒。
 
 - 上表角色默认 `admin`。`systemStatus` 要 `read_system`，`querySales` 要表权限，`propose_script` 要 `draft_script`——用 `read-only` 测 `propose_script` 会被拒。
-- 三个目标工具各要一个动作（`get_goal` / `create_goal` / `update_goal`，`read-only` 与 `admin` 有，`guest` 没有）。它们**不跟着 `claw4j.run.enabled` 进退**：目标是会话状态，关掉记账照样该有。
+- 三个目标工具各要一个动作（`get_goal` / `create_goal` / `update_goal`，`read-only` 与 `admin` 有，`guest` 没有）。它们**不跟着 `claw4j.persistence.enabled` 进退**：目标是会话状态，关掉记账照样该有。
 - `querySales` 三条时间窗的数是种子数据故意错开的，只对上第一条说明不了时间窗写对。
 
 ## 2. MCP：自己实现的 server（10 个）
@@ -427,7 +405,7 @@ claw4j:
 
 | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- |
-| 同步返回 | `t '这个进程堆内存上限多少？线程数呢？'` | 一个 JSON：`{"chatId":"http:ethan","text":"...","runId":"..."}` |
+| 同步返回 | `t '这个进程堆内存上限多少？线程数呢？'` | 一个 JSON：`{"chatId":"http:ethan","text":"...","turnId":"..."}` |
 | 流式返回 | `ts '这个进程堆内存上限多少？线程数呢？'` | 若干 `event:chunk` + 一个 `event:done`，**`done` 只出现一次** |
 | 两条路径都能触发工具 | 上面两条各跑一次 | `hit systemStatus` **+2**（只涨 1 说明有一条路径上的 Advisor 没生效） |
 | 流式下鉴权同样生效 | `U=guest9 R=guest ts '这个进程堆内存多少'` | 被拒；`hit systemStatus denied` +1 |
@@ -483,11 +461,11 @@ psql "$DATABASE_URL" -c "select actor, actor_role, tool_name, error_code, at
 # 这次调用是哪次批准的：结束事件上的 approval_id 与审批表同一个编号
 psql "$DATABASE_URL" -c "select seq, actor, tool_name, status, left(call_fingerprint,12) as digest,
   approval_id, at
-  from claw4j_run.audit_event where run_id = '<runId>' order by seq"
+  from claw4j_run.audit_event where turn_id = '<turnId>' order by seq"
 ```
 
-列：`seq / kind / action / status / error_code / run_id / session_key / actor / actor_role /
-channel / tool_name / call_fingerprint / approval_id / redaction / at`。
+列：`seq / kind / action / status / error_code / turn_id / session_key / actor / actor_role /
+channel / tool_name / call_fingerprint / approval_id / redaction / schema_version / at`。
 
 四条口径都在库里的行上验，不看模型措辞：
 

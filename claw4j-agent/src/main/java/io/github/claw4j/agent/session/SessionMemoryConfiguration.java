@@ -313,7 +313,7 @@ public class SessionMemoryConfiguration implements DisposableBean {
      *
      * <p><b>不跟着 run 存储进退</b>：目标挂在会话上，run 关掉之后"这一段对话在往哪儿走"
      * 照样成立。这也是它与原来那个 {@code update_plan} 最实质的区别——
-     * 那个工具跟着 {@code claw4j.run.enabled} 一起消失，而目标不该因为关了记账就没了。
+     * 那个工具跟着 {@code claw4j.persistence.enabled} 一起消失，而目标不该因为关了记账就没了。
      */
     @Bean
     @ConditionalOnMissingBean(GoalTools.class)

@@ -65,7 +65,7 @@ public class MeteredToolCallback implements ToolCallback {
 
     /**
      * 这次调用的审计行序号。**这是 trace 与库唯一能对上号的东西**：
-     * 拿 {@code (claw4j.run.id, claw4j.step.seq)} 去 {@code RunStore#stepsOf} 里查，
+     * 拿 {@code (claw4j.run.id, claw4j.step.seq)} 去库里查，
      * 查到的就是这一行的审计。
      */
     public static final String ATTR_STEP_SEQ = "claw4j.step.seq";
@@ -241,7 +241,7 @@ public class MeteredToolCallback implements ToolCallback {
         if (toolContext == null) {
             return null;
         }
-        Object value = toolContext.getContext().get(ContextKeys.RUN_ID);
+        Object value = toolContext.getContext().get(ContextKeys.TURN_ID);
         return value instanceof String runId && !runId.isBlank() ? runId : null;
     }
 

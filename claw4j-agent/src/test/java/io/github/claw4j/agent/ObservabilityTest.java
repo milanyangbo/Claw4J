@@ -7,13 +7,7 @@ import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.ObservabilityAutoConfiguration;
 import io.github.claw4j.agent.observability.OtelRunTracer;
 import io.github.claw4j.agent.observability.RunTracer;
-import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunStatus;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.Step;
-import io.github.claw4j.agent.run.StepInput;
-import io.github.claw4j.agent.run.StepKind;
-import io.github.claw4j.agent.run.RunLauncher;
+import io.github.claw4j.agent.TaskLauncher;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
@@ -227,17 +221,17 @@ class ObservabilityTest {
     private final List<SpanData> spans = new CopyOnWriteArrayList<>();
 
     @Test
-    @DisplayName("一条 run 一个 trace：tool 挂在它那一轮 model.turn 下，model.turn 挂在 run 下（P14）")
-    void oneRunIsOneTraceWithActionsNestedUnderTheirTurn() {
+    @DisplayName("一轮一个 trace：tool 挂在它那一轮 model.turn 下，model.turn 挂在根下（P14）")
+    void oneTurnIsOneTraceWithActionsNestedUnderTheirTurn() {
         RunTracer tracer = tracer();
-        RunStore runs = runStore(new ArrayList<>());
         AtomicInteger round = new AtomicInteger();
         ChatModel model = new FixedChatModel(prompt -> round.getAndIncrement() == 0
                 ? ChatPipelineTest.requestTool("querySales", "{}")
                 : withUsage(12, 34));
 
-        tracedPort(model, runs, tracer, new RecordingTool("querySales", "128400"))
-                .reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "上周华东成交额"));
+        String turnId = tracedPort(model, tracer, new RecordingTool("querySales", "128400"))
+                .reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "上周华东成交额"))
+                .turnId();
 
         SpanData run = spanOf("run");
         SpanData turn = spanOf("model.turn");
@@ -248,7 +242,9 @@ class ObservabilityTest {
                 .as("工具要挂在它那一轮下面，不是与它并列——只数个数的话，三个都挂根上也能绿")
                 .isEqualTo(turn.getSpanId());
         assertThat(tool.getTraceId()).isEqualTo(turn.getTraceId()).isEqualTo(run.getTraceId());
-        assertThat(run.getAttributes().get(AttributeKey.stringKey("claw4j.run.id"))).isEqualTo("run-1");
+        assertThat(run.getAttributes().get(AttributeKey.stringKey("claw4j.run.id")))
+                .as("属性名沿用 OTel 的 run.id 约定，值就是这一轮的 turnId")
+                .isEqualTo(turnId);
         assertThat(tool.getAttributes().get(AttributeKey.stringKey("claw4j.tool"))).isEqualTo("querySales");
         assertThat(registry.getMeters()).extracting(meter -> meter.getId().getName())
                 .as("trace 不新增计数器：同一次工具调用不该被 counter 与 span 各记一遍，两份口径迟早会漂")
@@ -256,30 +252,25 @@ class ObservabilityTest {
     }
 
     @Test
-    @DisplayName("动作 span 上带审计行序号：拿它加 runId 能反查回 agent_step 那一行（P14）")
-    void everyActionSpanCarriesTheSeqOfTheStepItWrote() {
+    @DisplayName("动作 span 上带审计账本序号：拿它加轮次编号能反查回 audit_event 那一行（P14）")
+    void everyActionSpanCarriesTheSeqOfTheEventItWrote() {
         RunTracer tracer = tracer();
-        List<Step> written = new ArrayList<>();
-        RunStore runs = runStore(written);
         AtomicInteger round = new AtomicInteger();
         ChatModel model = new FixedChatModel(prompt -> round.getAndIncrement() == 0
                 ? ChatPipelineTest.requestTool("querySales", "{}")
                 : withUsage(12, 34));
 
-        tracedPort(model, runs, tracer, new RecordingTool("querySales", "128400"))
+        tracedPort(model, tracer, new RecordingTool("querySales", "128400"))
                 .reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "上周华东成交额"));
 
         int toolSeq = seqOf(spanOf("tool.querySales"));
         int turnSeq = seqOf(spanOf("model.turn"));
 
-        assertThat(written).extracting(Step::kind)
-                .as("工具不再写 step（审计走独立账本，ADR-0027）；这里只剩收尾那一行")
-                .containsExactly(StepKind.MODEL_TURN);
         assertThat(toolSeq)
-                .as("工具 span 带的是审计账本序号，不是 step 序号")
+                .as("工具 span 带的是审计账本序号——审计是这一轮唯一的账")
                 .isPositive();
         assertThat(turnSeq)
-                .as("模型轮那一格也换成账本序号：两个序号空间混着用，反查就只有一个方向成立")
+                .as("模型轮那一格也是账本序号：两个序号空间混着用，反查就只有一个方向成立")
                 .isGreaterThan(toolSeq);
     }
 
@@ -287,7 +278,6 @@ class ObservabilityTest {
     @DisplayName("失败也留痕：工具抛异常那段是 ERROR，模型抛异常时 run 那段也是（P14）")
     void failuresEndTheirSpanAsErrors() {
         RunTracer tracer = tracer();
-        RunStore runs = runStore(new ArrayList<>());
         MeteredToolCallback failing = new MeteredToolCallback(new RecordingTool("querySales", "128400") {
             @Override
             public String call(String toolInput) {
@@ -296,7 +286,7 @@ class ObservabilityTest {
         }, null, new ToolCallAudit(event -> Optional.of(1L)), tracer);
 
         assertThatThrownBy(() -> failing.call("{}",
-                new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"))))
+                new ToolContext(Map.of(ContextKeys.TURN_ID, "run-1"))))
                 .isInstanceOf(IllegalStateException.class);
 
         SpanData tool = spanOf("tool.querySales");
@@ -309,7 +299,7 @@ class ObservabilityTest {
         ChatModel broken = new FixedChatModel(prompt -> {
             throw new IllegalStateException("模型服务 503");
         });
-        ChatClientAgentPort port = tracedPort(broken, runs, tracer);
+        ChatClientAgentPort port = tracedPort(broken, tracer);
         assertThatThrownBy(() -> port.reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "问")))
                 .isInstanceOf(IllegalStateException.class);
 
@@ -382,7 +372,7 @@ class ObservabilityTest {
      * <p>同一个而不是各造一个：父子靠 Context 接得上，但两套 provider 的 span 会进两条
      * 不同的导出链，断言时得按 provider 分开收——没有理由为省一行把它搞复杂。
      */
-    private ChatClientAgentPort tracedPort(ChatModel model, RunStore runs, RunTracer tracer,
+    private ChatClientAgentPort tracedPort(ChatModel model, RunTracer tracer,
                                            ToolCallback... tools) {
         AtomicLong auditSeq = new AtomicLong();
         ToolCallAudit audit = new ToolCallAudit(event -> Optional.of(auditSeq.incrementAndGet()));
@@ -393,30 +383,7 @@ class ObservabilityTest {
         ChatClient client = ChatPipelineTest.clientBuilder(model)
                 .defaultToolCallbacks(wrapped)
                 .build();
-        return new ChatClientAgentPort(client, null, runs, null, tracer, null, null, audit);
-    }
-
-    /**
-     * 只回答三件事的 run 存储：开出来是哪一件、现在还是 running、append 落第几行。
-     *
-     * <p>真库那一半在 app 的 {@code RunLifecycleTest}；这里要验的是"span 上写的是不是那个 seq"，
-     * 而 seq 由存储分配——所以替身按 append 的次数递增，与真库同一个口径。
-     */
-    private static RunStore runStore(List<Step> written) {
-        RunStore runs = mock(RunStore.class);
-        Run run = new Run("run-1", "u-1@fp", "fp", "上周华东成交额", RunStatus.RUNNING,
-                NotifyPolicy.DEFAULT, null, null, Instant.now());
-        when(runs.start(anyString(), anyString(), anyString(), any(), any()))
-                .thenReturn(Optional.of(run));
-        when(runs.find(anyString())).thenReturn(Optional.of(run));
-        when(runs.append(any())).thenAnswer(call -> {
-            StepInput input = call.getArgument(0);
-            Step step = new Step(input.runId(), written.size() + 1, input.kind(), input.input(),
-                    input.toolNames(), input.resultSummary(), input.status(), Instant.now());
-            written.add(step);
-            return Optional.of(step);
-        });
-        return runs;
+        return new ChatClientAgentPort(client, null, null, tracer, null, null, audit);
     }
 
     private SpanData spanOf(String name) {
@@ -447,7 +414,7 @@ class ObservabilityTest {
         ScheduleStore store = mock(ScheduleStore.class);
         when(store.claim(anyInt(), any())).thenReturn(List.of(due(ObservabilityTest.DAILY_NINE)));
         List<InboundMessage> asked = new ArrayList<>();
-        RunLauncher launcher = message -> {
+        TaskLauncher launcher = message -> {
             asked.add(message);
             return Optional.of("上周华东 128400");
         };
@@ -612,12 +579,12 @@ class ObservabilityTest {
         assertThat(fired("ok") + fired("failed")).isZero();
     }
 
-    private ScheduleScanner scanner(ScheduleStore store, RunLauncher launcher,
+    private ScheduleScanner scanner(ScheduleStore store, TaskLauncher launcher,
                                     List<OutboundDelivery> deliveries) {
         return scanner(store, launcher, deliveries, everything);
     }
 
-    private ScheduleScanner scanner(ScheduleStore store, RunLauncher launcher,
+    private ScheduleScanner scanner(ScheduleStore store, TaskLauncher launcher,
                                     List<OutboundDelivery> deliveries, RoleDirectory roles) {
         return new ScheduleScanner(store, launcher, new ScheduleAuthorization(roles, List.of(
                 ToolPermissionRegistry.of(Map.of(TOOL, ToolPermission.read("sales_order"))))),

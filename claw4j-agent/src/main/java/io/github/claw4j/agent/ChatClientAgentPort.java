@@ -4,16 +4,9 @@ import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.RunTracer;
-import io.github.claw4j.agent.run.DeliveryTarget;
-import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunDelivery;
-import io.github.claw4j.agent.run.RunStatus;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.RunLauncher;
-import io.github.claw4j.agent.run.Step;
-import io.github.claw4j.agent.run.StepInput;
-import io.github.claw4j.agent.run.StepKind;
-import io.github.claw4j.agent.run.StepStatus;
+import io.github.claw4j.agent.channel.DeliveryTarget;
+import io.github.claw4j.agent.channel.ConversationDelivery;
+import io.github.claw4j.agent.TaskLauncher;
 import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.audit.AuditEvent;
@@ -45,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -62,7 +56,7 @@ import java.util.function.Supplier;
  * 它在等待流时响应中断。客户端断开后通道 {@code cancel(true)}，
  * 这里会立刻以异常结束，而不是把整条模型流烧完。
  */
-public class ChatClientAgentPort implements AgentPort, RunLauncher {
+public class ChatClientAgentPort implements AgentPort, TaskLauncher {
 
     private static final Logger log = LoggerFactory.getLogger(ChatClientAgentPort.class);
 
@@ -138,17 +132,10 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
     private final SessionCompactor compactor;
 
     /**
-     * run 的落点。可以为 null——没装配存储时就没有"这件事做完了没有"这回事，
-     * 那是能力不在场，不是配置错误，所以不在这里造一个空实现去假装它存在
-     * （与 {@link #compactor} 同一个判断）。
-     */
-    private final RunStore runs;
-
-    /**
      * 结果投递与回收（A05）。可以为 null——与上面两个同一个判断：没有 run 存储
      * 就没有"送到哪儿"这回事，那是能力不在场，不造一个空实现去假装它存在。
      */
-    private final RunDelivery delivery;
+    private final ConversationDelivery delivery;
 
     /**
      * trace（P14）。默认是空实现：没开观测时这里一次 {@code open} 就是一次内联掉的方法调用，
@@ -163,7 +150,7 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      *
      * <p><b>它<b>不</b>属于 run 那一组</b>：run 回答"这件事做完了没有"，段回答
      * "这是哪一段对话"。两者的寿命不同（run 一轮、段跨多轮），所以开关也不同——
-     * {@code claw4j.run.enabled=false} 时 run 相关的一整组缺席，段照常工作。
+     * 关掉那一层持久化时，段照常工作。
      */
     private final ConversationPointers pointers;
 
@@ -189,51 +176,47 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
     private final ToolCallAudit audit;
 
     public ChatClientAgentPort(ChatClient chatClient) {
-        this(chatClient, null, null, null);
+        this(chatClient, null, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor) {
-        this(chatClient, compactor, null, null);
+        this(chatClient, compactor, null);
     }
 
-    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs) {
-        this(chatClient, compactor, runs, null);
-    }
-
-    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunDelivery delivery) {
-        this(chatClient, compactor, runs, delivery, RunTracer.NONE);
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery) {
+        this(chatClient, compactor, delivery, RunTracer.NONE);
     }
 
     /**
      * @param tracer 为 null 时按空实现处理：装配里它走 {@code ObjectProvider}，
      *               没开观测的部署拿不到 bean，而"少一个 bean"不该让门都装不上
      */
-    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunDelivery delivery, RunTracer tracer) {
-        this(chatClient, compactor, runs, delivery, tracer, null);
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery, RunTracer tracer) {
+        this(chatClient, compactor, delivery, tracer, null);
     }
 
-    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunDelivery delivery, RunTracer tracer,
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers) {
-        this(chatClient, compactor, runs, delivery, tracer, pointers, null);
+        this(chatClient, compactor, delivery, tracer, pointers, null);
     }
 
-    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunDelivery delivery, RunTracer tracer,
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers, ConversationLane lane) {
-        this(chatClient, compactor, runs, delivery, tracer, pointers, lane, null);
+        this(chatClient, compactor, delivery, tracer, pointers, lane, null);
     }
 
     /**
      * @param audit 审计规则层（ADR-0027）。为 null 表示这个部署没开审计：判定与回答照常，
      *              只是事后查不到——与预算、投递同一个判断（能力不在场，不是假装它在）
      */
-    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunDelivery delivery, RunTracer tracer,
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit) {
-        this(chatClient, compactor, runs, delivery, tracer, pointers, lane, audit, null);
+        this(chatClient, compactor, delivery, tracer, pointers, lane, audit, null);
     }
 
     /**
@@ -241,13 +224,12 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      *              于是每回合少注入那一行、{@code /goal} 那族命令回一句"用不了"。
      *              注意它与"这一段没有目标"是两件事——前者是能力不在场，后者是常态
      */
-    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunDelivery delivery, RunTracer tracer,
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit,
                                SessionGoalStore goals) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
-        this.runs = runs;
         this.delivery = delivery;
         this.tracer = tracer == null ? RunTracer.NONE : tracer;
         this.pointers = pointers;
@@ -315,24 +297,24 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      * 反过来：这条日志也是"脱敏发生在出站之前而不是事后替换"的证据——
      * 哪天有人在链路之外打日志，这里会立刻出现原始值。
      *
- * <p>run 在这一进一出之间：进门开一个（或接上一个），答完记一步并收尾。
- * <b>开 run 发生在模型之前</b>，否则模型一崩就没有任何痕迹表明这件事发生过。
+ * <p><b>这一进一出之间没有"一件事"，只有一轮</b>（ADR-0027）：拿到消息、生成编号、
+ * 调模型、把回答交回去。编号不落任何表，答完即作废——连续性靠会话键，不靠它。
  *
- * <p>预算也按 run 累计（A04）：进门先看这一件还剩多少额度，出门扣掉这一轮花掉的
- * token 与耗时。工具调用那一项不在这里扣——它由 {@code MeteredToolCallback} 在每一次
- * 调用前扣，因为只有那里知道"这次调用真的发生了"。三项里任何一项撞线，
- * 这一件事就停在 {@link RunStatus#BUDGET_EXHAUSTED}，并把结局写进库里，
- * 而不是抛一个要上层猜的异常。
+ * <p><b>审计的两条事件包住整轮</b>：进门 {@code agent.run.started}、出门
+ * {@code agent.run.finished}。少了开始那一条，跑了多久、两条并发的先后都只能靠时间戳猜。
  *
- * <p>结果在这一进一出之间有了"送到哪儿"（A05）：进门登记收件地址，出门把回答全文
- * 记在 run 上，再按通知策略送到别的地址。<b>就地回答过的那个地址不再推</b>——
- * 推一遍就是同一条内容出现两次；别的地址照推，那正是"在飞书开的头、在别处收结果"。
+ * <p><b>额度记在目标上</b>（ADR-0027 决定五）：出门把这轮的 token 记到这段会话的目标上，
+ * 撞上预算就进 {@code budget_limited}——那是目标的状态，不是这一轮的状态。
+ * "这一轮绕了太多次"是另一件事，由工具循环的熔断在上限处截断。
+ *
+ * <p><b>结果只回到它开始的那段对话</b>（ADR-0027 决定四）：就地回答过的地址不再推，
+ * 推一遍就是同一条内容出现两次；定时任务与审批续跑没有人等，才按通知策略推出去。
  */
     @Override
     public OutboundMessage reply(InboundMessage message) {
         Objects.requireNonNull(message, "message");
         Turn turn = inLane(message, () -> answer(message, addressOf(message)));
-        return OutboundMessage.of(message.chatId(), turn.text(), turn.runId());
+        return OutboundMessage.of(message.chatId(), turn.text(), turn.turnId());
     }
 
     /**
@@ -374,16 +356,13 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
     @Override
     public Optional<String> launch(InboundMessage message) {
         Objects.requireNonNull(message, "message");
-        if (runs == null) {
-            // 没有 run 存储就没有"这件事"可落，也就没有"跑完算谁的"这个问题。
-            // 如实返回空，让调度器记一次失败——它会在三次之后停掉这条任务。
-            return Optional.empty();
-        }
+        // 没有"跑不跑得了"的前置条件了：开一轮不需要任何存储（ADR-0027），
+        // 于是这里唯一能返回空的地方是模型那一侧抛了异常——那由调用方记一次失败。
         return Optional.ofNullable(inLane(message, () -> answer(message, null)).text());
     }
 
-    /** 这一轮的结果：落在哪个 run 上、回答是什么。 */
-    private record Turn(String runId, String text) {
+    /** 这一轮的结果：编号与回答。两个都可能为空——命令类回执既没有编号，也没有调模型。 */
+    private record Turn(String turnId, String text) {
     }
 
     /**
@@ -412,17 +391,20 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
         // 送模型的是命令之后的内容：`/new 帮我查华南` 的第一句是"帮我查华南"，
         // 命令本身不该出现在提示词里，也不该成为这一轮的 run 目标。
         String masked = PiiRedactor.mask(parsed.text());
-        Run openedRun = openRun(message, owner, sessionId, masked);
-        String runId = openedRun == null ? null : openedRun.id();
+        // 这一轮的编号（ADR-0027）：本地生成，不落任何表。
+        // 它只在三处用——审计的两条事件、trace 的一段 span、返回给调用方的回执。
+        // OpenClaw 的 `runId` 也是这个角色：`agent` RPC 返回它，`agent.wait` 可以等它，
+        // 但没有任何"按 runId 取回一件事"的接口，因为一轮答完它就作废了。
+        String turnId = UUID.randomUUID().toString();
         // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(turnId, sessionId, message.principal(),
                 message.channel());
         if (audit != null) {
             audit.runStarted(auditScope);
         }
         // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
-                runAttributes(runId, message.principal()))) {
+                runAttributes(turnId, message.principal()))) {
             try {
                 ChatResponse response;
                 String text;
@@ -430,22 +412,21 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
                 // 所以这段 duration 含那一次 INSERT（几十毫秒）。反过来（先关 span 再写 seq）
                 // 会让属性丢掉——已 end 的 span 上 setAttribute 是静默的空操作。
                 try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
-                    response = promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
+                    response = promptOf(message, owner, sessionId, promptText(sessionId, masked), turnId)
                             .call()
                             .chatResponse();
                     text = cappedText(response);
-                    log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
-                    stampTurn(turn, closeTurn(runId, auditScope, masked, text,
+                    log.debug("出站回答 chatId={} turnId={} text={}", message.chatId(), turnId, text);
+                    stampTurn(turn, closeTurn(auditScope, text,
                             pushTargetOf(answeredAt, message), message.notifyPolicy(),
                             tokensOf(response)), response);
                 }
-                return new Turn(runId, text);
+                return new Turn(turnId, text);
             } catch (RuntimeException | Error failure) {
                 run.failed(failure);
                 if (audit != null) {
                     audit.runFinished(auditScope, AuditStatus.FAILED, null);
                 }
-                fail(runId);
                 throw failure;
             }
         }
@@ -495,33 +476,32 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
             return;
         }
         String masked = PiiRedactor.mask(parsed.text());
-        Run openedRun = openRun(message, owner, sessionId, masked);
-        String runId = openedRun == null ? null : openedRun.id();
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
+        String turnId = UUID.randomUUID().toString();
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(turnId, sessionId, message.principal(),
                 message.channel());
         if (audit != null) {
             audit.runStarted(auditScope);
         }
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
-                runAttributes(runId, message.principal()))) {
+                runAttributes(turnId, message.principal()))) {
             StringBuilder answer = new StringBuilder();
             try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
-                    promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
+                    promptOf(message, owner, sessionId, promptText(sessionId, masked), turnId)
                             .stream()
                             .content()
-                            // 每一块都带 runId：调用方可能只收到最后一块，收到中间块的也要能查到同一件事
+                            // 每一块都带 turnId：调用方可能只收到最后一块，收到中间块的也要能认出同一批
                             .doOnNext(chunk -> {
-                                log.debug("出站分块 chatId={} runId={} chunk={}", message.chatId(), runId, chunk);
+                                log.debug("出站分块 chatId={} turnId={} chunk={}", message.chatId(), turnId, chunk);
                                 answer.append(chunk == null ? "" : chunk);
-                                onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk, runId));
+                                onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk, turnId));
                             })
-                            .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "", runId)))
+                            .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "", turnId)))
                             .blockLast();
                     // 流式的 token 记 0：汇总 usage 只在最后一帧上，而它未必到得了这一层
                     // （与"不拿估算值冒充真实值"同一个口径）。于是流式这一路不计入目标用量——
                     // 这是能力不在场，不是"这一轮不花钱"（见票 04 的"没做"一节）。
-                    stampTurn(turn, closeTurn(runId, auditScope, masked, answer.toString(),
+                    stampTurn(turn, closeTurn(auditScope, answer.toString(),
                             pushTargetOf(addressOf(message), message), message.notifyPolicy(),
                             0L), null);
                 } catch (RuntimeException | Error failure) {
@@ -531,30 +511,10 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
                     if (audit != null) {
                         audit.runFinished(auditScope, AuditStatus.FAILED, null);
                     }
-                    fail(runId);
                     throw failure;
                 }
             }
         }
-    }
-
-    /**
-     * 开这一轮（ADR-0027）。
-     *
-     * <p><b>只剩 start 一条路</b>：以前这里还有一个"带着 runId 接上旧事"的分支，
-     * 而那条分支配着一整套 {@code resume} / {@code reopen} / {@code suspend}。
-     * OpenClaw 的连续性靠 sessionKey——同一段对话自然有上下文，用户不需要携带任何标识。
-     * 所以"接着做"这件事由会话负责，不由 run 负责。
-     *
-     * <p><b>会话键在开的时候一起写</b>：预算是按会话累计的（ADR-0025），
-     * 少了这一列这条 run 就只能按自己那一行算，也就是"每轮 6 次"的旧行为。
-     */
-    private Run openRun(InboundMessage message, String owner, String sessionId, String masked) {
-        if (runs == null) {
-            return null;
-        }
-        return runs.start(owner, PermissionFingerprint.shortOf(message.principal()), masked,
-                message.notifyPolicy(), sessionId).orElse(null);
     }
 
     /**
@@ -623,21 +583,15 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      * 记账与判超在同一条 SQL 里（见 {@code JdbcSessionGoalStore#addTokens}）。
      *
      * <p><b>这一轮的状态不由额度决定</b>：用完额度不是"这一轮失败"，
-     * 它是这件事停下来了——状态在目标上，不在 run 上。
+     * 它是这件事停下来了——状态在目标上，不在一轮上。
+     *
+     * <p><b>不再往 step 表写摘要</b>（ADR-0027 决定二）：那张表随 run 一起没了。
+     * 要回答"这一轮说了什么"，读通道里的回答与 {@code audit_event} 的两条事件；
+     * 要回答"模型看到了什么"，读会话历史。摘要是"一件事的第几步"那个形状的产物。
      */
-    private Optional<Long> closeTurn(String runId, AuditEvent.Scope scope, String input, String answer,
+    private Optional<Long> closeTurn(AuditEvent.Scope scope, String answer,
                                      DeliveryTarget pushTo, NotifyPolicy policy, long tokens) {
-        if (runs == null || runId == null) {
-            return Optional.empty();
-        }
-        // 这一轮被某道门拦下并挂起了（P02）：<b>不收尾</b>。
-        //
-        runs.append(new StepInput(runId, StepKind.MODEL_TURN, input, null,
-                summary(answer), StepStatus.DONE));
         chargeGoal(scope, tokens);
-        // 全文进 run：step 上的那份是截断摘要，回答"这一步得到了什么"；
-        // 查结果的人要的是完整答案，而异步场景里没有一次请求在等着接它（A05）。
-        runs.finish(runId, RunStatus.DONE, answer);
         if (delivery != null && pushTo != null) {
             delivery.announce(pushTo, policy, answer);
         }
@@ -734,23 +688,6 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
         return total == null ? 0L : total.longValue();
     }
 
-    /** 收尾成失败。<b>不吞异常</b>：run 只负责记下"这件事没成"，怎么向上报告仍由调用方决定。 */
-    private void fail(String runId) {
-        if (runs == null || runId == null) {
-            return;
-        }
-        runs.finish(runId, RunStatus.FAILED);
-    }
-
-    /** 摘要长度。取头部而不是"尽量多留"：读的人要看的是"发生了什么"，不是重读一遍回答。 */
-    private static String summary(String text) {
-        if (text == null) {
-            return null;
-        }
-        String oneLine = text.strip();
-        return oneLine.length() <= SUMMARY_CHARS ? oneLine : oneLine.substring(0, SUMMARY_CHARS) + "…";
-    }
-
     /**
      * 把 Principal 与会话 id 交给 Advisor 链：走 Advisor 的上下文，不走 ThreadLocal。
      *
@@ -799,13 +736,14 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
     /**
      * 根 span 的属性：哪一轮、谁的（指纹）。
      *
-     * <p><b>没有 runId 时不写这一格</b>：没装 run 存储的部署里它确实是 null，
-     * 而写一个空串会让"这件事"与"空"在图上长得一样。
+     * <p><b>为空时不写这一格</b>：写一个空串会让"有编号"与"没有"在图上长得一样。
+     * 属性名仍是 {@code ATTR_RUN_ID}——它指的是 OpenTelemetry 那个 {@code run.id} 约定，
+     * 不是我们那个已经被删掉的实体。
      */
-    private static Map<String, String> runAttributes(String runId, Principal principal) {
+    private static Map<String, String> runAttributes(String turnId, Principal principal) {
         Map<String, String> attributes = new LinkedHashMap<>();
-        if (runId != null) {
-            attributes.put(ATTR_RUN_ID, runId);
+        if (turnId != null) {
+            attributes.put(ATTR_RUN_ID, turnId);
         }
         if (principal != null) {
             attributes.put(ATTR_OWNER, PermissionFingerprint.shortOf(principal));
@@ -814,7 +752,7 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
     }
 
     private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message, String owner, String sessionId,
-                                                      String masked, String runId) {
+                                                      String masked, String turnId) {
         Principal principal = message.principal();
         // 归属键与对话键都由调用方算好再传进来：一轮请求里 run 的 owner、会话 id
         // 都要用，各算一遍的话，口径一改就可能只改到一半，而表现是"会话记得住、run 查不到"。
@@ -837,11 +775,10 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
         // 子 Agent 要用**父这个身份**继续鉴权——委派不提权，
         // 而"子那边拿不到身份"的失败姿势必须是拒绝（见 SubagentDelegation）。
         toolContext.put(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal);
-        // runId 同理：计划工具在工具内部，它要知道这一步落在哪件事上。
-        // 没有 run 时干脆不放这个键——工具那边"读不到就是这一轮没有 run"，
-        // 比放一个空串让它去猜清楚。
-        if (runId != null) {
-            toolContext.put(ContextKeys.RUN_ID, runId);
+        // 这一轮的编号同理：工具在工具内部，它要知道"我这一轮属于哪一次回答"。
+        // 不放这个键时，工具那边读不到就是空——比放一个空串让它去猜清楚。
+        if (turnId != null) {
+            toolContext.put(ContextKeys.TURN_ID, turnId);
         }
         // 会话 id 也进工具上下文：recall_session 只查本段对话，它得知道"这一段"是哪一段。
         // 键用框架的 ChatMemory.CONVERSATION_ID，与它自己的会话工具（SessionEventTools）
@@ -876,10 +813,10 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
                     if (message.chatId() != null && !message.chatId().isBlank()) {
                         spec.param(ContextKeys.CHAT_REF, message.chatId());
                     }
-                    // 鉴权那一层也要知道这是哪件事（P02）：审批没批过时它要把这件事挂起，
-                    // 而"挂起谁"这个答案只在 runId 上。
-                    if (runId != null) {
-                        spec.param(ContextKeys.RUN_ID, runId);
+                    // 鉴权那一层也要知道这是哪一轮（ADR-0027）：审批行上要记"这条请求是哪一轮发起的"，
+                    // 那个答案只在这一格上。两处都要放——它读的是 Advisor 上下文，不是 ToolContext。
+                    if (turnId != null) {
+                        spec.param(ContextKeys.TURN_ID, turnId);
                     }
                 });
     }

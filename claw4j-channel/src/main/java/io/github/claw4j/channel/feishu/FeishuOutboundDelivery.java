@@ -20,7 +20,7 @@ import java.util.Objects;
  */
 public class FeishuOutboundDelivery implements OutboundDelivery {
 
-    /** 与 {@code agent_run_delivery.channel} 那一列同口径。 */
+    /** 与审计里记的通道同口径。 */
     public static final String CHANNEL = "feishu";
 
     private final FeishuReplySender sender;

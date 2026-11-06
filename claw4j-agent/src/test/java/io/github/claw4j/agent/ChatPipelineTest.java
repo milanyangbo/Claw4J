@@ -2,20 +2,17 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.approval.RunApprovalGate;
+import io.github.claw4j.agent.audit.AuditAction;
+import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.audit.AuditSink;
+import io.github.claw4j.agent.audit.AuditStatus;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.model.ModelConfiguration;
 import io.github.claw4j.agent.model.ModelProperties;
-import io.github.claw4j.agent.run.Budget;
-import io.github.claw4j.agent.run.DeliveryTarget;
-import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunStatus;
+import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.goal.SessionGoalStore;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.Step;
-import io.github.claw4j.agent.run.StepInput;
-import io.github.claw4j.agent.run.StepKind;
-import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.ApprovalCards;
@@ -197,7 +194,7 @@ class ChatPipelineTest {
         ChatClientAgentPort port = new ChatClientAgentPort(
                 client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))),
                         List.of(tool)),
-                null, new FakeRuns(), null, null, null, null, null, goals);
+                null, null, null, null, null, null, goals);
 
         port.reply(message("chat-cap", "/goal 把三张表的口径对齐"));
         String text = port.reply(message("chat-cap", "一直查")).text();
@@ -286,109 +283,92 @@ class ChatPipelineTest {
     // ---------------------------------------------------------------- run（A01）
 
     /**
-     * run 落在主链路上：进门开一个、答完记一步并收尾。
+     * 一轮在审计里留下两条事件（ADR-0027 决定二）。
      *
-     * <p>判据是"库里那两行"，不是模型说了什么：run 存在的意义就是
-     * <b>这件事做完了没有</b>这件事第一次有了落点。
+     * <p>判据是"这两个事件"，不是模型说了什么：审计要回答"谁在什么时候让谁做了什么、成没成"。
+     * 只有结束那一条时，跑了多久、两条并发的先后都只能靠时间戳猜。
+     *
+     * <p>编号跟着回答出去，但它<b>不是续跑令牌</b>：拿它回来接不上任何东西——
+     * 连续性靠会话键。这一条以前叫"开一个 run 并收尾"，而 run 已经不存了。
      */
     @Test
-    @DisplayName("一次提问开一个 run：答完记一步并收尾，runId 跟着回答出去")
-    void replyOpensOneRunAndClosesIt() {
-        FakeRuns runs = new FakeRuns();
-        ChatClientAgentPort port = port(new FixedChatModel("华东上周成交 128400"), runs);
+    @DisplayName("一次提问两条审计事件：started 与 finished 成对，turnId 跟着回答出去")
+    void replyLeavesTwoAuditEvents() {
+        RecordingAudit audit = new RecordingAudit();
+        ChatClientAgentPort port = port(new FixedChatModel("华东上周成交 128400"), audit.toolCallAudit());
 
         OutboundMessage answer = port.reply(message("chat-1", "上周华东成交额"));
 
-        assertThat(answer.runId()).isNotNull();
-        assertThat(runs.started).hasSize(1);
-        assertThat(runs.steps).hasSize(1);
-        assertThat(runs.steps.getFirst().kind()).isEqualTo(StepKind.MODEL_TURN);
-        assertThat(runs.steps.getFirst().seq()).isEqualTo(1);
-        // 归属键带权限指纹，与会话同一个口径：换一份权限就是另一件事，不是同一件事的续集。
-        assertThat(runs.started.getFirst().owner()).contains("u-1").contains("@");
-        // 收尾成 done：这是"做完了"唯一的落点，缺了它每个 run 都永远停在 running。
-        assertThat(runs.finished).containsExactly(answer.runId() + ":done");
+        assertThat(answer.turnId()).isNotNull();
+        assertThat(audit.actions()).containsExactly(
+                AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
+        assertThat(audit.events).allSatisfy(event -> {
+            assertThat(event.scope().turnId()).as("两条事件属于同一轮").isEqualTo(answer.turnId());
+            assertThat(event.scope().sessionKey()).as("会话键进门就算好了").isNotNull();
+            assertThat(event.scope().actor()).as("谁发起的").isEqualTo("u-1");
+        });
+        assertThat(audit.events.getLast().status()).isEqualTo(AuditStatus.SUCCEEDED);
     }
 
-    /** 失败也要留下痕迹：没有这一条，崩掉的那件事在系统里等于没发生过。 */
+    /** 失败也要留下痕迹：没有这一条，崩掉的那一轮在系统里等于没发生过。 */
     @Test
-    @DisplayName("模型抛异常：run 收尾成 failed，异常照旧抛给调用方")
-    void failureClosesRunAsFailedAndRethrows() {
-        FakeRuns runs = new FakeRuns();
+    @DisplayName("模型抛异常：审计里一条 failed，异常照旧抛给调用方")
+    void failureLeavesAFailedEventAndRethrows() {
+        RecordingAudit audit = new RecordingAudit();
         ChatClientAgentPort port = port(new FixedChatModel(prompt -> {
             throw new IllegalStateException("模型不可用");
-        }), runs);
+        }), audit.toolCallAudit());
 
         assertThatThrownBy(() -> port.reply(message("chat-1", "在吗")))
                 .isInstanceOf(IllegalStateException.class);
-        // 异常照抛——run 只负责记下"没成"，不负责吞掉失败。
-        assertThat(runs.finished).hasSize(1).first().asString().endsWith(":failed");
-        assertThat(runs.steps).as("没答出来的那一轮不该记成一步").isEmpty();
+        // 异常照抛——审计只负责记下"没成"，不负责吞掉失败。
+        assertThat(audit.actions()).containsExactly(
+                AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
+        assertThat(audit.events.getLast().status()).isEqualTo(AuditStatus.FAILED);
     }
 
-    /** 流式每一块都带同一个 runId：只收到中间块的调用方也要能查到同一件事。 */
+    /** 流式每一块都带同一个 turnId：只收到中间块的调用方也要能认出同一批。 */
     @Test
-    @DisplayName("流式：每一块都带同一个 runId，收尾只发生一次")
-    void streamChunksShareOneRunId() {
-        FakeRuns runs = new FakeRuns();
+    @DisplayName("流式：每一块都带同一个 turnId，结束事件只发生一次")
+    void streamChunksShareOneTurnId() {
+        RecordingAudit audit = new RecordingAudit();
         List<OutboundMessage> chunks = new ArrayList<>();
         ChatClientAgentPort port = port(
-                new FixedChatModel(prompt -> answer("整段回答"), List.of("第一块", "第二块")), runs);
+                new FixedChatModel(prompt -> answer("整段回答"), List.of("第一块", "第二块")),
+                audit.toolCallAudit());
 
         port.stream(message("chat-1", "讲一下"), chunks::add);
 
         assertThat(chunks).isNotEmpty();
-        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.runId()).isNotNull());
-        assertThat(chunks.stream().map(OutboundMessage::runId).distinct()).hasSize(1);
-        assertThat(runs.finished).containsExactly(chunks.getFirst().runId() + ":done");
+        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.turnId()).isNotNull());
+        assertThat(chunks.stream().map(OutboundMessage::turnId).distinct()).hasSize(1);
+        assertThat(audit.actions()).containsExactly(
+                AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
     }
 
     /**
-     * 没装配存储是"能力不在场"，存储降级（落不下去）是"能力坏了"——两种都不是回答的失败：
-     * run 是记账，不是回答的前置条件。两种都归一成 runId 为 null。
+     * 审计写不进去，回答照给。
      *
-     * <p>第二种还多钉一件事：降级时<b>连收尾都不该发生</b>。落不下去却照样写一条 done，
-     * 会在库里留下一件"做完了但没人知道做过什么"的事。
+     * <p>审计是记账，不是回答的前置条件。库连不上、迁移没跑过时，正确的姿势是
+     * "这一行没记上、话照说"，而不是把用户的问题打死——代价由
+     * {@code claw4j.audit.write_errors} 暴露：一个不为 0 的数就说明这些天缺了记录。
      */
     @Test
-    @DisplayName("没有 run 存储或存储降级：runId 为 null，回答仍然给得出来")
-    void noRunStoreOrADegradedStoreStillAnswers() {
-        OutboundMessage absent = port(new FixedChatModel("华东上周成交 128400"))
-                .reply(message("chat-1", "上周华东成交额"));
-        assertThat(absent.text()).isEqualTo("华东上周成交 128400");
-        assertThat(absent.runId()).isNull();
+    @DisplayName("审计写不进去（库不可用）时回答照给：记账不是回答的前置条件")
+    void aBrokenAuditStillAnswers() {
+        AuditSink broken = event -> {
+            throw new IllegalStateException("库连不上");
+        };
+        ChatClientAgentPort port = port(new FixedChatModel("华东上周成交 128400"),
+                new ToolCallAudit(broken));
 
-        FakeRuns degraded = new FakeRuns();
-        degraded.degraded = true;
-        OutboundMessage fellBack = port(new FixedChatModel("华东上周成交 128400"), degraded)
-                .reply(message("chat-1", "上周华东成交额"));
-        assertThat(fellBack.text()).isEqualTo("华东上周成交 128400");
-        assertThat(fellBack.runId()).isNull();
-        assertThat(degraded.finished).as("降级时连收尾都不该发生：没有 run 可收").isEmpty();
+        OutboundMessage answer = port.reply(message("chat-1", "上周华东成交额"));
+
+        assertThat(answer.text()).isEqualTo("华东上周成交 128400");
+        assertThat(answer.turnId()).as("编号本地生成，不依赖任何存储").isNotNull();
     }
 
-    // ---------------------------------------------------------------- resume（A02）
-
-    /**
-     * 等审批的 run 只能由审批放行：一句"继续"就能唤醒它的话，那道门等于没装。
-     *
-     * <p>真正挡住它的是 {@code JdbcRunStore} 里那条 {@code status <> 'suspended'}
-     * （真库上的断言在 {@code RunSchemaSqlTest}）；这里验的是主链路在"接不上"时
-     * 既不崩、也不静默接上。
-     */
-    @Test
-    @DisplayName("正在等审批的 run 接不上：一句「继续」不能当放行用")
-    void suspendedRunIsNotResumedByAnotherMessage() {
-        FakeRuns runs = new FakeRuns();
-        ChatClientAgentPort port = port(new FixedChatModel("答一句"), runs);
-        String runId = port.reply(message("chat-1", "发邮件给张三")).runId();
-        runs.awaitingApproval.add(runId);
-
-        OutboundMessage next = port.reply(continuation("chat-1", "继续", runId));
-
-        assertThat(next.runId()).isNotEqualTo(runId);
-        assertThat(runs.started).hasSize(2);
-    }
+    // ---------------------------------------------------------------- 审批门（P02）
 
     /**
      * 审批门只做两件事：登记一条请求，把卡片推到它自己那段对话（ADR-0027）。
@@ -422,19 +402,44 @@ class ChatPipelineTest {
         assertThat(cards.announced).as("没有来处就没有对话可推").hasSize(1);
     }
     /** 没有 run 存储时 runId 只是个没人认领的提示：回答照旧，不报错。 */
-    @Test
-    @DisplayName("没有 run 存储时带 runId 也不报错：回答照旧")
-    void runIdWithoutAStoreIsIgnored() {
-        ChatClientAgentPort port = port(new FixedChatModel("答一句"));
+    /**
+     * 把审计事件收进内存：这一层要验"记了哪几条、带没带编号"，不是"SQL 对不对"。
+     *
+     * <p>用它而不是 {@code AuditLedger}：账本要库、要迁移，而"什么时候该记一条什么事件"
+     * 这条规则本来就不需要库——{@code AuditSink} 存在的理由正是这个。
+     */
+    static final class RecordingAudit {
 
-        OutboundMessage answer = port.reply(continuation("chat-1", "继续", "run-1"));
+        final List<AuditEvent> events = new CopyOnWriteArrayList<>();
 
-        assertThat(answer.text()).isEqualTo("答一句");
-        assertThat(answer.runId()).isNull();
+        ToolCallAudit toolCallAudit() {
+            return new ToolCallAudit(event -> {
+                events.add(event);
+                return Optional.of((long) events.size());
+            });
+        }
+
+        List<AuditAction> actions() {
+            return events.stream().map(AuditEvent::action).toList();
+        }
     }
 
     private static ChatClientAgentPort port(FixedChatModel model) {
-        return port(model, List.of(), READS_EVERYTHING);
+        return port(model, new RecordingAudit().toolCallAudit());
+    }
+
+    /** 一台把审计写进内存的门：这一层要验"记了哪几条"，不是"SQL 对不对"。 */
+    private static ChatClientAgentPort port(FixedChatModel model, ToolCallAudit audit) {
+        return new ChatClientAgentPort(
+                client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))), List.of()),
+                null, null, null, null, null, audit, null);
+    }
+
+    private static ChatClientAgentPort port(FixedChatModel model, ToolCallAudit audit,
+                                            SessionGoalStore goals) {
+        return new ChatClientAgentPort(
+                client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))), List.of()),
+                null, null, null, null, null, audit, goals);
     }
 
     @Test
@@ -448,7 +453,7 @@ class ChatPipelineTest {
                     .reduce("", String::concat));
             return answer("好");
         });
-        ChatClientAgentPort port = port(model, new FakeRuns(), goals);
+        ChatClientAgentPort port = port(model, new RecordingAudit().toolCallAudit(), goals);
 
         port.reply(message("chat-1", "/goal 让 CI 变绿"));
         assertThat(model.prompts())
@@ -494,7 +499,7 @@ class ChatPipelineTest {
                     .reduce("", String::concat));
             return answer("好");
         });
-        ChatClientAgentPort port = port(model, new FakeRuns(), goals);
+        ChatClientAgentPort port = port(model, new RecordingAudit().toolCallAudit(), goals);
         String key = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-1");
 
         port.reply(message("chat-1", "/goal 让 CI 变绿"));
@@ -532,7 +537,7 @@ class ChatPipelineTest {
     @DisplayName("达成的目标不能直接 edit / pause / block：要先把目标 resume 回来")
     void aCompletedGoalMustBeResumedBeforeItCanBeChanged() {
         InMemoryGoals goals = new InMemoryGoals();
-        ChatClientAgentPort port = port(new FixedChatModel("好"), new FakeRuns(), goals);
+        ChatClientAgentPort port = port(new FixedChatModel("好"), new RecordingAudit().toolCallAudit(), goals);
         String key = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-1");
 
         port.reply(message("chat-1", "/goal 让 CI 变绿"));
@@ -547,17 +552,6 @@ class ChatPipelineTest {
         assertThat(goals.of(key).orElseThrow().objective()).isEqualTo("让 CI 变绿");
     }
 
-    private static ChatClientAgentPort port(FixedChatModel model, RunStore runs) {
-        return port(model, runs, null);
-    }
-
-    private static ChatClientAgentPort port(FixedChatModel model, RunStore runs,
-                                            SessionGoalStore goals) {
-        return new ChatClientAgentPort(
-                client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))), List.of()),
-                null, runs, null, null, null, null, null, goals);
-    }
-
     /**
      * 消息直接给了整段会话键时，就用它——不换段、不查指针（ADR-0027）。
      *
@@ -569,16 +563,18 @@ class ChatPipelineTest {
     @Test
     @DisplayName("显式给的整段会话键原样使用：审批续跑要回到它自己那一段")
     void anExplicitSessionKeyIsUsedAsGiven() {
-        FakeRuns runs = new FakeRuns();
-        ChatClientAgentPort port = port(new FixedChatModel("好"), runs);
+        RecordingAudit audit = new RecordingAudit();
+        ChatClientAgentPort port = port(new FixedChatModel("好"), audit.toolCallAudit());
 
         port.reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "接着说",
                 Instant.now(), null, "feishu", NotifyPolicy.DEFAULT, null,
                 "claw4j:u-1@fp-1:feishu:chat-1:seg-fixed"));
 
-        assertThat(runs.sessionIds)
+        assertThat(audit.events)
                 .as("按通道+chatId 派生会得到「无段」的那个键：段一丢，上下文与 goal 都不在这段里")
-                .containsExactly("claw4j:u-1@fp-1:feishu:chat-1:seg-fixed");
+                .isNotEmpty()
+                .allSatisfy(event -> assertThat(event.scope().sessionKey())
+                        .isEqualTo("claw4j:u-1@fp-1:feishu:chat-1:seg-fixed"));
     }
 
     /**
@@ -682,106 +678,6 @@ class ChatPipelineTest {
         }
     }
 
-    /**
-     * 内存版 run 存储：这一层要验的是主链路什么时候开 run、什么时候收尾，
-     * 不是 SQL 对不对（那是 {@code RunSchemaSqlTest} 的事）。
-     *
-     * <p>{@code degraded} 模仿"库没迁 / 连不上"：每个写方法都返回空，
-     * 用来钉住"落不下去不该把提问打成 500"这条降级口径。
-     */
-    private static final class FakeRuns implements RunStore {
-
-        /** 每次 start 收到的会话键。判据「显式给的那一段被原样用上」读它。 */
-        private final List<String> sessionIds = new ArrayList<>();
-
-        final List<Run> started = new ArrayList<>();
-
-        final List<Step> steps = new ArrayList<>();
-
-        final List<String> finished = new ArrayList<>();
-
-        /** 成功接上的 runId。判"接上了"看的是它，不是模型的措辞。 */
-        final List<String> resumed = new ArrayList<>();
-
-        /** 被挡回的 runId：不存在、不是你的、在等审批。 */
-        final List<String> rejected = new ArrayList<>();
-
-        /** 正在等审批的 run（P02 才会真的置这个状态，这里先留个口子）。 */
-        final Set<String> awaitingApproval = new java.util.LinkedHashSet<>();
-
-        /** 每个 run 的发起人（P02）：服务端续跑要用它鉴权。 */
-        final Map<String, Principal> principals = new java.util.HashMap<>();
-
-        boolean degraded;
-
-        @Override
-        public Optional<Run> start(String owner, String principalDigest, String goal,
-                                   NotifyPolicy notifyPolicy, String sessionId) {
-            sessionIds.add(sessionId);
-            if (degraded) {
-                return Optional.empty();
-            }
-            Run run = new Run("run-" + (started.size() + 1), owner, principalDigest, goal,
-                    RunStatus.RUNNING, notifyPolicy, Budget.NONE, null, Instant.now());
-            started.add(run);
-            return Optional.of(run);
-        }
-
-        @Override
-        public Optional<Step> append(StepInput input) {
-            if (degraded) {
-                return Optional.empty();
-            }
-            int seq = (int) steps.stream().filter(step -> step.runId().equals(input.runId())).count() + 1;
-            Step step = new Step(input.runId(), seq, input.kind(), input.input(), input.toolNames(),
-                    input.resultSummary(), input.status(), Instant.now());
-            steps.add(step);
-            return Optional.of(step);
-        }
-
-        @Override
-        public void finish(String runId, RunStatus status, String result) {
-            if (degraded) {
-                return;
-            }
-            finished.add(runId + ":" + status.column());
-            started.stream().filter(run -> run.id().equals(runId)).findFirst()
-                    .ifPresent(run -> started.set(started.indexOf(run), new Run(run.id(), run.owner(),
-                            run.principalDigest(), run.goal(), status, run.notifyPolicy(), run.spent(),
-                            // null 是"这一轮没有新结果"（失败与额度用尽），不是"把结果清空"
-                            result == null ? run.result() : result,
-                            run.createdAt())));
-        }
-
-        @Override
-        public Optional<Run> find(String runId) {
-            return started.stream().filter(run -> run.id().equals(runId)).findFirst();
-        }
-
-        /**
-         * 内存版 resume。三条挡回规则与 {@code JdbcRunStore} 一致（不存在 / 不是你的 /
-         * 在等审批），但<b>这里不验那三条</b>——它们是 SQL 里的 where 条件，
-         * 由 {@code RunSchemaSqlTest} 在真库上钉住；这份假实现只是为了主链路跑得起来。
-         */
-        @Override
-        public List<Step> stepsOf(String runId) {
-            return steps.stream().filter(step -> step.runId().equals(runId)).toList();
-        }
-
-        /**
-         * 内存版计划：一份 {@code steps} 就是唯一的事实来源，plan 的行也在里面。
-         * <b>不模仿"重写后旧版不再被读到"</b>——那是 SQL 里的 {@code plan_ref} 切法，
-         * 由 {@code RunSchemaSqlTest} 在真库上钉住；这里够让 recap 跑起来就行。
-         */
-
-
-        private Run replace(Run run, RunStatus status, String result) {
-            Run updated = new Run(run.id(), run.owner(), run.principalDigest(), run.goal(), status,
-                    run.notifyPolicy(), run.spent(), result, run.createdAt());
-            started.set(started.indexOf(run), updated);
-            return updated;
-        }
-    }
 
     /**
      * 审批账本的内存替身：这一层验的是"挂不挂起"，不是 SQL 里那条

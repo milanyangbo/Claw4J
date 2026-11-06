@@ -1,6 +1,6 @@
 package io.github.claw4j.agent.schedule;
 
-import io.github.claw4j.agent.run.DeliveryTarget;
+import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -354,7 +354,7 @@ public final class ScheduleTools implements ToolCallbackProvider {
         if (toolContext == null) {
             return null;
         }
-        Object value = toolContext.getContext().get(ContextKeys.RUN_ID);
+        Object value = toolContext.getContext().get(ContextKeys.TURN_ID);
         return value instanceof String runId && !runId.isBlank() ? runId : null;
     }
 
@@ -419,7 +419,7 @@ public final class ScheduleTools implements ToolCallbackProvider {
     /**
      * 结果推回哪儿：这一轮从哪个通道、哪个会话来的（ADR-0027）。
      *
-     * <p>以前按 runId 去 {@code agent_run_delivery} 查，那张表已经不在了——
+     * <p>以前按 runId 去一张投递表查，那张表已经不在了——
      * 地址本来就是这一轮的属性。拿不到就是"没地方推"，任务照建，结果只能按 id 取。
      */
     private static Optional<DeliveryTarget> addressOf(ToolContext toolContext) {

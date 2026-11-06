@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.run;
+package io.github.claw4j.agent.channel;
 
 /**
  * 一个收件地址：这件事的结果要回到"哪个通道的哪个会话"（ADR-0018）。

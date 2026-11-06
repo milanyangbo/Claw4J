@@ -3,12 +3,11 @@ package io.github.claw4j.app;
 import io.github.claw4j.agent.ChatClientAgentPort;
 import io.github.claw4j.agent.ToolCallBudget;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
-import io.github.claw4j.agent.run.DeliveryTarget;
-import io.github.claw4j.agent.run.JdbcRunStore;
-import io.github.claw4j.agent.run.Run;
+import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.session.SessionResetProperties;
-import io.github.claw4j.agent.run.RunStatus;
 import io.github.claw4j.agent.schedule.Schedule;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
@@ -107,8 +106,6 @@ class ScheduleFlowTest {
 
     private static JdbcTemplate jdbc;
 
-    private static JdbcRunStore runs;
-
     /**
      * 部署里的那张角色表（{@code claw4j.channel.http.roles}）：角色 → 权限。
      *
@@ -126,35 +123,38 @@ class ScheduleFlowTest {
                 .migrate();
         jdbc = new JdbcTemplate(new DriverManagerDataSource(
                 POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
-        runs = new JdbcRunStore(jdbc);
     }
 
     @BeforeEach
     void freshTables() {
+        jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("delete from claw4j_run.agent_schedule");
-        jdbc.update("delete from claw4j_run.agent_step");
-        jdbc.update("delete from claw4j_run.agent_run");
         roleTable.clear();
         roleTable.put("admin", OWNER_PRINCIPAL);
     }
 
     @Test
-    @DisplayName("到点了：开一个 run，跑在任务主人的身份上，回答落在 run 上")
-    void aDueTaskStartsARunOnTheOwnersBehalf() {
+    @DisplayName("到点了：跑一轮，跑在任务主人的身份上，审计里留两条事件")
+    void aDueTaskRunsOnTheOwnersBehalf() {
         Recorder delivery = new Recorder();
         String id = dueTask(DAILY_NINE, NotifyPolicy.SILENT);
 
         scannerWith(new ScriptedModel("上周华东 128400"), delivery).scan();
 
-        List<Run> created = jdbc.query("select id from claw4j_run.agent_run",
-                (row, index) -> runs.find(row.getString("id")).orElseThrow());
-        assertThat(created).hasSize(1);
-        Run run = created.getFirst();
-        assertThat(run.status()).isEqualTo(RunStatus.DONE);
-        assertThat(run.owner()).isEqualTo(SessionKeys.ownerOf(OWNER_PRINCIPAL));
-        assertThat(run.goal()).isEqualTo(GOAL);
-        // 静默档：结果落在 run 上，但一条都不推（spec 第 16 条）
-        assertThat(run.result()).isEqualTo("上周华东 128400");
+        Map<String, Object> started = jdbc.queryForMap(
+                "select session_key, actor from claw4j_run.audit_event"
+                        + " where action = 'agent.run.started'");
+        assertThat(started)
+                .as("跑在任务主人身上：不是「第一个点了启用的人」，也不是一个管理员身份")
+                .containsEntry("actor", OWNER_PRINCIPAL.userId());
+        assertThat((String) started.get("session_key"))
+                .as("定时任务的会话是 cron:<taskId>:<时刻>：不往用户那段对话里塞记录")
+                .contains("cron:");
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.finished' and status = 'succeeded'"))
+                .as("这一轮确实收尾了")
+                .isEqualTo(1);
+        // 静默档：一条都不推（spec 第 16 条）
         assertThat(delivery.sent).isEmpty();
         // 下一次推到明天九点，而不是"30 秒后再来一次"
         assertThat(nextRunAt(id)).isAfter(Instant.now());
@@ -178,7 +178,8 @@ class ScheduleFlowTest {
         workers.forEach(Thread::start);
         workers.forEach(ScheduleFlowTest::join);
 
-        assertThat(count("select count(*) from claw4j_run.agent_run")).isEqualTo(1);
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'")).isEqualTo(1);
     }
 
     @Test
@@ -191,14 +192,16 @@ class ScheduleFlowTest {
         for (int i = 0; i < 2; i++) {
             scannerWith(new ScriptedModel("不该跑"), delivery).scan();
         }
-        assertThat(count("select count(*) from claw4j_run.agent_run")).isZero();
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'")).as("没跑就没有这一轮").isZero();
         assertThat(nextRunAt(id)).isEqualTo(planned);
 
         // 时间到了：换一个"刚启动的实例"，它照样知道该跑（时间点在库里，不在进程里）
         makeDue(id);
         scannerWith(new ScriptedModel("到了"), delivery).scan();
 
-        assertThat(count("select count(*) from claw4j_run.agent_run")).isEqualTo(1);
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'")).isEqualTo(1);
     }
 
     @Test
@@ -260,7 +263,8 @@ class ScheduleFlowTest {
         // 失败计数不动：它不是"跑失败了"，是"根本没跑"
         assertThat(after.failures()).isZero();
         assertThat(after.disabledReason()).contains("cron 解析不了");
-        assertThat(count("select count(*) from claw4j_run.agent_run")).isZero();
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'")).as("没跑就没有这一轮").isZero();
         assertThat(delivery.sent).hasSize(1);
     }
 
@@ -274,7 +278,8 @@ class ScheduleFlowTest {
 
         scannerWith(new ScriptedModel("补一份"), delivery).scan();
 
-        assertThat(count("select count(*) from claw4j_run.agent_run")).isEqualTo(1);
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'")).isEqualTo(1);
         ZonedDateTime next = nextRunAt(id).atZone(SHANGHAI);
         assertThat(next).isAfter(ZonedDateTime.now(SHANGHAI));
         assertThat(next.getHour()).isEqualTo(9);
@@ -290,7 +295,8 @@ class ScheduleFlowTest {
 
         scannerWith(new ScriptedModel("不该跑"), delivery).scan();
 
-        assertThat(count("select count(*) from claw4j_run.agent_run")).isZero();
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'")).as("没跑就没有这一轮").isZero();
     }
 
     // ---- P05：从对话里建任务，以及到点那一刻的身份 ----
@@ -353,7 +359,8 @@ class ScheduleFlowTest {
         assertThat(after.enabled()).isFalse();
         assertThat(after.disabledReason()).contains("身份认不出来");
         assertThat(after.failures()).as("再试三次也不会变好，所以不攒次数").isZero();
-        assertThat(count("select count(*) from claw4j_run.agent_run")).isZero();
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'")).as("没跑就没有这一轮").isZero();
         assertThat(delivery.sent).hasSize(1);
         assertThat(delivery.sent.getFirst()).contains(GOAL).contains("已停用");
     }
@@ -370,7 +377,8 @@ class ScheduleFlowTest {
         Schedule after = schedule(id);
         assertThat(after.enabled()).isFalse();
         assertThat(after.disabledReason()).contains("sales_order");
-        assertThat(count("select count(*) from claw4j_run.agent_run")).isZero();
+        assertThat(count("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'")).as("没跑就没有这一轮").isZero();
     }
 
     @Test
@@ -383,19 +391,17 @@ class ScheduleFlowTest {
         makeDue(id);
         toolCallingScanner(delivery).scan();
 
-        List<String> runIds = jdbc.queryForList("select id from claw4j_run.agent_run order by created_at",
-                String.class);
-        assertThat(runIds).as("每次到点都是新的一件").hasSize(2);
-        for (String runId : runIds) {
-            assertThat(jdbc.queryForObject(
-                    "select session_id from claw4j_run.agent_run where id = ?", String.class, runId))
-                    .as("每次运行是自己的会话（cron:<taskId>:<时刻>）："
-                            + "借用创建者那段对话的话，两次会落在同一段上下文里")
-                    .startsWith("claw4j:user:")
-                    .contains("cron:");
-            assertThat(runs.find(runId).orElseThrow().owner())
-                    .isEqualTo(SessionKeys.ownerOf(OWNER_PRINCIPAL));
-        }
+        List<String> sessionKeys = jdbc.queryForList(
+                "select session_key from claw4j_run.audit_event"
+                        + " where action = 'agent.run.started' order by seq", String.class);
+        assertThat(sessionKeys).as("每次到点都是一轮").hasSize(2);
+        assertThat(sessionKeys).as("两次到点各走各的会话：借用创建者那段对话的话，两次会落在同一段上下文里")
+                .doesNotHaveDuplicates()
+                .allSatisfy(key -> assertThat(key).startsWith("claw4j:user:").contains("cron:"));
+        assertThat(jdbc.queryForList("select distinct actor from claw4j_run.audit_event"
+                        + " where action = 'agent.run.started'", String.class))
+                .as("跑在任务主人的身份上")
+                .containsExactly(OWNER_PRINCIPAL.userId());
         assertThat(seenPrincipals).as("工具在谁的身份下被放行")
                 .hasSize(2).containsOnly(OWNER_PRINCIPAL.userId());
     }
@@ -412,7 +418,8 @@ class ScheduleFlowTest {
         scannerWith(model, delivery).scan();
 
         List<String> sessions = jdbc.queryForList(
-                "select session_id from claw4j_run.agent_run", String.class);
+                "select session_key from claw4j_run.audit_event"
+                        + " where action = 'agent.run.started' order by seq", String.class);
         assertThat(sessions)
                 .as("两条 run 落在两段会话里：一条是用户的，一条是任务自己的")
                 .hasSize(2)
@@ -527,7 +534,13 @@ class ScheduleFlowTest {
                 .defaultAdvisors(new AuthorizationAdvisor(permissions()))
                 .defaultToolCallbacks(metered)
                 .build();
-        return new ChatClientAgentPort(chat, null, runs);
+        return new ChatClientAgentPort(chat, null, null, null, null, null,
+                auditIntoDatabase(), null);
+    }
+
+    /** 真账本：定时任务那一轮的审计要真的落库，用例才查得到（ADR-0027）。 */
+    private static ToolCallAudit auditIntoDatabase() {
+        return new ToolCallAudit(new AuditLedger(jdbc, null));
     }
 
     private ScheduleScanner toolCallingScanner(Recorder delivery) {
@@ -545,7 +558,8 @@ class ScheduleFlowTest {
                                 .toolCallingManager(ToolCallBudget.toolCallingManager(
                                         ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS)))
                 .build();
-        return new ChatClientAgentPort(chat, null, runs);
+        return new ChatClientAgentPort(chat, null, null, null, null, null,
+                auditIntoDatabase(), null);
     }
 
     private static void scanTogether(CyclicBarrier gate, ScheduleScanner scanner) {
@@ -594,7 +608,7 @@ class ScheduleFlowTest {
     /** 模型那一侧看到的那一份上下文：身份 + 这一轮的 run（工具靠它找收件地址）。 */
     private static ToolContext toolContext(Principal principal) {
         return new ToolContext(Map.of(ContextKeys.PRINCIPAL, principal,
-                ContextKeys.RUN_ID, "run-from-chat",
+                ContextKeys.TURN_ID, "run-from-chat",
                 ContextKeys.CHANNEL, Recorder.CHANNEL,
                 ContextKeys.CHAT_REF, "oc_sched"));
     }

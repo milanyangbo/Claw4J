@@ -7,7 +7,7 @@ import java.util.Objects;
 /**
  * Slack 的主动投递（A05，ADR-0018）：把结果推回某条会话。
  *
- * <p>与前三份逐行同构。{@link #CHANNEL} 必须与 {@code agent_run_delivery.channel} 那一列同口径——
+ * <p>与前三份逐行同构。{@link #CHANNEL} 必须与审计里记的通道同口径——
  * 写错的表现不是报错，而是"在 Slack 问、回推时找不到实现"：库里登记了一行永远没人能送的地址。
  *
  * <p><b>与另外三个通道有一处实质不同</b>：登记的地址是"频道 + 线程"，
@@ -17,7 +17,7 @@ import java.util.Objects;
  */
 public class SlackOutboundDelivery implements OutboundDelivery {
 
-    /** 与 {@code agent_run_delivery.channel} 那一列、与 {@code InboundMessage#channel} 同口径。 */
+    /** 与 {@code InboundMessage#channel}、与审计里记的通道同口径。 */
     public static final String CHANNEL = "slack";
 
     private final SlackReplySender sender;

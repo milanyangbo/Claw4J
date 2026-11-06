@@ -28,7 +28,7 @@ import java.util.Optional;
  * 宁可拦住一个本来批过的动作，也不放过一个没人批过的。
  *
  * <p>实现在 Agent 模块（审批表与 run 在同一个 schema 下），装配在
- * {@code RunPersistenceConfiguration}；没有装配时鉴权那一层退到
+ * {@code AgentPersistenceConfiguration}；没有装配时鉴权那一层退到
  * {@code ApprovalGate#denyAll()}——"没有审批设施"的失败姿势是拦住，不是放行。
  *
  * <p><b>这里不提供 {@code empty()} 那种空实现</b>：{@code domain.port} 只放契约
@@ -66,7 +66,7 @@ public interface ApprovalLedger {
      *                    为 null 表示这一层还没有对话（子 Agent，A10）——那时结论落得下来，
      *                    但没有"接着做"这回事
      */
-    record Ask(String runId, String owner, String toolName, String argsDigest, String argsSummary,
+    record Ask(String turnId, String owner, String toolName, String argsDigest, String argsSummary,
                Origin origin) {
     }
 

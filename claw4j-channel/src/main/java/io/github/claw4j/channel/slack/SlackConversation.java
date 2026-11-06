@@ -23,7 +23,7 @@ package io.github.claw4j.channel.slack;
  */
 public final class SlackConversation {
 
-    /** 频道与线程根之间的分隔符。改它等于改一个对外约定：已经登记在 {@code agent_run_delivery} 里的地址会全部失效。 */
+    /** 频道与线程根之间的分隔符。改它等于改一个对外约定：已经登记在库里的地址会全部失效。 */
     public static final char SEPARATOR = '|';
 
     private SlackConversation() {

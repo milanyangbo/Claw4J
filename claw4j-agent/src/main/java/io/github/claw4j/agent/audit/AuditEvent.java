@@ -30,9 +30,6 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     /** 工具自己抛了异常。不细分到异常类型：类型名是开放的，而这一列是闭合口径。 */
     public static final String TOOL_ERROR = "tool_error";
 
-    /** 额度用完。 */
-    public static final String BUDGET_EXHAUSTED = "budget_exhausted";
-
     /** 超时中止。 */
     public static final String TIMEOUT = "timeout";
 
@@ -45,12 +42,12 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      * <p>六个字段全部可空：审计不能因为"取不到身份"就不写——"有个工具跑了"本身就是事实，
      * 只是那一格没人。为一行缺字段的审计去拒绝整个工具调用，是把记账当成了前置条件。
      */
-    public record Scope(String runId, String sessionKey, String agentId,
+    public record Scope(String turnId, String sessionKey, String agentId,
                         String actor, String actorRole, String channel) {
 
         /** 从身份与位置组一份。principal 为空时只留位置。 */
-        public static Scope of(String runId, String sessionKey, Principal principal, String channel) {
-            return new Scope(runId, sessionKey, null,
+        public static Scope of(String turnId, String sessionKey, Principal principal, String channel) {
+            return new Scope(turnId, sessionKey, null,
                     principal == null ? null : principal.userId(),
                     principal == null ? null : principal.role(),
                     channel);

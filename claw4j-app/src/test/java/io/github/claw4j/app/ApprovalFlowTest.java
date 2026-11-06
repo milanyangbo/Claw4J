@@ -11,13 +11,6 @@ import io.github.claw4j.agent.approval.RunApprovalGate;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
-import io.github.claw4j.agent.run.JdbcRunStore;
-import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunStatus;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.Step;
-import io.github.claw4j.agent.run.StepKind;
-import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.port.ApprovalDecider;
@@ -103,8 +96,6 @@ class ApprovalFlowTest {
 
     private static JdbcTemplate jdbc;
 
-    private static JdbcRunStore runs;
-
     @BeforeAll
     static void migrate() {
         Flyway.configure()
@@ -113,16 +104,13 @@ class ApprovalFlowTest {
                 .migrate();
         jdbc = new JdbcTemplate(new DriverManagerDataSource(
                 POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
-        runs = new JdbcRunStore(jdbc);
     }
 
     @BeforeEach
     void freshTables() {
         jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("delete from claw4j_run.approval_request");
-        jdbc.update("delete from claw4j_run.agent_step");
-        jdbc.update("delete from claw4j_run.agent_run");
-    }
+            }
 
     /**
      * 验收 1：没有批准时 run 挂起、请求直接返回、审批编号回到用户手里，工具一次都没执行。
@@ -145,9 +133,9 @@ class ApprovalFlowTest {
                 .as("用户要拿着编号去问「批了吗」；没有编号他只能再发一遍同一句话")
                 .contains("审批编号");
 
-        assertThat(runs.find(reply.runId()).orElseThrow().status())
+        assertThat(finishStatusOf(reply.turnId()))
                 .as("这一轮确实结束了：它回给用户的是「我需要你批准」。等审批不是一种能跨请求的状态")
-                .isEqualTo(RunStatus.DONE);
+                .isEqualTo("succeeded");
         assertThat(pendingApprovals()).hasSize(1);
 
         // 来处与请求一起落（V21）：批准之后要回到那段对话开新一轮
@@ -181,16 +169,18 @@ class ApprovalFlowTest {
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.GRANTED);
         assertThat(tool.calls()).as("批准之后那一次调用真的执行了").isEqualTo(1);
-        assertThat(runs.find(first.runId()).orElseThrow().status())
+        assertThat(finishStatusOf(first.turnId()))
                 .as("旧的那一轮不会因为一条迟到的批准被拉起来重跑")
-                .isEqualTo(RunStatus.DONE);
+                .isEqualTo("succeeded");
 
         // 多出来的是同一段对话里的下一轮，不是同一行的续写
-        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.agent_run", Integer.class))
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'", Integer.class))
                 .as("批准之后是新一轮（新的一行），不是把旧那行拉起来")
                 .isEqualTo(2);
         assertThat(jdbc.queryForList(
-                "select distinct session_id from claw4j_run.agent_run", String.class))
+                "select distinct session_key from claw4j_run.audit_event"
+                        + " where action = 'agent.run.started'", String.class))
                 .as("两轮在同一段会话里：上下文与 goal 都在，不用我们从 step 拼一段 recap")
                 .hasSize(1);
 
@@ -237,12 +227,13 @@ class ApprovalFlowTest {
                 .contains(reason)
                 .contains("没有执行")
                 .contains("不要再重试");
-        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.agent_run", Integer.class))
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.audit_event"
+                + " where action = 'agent.run.started'", Integer.class))
                 .as("拒绝不是终态收尾，而是同一段对话里的新一轮（模型要去向用户解释）")
                 .isEqualTo(2);
-        assertThat(runs.find(first.runId()).orElseThrow().status())
+        assertThat(finishStatusOf(first.turnId()))
                 .as("被拦的那一轮早就以 done 收尾了，拒绝不改它")
-                .isEqualTo(RunStatus.DONE);
+                .isEqualTo("succeeded");
     }
 
     /**
@@ -266,9 +257,9 @@ class ApprovalFlowTest {
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.EXPIRED);
         assertThat(tool.calls()).isZero();
-        assertThat(runs.find(first.runId()).orElseThrow().status())
+        assertThat(finishStatusOf(first.turnId()))
                 .as("过期的批准不能补点；而这一轮本来就是 done（它回给用户的是「我需要你批准」）")
-                .isEqualTo(RunStatus.DONE);
+                .isEqualTo("succeeded");
         assertThat(jdbc.queryForObject("select status from claw4j_run.approval_request where id = ?",
                 String.class, approvalId)).isEqualTo("pending");
     }
@@ -301,7 +292,7 @@ class ApprovalFlowTest {
                 String.class, approvalId))
                 .as("自批不落结论：那条请求还挂着等人批，不是被点废")
                 .isEqualTo("pending");
-        assertThat(runs.find(first.runId()).orElseThrow().status()).isEqualTo(RunStatus.DONE);
+        assertThat(finishStatusOf(first.turnId())).isEqualTo("succeeded");
 
         ApprovalDecider.Result other = harness.decider(roster).decide(approvalId, "approver-1", true, null);
 
@@ -334,7 +325,7 @@ class ApprovalFlowTest {
                 String.class, approvalId))
                 .as("连 decided_by 都不该被写上：那一行还是没人碰过的样子")
                 .isNull();
-        assertThat(runs.find(first.runId()).orElseThrow().status()).isEqualTo(RunStatus.DONE);
+        assertThat(finishStatusOf(first.turnId())).isEqualTo("succeeded");
     }
 
     /**
@@ -361,9 +352,9 @@ class ApprovalFlowTest {
                 "select args_digest from claw4j_run.approval_request order by requested_at", String.class);
         assertThat(digests).as("两次调用是两个指纹，不是一条记录被复用").hasSize(2);
         assertThat(digests.get(0)).isNotEqualTo(digests.get(1));
-        assertThat(runs.find(first.runId()).orElseThrow().status())
+        assertThat(finishStatusOf(first.turnId()))
                 .as("第二次又卡住了：那一轮的结局仍是 done，新的一轮落在同一段对话里")
-                .isEqualTo(RunStatus.DONE);
+                .isEqualTo("succeeded");
     }
 
     /**
@@ -510,11 +501,11 @@ class ApprovalFlowTest {
 
         assertThat(tool.calls()).isEqualTo(1);
         String executedRunId = jdbc.queryForObject(
-                "select run_id from claw4j_run.audit_event"
+                "select turn_id from claw4j_run.audit_event"
                         + " where kind = 'tool_action' and status = 'succeeded' limit 1", String.class);
         assertThat(executedRunId)
                 .as("执行落在批准之后那一轮：那是新的一行 run，不是被拦的那一条被拉起来了")
-                .isNotEqualTo(first.runId());
+                .isNotEqualTo(first.turnId());
         Map<String, Object> executed = onlyAuditRow(executedRunId, "succeeded");
         assertThat(executed.get("tool_name")).isEqualTo(TOOL);
         assertThat(executed.get("actor")).isEqualTo("u-mailer");
@@ -534,7 +525,7 @@ class ApprovalFlowTest {
 
         assertThat(jdbc.queryForObject(
                 "select count(*) from claw4j_run.audit_event"
-                        + " where run_id = ? and kind = 'tool_action'", Integer.class, first.runId()))
+                        + " where turn_id = ? and kind = 'tool_action'", Integer.class, first.turnId()))
                 .as("等审批不写审计：那件事的真相在 approval_request 上。"
                         + "被拦的那一轮一条工具事件都没有——它没开始，也不该假装有过一次调用")
                 .isZero();
@@ -558,7 +549,7 @@ class ApprovalFlowTest {
         OutboundMessage reply = harness.port().reply(harness.reader("查一下上周华东区成交额"));
 
         assertThat(tool.calls()).as("工具一次都不该执行").isZero();
-        Map<String, Object> refused = onlyAuditRow(reply.runId(), "blocked");
+        Map<String, Object> refused = onlyAuditRow(reply.turnId(), "blocked");
         assertThat(refused.get("tool_name")).isEqualTo(TOOL);
         assertThat(refused.get("actor")).isEqualTo("u-analyst");
         assertThat(refused.get("actor_role")).isEqualTo("analyst");
@@ -624,7 +615,8 @@ class ApprovalFlowTest {
                                 Metrics.globalRegistry, audit))
                         .defaultToolCallbacks(List.copyOf(tools))
                         .build();
-                port = new ChatClientAgentPort(chat, null, runs);
+                // 带上审计：这一层的断言读 audit_event 里的两条事件（ADR-0027）。
+                port = new ChatClientAgentPort(chat, null, null, null, null, null, audit, null);
             }
             return port;
         }
@@ -717,10 +709,23 @@ class ApprovalFlowTest {
     private static Map<String, Object> onlyAuditRow(String runId, String status) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "select * from claw4j_run.audit_event"
-                        + " where run_id = ? and action = 'tool.action.finished' and status = ?"
+                        + " where turn_id = ? and action = 'tool.action.finished' and status = ?"
                         + " order by seq", runId, status);
         assertThat(rows).as("这一件事应当正好有一条 %s 的结束事件", status).hasSize(1);
         return rows.getFirst();
+    }
+
+    /**
+     * 这一轮以什么状态收尾：读审计里那一条 {@code agent.run.finished}。
+     *
+     * <p>它是"这一轮结束了"唯一的落点（ADR-0027）：以前读 {@code agent_run.status}，
+     * 而那张表已经不在了。{@code succeeded} 在这里的含义是"这一轮正常跑完了"——
+     * 回给用户一句"我需要你批准"也是一次正常收尾。
+     */
+    private static String finishStatusOf(String turnId) {
+        return jdbc.queryForObject(
+                "select status from claw4j_run.audit_event where action = 'agent.run.finished'"
+                        + " and turn_id = ? order by seq desc limit 1", String.class, turnId);
     }
 
     private static String onlyPendingId() {

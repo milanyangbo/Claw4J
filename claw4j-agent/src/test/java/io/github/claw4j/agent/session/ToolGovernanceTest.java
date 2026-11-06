@@ -10,15 +10,6 @@ import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
-import io.github.claw4j.agent.run.Budget;
-import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunStatus;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.Step;
-import io.github.claw4j.agent.run.StepAudit;
-import io.github.claw4j.agent.run.StepInput;
-import io.github.claw4j.agent.run.StepKind;
-import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.principal.Principal;
@@ -227,12 +218,12 @@ class ToolGovernanceTest {
     }
 
     @Test
-    @DisplayName("没有 runId 也写：「发生过」比字段齐全重要，只是那一格空")
+    @DisplayName("没有轮次编号也写：「发生过」比字段齐全重要，只是那一格空")
     void anEventWithoutARunIsStillWritten() {
         audit.toolFinished(AuditEvent.Scope.empty(), TOOL, "{}", null);
 
         assertThat(events).hasSize(1);
-        assertThat(events.getFirst().scope().runId()).isNull();
+        assertThat(events.getFirst().scope().turnId()).isNull();
         assertThat(events.getFirst().toolName()).isEqualTo(TOOL);
     }
 
@@ -641,56 +632,6 @@ class ToolGovernanceTest {
     }
 
     // ---------------------------------------------------------------- 假存储 / 假会话
-
-    /** 只认 {@code append}：审计只该追加一行，其余方法被调到就是它越界了。 */
-    private static class RecordingStore implements RunStore {
-
-        private final List<StepInput> rows = new ArrayList<>();
-
-        @Override
-        public Optional<Step> append(StepInput input) {
-            rows.add(input);
-            return Optional.of(new Step(input.runId(), rows.size(), input.kind(), input.input(),
-                    input.toolNames(), input.resultSummary(), input.status(), null));
-        }
-
-        private StepInput only() {
-            assertThat(rows).as("这一轮应当正好落一行审计").hasSize(1);
-            return rows.getFirst();
-        }
-
-        @Override
-        public Optional<Run> start(String owner, String principalDigest, String goal,
-                                   NotifyPolicy notifyPolicy, String sessionId) {
-            throw new UnsupportedOperationException("审计不该开 run");
-        }
-
-        @Override
-        public void finish(String runId, RunStatus status, String result) {
-            throw new UnsupportedOperationException("审计不该收尾");
-        }
-
-        @Override
-        public Optional<Run> find(String runId) {
-            throw new UnsupportedOperationException("审计不该读 run");
-        }
-
-        @Override
-        public List<Step> stepsOf(String runId) {
-            throw new UnsupportedOperationException("审计不该回读 step");
-        }
-
-
-    }
-
-    /** 写的时候真抛的那种存储：验"兜住了没有"。其余方法与上面那个假存储同源，所以直接继承。 */
-    private static final class ThrowingStore extends RecordingStore {
-
-        @Override
-        public Optional<Step> append(StepInput input) {
-            throw new IllegalStateException("库连不上");
-        }
-    }
 
     /** 与 application.yml 里 read-only 那一行同形状：read 之外还给了 recall_session。 */
     private static Principal readOnlyWithRecall(String userId) {

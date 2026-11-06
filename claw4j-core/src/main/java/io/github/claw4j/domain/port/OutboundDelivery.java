@@ -31,7 +31,7 @@ package io.github.claw4j.domain.port;
 public interface OutboundDelivery {
 
     /**
-     * 通道标识，与 {@code agent_run_delivery.channel} 那一列同口径
+     * 通道标识，与审计里记的通道同口径
      * （{@code feishu} / {@code wecom} / …）。没有实现推的通道不注册本接口的 bean。
      */
     String channel();

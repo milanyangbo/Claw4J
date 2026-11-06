@@ -17,7 +17,7 @@ package io.github.claw4j.domain.port;
  * "哪一条 + 批还是拒"，谁点的由通道自己认出来后交给同一处。这样"卡片能批"与"接口能批"
  * 不会长出两套规矩——尤其是"不能批自己的请求"那一条，写在入口上的话，第二个入口必然漏。
  *
- * <p><b>一个通道一个实现</b>：{@link #channel()} 与 {@code agent_run_delivery.channel}
+ * <p><b>一个通道一个实现</b>：{@link #channel()} 与审计里记的通道
  * 同口径，投递时按这个值把卡片交给对应的实现。没有实现的通道（HTTP）不推卡片，
  * 它那边的入口是接口——两种形态并存是有意的，见 {@code ApprovalDecider} 的说明。
  *
@@ -27,7 +27,7 @@ package io.github.claw4j.domain.port;
  */
 public interface ApprovalCards {
 
-    /** 与 {@code agent_run_delivery.channel} 同口径的通道标识。 */
+    /** 与审计里记的通道同口径的标识。 */
     String channel();
 
     /**

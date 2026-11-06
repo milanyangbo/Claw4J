@@ -1,6 +1,6 @@
 package io.github.claw4j.agent.approval;
 
-import io.github.claw4j.agent.run.PrincipalSnapshot;
+import io.github.claw4j.agent.approval.PrincipalSnapshot;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -81,7 +81,7 @@ public class ApprovalService implements ApprovalDecider {
      * 仍然是唯一的判定点。
      */
     private static final String ROW_SQL =
-            "select status, expires_at <= now() as expired, run_id, owner, tool_name,"
+            "select status, expires_at <= now() as expired, turn_id, owner, tool_name,"
                     + " session_key, channel, chat_ref, principal_snapshot"
                     + " from claw4j_run.approval_request where id = ?";
 
@@ -330,7 +330,7 @@ public class ApprovalService implements ApprovalDecider {
         }
         try {
             return jdbc.query(
-                    "select id, run_id, owner, tool_name, args_summary, status,"
+                    "select id, turn_id, owner, tool_name, args_summary, status,"
                             + " expires_at <= now() as expired, expires_at"
                             + " from claw4j_run.approval_request where id = ?",
                     this::pendingOf, approvalId).stream().findFirst();
@@ -342,7 +342,7 @@ public class ApprovalService implements ApprovalDecider {
     }
 
     private Pending pendingOf(ResultSet row, int index) throws SQLException {
-        return new Pending(row.getString("id"), row.getString("run_id"), row.getString("owner"),
+        return new Pending(row.getString("id"), row.getString("turn_id"), row.getString("owner"),
                 row.getString("tool_name"), row.getString("args_summary"), row.getString("status"),
                 row.getBoolean("expired"), row.getObject("expires_at", java.time.OffsetDateTime.class)
                 .toInstant());

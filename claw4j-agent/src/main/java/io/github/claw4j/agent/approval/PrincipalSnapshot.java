@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.run;
+package io.github.claw4j.agent.approval;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

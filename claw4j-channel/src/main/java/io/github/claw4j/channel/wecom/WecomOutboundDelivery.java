@@ -12,12 +12,12 @@ import java.util.Objects;
  * 缺的只是一个与通道无关的收件地址。本类只负责"给一个 UserID，把这段话送过去"。
  *
  * <p>它存在的意义全在那一个常量上：{@link #CHANNEL} 必须与
- * {@code agent_run_delivery.channel} 那一列同口径。写错的表现不是报错，
+ * 审计里记的通道同口径。写错的表现不是报错，
  * 而是"在飞书问、企微收"这条路上，库里登记了一行永远没有实现能送的地址。
  */
 public class WecomOutboundDelivery implements OutboundDelivery {
 
-    /** 与 {@code agent_run_delivery.channel} 那一列、与 {@code InboundMessage#channel} 同口径。 */
+    /** 与 {@code InboundMessage#channel}、与审计里记的通道同口径。 */
     public static final String CHANNEL = "wecom";
 
     private final WecomReplySender sender;
