@@ -31,12 +31,19 @@ import java.time.Duration;
  * @param maxPerScan       一次扫描最多认领几条，默认 5 条
  * @param failureThreshold 连续失败几次自动停用，默认 3 次
  * @param lease            一条被认领之后占多久，默认 5 分钟
+ * @param sessionRetention 一次定时运行留下的那段会话留多久，默认 24 小时。
+ *                         <b>它与"人的对话留 30 天"是两条口径</b>（OpenClaw 的
+ *                         {@code cron.sessionRetention}，默认也是 24h）：定时任务每次运行
+ *                         都是一个新段（03），一天跑一次就是一天一段，按 30 天留会让
+ *                         {@code ai_session} 里全是没人看的 cron 段。留 24 小时是为了
+ *                         "这一次跑出了什么"还能查，查完就该走
  */
 @ConfigurationProperties("claw4j.schedule")
 public record ScheduleProperties(Duration scanInterval,
                                  Integer maxPerScan,
                                  Integer failureThreshold,
-                                 Duration lease) {
+                                 Duration lease,
+                                 Duration sessionRetention) {
 
     public static final Duration DEFAULT_SCAN_INTERVAL = Duration.ofSeconds(30);
 
@@ -50,6 +57,9 @@ public record ScheduleProperties(Duration scanInterval,
      * 所以这里不需要照顾特别长的那种。
      */
     public static final Duration DEFAULT_LEASE = Duration.ofMinutes(5);
+
+    /** 定时运行的会话留存，默认 24 小时。与 OpenClaw 的 {@code cron.sessionRetention} 同值。 */
+    public static final Duration DEFAULT_SESSION_RETENTION = Duration.ofHours(24);
 
     public ScheduleProperties {
         scanInterval = scanInterval == null ? DEFAULT_SCAN_INTERVAL : scanInterval;
@@ -76,9 +86,15 @@ public record ScheduleProperties(Duration scanInterval,
                     "claw4j.schedule.lease 必须为正：" + lease
                             + "。没有租约，认领之后崩溃的那条任务没人敢再跑");
         }
+        sessionRetention = sessionRetention == null ? DEFAULT_SESSION_RETENTION : sessionRetention;
+        if (sessionRetention.isNegative() || sessionRetention.isZero()) {
+            throw new IllegalArgumentException(
+                    "claw4j.schedule.session-retention 必须为正：" + sessionRetention
+                            + "。0 的意思是“这次运行的记录立刻删掉”，那与“留着能查”相反");
+        }
     }
 
     public static ScheduleProperties defaults() {
-        return new ScheduleProperties(null, null, null, null);
+        return new ScheduleProperties(null, null, null, null, null);
     }
 }

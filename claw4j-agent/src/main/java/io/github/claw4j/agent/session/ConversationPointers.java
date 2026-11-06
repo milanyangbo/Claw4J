@@ -75,13 +75,34 @@ public final class ConversationPointers {
      *         空串就是改造之前的形状
      */
     public String segmentOf(String owner, String channel, String chatId) {
+        return segment(owner, channel, chatId, false);
+    }
+
+    /**
+     * 把这一段结束掉，回新段的名字（用户发了 {@code /new} 或 {@code /reset}）。
+     *
+     * <p><b>为什么要单独一个方法，而不是给 {@link #segmentOf} 加个 boolean</b>：
+     * "现在这段叫什么"与"把这段结束掉"是两个动词，而 {@code segmentOf} 在测试里有六处
+     * 直接调用——加参数等于六处白改，且改的时候每一处都得想一遍"我要的是哪个"。
+     *
+     * <p><b>{@code mode: none} 时它什么也不做</b>（返回空串）。那一档的语义就是"永不结束"，
+     * 而 {@code /new} 是"现在就结束"——两条规则直接冲突时，配置赢：说了永不结束，
+     * 就不能靠一条消息把它结束掉，否则 {@code none} 只是"默认不换"的别名。
+     *
+     * @return 新段；空串表示"没换"（{@code none} 档、没有库、或指针读不到）
+     */
+    public String rotate(String owner, String channel, String chatId) {
+        return segment(owner, channel, chatId, true);
+    }
+
+    private String segment(String owner, String channel, String chatId, boolean forced) {
         if (!reset.rotates() || store == null || owner == null || owner.isBlank()) {
             return "";
         }
         Instant now = clock.instant();
         ConversationPointerStore.Rotation rotation = new ConversationPointerStore.Rotation(
                 freshSegment(now), now, now.minusMillis(reset.idleMillis()),
-                reset.logicalDayOf(now, zone), reset.followsDaily());
+                reset.logicalDayOf(now, zone), reset.followsDaily(), forced);
         try {
             return store.segmentOf(new ConversationPointerStore.Key(
                     owner, SessionKeys.placeholder(channel), SessionKeys.placeholder(chatId)), rotation)

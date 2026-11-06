@@ -419,6 +419,32 @@ class RunSchemaSqlTest {
                 .as("换段是同一行改值。插一行的话这个键会越积越多，"
                         + "而查询'当前段'只能靠 order by，早晚会拿到错的那一行")
                 .isEqualTo(1);
+
+        // ---- /new（ADR-0026）：forced 时不看时间，同一逻辑日内也换段；下一次不强制就沿用。
+        ConversationPointerStore.Key selfService =
+                new ConversationPointerStore.Key("u-1@fp-1", "web", "c-new");
+        String before = pointers.segmentOf(selfService, rotation(tenAm, zone, "n-1")).orElseThrow();
+        String forced = pointers.segmentOf(selfService,
+                rotation(tenAm.plusSeconds(1), zone, "n-2", true)).orElseThrow();
+        assertThat(forced)
+                .as("用户按了 /new：这一句就该是新段，不等空闲也不等跨天")
+                .isNotEqualTo(before);
+        assertThat(pointers.segmentOf(selfService, rotation(tenAm.plusSeconds(2), zone, "n-3"))
+                .orElseThrow())
+                .as("/new 只影响它自己那一句。把 forced 写进指针行（「这一段是强制的」）的话，"
+                        + "下一句又会换一段，等于每条消息都是新对话")
+                .isEqualTo(forced);
+
+        // ---- 两个相邻的 boolean 不许互串：dailyGate=false 走的是另一条语句（IDLE_ONLY）。
+        assertThat(pointers.segmentOf(selfService,
+                rotation(tenAm.plusSeconds(3), zone, "n-4", false, false)).orElseThrow())
+                .as("dailyGate=false + forced=false：还剩 120 分钟空闲窗口，沿用上一段")
+                .isEqualTo(forced);
+        assertThat(pointers.segmentOf(selfService,
+                rotation(tenAm.plusSeconds(4), zone, "n-5", false, true)).orElseThrow())
+                .as("dailyGate=false + forced=true：另一条语句里也必须认 forced，"
+                        + "否则 /new 在 mode: idle 下就是一个不生效的命令")
+                .isNotEqualTo(forced);
     }
 
     /**
@@ -430,10 +456,21 @@ class RunSchemaSqlTest {
      */
     private static ConversationPointerStore.Rotation rotation(Instant now, ZoneId zone,
                                                               String segment) {
+        return rotation(now, zone, segment, false);
+    }
+
+    private static ConversationPointerStore.Rotation rotation(Instant now, ZoneId zone,
+                                                              String segment, boolean forced) {
+        return rotation(now, zone, segment, true, forced);
+    }
+
+    private static ConversationPointerStore.Rotation rotation(Instant now, ZoneId zone,
+                                                              String segment, boolean dailyGate,
+                                                              boolean forced) {
         return new ConversationPointerStore.Rotation(segment, now,
                 now.minus(Duration.ofMinutes(SessionResetProperties.DEFAULT_IDLE_MINUTES)),
                 now.atZone(zone).minusHours(SessionResetProperties.DEFAULT_AT_HOUR).toLocalDate(),
-                true);
+                dailyGate, forced);
     }
 
     // ---------------------------------------------------------------- 审批（P01）

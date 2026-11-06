@@ -53,6 +53,7 @@ public final class SessionMaintenance {
             select a.id
             from claw4j_session.ai_session a
             left join claw4j_session.ai_session_event e on e.session_id = a.id
+            where a.id not like ?
             group by a.id, a.created_at
             having coalesce(max(e."timestamp"), a.created_at) < ?
             """;
@@ -63,7 +64,10 @@ public final class SessionMaintenance {
     /**
      * 一段时间没动静的指针行。
      *
-     * <p>与段级那条分开，是因为它们的依据不同：段看"最后一次事件"，桶看"最后一次访问"。
+     * <p>它把 cron 的段排除在外（{@code not like '%:cron:%'}）：那一类有自己的一条短留存，
+     * 两边都数一遍会让报告里的数字互相吃掉，也让"这次删了几条"答不清楚。
+     *
+     * <p>与桶级那条分开，是因为它们的依据不同：段看"最后一次事件"，桶看"最后一次访问"。
      * 一个刚换段的人可能一条事件都没写（换段那次是纯读），但指针行必须被刷新。
      */
     private static final String STALE_CONVERSATIONS =
@@ -151,10 +155,11 @@ public final class SessionMaintenance {
         Instant segmentCutoff = now.minus(properties.pruneAfter());
         Instant cronCutoff = now.minus(schedule.sessionRetention());
         try {
-            long segments = count(STALE_SEGMENTS, timestamp(segmentCutoff));
-            long conversations = count(STALE_CONVERSATIONS, timestamp(segmentCutoff));
-            long overLimit = count(OVER_LIMIT, properties.maxEntries());
-            long cron = count(STALE_CRON_SEGMENTS, CRON_MARKER, timestamp(cronCutoff));
+            long segments = measure(STALE_SEGMENTS, CRON_MARKER, timestamp(segmentCutoff));
+            long conversations = measure(STALE_CONVERSATIONS, timestamp(segmentCutoff));
+            long maxEntries = properties.maxEntries();
+            long overLimit = measure(OVER_LIMIT, maxEntries);
+            long cron = measure(STALE_CRON_SEGMENTS, CRON_MARKER, timestamp(cronCutoff));
 
             prunableSegments.set(segments);
             prunableConversations.set(conversations);
@@ -170,15 +175,15 @@ public final class SessionMaintenance {
                 return new Report(segments, conversations, overLimit, cron, false);
             }
 
-            long prunedSegments = delete(DELETE_STALE_SEGMENTS, timestamp(segmentCutoff));
+            long prunedSegments = delete(DELETE_STALE_SEGMENTS, CRON_MARKER, timestamp(segmentCutoff));
             long prunedConversations = delete(DELETE_STALE_CONVERSATIONS, timestamp(segmentCutoff));
-            long prunedOverLimit = delete(DELETE_OVER_LIMIT, properties.maxEntries());
+            long prunedOverLimit = delete(DELETE_OVER_LIMIT, maxEntries);
             long prunedCron = delete(DELETE_STALE_CRON_SEGMENTS, CRON_MARKER, timestamp(cronCutoff));
 
-            count(PRUNED, "segments", prunedSegments);
-            count(PRUNED, "conversations", prunedConversations);
-            count(PRUNED, "over-limit", prunedOverLimit);
-            count(PRUNED, "cron", prunedCron);
+            increment(PRUNED, "segments", prunedSegments);
+            increment(PRUNED, "conversations", prunedConversations);
+            increment(PRUNED, "over-limit", prunedOverLimit);
+            increment(PRUNED, "cron", prunedCron);
 
             if (prunedSegments + prunedConversations + prunedOverLimit + prunedCron > 0) {
                 log.info("会话清理：删了段 {} / 桶 {} / 超限 {} / cron {}",
@@ -188,7 +193,7 @@ public final class SessionMaintenance {
                     prunedSegments, prunedConversations, prunedOverLimit, prunedCron, true);
         } catch (DataAccessException unavailable) {
             // 只把第一条说清楚，后面的只计数：一小时一条全栈日志会把真正的问题淹掉。
-            count(FAILURES);
+            increment(FAILURES);
             if (!warned) {
                 warned = true;
                 log.warn("会话清理跑不成（库连不上或表没迁），这些天一行都不会被清：{}",
@@ -198,7 +203,7 @@ public final class SessionMaintenance {
         }
     }
 
-    private long count(String sql, Object... args) {
+    private long measure(String sql, Object... args) {
         Long value = jdbc.queryForObject("select count(*) from (" + sql + ") candidate", Long.class, args);
         return value == null ? 0 : value;
     }
@@ -214,7 +219,7 @@ public final class SessionMaintenance {
                 .register(registry);
     }
 
-    private void count(String metric, String kind, long amount) {
+    private void increment(String metric, String kind, long amount) {
         if (registry == null || amount <= 0) {
             return;
         }
@@ -224,7 +229,7 @@ public final class SessionMaintenance {
                 .increment(amount);
     }
 
-    private void count(String metric) {
+    private void increment(String metric) {
         if (registry != null) {
             Counter.builder(metric).description("清理跑不成的次数").register(registry).increment();
         }
@@ -253,6 +258,11 @@ public final class SessionMaintenance {
 
         /** 库不可用时的空账：什么都没判、什么都没删。 */
         public static final Report NONE = new Report(0, 0, 0, 0, 0, 0, 0, 0, false);
+
+        /** {@code warn} 那一支：判定了，但一行没删。四个 {@code pruned*} 因此是 0。 */
+        Report(long segments, long conversations, long overLimit, long cronSegments, boolean enforced) {
+            this(segments, conversations, overLimit, cronSegments, 0, 0, 0, 0, enforced);
+        }
 
         /** 判定为陈旧的总数。 */
         public long stale() {

@@ -14,6 +14,9 @@ import io.github.claw4j.agent.run.RunDelivery;
 import io.github.claw4j.agent.run.RunStatus;
 import io.github.claw4j.agent.run.RunStore;
 import io.github.claw4j.agent.run.Step;
+import io.github.claw4j.agent.schedule.ScheduleProperties;
+import io.github.claw4j.agent.session.SessionMaintenance;
+import io.github.claw4j.agent.session.SessionMaintenanceProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
@@ -22,6 +25,8 @@ import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.data.SpanData;
@@ -50,7 +55,10 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -106,6 +114,7 @@ class RunLifecycleTest {
         jdbc.update("delete from claw4j_run.agent_run_delivery");
         jdbc.update("delete from claw4j_run.agent_step");
         jdbc.update("delete from claw4j_run.agent_run");
+        freshSessionTables();
         runs = new JdbcRunStore(jdbc);
         budget = new RunBudget(runs, RunBudgetProperties.defaults(),
                 SessionResetProperties.defaults().idleMillis());
@@ -354,6 +363,123 @@ class RunLifecycleTest {
         assertThat(tracedSteps).extracting(Step::resultSummary)
                 .as("摘要也不该因为开了 trace 而变化")
                 .isEqualTo(plainSteps.stream().map(Step::resultSummary).toList());
+    }
+
+    // ---------------------------------------------------------------- 旧会话怎么清（04）
+
+    @Test
+    @DisplayName("清理按「多久没动」判，不按「建了多久」：活跃桶的旧段走、当前段留")
+    void staleSessionsAreJudgedByLastActivity() {
+        Instant now = Instant.parse("2026-11-06T02:00:00Z");
+        Instant longAgo = now.minus(Duration.ofDays(40));
+        Instant justNow = now.minus(Duration.ofMinutes(5));
+        String ow = owner("u-1");
+
+        // 桶 A：最后动作在 40 天前。段与指针都该走。
+        session("A", ow, longAgo, longAgo);
+        pointer(ow, "web", "c-a", "s-a", longAgo);
+        // 桶 B：活跃桶。旧段最后一次事件在 40 天前（该走），当前段刚写过（该留）。
+        // B-now 的 created_at 也写成 40 天前——照 created_at 判的话它会被误删。
+        session("B-old", ow, longAgo, longAgo);
+        session("B-now", ow, longAgo, justNow);
+        pointer(ow, "web", "c-b", "s-b-now", justNow);
+        // mode: none 的形状：id 没有段，created_at 在 40 天前，但刚刚说过话。
+        // 它靠事件时间活下来——这正是"none 也要能被判活"的判据（指针表里没有它的行）。
+        session(SessionKeys.sessionIdOf(ow, "web", "c-legacy"), ow, longAgo, justNow);
+        // cron：25 小时前的那一次运行。它的口径是 24 小时，不是 30 天。
+        session(SessionKeys.sessionIdOf(ow, "http", "cron:task-1:1762300000000"),
+                ow, now, now.minus(Duration.ofHours(25)));
+
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        SessionMaintenance.Report report = maintenance("enforce", 500, registry).sweep(now);
+
+        assertThat(report.enforced()).isTrue();
+        assertThat(report.prunedSegments())
+                .as("两个 40 天前的段：A 那一段（桶整体过期）与 B 的旧段（桶还活着、这一段死了）")
+                .isEqualTo(2);
+        assertThat(report.prunedConversations()).as("A 的指针没人要了").isEqualTo(1);
+        assertThat(report.prunedCron()).as("cron 那条 25 小时，超过 24 小时的口径").isEqualTo(1);
+
+        assertThat(sessionsInTable())
+                .as("留下的是两个「刚说过话」的：B-now 的 created_at 也是 40 天前，"
+                        + "无段形状那条更是连指针行都没有——它们留下来这件事本身就说明判据不是 created_at")
+                .containsExactlyInAnyOrder("B-now",
+                        SessionKeys.sessionIdOf(ow, "web", "c-legacy"));
+        assertThat(jdbc.queryForObject("select chat_id from claw4j_session.conversation_pointer",
+                String.class)).isEqualTo("c-b");
+
+        // ---- 上限：桶比 max-entries 多时，驱逐最久没动的（OpenClaw 的 maxEntries）。
+        freshSessionTables();
+        // segment 与时间故意反着排：按字符串序会驱逐 c-3（最新那个），按时间序才是 c-1。
+        pointer(ow, "web", "c-1", "zzz-oldest", now.minus(Duration.ofHours(3)));
+        pointer(ow, "web", "c-2", "mmm-middle", now.minus(Duration.ofHours(2)));
+        pointer(ow, "web", "c-3", "aaa-newest", now.minus(Duration.ofHours(1)));
+
+        SessionMaintenance.Report evicted =
+                maintenance("enforce", 2, new SimpleMeterRegistry()).sweep(now);
+
+        assertThat(evicted.prunedOverLimit()).as("三个桶留两个，走的是最久没动的那个").isEqualTo(1);
+        assertThat(jdbc.queryForList("select chat_id from claw4j_session.conversation_pointer",
+                        String.class))
+                .as("按 segment 的字符串序排会驱逐错人，按 touched_at 才是「最久没动」")
+                .containsExactlyInAnyOrder("c-2", "c-3");
+    }
+
+    @Test
+    @DisplayName("warn 档位一行不删，但把「本来会删多少」数出来——默认档位不能是静默空转")
+    void warnModeDeletesNothingButCounts() {
+        Instant now = Instant.parse("2026-11-06T02:00:00Z");
+        Instant longAgo = now.minus(Duration.ofDays(40));
+        String ow = owner("u-1");
+        session("A", ow, longAgo, longAgo);
+        pointer(ow, "web", "c-a", "s-a", longAgo);
+
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        SessionMaintenance.Report report = maintenance("warn", 500, registry).sweep(now);
+
+        assertThat(report.enforced()).isFalse();
+        assertThat(report.pruned()).isZero();
+        assertThat(sessionsInTable()).as("warn 下一条都不许删").containsExactly("A");
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_session.conversation_pointer",
+                Integer.class)).isEqualTo(1);
+        assertThat(registry.get(SessionMaintenance.PRUNABLE).tag("kind", "segments").gauge().value())
+                .as("数得出来才叫「只报告」：这个值恒为 0 的话，默认档位就是一次静默空转")
+                .isEqualTo(1.0);
+        assertThat(registry.find(SessionMaintenance.PRUNED).counter())
+                .as("一行没删，pruned 根本不该被注册出来")
+                .isNull();
+    }
+
+    private SessionMaintenance maintenance(String mode, int maxEntries, MeterRegistry registry) {
+        return new SessionMaintenance(jdbc,
+                new SessionMaintenanceProperties(mode, Duration.ofDays(30), maxEntries),
+                ScheduleProperties.defaults(), registry);
+    }
+
+    private void session(String id, String owner, Instant createdAt, Instant lastEventAt) {
+        jdbc.update("insert into claw4j_session.ai_session (id, user_id, created_at)"
+                + " values (?, ?, ?)", id, owner, Timestamp.from(createdAt));
+        jdbc.update("insert into claw4j_session.ai_session_event"
+                        + " (id, session_id, \"timestamp\", message_type) values (?, ?, ?, 'USER')",
+                id + "-e", id, Timestamp.from(lastEventAt));
+    }
+
+    private void pointer(String owner, String channel, String chatId, String segment, Instant touchedAt) {
+        jdbc.update("insert into claw4j_session.conversation_pointer"
+                        + " (owner, channel, chat_id, segment, touched_at, day_started)"
+                        + " values (?, ?, ?, ?, ?, ?)",
+                owner, channel, chatId, segment, Timestamp.from(touchedAt),
+                touchedAt.atZone(ZoneId.of("Asia/Shanghai")).toLocalDate());
+    }
+
+    private java.util.List<String> sessionsInTable() {
+        return jdbc.queryForList("select id from claw4j_session.ai_session order by id", String.class);
+    }
+
+    private void freshSessionTables() {
+        jdbc.update("delete from claw4j_session.ai_session_event");
+        jdbc.update("delete from claw4j_session.ai_session");
+        jdbc.update("delete from claw4j_session.conversation_pointer");
     }
 
     // ---------------------------------------------------------------- 装配

@@ -45,9 +45,13 @@ public interface ConversationPointerStore {
      *                     实现据此走"只看空闲"的那条语句——不用 null 参数去做开关，
      *                     那要靠三值逻辑与驱动的类型推断同时成立，错一个就报
      *                     "could not determine data type of parameter"
+     * @param forced       这一次必须换段，不看时间（用户发了 {@code /new}）。
+     *                     <b>它是字段而不是"把 {@code idleBefore} 拨到未来"</b>：后者更省一行，
+     *                     但会让 SQL 里那个参数明明叫 idleBefore、实际含义是"用户按了按钮"——
+     *                     正是这个 record 存在的理由（写反了不会有任何编译错误）
      */
     record Rotation(String freshSegment, Instant now, Instant idleBefore, LocalDate today,
-                    boolean dailyGate) {
+                    boolean dailyGate, boolean forced) {
     }
 
     /**

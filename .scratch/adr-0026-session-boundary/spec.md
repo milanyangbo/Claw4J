@@ -59,14 +59,16 @@ Status: ready-for-agent
 判据：同一 chatId 建任务并触发，`count(distinct session_id) = 2`，且定时那条不含用户 chatId；
 两次运行之间不共享历史（第二次的提示词里没有第一次的问答）。
 
-### 票 04 TTL 与 /new
+### 票 04 会话清理与 /new
 
-段让活跃对话永远是"新行"，所以 TTL 只需要继续做它本来那句话：删掉过期行。
-**不改 30 天这个数**（留存口径是《数据安全法》那条线上的承诺，不在本票改）。
-`/new` 只做 HTTP 一个头，IM 侧等真的有人要。
+照 OpenClaw 的 `session.maintenance` 重做（2026-11-06 修订）：删除判据从"建了多久"改成
+**"多久没动"**，`mode`（默认 `warn`）/ `prune-after`（30d）/ `max-entries`（500）三个键照它的名字与语义，
+cron 那一路单独按 `session-retention`（24h）留。没有手动清理入口，只有每小时一次。
+`/new` 是一条**消息命令**（`/new` / `/reset`，剩下的内容透传为新段第一句），在 agent 侧解析，
+所以所有通道自动都有；IM 侧不需要单独做。
 
-判据：活跃对话跨过 TTL 仍然在（因为它的段是新行）；旧段到点被删；带 `X-Claw4j-New-Session: true`
-之后 sessionId 立刻换。
+判据：桶过期段一起清、活跃桶的旧段照删而当前段留着、`warn` 一行不删但数得出来、
+`maxEntries` 驱逐最久没动的、cron 的 24h 与普通的 30 天不互相串、`/new` 之后段立刻换。
 
 ### 票 05 压缩窗口
 

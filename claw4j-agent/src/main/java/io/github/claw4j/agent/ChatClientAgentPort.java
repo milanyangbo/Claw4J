@@ -19,6 +19,7 @@ import io.github.claw4j.agent.run.StepKind;
 import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.SessionCompactor;
+import io.github.claw4j.agent.session.SessionCommand;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -219,14 +220,33 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      * 而它们必须算出<b>同一个</b> id——一条消息走流式、下一条走非流式是常态，
      * 两处各写一遍的话，"什么算同一段对话"就有了两个答案。
      */
-    private String sessionIdOf(InboundMessage message, String owner) {
+    private String sessionIdOf(InboundMessage message, String owner, boolean reset) {
         String conversation = conversationOf(message);
         // 调用方自带会话标识的那条路（定时任务）不走指针：它的"段"就是触发时刻本身，
         // 每次运行天然是一个新的。指针只服务"人"这条路——那里才有"上次说到哪儿"。
         String segment = pointers == null || message.conversationId() != null
                 ? ""
-                : pointers.segmentOf(owner, message.channel(), conversation);
+                : reset
+                        ? pointers.rotate(owner, message.channel(), conversation)
+                        : pointers.segmentOf(owner, message.channel(), conversation);
         return SessionKeys.sessionIdOf(owner, message.channel(), conversation, segment);
+    }
+
+    /**
+     * 光发了一个 {@code /new}：换段，回一句确认。
+     *
+     * <p><b>不开 run、不调模型、不写事件</b>：这一轮除了"新的开始了"没有别的信息，
+     * 一次模型调用不值。而"换段"本身已经发生了——下一句自然落在新段上。
+     *
+     * <p>在 lane 里被调用（{@code answer} 与 {@code streamInLane} 都在门内），
+     * 所以它与同一对话的另一条消息不会各换一段。
+     */
+    private String startOver(InboundMessage message) {
+        // 走同一个入口，不下第二遍手：换段只有 sessionIdOf 一处实现，
+        // 否则"单独 /new"与"/new 带内容"会各自长出一套，改一处忘一处。
+        // 返回值是这一句本该用的新 sessionId——而这一句不落库、不进提示词，所以丢掉。
+        sessionIdOf(message, SessionKeys.ownerOf(message.principal()), true);
+        return SessionCommand.ACK;
     }
 
     /**
@@ -325,12 +345,18 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      *                   （定时任务、服务端续跑），于是按策略推给每一个登记过的地址
      */
     private Turn answer(InboundMessage message, DeliveryTarget answeredAt) {
+        SessionCommand.Parsed parsed = SessionCommand.parse(message.text());
+        if (parsed.bareCommand()) {
+            return new Turn(null, startOver(message));
+        }
         String owner = SessionKeys.ownerOf(message.principal());
         // 对话键与归属键是两把：owner 管"这是谁的东西"，sessionId 管"这是哪一段话"。
         // 群聊与私聊必须是两段——同一份权限下，听众可以完全不同（ADR-0025）。
-        // 段由指针给（ADR-0026）：跨天或空闲就换一个，于是"这段对话什么时候结束"有了落点。
-        String sessionId = sessionIdOf(message, owner);
-        String masked = PiiRedactor.mask(message.text());
+        // 段由指针给（ADR-0026）：跨天、空闲、或者用户发了 /new 就换一个。
+        String sessionId = sessionIdOf(message, owner, parsed.reset());
+        // 送模型的是命令之后的内容：`/new 帮我查华南` 的第一句是"帮我查华南"，
+        // 命令本身不该出现在提示词里，也不该成为这一轮的 run 目标。
+        String masked = PiiRedactor.mask(parsed.text());
         Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
         // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
@@ -396,9 +422,16 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
 
     /** 真正的流式那一轮。锁由 {@link #stream} 拿——放在这里就晚了，run 已经开出来了。 */
     private void streamInLane(InboundMessage message, Consumer<OutboundMessage> onChunk) {
+        SessionCommand.Parsed parsed = SessionCommand.parse(message.text());
+        if (parsed.bareCommand()) {
+            // 与"忙"那条同形：一帧正文 + 一帧空文本，调用方靠后者收尾。
+            onChunk.accept(OutboundMessage.of(message.chatId(), startOver(message), null));
+            onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
+            return;
+        }
         String owner = SessionKeys.ownerOf(message.principal());
-        String sessionId = sessionIdOf(message, owner);
-        String masked = PiiRedactor.mask(message.text());
+        String sessionId = sessionIdOf(message, owner, parsed.reset());
+        String masked = PiiRedactor.mask(parsed.text());
         Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,

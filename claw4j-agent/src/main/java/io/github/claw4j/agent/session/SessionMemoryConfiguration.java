@@ -65,7 +65,8 @@ import java.util.Map;
 @ConditionalOnSingleCandidate(DataSource.class)
 @EnableScheduling
 @EnableConfigurationProperties({DataSourceProperties.class, SessionMemoryProperties.class,
-        SessionServiceProperties.class, SessionResetProperties.class})
+        SessionServiceProperties.class, SessionResetProperties.class,
+        SessionMaintenanceProperties.class})
 public class SessionMemoryConfiguration implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(SessionMemoryConfiguration.class);
@@ -178,17 +179,38 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
+     * 旧会话怎么清（ADR-0026 的收尾，判据照 OpenClaw 的 {@code session.maintenance}）。
+     *
+     * <p><b>用的是主连接池</b>：表名写全限定，与会话仓储那一路不同（那边框架生成的 SQL
+     * 不带前缀，必须另开一个池把 {@code currentSchema} 指过去）。
+     *
+     * <p><b>为什么把 {@code ScheduleProperties} 也依赖进来</b>：cron 的会话留存
+     * （{@code claw4j.schedule.session-retention}）是清理这一侧读的，调度那一侧不读。
+     * 放在 schedule 命名空间是为了与 OpenClaw 的 {@code cron.sessionRetention} 同位置；
+     * 而写在这里是为了"谁读谁写"能一眼看出来。
+     */
+    @Bean
+    @ConditionalOnMissingBean(SessionMaintenance.class)
+    public SessionMaintenance sessionMaintenance(JdbcTemplate jdbc,
+                                                 SessionMaintenanceProperties properties,
+                                                 io.github.claw4j.agent.schedule.ScheduleProperties schedule,
+                                                 ObjectProvider<MeterRegistry> meterRegistry) {
+        MeterRegistry registry = meterRegistry.getIfAvailable();
+        return new SessionMaintenance(jdbc, properties, schedule,
+                registry == null ? Metrics.globalRegistry : registry);
+    }
+
+    /**
      * 过期会话清理（M3-04）。
      *
-     * <p>{@code spring.ai.session.time-to-live} 只是写在会话行上的时间戳，没有任何东西读它。
-     * 只配 TTL 不配清理 = 一条都不删，而配置看起来已经成立。
+     * <p>{@code spring.ai.session.time-to-live} 只是写在会话行上的时间戳，没有任何东西读它——
+     * 而它写的是"建行 + TTL"，不随活动刷新。所以真正判"该不该清"的已经不是它了，
+     * 是 {@link SessionMaintenance} 里的"多久没动"。这个 bean 现在只管"什么时候跑"。
      */
     @Bean
     @ConditionalOnMissingBean(SessionCleanup.class)
-    public SessionCleanup sessionCleanup(SessionService sessionService,
-                                         ObjectProvider<MeterRegistry> meterRegistry) {
-        MeterRegistry registry = meterRegistry.getIfAvailable();
-        return new SessionCleanup(sessionService, registry == null ? Metrics.globalRegistry : registry);
+    public SessionCleanup sessionCleanup(SessionMaintenance maintenance) {
+        return new SessionCleanup(maintenance);
     }
 
     /**

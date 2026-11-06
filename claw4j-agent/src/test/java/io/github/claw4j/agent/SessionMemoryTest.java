@@ -4,9 +4,12 @@ import io.github.claw4j.agent.session.ConversationPointerStore;
 import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.FaultTolerantSessionService;
 import io.github.claw4j.agent.session.JdbcConversationPointerStore;
-import io.github.claw4j.agent.session.SessionCleanup;
 import io.github.claw4j.agent.session.SessionCompactor;
+import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.agent.session.SessionMaintenance;
+import io.github.claw4j.agent.session.SessionCommand;
+import io.github.claw4j.agent.session.SessionMaintenanceProperties;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
@@ -243,7 +246,9 @@ class SessionMemoryTest {
     void memoryFollowsTheConversationNotJustThePrincipal() {
         MapSessionService sessions = new MapSessionService();
         FixedChatModel model = new FixedChatModel("记住了");
-        ChatClientAgentPort port = port(model, sessions);
+        // 时钟钉在同一天：跨天与空闲都不会触发，所以下面每一段的"换没换"只由 /new 决定。
+        ChatClientAgentPort port = port(model, sessions, null, pointersAt(new MemoryPointers(),
+                Instant.parse("2026-11-05T02:00:00Z"), ZoneId.of("Asia/Shanghai")));
         Principal principal = Principal.readOnly("u-1");
 
         port.reply(new InboundMessage(principal, "web-chat", "我叫 Ethan"));
@@ -267,6 +272,23 @@ class SessionMemoryTest {
                 .hasSize(2);
         assertThat(otherConversation)
                 .as("两段串了的话，群里就能看见私聊里说过的内容——那是没人复核的泄露")
+                .doesNotContain("我叫 Ethan");
+
+        // ---- 第三条换段途径：用户自己说"换一段"（ADR-0026）。
+        String acknowledged = port.reply(new InboundMessage(principal, "web-chat", "/new")).text();
+        port.reply(new InboundMessage(principal, "web-chat", "我叫什么"));
+
+        String afterCommand = model.prompts().getLast().getInstructions().stream()
+                .map(Message::getText)
+                .collect(Collectors.joining("\n"));
+        assertThat(acknowledged)
+                .as("单独 /new 回一句确认，而不是把命令本身送进模型")
+                .isEqualTo(SessionCommand.ACK);
+        assertThat(sessions.createdIds())
+                .as("换段之后是另一行会话：同上一个 id 的话，新段根本不存在")
+                .hasSize(3);
+        assertThat(afterCommand)
+                .as("这就是用户按 /new 的理由：上下文污染之后，唯一有效的动作是换一段重说")
                 .doesNotContain("我叫 Ethan");
     }
 
@@ -373,7 +395,7 @@ class SessionMemoryTest {
         assertThat(new JdbcConversationPointerStore(jdbc).segmentOf(
                 new ConversationPointerStore.Key("u-1@fp", "web", "c-1"),
                 new ConversationPointerStore.Rotation("fresh", first, first.minusSeconds(7200),
-                        LocalDate.of(2026, 11, 5), true)))
+                        LocalDate.of(2026, 11, 5), true, false)))
                 .contains("seg-1");
         verify(jdbc, times(1)).queryForObject(anyString(), eq(String.class), any(Object[].class));
         verifyNoMoreInteractions(jdbc);
@@ -392,6 +414,24 @@ class SessionMemoryTest {
         assertThat(metrics.get(ConversationPointers.FAILURE_METRIC).counter().count())
                 .as("这个计数不为 0 就说明段当前没生效；少记一笔可以，不让它变成静默")
                 .isEqualTo(1.0);
+
+        // ---- /new（ADR-0026 的第三条换段途径）：整词匹配，剩下的内容才是这一轮要问的话。
+        assertThat(SessionCommand.parse("/new"))
+                .as("单独一个 /new：只换段，回一句确认（不跑模型）")
+                .isEqualTo(new SessionCommand.Parsed("", true));
+        assertThat(SessionCommand.parse("  /NEW  ").reset())
+                .as("大小写不敏感：用户不该为了换个对话去猜大小写")
+                .isTrue();
+        assertThat(SessionCommand.parse("/reset 帮我查华南回款"))
+                .as("/reset 是别名，后面那句才是新段的第一句")
+                .isEqualTo(new SessionCommand.Parsed("帮我查华南回款", true));
+        assertThat(SessionCommand.parse("/newer 怎么说"))
+                .as("前缀匹配会让「问一个新问题」被当成「清空上下文」，而且没有任何报错")
+                .isEqualTo(new SessionCommand.Parsed("/newer 怎么说", false));
+        assertThat(SessionCommand.parse("/etc 的权限"))
+                .as("不是命令的斜杠开头一律当普通问题：别的命令不归我们解释")
+                .isEqualTo(new SessionCommand.Parsed("/etc 的权限", false));
+        assertThat(SessionCommand.parse("上周成交额").reset()).isFalse();
     }
 
     private static ConversationPointers pointersAt(MemoryPointers store, Instant now, ZoneId zone) {
@@ -415,6 +455,7 @@ class SessionMemoryTest {
         public Optional<String> segmentOf(Key key, Rotation rotation) {
             Row old = rows.get(key);
             boolean stale = old == null
+                    || rotation.forced()
                     || old.touched().isBefore(rotation.idleBefore())
                     || (rotation.dailyGate() && !old.day().equals(rotation.today()));
             Row next = stale
@@ -492,20 +533,22 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("过期会话真的被删掉、没过期的还在：TTL 只是一个时间戳，删要靠清理任务")
-    void expiredSessionsAreDeleted() {
-        MapSessionService sessions = new MapSessionService();
-        sessions.create(CreateSessionRequest.builder()
-                .id("old").userId("u-1").timeToLive(Duration.ofSeconds(-1)).build());
-        sessions.create(CreateSessionRequest.builder()
-                .id("fresh").userId("u-1").timeToLive(Duration.ofDays(1)).build());
+    @DisplayName("清理撞上连不上的库：返回空账、只 WARN 第一次、每次都计数——不让后台任务变成刷屏的异常")
+    void cleanupSurvivesAnUnavailableDatabase() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
+                .thenThrow(new DataAccessResourceFailureException("连不上库"));
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        SessionMaintenance maintenance = maintenance(jdbc, registry);
 
-        new SessionCleanup(sessions, registry).deleteExpired();
-
-        assertThat(sessions.findById("old")).as("过期的那条该没了").isNull();
-        assertThat(sessions.findById("fresh")).as("没过期的一条都不该动").isNotNull();
-        assertThat(registry.get("claw4j.session.expired").counter().count()).isEqualTo(1);
+        assertThatCode(() -> maintenance.sweep(Instant.now()))
+                .as("清理是后台任务，抛出去只会让 @Scheduled 每小时刷一次全栈；"
+                        + "而「清理没跑成」与「没有东西可清」在结果上都是 0 行")
+                .doesNotThrowAnyException();
+        assertThat(maintenance.sweep(Instant.now())).isEqualTo(SessionMaintenance.Report.NONE);
+        assertThat(registry.get(SessionMaintenance.FAILURES).counter().count())
+                .as("失败不静默：这个数不为 0 就说明这些天一行都没清")
+                .isEqualTo(2);
     }
 
     @Test
@@ -524,14 +567,29 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("没设 TTL 的会话永不过期：这是框架默认值，也正是必须显式配 30 天的理由")
-    void sessionWithoutTtlNeverExpires() {
-        MapSessionService sessions = new MapSessionService();
-        sessions.create(CreateSessionRequest.builder().id("forever").userId("u-1").build());
+    @DisplayName("清理的三个数越界直接拒绝启动：prune-after=0 是「全部过期」，max-entries=0 是「一个不留」")
+    void maintenanceBoundsAreRejected() {
+        assertThatThrownBy(() -> new SessionMaintenanceProperties(null, Duration.ZERO, null))
+                .as("0 的意思是「所有段都过期」，第一次清理就会把会话表清空，"
+                        + "而它看起来只是「把数调小一点」")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("prune-after");
+        assertThatThrownBy(() -> new SessionMaintenanceProperties("enforce", null, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("max-entries");
 
-        new SessionCleanup(sessions, new SimpleMeterRegistry()).deleteExpired();
+        assertThat(SessionMaintenanceProperties.defaults().mode())
+                .as("默认必须是 warn：删数据不可逆，而 OpenClaw 的默认也是只报告")
+                .isEqualTo(SessionMaintenanceProperties.MODE_WARN);
+        assertThat(new SessionMaintenanceProperties("enfroce", null, null).mode())
+                .as("拼错落回 warn，不是落回 enforce——错的方向必须朝「少删」那边倒")
+                .isEqualTo(SessionMaintenanceProperties.MODE_WARN);
+        assertThat(new SessionMaintenanceProperties("ENFORCE", null, null).enforces()).isTrue();
+    }
 
-        assertThat(sessions.findById("forever")).isNotNull();
+    private static SessionMaintenance maintenance(JdbcTemplate jdbc, MeterRegistry registry) {
+        return new SessionMaintenance(jdbc, SessionMaintenanceProperties.defaults(),
+                ScheduleProperties.defaults(), registry);
     }
 
     private static SessionCompactor compactor(SessionService sessions, MeterRegistry registry) {
@@ -559,12 +617,17 @@ class SessionMemoryTest {
 
     private static ChatClientAgentPort port(ChatModel model, SessionService sessions,
                                             ConversationLane lane) {
+        return port(model, sessions, lane, null);
+    }
+
+    private static ChatClientAgentPort port(ChatModel model, SessionService sessions,
+                                            ConversationLane lane, ConversationPointers pointers) {
         ChatClient chat = ChatPipelineTest.clientBuilder(model)
                 .defaultAdvisors(SessionMemoryAdvisor.builder(sessions)
                         .order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
                         .build())
                 .build();
-        return new ChatClientAgentPort(chat, null, null, null, null, null, null, lane);
+        return new ChatClientAgentPort(chat, null, null, null, null, null, pointers, lane);
     }
 
     private static InboundMessage message(String chatId, String text) {

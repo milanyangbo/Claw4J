@@ -38,10 +38,12 @@ public final class JdbcConversationPointerStore implements ConversationPointerSt
                    (owner, channel, chat_id, segment, touched_at, day_started)
             values (?, ?, ?, ?, ?, ?)
             on conflict (owner, channel, chat_id) do update set
-                segment     = case when conversation_pointer.day_started <> ?
+                segment     = case when cast(? as boolean)
+                                     or conversation_pointer.day_started <> ?
                                      or conversation_pointer.touched_at < ?
                                    then excluded.segment else conversation_pointer.segment end,
-                day_started = case when conversation_pointer.day_started <> ?
+                day_started = case when cast(? as boolean)
+                                     or conversation_pointer.day_started <> ?
                                      or conversation_pointer.touched_at < ?
                                    then excluded.day_started else conversation_pointer.day_started end,
                 touched_at  = excluded.touched_at
@@ -54,9 +56,11 @@ public final class JdbcConversationPointerStore implements ConversationPointerSt
                    (owner, channel, chat_id, segment, touched_at, day_started)
             values (?, ?, ?, ?, ?, ?)
             on conflict (owner, channel, chat_id) do update set
-                segment     = case when conversation_pointer.touched_at < ?
+                segment     = case when cast(? as boolean)
+                                     or conversation_pointer.touched_at < ?
                                    then excluded.segment else conversation_pointer.segment end,
-                day_started = case when conversation_pointer.touched_at < ?
+                day_started = case when cast(? as boolean)
+                                     or conversation_pointer.touched_at < ?
                                    then excluded.day_started else conversation_pointer.day_started end,
                 touched_at  = excluded.touched_at
             returning segment
@@ -73,13 +77,14 @@ public final class JdbcConversationPointerStore implements ConversationPointerSt
         Timestamp now = Timestamp.from(rotation.now());
         Timestamp idleBefore = Timestamp.from(rotation.idleBefore());
         Date today = Date.valueOf(rotation.today());
+        boolean forced = rotation.forced();
         String segment = rotation.dailyGate()
                 ? jdbc.queryForObject(DAILY_AND_IDLE, String.class,
                 key.owner(), key.channel(), key.chatId(), rotation.freshSegment(),
-                now, today, today, idleBefore, today, idleBefore)
+                now, today, forced, today, idleBefore, forced, today, idleBefore)
                 : jdbc.queryForObject(IDLE_ONLY, String.class,
                 key.owner(), key.channel(), key.chatId(), rotation.freshSegment(),
-                now, today, idleBefore, idleBefore);
+                now, today, forced, idleBefore, forced, idleBefore);
         return Optional.ofNullable(segment);
     }
 }
