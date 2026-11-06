@@ -243,7 +243,7 @@ class ApprovalFlowTest {
      * 合并成一句"操作失败"，点按钮的人只能再点一次。
      */
     @Test
-    @DisplayName("过期之后批不动：结论是 EXPIRED，run 仍然挂着等一次新的请求")
+    @DisplayName("过期之后批不动：结论是 EXPIRED，审批行仍是 pending，要重发一次才有新的一轮")
     void anExpiredRequestCannotBeApproved() {
         Harness harness = new Harness(requestTool(ARGS), answer("不该走到这里"));
         RecordingTool tool = harness.withApprovalRequiredTool();

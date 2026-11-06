@@ -27,7 +27,7 @@ import java.util.Optional;
  * 这也决定了它读失败时的姿势——见 {@code JdbcApprovalLedger}：读不到按"没有"处理，
  * 宁可拦住一个本来批过的动作，也不放过一个没人批过的。
  *
- * <p>实现在 Agent 模块（审批表与 run 在同一个 schema 下），装配在
+ * <p>实现在 Agent 模块（审批表与审计在同一个 schema 下），装配在
  * {@code AgentPersistenceConfiguration}；没有装配时鉴权那一层退到
  * {@code ApprovalGate#denyAll()}——"没有审批设施"的失败姿势是拦住，不是放行。
  *
@@ -50,8 +50,8 @@ public interface ApprovalLedger {
     /**
      * 一次"我想干这件事，但没人批过"的登记。
      *
-     * @param runId       这条请求属于哪件事。可以为 null（子 Agent 那一层还没有 runId，A10），
-     *                    为空时不挂起任何 run——没有 run 可挂
+     * @param runId       这条请求是哪一轮发起的。可以为 null（子 Agent 那一层还没有编号，A10），
+     *                    为空时审批照样成立，只是事后答不出"是哪一轮发起的"
      * @param owner       发起这次调用的人（{@link io.github.claw4j.domain.principal.Principal#userId()}）。
      *                    批准是<b>批给某个人的</b>，不是批给某个动作：同一句话换个没被批过的人来问，
      *                    仍然要重新批一遍

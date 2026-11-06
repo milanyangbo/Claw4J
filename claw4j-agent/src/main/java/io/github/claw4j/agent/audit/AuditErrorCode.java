@@ -6,7 +6,10 @@ package io.github.claw4j.agent.audit;
  * <p><b>九个值逐字照 OpenClaw</b>：{@code packages/gateway-protocol/src/schema/audit.ts}
  * 里的 {@code AuditEventErrorCodeSchema}。一半属于运行、一半属于工具，前缀就是归属。
  * 前缀不是为了好看——审计的主要读法是"按 kind + status 过滤"，而一个 {@code agent_run}
- * 的事件配上 {@code tool_failed}，说明写的人弄错了层，这种事在自由文本里查不出来。
+ * 的事件配上 {@code tool_failed}，读的人一眼就能看出写错了层。
+ * <b>但那是"看得出来"，不是"写不进去"</b>：库里没有 {@code kind × error_code} 的配对约束，
+ * 枚举只管值域、管不了这两个字段搭不搭。要真挡住得再加一条 check，目前没有——
+ * 别让下一个读这段的人以为它已经被挡住了。
  *
  * <p><b>为什么是枚举而不是几个 String 常量</b>：闭合词表要真的闭合。常量只在调用方
  * 愿意用常量的前提下成立，而一个从异常类型名拼出来的字符串照样能写进去；换成枚举，

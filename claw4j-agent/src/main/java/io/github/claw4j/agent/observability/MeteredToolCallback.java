@@ -87,7 +87,7 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /**
-     * @param audit 为 null 表示没装配 run 存储：计量照常，只是这一次调用不会留下一行审计
+     * @param audit 为 null 表示没装配审计：计量照常，只是这一次调用不会留下一行审计
      */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry, ToolCallAudit audit) {
         this(delegate, registry, audit, SpanTracer.NONE);
