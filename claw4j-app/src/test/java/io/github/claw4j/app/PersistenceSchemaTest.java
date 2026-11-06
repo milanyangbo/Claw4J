@@ -1,7 +1,9 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.github.claw4j.agent.audit.AuditErrorCode;
+import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.goal.GoalStatus;
@@ -271,13 +273,13 @@ class PersistenceSchemaTest {
     @DisplayName("审计按 30 天与 10 万行清：一个按时钟，一个按账本序号")
     void theAuditLedgerPrunesByAgeAndSize() {
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status, actor, at)"
+                + " (id, event_id, kind, action, status, actor, run_id, at)"
                 + " values (gen_random_uuid(), 'e-old', 'agent_run', 'agent.run.started',"
-                + " 'started', 'u-1', now() - interval '31 days')");
+                + " 'started', 'u-1', 'run-1', now() - interval '31 days')");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status, actor)"
+                + " (id, event_id, kind, action, status, actor, run_id)"
                 + " values (gen_random_uuid(), 'e-fresh', 'agent_run', 'agent.run.started',"
-                + " 'started', 'u-1')");
+                + " 'started', 'u-1', 'run-2')");
 
         AuditLedger.Report aged = new AuditLedger(jdbc, null).prune();
 
@@ -288,9 +290,9 @@ class PersistenceSchemaTest {
         // ---- 10 万行上限。一条 SQL 插进去，比循环十万次快得多，也比 sleep 诚实。
         jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status)"
-                + " select gen_random_uuid(), 'bulk-' || g, 'agent_run', 'agent.run.started', 'started'"
-                + " from generate_series(1, 100001) g");
+                + " (id, event_id, kind, action, status, run_id)"
+                + " select gen_random_uuid(), 'bulk-' || g, 'agent_run', 'agent.run.started',"
+                + " 'started', 'run-bulk' from generate_series(1, 100001) g");
 
         Long highest = jdbc.queryForObject("select max(seq) from claw4j_run.audit_event", Long.class);
 
@@ -319,8 +321,8 @@ class PersistenceSchemaTest {
         for (AuditErrorCode code : AuditErrorCode.values()) {
             boolean runLevel = code.column().startsWith("run_");
             jdbc.update("insert into claw4j_run.audit_event"
-                            + " (id, event_id, kind, action, status, error_code)"
-                            + " values (gen_random_uuid(), ?, ?, ?, 'blocked', ?)",
+                            + " (id, event_id, kind, action, status, error_code, run_id)"
+                            + " values (gen_random_uuid(), ?, ?, ?, 'blocked', ?, 'run-1')",
                     "e-" + code.column(),
                     runLevel ? "agent_run" : "tool_action",
                     runLevel ? "agent.run.finished" : "tool.action.finished",
@@ -328,9 +330,9 @@ class PersistenceSchemaTest {
         }
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status, error_code)"
+                + " (id, event_id, kind, action, status, error_code, run_id)"
                 + " values (gen_random_uuid(), 'e-old-word', 'tool_action', 'tool.action.finished',"
-                + " 'blocked', 'policy_denied')"))
+                + " 'blocked', 'policy_denied', 'run-1')"))
                 .as("这是换词表之前的值，现在不在词表里")
                 .hasMessageContaining("ck_audit_event_error_code");
 
@@ -339,6 +341,38 @@ class PersistenceSchemaTest {
                 Integer.class))
                 .as("枚举有几个值，就该有几行落下去")
                 .isEqualTo(AuditErrorCode.values().length);
+    }
+
+    @Test
+    @DisplayName("run_id 必填：没有轮次的事件落不下去，账本连 SQL 都不发")
+    void anAuditEventWithoutARunIdDoesNotLand() {
+        // OpenClaw 的 AuditEventSchema.runId 是 NonEmptyString。这一条两头都验：
+        // 库拒绝空值；账本在没有编号时直接跳过（否则每一行都撞约束，write_errors 会一直涨，
+        // 把"没有归属"错报成"库坏了"）。
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (id, event_id, kind, action, status, run_id)"
+                + " values (gen_random_uuid(), 'e-with-run', 'agent_run', 'agent.run.started',"
+                + " 'started', 'run-1')");
+
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (id, event_id, kind, action, status)"
+                + " values (gen_random_uuid(), 'e-no-run', 'agent_run', 'agent.run.started', 'started')"))
+                .as("没有 run_id 的行会被库拒绝")
+                .hasMessageContaining("run_id");
+
+        // 断言计数而不是行数：行数在"跳过"和"撞约束失败"两种情况下都一样（都是 1），
+        // 只有 skipped 与 write_errors 的分布能说明是哪一种。这条区分就是"没有归属"与"库坏了"的边界。
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        new AuditLedger(jdbc, registry).record(AuditEvent.runStarted(AuditEvent.Scope.empty()));
+
+        assertThat(registry.find(AuditLedger.SKIPPED).counter())
+                .as("计入了 skipped").isNotNull();
+        assertThat(registry.find(AuditLedger.SKIPPED).counter().count()).isEqualTo(1.0);
+        assertThat(registry.find(AuditLedger.WRITE_ERRORS).counter())
+                .as("不是写失败——把它记成故障会让一次正常的子链调用看起来像库挂了")
+                .isNull();
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.audit_event", Integer.class))
+                .as("那一行没有落库").isEqualTo(1);
     }
 
     private void granted(String id, String owner, String tool, String digest, String offset) {

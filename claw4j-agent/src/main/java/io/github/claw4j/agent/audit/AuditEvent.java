@@ -28,7 +28,11 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     /**
      * 这一轮是谁、在哪段会话、从哪个通道来。
      *
-     * <p>六个字段全部可空：审计不能因为"取不到身份"就不写——"有个工具跑了"本身就是事实，
+     * <p><b>只有 {@code runId} 是必需的</b>：没有它这一行落不下去（{@code AuditLedger} 直接跳过），
+     * 因为它不属于任何一次运行——按 runId 查永远查不到，留着只会让计数虚高。
+     * OpenClaw 的 {@code AuditEventSchema.runId} 同样是必填。
+     *
+     * <p>其余五个字段可空：审计不能因为"取不到身份"就不写——"有个工具跑了"本身就是事实，
      * 只是那一格没人。为一行缺字段的审计去拒绝整个工具调用，是把记账当成了前置条件。
      */
     public record Scope(String runId, String sessionKey, String agentId,

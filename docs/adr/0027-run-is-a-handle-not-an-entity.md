@@ -55,7 +55,9 @@ ADR-0024 与 ADR-0026 已经把"答完之后"这件事交给会话了，run 作�
 新建 `audit_event`，一个会话一个流水。照它的六条：
 
 1. **四类 action**：`agent.run.started`、`agent.run.finished`、`tool.action.started`、`tool.action.finished`；
-2. 每条记 identity / ordering / provenance / action / status / 归一化错误码 / actor；
+2. 每条记 identity / ordering / provenance / action / status / 归一化错误码 / actor，
+   其中 **`runId` 必填**——它的 schema 就是这么定的。没有轮次的事件不属于任何一次运行，
+   我们不写它，也不让库里出现一行按 runId 查不到的审计；
 3. **不存**提示词、消息体、工具参数、工具结果、命令输出、原始错误文本；
 4. 工具调用 id 只存**单向指纹**；工具名必须是模型可见的那个紧凑名，认不出就记 `unknown`；
 5. 状态是**闭合词表**：`started` / `succeeded` / `failed` / `cancelled` / `timed_out` / `blocked` / `unknown`；

@@ -1,7 +1,5 @@
 package io.github.claw4j.agent.audit;
 
-import java.util.Optional;
-
 /**
  * 审计事件的落点（ADR-0027 决定二）。
  *
@@ -11,6 +9,10 @@ import java.util.Optional;
  *
  * <p>实现只有一个（{@link AuditLedger}）。这个接口存在的理由不是"将来可能换实现"，
  * 而是让测试能看见真正产生的事件，而不是"某个方法被调用了"。
+ *
+ * <p><b>没有返回值</b>：账本序号是账本自己的排序键（翻页与上限淘汰用），不是调用方要的东西。
+ * OpenClaw 的写入是"丢进 writer 队列然后继续跑"，调用方从头到尾不知道写到了第几行；
+ * 我们同步写，但同样不该把序号交出去——一旦有人拿它去做关联，它就又变成一个实体了。
  */
 @FunctionalInterface
 public interface AuditSink {
@@ -18,7 +20,8 @@ public interface AuditSink {
     /**
      * 写一条事件。
      *
-     * @return 落下来的账本序号；空表示没写进去
+     * <p>写不进去由实现自己记账（计数 + 一次 WARN），**不抛、也不返回成败**：
+     * 记账不是回答的前置条件，调用方没有"根据写没写成功改变行为"的余地。
      */
-    Optional<Long> record(AuditEvent event);
+    void record(AuditEvent event);
 }

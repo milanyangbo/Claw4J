@@ -55,7 +55,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -260,7 +259,7 @@ class ObservabilityTest {
             public String call(String toolInput) {
                 throw new IllegalStateException("库挂了");
             }
-        }, null, new ToolCallAudit(event -> Optional.of(1L)), tracer);
+        }, null, new ToolCallAudit(event -> { }), tracer);
 
         assertThatThrownBy(() -> failing.call("{}",
                 new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"))))
@@ -351,8 +350,7 @@ class ObservabilityTest {
      */
     private ChatClientAgentPort tracedPort(ChatModel model, SpanTracer tracer,
                                            ToolCallback... tools) {
-        AtomicLong auditSeq = new AtomicLong();
-        ToolCallAudit audit = new ToolCallAudit(event -> Optional.of(auditSeq.incrementAndGet()));
+        ToolCallAudit audit = new ToolCallAudit(event -> { });
         List<ToolCallback> wrapped = new ArrayList<>();
         for (ToolCallback tool : tools) {
             wrapped.add(new MeteredToolCallback(tool, registry, audit, tracer));

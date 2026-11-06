@@ -229,3 +229,10 @@ core/domain/port/RunView.java          -- 若有对外读，改成 TurnView 或�
      全部收窄成 `void`）。理由：span 与审计的关联键已经有一个 `claw4j.run.id`，再挂一个"第几行"
      不回答任何新问题，却把两条本可以各自演进的管道钉在一起；OpenClaw 的 span 属性里没有账本序号。
    - `ATTR_RESUMED = "claw4j.run.resumed"` 删掉。死常量，续跑在票 03 就没了，只有定义没有使用处。
+5. **`audit_event.run_id` 改成必填**（`V26__audit_run_id_required.sql`）。OpenClaw 的
+   `AuditEventSchema.runId` 是 `NonEmptyString`：事件必须属于一次已准入的运行。
+   迁移先清掉没有归属的历史行再 `set not null`（反过来约束会先把现存行判红）；
+   写入侧在没有 runId 时**直接跳过**，计入 `claw4j.audit.skipped`——不是 `write_errors`，
+   那不是写失败，是"没有归属"，合成一个数会让一次正常的子链调用看起来像库故障。
+   `AuditSink.record` 同时收窄成 `void`：账本序号是账本自己的排序键（翻页与上限淘汰用），
+   调用方从头到尾不需要它；OpenClaw 的写入是丢进 writer 队列，同样不返回序号。

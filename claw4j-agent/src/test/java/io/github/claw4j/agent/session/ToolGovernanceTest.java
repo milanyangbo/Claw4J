@@ -84,10 +84,7 @@ class ToolGovernanceTest {
     @BeforeEach
     void setUp() {
         events = new ArrayList<>();
-        audit = new ToolCallAudit(event -> {
-            events.add(event);
-            return Optional.of((long) events.size());
-        });
+        audit = new ToolCallAudit(events::add);
     }
 
     private static AuditEvent.Scope scope() {

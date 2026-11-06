@@ -378,7 +378,7 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
         audit.rejected(scopeOf(context), denial.tool(), denial.args());
     }
 
-    /** 被拦下来的那一次落在谁、哪一轮、哪段会话上。取不到就为空，审计照样写。 */
+    /** 被拦下来的那一次落在谁、哪一轮、哪段会话上。没有 runId 时那一行不会落库。 */
     private static AuditEvent.Scope scopeOf(Map<String, Object> context) {
         return AuditEvent.Scope.of(runIdOf(context), sessionKeyOf(context), principalOf(context), null);
     }

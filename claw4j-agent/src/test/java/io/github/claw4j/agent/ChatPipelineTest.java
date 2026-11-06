@@ -413,10 +413,7 @@ class ChatPipelineTest {
         final List<AuditEvent> events = new CopyOnWriteArrayList<>();
 
         ToolCallAudit toolCallAudit() {
-            return new ToolCallAudit(event -> {
-                events.add(event);
-                return Optional.of((long) events.size());
-            });
+            return new ToolCallAudit(events::add);
         }
 
         List<AuditAction> actions() {

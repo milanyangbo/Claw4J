@@ -205,7 +205,8 @@ public class MeteredToolCallback implements ToolCallback {
      * 这一条事件的身份与位置。
      *
      * <p>身份从工具上下文里取：入口把 principal 与 runId 一起放进去了，而这里拿不到 Advisor 的上下文。
-     * 取不到身份时照样写——"有个工具跑了"本身就是审计要的事实，只是那一格没人。
+     * 取不到 principal 时照样写（那一格没人）；**取不到 runId 时这一行落不下去**——
+     * 没有轮次的事件不属于任何一次运行，与 OpenClaw 的必填同口径。
      *
      * <p>通道留空：工具上下文里没有它，而为了填这一格去加一个 key，会让"审计"与"投递"
      * 两条本来无关的线互相拉扯。按 runId / sessionKey 关联已经够查。

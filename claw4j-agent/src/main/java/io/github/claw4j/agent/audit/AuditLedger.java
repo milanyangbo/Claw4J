@@ -10,7 +10,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 
 import java.time.Duration;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -43,6 +42,15 @@ public class AuditLedger implements AuditSink {
     /** 清掉的记录数，按原因分：{@code expired}（30 天）与 {@code over_limit}（10 万行）。 */
     public static final String PURGED = "claw4j.audit.purged";
 
+    /**
+     * 因为拿不到轮次编号而没落库的事件数。
+     *
+     * <p>与 {@link #WRITE_ERRORS} 分开：那个数是"该记却没记上"的故障，
+     * 这个是"本来就不该记"的口径（没有轮次的事件不属于任何一次运行）。
+     * 合成一个数的话，一次正常的子链调用会被看成一次故障。
+     */
+    public static final String SKIPPED = "claw4j.audit.skipped";
+
     /** 照 OpenClaw：30 天。 */
     public static final Duration RETENTION = Duration.ofDays(30);
 
@@ -64,7 +72,6 @@ public class AuditLedger implements AuditSink {
                 (id, event_id, kind, action, status, error_code, run_id, session_key, agent_id,
                  actor, actor_role, channel, tool_name, call_fingerprint, approval_id)
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            returning seq
             """;
 
     private static final String PURGE_AGE =
@@ -108,17 +115,24 @@ public class AuditLedger implements AuditSink {
     /**
      * 写一条事件。
      *
-     * @return 落下来的账本序号；空表示没写进去（库不可用、迁移没跑、或采集被关掉）
+     * <p><b>没有轮次编号就不写</b>：OpenClaw 的 {@code AuditEventSchema.runId} 是必填，
+     * 事件必须属于一次已准入的运行。一行查不到轮次的审计，按 runId 查永远命中不了，
+     * 留着只会让"这个月跑了多少次"的数字比能查到的多。它们计入
+     * {@value #SKIPPED}（不是 {@value #WRITE_ERRORS}——那不是写失败，是"没有归属"）。
      */
     @Override
-    public Optional<Long> record(AuditEvent event) {
+    public void record(AuditEvent event) {
         Objects.requireNonNull(event, "event");
         if (!enabled) {
-            return Optional.empty();
+            return;
         }
         AuditEvent.Scope scope = event.scope() == null ? AuditEvent.Scope.empty() : event.scope();
+        if (scope.runId() == null || scope.runId().isBlank()) {
+            countSkipped();
+            return;
+        }
         try {
-            Long seq = jdbc.queryForObject(INSERT, Long.class,
+            jdbc.update(INSERT,
                     UUID.randomUUID(),
                     // event_id 单独生成而不是复用主键：OpenClaw 用它去重（同一条事件重复投递只留一行）。
                     // 我们的写入是同步单次的，没有重放路径，所以现在它只是一个唯一值；
@@ -139,7 +153,6 @@ public class AuditLedger implements AuditSink {
                     event.callFingerprint(),
                     event.approvalId());
             pruneIfDue();
-            return Optional.ofNullable(seq);
         } catch (RuntimeException failure) {
             count(WRITE_ERRORS);
             if (!warned) {
@@ -147,7 +160,6 @@ public class AuditLedger implements AuditSink {
                 log.warn("审计事件写不进去（{}）。之后同类失败只计数不再打日志：{}",
                         event.action().column(), failure.toString());
             }
-            return Optional.empty();
         }
     }
 
@@ -201,6 +213,16 @@ public class AuditLedger implements AuditSink {
         if (writes.incrementAndGet() % PRUNE_EVERY == 0) {
             prune();
         }
+    }
+
+    private void countSkipped() {
+        if (registry == null) {
+            return;
+        }
+        Counter.builder(SKIPPED)
+                .description("没有轮次编号、因而没有落库的审计事件数")
+                .register(registry)
+                .increment();
     }
 
     private void count(String metric) {

@@ -134,7 +134,7 @@ class BuildContractTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：到 25 全跑到，五个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：到 26 全跑到，五个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -144,7 +144,7 @@ class BuildContractTest {
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
                 .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
-                        "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25");
+                        "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26");
 
         var jdbc = new JdbcTemplate(dataSource());
 
