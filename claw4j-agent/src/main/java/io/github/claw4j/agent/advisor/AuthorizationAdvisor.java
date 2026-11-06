@@ -347,7 +347,8 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
         }
         // 没有批准：登记一条，并把这件事停在这一步（P02）。
         Optional<String> approvalId = gate.ask(new ApprovalLedger.Ask(runIdOf(context),
-                principal.userId(), call.name(), digest.get(), summaryOf(args)));
+                principal.userId(), call.name(), digest.get(), summaryOf(args),
+                originOf(context, principal)));
         return Optional.of(new Denial(call.name(),
                 approvalText(permission.get(), call.name(), approvalId.orElse(null)),
                 OUTCOME_NEEDS_APPROVAL, args, approvalId.orElse(null)));
@@ -482,6 +483,27 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
      * 这一轮落在哪件事上。为 null 表示不在一个 run 里（子 Agent 那一层，A10）——
      * 那时审批照常拦，只是没有"停在哪儿"这回事。
      */
+    /**
+     * 这条请求从哪段对话来（ADR-0027）。批准之后就在这段对话里开新一轮，
+     * 而不用拿 runId 去唤醒一件"挂着的事"。
+     *
+     * <p>拿不到会话键时返回 null：子 Agent 那一层可能还没有会话（A10）。
+     * 那时结论照样落得下来，只是没有"接着做"这回事——{@code ApprovalService} 会如实说出来。
+     */
+    private static ApprovalLedger.Origin originOf(Map<String, Object> context, Principal principal) {
+        Object session = context == null ? null : context.get(ChatMemory.CONVERSATION_ID);
+        if (!(session instanceof String sessionKey) || sessionKey.isBlank()) {
+            return null;
+        }
+        return new ApprovalLedger.Origin(sessionKey, textAt(context, ContextKeys.CHANNEL),
+                textAt(context, ContextKeys.CHAT_REF), principal);
+    }
+
+    private static String textAt(Map<String, Object> context, String key) {
+        Object value = context == null ? null : context.get(key);
+        return value instanceof String text && !text.isBlank() ? text : null;
+    }
+
     private static String runIdOf(Map<String, Object> context) {
         Object value = context == null ? null : context.get(ContextKeys.RUN_ID);
         return value instanceof String runId && !runId.isBlank() ? runId : null;

@@ -67,7 +67,8 @@ public class HttpChatController {
                            @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
                            @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
         OutboundMessage answer = channel.ask(inbound(request, user, role, chatId));
-        // runId 跟着回答一起出去：调用方拿到它才问得出"这件事做到第几步"（ADR-0016）。
+        // turnId 跟着回答一起出去：它是"这一轮"的编号，用来查、用来串日志（ADR-0027）。
+        // <b>它不是续跑令牌</b>：拿它回来接不上任何东西——连续性靠会话，不靠这个 id。
         // 没有装配 run 存储时它是 null——那是能力不在场，不是这一轮失败了。
         return new AskResponse(answer.chatId(), answer.text(), answer.runId());
     }
@@ -151,19 +152,14 @@ public class HttpChatController {
             throw new InvalidRequestException("text 不能为空");
         }
         var principal = principalResolver.resolve(user, role);
-        // runId 是"接着哪件事做"（A02）：客户端拿上一轮回答里的 runId 回来，就是 resume。
-        // 空白一律当成没带——带着一个空串去 resume，比不带更容易掩盖客户端的拼装错误。
-        String runId = request.runId() == null || request.runId().isBlank() ? null : request.runId().strip();
         return new InboundMessage(
                 principal,
                 principalResolver.chatId(principal.userId(), chatId),
                 request.text(),
                 Instant.now(),
                 null,
-                runId,
-                // 通道名进去之后，这件事会把"HTTP 这个会话"登记成收件地址（A05）。
-                // HTTP 自己不能推（连接早就断了），登记它是为了让"换通道接着做"时
-                // 认得出同一件事——结果由 GET /api/runs/{id} 取回去。
+                // 通道名进去之后，审批卡片与结果才知道"送回哪儿"（ADR-0027）。
+                // HTTP 自己不能推（连接早断了）：它的结果由轮询取回去。
                 CHANNEL,
                 notifyPolicyOf(request));
     }
@@ -213,23 +209,24 @@ public class HttpChatController {
     }
 
     /**
+     * <p><b>没有 {@code runId}</b>（ADR-0027）：客户端不能"带着上一轮的 id 回来接着做"。
+     * 那种能力要求一件事能跨请求活着，而 OpenClaw 里根本不存在——连续性靠会话键，
+     * 同一段对话自然有上下文。留着这个字段的话，它会静默变成一个没人读的摆设，
+     * 下一个人会以为"带上它就能续"。
+     *
      * @param text         这一轮说的话
-     * @param runId        要接着做的那件事；不带就是一件新事（A02）
-     * @param notifyPolicy 这一件事的通知策略（A05），不写走 {@link NotifyPolicy#DEFAULT}。
+     * @param notifyPolicy 这一轮的通知策略（A05），不写走 {@link NotifyPolicy#DEFAULT}。
      *                     定时任务那一类"跑完放着"的事传 {@code silent}
      */
-    public record AskRequest(String text, String runId, String notifyPolicy) {
-
-        public AskRequest(String text, String runId) {
-            this(text, runId, null);
-        }
+    public record AskRequest(String text, String notifyPolicy) {
 
         public AskRequest(String text) {
-            this(text, null, null);
+            this(text, null);
         }
     }
 
-    public record AskResponse(String chatId, String text, String runId) {
+    /** @param turnId 这一轮的编号（ADR-0027）。可以查、可以串日志，<b>但不能用来续跑</b> */
+    public record AskResponse(String chatId, String text, String turnId) {
     }
 
     public record ErrorResponse(String error) {

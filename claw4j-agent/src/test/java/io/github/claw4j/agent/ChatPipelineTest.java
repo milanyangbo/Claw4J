@@ -336,68 +336,6 @@ class ChatPipelineTest {
     // ---------------------------------------------------------------- resume（A02）
 
     /**
-     * A02 的判据：断点之后再说一句，落的是<b>同一件事的下一步</b>。
-     *
-     * <p>反题就是今天的行为：再说一句是一段新对话，之前的进度在库里查不到。
-     * 判定看库行与 {@code resumed}，不看模型说了什么。
-     */
-    @Test
-    @DisplayName("带着 runId 再说一句：接上同一个 run，序号接着涨而不是另开一个")
-    void resumeContinuesTheSameRun() {
-        FakeRuns runs = new FakeRuns();
-        ChatClientAgentPort port = port(new FixedChatModel("先做第一步"), runs);
-
-        String runId = port.reply(message("chat-1", "把三张表的口径对齐")).runId();
-        OutboundMessage next = port.reply(continuation("chat-1", "继续", runId));
-
-        assertThat(next.runId()).isEqualTo(runId);
-        assertThat(runs.resumed).containsExactly(runId);
-        assertThat(runs.started).as("接上来的那一轮不新建 run").hasSize(1);
-        assertThat(runs.steps).extracting(Step::seq).containsExactly(1, 2);
-        assertThat(runs.steps).allSatisfy(step -> assertThat(step.runId()).isEqualTo(runId));
-    }
-
-    /** 接上时要给模型"做到哪儿了"：否则"继续"在模型看来只是一句没有上下文的话。 */
-    @Test
-    @DisplayName("接上时给模型的提示里带着上一步做了什么；第一轮是新事，不带")
-    void resumeFeedsPreviousStepsIntoThePrompt() {
-        FakeRuns runs = new FakeRuns();
-        List<String> sent = new ArrayList<>();
-        FixedChatModel model = new FixedChatModel(prompt -> {
-            sent.add(prompt.getInstructions().stream()
-                    .map(each -> each.getText() == null ? "" : each.getText())
-                    .reduce("", String::concat));
-            return answer("接着做第二步");
-        });
-        ChatClientAgentPort port = port(model, runs);
-
-        String runId = port.reply(message("chat-1", "把三张表的口径对齐")).runId();
-        port.reply(continuation("chat-1", "继续", runId));
-
-        assertThat(sent).hasSize(2);
-        assertThat(sent.getFirst()).as("第一轮是新事，不该带 recap").doesNotContain("接着做这件事");
-        assertThat(sent.getLast()).contains("把三张表的口径对齐").contains("第 1 步").contains("继续");
-    }
-
-    /** 光有 runId 拿不到别人的事：接不上时另开一个，绝不把别人的事继续下去。 */
-    @Test
-    @DisplayName("别人的 runId 接不上：另开一个 run，那一句也不会记到对方的事上")
-    void resumeOfAnotherOwnersRunStartsANewOne() {
-        FakeRuns runs = new FakeRuns();
-        ChatClientAgentPort port = port(new FixedChatModel("答一句"), runs);
-        String mine = port.reply(message("chat-1", "我的事")).runId();
-
-        OutboundMessage other = port.reply(new InboundMessage(
-                Principal.readOnly("u-2"), "chat-2", "继续", Instant.now(), null, mine));
-
-        assertThat(other.runId()).isNotNull().isNotEqualTo(mine);
-        assertThat(runs.rejected).containsExactly(mine);
-        assertThat(runs.started).hasSize(2);
-        assertThat(runs.steps).filteredOn(step -> step.runId().equals(mine))
-                .as("u-2 的那一句不该记到 u-1 的事上").hasSize(1);
-    }
-
-    /**
      * 等审批的 run 只能由审批放行：一句"继续"就能唤醒它的话，那道门等于没装。
      *
      * <p>真正挡住它的是 {@code JdbcRunStore} 里那条 {@code status <> 'suspended'}
@@ -419,58 +357,36 @@ class ChatPipelineTest {
     }
 
     /**
-     * 停下来要落在两个地方（P02）：{@code agent_run.status = suspended} 说这件事停了，
-     * {@code agent_step} 上一行 {@code approval / awaiting} 说停在哪个工具上。
+     * 审批门只做两件事：登记一条请求，把卡片推到它自己那段对话（ADR-0027）。
      *
-     * <p>只落前一半，"这件事卡在什么工具上、卡过几次"就只能靠读摘要文本去猜；
-     * 只落后一半，没有人知道它不该被一句"继续"唤醒——两条都是主链路的行为，不是 SQL 的事，
-     * 而它们各自能红：删掉 {@code suspend} 或删掉那次 {@code append}，下面都有断言接住。
-     *
-     * <p>子 Agent 那一层还没有 runId（A10）：请求照样登记，只是没有可挂起的东西。
-     * 那时候凭空开一个 run 出来，会造出一件没人认得、也不会有人来续的事。
-     *
-     * <p>**卡片排在最后**（P03）：它推给"这件事登记过的会话"，推不出去只记日志——
-     * 所以这里同时钉住"推了"（带编号与摘要、按通道匹配）与"推失败不影响登记"。
+     * <p><b>它不再挂起 run、也不再写一条 awaiting 步骤</b>：那一轮以 done 收尾
+     * （它回给用户的是"我需要你批准"），而"等审批"不是一种能跨请求的状态。
+     * 这里同时钉住"推了"（带编号与摘要、按通道匹配）与"推失败不影响登记"。
      */
     @Test
-    @DisplayName("审批门挂起 run：suspended + 一条 awaiting 步骤；顺手把卡片推到登记的会话；没有 runId 时只登记不挂")
-    void theGateSuspendsTheRunAndLeavesOneAwaitingStep() {
-        FakeRuns runs = new FakeRuns();
+    @DisplayName("审批门只登记与推卡片：不挂起 run、不写 awaiting 步骤，卡片落在请求自己那段对话")
+    void theGateRegistersAndAnnouncesWithoutSuspendingAnything() {
         FakeLedger ledger = new FakeLedger("ap-1");
         RecordingCards cards = new RecordingCards("feishu");
-        RunApprovalGate gate = new RunApprovalGate(ledger, runs,
-                List.of(cards, new BrokenCards("feishu")),
-                runId -> List.of(new DeliveryTarget("feishu", "oc_1"),
-                        new DeliveryTarget("http", "http:u-1")));
-        String runId = runs.start("u-1", "digest", "发一封邮件给张三", NotifyPolicy.STATE_CHANGES)
-                .orElseThrow().id();
+        RunApprovalGate gate = new RunApprovalGate(ledger, List.of(cards, new BrokenCards("feishu")));
         String digest = "a".repeat(64);
+        ApprovalLedger.Origin origin = new ApprovalLedger.Origin("claw4j:u-1@fp:feishu:oc_1",
+                "feishu", "oc_1", Principal.readOnly("u-1"));
 
         assertThat(gate.redeem("u-1", "sendEmail", digest)).as("没批过就是没有").isEmpty();
 
-        Optional<String> asked = gate.ask(
-                new ApprovalLedger.Ask(runId, "u-1", "sendEmail", digest, "to=张三"));
+        Optional<String> asked = gate.ask(new ApprovalLedger.Ask("run-1", "u-1", "sendEmail",
+                digest, "to=张三", origin));
 
         assertThat(asked).contains("ap-1");
-        assertThat(runs.find(runId).orElseThrow().status()).isEqualTo(RunStatus.SUSPENDED);
-        Step waiting = runs.steps.stream().filter(step -> step.kind() == StepKind.APPROVAL)
-                .findFirst().orElseThrow();
-        assertThat(waiting.status()).isEqualTo(StepStatus.AWAITING);
-        assertThat(waiting.status().label()).isEqualTo("等审批");
-        assertThat(waiting.toolNames()).isEqualTo("sendEmail");
-        assertThat(waiting.input()).as("人要在卡片上认出这是哪一条").contains("ap-1");
-
         assertThat(cards.announced)
-                .as("按通道匹配：飞书的地址给飞书那张卡，HTTP 那个地址没有卡片能力（入口是接口）")
+                .as("卡片落在请求自己那段对话上；推失败的那个只记日志，不影响登记")
                 .containsExactly("oc_1|sendEmail|to=张三|ap-1|pending");
 
-        assertThat(gate.ask(new ApprovalLedger.Ask(null, "u-1", "sendEmail", digest, "to=张三")))
+        assertThat(gate.ask(new ApprovalLedger.Ask(null, "u-1", "sendEmail", digest, "to=张三", null)))
                 .contains("ap-1");
-        assertThat(runs.started).as("没有 runId 时不能凭空开一个 run").hasSize(1);
-        assertThat(runs.steps).as("也没有「停在哪儿」这回事").hasSize(1);
-        assertThat(cards.announced).as("没有 run 就没有登记的会话，卡片无处可推").hasSize(1);
+        assertThat(cards.announced).as("没有来处就没有对话可推").hasSize(1);
     }
-
     /** 没有 run 存储时 runId 只是个没人认领的提示：回答照旧，不报错。 */
     @Test
     @DisplayName("没有 run 存储时带 runId 也不报错：回答照旧")
@@ -481,44 +397,6 @@ class ChatPipelineTest {
 
         assertThat(answer.text()).isEqualTo("答一句");
         assertThat(answer.runId()).isNull();
-    }
-
-    /**
-     * 真模型闭环（ADR-0011 的口径：假模型只证明装配成立）。
-     *
-     * <p>要验的是"断点之后再说一句，落的是同一件事的下一步"——不是模型聪不聪明。
-     * 但 recap 是塞进提示词的真文本，假模型时代它长得对不代表真模型读得懂，
-     * 所以这条要真跑一次。
-     */
-    @Test
-    @Timeout(120)
-    @DisplayName("真模型：断点之后再说一句，接上同一个 run，序号接着涨")
-    void realModelResumeContinuesTheSameRun() {
-        String apiKey = System.getenv("DEEPSEEK_API_KEY");
-        assertThat(apiKey)
-                .as("真模型用例需要 DEEPSEEK_API_KEY；运行前先 source 仓库根的 .env")
-                .isNotBlank();
-
-        ModelProperties properties = new ModelProperties();
-        // 配的是句柄，真值在测试自己的 Environment 里（P08 之后模型装配只认这一条路）。
-        properties.getDeepseek().setApiKey("secret:deepseek_api_key");
-        properties.getDeepseek().setBaseUrl("https://api.deepseek.com");
-        properties.getDeepseek().setModel("deepseek-chat");
-        ChatModel model = new ModelConfiguration().deepSeekChatModel(properties, keyInEnvironment(apiKey));
-
-        FakeRuns runs = new FakeRuns();
-        ChatClientAgentPort port = new ChatClientAgentPort(client(model, List.of(), List.of()), null, runs);
-        Principal who = Principal.of("u-real", "admin", Set.of("*"), Set.of("*"));
-
-        String runId = port.reply(
-                new InboundMessage(who, "chat-real", "把三张表的口径对齐，先只做第一步")).runId();
-        OutboundMessage next = port.reply(
-                new InboundMessage(who, "chat-real", "继续做第二步", Instant.now(), null, runId));
-
-        assertThat(next.runId()).isEqualTo(runId);
-        assertThat(next.text()).isNotBlank();
-        assertThat(runs.started).as("接上来的那一轮不新建 run").hasSize(1);
-        assertThat(runs.steps).extracting(Step::seq).containsExactly(1, 2);
     }
 
     private static ChatClientAgentPort port(FixedChatModel model) {
@@ -568,6 +446,29 @@ class ChatPipelineTest {
         return new ChatClientAgentPort(
                 client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))), List.of()),
                 null, runs, null, null, null, null, null, null, goals);
+    }
+
+    /**
+     * 消息直接给了整段会话键时，就用它——不换段、不查指针（ADR-0027）。
+     *
+     * <p>审批批准之后走的就是这条：那条请求的 {@code session_key} 写在审批行上，
+     * 批准之后要回到<b>那一段</b>对话开新一轮。按通道重新派生也能算出一个键，
+     * 而它与本段差一个段后缀——上下文与 goal 就都不在这段里了，表现是
+     * "批准之后它像第一次听到这件事"。
+     */
+    @Test
+    @DisplayName("显式给的整段会话键原样使用：审批续跑要回到它自己那一段")
+    void anExplicitSessionKeyIsUsedAsGiven() {
+        FakeRuns runs = new FakeRuns();
+        ChatClientAgentPort port = port(new FixedChatModel("好"), runs);
+
+        port.reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "接着说",
+                Instant.now(), null, "feishu", NotifyPolicy.DEFAULT, null,
+                "claw4j:u-1@fp-1:feishu:chat-1:seg-fixed"));
+
+        assertThat(runs.sessionIds)
+                .as("按通道+chatId 派生会得到「无段」的那个键：段一丢，上下文与 goal 都不在这段里")
+                .containsExactly("claw4j:u-1@fp-1:feishu:chat-1:seg-fixed");
     }
 
     /**
@@ -639,6 +540,9 @@ class ChatPipelineTest {
      */
     private static final class FakeRuns implements RunStore {
 
+        /** 每次 start 收到的会话键。判据「显式给的那一段被原样用上」读它。 */
+        private final List<String> sessionIds = new ArrayList<>();
+
         final List<Run> started = new ArrayList<>();
 
         final List<Step> steps = new ArrayList<>();
@@ -663,7 +567,9 @@ class ChatPipelineTest {
         boolean degraded;
 
         @Override
-        public Optional<Run> start(String owner, String principalDigest, String goal, NotifyPolicy notifyPolicy) {
+        public Optional<Run> start(String owner, String principalDigest, String goal,
+                                   NotifyPolicy notifyPolicy, String sessionId) {
+            sessionIds.add(sessionId);
             if (degraded) {
                 return Optional.empty();
             }
@@ -672,11 +578,6 @@ class ChatPipelineTest {
             started.add(run);
             spent.put(run.id(), Budget.NONE);
             return Optional.of(run);
-        }
-
-        @Override
-        public void attachPrincipal(String runId, Principal principal) {
-            principals.put(runId, principal);
         }
 
         @Override
@@ -716,21 +617,6 @@ class ChatPipelineTest {
          * 由 {@code RunSchemaSqlTest} 在真库上钉住；这份假实现只是为了主链路跑得起来。
          */
         @Override
-        public Optional<Run> resume(String runId, String owner) {
-            Optional<Run> found = find(runId);
-            if (found.isEmpty() || !found.get().owner().equals(owner) || awaitingApproval.contains(runId)) {
-                rejected.add(runId);
-                return Optional.empty();
-            }
-            Run reopened = new Run(found.get().id(), owner, found.get().principalDigest(), found.get().goal(),
-                    RunStatus.RUNNING, found.get().notifyPolicy(), found.get().spent(),
-                    found.get().result(), found.get().createdAt());
-            started.set(started.indexOf(found.get()), reopened);
-            resumed.add(runId);
-            return Optional.of(reopened);
-        }
-
-        @Override
         public List<Step> stepsOf(String runId) {
             return steps.stream().filter(step -> step.runId().equals(runId)).toList();
         }
@@ -758,41 +644,6 @@ class ChatPipelineTest {
             return Optional.of(now);
         }
 
-
-        @Override
-        public void suspend(String runId) {
-            find(runId).ifPresent(run -> {
-                awaitingApproval.add(runId);
-                replace(run, RunStatus.SUSPENDED, run.result());
-            });
-        }
-
-        @Override
-        public Optional<Run> reopen(String runId) {
-            Optional<Run> found = find(runId);
-            if (found.isEmpty() || found.get().status() != RunStatus.SUSPENDED) {
-                return Optional.empty();
-            }
-            awaitingApproval.remove(runId);
-            return Optional.of(replace(found.get(), RunStatus.RUNNING, found.get().result()));
-        }
-
-        @Override
-        public Optional<Principal> principalOf(String runId) {
-            return Optional.ofNullable(principals.get(runId));
-        }
-
-        @Override
-        public void settleApprovalStep(String runId, StepStatus status) {
-            for (int i = 0; i < steps.size(); i++) {
-                Step step = steps.get(i);
-                if (step.runId().equals(runId) && step.kind() == StepKind.APPROVAL
-                        && step.status() == StepStatus.AWAITING) {
-                    steps.set(i, new Step(step.runId(), step.seq(), step.kind(), step.input(),
-                            step.toolNames(), step.resultSummary(), status, step.createdAt()));
-                }
-            }
-        }
 
         private Run replace(Run run, RunStatus status, String result) {
             Run updated = new Run(run.id(), run.owner(), run.principalDigest(), run.goal(), status,

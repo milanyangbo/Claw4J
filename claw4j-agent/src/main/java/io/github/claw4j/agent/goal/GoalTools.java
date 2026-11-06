@@ -176,18 +176,25 @@ public final class GoalTools implements ToolCallbackProvider {
     /**
      * 模型只能标这两个状态。
      *
-     * <p>写成枚举白名单而不是 {@code GoalStatus.valueOf}：后者会让模型传 {@code paused}
-     * 就真的暂停——而"暂停"是操作员的按钮，模型悄悄按下去正是这条工具不该有的能力。
+     * <p><b>判据只有一处</b>：{@link GoalStatus#modelSettable()}。这里先把词映射成枚举，
+     * 再用那个方法判"能不能设"。写成这样一个 switch 白名单也行，但那样同一条规则
+     * （"只有 complete 与 blocked"）就有两份，改一处忘一处就漂。
      */
     private static GoalStatus modelStatus(String raw) {
-        String value = raw.toLowerCase(java.util.Locale.ROOT);
-        return switch (value) {
-            case "complete" -> GoalStatus.COMPLETE;
-            case "blocked" -> GoalStatus.BLOCKED;
-            default -> throw new IllegalArgumentException(
+        GoalStatus status;
+        try {
+            status = GoalStatus.fromColumn(raw.toLowerCase(java.util.Locale.ROOT));
+        }
+        catch (IllegalArgumentException unknown) {
+            throw new IllegalArgumentException(
+                    "不认识的状态「" + raw + "」。只能标 complete 或 blocked。");
+        }
+        if (!status.modelSettable()) {
+            throw new IllegalArgumentException(
                     "只能标 complete 或 blocked，收到的是「" + raw + "」。"
                             + "暂停与恢复是用户用 /goal pause、/goal resume 按的按钮，不归你改。");
-        };
+        }
+        return status;
     }
 
     /** 摘要：形状照 OpenClaw 的 {@code /goal} 输出（状态 / 目标 / 已用 / 预算 / 命令）。 */

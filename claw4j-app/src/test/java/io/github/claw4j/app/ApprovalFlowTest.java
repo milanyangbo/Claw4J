@@ -53,6 +53,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -93,6 +94,9 @@ class ApprovalFlowTest {
     /** 一条请求等多长。用例里用它判"这条该不该有结论"。 */
     private static final Duration TTL = Duration.ofMinutes(10);
 
+    /** 这些消息从哪个通道来。审批行上的 channel/chat_ref 就是它——批准之后回到这段对话。 */
+    private static final String CHANNEL = "feishu";
+
     @Container
     private static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>("pgvector/pgvector:pg16");
@@ -114,6 +118,7 @@ class ApprovalFlowTest {
 
     @BeforeEach
     void freshTables() {
+        jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("delete from claw4j_run.approval_request");
         jdbc.update("delete from claw4j_run.agent_step");
         jdbc.update("delete from claw4j_run.agent_run");
@@ -127,8 +132,8 @@ class ApprovalFlowTest {
      * "挂起"变成"回一句话然后照常跑完"也会绿。
      */
     @Test
-    @DisplayName("没有批准：run 挂起、step 停在 awaiting、审批编号回到用户手里、工具一次没执行")
-    void anApprovalRequiredToolStopsTheRunAndHandsBackAnId() {
+    @DisplayName("没有批准：这一轮以 done 收尾、审批行带上来处、编号回到用户手里、工具一次没执行")
+    void anApprovalRequiredToolEndsTheTurnAndHandsBackAnId() {
         Harness harness = new Harness(requestTool(ARGS), answer("已发送"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
@@ -140,11 +145,23 @@ class ApprovalFlowTest {
                 .as("用户要拿着编号去问「批了吗」；没有编号他只能再发一遍同一句话")
                 .contains("审批编号");
 
-        Run run = runs.find(reply.runId()).orElseThrow();
-        assertThat(run.status()).as("停在这一步是库里的一个状态，不是挂着的线程")
-                .isEqualTo(RunStatus.SUSPENDED);
-        assertThat(awaitingStep(run.id())).isPresent();
+        assertThat(runs.find(reply.runId()).orElseThrow().status())
+                .as("这一轮确实结束了：它回给用户的是「我需要你批准」。等审批不是一种能跨请求的状态")
+                .isEqualTo(RunStatus.DONE);
         assertThat(pendingApprovals()).hasSize(1);
+
+        // 来处与请求一起落（V21）：批准之后要回到那段对话开新一轮
+        assertThat(jdbc.queryForMap("select session_key, channel, chat_ref, principal_snapshot"
+                + " from claw4j_run.approval_request"))
+                .satisfies(row -> {
+                    assertThat(row.get("session_key")).as("哪一段对话（含段）").isNotNull();
+                    assertThat(row.get("channel")).isEqualTo(CHANNEL);
+                    assertThat(row.get("chat_ref")).isEqualTo("chat-ap");
+                    assertThat((String) row.get("principal_snapshot"))
+                            .as("发起人快照：批准之后用它调模型，不能用审批人的身份")
+                            .contains("u-mailer")
+                            .contains("mailer");
+                });
     }
 
     /**
@@ -154,8 +171,8 @@ class ApprovalFlowTest {
      * 只断言"工具最后执行了"的话，"续跑时模型从头猜"这件事永远不会红。
      */
     @Test
-    @DisplayName("批准之后服务端续跑同一件事：回答接着做，而不是重新解释背景")
-    void approvingResumesTheSameRunAndTheToolFinallyRuns() {
+    @DisplayName("批准之后在同一段对话里开新一轮：工具终于执行，旧的那一轮仍是 done")
+    void approvingStartsTheNextTurnInTheSameConversation() {
         Harness harness = new Harness(requestTool(ARGS), requestTool(ARGS), answer("已发给张三"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
@@ -164,16 +181,23 @@ class ApprovalFlowTest {
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.GRANTED);
         assertThat(tool.calls()).as("批准之后那一次调用真的执行了").isEqualTo(1);
-        Run run = runs.find(first.runId()).orElseThrow();
-        assertThat(run.id()).as("续跑的是同一件事，不是另开一件").isEqualTo(first.runId());
-        assertThat(run.status()).isEqualTo(RunStatus.DONE);
-        assertThat(run.result()).isEqualTo("已发给张三");
-        assertThat(awaitingStep(run.id())).as("这一等已经结束了，不该还挂着").isEmpty();
+        assertThat(runs.find(first.runId()).orElseThrow().status())
+                .as("旧的那一轮不会因为一条迟到的批准被拉起来重跑")
+                .isEqualTo(RunStatus.DONE);
+
+        // 多出来的是同一段对话里的下一轮，不是同一行的续写
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.agent_run", Integer.class))
+                .as("批准之后是新一轮（新的一行），不是把旧那行拉起来")
+                .isEqualTo(2);
+        assertThat(jdbc.queryForList(
+                "select distinct session_id from claw4j_run.agent_run", String.class))
+                .as("两轮在同一段会话里：上下文与 goal 都在，不用我们从 step 拼一段 recap")
+                .hasSize(1);
 
         assertThat(harness.prompts().getLast())
-                .as("续跑要带上这件事的目标与进度：不然模型只能从头猜")
-                .contains("发一封给张三的周报")
-                .contains("等审批");
+                .as("交给模型的是审批结论，不是从头再解释一遍背景")
+                .contains("[审批通过]")
+                .contains(TOOL);
     }
 
     /**
@@ -183,8 +207,8 @@ class ApprovalFlowTest {
      * 下一轮大概率把同一个请求原样再发一次。
      */
     @Test
-    @DisplayName("拒绝也落一行：理由回灌进下一次请求，工具一次没执行")
-    void denyingFeedsTheReasonBackAndTheToolNeverRuns() {
+    @DisplayName("拒绝是终态：结论落库、工具没执行、不调模型（OpenClaw 不拿拒绝去唤醒会话）")
+    void denyingLeavesTheDecisionAndNeverCallsTheModel() {
         Harness harness = new Harness(requestTool(ARGS), answer("好的，我换个说法"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
@@ -195,17 +219,22 @@ class ApprovalFlowTest {
         ApprovalDecider.Result result = harness.decider().decide(approvalId, "approver-1", false, reason);
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.DENIED);
+        assertThat(result.detail()).as("给点按钮的人一句明确的话，带工具名与理由")
+                .contains(TOOL).contains(reason);
         assertThat(tool.calls()).isZero();
         assertThat(jdbc.queryForObject("select status from claw4j_run.approval_request where id = ?",
                 String.class, approvalId)).isEqualTo("denied");
         assertThat(jdbc.queryForObject("select reason from claw4j_run.approval_request where id = ?",
                 String.class, approvalId)).isEqualTo(reason);
-        assertThat(harness.prompts().getLast())
-                .as("理由要原样交给模型，它才知道该换什么做法")
-                .contains(reason)
-                .contains("不要再请求同一个操作");
+        assertThat(harness.prompts())
+                .as("被拒绝的批准是终态：不调模型、不开新一轮。"
+                        + "要「换个做法」的正确动作是提请求的人自己再说一句")
+                .hasSize(1);
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.agent_run", Integer.class))
+                .as("拒绝不开新一轮")
+                .isEqualTo(1);
         assertThat(runs.find(first.runId()).orElseThrow().status())
-                .as("拒绝之后这一轮仍然要跑完（模型要说清换什么做法），不是把 run 扔在 suspended")
+                .as("那一轮早就以 done 收尾了，拒绝不改它")
                 .isEqualTo(RunStatus.DONE);
     }
 
@@ -231,8 +260,8 @@ class ApprovalFlowTest {
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.EXPIRED);
         assertThat(tool.calls()).isZero();
         assertThat(runs.find(first.runId()).orElseThrow().status())
-                .as("过期的批准不能补点，这件事仍然停在原地")
-                .isEqualTo(RunStatus.SUSPENDED);
+                .as("过期的批准不能补点；而这一轮本来就是 done（它回给用户的是「我需要你批准」）")
+                .isEqualTo(RunStatus.DONE);
         assertThat(jdbc.queryForObject("select status from claw4j_run.approval_request where id = ?",
                 String.class, approvalId)).isEqualTo("pending");
     }
@@ -265,7 +294,7 @@ class ApprovalFlowTest {
                 String.class, approvalId))
                 .as("自批不落结论：那条请求还挂着等人批，不是被点废")
                 .isEqualTo("pending");
-        assertThat(runs.find(first.runId()).orElseThrow().status()).isEqualTo(RunStatus.SUSPENDED);
+        assertThat(runs.find(first.runId()).orElseThrow().status()).isEqualTo(RunStatus.DONE);
 
         ApprovalDecider.Result other = harness.decider(roster).decide(approvalId, "approver-1", true, null);
 
@@ -298,7 +327,7 @@ class ApprovalFlowTest {
                 String.class, approvalId))
                 .as("连 decided_by 都不该被写上：那一行还是没人碰过的样子")
                 .isNull();
-        assertThat(runs.find(first.runId()).orElseThrow().status()).isEqualTo(RunStatus.SUSPENDED);
+        assertThat(runs.find(first.runId()).orElseThrow().status()).isEqualTo(RunStatus.DONE);
     }
 
     /**
@@ -326,8 +355,8 @@ class ApprovalFlowTest {
         assertThat(digests).as("两次调用是两个指纹，不是一条记录被复用").hasSize(2);
         assertThat(digests.get(0)).isNotEqualTo(digests.get(1));
         assertThat(runs.find(first.runId()).orElseThrow().status())
-                .as("第二次又卡住了，所以这件事仍然停在原地")
-                .isEqualTo(RunStatus.SUSPENDED);
+                .as("第二次又卡住了：那一轮的结局仍是 done，新的一轮落在同一段对话里")
+                .isEqualTo(RunStatus.DONE);
     }
 
     /**
@@ -433,8 +462,8 @@ class ApprovalFlowTest {
      * 允许第二次生效的话，那件事会被同一个批准唤醒两遍。
      */
     @Test
-    @DisplayName("同一条审批点两次：第二次是「已经有结论了」，不会把这件事再唤醒一遍")
-    void decidingTheSameRequestTwiceDoesNotResumeTwice() {
+    @DisplayName("同一条审批点两次：第二次是「已经有结论了」，不会再开一轮")
+    void decidingTheSameRequestTwiceDoesNotStartAnotherTurn() {
         Harness harness = new Harness(requestTool(ARGS), requestTool(ARGS), answer("已发送"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
@@ -458,9 +487,9 @@ class ApprovalFlowTest {
      * <p>判据在视图里，不在回话里：执行那一行带着 {@code approval_id}，视图把它接到
      * 审批表上，于是"谁批的、什么时候、结论是什么"是同一条 select 的三列。
      *
-     * <p>同时钉住这条链的<b>方向</b>：等审批那一行也带着同一个编号（"这条停在谁身上"要能查），
-     * 而两行里只有一行是 {@code executed}——所以 V14 的唯一索引带 {@code outcome} 谓词。
-     * 少了那个谓词，一条"先等批、后执行"的正常流程会撞约束。
+     * <p>同时钉住<b>执行发生在哪一轮</b>：批准之后是同一段对话里的<b>下一轮</b>，
+     * 所以那条 {@code succeeded} 事件挂在新的一行 run 上，而不是被拦的那一轮上。
+     * 分不清这两者的话，"批准之后接着做"会被读成"同一轮又从被拦的地方爬起来"。
      */
     @Test
     @DisplayName("批准之后执行的那一次：审计行带着审批编号，视图里查得到谁批的")
@@ -473,7 +502,13 @@ class ApprovalFlowTest {
         harness.decider().decide(approvalId, "approver-1", true, null);
 
         assertThat(tool.calls()).isEqualTo(1);
-        Map<String, Object> executed = onlyAuditRow(first.runId(), "succeeded");
+        String executedRunId = jdbc.queryForObject(
+                "select run_id from claw4j_run.audit_event"
+                        + " where kind = 'tool_action' and status = 'succeeded' limit 1", String.class);
+        assertThat(executedRunId)
+                .as("执行落在批准之后那一轮：那是新的一行 run，不是被拦的那一条被拉起来了")
+                .isNotEqualTo(first.runId());
+        Map<String, Object> executed = onlyAuditRow(executedRunId, "succeeded");
         assertThat(executed.get("tool_name")).isEqualTo(TOOL);
         assertThat(executed.get("actor")).isEqualTo("u-mailer");
         assertThat(executed.get("actor_role")).isEqualTo("mailer");
@@ -494,8 +529,8 @@ class ApprovalFlowTest {
                 "select count(*) from claw4j_run.audit_event"
                         + " where run_id = ? and kind = 'tool_action'", Integer.class, first.runId()))
                 .as("等审批不写审计：那件事的真相在 approval_request 上。"
-                        + "两条 = 开始 + 成功，没有第三条「停在谁身上」")
-                .isEqualTo(2);
+                        + "被拦的那一轮一条工具事件都没有——它没开始，也不该假装有过一次调用")
+                .isZero();
     }
 
     /**
@@ -577,8 +612,7 @@ class ApprovalFlowTest {
                                                 ObservationRegistry.NOOP)))
                         .defaultAdvisors(new AuthorizationAdvisor(
                                 List.of(ToolPermissionRegistry.of(declared)),
-                                new RunApprovalGate(new JdbcApprovalLedger(jdbc, TTL.toMillis()), runs,
-                                        List.of(), runId -> List.of()),
+                                new RunApprovalGate(new JdbcApprovalLedger(jdbc, TTL.toMillis()), List.of()),
                                 Metrics.globalRegistry, audit))
                         .defaultToolCallbacks(List.copyOf(tools))
                         .build();
@@ -597,7 +631,7 @@ class ApprovalFlowTest {
          *                  "提问人批不了自己的"要的是不同的名单
          */
         private ApprovalDecider decider(Set<String> approvers) {
-            return new ApprovalService(jdbc, runs, port(), new ApproverRoster(approvers));
+            return new ApprovalService(jdbc, new ApproverRoster(approvers), port());
         }
 
         private List<String> prompts() {
@@ -607,13 +641,13 @@ class ApprovalFlowTest {
         private InboundMessage mailer(String text) {
             // 有 send_email 动作、没有表权限：第一道门已经过了，挡住的确实是第二道门。
             return new InboundMessage(Principal.of("u-mailer", "mailer", Set.of(), Set.of("send_email")),
-                    "chat-ap", text);
+                    "chat-ap", text, Instant.now(), null, CHANNEL);
         }
 
         /** 有 {@code read} 动作、一张表都没有：用来验"表那一格挡住了他"。 */
         private InboundMessage reader(String text) {
             return new InboundMessage(Principal.of("u-analyst", "analyst", Set.of(), Set.of("read")),
-                    "chat-ap", text);
+                    "chat-ap", text, Instant.now(), null, CHANNEL);
         }
     }
 
@@ -659,12 +693,6 @@ class ApprovalFlowTest {
             }
             return text.toString();
         }
-    }
-
-    private static Optional<Step> awaitingStep(String runId) {
-        return runs.stepsOf(runId).stream()
-                .filter(step -> step.kind() == StepKind.APPROVAL && step.status() == StepStatus.AWAITING)
-                .findFirst();
     }
 
     private static List<String> pendingApprovals() {

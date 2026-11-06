@@ -248,7 +248,7 @@ public class InboundDispatcher {
         try {
             InboundMessage message = new InboundMessage(
                     principal, conversationId, event.text(), event.receivedAt(), event.eventId(),
-                    null, channel);
+                    channel);
             log.info("开始处理：eventId={} user={} conversationId={}",
                     event.eventId(), principal.userId(), conversationId);
 

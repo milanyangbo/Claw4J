@@ -510,6 +510,19 @@ class ToolGovernanceTest {
                 "{\"status\":\"blocked\",\"note\":\"等 CI 环境\"}", context);
         assertThat(blocked).contains("已阻塞");
         assertThat(goals.of("c-goal").orElseThrow().note()).isEqualTo("等 CI 环境");
+
+        // ---- 从 blocked 恢复是正常的；再按一次 resume 才是什么都不该发生
+        //（原文的 resume 只针对"已暂停、已阻塞、用量受限、预算受限"这四个态）。
+        assertThat(GoalCommand.execute(new GoalCommand.Resume(null), goals, "c-goal"))
+                .contains("目标恢复为活跃");
+        long afterResume = goals.of("c-goal").orElseThrow().revision();
+        assertThat(GoalCommand.execute(new GoalCommand.Resume(null), goals, "c-goal"))
+                .as("目标是活跃的再按 resume：说清「本来就是活跃的」，而不是假装改成功了")
+                .contains("本来就是活跃");
+        assertThat(goals.of("c-goal").orElseThrow().revision())
+                .as("没改就别把 revision 推一格：那是「谁最后改的」的痕迹，"
+                        + "一条没有改动的记录会让它退化成时间戳")
+                .isEqualTo(afterResume);
     }
 
     private static ToolContext sessionOf(String sessionKey) {
@@ -616,43 +629,13 @@ class ToolGovernanceTest {
 
         @Override
         public Optional<Run> start(String owner, String principalDigest, String goal,
-                                   NotifyPolicy notifyPolicy) {
+                                   NotifyPolicy notifyPolicy, String sessionId) {
             throw new UnsupportedOperationException("审计不该开 run");
-        }
-
-        @Override
-        public void attachPrincipal(String runId, Principal principal) {
-            throw new UnsupportedOperationException("审计不该写发起人快照");
-        }
-
-        @Override
-        public Optional<Run> resume(String runId, String owner) {
-            throw new UnsupportedOperationException("审计不该接 run");
-        }
-
-        @Override
-        public Optional<Run> reopen(String runId) {
-            throw new UnsupportedOperationException("审计不该续跑");
         }
 
         @Override
         public void finish(String runId, RunStatus status, String result) {
             throw new UnsupportedOperationException("审计不该收尾");
-        }
-
-        @Override
-        public void suspend(String runId) {
-            throw new UnsupportedOperationException("审计不该挂起");
-        }
-
-        @Override
-        public Optional<Principal> principalOf(String runId) {
-            throw new UnsupportedOperationException("审计不该读身份");
-        }
-
-        @Override
-        public void settleApprovalStep(String runId, StepStatus status) {
-            throw new UnsupportedOperationException("审计不该改审批那一步");
         }
 
         @Override

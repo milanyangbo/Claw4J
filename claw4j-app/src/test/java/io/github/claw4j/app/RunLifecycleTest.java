@@ -111,7 +111,6 @@ class RunLifecycleTest {
     @BeforeEach
     void freshTables() {
         // 投递表先清：它按 run 的外键指着 agent_run。
-        jdbc.update("delete from claw4j_run.agent_run_delivery");
         jdbc.update("delete from claw4j_run.agent_step");
         jdbc.update("delete from claw4j_run.agent_run");
         freshSessionTables();
@@ -150,13 +149,14 @@ class RunLifecycleTest {
     @DisplayName("超预算：不再调模型，写明结局，状态 budget_exhausted 能从库里读回")
     void exhaustedRunStopsWithAnOutcomeInTheDatabase() {
         Principal principal = Principal.readOnly("u-1");
-        Run run = runs.start(SessionKeys.ownerOf(principal), "fp-1", "对齐三张表的口径").orElseThrow();
+        // 会话键在开 run 的时候就写进去：预算按会话累计，先扣后写的那几笔
+        // 会落在 run 行上，而判据读的是会话行——看起来像"一次都没花"（ADR-0025）。
+        String sessionId = SessionKeys.sessionIdOf(principal, null, "chat-budget");
+        Run run = runs.start(SessionKeys.ownerOf(principal), "fp-1", "对齐三张表的口径",
+                NotifyPolicy.DEFAULT, sessionId).orElseThrow();
         InboundMessage message = new InboundMessage(
-                principal, "chat-budget", "接着做", Instant.now(), null, run.id());
-        // 会话键必须在第一次扣费之前写上：预算按会话累计，先扣后挂的那几笔
-        // 落在 run 行上，而判据读的是会话行——看起来像"一次都没花"（ADR-0025）。
-        runs.attachSession(run.id(),
-                SessionKeys.sessionIdOf(principal, message.channel(), message.chatId()));
+                principal, "chat-budget", "接着做", Instant.now(), null,
+                null, NotifyPolicy.DEFAULT, null, sessionId);
         for (int i = 0; i < 6; i++) {
             assertThat(budget.chargeToolCall(run.id())).isTrue();
         }
@@ -167,8 +167,10 @@ class RunLifecycleTest {
 
         assertThat(answer.text()).contains("预算用尽").contains("工具调用 6/6 次");
         // 判据是库里那两个数：状态与"为什么停"，都不是回执的措辞。
-        assertThat(runs.find(run.id()).orElseThrow().status()).isEqualTo(RunStatus.BUDGET_EXHAUSTED);
-        assertThat(runs.stepsOf(run.id()))
+        // 这一轮是 reply 开出来的那一行——上面那条 run 只用来把会话额度扣光。
+        assertThat(runs.find(answer.runId()).orElseThrow().status())
+                .isEqualTo(RunStatus.BUDGET_EXHAUSTED);
+        assertThat(runs.stepsOf(answer.runId()))
                 .as("为什么停在这一轮，库里要答得出来——这是审计最常问的一句")
                 .anySatisfy(step -> assertThat(step.resultSummary()).contains("预算用尽"));
     }
@@ -207,18 +209,19 @@ class RunLifecycleTest {
     @DisplayName("一轮的 token 与耗时记到 run 上：模型报多少记多少，不估算")
     void tokensAndWallClockOfATurnAreChargedToTheRun() {
         Principal principal = Principal.readOnly("u-1");
-        Run run = runs.start(SessionKeys.ownerOf(principal), "fp-1", "上周华东成交额").orElseThrow();
         ChatClientAgentPort port = new ChatClientAgentPort(
                 ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs, budget);
 
-        port.reply(new InboundMessage(
-                principal, "chat-tokens", "上周华东成交额", Instant.now(), null, run.id()));
+        OutboundMessage answer = port.reply(new InboundMessage(
+                principal, "chat-tokens", "上周华东成交额", Instant.now(), null));
 
-        Budget spent = budget.spent(run.id()).orElseThrow();
+        Budget spent = budget.spent(answer.runId()).orElseThrow();
         assertThat(spent.tokens()).as("12 + 34：模型报什么就记什么，不拿估算值补").isEqualTo(46L);
-        assertThat(spent.millis()).as("耗时照记：开 run、落 step、扣额度三次往返跑不完 1 毫秒")
-                .isPositive();
-        assertThat(runs.find(run.id()).orElseThrow().status())
+        assertThat(spent.millis())
+                .as("耗时也照记（从进门到收尾实测）。这里只断言它非负——"
+                        + "一次本地往返可能真的不到 1 毫秒，写成 isPositive 会变成一条随机红的断言")
+                .isNotNegative();
+        assertThat(runs.find(answer.runId()).orElseThrow().status())
                 .as("没有撞线的一轮照常是 done，不是 budget_exhausted").isEqualTo(RunStatus.DONE);
     }
 
@@ -253,24 +256,18 @@ class RunLifecycleTest {
     // ---------------------------------------------------------------- 送到哪（A05）
 
     @Test
-    @DisplayName("一件事登记两个地址：就地回答过的那个不重复推，另一个通道照样收到")
-    void theOtherChannelGetsTheResult() {
-        Recording deliveryFeishu = new Recording("feishu");
-        Recording deliveryWeCom = new Recording("wecom");
-        RunDelivery delivery = delivery(deliveryFeishu, deliveryWeCom);
-        Run run = runs.start(owner("u-1"), "fp-1", "对齐三张表的口径").orElseThrow();
+    @DisplayName("结果推回它开始的那段对话：没有登记表，也不回退到「最近用过的通道」")
+    void theResultGoesBackToTheConversationItStartedIn() {
+        Recording feishu = new Recording("feishu");
+        RunDelivery delivery = delivery(feishu);
 
-        // 在飞书开的头，在飞书里接着问了一句（就地回答了），企业微信那边也被登记过。
-        delivery.register(run.id(), "feishu", "oc_zhang");
-        delivery.register(run.id(), "wecom", "chat-9");
-        runs.finish(run.id(), RunStatus.DONE, "三张表的口径对完了：成交额按支付时间算");
-        delivery.announce(run.id(), RunStatus.DONE, "三张表的口径对完了：成交额按支付时间算",
-                new DeliveryTarget("feishu", "oc_zhang"));
+        delivery.announce(new DeliveryTarget("feishu", "oc_zhang"), NotifyPolicy.DONE_ONLY, "口径对完了");
+        // 没有实现推的通道（HTTP）不在 deliveries 里：它靠轮询，这不是失败
+        delivery.announce(new DeliveryTarget("http", "http:u-1"), NotifyPolicy.DONE_ONLY, "口径对完了");
 
-        assertThat(deliveryFeishu.sent).as("同一条内容出现两遍，人以为自己被重跑了").isEmpty();
-        assertThat(deliveryWeCom.sent)
-                .as("在别处接着做，原通道那头也要收到结果")
-                .containsExactly("chat-9|三张表的口径对完了：成交额按支付时间算");
+        assertThat(feishu.sent)
+                .as("只推给它自己那段对话（ADR-0027 决定四）")
+                .containsExactly("oc_zhang|口径对完了");
     }
 
     @Test
@@ -282,9 +279,9 @@ class RunLifecycleTest {
         Run run = runs.start(owner("u-1"), "fp-1", "每周一跑一遍口径核对",
                 NotifyPolicy.SILENT).orElseThrow();
 
-        delivery.register(run.id(), "feishu", "oc_zhang");
         runs.finish(run.id(), RunStatus.DONE, "这周没有对不上的地方");
-        delivery.announce(run.id(), RunStatus.DONE, "这周没有对不上的地方", null);
+        delivery.announce(new DeliveryTarget("feishu", "oc_zhang"), NotifyPolicy.SILENT,
+                "这周没有对不上的地方");
 
         assertThat(deliveryFeishu.sent).as("定时任务每跑一趟推一条，等于把自动化做成骚扰").isEmpty();
         assertThat(delivery.find(run.id(), asker)).get()
@@ -301,7 +298,6 @@ class RunLifecycleTest {
         Run run = runs.start(owner("u-1"), "fp-1", "上周华东成交额").orElseThrow();
         runs.finish(run.id(), RunStatus.DONE, "华东上周成交 128400");
 
-        // 同一件事在飞书开的头，在 HTTP 上查得到——这正是"绑 principal 不绑通道"。
         assertThat(delivery.find(run.id(), Principal.readOnly("u-1")))
                 .hasValueSatisfying(view -> assertThat(view.status()).isEqualTo("done"));
         assertThat(delivery.find(run.id(), Principal.readOnly("u-9")))
@@ -317,19 +313,6 @@ class RunLifecycleTest {
                         + " values ('r-bad', 'u-1@fp', 'fp', 'goal', 'running', 'slience')"))
                 .as("拼错的表现是「该说的一次没说」，那种错只在事后被发现")
                 .hasMessageContaining("ck_agent_run_notify_policy");
-    }
-
-    @Test
-    @DisplayName("同一个地址登记两次只留一行：连着问三轮，收到结果的还是一个会话")
-    void theSameAddressIsRegisteredOnce() {
-        RunDelivery delivery = delivery(new Recording("feishu"));
-        Run run = runs.start(owner("u-1"), "fp-1", "goal").orElseThrow();
-
-        delivery.register(run.id(), "feishu", "oc_zhang");
-        delivery.register(run.id(), "feishu", "oc_zhang");
-
-        assertThat(delivery.targetsOf(run.id()))
-                .containsExactly(new DeliveryTarget("feishu", "oc_zhang"));
     }
 
     // ---------------------------------------------------------------- 观测不碰这两张表（P14）
@@ -490,7 +473,7 @@ class RunLifecycleTest {
 
     private RunDelivery delivery(OutboundDelivery... channels) {
         // 没有 registry 时照常投递，只是没有指标——与 run 落库同一个降级口径。
-        return new RunDelivery(runs, jdbc, List.of(channels), null);
+        return new RunDelivery(runs, List.of(channels), null);
     }
 
     /** 把 span 收进列表的 tracer：这一条只关心"画了没有"，不关心画成什么样。 */

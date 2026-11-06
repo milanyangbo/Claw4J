@@ -406,7 +406,8 @@ class ObservabilityTest {
         RunStore runs = mock(RunStore.class);
         Run run = new Run("run-1", "u-1@fp", "fp", "上周华东成交额", RunStatus.RUNNING,
                 NotifyPolicy.DEFAULT, null, null, Instant.now());
-        when(runs.start(anyString(), anyString(), anyString(), any())).thenReturn(Optional.of(run));
+        when(runs.start(anyString(), anyString(), anyString(), any(), any()))
+                .thenReturn(Optional.of(run));
         when(runs.find(anyString())).thenReturn(Optional.of(run));
         when(runs.append(any())).thenAnswer(call -> {
             StepInput input = call.getArgument(0);
@@ -458,7 +459,9 @@ class ObservabilityTest {
         assertThat(asked.getFirst().text()).isEqualTo("报一次成交额");
         assertThat(asked.getFirst().principal().userId()).isEqualTo("u-1");
         assertThat(asked.getFirst().channel()).isEqualTo("feishu");
-        assertThat(asked.getFirst().runId()).as("每次到点都是新的一件").isNull();
+        assertThat(asked.getFirst().sessionId())
+                .as("到点那一刻没有会话键：它按 conversationId 派生自己那一段（ADR-0026）")
+                .isNull();
         assertThat(asked.getFirst().notifyPolicy()).isEqualTo(NotifyPolicy.SILENT);
         assertThat(fired("ok")).isEqualTo(1);
     }

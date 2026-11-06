@@ -70,16 +70,11 @@ public final class ScheduleTools implements ToolCallbackProvider {
 
     private final ScheduleAuthorization authorization;
 
-    /** 这个 run 在哪些会话里被问过。定时任务的结果推回第一个（发起的那一个）。 */
-    private final Function<String, List<DeliveryTarget>> targetsOf;
-
     private final List<ToolCallback> tools;
 
-    public ScheduleTools(ScheduleStore store, ScheduleAuthorization authorization,
-                         Function<String, List<DeliveryTarget>> targetsOf) {
+    public ScheduleTools(ScheduleStore store, ScheduleAuthorization authorization) {
         this.store = Objects.requireNonNull(store, "store");
         this.authorization = Objects.requireNonNull(authorization, "authorization");
-        this.targetsOf = targetsOf;
         this.tools = List.of(new CreateTool(), new ListTool(), new CancelTool());
     }
 
@@ -174,7 +169,7 @@ public final class ScheduleTools implements ToolCallbackProvider {
 
             // ④ 落到哪儿：这件事登记过的第一个会话就是它的出处。没有地址也能建，
             //    只是结果只能按 run id 取。
-            Optional<DeliveryTarget> address = addressOf(runIdOf(toolContext));
+            Optional<DeliveryTarget> address = addressOf(toolContext);
             Optional<Schedule> created = store.create(new ScheduleStore.Request(
                     SessionKeys.ownerOf(principal), goal, cron, zone, notify,
                     address.map(DeliveryTarget::channel).orElse(null),
@@ -421,13 +416,26 @@ public final class ScheduleTools implements ToolCallbackProvider {
         };
     }
 
-    /** 这个 run 登记过的收件地址。没有 run、没有装配投递、或者读不到，都是空。 */
-    private Optional<DeliveryTarget> addressOf(String runId) {
-        if (runId == null || targetsOf == null) {
+    /**
+     * 结果推回哪儿：这一轮从哪个通道、哪个会话来的（ADR-0027）。
+     *
+     * <p>以前按 runId 去 {@code agent_run_delivery} 查，那张表已经不在了——
+     * 地址本来就是这一轮的属性。拿不到就是"没地方推"，任务照建，结果只能按 id 取。
+     */
+    private static Optional<DeliveryTarget> addressOf(ToolContext toolContext) {
+        if (toolContext == null) {
             return Optional.empty();
         }
-        List<DeliveryTarget> targets = targetsOf.apply(runId);
-        return targets == null || targets.isEmpty()
-                ? Optional.empty() : Optional.of(targets.getFirst());
+        String channel = textAt(toolContext, ContextKeys.CHANNEL);
+        String chatRef = textAt(toolContext, ContextKeys.CHAT_REF);
+        if (channel == null || chatRef == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new DeliveryTarget(channel, chatRef));
+    }
+
+    private static String textAt(ToolContext toolContext, String key) {
+        Object value = toolContext.getContext().get(key);
+        return value instanceof String text && !text.isBlank() ? text : null;
     }
 }

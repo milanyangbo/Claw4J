@@ -1,7 +1,6 @@
 package io.github.claw4j.agent.run;
 
 import io.github.claw4j.domain.NotifyPolicy;
-import io.github.claw4j.domain.principal.Principal;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -76,17 +75,18 @@ public class JdbcRunStore implements RunStore {
     }
 
     @Override
-    public Optional<Run> start(String owner, String principalDigest, String goal, NotifyPolicy notifyPolicy) {
+    public Optional<Run> start(String owner, String principalDigest, String goal,
+                               NotifyPolicy notifyPolicy, String sessionId) {
         String id = UUID.randomUUID().toString();
         Instant now = Instant.now();
         return guard("开一个 run", () -> {
             jdbc.update("insert into claw4j_run.agent_run"
                             + " (id, owner, principal_digest, goal, status, notify_policy, budget_used,"
-                            + " created_at, updated_at)"
-                            + " values (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                            + " session_id, created_at, updated_at)"
+                            + " values (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
                     id, owner, principalDigest, goal, RunStatus.RUNNING.column(),
                     notifyPolicy == null ? NotifyPolicy.DEFAULT.column() : notifyPolicy.column(),
-                    timestamp(now), timestamp(now));
+                    sessionId, timestamp(now), timestamp(now));
             count("created", "policy", notifyPolicy == null
                     ? NotifyPolicy.DEFAULT.column() : notifyPolicy.column());
             return new Run(id, owner, principalDigest, goal, RunStatus.RUNNING,
@@ -99,90 +99,6 @@ public class JdbcRunStore implements RunStore {
      *
      * <p>单独一条 update 而不是并进 insert：只有"可能被服务端叫醒"的那些 run 需要它，
      * 而"这件事有没有主"和"这件事是什么"是两个不同的问题。
-     */
-    @Override
-    public void attachPrincipal(String runId, Principal principal) {
-        if (runId == null || principal == null) {
-            return;
-        }
-        guard("记下 run 的发起人", () -> jdbc.update(
-                "update claw4j_run.agent_run set principal_snapshot = ? where id = ?",
-                PrincipalSnapshot.encode(principal), runId));
-    }
-
-    /** 记下这条 run 属于哪一段会话（ADR-0025）。没记上就退回按 run 自己那一行算。 */
-    @Override
-    public void attachSession(String runId, String sessionId) {
-        if (runId == null || sessionId == null || sessionId.isBlank()) {
-            return;
-        }
-        guard("记下 run 的会话", () -> jdbc.update(
-                "update claw4j_run.agent_run set session_id = ? where id = ?", sessionId, runId));
-    }
-
-    /** 记下这条 run 的对话地址（ADR-0026 决定二）：续跑靠它抢同一把 lane 锁。 */
-    @Override
-    public void attachAddress(String runId, String address) {
-        if (runId == null || address == null || address.isBlank()) {
-            return;
-        }
-        guard("记下 run 的对话地址", () -> jdbc.update(
-                "update claw4j_run.agent_run set session_address = ? where id = ?", address, runId));
-    }
-
-    /** 这条 run 当初在哪条对话里。空 = 加列之前建的，或者存储降级（续跑时就不加锁）。 */
-    @Override
-    public Optional<String> sessionAddressOf(String runId) {
-        if (runId == null || runId.isBlank()) {
-            return Optional.empty();
-        }
-        return guard("读一条 run 的对话地址", () -> jdbc.query(
-                "select session_address from claw4j_run.agent_run where id = ?",
-                (row, index) -> row.getString(1), runId).stream()
-                .filter(address -> address != null && !address.isBlank())
-                .findFirst().orElse(null));
-    }
-
-    @Override
-    public Optional<String> sessionOf(String runId) {
-        return guard("读 run 的会话", () -> jdbc.query(
-                        "select session_id from claw4j_run.agent_run where id = ?",
-                        (row, index) -> row.getString(1), runId).stream().findFirst().orElse(null))
-                .flatMap(Optional::ofNullable);
-    }
-
-    /**
-     * 接上一个 run：只改状态，不插新行——"接上"不是"再来一次"。
-     *
-     * <p>{@code owner} 进 where 而不是先查后判：拿着别人的 runId 来"继续"，
-     * 落到的是另开一个 run，而不是把别人的事继续下去。多一次往返换来的
-     * 只是能把"不存在"和"不是你的"区分开，而调用方对两者的处理完全一样。
-     *
-     * <p>{@code status <> suspended} 同理：等审批的 run 只由审批放行，不由"继续"放行。
-     */
-    @Override
-    public Optional<Run> resume(String runId, String owner) {
-        return guard("接上一个 run", () -> {
-            int updated = jdbc.update("update claw4j_run.agent_run set status = ?, updated_at = ?"
-                            + " where id = ? and owner = ? and status <> ?",
-                    RunStatus.RUNNING.column(), timestamp(Instant.now()), runId, owner,
-                    RunStatus.SUSPENDED.column());
-            if (updated == 0) {
-                count("resume_rejected");
-                return null;
-            }
-            count("resumed");
-            return jdbc.query(RUN_COLUMNS + " where id = ?", this::runOf, runId)
-                    .stream().findFirst().orElse(null);
-        });
-    }
-
-    /**
-     * 追加一步。审计那几样（P07）跟着同一行进去——它们不是另一张表的事，
-     * 而"另建一张审计表"正是这一票明确不要的东西（ADR-0023）。
-     *
-     * <p>{@code audit} 为空时六列全写 null：模型轮与计划那两类 step 与审计无关，
-     * 给它们编一个默认值只会让"这一行有没有审计"变得看不出来。
      */
     @Override
     public Optional<Step> append(StepInput input) {
@@ -214,30 +130,6 @@ public class JdbcRunStore implements RunStore {
      * 这条路上的唤醒理由是"有人批了"，它不该顺手把一件正在跑或已经跑完的事再拉起来一次。
      */
     @Override
-    public Optional<Run> reopen(String runId) {
-        return guard("审批放行后接着做", () -> {
-            int updated = jdbc.update("update claw4j_run.agent_run set status = ?, updated_at = ?"
-                            + " where id = ? and status = ?",
-                    RunStatus.RUNNING.column(), timestamp(Instant.now()), runId,
-                    RunStatus.SUSPENDED.column());
-            if (updated == 0) {
-                count("reopen_missed");
-                return null;
-            }
-            count("reopened");
-            return jdbc.query(RUN_COLUMNS + " where id = ?", this::runOf, runId)
-                    .stream().findFirst().orElse(null);
-        });
-    }
-
-    /**
-     * 收尾，顺手写上这一轮的回答全文。
-     *
-     * <p>{@code result} 为 null 时用 {@code coalesce} 留着旧值：失败与"额度用尽"那两条路
-     * 没有新结果，而它们不该把上一轮的答案抹掉——"这件事最后做出来的是什么"
-     * 在那些时候正是要被问的问题。
-     */
-    @Override
     public void finish(String runId, RunStatus status, String result) {
         guard("收尾一个 run", () -> {
             jdbc.update("update claw4j_run.agent_run set status = ?, result = coalesce(?, result),"
@@ -259,62 +151,6 @@ public class JdbcRunStore implements RunStore {
      *
      * <p>{@code and status = 'running'} 不是防御式编程：一条迟到一小时的批准
      * 不该把一件已经做完的事拉回 suspended，而那种状态会让人再去"继续"它一遍。
-     */
-    @Override
-    public void suspend(String runId) {
-        guard("把 run 停下来等审批", () -> {
-            int updated = jdbc.update("update claw4j_run.agent_run set status = ?, updated_at = ?"
-                            + " where id = ? and status = ?",
-                    RunStatus.SUSPENDED.column(), timestamp(Instant.now()), runId,
-                    RunStatus.RUNNING.column());
-            if (updated == 0) {
-                count("suspend_missed");
-            } else {
-                count("suspended");
-            }
-            return null;
-        });
-    }
-
-    @Override
-    public Optional<Principal> principalOf(String runId) {
-        return guard("读 run 的发起人", () -> {
-            String snapshot = jdbc.queryForObject(
-                    "select principal_snapshot from claw4j_run.agent_run where id = ?",
-                    String.class, runId);
-            return PrincipalSnapshot.decode(snapshot).orElse(null);
-        });
-    }
-
-    /**
-     * 把等审批的那一步改成结论（P02）。
-     *
-     * <p>条件里带 {@code status = 'awaiting'}：这条语句只该改"正等着的那一步"。
-     * 去掉它就会把同一个 run 里历史上所有审批步骤一起改写，
-     * 而表现是"上次被拒的那一步忽然变成已做"。
-     */
-    @Override
-    public void settleApprovalStep(String runId, StepStatus status) {
-        guard("把等审批的那一步改成结论", () -> {
-            int updated = jdbc.update("update claw4j_run.agent_step set status = ?"
-                            + " where run_id = ? and kind = ? and status = ?",
-                    status.column(), runId, StepKind.APPROVAL.column(), StepStatus.AWAITING.column());
-            if (updated == 0) {
-                count("settle_missed");
-            }
-            return null;
-        });
-    }
-
-    /**
-     * 读用量：按这条 run 所属的那段会话，取窗口内的累计（ADR-0025）。
-     *
-     * <p><b>为什么不能按 run 行求和</b>：每轮都写新的 {@code updated_at}，
-     * 两小时前那几轮会掉出时间窗，累计值从 5 掉回 3——额度"回血"，
-     * 而预算最要紧的性质是只增不减。所以窗口内的计数单独存一行，过期整行清零。
-     *
-     * <p><b>清零就是"上一段对话结束了"</b>：不判"用户这件事做完了"——那是判不了的，
-     * 判错的代价是把人卡住。与 OpenClaw 的 idle reset 同一个做法。
      */
     @Override
     public Optional<Budget> spent(String runId, Instant idleBefore) {

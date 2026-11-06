@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.approval;
 
+import io.github.claw4j.agent.run.PrincipalSnapshot;
 import io.github.claw4j.domain.port.ApprovalLedger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,8 +63,9 @@ public class JdbcApprovalLedger implements ApprovalLedger {
     private static final String ASK_SQL =
             "insert into claw4j_run.approval_request"
                     + " (id, run_id, owner, tool_name, args_digest, args_summary, status,"
+                    + " session_key, channel, chat_ref, principal_snapshot,"
                     + " requested_at, expires_at)"
-                    + " values (?, ?, ?, ?, ?, ?, 'pending', now(),"
+                    + " values (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, now(),"
                     + " now() + (? * interval '1 millisecond'))";
 
     private final JdbcTemplate jdbc;
@@ -105,9 +107,18 @@ public class JdbcApprovalLedger implements ApprovalLedger {
             return Optional.empty();
         }
         String id = UUID.randomUUID().toString();
+        // 来处与请求一起落（ADR-0027）：批准之后要回到那段对话开新一轮，
+        // 而"哪段对话、发起人是谁"是这一条请求自己的属性，不该寄存在别处。
+        Origin origin = ask.origin();
         try {
             jdbc.update(ASK_SQL, id, ask.runId(), ask.owner(), ask.toolName(), ask.argsDigest(),
-                    ask.argsSummary(), ttlMillis);
+                    ask.argsSummary(),
+                    origin == null ? null : origin.sessionKey(),
+                    origin == null ? null : origin.channel(),
+                    origin == null ? null : origin.chatRef(),
+                    origin == null || origin.principal() == null
+                            ? null : PrincipalSnapshot.encode(origin.principal()),
+                    ttlMillis);
             return Optional.of(id);
         }
         catch (RuntimeException failure) {

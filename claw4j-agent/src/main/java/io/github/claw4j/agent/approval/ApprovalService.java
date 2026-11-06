@@ -1,44 +1,54 @@
 package io.github.claw4j.agent.approval;
 
-import io.github.claw4j.agent.run.RunResumer;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.StepStatus;
+import io.github.claw4j.agent.run.PrincipalSnapshot;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.ApproverRoster;
+import io.github.claw4j.domain.NotifyPolicy;
+import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.InboundMessage;
+import io.github.claw4j.domain.principal.Principal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
- * 一次审批决定的落点（P02、P03）：看这个人有没有资格批、定结论、把那一步从 awaiting 改掉、
- * 然后叫醒停在原地的 run。
+ * 一次审批决定的落点（P02、P03）：看这个人有没有资格批、定结论，然后按结论决定
+ * 要不要在同一段对话里开新一轮。
+ *
+ * <p><b>批准 = 同一段对话里开新一轮；拒绝 = 什么都不开</b>（ADR-0027 决定一）。
+ * 这是照 OpenClaw 的原文：
+ *
+ * <blockquote>核准的非同步執行會發出命令進度與完成系統事件；
+ * <b>遭拒絕或逾時的核准為終止狀態，不會以拒絕系統事件喚醒代理程式工作階段</b>。</blockquote>
+ *
+ * <p>所以"拒绝之后把理由回灌给模型"那套没有了。它不是被删掉的便利，而是被证伪的设计：
+ * 那条路要求"一件事"能跨请求活着，被拒绝之后还能把它叫起来；而开放式对话里
+ * 用户拒绝一件事之后，正确的下一步是<b>他说一句别的</b>，不是模型自己换个说法再试一次。
+ *
+ * <p><b>为什么"同一段对话"就够了，不用把做到哪一步抄给模型</b>：上下文与 goal 都在那段对话里
+ * （ADR-0025、ADR-0027 决定三）。模型看到的自然就是"刚才我要调这个工具、现在批准了"。
+ * 以前要从 step 拼一段 recap，是因为 run 挂起之后上下文被认为丢了——那个前提不成立。
  *
  * <p><b>资格先判，结论后落</b>（P03）：不在名单里的人、以及提出这条请求的人，都<b>不落结论</b>——
  * 那条请求仍然挂着等别人，而不是被点废。先判资格还有一个顺序上的便宜：资格判定要读一次行
  * （拿 {@code owner}），而"结论落不落得下来"那条 update 必须在读懂之后，
  * 否则自批的那一下已经写进去了，再想撤回来就得写一条补偿语句。
  *
- * <p><b>三步的顺序不是随意的</b>：
- * <ol>
- *   <li><b>先落结论</b>——续跑跑起来之后，工具那一层紧接着会问"有没有一条有效批准"，
- *       而它读的正是这次 update。先叫醒再落结论的话，模型会在一个还没有批准的世界里
- *       重新发起同一个调用，于是它立刻又被拦一次（而人会以为自己已经批过了）。</li>
- *   <li><b>再改 step</b>——recap 是续跑时模型唯一能看到的进度，那一步还写着"等审批"的话，
- *       它会先把"我在等人批"再说一遍。</li>
- *   <li><b>最后续跑</b>——前两步都只改了库，没有它们也能"成功"返回；
- *       而续跑一旦开始就花 token、调模型、执行工具，是这一步里唯一不可逆的动作。</li>
- * </ol>
+ * <p><b>先落结论，再开新一轮</b>：新一轮跑起来之后，工具那一层紧接着会问"有没有一条有效批准"，
+ * 而它读的正是这次 update。先叫醒再落结论的话，模型会在一个还没有批准的世界里
+ * 重新发起同一个调用，于是它立刻又被拦一次（而人会以为自己已经批过了）。
  *
  * <p><b>一次结论只能落一次</b>：判定与写入是一条语句（{@code where status = 'pending'}），
  * 并且带 {@code expires_at > now()}。两个审批人同时点、或者同一个人点了两次，
- * 第二次拿到的是 {@link ApprovalVerdict#ALREADY_DECIDED}，而不是一次新的续跑——
+ * 第二次拿到的是 {@link ApprovalVerdict#ALREADY_DECIDED}，而不是第二轮模型调用——
  * 否则那件事会被同一个批准唤醒两遍。
  */
 public class ApprovalService implements ApprovalDecider {
@@ -58,31 +68,33 @@ public class ApprovalService implements ApprovalDecider {
                     + " where id = ? and status = 'pending' and expires_at > now()";
 
     /**
-     * 读一条请求现在的样子：资格判定要 {@code owner}，落不下去时要拿状态与过期与否解释。
-     * 一次读全——落结论那条 update 仍然是唯一的判定点。
+     * 读一条请求现在的样子：资格判定要 {@code owner}，落不下去时要拿状态与过期与否解释，
+     * 批准时要拿来处（哪段对话、哪个通道、发起人是谁）。一次读全——落结论那条 update
+     * 仍然是唯一的判定点。
      */
     private static final String ROW_SQL =
-            "select status, expires_at <= now() as expired, run_id, owner, tool_name"
+            "select status, expires_at <= now() as expired, run_id, owner, tool_name,"
+                    + " session_key, channel, chat_ref, principal_snapshot"
                     + " from claw4j_run.approval_request where id = ?";
 
     private final JdbcTemplate jdbc;
 
-    private final RunStore runs;
-
     /**
-     * 续跑那条腿。可以为 null——没有 Agent 的部署（只装配了 run 存储）里，批准照样落得下来，
-     * 只是没人接着做。那时如实说出来，而不是假装续上了。
+     * 谁有权批（P03）。名单为空时谁都批不了——装配时在这里喊一次，
+     * 别让它表现成"请求默默过期"。
      */
-    private final RunResumer resumer;
-
-    /** 谁能批（P03）。名单为空时谁都批不了——装配时在这里喊一次，别让它表现成"请求默默过期"。 */
     private final ApproverRoster roster;
 
-    public ApprovalService(JdbcTemplate jdbc, RunStore runs, RunResumer resumer, ApproverRoster roster) {
+    /**
+     * 批准之后在那段对话里开新一轮。可以为 null——没有 Agent 的部署（只装配了审批表）里，
+     * 批准照样落得下来，只是没人接着做。那时如实说出来，而不是假装续上了。
+     */
+    private final AgentPort agent;
+
+    public ApprovalService(JdbcTemplate jdbc, ApproverRoster roster, AgentPort agent) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
-        this.runs = Objects.requireNonNull(runs, "runs");
-        this.resumer = resumer;
         this.roster = Objects.requireNonNull(roster, "roster");
+        this.agent = agent;
         if (roster.nobody()) {
             log.warn("claw4j.approval.approvers 一个人都没有：待批请求会一直挂着，直到过期。"
                     + "要么把审批人填进去（飞书填 open_id，HTTP 填用户名），要么别把任何动作标成“要审批”。");
@@ -108,48 +120,72 @@ public class ApprovalService implements ApprovalDecider {
             // 读的时候还在等，写的时候落不下来：已经有结论 / 刚好过期 / 另一个人刚落完。
             return explanationOf(row);
         }
-        String note = note(row.toolName(), approvalId, approved, reason);
-        if (row.runId() == null || row.runId().isBlank()) {
-            // 不在一个 run 里（子 Agent，A10）：结论落下了，但没有"接着做"这回事。
-            return new Result(verdictOf(approved), approved ? "已批准。" : "已拒绝。");
+        if (!approved) {
+            // 拒绝是终态：不调模型、不开新一轮。理由只落在库上（谁批过、为什么），
+            // 不再回灌给模型——那条路要求"一件事"能被叫醒，而它已经不存在了。
+            return new Result(ApprovalVerdict.DENIED, deniedText(row.toolName(), reason));
         }
-        runs.settleApprovalStep(row.runId(), approved ? StepStatus.DONE : StepStatus.FAILED);
-        return resume(row, note, approved);
+        return continueInConversation(row, approvalId);
+    }
+
+    /**
+     * 批准之后：回到发起请求的那段对话，开新一轮。
+     *
+     * <p><b>身份用发起人的快照，不用审批人的</b>（V11）：用审批人的身份跑等于"我批了
+     * 就能用我的权限干"——那不是审批，是授权变更。而只存 {@code owner} 反推不出角色与
+     * 可访问表，所以这一行上的 {@code principal_snapshot} 是整份身份。
+     *
+     * <p><b>会话键原样带过去，不换段</b>：换段就等于把上下文与 goal 丢掉，
+     * 那正好是"接着做"需要的两样东西。
+     *
+     * <p><b>没有来处就不跑</b>：读不到发起人或会话键时如实说"没法自动接着做"。
+     * 猜一个身份或猜一段对话去跑，比让人再说一句更糟——前者是提权，后者是回答落到别人那里。
+     */
+    private Result continueInConversation(Row row, String approvalId) {
+        if (agent == null) {
+            return new Result(ApprovalVerdict.GRANTED,
+                    "已批准，但这个部署没有 Agent 在跑，这件事不会自动接着做。");
+        }
+        Optional<Principal> principal = PrincipalSnapshot.decode(row.principalSnapshot());
+        if (principal.isEmpty() || blank(row.sessionKey()) || blank(row.chatRef())) {
+            return new Result(ApprovalVerdict.GRANTED,
+                    "已批准，但这条请求没有留下完整的来处（哪段对话、发起人是谁），"
+                            + "没法自动接着做。让提这个请求的人再说一句“继续”。");
+        }
+        InboundMessage message = new InboundMessage(
+                principal.get(),
+                row.chatRef(),
+                grantedNote(row.toolName(), approvalId),
+                Instant.now(),
+                null,
+                row.channel(),
+                NotifyPolicy.DONE_ONLY,
+                null,
+                row.sessionKey());
+        try {
+            agent.reply(message);
+        }
+        catch (RuntimeException failure) {
+            // 结论确实落下了，所以 verdict 不改；但"接着做"没发生，必须说出来——
+            // 只说"已批准"的话，用户会一直等一个不会来的回答。
+            log.error("批准之后那一轮没跑起来 approval={}", approvalId, failure);
+            return new Result(ApprovalVerdict.GRANTED,
+                    "已批准，但接着做的那一轮出错了（见日志），结果可能还没送到。"
+                            + "让提这个请求的人再说一句“继续”。");
+        }
+        return new Result(ApprovalVerdict.GRANTED, "已批准，这件事已经接着往下做了。");
     }
 
     /** 落结论。返回 0 表示那一行已经不是"等着且没过期"了。 */
     private int claim(String approvalId, String approver, boolean approved, String reason) {
         try {
             return jdbc.update(CLAIM_SQL, approved ? "granted" : "denied", approver, reason, approvalId);
-        } catch (RuntimeException failure) {
+        }
+        catch (RuntimeException failure) {
             // 落不下来时不能假装批了：调用方（审批卡片）要告诉点按钮的人"没生效"，让他再点一次。
             log.error("审批结论落不下来 approval={}", approvalId, failure);
             return 0;
         }
-    }
-
-    private Result resume(Row row, String note, boolean approved) {
-        if (resumer == null) {
-            return new Result(verdictOf(approved),
-                    approved
-                            ? "已批准，但这个部署没有 Agent 在跑，这件事不会自动接着做。"
-                            : "已拒绝，这个部署没有 Agent 在跑，理由没能回灌给模型。");
-        }
-        Optional<String> answer = resumer.resume(row.runId(), note);
-        if (answer.isEmpty()) {
-            // 结论确实落下了，所以 verdict 不改；但"接着做"没发生，必须说出来——
-            // 说"已批准"而不提这一句，用户会一直等一个不会来的回答。
-            return new Result(verdictOf(approved),
-                    (approved ? "已批准" : "已拒绝")
-                            + "，但这件事实在没能自动接着做（它不在等待状态，或者读不到发起人）。"
-                            + "让提这个请求的人再说一句“继续”。");
-        }
-        return new Result(verdictOf(approved),
-                approved ? "已批准，这件事已经接着往下做了。" : "已拒绝，理由已经交给模型。");
-    }
-
-    private static ApprovalVerdict verdictOf(boolean approved) {
-        return approved ? ApprovalVerdict.GRANTED : ApprovalVerdict.DENIED;
     }
 
     /**
@@ -173,7 +209,8 @@ public class ApprovalService implements ApprovalDecider {
         List<Row> rows;
         try {
             rows = jdbc.query(ROW_SQL, this::rowOf, approvalId);
-        } catch (RuntimeException failure) {
+        }
+        catch (RuntimeException failure) {
             log.warn("审批表读不出来 approval={}", approvalId, failure);
             return Optional.empty();
         }
@@ -200,24 +237,23 @@ public class ApprovalService implements ApprovalDecider {
     }
 
     /**
-     * 回灌给模型的那句话。
+     * 批准之后交给模型的这句话。
      *
-     * <p><b>拒绝也要给理由，而且要说"别再发一次"</b>：模型看不到审批系统，
-     * 只看到"上一轮被拦了"。不说清为什么，它下一轮会把同一个请求原样再来一遍；
-     * 而说清了理由之后，它至少知道该换个参数、换条路，或者直接告诉用户不行。
+     * <p><b>要说"下一步就是执行它"</b>：模型看不到审批系统，只看到"上一轮被拦了"。
+     * 不点明这一句，它下一轮会再问一遍用户要不要做——而那个按钮已经有人按过了。
      */
-    private static String note(String toolName, String approvalId, boolean approved, String reason) {
-        if (approved) {
-            return "工具 " + toolName + " 的审批已经通过（编号 " + approvalId
-                    + "）。下一步就是执行它，不要再问用户要不要做。";
-        }
-        StringBuilder text = new StringBuilder("工具 ").append(toolName)
-                .append(" 的审批被拒绝了（编号 ").append(approvalId).append("）");
+    private static String grantedNote(String toolName, String approvalId) {
+        return "[审批通过] 工具 " + toolName + " 的审批已经通过（编号 " + approvalId
+                + "）。下一步就是执行它，不要再问用户要不要做。";
+    }
+
+    /** 拒绝之后回给审批人的那一句。不调模型，所以它只是"这一条到此为止"的确认。 */
+    private static String deniedText(String toolName, String reason) {
+        StringBuilder text = new StringBuilder("已拒绝，工具 ").append(toolName).append(" 的这次操作不会执行。");
         if (reason != null && !reason.isBlank()) {
-            text.append("，理由：").append(reason.strip());
+            text.append("理由：").append(reason.strip()).append('。');
         }
-        return text.append("。不要再请求同一个操作：同一个请求再发一次也不会被批准，")
-                .append("换个做法，或者直接告诉用户这条路走不通。").toString();
+        return text.append("提请求的人可以换个做法再说一句。").toString();
     }
 
     /**
@@ -238,7 +274,8 @@ public class ApprovalService implements ApprovalDecider {
                             + " expires_at <= now() as expired, expires_at"
                             + " from claw4j_run.approval_request where id = ?",
                     this::pendingOf, approvalId).stream().findFirst();
-        } catch (RuntimeException failure) {
+        }
+        catch (RuntimeException failure) {
             log.warn("读审批请求失败 approval={}", approvalId, failure);
             return Optional.empty();
         }
@@ -248,14 +285,27 @@ public class ApprovalService implements ApprovalDecider {
         return new Pending(row.getString("id"), row.getString("run_id"), row.getString("owner"),
                 row.getString("tool_name"), row.getString("args_summary"), row.getString("status"),
                 row.getBoolean("expired"), row.getObject("expires_at", java.time.OffsetDateTime.class)
-                        .toInstant());
+                .toInstant());
     }
 
     private Row rowOf(ResultSet row, int index) throws SQLException {
         return new Row(row.getString("status"), row.getBoolean("expired"),
-                row.getString("run_id"), row.getString("owner"), row.getString("tool_name"));
+                row.getString("owner"), row.getString("tool_name"),
+                row.getString("session_key"), row.getString("channel"), row.getString("chat_ref"),
+                row.getString("principal_snapshot"));
     }
 
-    private record Row(String status, boolean expired, String runId, String owner, String toolName) {
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /**
+     * @param sessionKey        这条请求来自哪一段对话（含段）
+     * @param channel           卡片与结果的投递通道，可空
+     * @param chatRef           通道内的会话地址
+     * @param principalSnapshot 发起人的身份快照（JSON），可空
+     */
+    private record Row(String status, boolean expired, String owner, String toolName,
+                       String sessionKey, String channel, String chatRef, String principalSnapshot) {
     }
 }

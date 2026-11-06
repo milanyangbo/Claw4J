@@ -19,6 +19,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
+import java.lang.reflect.RecordComponent;
+
+import java.util.Arrays;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -108,23 +112,19 @@ class HttpChatControllerTest {
     }
 
     /**
-     * resume 的入口就长这样：客户端把上一轮回答里的 runId 带回来（A02）。
+     * 请求体里<b>没有</b> {@code runId}（ADR-0027）。
      *
-     * <p>不另开一个 {@code /api/runs/{id}/resume} 端点——那就要把认人这一段再写一遍，
-     * 而两处认人迟早只对一处改。runId 是请求体里一个可选字段，
-     * 同步与流式两条路同时生效，代价是零。
+     * <p>留着它的话，它会静默变成一个没人读的摆设，而下一个看接口文档的人会以为
+     * "带上它就能接着做"——那条路要求一件事能跨请求活着，而它已经不存在了。
+     * 这条用反射钉住参数名：把 runId 加回去的那一刻它就会红。
      */
     @Test
-    @DisplayName("带着 runId 的 /api/chat 就是 resume：runId 原样交给 Agent")
-    void runIdInTheRequestReachesTheAgent() {
-        ScriptedAgent agent = new ScriptedAgent();
-        HttpChatController controller = controller(agent, Runnable::run);
-
-        controller.ask(new AskRequest("继续", "run-7"), "u-1", "read-only", null);
-        controller.ask(new AskRequest("新问题"), "u-1", "read-only", null);
-
-        assertEquals("run-7", agent.received.getFirst().runId());
-        assertEquals(null, agent.received.getLast().runId());
+    @DisplayName("/api/chat 的请求体只有 text 与 notifyPolicy：没有续跑令牌")
+    void theRequestCarriesNoResumeToken() {
+        assertEquals(List.of("text", "notifyPolicy"),
+                Arrays.stream(AskRequest.class.getRecordComponents())
+                        .map(RecordComponent::getName).toList(),
+                "加回 runId 就等于把「一件事能跨请求活着」重新引进来，而它正是这一版要拆掉的");
     }
 
     @Test
@@ -133,7 +133,7 @@ class HttpChatControllerTest {
         ScriptedAgent agent = new ScriptedAgent();
         HttpChatController controller = controller(agent, Runnable::run);
 
-        controller.ask(new AskRequest("继续", "run-7", " silent "), "u-1", "read-only", null);
+        controller.ask(new AskRequest("继续", " silent "), "u-1", "read-only", null);
         controller.ask(new AskRequest("随口问问"), "u-1", "read-only", null);
 
         InboundMessage silent = agent.received.getFirst();
@@ -151,7 +151,7 @@ class HttpChatControllerTest {
         ScriptedAgent agent = new ScriptedAgent();
 
         assertThrows(InvalidRequestException.class, () -> controller(agent, Runnable::run)
-                .ask(new AskRequest("问题", null, "slience"), "u-1", "read-only", null));
+                .ask(new AskRequest("问题", "slience"), "u-1", "read-only", null));
 
         assertEquals(0, agent.received.size(), "拼错的请求不该先跑一遍再报错");
     }

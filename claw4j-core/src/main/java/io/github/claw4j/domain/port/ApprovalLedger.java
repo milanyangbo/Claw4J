@@ -1,5 +1,7 @@
 package io.github.claw4j.domain.port;
 
+import io.github.claw4j.domain.principal.Principal;
+
 import java.time.Instant;
 import java.util.Optional;
 
@@ -59,8 +61,26 @@ public interface ApprovalLedger {
      *                    收窄到"这个工具的这一种调用方式"
      * @param argsSummary 给人看的参数摘要（已脱敏、已截断）。审批人看不到自己批的是什么时，
      *                    点下去的那个按钮等于盖章
+     * @param origin      这条请求从哪段对话来的（ADR-0027）。批准之后就在那段对话里开新一轮，
+     *                    而不用拿 {@code runId} 去唤醒一件"挂着的事"。
+     *                    为 null 表示这一层还没有对话（子 Agent，A10）——那时结论落得下来，
+     *                    但没有"接着做"这回事
      */
-    record Ask(String runId, String owner, String toolName, String argsDigest, String argsSummary) {
+    record Ask(String runId, String owner, String toolName, String argsDigest, String argsSummary,
+               Origin origin) {
+    }
+
+    /**
+     * 一条待批请求的来处。
+     *
+     * @param sessionKey 哪一段对话（含段）。批准之后用它开新一轮，<b>不换段</b>：
+     *                   上下文与 goal 都在那段对话里
+     * @param channel    卡片往哪个通道发。空表示这个通道没有卡片能力（HTTP 靠接口批）
+     * @param chatRef    通道内的会话地址
+     * @param principal  发起人。批准之后用他的身份调模型——用审批人的身份等于提权，
+     *                   而只存 {@code owner} 反推不出角色与可访问表
+     */
+    record Origin(String sessionKey, String channel, String chatRef, Principal principal) {
     }
 
     /**

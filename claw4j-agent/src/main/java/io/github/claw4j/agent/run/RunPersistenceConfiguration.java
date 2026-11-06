@@ -41,7 +41,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 import javax.sql.DataSource;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -153,8 +152,8 @@ public class RunPersistenceConfiguration {
     /**
      * 审批门：Advisor 只认这两个动作（兑现、登记）。
      *
-     * <p>它把"登记一条"与"把这件事停在这一点"合成一次调用——
-     * 分成两次的话，早晚有一处只做了前半截，而那种状态是"有人批了但这件事不会醒"。
+     * <p>它只做两件事：登记一条、把卡片推到那段对话里。以前还要"把这件事停在这一点"，
+     * 那是 run 能跨请求活着的遗产（ADR-0027）。
      *
      * <p><b>卡片能力从容器里取</b>（P03）：哪个通道能推卡片是那个通道自己的事
      * （飞书有交互卡片，HTTP 那边入口是接口）。取不到时 {@code cards} 为空——
@@ -162,24 +161,16 @@ public class RunPersistenceConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(ApprovalGate.class)
-    public ApprovalGate approvalGate(ApprovalLedger ledger, RunStore runs,
-                                     ObjectProvider<ApprovalCards> cards,
-                                     ObjectProvider<RunDelivery> delivery) {
-        return new RunApprovalGate(ledger, runs, cards.orderedStream().toList(),
-                runId -> {
-                    RunDelivery targets = delivery.getIfAvailable();
-                    return targets == null ? List.of() : targets.targetsOf(runId);
-                });
+    public ApprovalGate approvalGate(ApprovalLedger ledger, ObjectProvider<ApprovalCards> cards) {
+        return new RunApprovalGate(ledger, cards.orderedStream().toList());
     }
 
     /**
      * 审批的"人那一侧"：有人点了批准或拒绝之后发生什么（P02），以及这个人有没有资格点（P03）。
      *
-     * <p><b>续跑那条腿从 {@link AgentPort} 里认出来</b>，不另外注入一个 {@code RunResumer}：
-     * 那个实现就是 Agent 的门本身（它持有会话、预算、投递，能自己把一轮跑完），
-     * 再注册一个同对象的第二个名字，只会让"谁是那个实现"多一处能写错的地方。
-     * 拿到的门不实现 {@code RunResumer} 时（第三方换了一个 AgentPort 实现），
-     * 批准照样落得下来，只是没法自动接着做——那时 {@code ApprovalService} 会如实说出来。
+     * <p><b>接着做的那条腿就是 {@link AgentPort} 本身</b>：批准之后组一条入站消息，
+     * 走与普通消息同一条路径（会话记忆、预算、投递都在那条路上）。
+     * 没有 Agent 的部署里批准照样落得下来，只是没人接着做——那时会如实说出来。
      *
      * <p><b>名单在这里变成值对象</b>：{@code claw4j.approval.approvers} 是配置，
      * {@link ApproverRoster} 是"能不能批"这条判断唯一的落点——判定写在配置对象上的话，
@@ -187,13 +178,12 @@ public class RunPersistenceConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(ApprovalDecider.class)
-    public ApprovalDecider approvalDecider(JdbcTemplate jdbc, RunStore runs,
+    public ApprovalDecider approvalDecider(JdbcTemplate jdbc,
                                            ObjectProvider<AgentPort> agentPort,
                                            ApprovalProperties properties) {
-        AgentPort port = agentPort.getIfAvailable();
-        RunResumer resumer = port instanceof RunResumer candidate ? candidate : null;
-        return new ApprovalService(jdbc, runs, resumer,
-                new ApproverRoster(new LinkedHashSet<>(properties.getApprovers())));
+        return new ApprovalService(jdbc,
+                new ApproverRoster(new LinkedHashSet<>(properties.getApprovers())),
+                agentPort.getIfAvailable());
     }
 
     /**
@@ -215,16 +205,13 @@ public class RunPersistenceConfiguration {
      *
      * <p><b>推送实现从容器里取，不在这一层写死</b>：哪个通道能推是那个通道自己的事
      * （HTTP 不能，它靠轮询），写死等于把"哪些通道支持推"这张表埋进 Agent 模块。
-     * 取不到任何实现时它照常登记与回收——只是没有人会被主动找到。
      */
     @Bean
     @ConditionalOnMissingBean(RunDelivery.class)
     public RunDelivery runDelivery(RunStore runs,
-                                   JdbcTemplate jdbc,
                                    ObjectProvider<OutboundDelivery> deliveries,
                                    ObjectProvider<MeterRegistry> registry) {
-        return new RunDelivery(runs, jdbc, deliveries.orderedStream().toList(),
-                registry.getIfAvailable());
+        return new RunDelivery(runs, deliveries.orderedStream().toList(), registry.getIfAvailable());
     }
 
     /**
@@ -287,20 +274,16 @@ public class RunPersistenceConfiguration {
      * 能建任务但没有东西会跑它，模型给出的"已经定好了"就是一句谎话。
      * 与计划工具同一个判断：模型面前少一个工具，比"调了才发现白做"好。
      *
-     * <p>收件地址从 {@link RunDelivery} 里取（这件事在哪些会话被问过），
-     * 与审批卡片同一处来源。取不到时任务照建，只是结果没有可推的地址。
+     * <p>收件地址从工具上下文里取（这一轮从哪个通道、哪个会话来），与审批卡片同一处来源。
+     * 取不到时任务照建，只是结果没有可推的地址。
      */
     @Bean
     @ConditionalOnMissingBean(ScheduleTools.class)
     @ConditionalOnProperty(prefix = "claw4j.schedule", name = "enabled",
             havingValue = "true", matchIfMissing = true)
     public ToolCallbackProvider scheduleTools(ScheduleStore schedules,
-                                              ScheduleAuthorization authorization,
-                                              ObjectProvider<RunDelivery> delivery) {
-        return new ScheduleTools(schedules, authorization, runId -> {
-            RunDelivery targets = delivery.getIfAvailable();
-            return targets == null ? List.of() : targets.targetsOf(runId);
-        });
+                                              ScheduleAuthorization authorization) {
+        return new ScheduleTools(schedules, authorization);
     }
 
     /**

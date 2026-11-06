@@ -9,7 +9,7 @@ package io.github.claw4j.agent.run;
  * 一件已经发生的事没法被标成待做。
  *
  * <p><b>{@link #AWAITING} 是"停在这一步"在 step 上的样子</b>（P02）。
- * 它与 run 的 {@link RunStatus#SUSPENDED} 说的是同一件事的两半：run 说"这件事停了"，
+ * 它以前与 run 的 suspended 说的是同一件事的两半：run 说"这件事停了"，
  * step 说"停在哪个动作上"。只有 run 那一半的话，"这件事卡过几次审批、每次都卡在什么动作上"
  * 就只能靠读文本猜。它也不等于 {@link #PENDING}：待做是计划里的东西，
  * 等审批是一个已经发起的动作在等人点头。

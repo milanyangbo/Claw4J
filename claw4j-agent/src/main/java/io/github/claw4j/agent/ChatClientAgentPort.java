@@ -12,7 +12,6 @@ import io.github.claw4j.agent.run.RunBudget;
 import io.github.claw4j.agent.run.RunStatus;
 import io.github.claw4j.agent.run.RunStore;
 import io.github.claw4j.agent.run.RunLauncher;
-import io.github.claw4j.agent.run.RunResumer;
 import io.github.claw4j.agent.run.Step;
 import io.github.claw4j.agent.run.StepInput;
 import io.github.claw4j.agent.run.StepKind;
@@ -63,7 +62,7 @@ import java.util.function.Supplier;
  * 它在等待流时响应中断。客户端断开后通道 {@code cancel(true)}，
  * 这里会立刻以异常结束，而不是把整条模型流烧完。
  */
-public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
+public class ChatClientAgentPort implements AgentPort, RunLauncher {
 
     private static final Logger log = LoggerFactory.getLogger(ChatClientAgentPort.class);
 
@@ -267,6 +266,11 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      * 两处各写一遍的话，"什么算同一段对话"就有了两个答案。
      */
     private String sessionIdOf(InboundMessage message, String owner, boolean reset) {
+        // 调用方直接给了整段会话键：用它，不换段也不查指针。
+        // 审批批准之后走的就是这条——回到发起请求的那一段对话里开新一轮（ADR-0027）。
+        if (message.sessionId() != null && !message.sessionId().isBlank()) {
+            return message.sessionId();
+        }
         String conversation = conversationOf(message);
         // 调用方自带会话标识的那条路（定时任务）不走指针：它的"段"就是触发时刻本身，
         // 每次运行天然是一个新的。指针只服务"人"这条路——那里才有"上次说到哪儿"。
@@ -410,8 +414,8 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         // 送模型的是命令之后的内容：`/new 帮我查华南` 的第一句是"帮我查华南"，
         // 命令本身不该出现在提示词里，也不该成为这一轮的 run 目标。
         String masked = PiiRedactor.mask(parsed.text());
-        Opened opened = openRun(message, owner, sessionId, masked);
-        String runId = opened == null ? null : opened.run().id();
+        Run openedRun = openRun(message, owner, sessionId, masked);
+        String runId = openedRun == null ? null : openedRun.id();
         // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
         AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
                 message.channel());
@@ -420,7 +424,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         }
         // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
-                runAttributes(runId, message.principal(), opened))) {
+                runAttributes(runId, message.principal()))) {
             // 进门先看额度：上一轮已经把额度烧完的 run，这一轮不该再调一次模型——
             // 调了也只是再花一份钱去换一个"还是得停"的结论。
             Optional<Budget> overBudget = exhaustedSpent(runId);
@@ -438,12 +442,13 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                 // 所以这段 duration 含那一次 INSERT（几十毫秒）。反过来（先关 span 再写 seq）
                 // 会让属性丢掉——已 end 的 span 上 setAttribute 是静默的空操作。
                 try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
-                    response = promptOf(message.principal(), owner, sessionId, promptText(opened, sessionId, masked), runId)
+                    response = promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
                             .call()
                             .chatResponse();
                     text = textOf(response);
                     log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
-                    stampTurn(turn, closeTurn(runId, auditScope, masked, text, answeredAt,
+                    stampTurn(turn, closeTurn(runId, auditScope, masked, text,
+                            pushTargetOf(answeredAt, message), message.notifyPolicy(),
                             tokensOf(response), elapsedMillis(startedAt)), response);
                 }
                 return new Turn(runId, text);
@@ -502,15 +507,15 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             return;
         }
         String masked = PiiRedactor.mask(parsed.text());
-        Opened opened = openRun(message, owner, sessionId, masked);
-        String runId = opened == null ? null : opened.run().id();
+        Run openedRun = openRun(message, owner, sessionId, masked);
+        String runId = openedRun == null ? null : openedRun.id();
         AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
                 message.channel());
         if (audit != null) {
             audit.runStarted(auditScope);
         }
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
-                runAttributes(runId, message.principal(), opened))) {
+                runAttributes(runId, message.principal()))) {
             Optional<Budget> overBudget = exhaustedSpent(runId);
             if (overBudget.isPresent()) {
                 run.attribute(MeteredToolCallback.ATTR_OUTCOME, "budget_exhausted");
@@ -522,7 +527,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             long startedAt = System.nanoTime();
             try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
-                    promptOf(message.principal(), owner, sessionId, promptText(opened, sessionId, masked), runId)
+                    promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
                             .stream()
                             .content()
                             // 每一块都带 runId：调用方可能只收到最后一块，收到中间块的也要能查到同一件事
@@ -535,7 +540,8 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                             .blockLast();
                     // 流式的 token 记 0：汇总 usage 只在最后一帧上，而它未必到得了这一层
                     // （与"不拿估算值冒充真实值"同一个口径）。耗时照记——它不需要模型报。
-                    stampTurn(turn, closeTurn(runId, auditScope, masked, answer.toString(), addressOf(message),
+                    stampTurn(turn, closeTurn(runId, auditScope, masked, answer.toString(),
+                            pushTargetOf(addressOf(message), message), message.notifyPolicy(),
                             0L, elapsedMillis(startedAt)), null);
                 } catch (RuntimeException | Error failure) {
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
@@ -552,185 +558,33 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     }
 
     /**
-     * 审批放行之后由服务端接着做（P02）。
+     * 开这一轮（ADR-0027）。
      *
-     * <p><b>用发起人的身份，不用审批人的</b>：run 上存着进门时的身份快照。
-     * 拿审批人的身份续跑等于"我批了你就能用我的权限干"——那不是审批，是授权变更。
+     * <p><b>只剩 start 一条路</b>：以前这里还有一个"带着 runId 接上旧事"的分支，
+     * 而那条分支配着一整套 {@code resume} / {@code reopen} / {@code suspend}。
+     * OpenClaw 的连续性靠 sessionKey——同一段对话自然有上下文，用户不需要携带任何标识。
+     * 所以"接着做"这件事由会话负责，不由 run 负责。
      *
-     * <p><b>交给模型的是 recap 加一句结论，不是从头重说</b>：这正是挂起-续跑这套东西
-     * 存在的理由。只给一句"批了"的话，模型得自己从会话记忆里翻回三十分钟前的上下文，
-     * 而记忆里那一段可能已经被压过。
-     *
-     * <p><b>拒绝也要用这一条</b>：理由回灌给模型，"换个做法"才有依据。只把 run 标成失败、
-     * 不告诉模型为什么的话，用户下一次说"继续"时它会把同一个请求原样再发一遍。
-     *
-     * <p>读不到身份快照就<b>不续跑</b>：猜一个身份去跑比停下来更糟。
+     * <p><b>会话键在开的时候一起写</b>：预算是按会话累计的（ADR-0025），
+     * 少了这一列这条 run 就只能按自己那一行算，也就是"每轮 6 次"的旧行为。
      */
-    @Override
-    public Optional<String> resume(String runId, String note) {
-        if (runs == null || runId == null || runId.isBlank()) {
-            return Optional.empty();
-        }
-        String address = runs.sessionAddressOf(runId).orElse(null);
-        if (lane == null || address == null) {
-            if (address == null) {
-                // 加列之前建的 run：没有地址就没有可以抢的锁。不加锁比"永远不执行"好——
-                // 这条路上没有入站消息，除了这里没人能推动它。
-                log.debug("run {} 没有记对话地址（加列之前建的），这一轮不加锁", runId);
-            }
-            return doResume(runId, note);
-        }
-        try {
-            // **锁在 reopen 之前拿**：拿不到就不把 run 拉起来，它继续挂着等下一次审批动作。
-            // 反过来（先 reopen 再等锁）会让一条 run 卡在 running 而没人收尾——
-            // 那比"这次没执行"难查得多，因为它看起来是成功过的。
-            return lane.run(address, () -> doResume(runId, note));
-        } catch (LaneBusyException busy) {
-            log.warn("run {} 的对话正在处理别的消息，这次续跑没有执行", runId);
-            return Optional.of(ConversationLane.BUSY_REPLY);
-        }
-    }
-
-    /** 续跑本体。锁由 {@link #resume} 拿——它要先从 run 上读到地址才知道锁哪一把。 */
-    private Optional<String> doResume(String runId, String note) {
-        Optional<Run> reopened = runs.reopen(runId);
-        if (reopened.isEmpty()) {
-            log.warn("run {} 不在等待状态，审批放行也不会把它拉起来", runId);
-            return Optional.empty();
-        }
-        Optional<Principal> principal = runs.principalOf(runId);
-        if (principal.isEmpty()) {
-            log.warn("run {} 读不到发起人快照，这一轮不续跑", runId);
-            return Optional.empty();
-        }
-        Optional<Budget> overBudget = exhaustedSpent(runId);
-        if (overBudget.isPresent()) {
-            runs.append(new StepInput(runId, StepKind.MODEL_TURN, note, null,
-                    "预算用尽，审批放行后没有调用模型：" + budget.reason(overBudget.get()),
-                    StepStatus.FAILED));
-            runs.finish(runId, RunStatus.BUDGET_EXHAUSTED);
-            return Optional.of(budget.outcomeText(overBudget.get(), runId));
-        }
-        Run run = reopened.get();
-        // 这条路上没有入站消息，算不出会话键，只能回读：续跑的回答要落回
-        // "当初提问的那段对话"。老数据没有归属就退到无通道占位段——
-        // 至少不会把审批结果写进另一个人的另一段对话里。
-        String sessionId = runs.sessionOf(runId)
-                .filter(id -> !id.isBlank())
-                .orElseGet(() -> SessionKeys.sessionIdOf(run.owner(), null, null));
-        String prompt = recap(run, runs.stepsOf(runId)) + "[审批有结论] " + note;
-        // 续跑也是一轮：开始与结束各一条事件，与普通那一轮同一个口径。
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, principal.get(), null);
-        if (audit != null) {
-            audit.runStarted(auditScope);
-        }
-        long startedAt = System.nanoTime();
-        // 续跑也是一次"执行这件事"：单独一条 trace，但根还是 run。不包的话这一轮的
-        // model.turn 会成为一条没有根的 trace——图上表现为"有个模型轮不知道属于哪件事"。
-        try (RunTracer.SpanScope span = tracer.open(RUN_SPAN,
-                runAttributes(runId, principal.get(), null))) {
-            try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
-                try {
-                    ChatResponse response = promptOf(principal.get(), run.owner(), sessionId, prompt, runId)
-                            .call()
-                            .chatResponse();
-                    String text = textOf(response);
-                    // 这一轮没有"就地回答"的地址：没有人正盯着一个请求等结果，
-                    // 于是结果按通知策略送到登记过的每一个地方（A05）。
-                    stampTurn(turn, closeTurn(runId, auditScope, "[审批] " + note, text, null,
-                            tokensOf(response), elapsedMillis(startedAt)), response);
-                    return Optional.ofNullable(text);
-                } catch (RuntimeException | Error failure) {
-                    turn.failed(failure);
-                    span.failed(failure);
-                    if (audit != null) {
-                        audit.runFinished(auditScope, AuditStatus.FAILED, null);
-                    }
-                    fail(runId);
-                    log.error("审批放行后 run {} 的续跑失败", runId, failure);
-                    return Optional.empty();
-                }
-            }
-        }
-    }
-
-    /** 这一轮落在哪件事上，以及它是不是接上来的。 */
-    private record Opened(Run run, boolean resumed) {
-    }
-
-    /**
-     * 开一个 run，或者接上一个已有的（A02）。返回 null 表示"这一轮没有 run"
-     * （没装存储，或没记下来）——那是降级，不是错误，所以不抛。
-     *
-     * <p><b>接不上的时候另开一个，而不是报错</b>：runId 是调用方带来的一个提示，
-     * 不是这个人的义务。它可能是过期的、抄错的、或者那件事正在等审批——
-     * 三种情况下用户的"继续"都得有回答，而不是一个 400。
-     * 而"另开一个"绝不意味着接上别人的：那是 {@code RunStore#resume} 用
-     * {@code owner} 挡住的，这里连重试都不做。
-     */
-    private Opened openRun(InboundMessage message, String owner, String sessionId, String masked) {
+    private Run openRun(InboundMessage message, String owner, String sessionId, String masked) {
         if (runs == null) {
             return null;
         }
-        Opened opened = null;
-        String asked = message.runId();
-        if (asked != null && !asked.isBlank()) {
-            Optional<Run> resumed = runs.resume(asked, owner);
-            if (resumed.isPresent()) {
-                opened = new Opened(resumed.get(), true);
-            } else {
-                // 三种接不上：没有这个 run / 不是你的 / 它正在等审批。
-                // 不分别查一次再决定——多一次往返，而结论与动作都一样。
-                log.warn("runId={} 接不上（不存在、不属于 {}，或正在等审批），这一轮另开一个 run",
-                        asked, owner);
-            }
-        }
-        if (opened == null) {
-            opened = runs.start(owner, PermissionFingerprint.shortOf(message.principal()), masked,
-                            message.notifyPolicy())
-                    .map(run -> new Opened(run, false))
-                    .orElse(null);
-        }
-        // 记下发起人（P02）：批准之后服务端要用他的身份续跑。用审批人的身份续跑等于提权，
-        // 而只凭权限指纹反推不出角色与可访问表——所以进门这一下就要整份存下来。
-        if (opened != null) {
-            runs.attachPrincipal(opened.run().id(), message.principal());
-            // 会话键在开 run 之后补写：预算是按会话判的（ADR-0025），
-            // 没有它这条 run 就只能按自己那一行算——也就是"每轮 6 次"的旧行为。
-            runs.attachSession(opened.run().id(), sessionId);
-            // 对话地址（ADR-0026 决定二）：审批续跑没有入站消息，靠这一列去抢同一把锁。
-            // 与会话键分开存——那个随段轮换，这个不随，两件事混在一列里就会一起错。
-            runs.attachAddress(opened.run().id(),
-                    ConversationLane.addressOf(owner, message.channel(), message.chatId()));
-        }
-        // 收件地址在进门时登记，接上旧事时也登记：后者正是"换一个通道接着做"的那一次，
-        // 不登记它，结果就只能回到第一次提问的那个通道（A05）。
-        if (opened != null && delivery != null) {
-            delivery.register(opened.run().id(), message.channel(), message.chatId());
-        }
-        return opened;
+        return runs.start(owner, PermissionFingerprint.shortOf(message.principal()), masked,
+                message.notifyPolicy(), sessionId).orElse(null);
     }
 
     /**
-     * 交给模型的文本。接上一件旧事时前面加一段"做到哪儿了"。
+     * 交给模型的文本。
      *
-     * <p>不加它，"继续"在跨通道、或者会话被压过之后就是一句没有上下文的话——
-     * 模型只能从头猜，而它的表现恰恰是"看起来答得挺好，其实是把第一轮重做了一遍"。
-     * 会话记忆还在，但它记的是说过的话，不是"这件事做到第几步"。
-     *
-     * <p><b>"在往哪儿走"不在这里</b>：那是会话目标（{@link #activeGoalLine}），
-     * 它每回合都注入，与"接着做"无关。recap 只回答"已经发生了什么"——
-     * 把目标混进这一段的话，一个一直挂着的目标会被读成"这件事刚做过一步"。
-     *
-     * <p>只回看最近几步、每步截断：这段 recap 的用途是让模型知道下一步做什么，
-     * 不是让它把历史重读一遍——全量塞进去会在长 run 上先撞上下文上限。
+     * <p><b>只有两段：活跃目标 + 这一句</b>。以前还会在中间拼一段 recap（目标 + 最近几步），
+     * 那是给"run 挂起、上下文没了"准备的；上下文一直在会话里，这个前提不成立
+     * （ADR-0027 决定三）。模型看到的是同一段对话的前几轮，不需要我们把它们再抄一遍。
      */
-    private String promptText(Opened opened, String sessionId, String masked) {
-        String goalLine = activeGoalLine(sessionId);
-        if (opened == null || !opened.resumed()) {
-            return goalLine + masked;
-        }
-        return goalLine + recap(opened.run(), runs.stepsOf(opened.run().id())) + masked;
+    private String promptText(String sessionId, String masked) {
+        return activeGoalLine(sessionId) + masked;
     }
 
     /**
@@ -761,35 +615,6 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         return flat.length() <= max ? flat : flat.substring(0, max) + "…";
     }
 
-    private static String recap(Run run, List<Step> steps) {
-        List<Step> happened = steps;
-        StringBuilder text = new StringBuilder("[接着做这件事 ")
-                .append(run.id(), 0, Math.min(8, run.id().length()))
-                .append("]\n目标：")
-                .append(clip(run.goal(), RECAP_CHARS))
-                .append('\n');
-        if (happened.isEmpty()) {
-            text.append("还没有任何一步落下来。\n");
-        } else {
-            List<Step> recent = happened.size() <= RECAP_STEPS
-                    ? happened : happened.subList(happened.size() - RECAP_STEPS, happened.size());
-            text.append("已发生 ").append(happened.size()).append(" 步，最近的是：\n");
-            for (Step step : recent) {
-                text.append("第 ").append(step.seq()).append(" 步：").append(clip(step.input(), RECAP_CHARS))
-                        .append(" → ").append(clip(step.resultSummary(), RECAP_CHARS)).append('\n');
-            }
-        }
-        return text.append("（以上是这件事已经做完的部分，直接接着做下一步，不要重做。）\n").toString();
-    }
-
-    private static String clip(String value, int max) {
-        if (value == null) {
-            return "(无)";
-        }
-        String oneLine = value.strip();
-        return oneLine.length() <= max ? oneLine : oneLine.substring(0, max) + "…";
-    }
-
     /**
      * 记下"模型这一轮"，扣掉这一轮花掉的 token 与耗时，然后收尾（A04）。
      *
@@ -808,24 +633,13 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      * （追加预算继续 vs 没有了），混成一个状态的话没人知道该重试还是该换做法。
      */
     private Optional<Long> closeTurn(String runId, AuditEvent.Scope scope, String input, String answer,
-                                     DeliveryTarget answeredAt, long tokens, long millis) {
+                                     DeliveryTarget pushTo, NotifyPolicy policy,
+                                     long tokens, long millis) {
         if (runs == null || runId == null) {
             return Optional.empty();
         }
         // 这一轮被某道门拦下并挂起了（P02）：<b>不收尾</b>。
         //
-        // 收尾会把 run 写回 done，而"批准之后接着做"整个依赖于那个 suspended——
-        // 覆盖掉之后，批准会落到一件已经做完的事上，reopen 直接失败，
-        // 用户点完按钮什么都不会发生，也没有任何报错。
-        //
-        // 也不记 model_turn：这一轮实际上没跑完，记一步"已做"会让 recap 里的进度
-        // 比事实多一步（模型下一轮就会跳过那件没做完的事）。
-        if (isSuspended(runId)) {
-            // 这一轮确实结束了（回给用户的是"我需要你批准"），所以审计要有一条结束事件——
-            // 只有开始没有结束的那一行，看的人分不出"跑了很久"与"进程没了"。
-            log.debug("run {} 这一轮停在等审批，不收尾", runId);
-            return finishAudit(scope, AuditStatus.SUCCEEDED, null);
-        }
         runs.append(new StepInput(runId, StepKind.MODEL_TURN, input, null,
                 summary(answer), StepStatus.DONE));
         if (budget != null) {
@@ -840,8 +654,8 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         // 全文进 run：step 上的那份是截断摘要，回答"这一步得到了什么"；
         // 查结果的人要的是完整答案，而异步场景里没有一次请求在等着接它（A05）。
         runs.finish(runId, RunStatus.DONE, answer);
-        if (delivery != null) {
-            delivery.announce(runId, RunStatus.DONE, answer, answeredAt);
+        if (delivery != null && pushTo != null) {
+            delivery.announce(pushTo, policy, answer);
         }
         return finishAudit(scope, AuditStatus.SUCCEEDED, null);
     }
@@ -851,13 +665,18 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         return audit == null ? Optional.empty() : audit.runFinished(scope, status, errorCode);
     }
 
-    /** 这一轮里有没有人把这件事实停下来了。读不到 run 时按"没有"处理（照常收尾）。 */
-    private boolean isSuspended(String runId) {
-        Optional<Run> current = runs.find(runId);
-        return current.isPresent() && current.get().status() == RunStatus.SUSPENDED;
+    /**
+     * 这一轮要不要推、推到哪儿。
+     *
+     * <p>同步请求（HTTP、飞书消息）的回答已经从响应里返回了，再推一次就是同一条内容出现两遍——
+     * 那时返回 null。定时任务与审批续跑没有人等结果，于是推到这段对话
+     * （ADR-0027 决定四：结果只回到它开始的地方，不回退到"最近用过的通道"）。
+     */
+    private static DeliveryTarget pushTargetOf(DeliveryTarget answeredAt, InboundMessage message) {
+        return answeredAt == null ? addressOf(message) : null;
     }
 
-    /** 这一轮已经就地回答过的地址。没有通道名时是 null（异步生产没有就地回答）。 */
+    /** 这一轮来自哪段对话。没有通道名时是 null（老调用方与单测）。 */
     private static DeliveryTarget addressOf(InboundMessage message) {
         String channel = message.channel();
         if (channel == null || channel.isBlank()) {
@@ -982,12 +801,12 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     }
 
     /**
-     * 根 span 的属性：哪件事、谁的（指纹）、是不是接上来的。
+     * 根 span 的属性：哪一轮、谁的（指纹）。
      *
      * <p><b>没有 runId 时不写这一格</b>：没装 run 存储的部署里它确实是 null，
      * 而写一个空串会让"这件事"与"空"在图上长得一样。
      */
-    private static Map<String, String> runAttributes(String runId, Principal principal, Opened opened) {
+    private static Map<String, String> runAttributes(String runId, Principal principal) {
         Map<String, String> attributes = new LinkedHashMap<>();
         if (runId != null) {
             attributes.put(ATTR_RUN_ID, runId);
@@ -995,14 +814,12 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         if (principal != null) {
             attributes.put(ATTR_OWNER, PermissionFingerprint.shortOf(principal));
         }
-        if (opened != null && opened.resumed()) {
-            attributes.put(ATTR_RESUMED, "true");
-        }
         return attributes;
     }
 
-    private ChatClient.ChatClientRequestSpec promptOf(Principal principal, String owner, String sessionId,
+    private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message, String owner, String sessionId,
                                                       String masked, String runId) {
+        Principal principal = message.principal();
         // 归属键与对话键都由调用方算好再传进来：一轮请求里 run 的 owner、会话 id
         // 都要用，各算一遍的话，口径一改就可能只改到一半，而表现是"会话记得住、run 查不到"。
         // 压缩必须发生在"这一轮拼提示词"之前：记忆 Advisor 在 before 阶段读事件，
@@ -1036,6 +853,15 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         // 放这里而不是让工具自己按 principal 推：会话键里还有通道与 chatId，工具推不出来，
         // 让它去猜就会退化成"这个人的所有会话"，而那正是私聊内容被带进群聊的那条路。
         toolContext.put(ChatMemory.CONVERSATION_ID, sessionId);
+        // 通道与地址也进工具上下文（ADR-0027）：审批要写"这条请求来自哪段对话"，
+        // 定时任务要写"结果推回哪里"。以前这两处拿 runId 去投递表反查，
+        // 而地址本来就是这一轮的属性，不该绕一次库、更不该靠一张要下线的表。
+        if (message.channel() != null && !message.channel().isBlank()) {
+            toolContext.put(ContextKeys.CHANNEL, message.channel());
+        }
+        if (message.chatId() != null && !message.chatId().isBlank()) {
+            toolContext.put(ContextKeys.CHAT_REF, message.chatId());
+        }
         return chatClient.prompt(masked)
                 .toolContext(toolContext)
                 .advisors(spec -> {
@@ -1044,6 +870,16 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                             // 外键用归属键而不是裸 userId：跨会话召回走 user_id 精确匹配，
                             // 传裸 userId 的话"换角色即换会话"在召回那条路上等于没做（见 SessionKeys）。
                             .param(SessionMemoryAdvisor.USER_ID_CONTEXT_KEY, owner);
+                    // 审批那一层（AuthorizationAdvisor）读的是这份上下文，不是 ToolContext：
+                    // 它要写"这条请求来自哪段对话"，于是这三个键两边都要有。
+                    // 少了它们的表现是"批准之后说找不到来处"，而不是报错。
+                    spec.param(ChatMemory.CONVERSATION_ID, sessionId);
+                    if (message.channel() != null && !message.channel().isBlank()) {
+                        spec.param(ContextKeys.CHANNEL, message.channel());
+                    }
+                    if (message.chatId() != null && !message.chatId().isBlank()) {
+                        spec.param(ContextKeys.CHAT_REF, message.chatId());
+                    }
                     // 鉴权那一层也要知道这是哪件事（P02）：审批没批过时它要把这件事挂起，
                     // 而"挂起谁"这个答案只在 runId 上。
                     if (runId != null) {

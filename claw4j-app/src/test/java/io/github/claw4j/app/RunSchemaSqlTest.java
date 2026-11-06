@@ -107,7 +107,7 @@ class RunSchemaSqlTest {
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'claw4j_run'"
                         + " order by table_name", String.class))
-                .containsExactly("agent_run", "agent_run_delivery", "agent_schedule", "agent_session_budget",
+                .containsExactly("agent_run", "agent_schedule", "agent_session_budget",
                         "agent_step", "approval_request", "audit_event", "audit_trail");
 
         // 约束不是装饰：没有它，任何字符串都能当状态写进去，
@@ -180,62 +180,26 @@ class RunSchemaSqlTest {
     // ---------------------------------------------------------------- resume（A02）
 
     /**
-     * "继续"不是"再来一次"：不插新行、状态回到 running、序号接着涨。
+     * 库不再接受 {@code suspended}（ADR-0027）。
      *
-     * <p>这三条里最要紧的是第一条——另开一个 run 也能给出"第 1 步"，
-     * 只有 runId 相同才说明它真的是同一件事的续集。
+     * <p><b>这不是"少了一个可选值"</b>：那个状态配着 {@code reopen} / {@code resume} 一整套，
+     * 存在的理由是"一件事能跨请求活着"。删掉它之后，等审批的那一轮以 done 收尾
+     * （它回给用户的是"我需要你批准"），而批准之后是同一段对话里的下一轮。
+     *
+     * <p>V21 里那条 {@code update ... set status='done' where status='suspended'} 是配套的：
+     * 不迁数据就删枚举值，读回一行旧 suspended 会让 {@code RunStatus.fromColumn} 直接抛，
+     * 于是一条历史记录能让整个列表页 500。
      */
     @Test
-    @DisplayName("接上：不新建 run，状态回到 running，序号接着涨")
-    void resumeReusesTheRunAndContinuesTheSequence() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "对齐三张表的口径").orElseThrow();
-        runs.append(new StepInput(run.id(), StepKind.MODEL_TURN, "第一轮", null, "答一", StepStatus.DONE));
-        runs.finish(run.id(), RunStatus.DONE);
-
-        Run resumed = runs.resume(run.id(), "u-1@fp-1").orElseThrow();
-
-        assertThat(resumed.id()).isEqualTo(run.id());
-        assertThat(resumed.status()).isEqualTo(RunStatus.RUNNING);
-        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.agent_run", Integer.class))
-                .as("接上不该多出一行").isEqualTo(1);
-        Step next = runs.append(
-                new StepInput(run.id(), StepKind.MODEL_TURN, "继续", null, "答二", StepStatus.DONE)).orElseThrow();
-        assertThat(next.seq()).isEqualTo(2);
-        assertThat(runs.stepsOf(run.id())).extracting(Step::seq).containsExactly(1, 2);
-    }
-
-    /** 只有 id 拿不到别人的事：挡在 where 里，而且被拒的那次不能顺手改别人的状态。 */
-    @Test
-    @DisplayName("别人的 run 与不存在的 runId 都接不上")
-    void resumeRejectsRunsThatAreNotYoursOrDoNotExist() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "goal").orElseThrow();
-        runs.finish(run.id(), RunStatus.DONE);
-
-        assertThat(runs.resume(run.id(), "u-2@fp-2")).isEmpty();
-        assertThat(runs.resume("no-such-run", "u-1@fp-1")).isEmpty();
-        assertThat(jdbc.queryForObject(
-                "select status from claw4j_run.agent_run where id = ?", String.class, run.id()))
-                .as("被拒的那次不能把别人的 run 改成 running").isEqualTo("done");
-    }
-
-    /**
-     * 等审批的 run 只由审批放行（P02）。
-     *
-     * <p>这条是那道门的锁：一句"继续"就能把它唤醒的话，审批这道门等于没装，
-     * 而它的表现会比没有审批更糟——系统看起来有审批，实际上绕得过去。
-     */
-    @Test
-    @DisplayName("等审批的 run 接不上：一句「继续」不能当放行用")
-    void resumeDoesNotWakeASuspendedRun() {
+    @DisplayName("没有 suspended 这个状态：等审批不是一种能跨请求的状态")
+    void thereIsNoSuspendedStatus() {
         Run run = runs.start("u-1@fp-1", "fp-1", "发邮件").orElseThrow();
-        jdbc.update("update claw4j_run.agent_run set status = 'suspended' where id = ?", run.id());
 
-        assertThat(runs.resume(run.id(), "u-1@fp-1")).isEmpty();
-        assertThat(jdbc.queryForObject(
-                "select status from claw4j_run.agent_run where id = ?", String.class, run.id()))
-                .isEqualTo("suspended");
+        assertThatThrownBy(() -> jdbc.update(
+                "update claw4j_run.agent_run set status = 'suspended' where id = ?", run.id()))
+                .as("约束会拒绝它，而不是存下一个没人认得的状态")
+                .hasMessageContaining("ck_agent_run_status");
     }
-
     // ---------------------------------------------------------------- step 的状态约束（V7）
 
     /**
@@ -336,7 +300,7 @@ class RunSchemaSqlTest {
     @DisplayName("用量与会话指针都只在库里长一行：前者累加，后者每次刷新 touched_at")
     void budgetColumnsAccumulateAndThePointerKeepsOneRow() {
         Run run = runs.start("u-1@fp-1", "fp-1", "对齐三张表的口径").orElseThrow();
-        // EPOCH = 窗口永不过期：这条 run 没有会话归属（没 attachSession），
+        // EPOCH = 窗口永不过期：这条 run 没有会话归属（start 时没给会话键），
         // 读的就是它自己那一行，这正是这里要验的 SQL 累加
         assertThat(runs.spent(run.id(), Instant.EPOCH).orElseThrow()).isEqualTo(Budget.NONE);
 
@@ -349,114 +313,8 @@ class RunSchemaSqlTest {
         assertThat(restarted.find(run.id()).orElseThrow().spent())
                 .as("读 run 时也带上用量：停在 budget_exhausted 的 run 只能靠它回答'为什么停'")
                 .isEqualTo(new Budget(3, 1_500L, 3_500L));
-
-        // ---- 对话地址（ADR-0026 决定二）：审批续跑没有入站消息，只能靠这一列找回地址。
-        // 与会话键分开存：那个随段轮换，这个不随——混成一列的话，续跑会锁到另一段对话上。
-        runs.attachAddress(run.id(), "addr:u-1@fp-1|web|c-1");
-        assertThat(new JdbcRunStore(jdbc).sessionAddressOf(run.id()).orElseThrow())
-                .as("读不回来就退化成不加锁，而那个失败是「审批续跑和用户同时写一段会话」")
-                .isEqualTo("addr:u-1@fp-1|web|c-1");
-
-        // ---- 会话指针（ADR-0026 / V17）：同一行反复改值，不是每次插一行。
-        // 这里验的是那条 on conflict ... case ... returning 在真 Postgres 上的行为——
-        // 内存实现（SessionMemoryTest）能验"时间怎么驱动段"，但验不到 SQL 本身。
-        ConversationPointerStore pointers = new JdbcConversationPointerStore(jdbc);
-        ZoneId zone = ZoneId.of("Asia/Shanghai");
-        Instant tenAm = Instant.parse("2026-11-05T02:00:00Z");   // 东八区 11-05 10:00
-        ConversationPointerStore.Key key =
-                new ConversationPointerStore.Key("u-1@fp-1", "web", "c-1");
-
-        String first = pointers.segmentOf(key, rotation(tenAm, zone, "s-1")).orElseThrow();
-        String again = pointers.segmentOf(key, rotation(tenAm.plusSeconds(60), zone, "s-2"))
-                .orElseThrow();
-        assertThat(again)
-                .as("同一天连着两句必须是同一段：换段等于换对话，每句都换就没有'这段对话'了")
-                .isEqualTo(first);
-
-        assertThat(jdbc.queryForObject("select touched_at from claw4j_session.conversation_pointer"
-                        + " where owner = ? and channel = ? and chat_id = ?",
-                Timestamp.class, key.owner(), key.channel(), key.chatId()).toInstant())
-                .as("不换段的那一次也要刷新 touched_at。不刷新的话空闲是从这一段的第一句话算起的，"
-                        + "120 分钟之后每句话都会换段——而那一刻之前一切正常")
-                .isAfter(tenAm);
-
-        // 从"上一次说话"（10:01）再空 121 分钟。从 10:00 起算会差一分钟——
-        // 判定是严格小于（超过阈值才算空闲），边界上不换段是对的。
-        assertThat(pointers.segmentOf(key,
-                rotation(tenAm.plusSeconds(60 + 121 * 60), zone, "s-3")).orElseThrow())
-                .as("空过阈值必须换段")
-                .isNotEqualTo(first);
-
-        assertThat(jdbc.queryForObject(
-                "select count(*) from claw4j_session.conversation_pointer where owner = ?",
-                Integer.class, key.owner()))
-                .as("换段是同一行改值。插一行的话这个键会越积越多，"
-                        + "而查询'当前段'只能靠 order by，早晚会拿到错的那一行")
-                .isEqualTo(1);
-
-        // ---- /new（ADR-0026）：forced 时不看时间，同一逻辑日内也换段；下一次不强制就沿用。
-        ConversationPointerStore.Key selfService =
-                new ConversationPointerStore.Key("u-1@fp-1", "web", "c-new");
-        String before = pointers.segmentOf(selfService, rotation(tenAm, zone, "n-1")).orElseThrow();
-        String forced = pointers.segmentOf(selfService,
-                rotation(tenAm.plusSeconds(1), zone, "n-2", true)).orElseThrow();
-        assertThat(forced)
-                .as("用户按了 /new：这一句就该是新段，不等空闲也不等跨天")
-                .isNotEqualTo(before);
-        assertThat(pointers.segmentOf(selfService, rotation(tenAm.plusSeconds(2), zone, "n-3"))
-                .orElseThrow())
-                .as("/new 只影响它自己那一句。把 forced 写进指针行（「这一段是强制的」）的话，"
-                        + "下一句又会换一段，等于每条消息都是新对话")
-                .isEqualTo(forced);
-
-        // ---- 两个相邻的 boolean 不许互串：dailyGate=false 走的是另一条语句（IDLE_ONLY）。
-        assertThat(pointers.segmentOf(selfService,
-                rotation(tenAm.plusSeconds(3), zone, "n-4", false, false)).orElseThrow())
-                .as("dailyGate=false + forced=false：还剩 120 分钟空闲窗口，沿用上一段")
-                .isEqualTo(forced);
-        assertThat(pointers.segmentOf(selfService,
-                rotation(tenAm.plusSeconds(4), zone, "n-5", false, true)).orElseThrow())
-                .as("dailyGate=false + forced=true：另一条语句里也必须认 forced，"
-                        + "否则 /new 在 mode: idle 下就是一个不生效的命令")
-                .isNotEqualTo(forced);
     }
 
-    /**
-     * 一次访问带来的那一组参数，交给指针 store。
-     *
-     * <p>与 {@code SessionResetProperties} 的默认口径一致：120 分钟空闲、4 点换日、
-     * 日历参与判定。写在这里而不是复用那个类，是因为这条用例要验的是
-     * <b>SQL 对这四个入参的反应</b>，不是配置怎么绑定。
-     */
-    private static ConversationPointerStore.Rotation rotation(Instant now, ZoneId zone,
-                                                              String segment) {
-        return rotation(now, zone, segment, false);
-    }
-
-    private static ConversationPointerStore.Rotation rotation(Instant now, ZoneId zone,
-                                                              String segment, boolean forced) {
-        return rotation(now, zone, segment, true, forced);
-    }
-
-    private static ConversationPointerStore.Rotation rotation(Instant now, ZoneId zone,
-                                                              String segment, boolean dailyGate,
-                                                              boolean forced) {
-        return new ConversationPointerStore.Rotation(segment, now,
-                now.minus(Duration.ofMinutes(SessionResetProperties.DEFAULT_IDLE_MINUTES)),
-                now.atZone(zone).minusHours(SessionResetProperties.DEFAULT_AT_HOUR).toLocalDate(),
-                dailyGate, forced);
-    }
-
-    // ---------------------------------------------------------------- 审批（P01）
-
-    /**
-     * V10 的约束：三种状态、以及"有结论就必须有决定时间"。
-     *
-     * <p>这两条挡的都不是错别字，是两种会让审批悄悄失效的形状：
-     * 多一个拼错的 {@code granted} 之后，查询按 {@code status = 'granted'} 过滤时会把它当成
-     * "没批准"——记录看起来是批过的，行为是没批；而没有决定时间的 {@code granted}
-     * 事后答不出"谁在什么时候点的头"，也就是一条无法追溯的断言。
-     */
     @Test
     @DisplayName("审批表只认三种状态；有结论必须有决定时间，还挂着的不能有")
     void approvalRequestPinsItsStatusAndDecision() {
@@ -535,7 +393,7 @@ class RunSchemaSqlTest {
         ApprovalLedger ledger = new JdbcApprovalLedger(jdbc, Duration.ofMinutes(3).toMillis());
 
         String id = ledger.ask(new ApprovalLedger.Ask("run-x", "u-1", "sendEmail", DIGEST,
-                "{\"to\":\"zhang@example.com\"}")).orElseThrow();
+                "{\"to\":\"zhang@example.com\"}", null)).orElseThrow();
 
         Long minutes = jdbc.queryForObject("select round(extract(epoch from (expires_at - now())) / 60)"
                 + " from claw4j_run.approval_request where id = ?", Long.class, id);

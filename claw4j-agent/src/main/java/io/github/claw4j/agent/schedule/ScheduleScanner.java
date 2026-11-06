@@ -183,8 +183,8 @@ public class ScheduleScanner {
      */
     private static InboundMessage message(ScheduleStore.Due task, Principal owner, Instant now) {
         return new InboundMessage(owner, task.channelRef() == null ? task.id() : task.channelRef(),
-                task.goal(), now, null, null, task.channel(), task.notifyPolicy(),
-                "cron:" + task.id() + ":" + now.toEpochMilli());
+                task.goal(), now, null, task.channel(), task.notifyPolicy(),
+                "cron:" + task.id() + ":" + now.toEpochMilli(), null);
     }
 
     private void fail(ScheduleStore.Due task, Instant nextRunAt, String error) {

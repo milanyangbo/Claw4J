@@ -182,8 +182,7 @@ class ScheduleToolsTest {
     void anUnknownRoleIsRefused() {
         ScheduleStore store = mock(ScheduleStore.class);
         ScheduleTools tools = new ScheduleTools(store,
-                new ScheduleAuthorization((userId, role) -> Optional.empty(), registries()),
-                runId -> List.of(new DeliveryTarget(CHANNEL, CHANNEL_REF)));
+                new ScheduleAuthorization((userId, role) -> Optional.empty(), registries()));
 
         String reply = call(tools, ScheduleTools.CREATE, """
                 {"goal":"%s","cron":"0 0 9 * * *","tools":[]}""".formatted(GOAL),
@@ -289,8 +288,7 @@ class ScheduleToolsTest {
     private static ScheduleTools tools(ScheduleStore store) {
         return new ScheduleTools(store,
                 new ScheduleAuthorization((userId, role) -> Optional.of(Principal.of(userId, role,
-                        Set.of("*"), Set.of(ToolPermission.READ, ScheduleTools.CREATE))), registries()),
-                runId -> List.of(new DeliveryTarget(CHANNEL, CHANNEL_REF)));
+                        Set.of("*"), Set.of(ToolPermission.READ, ScheduleTools.CREATE))), registries()));
     }
 
     private static String create(ScheduleStore store, Principal principal, String args) {
@@ -307,7 +305,8 @@ class ScheduleToolsTest {
 
     /** 模型那一侧看到的那份上下文：身份 + 这一轮的 run（工具靠它找收件地址）。 */
     private static ToolContext context(Principal principal) {
-        return new ToolContext(Map.of(ContextKeys.PRINCIPAL, principal, ContextKeys.RUN_ID, "run-1"));
+        return new ToolContext(Map.of(ContextKeys.PRINCIPAL, principal, ContextKeys.RUN_ID, "run-1",
+                ContextKeys.CHANNEL, CHANNEL, ContextKeys.CHAT_REF, CHANNEL_REF));
     }
 
     private static Schedule schedule(String id) {

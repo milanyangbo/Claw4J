@@ -1,7 +1,6 @@
 package io.github.claw4j.agent.run;
 
 import io.github.claw4j.domain.NotifyPolicy;
-import io.github.claw4j.domain.principal.Principal;
 
 import java.time.Instant;
 import java.util.List;
@@ -34,104 +33,19 @@ public interface RunStore {
      *
      * @param notifyPolicy 做完之后要不要主动去找人；定时任务传
      *                     {@link NotifyPolicy#SILENT}
+     * @param sessionId    这一轮属于哪一段会话（ADR-0025）。预算按会话累计就靠它：
+     *                     空表示按这一行自己算，也就是"每轮 6 次"的旧口径。
+     *                     <b>开的时候就写进去</b>，不事后补一条 update——补写的那一下
+     *                     一旦失败，这一轮的额度就悄悄变成按 run 算，而没有任何报错
      */
-    Optional<Run> start(String owner, String principalDigest, String goal, NotifyPolicy notifyPolicy);
+    Optional<Run> start(String owner, String principalDigest, String goal,
+                        NotifyPolicy notifyPolicy, String sessionId);
 
-    /**
-     * 记下这件事是谁发起的（P02）。批准之后服务端续跑，用的就是这份身份。
-     *
-     * <p><b>为什么不并进 {@link #start}</b>：它是"这件事可能被服务端叫醒"的前提条件，
-     * 而不是"开一件事"的必备部分——定时任务、子 Agent、以及不接审批的部署都不需要它。
-     * 并进 start 会让每个调用点都要先造一个 Principal，而那些地方的 run 本来就不归人。
-     *
-     * <p><b>没记下来的后果是明确的</b>：这件事不会被服务端续跑
-     * （{@link #principalOf} 读不到，`ApprovalService` 会如实说"让提请求的人再说一句继续"）。
-     * 与其拿一个猜来的身份去跑，不如停在原地。
-     *
-     * @param runId     哪一件事
-     * @param principal 发起人。整份存下来——只存指纹反推不出角色与可访问表
-     */
-    void attachPrincipal(String runId, Principal principal);
-
-    /**
-     * 记下这条 run 属于哪一段会话（ADR-0025）。
-     *
-     * <p><b>单独一条 update，不并进 {@link #start}</b>：会话键由通道与 chatId 派生，
-     * 那是"这一轮从哪来"的信息，与"这件事是什么"分开更清楚；
-     * 而且并进 start 会让定时任务、子 run 这些没有会话的调用点被迫造一个假键。
-     *
-     * <p>没记下来的后果：这条 run 不参与会话预算累计，退回按它自己那一行算——
-     * 也就是改之前的行为。少算一段，不拦错人。
-     */
-    default void attachSession(String runId, String sessionId) {
-        // 默认什么都不做：这条 run 就不会参与会话累计，退回按它自己那一行算——
-        // 也就是改动之前的行为。故意不抛异常：替身与降级部署都靠这条默认路径，
-        // 而"少算一段"比"这一轮直接失败"轻。
+    /** 不带会话键的版本：子 Agent 与单测走这里，它们不参与会话预算。 */
+    default Optional<Run> start(String owner, String principalDigest, String goal,
+                                NotifyPolicy notifyPolicy) {
+        return start(owner, principalDigest, goal, notifyPolicy, null);
     }
-
-    /**
-     * 记下这条 run 的"对话地址"（ADR-0026 决定二）。
-     *
-     * <p><b>与 {@link #attachSession} 是两件事</b>：那个记"哪一段会话"
-     * （{@code claw4j:user:…:<段>}，会随段轮换而变，给记忆与预算用）；
-     * 这个记"哪条对话"（{@code addr:<owner>|<通道>|<chatId>}，不随段变，用来抢 lane 那把锁）。
-     *
-     * <p><b>为什么要多存一份</b>：审批续跑没有入站消息，手上只有 {@code session_id}
-     * 那一串。反解要按 {@code :} 切，而 {@code chatId} 里出现冒号是可能的——
-     * 解析错的方式是"锁到了另一条对话上"，不报错。
-     */
-    default void attachAddress(String runId, String address) {
-        // 默认什么都不做：这条 run 就不会在续跑时抢锁，退回"各跑各的"。
-        // 替身与降级部署靠这条默认路径，而"少了串行化"比"这一轮直接失败"轻。
-    }
-
-    /**
-     * 这条 run 当初在哪条对话里。空表示没记下来（加列之前的老数据、存储降级）。
-     *
-     * <p>空的时候续跑<b>不加锁</b>：那条路上只有审批能推动它，而"放弃执行"
-     * 比"上一把抢不到的锁"糟得多——前者是永远不做，后者只是这一次没排上。
-     */
-    default Optional<String> sessionAddressOf(String runId) {
-        return Optional.empty();
-    }
-
-    /**
-     * 这条 run 属于哪一段会话。空表示没记下来（加列之前的老数据、存储降级）。
-     *
-     * <p>审批续跑那条路上没有入站消息，算不出会话键，只能回读——
-     * 续跑的结果要写回"当初提问的那段对话"，否则人点完批准，答案落到别处去了。
-     */
-    default Optional<String> sessionOf(String runId) {
-        return Optional.empty();
-    }
-
-    /**
-     * 接上一个已经存在的 run：不新建，序号接着涨（A02）。
-     *
-     * <p>返回空表示"接不上"，三种情况不作区分，因为调用方的动作一样（另开一个）：
-     * 没有这个 run、它不属于 {@code owner}、它正在等审批。
-     *
-     * <p><b>第三种必须挡住</b>：等审批的 run 只能由审批放行（P02），
-     * 一句"继续"就能把它唤醒的话，那道门等于没装。
-     *
-     * @param owner 归属键，与 {@link #start} 同一个口径。带它才能挡住"接别人的 run"
-     */
-    Optional<Run> resume(String runId, String owner);
-
-    /**
-     * 审批放行之后由服务端续跑（P02）：这里能把 {@link RunStatus#SUSPENDED} 拉回 running。
-     *
-     * <p><b>为什么与 {@link #resume} 分开而不是加个开关</b>：那两种唤醒的来源根本不同——
-     * 一个是"用户又说了一句继续"，一个是"有人点了批准"。合成一个方法之后，
-     * {@code resume} 里那句"等审批的 run 只能由审批放行"就变成一个条件参数，
-     * 而条件参数写错一次，那句约束就永久消失且没有任何测试会红。
-     *
-     * <p><b>只从 suspended 转</b>：已经做完的事不该因为一条迟到的批准被拉起来重跑。
-     *
-     * @return 空表示接不上（没有这个 run、不在 suspended、存储降级）。
-     *         三种都不细分的理由与 {@link #resume} 相同
-     */
-    Optional<Run> reopen(String runId);
 
     /** 追加一步，序号由存储分配。返回空表示没记下来。 */
     Optional<Step> append(StepInput input);
@@ -152,42 +66,7 @@ public interface RunStore {
      */
     void finish(String runId, RunStatus status, String result);
 
-    /**
-     * 停在这里等人批（P02）。只改状态，不建新行、不删任何东西。
-     *
-     * <p><b>"停在这一步"是库里的一行状态，不是挂着的线程</b>：请求照常返回，
-     * 审批号回给用户，服务端一个线程都不占。挂线程的写法在这一层有三个躲不掉的问题——
-     * 审批可能十分钟后才来（线程早被池子收走）、进程重启后没人记得它在等（线程没了）、
-     * 一件被忘掉的事会一直吃掉一个线程。
-     *
-     * <p>只从 {@link RunStatus#RUNNING} 转（SQL 里带着这个条件）：
-     * 已经做完的事不该因为一条迟到一小时的审批被拉回 suspended。
-     */
-    void suspend(String runId);
-
-    /**
-     * 这件事是谁发起的（P02）。批准之后服务端续跑，用的就是这份身份。
-     *
-     * <p>空表示读不到（存储降级，或者这个 run 早于 P02、没有快照）。
-     * 那种情况下**不续跑**：拿一个猜来的身份去跑，比让它停在原地更糟。
-     */
-    Optional<Principal> principalOf(String runId);
-
-    /**
-     * 把等审批的那一步改成结论（P02）。
-     *
-     * <p>不这么做的话，recap 里那一步会一直显示"等审批"，而 resume 时模型看到的
-     * 正是 recap——它会以为还在等，于是把"等人批"这件事再说一遍。
-     *
-     * <p><b>不用传 seq</b>：run 停在 suspended 之后不会再产生新的审批，
-     * 所以这个 run 里状态为 awaiting 的 approval step 最多一条。
-     * 按 seq 追反而要先把序号存回审批行，多一次写、多一处能忘。
-     *
-     * @param status {@link StepStatus#DONE}（批了）或 {@link StepStatus#FAILED}（拒了）
-     */
-    void settleApprovalStep(String runId, StepStatus status);
-
-    /** 回读一个 run。用于"这件事做到第几步"与进程重启之后接着问。 */
+    /** 回读一个 run。用于"上一轮是什么结局"与审计对账。 */
     Optional<Run> find(String runId);
 
     /** 一个 run 的全部 step，按序号升序。 */

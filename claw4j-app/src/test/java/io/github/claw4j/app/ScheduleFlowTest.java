@@ -134,7 +134,6 @@ class ScheduleFlowTest {
     @BeforeEach
     void freshTables() {
         jdbc.update("delete from claw4j_run.agent_schedule");
-        jdbc.update("delete from claw4j_run.agent_run_delivery");
         jdbc.update("delete from claw4j_run.agent_step");
         jdbc.update("delete from claw4j_run.agent_run");
         roleTable.clear();
@@ -583,8 +582,7 @@ class ScheduleFlowTest {
 
     /** 三个工具按生产那套装配：同一个 store、同一份角色表、同一个收件地址来源。 */
     private ScheduleTools tools() {
-        return new ScheduleTools(store(), authorization(),
-                runId -> List.of(new DeliveryTarget(Recorder.CHANNEL, "oc_sched")));
+        return new ScheduleTools(store(), authorization());
     }
 
     private ToolCallback toolNamed(String name) {
@@ -597,7 +595,9 @@ class ScheduleFlowTest {
     /** 模型那一侧看到的那一份上下文：身份 + 这一轮的 run（工具靠它找收件地址）。 */
     private static ToolContext toolContext(Principal principal) {
         return new ToolContext(Map.of(ContextKeys.PRINCIPAL, principal,
-                ContextKeys.RUN_ID, "run-from-chat"));
+                ContextKeys.RUN_ID, "run-from-chat",
+                ContextKeys.CHANNEL, Recorder.CHANNEL,
+                ContextKeys.CHAT_REF, "oc_sched"));
     }
 
     /** 记录推出去的话。停用通知是"无人值守"唯一能被听见的地方，所以要读原文。 */

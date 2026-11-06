@@ -170,6 +170,12 @@ public sealed interface GoalCommand {
         if (!current.get().status().resumable()) {
             return "这个目标已经达成了，不能恢复。要开始别的事得先 /goal clear。";
         }
+        if (current.get().status() == GoalStatus.ACTIVE) {
+            // 原文的 resume 是"恢复已暂停、已阻塞、用量受限或预算受限的目标"。
+            // 打在活跃目标上什么都不该发生：跟着改一格 revision 的话，
+            // "谁最后改的"就多出一条没有改动的痕迹。
+            return "这个目标本来就是活跃的，没动它。\n" + GoalTools.render(current.get());
+        }
         return setStatus(goals, sessionKey, GoalStatus.ACTIVE, note,
                 "目标恢复为活跃，接下来的轮次会重新把它带进上下文。");
     }
