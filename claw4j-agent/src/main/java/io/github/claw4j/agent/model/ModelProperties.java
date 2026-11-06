@@ -11,8 +11,8 @@ import java.time.Duration;
  * <p><b>凭据是句柄，不是值</b>（P08）：yaml 里写 {@code api-key: secret:deepseek_api_key}，
  * 真值在发请求那一刻才由 {@code SecretResolver} 从部署环境换出来。于是这个类、
  * 它的 toString、它的日志，从头到尾都拿不到 key —— 它们只知道"这次用的是哪把钥匙"。
- * 在这之前是 {@code ${DEEPSEEK_API_KEY:}}：Spring 在绑定期就解成真值，字段活到进程结束，
- * 任何能读到配置的组件都能随手取走（ADR-0006 的取向没变，变的是真值活多久）。
+ * 不写成 {@code ${DEEPSEEK_API_KEY:}}：Spring 在绑定期就解成真值，字段活到进程结束，
+ * 任何能读到配置的组件都能随手取走（ADR-0006 的取向不变，变的是真值活多久）。
  *
  * <p><b>没有"要不要 mock"的开关</b>：ADR-0011 取消了 mock 兜底，一个 key 都没有就启动失败，
  * 于是那个三态字段没有存在的理由——留着它就是一处"配了也不生效"的入口。
@@ -102,7 +102,7 @@ public class ModelProperties {
          * 这一家用的凭据句柄。空（{@code isAbsent()}）表示这一家没配。
          *
          * <p><b>不提供 {@code String} 形态的 getter</b>：一旦有 {@code getApiKey()} 返回字符串，
-         * 下一个人就会拿它去拼 header，本票做的事就退回原样了。要真值只有一个入口——
+         * 下一个人就会拿它去拼 header，那把钥匙就又有了第二个出口。要真值只有一个入口——
          * {@code apiKey().render(resolver)}，而它只该出现在装配类的出口。
          */
         public SecretValue apiKey() {

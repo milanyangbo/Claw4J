@@ -208,8 +208,8 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * 过期会话清理（M3-04）。
      *
      * <p>{@code spring.ai.session.time-to-live} 只是写在会话行上的时间戳，没有任何东西读它——
-     * 而它写的是"建行 + TTL"，不随活动刷新。所以真正判"该不该清"的已经不是它了，
-     * 是 {@link SessionMaintenance} 里的"多久没动"。这个 bean 现在只管"什么时候跑"。
+     * 而它写的是"建行 + TTL"，不随活动刷新。所以判"该不该清"的是
+     * {@link SessionMaintenance} 里的"多久没动"，这个 bean 只管"什么时候跑"。
      */
     @Bean
     @ConditionalOnMissingBean(SessionCleanup.class)

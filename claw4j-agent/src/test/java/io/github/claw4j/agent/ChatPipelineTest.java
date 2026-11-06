@@ -272,8 +272,8 @@ class ChatPipelineTest {
                 .as("模型没有调用 querySales：自然语言没有被翻成工具调用")
                 .isNotEmpty();
         // 只断言"翻译发生了"：聚合函数与时间窗都从这句中文里来。
-        // 以前这里还断言 sales_order / east 这些**业务 schema 的写法**，那是借了示例销售工具的描述，
-        // 而示例已经搬去独立 jar —— 一个验链路装配的用例，不该由某份业务表的结构决定它红不红。
+        // 不断言 sales_order / east 这类**业务 schema 的写法**——那是借了示例销售工具的描述，
+        // 而一个验链路装配的用例，不该由某份业务表的结构决定它红不红。
         assertThat(executedSql.getFirst().toLowerCase())
                 .as("中文里的‘成交额’没有被翻成聚合、‘上周’没有被翻成时间窗")
                 .contains("sum(", "interval");
@@ -289,7 +289,7 @@ class ChatPipelineTest {
      * 只有结束那一条时，跑了多久、两条并发的先后都只能靠时间戳猜。
      *
      * <p>编号跟着回答出去，但它<b>不是续跑令牌</b>：拿它回来接不上任何东西——
-     * 连续性靠会话键。这一条以前叫"开一个 run 并收尾"，而 run 已经不存了。
+     * 连续性靠会话键。
      */
     @Test
     @DisplayName("一次提问两条审计事件：started 与 finished 成对，runId 跟着回答出去")
@@ -476,10 +476,8 @@ class ChatPipelineTest {
     /**
      * 达成的目标能 resume（ADR-0027 决定三，照 OpenClaw 的命令表）。
      *
-     * <p><b>这一条此前是反的</b>：我把"达成之后不能直接 edit / pause / block"读成了
-     * "不能恢复"。原文两处写得很清楚——命令表里 resume 恢复"已暂停、已阻塞、受限<b>或已完成</b>
-     * 的目标"；状态那一节说 {@code complete}"保持达成，直到你显式地用 {@code /goal resume}
-     * 再次推进同一个目标"。两句挨着，我引了后一句却按前一句的意思实现。
+     * <p><b>依据</b>：OpenClaw 的 resume 能恢复"受限或已完成"的目标（命令表与状态那一节都这么写）；
+     * "不能直接 edit / pause / block" 是另一句话。
      *
      * <p><b>恢复的是同一个目标</b>：内容、预算、已用 Token 都不动（只有 {@code budget_limited}
      * 才开新窗口）。当成新建一件的话，"再推一次"会带着一份空账从头开始，
@@ -913,8 +911,7 @@ class RecordingTool implements ToolCallback {
 /**
  * 真模型用例需要一个"真的会被调用、且会留下痕迹"的工具。
  *
- * <p>它以前借的是 capability 里的示例销售工具——那条依赖是错的：agent 不该为了一个替身
- * 认识业务模块（示例业务搬去独立 jar 之后，这里编译不过才暴露出来）。
+ * <p>它不借 capability 里的示例销售工具：agent 不该为了一个替身认识业务模块。
  * 替身只做两件真模型用例关心的事：记下被传进来的 SQL、回一行数。
  */
 class RecordingSalesTool {

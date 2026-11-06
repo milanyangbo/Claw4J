@@ -624,18 +624,18 @@ class ModelAndToolSelectionTest {
                 ToolReference.builder().toolName("runScript")
                         .summary("在沙箱里执行脚本，用于批量处理数据").build());
 
-        // 一、整句命中。改之前这条是 0 个：整句是一个 token，当子串去描述里找什么都找不到。
+        // 一、整句命中。不切词的话整句是一个 token，当子串去描述里找什么都找不到。
         index.indexTools("chat-1", tools);
         assertThat(foundTools(index, "chat-1", "回忆以前说过的话"))
                 .as("中文整句不该空手而归")
                 .contains("recall_session");
 
-        // 二、原来那套空格关键词不能因此变差——这条守的是"修好中文顺手弄坏英文写法"。
+        // 二、空格关键词不能因此变差——这条守的是"修好中文顺手弄坏英文写法"。
         assertThat(foundTools(index, "chat-1", "回忆 历史 会话"))
                 .as("空格分隔的关键词仍然命中同一个工具")
                 .contains("recall_session");
 
-        // 三、英文 query 逐字不变：没有中文就走父类，正则形状与原来完全一致。
+        // 三、英文 query 逐字不变：没有中文就走父类，正则形状与父类一致。
         //     反例是把 ASCII 段也打散成 re|ca|ll —— 那样英文检索全线掉。
         assertThat(index.convertQueryToRegexPattern("sales revenue last week"))
                 .as("没有中文时原样交回父类，一个 token 都不该被拆开")

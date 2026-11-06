@@ -718,9 +718,8 @@ class ApprovalFlowTest {
     /**
      * 这一轮以什么状态收尾：读审计里那一条 {@code agent.run.finished}。
      *
-     * <p>它是"这一轮结束了"唯一的落点（ADR-0027）：以前读 {@code agent_run.status}，
-     * 而那张表已经不在了。{@code succeeded} 在这里的含义是"这一轮正常跑完了"——
-     * 回给用户一句"我需要你批准"也是一次正常收尾。
+     * <p>它是"这一轮结束了"唯一的落点（ADR-0027）。{@code succeeded} 在这里的含义是
+     * "这一轮正常跑完了"——回给用户一句"我需要你批准"也是一次正常收尾。
      */
     private static String finishStatusOf(String runId) {
         return jdbc.queryForObject(

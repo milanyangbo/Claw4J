@@ -13,9 +13,9 @@ import java.util.Objects;
  * 而"过期"在配置里看起来已经成立了。这是本项目第二次遇到"配了不等于生效"
  * （第一次是压缩，见 {@code docs/design/pitfalls.md} 第十条）。
  *
- * <p><b>它现在只负责"什么时候跑"，不负责"删什么"</b>：判据在 {@link SessionMaintenance}。
+ * <p><b>它只负责"什么时候跑"，不负责"删什么"</b>：判据在 {@link SessionMaintenance}。
  * 分开的理由是两件事的读者不同——间隔是调度问题（{@code @Scheduled} 在启动时就要拿到值），
- * 判据是数据问题（要能单独验、单独改口径）。原来"到点就删行"的语义已经不在这里了。
+ * 判据是数据问题（要能单独验、单独改口径）。
  *
  * <p>间隔用 {@code @Scheduled} 的属性占位符而不是从 properties 对象读：
  * 调度注解在容器启动时就要拿到值，那时 properties 绑定不一定已经完成；

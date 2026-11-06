@@ -24,10 +24,10 @@ import org.springframework.core.env.Environment;
 /**
  * 向量模型：**一个部署只有一份**，缓存的与知识库的消费者共用。
  *
- * <p><b>它为什么独立于缓存</b>（P10）：这个 bean 原先由 {@code CacheAutoConfiguration} 装配，
- * 条件里带着 {@code claw4j.cache.enabled}。于是关掉语义缓存（一个省钱开关）会连带让知识库
- * 起不来，而两件事的变更节奏完全不同——一个是成本调优，一个是功能开关。
- * 拆开之后条件只剩"配了通义 key"，两个消费者各自用，谁也不绑谁。
+ * <p><b>它为什么独立于缓存</b>（P10）：不带 {@code claw4j.cache.enabled} 这个条件。
+ * 语义缓存是省钱开关、知识库是功能，两件事的变更节奏完全不同——绑在一起的话，
+ * 关掉缓存会连带让知识库起不来。
+ * 条件只剩"配了通义 key"，两个消费者各自用，谁也不绑谁。
  *
  * <p><b>为什么只有通义这一家</b>：DeepSeek 没有 embedding 接口。所以向量能力跟着
  * {@code claw4j.model.qwen.*} 那套凭据走，不新增一组配置、也不新增一把钥匙。

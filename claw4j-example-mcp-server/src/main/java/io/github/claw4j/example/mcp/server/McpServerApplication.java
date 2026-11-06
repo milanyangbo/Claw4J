@@ -50,8 +50,6 @@ public final class McpServerApplication {
         Runtime.getRuntime().addShutdownHook(new Thread(server::closeGracefully, "mcp-server-shutdown"));
 
         // 到这里就可以返回了：传输的非守护线程让进程继续活着，客户端关掉 stdin 之后它们收尾。
-        // 曾经在这里放了一个 CountDownLatch(1).await()，注释写的是"main 返回 JVM 就退出"——
-        // 把那行删掉跑一遍，用例照样全绿，说明那句话是错的（见类注释第 2 条）。
-        // 宁愿少一行"看起来更稳妥"的等待，也不要一行测不到的假设。
+        // 不要在这里加"等一等再退出"：main 返回 JVM 并不会退出，那种等待是一行测不到的假设。
     }
 }

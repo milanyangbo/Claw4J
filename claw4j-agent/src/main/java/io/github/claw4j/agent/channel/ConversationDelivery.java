@@ -16,15 +16,14 @@ import java.util.Objects;
  * <p><b>只有一件事：把结果推到"这一轮来自的那段对话"</b>。没有登记表，没有"按 runId
  * 查这个 run 登记过哪些地址"。
  *
- * <p>以前那套（投递表一对多、HTTP 发起飞书批准企微收结果）
- * 建立在"一件事能跨请求活着"上。那个前提没了之后，它也站不住：一条消息只来自
- * 一段对话，而那段对话的地址就在消息上（{@code channel + chatId}）。
- * OpenClaw 的原文是 <b>"never falls back to lastChannel"</b>——结果回到它开始的地方，
- * 不回退到"最近用过的通道"。
+ * <p><b>不做一对多投递</b>：一条消息只来自一段对话，而那段对话的地址就在消息上
+ * （{@code channel + chatId}）。OpenClaw 的原文是 <b>"never falls back to lastChannel"</b>——
+ * 结果回到它开始的地方，不回退到"最近用过的通道"。
  *
  * <p><b>推与存是两件事</b>：推失败只记一条日志（重试策略属于具体平台，见
- * {@link OutboundDelivery}）；结果本身早就落在 run 上了，收不到推送的人照样查得到。
- * 这是"投递"敢失败的前提——它从来不是结果的唯一副本。
+ * {@link OutboundDelivery}）；结果本身早就交回调用方了（{@code reply} 的返回值、
+ * 或流式最后一帧），收不到推送的人照样拿得到。这是"投递"敢失败的前提——
+ * 它从来不是结果的唯一副本。
  */
 public class ConversationDelivery {
 

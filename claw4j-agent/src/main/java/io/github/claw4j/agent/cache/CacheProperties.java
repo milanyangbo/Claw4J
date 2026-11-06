@@ -9,7 +9,7 @@ import java.time.Duration;
  *
  * <p><b>字段全部用包装类型</b>：配置绑定对缺失的键只能传 null，原始类型会被填成 0 ——
  * 而这里 0 是有意义的坏值（阈值 0 = 任何候选都算命中，TTL 0 = 存进去就过期）。
- * 这个坑在 M3-06 踩过一次（`ToolSearchProperties`），同样的形状不再踩第二次。
+ * 漏一个包装类型，就等于给那一项配了一个谁都没写的 0。
  *
  * <p><b>没有 {@code enabled} 字段</b>：总开关由 {@code CacheAutoConfiguration} 类上那个
  * {@code @ConditionalOnProperty} 读 {@code claw4j.cache.enabled} 判定，关掉即整套不装。

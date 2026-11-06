@@ -284,7 +284,7 @@ class ScheduleToolsTest {
                 NEEDS_APPROVAL, ToolPermission.requiringApproval("send_email"))));
     }
 
-    /** 生产那套装配：真 store、真判据、收件地址来自这一轮的 run。 */
+    /** 生产那套装配：真 store、真判据、收件地址来自这一轮的工具上下文。 */
     private static ScheduleTools tools(ScheduleStore store) {
         return new ScheduleTools(store,
                 new ScheduleAuthorization((userId, role) -> Optional.of(Principal.of(userId, role,

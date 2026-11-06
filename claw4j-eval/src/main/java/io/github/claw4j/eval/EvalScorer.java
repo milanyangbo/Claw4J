@@ -32,9 +32,8 @@ import java.util.regex.Pattern;
  * 报告只够说"它拒了"，而运营要问的是"拦在哪"。
  *
  * <p><b>轨迹的形状就是审计的形状</b>（ADR-0027）：一次工具调用一条 {@link Trace}，
- * 与 {@code audit_event} 里的一行一一对应。以前它读步骤表里的
- * {@code tool_calls} 汇总行（一行逗号串好几个工具），那个形状随 run 一起没了，
- * 而"一次一行"更准——汇总行分不出"调了两次同一个工具"。
+ * 与 {@code audit_event} 里的一行一一对应。"一次一行"是对的——汇总行分不出
+ * "调了两次同一个工具"，而运营要问的正是"拦在哪一次"。
  */
 public final class EvalScorer {
 

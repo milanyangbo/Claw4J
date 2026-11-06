@@ -82,8 +82,8 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * <p><b>没有 {@code status <> 'complete'} 那一句</b>：完成的也能 resume。
      * 原文的状态表把 {@code complete} 写成"保持达成，直到你显式地用 {@code /goal resume}
      * 再次推进同一个目标"；命令表里也写着 resume "恢复已暂停、已阻塞、受限或<b>已完成</b>的目标"。
-     * 我此前照着"终态"两个字把这一支堵了，而那句"终止状态"讲的是
-     * <b>不能直接 edit / pause / block</b>（见 {@link #EDIT} 与 {@link #SET_STATUS}），不是不能恢复。
+     * 别把另一句读成"不能恢复"：那句"终止状态"讲的是
+     * <b>不能直接 edit / pause / block</b>（见 {@link #EDIT} 与 {@link #SET_STATUS}）。
      */
     private static final String RESUME = "update claw4j_session.conversation_goal"
             + " set tokens_used = case when status = 'budget_limited' then 0 else tokens_used end,"

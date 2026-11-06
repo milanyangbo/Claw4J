@@ -41,8 +41,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p><b>库不可用时不抛</b>：这里是后台任务，抛出去只会让 {@code @Scheduled} 每小时刷一次全栈，
  * 而"清理没跑成"与"没有东西可清"在结果上都是 0 行。所以 WARN 一次、计数、返回空报告——
- * 与 {@code FaultTolerantSessionService} 同一个判断。区别是那一层已经不在链上了
- * （本类直接写 SQL），降级要自己接。
+ * 与 {@code FaultTolerantSessionService} 同一个判断。区别是本类直接写 SQL、
+ * 中间没有那一层降级，所以降级要自己接。
  */
 public final class SessionMaintenance {
 

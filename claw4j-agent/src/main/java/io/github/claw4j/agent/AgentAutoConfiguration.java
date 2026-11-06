@@ -189,8 +189,8 @@ public class AgentAutoConfiguration {
      *
      * <p><b>为什么是中文那一版而不是框架的 {@code RegexToolIndex}</b>：后者只按空白与标点切词，
      * 中文整句进去是**一个** token，当子串匹配等于什么都不匹配。这件事的代价不止"命中率低"——
-     * 系统提示词当时得反过来要求模型自己用空格分词，等于把实现的缺陷教给模型。
-     * 换成 {@link ChineseToolIndex} 之后那段提示词才删得掉（见 {@link ToolSearch#SYSTEM_SUFFIX}）。
+     * 用它就得靠系统提示词反过来要求模型自己用空格分词，等于把实现的缺陷教给模型。
+     * {@link ChineseToolIndex} 让那段提示词没有必要存在（见 {@link ToolSearch#SYSTEM_SUFFIX}）。
      *
      * <p>选它而不是向量索引（{@code VectorToolIndex}）是因为这一版的判据是"提示词里的工具定义 token
      * 降下来、选工具还不选错"，词面匹配已经够回答这个问题，而且不需要 embedding 调用、
@@ -397,7 +397,7 @@ public class AgentAutoConfiguration {
         // 那不是浪费，是让"开着"与"关着"走同一条路，否则关着的那条路平时不执行，
         // 等开了观测才第一次跑。
         // 段（ADR-0026）也走 ObjectProvider，但它与 run 那一组不同进同出：
-        // 段回答"这是哪一段对话"，与"这件事做完了没有"不是一回事——后者已经不存了。
+        // 段回答"这是哪一段对话"，而"这件事做完了没有"没有对应的存储。
         //
         // lane 不是可选项：它是"一段对话同时只有一轮在跑"那条正确性保证本身。
         // 不装配它，并发两条消息就会各跑各的，而失败长相是"模型偶尔会忘事"。

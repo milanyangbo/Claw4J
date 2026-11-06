@@ -28,7 +28,7 @@ import java.util.Objects;
  *
  * <p><b>凭据走 {@code headers}，值是句柄</b>（P08）：配置里写
  * {@code Authorization: "Bearer secret:deepwiki_token"}，真值在<b>每一次请求</b>写头那一刻才换出来
- * （见 {@link #requestCustomizer()}）。在这之前是 {@code ${DEEPWIKI_TOKEN}}——Spring 在配置绑定期
+ * （见 {@link #requestCustomizer()}）。不能写成 {@code ${DEEPWIKI_TOKEN}}：Spring 在配置绑定期
  * 就把它解成真值，于是这个对象手里握着的是一把能活到进程结束的钥匙。
  */
 public final class HttpMcpEndpoint {

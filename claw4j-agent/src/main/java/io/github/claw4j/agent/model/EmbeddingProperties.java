@@ -3,12 +3,12 @@ package io.github.claw4j.agent.model;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * 向量模型的两项配置。**它不在 {@code claw4j.cache} 下面**（P10 之前在那里）。
+ * 向量模型的两项配置。**它不在 {@code claw4j.cache} 下面**。
  *
- * <p><b>为什么搬出来</b>：向量模型有两个消费者——语义缓存（"这个问题问过没有"）与
- * 知识库（"哪段文档相关"）。它原先住在 {@code CacheAutoConfiguration} 里，条件之一是
- * {@code claw4j.cache.enabled}。于是"关掉语义缓存"这个**省钱开关**会连带关掉知识库要用的
- * 向量模型，而且失败的样子是"知识库起不来"或者"得打开一个用不上的缓存来换"。
+ * <p><b>为什么独立于缓存</b>：向量模型有两个消费者——语义缓存（"这个问题问过没有"）与
+ * 知识库（"哪段文档相关"）。挂在 {@code claw4j.cache.enabled} 下面的话，
+ * "关掉语义缓存"这个**省钱开关**会连带关掉知识库要用的向量模型，
+ * 而且失败的样子是"知识库起不来"或者"得打开一个用不上的缓存来换"。
  *
  * <p>现在它的条件只剩一条：**配了通义那家的 key**（DeepSeek 没有 embedding 接口）。
  * 关掉缓存之后这个 bean 还在，但没人调它——它是懒的，只有第一次 {@code embed} 才发请求。

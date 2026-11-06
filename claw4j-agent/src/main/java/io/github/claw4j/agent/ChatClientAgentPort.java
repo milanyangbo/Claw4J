@@ -147,11 +147,10 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
 
     /**
      * 这段对话现在叫什么（ADR-0026）。可以为 null——没有会话存储就没有"段"这回事，
-     * 于是 {@code sessionId} 退回加段之前的形状，与改造之前逐字相同。
+     * 于是 {@code sessionId} 退回加段之前的形状。
      *
-     * <p><b>它<b>不</b>属于 run 那一组</b>：run 回答"这件事做完了没有"，段回答
-     * "这是哪一段对话"。两者的寿命不同（run 一轮、段跨多轮），所以开关也不同——
-     * 关掉那一层持久化时，段照常工作。
+     * <p><b>它<b>不</b>属于 run 那一组</b>：一轮的编号活一轮，段跨多轮，寿命不同，
+     * 所以开关也不同——关掉那一层持久化时，段照常工作。
      */
     private final ConversationPointers pointers;
 
@@ -524,9 +523,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 交给模型的文本。
      *
-     * <p><b>只有两段：活跃目标 + 这一句</b>。以前还会在中间拼一段 recap（目标 + 最近几步），
-     * 那是给"run 挂起、上下文没了"准备的；上下文一直在会话里，这个前提不成立
-     * （ADR-0027 决定三）。模型看到的是同一段对话的前几轮，不需要我们把它们再抄一遍。
+     * <p><b>只有两段：活跃目标 + 这一句</b>。不拼 recap：上下文一直在会话里
+     * （ADR-0027 决定三），模型看到的就是同一段对话的前几轮，不需要我们再抄一遍。
      */
     private String promptText(String sessionId, String masked) {
         return activeGoalLine(sessionId) + masked;
@@ -589,9 +587,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * <p><b>这一轮的状态不由额度决定</b>：用完额度不是"这一轮失败"，
      * 它是这件事停下来了——状态在目标上，不在一轮上。
      *
-     * <p><b>不再往 step 表写摘要</b>（ADR-0027 决定二）：那张表随 run 一起没了。
-     * 要回答"这一轮说了什么"，读通道里的回答与 {@code audit_event} 的两条事件；
-     * 要回答"模型看到了什么"，读会话历史。摘要是"一件事的第几步"那个形状的产物。
+     * <p><b>不写摘要</b>（ADR-0027 决定二）：要回答"这一轮说了什么"，读通道里的回答与
+     * {@code audit_event} 的两条事件；要回答"模型看到了什么"，读会话历史。
+     * 摘要是"一件事的第几步"那个形状的产物，这里没有那种形状。
      */
     private void closeTurn(AuditEvent.Scope scope, String answer,
                            DeliveryTarget pushTo, NotifyPolicy policy, long tokens) {
@@ -790,8 +788,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // 让它去猜就会退化成"这个人的所有会话"，而那正是私聊内容被带进群聊的那条路。
         toolContext.put(ChatMemory.CONVERSATION_ID, sessionId);
         // 通道与地址也进工具上下文（ADR-0027）：审批要写"这条请求来自哪段对话"，
-        // 定时任务要写"结果推回哪里"。以前这两处拿 runId 去投递表反查，
-        // 而地址本来就是这一轮的属性，不该绕一次库、更不该靠一张要下线的表。
+        // 定时任务要写"结果推回哪里"。地址是这一轮的属性——不该绕一次库，也不该靠另一张表登记。
         if (message.channel() != null && !message.channel().isBlank()) {
             toolContext.put(ContextKeys.CHANNEL, message.channel());
         }

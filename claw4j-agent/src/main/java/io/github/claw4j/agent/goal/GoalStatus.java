@@ -68,9 +68,8 @@ public enum GoalStatus {
      * 直到你显式地用 {@code /goal resume} 再次推进同一个目标"。
      *
      * <p>唯一没有动作的是 {@link #ACTIVE} 自己——它已经是活跃的。
-     * 我此前把 {@code COMPLETE} 写成"终态、不能恢复"，读到的是另一句：
-     * 那句讲的是<b>不能在达成之后直接 edit / pause / block</b>（要先把目标 resume），
-     * 不是"不能 resume"。两句话挨着，读反了。
+     * 别把另一句读成"达成之后不能 resume"：那句讲的是<b>不能在达成之后直接
+     * edit / pause / block</b>，要先把目标 resume 回来。
      */
     public boolean resumable() {
         return this != ACTIVE;

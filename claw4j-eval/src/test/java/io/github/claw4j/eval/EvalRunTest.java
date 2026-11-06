@@ -202,8 +202,7 @@ class EvalRunTest {
      * 这一轮的工具调用轨迹：读审计里每一次 {@code tool.action.finished}。
      *
      * <p>一次调用一行——审计本来就是"一行 = 一次动作"（ADR-0027）。
-     * 以前读 {@code agent_step} 的 {@code tool_calls} 汇总行（逗号串好几个工具），
-     * 那个形状分不出"调了两次同一个工具"，随 run 一起没了。
+     * 汇总行分不出"调了两次同一个工具"。
      */
     private List<EvalScorer.Trace> traceOf(String runId) {
         return jdbc.query(

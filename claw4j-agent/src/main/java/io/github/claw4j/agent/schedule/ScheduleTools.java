@@ -419,8 +419,8 @@ public final class ScheduleTools implements ToolCallbackProvider {
     /**
      * 结果推回哪儿：这一轮从哪个通道、哪个会话来的（ADR-0027）。
      *
-     * <p>以前按 runId 去一张投递表查，那张表已经不在了——
-     * 地址本来就是这一轮的属性。拿不到就是"没地方推"，任务照建，结果只能按 id 取。
+     * <p>地址是这一轮的属性（工具上下文里的 {@code channel} 与 {@code chatRef}），
+     * 不靠另一张表登记。拿不到就是"没地方推"，任务照建，结果只能按 id 取。
      */
     private static Optional<DeliveryTarget> addressOf(ToolContext toolContext) {
         if (toolContext == null) {
