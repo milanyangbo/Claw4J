@@ -17,7 +17,7 @@ import tools.jackson.databind.ObjectMapper;
  * （那是入站事件与地址表里记的东西），正文是<b>字符串化的卡片 JSON</b>而不是纯文本——
  * 飞书的消息体永远是一个 JSON 字符串，{@code msg_type=interactive} 时里面装的是卡片本身。
  *
- * <p>失败一律抛：调用方（{@code RunApprovalGate}）会记一条 WARN 然后继续——
+ * <p>失败一律抛：调用方（{@code ConversationApprovalGate}）会记一条 WARN 然后继续——
  * 那一轮已经停住了、编号也在对话里，缺的只是这个更方便的按钮。
  */
 class FeishuApprovalCards implements ApprovalCards {

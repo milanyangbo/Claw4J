@@ -15,7 +15,6 @@ import org.springframework.ai.tool.metadata.ToolMetadata;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Objects;
 
 /**
@@ -30,7 +29,7 @@ import java.util.Objects;
  *
  * <p><b>它做四件事，因为这四个事实同源</b>：计数的前提是"这次调用真的发生了"，
  * {@link ToolCallLog} 要记的、审计要落的（{@link ToolCallAudit}，P07）、
- * trace 要画的（{@link RunTracer}，P14）也都是同一件事。分成几个包装类会多几层对象，
+ * trace 要画的（{@link SpanTracer}，P14）也都是同一件事。分成几个包装类会多几层对象，
  * 还会让"只包了计量那层"的路径悄悄漏掉另外几件——
  * 这个仓库已经因为"某条路径没被包上"出过一次问题（工具清单只收 provider 不收单个 callback）。
  *
@@ -41,7 +40,7 @@ import java.util.Objects;
  *
  * <p><b>没有 registry 时照样包</b>：记录"这一轮调过哪些工具"是语义缓存判断副作用的依据，
  * 与"有没有装 actuator"无关。装不装只影响计数报不报得出去。span 也一样：
- * {@link RunTracer#NONE} 是零开销的空实现，埋点代码只有一种写法。
+ * {@link SpanTracer#NONE} 是零开销的空实现，埋点代码只有一种写法。
  *
  * <p><b>这里看不到 {@code denied}</b>：鉴权拒绝发生在 Advisor 那一层，工具根本没被执行，
  * 所以走不到这个 {@code call} 里。那个计数只能在鉴权 Advisor 上报（见
@@ -63,13 +62,6 @@ public class MeteredToolCallback implements ToolCallback {
     /** 失败时的异常类型名。只记类型不记 message（trace 会进第三方后端）。 */
     public static final String ATTR_ERROR_TYPE = "claw4j.error.type";
 
-    /**
-     * 这次调用的审计行序号。**这是 trace 与库唯一能对上号的东西**：
-     * 拿 {@code (claw4j.run.id, claw4j.step.seq)} 去库里查，
-     * 查到的就是这一行的审计。
-     */
-    public static final String ATTR_STEP_SEQ = "claw4j.step.seq";
-
     private final ToolCallback delegate;
     private final String toolName;
     private final MeterRegistry registry;
@@ -87,29 +79,29 @@ public class MeteredToolCallback implements ToolCallback {
      * trace（P14）。默认是空实现——没开观测时埋点照样走同一条代码路径，
      * 只是 {@code open} 返回的是一段什么都不做的 scope。
      */
-    private final RunTracer tracer;
+    private final SpanTracer tracer;
 
     /** @param registry 为 null 表示调用方没装 actuator：照常记录调用，只是没有指标可报 */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry) {
-        this(delegate, registry, null, RunTracer.NONE);
+        this(delegate, registry, null, SpanTracer.NONE);
     }
 
     /**
      * @param audit 为 null 表示没装配 run 存储：计量照常，只是这一次调用不会留下一行审计
      */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry, ToolCallAudit audit) {
-        this(delegate, registry, audit, RunTracer.NONE);
+        this(delegate, registry, audit, SpanTracer.NONE);
     }
 
     /**
      * @param tracer 为 null 时按空实现处理：埋点不该因为少一个参数就把调用打断
      */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry,
-                               ToolCallAudit audit, RunTracer tracer) {
+                               ToolCallAudit audit, SpanTracer tracer) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.registry = registry;
         this.audit = audit;
-        this.tracer = tracer == null ? RunTracer.NONE : tracer;
+        this.tracer = tracer == null ? SpanTracer.NONE : tracer;
         this.toolName = delegate.getToolDefinition().name();
     }
 
@@ -130,7 +122,7 @@ public class MeteredToolCallback implements ToolCallback {
     @Override
     public String call(String toolInput) {
         ToolCallLog.record(toolName);
-        try (RunTracer.SpanScope span = openSpan()) {
+        try (SpanTracer.SpanScope span = openSpan()) {
             try {
                 String result = delegate.call(toolInput);
                 span.attribute(ATTR_OUTCOME, "ok");
@@ -148,24 +140,30 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /**
-     * 带上下文的那一个重载：runId 与审计的 scope 只在它这里，step 序号也只在它这里拿得到（P14）。
+     * 带上下文的那一个重载：runId 与审计的 scope 只在它这里拿得到。
      *
      * <p>这一层不再有"额度不够就不执行"的分支（ADR-0027 决定五）：
      * 成本上限在目标的 token 预算上，按轮记账；这一轮绕了太多次由工具循环在上限处截断。
      * 工具回调只回答"这次调用发生了什么"。
+     *
+     * <p><b>span 上不挂审计行号</b>：审计与 trace 是两条独立的管道，共同的那个键是
+     * {@code claw4j.run.id}——拿它去库里查，一次运行的每条事件都在。挂一个"第几行"
+     * 既不比 runId 多回答什么，又把两条本可以各自演进的管道钉在一起。
+     * OpenClaw 也是这个分法：它的 span 属性只有 outcome / channel / provider / model / agent，
+     * 账本序号留在账本里，给排序、翻页与上限淘汰用。
      */
     @Override
     public String call(String toolInput, ToolContext toolContext) {
         String runId = runIdOf(toolContext);
         ToolCallLog.record(toolName);
-        try (RunTracer.SpanScope span = openSpan()) {
+        try (SpanTracer.SpanScope span = openSpan()) {
             // 开始那一条先写，结束那一条在两条出口各写一次：只有结束的话，
             // "这个工具跑了多久"和"两个并发调用谁先开始"都只能靠时间戳猜。
             AuditEvent.Scope scope = scopeOf(toolContext);
-            stampStep(span, toolStarted(scope, toolInput));
+            toolStarted(scope, toolInput);
             try {
                 String result = delegate.call(toolInput, toolContext);
-                stampStep(span, toolFinished(scope, toolInput, null));
+                toolFinished(scope, toolInput, null);
                 span.attribute(ATTR_OUTCOME, "ok");
                 count("ok");
                 return result;
@@ -173,7 +171,7 @@ public class MeteredToolCallback implements ToolCallback {
             catch (RuntimeException failure) {
                 // 抛异常也是一次"发生过的调用"：审计里它是 executed + failed，
                 // 与被拒绝（根本没执行）是两件事——修法与改配置完全不同。
-                stampStep(span, toolFinished(scope, toolInput, failure.getClass().getSimpleName()));
+                toolFinished(scope, toolInput, failure.getClass().getSimpleName());
                 span.attribute(ATTR_OUTCOME, "error");
                 span.attribute(ATTR_ERROR_TYPE, failure.getClass().getSimpleName());
                 span.failed(failure);
@@ -184,30 +182,23 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /** 一行 {@code tool.<工具名>} 的 span。属性在开始时就把工具名写死，后面只补结果。 */
-    private RunTracer.SpanScope openSpan() {
+    private SpanTracer.SpanScope openSpan() {
         Map<String, String> attributes = new LinkedHashMap<>();
         attributes.put(ATTR_TOOL, toolName);
         return tracer.open("tool." + toolName, attributes);
     }
 
-    /**
-     * 把审计行的序号写到 span 上。
-     *
-     * <p>写在 {@code close()} 之前是必须的：已经 end 的 span 上再设属性是静默的空操作，
-     * 而它看起来与"设成功了"一模一样——这类失败只会在别人抱怨"trace 里查不到对应审计行"时
-     * 才被发现，那时离写出这行代码已经很久了。
-     */
-    private static void stampStep(RunTracer.SpanScope span, Optional<Long> seq) {
-        // 属性名不变（claw4j.step.seq）：它现在指的是审计账本序号，仍然是"这次调用在账本上的位置"。
-        seq.ifPresent(value -> span.attribute(ATTR_STEP_SEQ, Long.toString(value)));
+    /** 写两条审计事件。写不写得上与这次调用无关——审计缺一行不该把工具打成失败。 */
+    private void toolStarted(AuditEvent.Scope scope, String toolInput) {
+        if (audit != null) {
+            audit.toolStarted(scope, toolName, toolInput);
+        }
     }
 
-    private Optional<Long> toolStarted(AuditEvent.Scope scope, String toolInput) {
-        return audit == null ? Optional.empty() : audit.toolStarted(scope, toolName, toolInput);
-    }
-
-    private Optional<Long> toolFinished(AuditEvent.Scope scope, String toolInput, String failure) {
-        return audit == null ? Optional.empty() : audit.toolFinished(scope, toolName, toolInput, failure);
+    private void toolFinished(AuditEvent.Scope scope, String toolInput, String failure) {
+        if (audit != null) {
+            audit.toolFinished(scope, toolName, toolInput, failure);
+        }
     }
 
     /**

@@ -32,16 +32,16 @@ import java.util.Optional;
  * 反过来把卡片失败往上抛，这一轮会变成 500——那会把"通知没发出去"升级成"这次调用炸了"，
  * 而工具本来就没执行、什么也没坏。
  */
-public class RunApprovalGate implements ApprovalGate {
+public class ConversationApprovalGate implements ApprovalGate {
 
-    private static final Logger log = LoggerFactory.getLogger(RunApprovalGate.class);
+    private static final Logger log = LoggerFactory.getLogger(ConversationApprovalGate.class);
 
     private final ApprovalLedger ledger;
 
     /** 各通道的卡片能力。空表示这个部署没有卡片（对话里的编号与 HTTP 接口照旧能用）。 */
     private final List<ApprovalCards> cards;
 
-    public RunApprovalGate(ApprovalLedger ledger, List<ApprovalCards> cards) {
+    public ConversationApprovalGate(ApprovalLedger ledger, List<ApprovalCards> cards) {
         this.ledger = Objects.requireNonNull(ledger, "ledger");
         this.cards = cards == null ? List.of() : List.copyOf(cards);
     }

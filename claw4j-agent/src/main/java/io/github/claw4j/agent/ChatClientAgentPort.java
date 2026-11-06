@@ -3,7 +3,7 @@ package io.github.claw4j.agent;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
-import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.TaskLauncher;
@@ -90,7 +90,10 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /** 一轮动作的 span：包住 {@code call()} 与收尾。工具 span 都挂在它下面。 */
     private static final String TURN_SPAN = "model.turn";
 
-    /** 这件事是哪一件。与 {@code MeteredToolCallback.ATTR_STEP_SEQ} 一起，能把 span 反查回库。 */
+    /**
+     * 这一轮是哪一轮。trace 与审计之间**只有这一把键**：拿它去 {@code audit_event.run_id}
+     * 查，这一轮的全部事件都在（OpenClaw 的 span 上同样只带身份，不带账本行号）。
+     */
     private static final String ATTR_RUN_ID = "claw4j.run.id";
 
     /**
@@ -102,17 +105,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      */
     private static final String ATTR_OWNER = "claw4j.owner";
 
-    /** 这一轮的审计行序号。span 与库唯一能对上号的地方。 */
-    private static final String ATTR_STEP_SEQ = "claw4j.step.seq";
-
     /** 这一轮花掉的 token。拿不到时**不写**——写 0 会被读成"没花钱"。 */
     private static final String ATTR_TOKENS = "claw4j.tokens";
 
     /** 这一轮是哪个模型答的。取响应里的 model id，不是我们配的路由名（那一个在这一层看不到）。 */
     private static final String ATTR_MODEL = "gen_ai.response.model";
-
-    /** 接上来的那一轮标一下：同一个 runId 会有多条 trace，这一条是"继续"，不是"开头"。 */
-    private static final String ATTR_RESUMED = "claw4j.run.resumed";
 
     /**
      * 撞上工具调用上限时回给用户的那一句。
@@ -143,7 +140,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * 埋点代码与开着的时候逐字相同——**"关着"不该是另一条代码路径**，
      * 否则那条路径平时不跑，等开了观测才第一次执行。
      */
-    private final RunTracer tracer;
+    private final SpanTracer tracer;
 
     /**
      * 这段对话现在叫什么（ADR-0026）。可以为 null——没有会话存储就没有"段"这回事，
@@ -186,7 +183,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery) {
-        this(chatClient, compactor, delivery, RunTracer.NONE);
+        this(chatClient, compactor, delivery, SpanTracer.NONE);
     }
 
     /**
@@ -194,18 +191,18 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      *               没开观测的部署拿不到 bean，而"少一个 bean"不该让门都装不上
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
-                               ConversationDelivery delivery, RunTracer tracer) {
+                               ConversationDelivery delivery, SpanTracer tracer) {
         this(chatClient, compactor, delivery, tracer, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
-                               ConversationDelivery delivery, RunTracer tracer,
+                               ConversationDelivery delivery, SpanTracer tracer,
                                ConversationPointers pointers) {
         this(chatClient, compactor, delivery, tracer, pointers, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
-                               ConversationDelivery delivery, RunTracer tracer,
+                               ConversationDelivery delivery, SpanTracer tracer,
                                ConversationPointers pointers, ConversationLane lane) {
         this(chatClient, compactor, delivery, tracer, pointers, lane, null);
     }
@@ -215,7 +212,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      *              只是事后查不到——与预算、投递同一个判断（能力不在场，不是假装它在）
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
-                               ConversationDelivery delivery, RunTracer tracer,
+                               ConversationDelivery delivery, SpanTracer tracer,
                                ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit) {
         this(chatClient, compactor, delivery, tracer, pointers, lane, audit, null);
     }
@@ -226,13 +223,13 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      *              注意它与"这一段没有目标"是两件事——前者是能力不在场，后者是常态
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
-                               ConversationDelivery delivery, RunTracer tracer,
+                               ConversationDelivery delivery, SpanTracer tracer,
                                ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit,
                                SessionGoalStore goals) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
         this.delivery = delivery;
-        this.tracer = tracer == null ? RunTracer.NONE : tracer;
+        this.tracer = tracer == null ? SpanTracer.NONE : tracer;
         this.pointers = pointers;
         this.lane = lane;
         this.audit = audit;
@@ -404,7 +401,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             audit.runStarted(auditScope);
         }
         // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
-        try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
+        try (SpanTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal()))) {
             try {
                 ChatResponse response;
@@ -412,15 +409,16 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                 // 一轮的 span 包住 call() **与收尾**：seq 要先落库才拿得到，
                 // 所以这段 duration 含那一次 INSERT（几十毫秒）。反过来（先关 span 再写 seq）
                 // 会让属性丢掉——已 end 的 span 上 setAttribute 是静默的空操作。
-                try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
+                try (SpanTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                     response = promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
                             .call()
                             .chatResponse();
                     text = cappedText(response);
                     log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
-                    stampTurn(turn, closeTurn(auditScope, text,
+                    closeTurn(auditScope, text,
                             pushTargetOf(answeredAt, message), message.notifyPolicy(),
-                            tokensOf(response)), response);
+                            tokensOf(response));
+                    stampTurn(turn, response);
                 }
                 return new Turn(runId, text);
             } catch (RuntimeException | Error failure) {
@@ -483,10 +481,10 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         if (audit != null) {
             audit.runStarted(auditScope);
         }
-        try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
+        try (SpanTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal()))) {
             StringBuilder answer = new StringBuilder();
-            try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
+            try (SpanTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
                     promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
                             .stream()
@@ -502,9 +500,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     // 流式的 token 记 0：汇总 usage 只在最后一帧上，而它未必到得了这一层
                     // （与"不拿估算值冒充真实值"同一个口径）。于是流式这一路不计入目标用量——
                     // 这是能力不在场，不是"这一轮不花钱"（见票 04 的"没做"一节）。
-                    stampTurn(turn, closeTurn(auditScope, answer.toString(),
+                    // 流式这一路手上没有 ChatResponse（汇总 usage 在最后一帧，未必到得了），
+                    // 所以只收尾，不往 span 上补 token / model——写 0 会被读成"没花钱"。
+                    closeTurn(auditScope, answer.toString(),
                             pushTargetOf(addressOf(message), message), message.notifyPolicy(),
-                            0L), null);
+                            0L);
                 } catch (RuntimeException | Error failure) {
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
                     turn.failed(failure);
@@ -590,18 +590,20 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * 要回答"这一轮说了什么"，读通道里的回答与 {@code audit_event} 的两条事件；
      * 要回答"模型看到了什么"，读会话历史。摘要是"一件事的第几步"那个形状的产物。
      */
-    private Optional<Long> closeTurn(AuditEvent.Scope scope, String answer,
-                                     DeliveryTarget pushTo, NotifyPolicy policy, long tokens) {
+    private void closeTurn(AuditEvent.Scope scope, String answer,
+                           DeliveryTarget pushTo, NotifyPolicy policy, long tokens) {
         chargeGoal(scope, tokens);
         if (delivery != null && pushTo != null) {
             delivery.announce(pushTo, policy, answer);
         }
-        return finishAudit(scope, AuditStatus.SUCCEEDED, null);
+        finishAudit(scope, AuditStatus.SUCCEEDED, null);
     }
 
-    /** 收尾那条审计事件的账本序号。没开审计时为空，span 上就不带这一格。 */
-    private Optional<Long> finishAudit(AuditEvent.Scope scope, AuditStatus status, AuditErrorCode errorCode) {
-        return audit == null ? Optional.empty() : audit.runFinished(scope, status, errorCode);
+    /** 收尾那条审计事件。没开审计时什么都不写——账本序号没有任何人需要。 */
+    private void finishAudit(AuditEvent.Scope scope, AuditStatus status, AuditErrorCode errorCode) {
+        if (audit != null) {
+            audit.runFinished(scope, status, errorCode);
+        }
     }
 
     /**
@@ -714,10 +716,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      *
      * @param response 可为 null（流式那一侧拿不到汇总 usage）
      */
-    private static void stampTurn(RunTracer.SpanScope turn, Optional<Long> seq, ChatResponse response) {
-        // 这一格现在装的是审计账本序号（ADR-0027）：工具与模型轮落在同一个账本上，
-        // 于是"哪一段 span 对应账本哪一行"只有一个答案。以前它装的是 step 序号，工具与模型轮分属两处。
-        seq.ifPresent(value -> turn.attribute(ATTR_STEP_SEQ, Long.toString(value)));
+    private static void stampTurn(SpanTracer.SpanScope turn, ChatResponse response) {
         long tokens = tokensOf(response);
         if (tokens > 0) {
             turn.attribute(ATTR_TOKENS, Long.toString(tokens));

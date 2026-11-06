@@ -15,7 +15,7 @@ import java.time.Duration;
  * {@link #exporting()} 是唯一的判据，装配只看它。空端点下 OTLP exporter 会回落到
  * {@code http://localhost:4318}，于是"开了但没配"表现为"每 5 秒一条连接被拒的日志"，
  * 而运维会去查网络——真正缺的那一项没人说。这种"以为开了"是最坏的姿势，所以
- * {@link #exporting()} 为 false 时装配会退回 {@link RunTracer#NONE} 并打一条点名缺项的话。
+ * {@link #exporting()} 为 false 时装配会退回 {@link SpanTracer#NONE} 并打一条点名缺项的话。
  *
  * <p>键名见 {@code application.yml} 的 {@code claw4j.observability} 段。
  *

@@ -1,7 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
-import io.github.claw4j.agent.approval.RunApprovalGate;
+import io.github.claw4j.agent.approval.ConversationApprovalGate;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditSink;
@@ -382,7 +382,7 @@ class ChatPipelineTest {
     void theGateRegistersAndAnnouncesWithoutSuspendingAnything() {
         FakeLedger ledger = new FakeLedger("ap-1");
         RecordingCards cards = new RecordingCards("feishu");
-        RunApprovalGate gate = new RunApprovalGate(ledger, List.of(cards, new BrokenCards("feishu")));
+        ConversationApprovalGate gate = new ConversationApprovalGate(ledger, List.of(cards, new BrokenCards("feishu")));
         String digest = "a".repeat(64);
         ApprovalLedger.Origin origin = new ApprovalLedger.Origin("claw4j:u-1@fp:feishu:oc_1",
                 "feishu", "oc_1", Principal.readOnly("u-1"));

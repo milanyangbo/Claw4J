@@ -110,10 +110,13 @@ core/domain/port/RunView.java          -- 若有对外读，改成 TurnView 或�
       `agent_run` 只在一处还出现：`AuditAction` 的 `kind` 列值——那是照 OpenClaw 的记录分类
       （`agent.run.started` 的 kind 就叫 `agent_run`），不是那个被删掉的实体。
       证据：`Grep` 全库 `*/src/main/**`。
-      **剩下的只是名字，不是实体**：`RunTracer`（接口名，仍开 `run` / `model.turn` / `tool.*`
-      三种 span）、`RunApprovalGate`（类名）、`ATTR_STEP_SEQ = "claw4j.step.seq"`
-      （span 属性名，指向已删的 step 表）、`ATTR_RESUMED`（死常量，续跑删掉之后没有使用处）。
-      这四样不改行为，本票不动它们——改了只是让 diff 更大，记在这里等下一次顺手清。
+      **四个名字也清了**（第二次修订）：`RunTracer` → `SpanTracer`、`OtelRunTracer` →
+      `OtelSpanTracer`、`RunApprovalGate` → `ConversationApprovalGate`；
+      `ATTR_STEP_SEQ = "claw4j.step.seq"` 与 `ATTR_RESUMED` **整个删掉**。
+      span 上不再写账本行号，trace 与审计只靠 `claw4j.run.id` 关联——OpenClaw 同样是这个分法：
+      它的 span 属性只有 outcome / channel / provider / model / agent，账本序号留在账本里
+      给排序、翻页与上限淘汰用。两个类本体是真实能力（tracing 与审批），OpenClaw 都有，
+      所以改名不删；两个常量没有任何对应物，删掉之后连"账本序号在 span 上"这条假设也没了。
 - [x] **错误码是 OpenClaw 的九项词表**：`AuditErrorCode` 是枚举，写不进词表外的值；
       库里 `ck_audit_event_error_code` 同一条口径。
       证据：`PersistenceSchemaTest#theErrorCodeVocabularyIsClosed`（插一个 `policy_denied` 被库拒绝）。
@@ -216,3 +219,13 @@ core/domain/port/RunView.java          -- 若有对外读，改成 TurnView 或�
 3. **票面判据 1 的说法改准了**：原来写"代码里没有 run 了"，但正则只查了五个符号，
    `RunTracer` / `RunApprovalGate` / `claw4j.step.seq` / `ATTR_RESUMED` 都还在。它们是名字不是实体，
    本票不动，但判据不能声称一件没有做到的事。
+4. **四个 `run` / `step` 名字清了**（用户点名之后）。逐个对过 OpenClaw：
+   - `RunTracer` / `OtelRunTracer` → `SpanTracer` / `OtelSpanTracer`。能力留着——OpenClaw 有完整
+     traces（`openclaw.run`、`openclaw.model.call`、`openclaw.tool.execution`），删掉的是"这个接口
+     负责持久 run"的错觉。
+   - `RunApprovalGate` → `ConversationApprovalGate`。它按对话地址推审批卡片，名字改成它实际做的事。
+   - `ATTR_STEP_SEQ = "claw4j.step.seq"` **删掉**，连带整条 `Optional<Long>` 返回链
+     （`closeTurn` / `finishAudit` / `ToolCallAudit` 的五个方法 / `MeteredToolCallback` 的两个私有方法
+     全部收窄成 `void`）。理由：span 与审计的关联键已经有一个 `claw4j.run.id`，再挂一个"第几行"
+     不回答任何新问题，却把两条本可以各自演进的管道钉在一起；OpenClaw 的 span 属性里没有账本序号。
+   - `ATTR_RESUMED = "claw4j.run.resumed"` 删掉。死常量，续跑在票 03 就没了，只有定义没有使用处。

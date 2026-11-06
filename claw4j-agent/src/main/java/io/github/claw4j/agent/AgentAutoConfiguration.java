@@ -5,7 +5,7 @@ import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
-import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
@@ -109,14 +109,14 @@ public class AgentAutoConfiguration {
                                    ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                    ObjectProvider<MeterRegistry> meterRegistry,
                                    ObjectProvider<ToolCallAudit> audit,
-                                   ObjectProvider<RunTracer> tracer,
+                                   ObjectProvider<SpanTracer> tracer,
                                    ObjectProvider<ToolTierRegistry> tierRegistries,
                                    ToolsProperties toolPolicy,
                                    PersonaCatalog.Catalog personas) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
         List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
                 meterRegistry.getIfAvailable(), audit.getIfAvailable(),
-                tracer.getIfAvailable(() -> RunTracer.NONE), profile, tierRegistries.orderedStream().toList());
+                tracer.getIfAvailable(() -> SpanTracer.NONE), profile, tierRegistries.orderedStream().toList());
         return new ToolCatalog(personas.selected().name(), profile, tools);
     }
 
@@ -259,7 +259,7 @@ public class AgentAutoConfiguration {
      *
      * @param audit  可以为 null：没有装配持久化那一层时（{@code claw4j.persistence.enabled=false}）
      *               就没有可写的审计落点，工具照常调用
-     * @param tracer 埋点入口。没有开观测时传 {@link RunTracer#NONE}，**不要传 null 让它去猜**
+     * @param tracer 埋点入口。没有开观测时传 {@link SpanTracer#NONE}，**不要传 null 让它去猜**
      * @param profile 这个部署的工具策略（P09）。**必填**：给它一个"不过滤"的默认值等于让
      *               某条装配路径漏传参数时静默全开，而这条路径正是父子两个 Agent 共用的那一条
      * @param tierRegistries 各模块声明的档位登记表。查不到档位的工具会让这次收集直接失败
@@ -268,7 +268,7 @@ public class AgentAutoConfiguration {
                                                           ObjectProvider<ToolCallbackProvider> providers,
                                                           MeterRegistry registry,
                                                           ToolCallAudit audit,
-                                                          RunTracer tracer,
+                                                          SpanTracer tracer,
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries) {
         List<ToolCallback> collected = new ArrayList<>();
@@ -384,7 +384,7 @@ public class AgentAutoConfiguration {
     public AgentPort agentPort(ChatClient chatClient,
                                ObjectProvider<SessionCompactor> compactor,
                                ObjectProvider<ConversationDelivery> delivery,
-                               ObjectProvider<RunTracer> tracer,
+                               ObjectProvider<SpanTracer> tracer,
                                ObjectProvider<ConversationPointers> pointers,
                                ObjectProvider<ToolCallAudit> audit,
                                ObjectProvider<io.github.claw4j.agent.goal.SessionGoalStore> goals,
@@ -403,7 +403,7 @@ public class AgentAutoConfiguration {
         // 不装配它，并发两条消息就会各跑各的，而失败长相是"模型偶尔会忘事"。
         return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(),
                 delivery.getIfAvailable(),
-                tracer.getIfAvailable(() -> RunTracer.NONE), pointers.getIfAvailable(),
+                tracer.getIfAvailable(() -> SpanTracer.NONE), pointers.getIfAvailable(),
                 new ConversationLane(properties.laneWait()), audit.getIfAvailable(),
                 goals.getIfAvailable());
     }

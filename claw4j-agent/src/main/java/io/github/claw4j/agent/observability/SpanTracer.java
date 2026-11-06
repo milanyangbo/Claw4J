@@ -8,7 +8,7 @@ import java.util.Map;
  * <p><b>为什么是一个我们自己的接口，而不是直接用 {@code io.opentelemetry.api.Tracer}</b>：
  * 那个类型一露到业务代码里，换后端（OTel / Brave / 内部链路系统）就得改遍埋点处，
  * 而埋点分散在工具回调、模型轮、run 三处，改漏一处的表现是"这条链路少一段",
- * 不报错、只是图上缺一截。这一层只有 {@code OtelRunTracer} 一个实现碰 SDK。
+ * 不报错、只是图上缺一截。这一层只有 {@code OtelSpanTracer} 一个实现碰 SDK。
  *
  * <p><b>为什么 {@link #NONE} 是默认而不是"没有 tracer 时传 null"</b>：三处埋点都要写
  * {@code try (var span = tracer.open(...))}，null 会让每处都多一个判空，而判空写错的地方
@@ -23,10 +23,10 @@ import java.util.Map;
  * <p><b>这里没有 {@code event} / {@code link} / {@code baggage}</b>：需要什么再加。
  * 一个只在想象里被用到的接口方法，最后总会被某处按自己的理解实现一遍。
  */
-public interface RunTracer {
+public interface SpanTracer {
 
     /** 不记录任何东西。默认值——没配 {@code claw4j.observability.enabled} 时就是它。 */
-    RunTracer NONE = (name, attributes) -> SpanScope.NONE;
+    SpanTracer NONE = (name, attributes) -> SpanScope.NONE;
 
     /**
      * 开一段 span 并让它成为当前 span，直到 {@link SpanScope#close()}。

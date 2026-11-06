@@ -4,7 +4,7 @@ import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.ToolSearchProperties;
 import io.github.claw4j.agent.ToolsProperties;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
-import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
@@ -100,10 +100,10 @@ public class SubagentAutoConfiguration {
      *   <li>指标：由调用方给，没有 actuator 时它就是 {@code null}。</li>
      * </ul>
      *
-     * <p><b>trace 显式传空实现</b>（P14）：子链没有 run，画出来的 {@code tool.*} 会挂在
-     * {@code tool.Task} 那段下面、却永远没有 {@code claw4j.step.seq}——只有半截故事，
+     * <p><b>trace 显式传空实现</b>（P14）：子链没有自己的编号，画出来的 {@code tool.*} 会挂在
+     * {@code tool.Task} 那段下面、却没有一条对应的审计——只有半截故事，
      * 而半截的 trace 比没有更费人（看的人会以为"子工具没落审计"）。要画全它得让
-     * {@link SubagentRunner} 认识 run，那是 A10 的事。
+     * {@link SubagentRunner} 认识这一轮的编号，那是 A10 的事。
      *
      * <p><b>过滤掉 {@code Task} 自己</b>：定义里白名单写了它按定义错误处理（见
      * {@link SubagentDefinition}），这里再把"继承全部工具"那条路上也出现的它去掉，
@@ -121,7 +121,7 @@ public class SubagentAutoConfiguration {
         // 档位在这里同一个理由（P09）：子 Agent 拿到的必须是**父被允许的那份清单**里的一批。
         // 用另一份策略的话，一个 messaging 部署可以靠"派给子 Agent"把手跑脚本的口子打开。
         return AgentAutoConfiguration.collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                        meterRegistry, null, RunTracer.NONE,
+                        meterRegistry, null, SpanTracer.NONE,
                         toolPolicy.toProfile(), tierRegistries)
                 .stream()
                 .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(

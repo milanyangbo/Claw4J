@@ -432,9 +432,9 @@ claw4j:
   # 指标仍走下面 management 那套（actuator + Prometheus），**trace 只走 OTLP**：
   # 两套导出器各配一遍端点是运维负担，而 metrics 那条路已经能用。
   #
-  # 根 span 是 run（不是请求）：五个通道都把回答丢进线程池，请求的 trace 在入池那一刻就断了；
-  # 而 run 跨通道、跨重试、跨重启。每个动作 span 上带 `claw4j.step.seq`，
-  # 拿它加 `claw4j.run.id` 能反查回 audit_event 那一行。
+  # 根 span 是 run（不是请求）：五个通道都把回答丢进线程池，请求的 trace 在入池那一刻就断了。
+  # 工具与模型轮挂在它下面，与审计靠 `claw4j.run.id` 对上——span 上不写账本行号，
+  # 审计与 trace 各自演进（OpenClaw 也是这个分法）。
   observability:
     enabled: ${CLAW4J_OBSERVABILITY_ENABLED:false}
     # OTLP HTTP 的地址，例如 http://localhost:4318（带上 /v1/traces 也认）。

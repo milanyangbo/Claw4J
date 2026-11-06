@@ -7,7 +7,7 @@ import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.approval.ApprovalService;
 import io.github.claw4j.agent.approval.CallFingerprint;
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
-import io.github.claw4j.agent.approval.RunApprovalGate;
+import io.github.claw4j.agent.approval.ConversationApprovalGate;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
@@ -611,7 +611,7 @@ class ApprovalFlowTest {
                                                 ToolCallBudget.MAX_TOTAL_CALLS)))
                         .defaultAdvisors(new AuthorizationAdvisor(
                                 List.of(ToolPermissionRegistry.of(declared)),
-                                new RunApprovalGate(new JdbcApprovalLedger(jdbc, TTL.toMillis()), List.of()),
+                                new ConversationApprovalGate(new JdbcApprovalLedger(jdbc, TTL.toMillis()), List.of()),
                                 Metrics.globalRegistry, audit))
                         .defaultToolCallbacks(List.copyOf(tools))
                         .build();

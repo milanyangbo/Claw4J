@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * 整套代码里**唯一**碰 {@code io.opentelemetry} 的类（P14）。
  *
- * <p>业务侧只认 {@link RunTracer}，所以换后端时改的是这一个文件；而"换版本"的风险也被
+ * <p>业务侧只认 {@link SpanTracer}，所以换后端时改的是这一个文件；而"换版本"的风险也被
  * 收在这里——{@code opentelemetry-sdk} 的版本是显式写的 1.35.0，与 Boot BOM 里的 1.62.0
  * 并存，理由见票面第一节（离线仓库里只有 1.35.0 这一条链是齐的）。
  *
@@ -34,7 +34,7 @@ import java.util.concurrent.TimeUnit;
  * "出事前的那几秒"——那正是有人去翻 trace 的时刻。{@link #close()} 先
  * {@code forceFlush} 再 {@code close}，并且等它完成（最多 {@link #FLUSH_TIMEOUT_SECONDS} 秒）。
  */
-public final class OtelRunTracer implements RunTracer, AutoCloseable {
+public final class OtelSpanTracer implements SpanTracer, AutoCloseable {
 
     /** instrumentation 名。后端里按它区分"是哪套代码产生的 span"。 */
     static final String INSTRUMENTATION = "io.github.claw4j";
@@ -51,11 +51,11 @@ public final class OtelRunTracer implements RunTracer, AutoCloseable {
     private final SdkTracerProvider owned;
 
     /** 用宿主给的 provider：生命周期也归宿主，{@link #close()} 不碰它。 */
-    public OtelRunTracer(SdkTracerProvider provider) {
+    public OtelSpanTracer(SdkTracerProvider provider) {
         this(provider.get(INSTRUMENTATION), null);
     }
 
-    private OtelRunTracer(Tracer tracer, SdkTracerProvider owned) {
+    private OtelSpanTracer(Tracer tracer, SdkTracerProvider owned) {
         this.tracer = tracer;
         this.owned = owned;
     }
@@ -66,9 +66,9 @@ public final class OtelRunTracer implements RunTracer, AutoCloseable {
      * <p>只该在 {@link ObservabilityProperties#exporting()} 为真时调用——端点为空的组合
      * 由装配那一层挡掉，这里不为它造一个指向 localhost 的 exporter。
      */
-    public static OtelRunTracer start(ObservabilityProperties properties) {
+    public static OtelSpanTracer start(ObservabilityProperties properties) {
         SdkTracerProvider provider = providerOf(properties);
-        return new OtelRunTracer(provider.get(INSTRUMENTATION), provider);
+        return new OtelSpanTracer(provider.get(INSTRUMENTATION), provider);
     }
 
     /**

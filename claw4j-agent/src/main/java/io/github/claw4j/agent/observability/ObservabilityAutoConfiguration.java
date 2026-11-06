@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>{@link SdkTracerProvider}——只在配了端点时存在。它是"导不导"唯一可断言的东西，
  *       所以必须是个 bean，而不是藏在 tracer 里的字段。</li>
- *   <li>{@link RunTracer}——总是存在（装配进来之后）。端点没配时它是 {@link RunTracer#NONE}，
+ *   <li>{@link SpanTracer}——总是存在（装配进来之后）。端点没配时它是 {@link SpanTracer#NONE}，
  *       并打一条点名缺项的话：埋点代码只有一种写法，而"开了却没配"必须能自己说出来。</li>
  *   <li>{@link FlushOnShutdown}——退出时先 flush 再 close。见它的注释。</li>
  * </ul>
@@ -42,7 +42,7 @@ public class ObservabilityAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(ObservabilityAutoConfiguration.class);
 
-    /** 退出时最多等这么久把队列吐完。与 {@code OtelRunTracer} 里那个常量同一个量级。 */
+    /** 退出时最多等这么久把队列吐完。与 {@code OtelSpanTracer} 里那个常量同一个量级。 */
     private static final int FLUSH_TIMEOUT_SECONDS = 5;
 
     /**
@@ -56,7 +56,7 @@ public class ObservabilityAutoConfiguration {
     @Bean(destroyMethod = "")
     @Conditional(OtlpConfiguredCondition.class)
     public SdkTracerProvider sdkTracerProvider(ObservabilityProperties properties) {
-        return OtelRunTracer.providerOf(properties);
+        return OtelSpanTracer.providerOf(properties);
     }
 
     /**
@@ -66,20 +66,20 @@ public class ObservabilityAutoConfiguration {
      * 而人会先去查网络、查防火墙。把缺的那一项直接打在启动日志里，比让人猜快得多。
      */
     @Bean
-    @ConditionalOnMissingBean(RunTracer.class)
-    public RunTracer runTracer(ObjectProvider<SdkTracerProvider> providers,
+    @ConditionalOnMissingBean(SpanTracer.class)
+    public SpanTracer runTracer(ObjectProvider<SdkTracerProvider> providers,
                                ObservabilityProperties properties) {
         SdkTracerProvider provider = providers.getIfAvailable();
         if (provider == null) {
             log.warn("claw4j.observability.enabled=true，但没有配置 claw4j.observability.endpoint："
                     + "trace 一条都不会导出，埋点退化为空实现。要导出请填 OTLP HTTP 的地址，"
                     + "例如 http://localhost:4318");
-            return RunTracer.NONE;
+            return SpanTracer.NONE;
         }
         log.info("trace 导出已打开：{}（服务名 {}，采样比例 {}，队列上限 {}）",
                 properties.tracesEndpoint(), properties.serviceName(),
                 properties.sampleRatio(), properties.maxQueueSize());
-        return new OtelRunTracer(provider);
+        return new OtelSpanTracer(provider);
     }
 
     /**

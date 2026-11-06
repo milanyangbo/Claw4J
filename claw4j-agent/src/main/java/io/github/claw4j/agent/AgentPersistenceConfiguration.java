@@ -4,7 +4,7 @@ import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalProperties;
 import io.github.claw4j.agent.approval.ApprovalService;
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
-import io.github.claw4j.agent.approval.RunApprovalGate;
+import io.github.claw4j.agent.approval.ConversationApprovalGate;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.ToolCallAudit;
@@ -149,7 +149,7 @@ public class AgentPersistenceConfiguration {
     @Bean
     @ConditionalOnMissingBean(ApprovalGate.class)
     public ApprovalGate approvalGate(ApprovalLedger ledger, ObjectProvider<ApprovalCards> cards) {
-        return new RunApprovalGate(ledger, cards.orderedStream().toList());
+        return new ConversationApprovalGate(ledger, cards.orderedStream().toList());
     }
 
     /**

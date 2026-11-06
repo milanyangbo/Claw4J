@@ -5,8 +5,8 @@ import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
 import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
-import io.github.claw4j.agent.observability.OtelRunTracer;
-import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.observability.OtelSpanTracer;
+import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.DeliveryTarget;
@@ -393,7 +393,7 @@ class TurnFlowTest {
     }
 
     /** 把 span 收进列表的 tracer：这一条只关心"画了没有"，不关心画成什么样。 */
-    private static RunTracer tracerInto(List<SpanData> spans) {
+    private static SpanTracer tracerInto(List<SpanData> spans) {
         SpanExporter exporter = new SpanExporter() {
 
             @Override
@@ -412,7 +412,7 @@ class TurnFlowTest {
                 return CompletableResultCode.ofSuccess();
             }
         };
-        return new OtelRunTracer(SdkTracerProvider.builder()
+        return new OtelSpanTracer(SdkTracerProvider.builder()
                 .setSampler(Sampler.alwaysOn())
                 .addSpanProcessor(SimpleSpanProcessor.create(exporter))
                 .build());

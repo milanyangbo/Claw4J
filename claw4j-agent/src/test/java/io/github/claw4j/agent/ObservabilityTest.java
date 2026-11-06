@@ -5,8 +5,8 @@ import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredChatModel;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.ObservabilityAutoConfiguration;
-import io.github.claw4j.agent.observability.OtelRunTracer;
-import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.observability.OtelSpanTracer;
+import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.TaskLauncher;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
@@ -213,7 +213,7 @@ class ObservabilityTest {
 
     // ---- trace：一条 run 连到它的每个 step（P14） ----
     //
-    // 这一组用的是**真的** OtelRunTracer 加 SimpleSpanProcessor（同步导出），不是替身：
+    // 这一组用的是**真的** OtelSpanTracer 加 SimpleSpanProcessor（同步导出），不是替身：
     // 父子关系是 OTel 的 Context 给的，拿替身验"我传了父 id"只能证明代码执行到那一行，
     // 证明不了层级真的成立。收 span 的 exporter 是几十行的假货——它只把 SpanData 收进列表。
 
@@ -223,7 +223,7 @@ class ObservabilityTest {
     @Test
     @DisplayName("一轮一个 trace：tool 挂在它那一轮 model.turn 下，model.turn 挂在根下（P14）")
     void oneTurnIsOneTraceWithActionsNestedUnderTheirTurn() {
-        RunTracer tracer = tracer();
+        SpanTracer tracer = tracer();
         AtomicInteger round = new AtomicInteger();
         ChatModel model = new FixedChatModel(prompt -> round.getAndIncrement() == 0
                 ? ChatPipelineTest.requestTool("querySales", "{}")
@@ -252,32 +252,9 @@ class ObservabilityTest {
     }
 
     @Test
-    @DisplayName("动作 span 上带审计账本序号：拿它加轮次编号能反查回 audit_event 那一行（P14）")
-    void everyActionSpanCarriesTheSeqOfTheEventItWrote() {
-        RunTracer tracer = tracer();
-        AtomicInteger round = new AtomicInteger();
-        ChatModel model = new FixedChatModel(prompt -> round.getAndIncrement() == 0
-                ? ChatPipelineTest.requestTool("querySales", "{}")
-                : withUsage(12, 34));
-
-        tracedPort(model, tracer, new RecordingTool("querySales", "128400"))
-                .reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "上周华东成交额"));
-
-        int toolSeq = seqOf(spanOf("tool.querySales"));
-        int turnSeq = seqOf(spanOf("model.turn"));
-
-        assertThat(toolSeq)
-                .as("工具 span 带的是审计账本序号——审计是这一轮唯一的账")
-                .isPositive();
-        assertThat(turnSeq)
-                .as("模型轮那一格也是账本序号：两个序号空间混着用，反查就只有一个方向成立")
-                .isGreaterThan(toolSeq);
-    }
-
-    @Test
     @DisplayName("失败也留痕：工具抛异常那段是 ERROR，模型抛异常时 run 那段也是（P14）")
     void failuresEndTheirSpanAsErrors() {
-        RunTracer tracer = tracer();
+        SpanTracer tracer = tracer();
         MeteredToolCallback failing = new MeteredToolCallback(new RecordingTool("querySales", "128400") {
             @Override
             public String call(String toolInput) {
@@ -315,7 +292,7 @@ class ObservabilityTest {
                 .withConfiguration(AutoConfigurations.of(ObservabilityAutoConfiguration.class))
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(SdkTracerProvider.class);
-                    assertThat(context).doesNotHaveBean(RunTracer.class);
+                    assertThat(context).doesNotHaveBean(SpanTracer.class);
                 });
 
         new ApplicationContextRunner()
@@ -325,9 +302,9 @@ class ObservabilityTest {
                     assertThat(context)
                             .as("开着却没端点：不造 provider，于是也不会有出站请求")
                             .doesNotHaveBean(SdkTracerProvider.class);
-                    assertThat(context.getBean(RunTracer.class))
+                    assertThat(context.getBean(SpanTracer.class))
                             .as("但埋点得有个东西可调：三处 open 不能为此写判空")
-                            .isSameAs(RunTracer.NONE);
+                            .isSameAs(SpanTracer.NONE);
                 });
 
         new ApplicationContextRunner()
@@ -336,12 +313,12 @@ class ObservabilityTest {
                         "claw4j.observability.endpoint=http://localhost:4318")
                 .run(context -> {
                     assertThat(context).hasSingleBean(SdkTracerProvider.class);
-                    assertThat(context.getBean(RunTracer.class)).isNotSameAs(RunTracer.NONE);
+                    assertThat(context.getBean(SpanTracer.class)).isNotSameAs(SpanTracer.NONE);
                 });
     }
 
     /** 一个只收 span 的 exporter。provider 用 alwaysOn：这一组验的是层级，不是采样。 */
-    private RunTracer tracer() {
+    private SpanTracer tracer() {
         SpanExporter exporter = new SpanExporter() {
 
             @Override
@@ -360,7 +337,7 @@ class ObservabilityTest {
                 return CompletableResultCode.ofSuccess();
             }
         };
-        return new OtelRunTracer(SdkTracerProvider.builder()
+        return new OtelSpanTracer(SdkTracerProvider.builder()
                 .setSampler(Sampler.alwaysOn())
                 .addSpanProcessor(SimpleSpanProcessor.create(exporter))
                 .build());
@@ -372,7 +349,7 @@ class ObservabilityTest {
      * <p>同一个而不是各造一个：父子靠 Context 接得上，但两套 provider 的 span 会进两条
      * 不同的导出链，断言时得按 provider 分开收——没有理由为省一行把它搞复杂。
      */
-    private ChatClientAgentPort tracedPort(ChatModel model, RunTracer tracer,
+    private ChatClientAgentPort tracedPort(ChatModel model, SpanTracer tracer,
                                            ToolCallback... tools) {
         AtomicLong auditSeq = new AtomicLong();
         ToolCallAudit audit = new ToolCallAudit(event -> Optional.of(auditSeq.incrementAndGet()));
@@ -393,12 +370,6 @@ class ObservabilityTest {
                         spans.stream().map(SpanData::getName).toList())
                 .hasSize(1);
         return matched.getFirst();
-    }
-
-    private static int seqOf(SpanData span) {
-        String value = span.getAttributes().get(AttributeKey.stringKey("claw4j.step.seq"));
-        assertThat(value).as("%s 上应该带审计行序号", span.getName()).isNotNull();
-        return Integer.parseInt(value);
     }
 
     // ---- 定时任务到点跑不跑（P04） ----

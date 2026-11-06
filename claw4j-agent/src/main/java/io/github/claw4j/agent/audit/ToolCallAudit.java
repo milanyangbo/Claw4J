@@ -7,7 +7,6 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -63,13 +62,13 @@ public class ToolCallAudit {
     }
 
     /** 一轮开始。 */
-    public Optional<Long> runStarted(AuditEvent.Scope scope) {
-        return write(AuditEvent.runStarted(scope));
+    public void runStarted(AuditEvent.Scope scope) {
+        write(AuditEvent.runStarted(scope));
     }
 
     /** 一轮结束。{@code status} 与 {@code errorCode} 是这一轮的结局。 */
-    public Optional<Long> runFinished(AuditEvent.Scope scope, AuditStatus status, AuditErrorCode errorCode) {
-        return write(AuditEvent.runFinished(scope, status, errorCode));
+    public void runFinished(AuditEvent.Scope scope, AuditStatus status, AuditErrorCode errorCode) {
+        write(AuditEvent.runFinished(scope, status, errorCode));
     }
 
     /**
@@ -77,14 +76,12 @@ public class ToolCallAudit {
      *
      * <p><b>被策略挡住的调用不该调它</b>：那种调用根本没有开始，只有一条
      * {@code finished / blocked}。两条都写的话，配额统计会把"想调但没调成"算成"调过"。
-     *
-     * @return 落下来的账本序号；空表示没写进去
      */
-    public Optional<Long> toolStarted(AuditEvent.Scope scope, String toolName, String argsJson) {
+    public void toolStarted(AuditEvent.Scope scope, String toolName, String argsJson) {
         if (isBlank(toolName)) {
-            return Optional.empty();
+            return;
         }
-        return write(AuditEvent.toolStarted(scope, toolName, fingerprint(toolName, argsJson)));
+        write(AuditEvent.toolStarted(scope, toolName, fingerprint(toolName, argsJson)));
     }
 
     /**
@@ -93,15 +90,14 @@ public class ToolCallAudit {
      * @param failure 工具抛出的异常类型名；null 表示正常返回。
      *                只用来判"成没成"，**类型名本身不落库**——那一列是归一化错误码，
      *                而类型名是开放的。要查是哪个异常，trace 的 span 上有。
-     * @return 落下来的账本序号；空表示没写进去
      */
-    public Optional<Long> toolFinished(AuditEvent.Scope scope, String toolName, String argsJson,
-                                       String failure) {
+    public void toolFinished(AuditEvent.Scope scope, String toolName, String argsJson,
+                             String failure) {
         if (isBlank(toolName)) {
-            return Optional.empty();
+            return;
         }
         String digest = fingerprint(toolName, argsJson);
-        return write(AuditEvent.toolFinished(scope, toolName, digest,
+        write(AuditEvent.toolFinished(scope, toolName, digest,
                 failure == null ? AuditStatus.SUCCEEDED : AuditStatus.FAILED,
                 failure == null ? null : AuditErrorCode.TOOL_FAILED,
                 take(scope == null ? null : scope.runId(), toolName, digest)));
@@ -114,11 +110,11 @@ public class ToolCallAudit {
      * 回给模型的那句话（"缺 tools 权限"）不进来——审计记的是归一化错误码，
      * 那句话的语气会随文案改动而变，把它写进"为什么没成"那一格，三个月后按它做统计就废了。
      */
-    public Optional<Long> rejected(AuditEvent.Scope scope, String toolName, String argsJson) {
+    public void rejected(AuditEvent.Scope scope, String toolName, String argsJson) {
         if (isBlank(toolName)) {
-            return Optional.empty();
+            return;
         }
-        return write(AuditEvent.toolFinished(scope, toolName, fingerprint(toolName, argsJson),
+        write(AuditEvent.toolFinished(scope, toolName, fingerprint(toolName, argsJson),
                 AuditStatus.BLOCKED, AuditErrorCode.TOOL_BLOCKED, null));
     }
 
@@ -146,16 +142,15 @@ public class ToolCallAudit {
     }
 
     /** 写一条。写不进去只记一条 debug：审计缺一行不该把一次调用打成失败。 */
-    private Optional<Long> write(AuditEvent event) {
+    private void write(AuditEvent event) {
         if (ledger == null) {
-            return Optional.empty();
+            return;
         }
         try {
-            return ledger.record(event);
+            ledger.record(event);
         } catch (RuntimeException failure) {
             // 账本自己已经吃掉了存储异常；能走到这里的是更意外的东西，仍然不该影响这一次调用。
             log.debug("写审计事件时出错：{}", event.action().column(), failure);
-            return Optional.empty();
         }
     }
 

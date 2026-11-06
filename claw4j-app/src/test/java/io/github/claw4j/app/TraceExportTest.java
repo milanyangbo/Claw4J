@@ -2,8 +2,8 @@ package io.github.claw4j.app;
 
 import com.sun.net.httpserver.HttpServer;
 import io.github.claw4j.agent.observability.ObservabilityProperties;
-import io.github.claw4j.agent.observability.OtelRunTracer;
-import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.observability.OtelSpanTracer;
+import io.github.claw4j.agent.observability.SpanTracer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -68,8 +68,8 @@ class TraceExportTest {
     @Test
     @DisplayName("导出真的发出：collector 在 /v1/traces 上收到一段 protobuf（P14）")
     void spansReachTheCollectorAsOtlpHttp() {
-        try (OtelRunTracer tracer = OtelRunTracer.start(properties(1.0))) {
-            try (RunTracer.SpanScope span = tracer.open("run", Map.of("claw4j.run.id", "run-1"))) {
+        try (OtelSpanTracer tracer = OtelSpanTracer.start(properties(1.0))) {
+            try (SpanTracer.SpanScope span = tracer.open("run", Map.of("claw4j.run.id", "run-1"))) {
                 span.attribute("claw4j.outcome", "ok");
             }
         }
@@ -86,10 +86,10 @@ class TraceExportTest {
     @DisplayName("关掉之前先 flush：还没到批次时间的 span 一条都不留在手里（P14）")
     void closingFlushesWhatIsStillInTheQueue() {
         // 默认的批次间隔是 5 秒，而这一段在毫秒内就结束了——不 flush 的话它们全丢。
-        try (OtelRunTracer tracer = OtelRunTracer.start(properties(1.0))) {
+        try (OtelSpanTracer tracer = OtelSpanTracer.start(properties(1.0))) {
             for (int i = 0; i < 3; i++) {
-                try (RunTracer.SpanScope span = tracer.open("model.turn", Map.of("claw4j.step.seq",
-                        Integer.toString(i + 1)))) {
+                try (SpanTracer.SpanScope span = tracer.open("model.turn", Map.of("claw4j.run.id",
+                        "run-" + (i + 1)))) {
                     span.attribute("claw4j.tokens", "34");
                 }
             }
@@ -102,8 +102,8 @@ class TraceExportTest {
     @Test
     @DisplayName("采样比例 0：一条都不导，队列里也不留（P14）")
     void aZeroRatioExportsNothing() {
-        try (OtelRunTracer tracer = OtelRunTracer.start(properties(0.0))) {
-            try (RunTracer.SpanScope span = tracer.open("run", Map.of())) {
+        try (OtelSpanTracer tracer = OtelSpanTracer.start(properties(0.0))) {
+            try (SpanTracer.SpanScope span = tracer.open("run", Map.of())) {
                 span.attribute("claw4j.outcome", "ok");
             }
         }
