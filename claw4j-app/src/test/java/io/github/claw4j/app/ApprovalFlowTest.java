@@ -201,15 +201,17 @@ class ApprovalFlowTest {
     }
 
     /**
-     * 验收 4：拒绝也落一行，理由回灌给模型。
+     * 验收 4：拒绝不执行，但<b>那段对话要被告知</b>。
      *
-     * <p>理由那一句是这条的全部要点：不给理由的话，模型手里只剩"上一轮被拦了"，
-     * 下一轮大概率把同一个请求原样再发一次。
+     * <p>OpenClaw 把两件事分得很清楚：命令是终态（不跑），会话要收到一条 internal followup
+     * （"An async command did not run. Do not run the command again."），
+     * 否则 agent 会一直等着一个不会来的结果。这里钉的就是后者——只断言"没执行"的话，
+     * "模型永远以为还在等"这件事永远不会红。
      */
     @Test
-    @DisplayName("拒绝是终态：结论落库、工具没执行、不调模型（OpenClaw 不拿拒绝去唤醒会话）")
-    void denyingLeavesTheDecisionAndNeverCallsTheModel() {
-        Harness harness = new Harness(requestTool(ARGS), answer("好的，我换个说法"));
+    @DisplayName("拒绝：结论落库、工具没执行，但同一段对话收到「没有执行、不要重试」")
+    void denyingTellsTheSameConversationTheCallDidNotRun() {
+        Harness harness = new Harness(requestTool(ARGS), answer("好的，我改用别的办法"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
         OutboundMessage first = harness.port().reply(harness.mailer("发一封给张三的周报"));
@@ -226,15 +228,20 @@ class ApprovalFlowTest {
                 String.class, approvalId)).isEqualTo("denied");
         assertThat(jdbc.queryForObject("select reason from claw4j_run.approval_request where id = ?",
                 String.class, approvalId)).isEqualTo(reason);
-        assertThat(harness.prompts())
-                .as("被拒绝的批准是终态：不调模型、不开新一轮。"
-                        + "要「换个做法」的正确动作是提请求的人自己再说一句")
-                .hasSize(1);
+
+        assertThat(harness.prompts()).as("拒绝也要回灌一句：模型不能一直以为还在等").hasSize(2);
+        assertThat(harness.prompts().getLast())
+                .as("照 OpenClaw 的三句：没有执行、不要重试、没有新输出")
+                .contains("[审批被拒]")
+                .contains(TOOL)
+                .contains(reason)
+                .contains("没有执行")
+                .contains("不要再重试");
         assertThat(jdbc.queryForObject("select count(*) from claw4j_run.agent_run", Integer.class))
-                .as("拒绝不开新一轮")
-                .isEqualTo(1);
+                .as("拒绝不是终态收尾，而是同一段对话里的新一轮（模型要去向用户解释）")
+                .isEqualTo(2);
         assertThat(runs.find(first.runId()).orElseThrow().status())
-                .as("那一轮早就以 done 收尾了，拒绝不改它")
+                .as("被拦的那一轮早就以 done 收尾了，拒绝不改它")
                 .isEqualTo(RunStatus.DONE);
     }
 

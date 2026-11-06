@@ -20,21 +20,29 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * 一次审批决定的落点（P02、P03）：看这个人有没有资格批、定结论，然后按结论决定
- * 要不要在同一段对话里开新一轮。
+ * 一次审批决定的落点（P02、P03）：看这个人有没有资格批、定结论，然后按结论
+ * 在那段对话里说一声。
  *
- * <p><b>批准 = 同一段对话里开新一轮；拒绝 = 什么都不开</b>（ADR-0027 决定一）。
- * 这是照 OpenClaw 的原文：
+ * <p><b>结论落在审批行上，"接着做"落在会话上</b>（ADR-0027 决定一）。照 OpenClaw 原文：
  *
- * <blockquote>核准的非同步執行會發出命令進度與完成系統事件；
- * <b>遭拒絕或逾時的核准為終止狀態，不會以拒絕系統事件喚醒代理程式工作階段</b>。</blockquote>
+ * <blockquote>When an approval can be delivered, ordinary agent runs wait for the decision and
+ * receive the exec result in the same turn. […] An operator denial returns a denied tool result
+ * without running the command.<br>
+ * For main-agent async approvals with an originating session, OpenClaw posts the denial back
+ * into that session as an internal followup so the agent can stop waiting on the async command
+ * and avoid a missing-result repair.</blockquote>
  *
- * <p>所以"拒绝之后把理由回灌给模型"那套没有了。它不是被删掉的便利，而是被证伪的设计：
- * 那条路要求"一件事"能跨请求活着，被拒绝之后还能把它叫起来；而开放式对话里
- * 用户拒绝一件事之后，正确的下一步是<b>他说一句别的</b>，不是模型自己换个说法再试一次。
+ * <p><b>我们走的是后一支（异步后续）</b>：工具被拦下的那一刻这一轮就结束了（回给用户"要先审批"），
+ * 没有一条线程在原地等。那一支对两种结论都要回灌：批准说"它被放行了"，
+ * 拒绝说"它没有执行，不要再重试"——否则模型一直以为还在等，下一次用户随便说句什么，
+ * 它答的是"还在等审批"。
+ *
+ * <p><b>这里曾经写反过一次</b>：把"不会以<b>拒绝系统事件</b>唤醒会话"读成了"拒绝什么都不说"。
+ * OpenClaw 分得很清楚：system event（`Exec denied`）不发，但 <b>internal followup</b> 要发——
+ * 那句原文的理由就写在括号里：让 agent 停止等待、免得它去修一个不存在的缺失结果。
  *
  * <p><b>为什么"同一段对话"就够了，不用把做到哪一步抄给模型</b>：上下文与 goal 都在那段对话里
- * （ADR-0025、ADR-0027 决定三）。模型看到的自然就是"刚才我要调这个工具、现在批准了"。
+ * （ADR-0025、ADR-0027 决定三）。模型看到的自然就是"刚才我要调这个工具、现在有结论了"。
  * 以前要从 step 拼一段 recap，是因为 run 挂起之后上下文被认为丢了——那个前提不成立。
  *
  * <p><b>资格先判，结论后落</b>（P03）：不在名单里的人、以及提出这条请求的人，都<b>不落结论</b>——
@@ -121,15 +129,32 @@ public class ApprovalService implements ApprovalDecider {
             return explanationOf(row);
         }
         if (!approved) {
-            // 拒绝是终态：不调模型、不开新一轮。理由只落在库上（谁批过、为什么），
-            // 不再回灌给模型——那条路要求"一件事"能被叫醒，而它已经不存在了。
-            return new Result(ApprovalVerdict.DENIED, deniedText(row.toolName(), reason));
+            // 拒绝：命令不执行（终态），但那一段对话要被告知——否则模型一直以为还在等。
+            Reached reached = wake(row, deniedNote(row.toolName(), reason));
+            return new Result(ApprovalVerdict.DENIED,
+                    deniedText(row.toolName(), reason) + denialTrailer(reached));
         }
-        return continueInConversation(row, approvalId);
+        Reached reached = wake(row, grantedNote(row.toolName(), approvalId));
+        return new Result(ApprovalVerdict.GRANTED, grantedTrailer(reached));
     }
 
     /**
-     * 批准之后：回到发起请求的那段对话，开新一轮。
+     * 结论再说到了哪一步。四种结果对应四句完全不同的话——把"结论落了"与"说到了"混成
+     * 一句"已处理"，点按钮的人会以为那段对话知道，而它可能一无所知。
+     */
+    private enum Reached {
+        /** 真的在那段对话里开了一轮。 */
+        DELIVERED,
+        /** 这个部署没有 Agent：结论落得下来，没人接着做，也没人可告知。 */
+        NO_AGENT,
+        /** 请求没留下完整的来处（哪段对话、发起人是谁）：猜一个地址比不说更糟。 */
+        NO_ORIGIN,
+        /** 那一轮没跑起来（模型侧报错）。结论已落库，但对话不知道。 */
+        FAILED
+    }
+
+    /**
+     * 回到发起请求的那段对话，开新一轮，把结论交给模型。
      *
      * <p><b>身份用发起人的快照，不用审批人的</b>（V11）：用审批人的身份跑等于"我批了
      * 就能用我的权限干"——那不是审批，是授权变更。而只存 {@code owner} 反推不出角色与
@@ -140,22 +165,20 @@ public class ApprovalService implements ApprovalDecider {
      *
      * <p><b>没有来处就不跑</b>：读不到发起人或会话键时如实说"没法自动接着做"。
      * 猜一个身份或猜一段对话去跑，比让人再说一句更糟——前者是提权，后者是回答落到别人那里。
+     * 这一支也正好对应 OpenClaw 的"没有会话、或者会话唤不起来时，只把结论报给操作者"。
      */
-    private Result continueInConversation(Row row, String approvalId) {
+    private Reached wake(Row row, String note) {
         if (agent == null) {
-            return new Result(ApprovalVerdict.GRANTED,
-                    "已批准，但这个部署没有 Agent 在跑，这件事不会自动接着做。");
+            return Reached.NO_AGENT;
         }
         Optional<Principal> principal = PrincipalSnapshot.decode(row.principalSnapshot());
         if (principal.isEmpty() || blank(row.sessionKey()) || blank(row.chatRef())) {
-            return new Result(ApprovalVerdict.GRANTED,
-                    "已批准，但这条请求没有留下完整的来处（哪段对话、发起人是谁），"
-                            + "没法自动接着做。让提这个请求的人再说一句“继续”。");
+            return Reached.NO_ORIGIN;
         }
         InboundMessage message = new InboundMessage(
                 principal.get(),
                 row.chatRef(),
-                grantedNote(row.toolName(), approvalId),
+                note,
                 Instant.now(),
                 null,
                 row.channel(),
@@ -166,14 +189,10 @@ public class ApprovalService implements ApprovalDecider {
             agent.reply(message);
         }
         catch (RuntimeException failure) {
-            // 结论确实落下了，所以 verdict 不改；但"接着做"没发生，必须说出来——
-            // 只说"已批准"的话，用户会一直等一个不会来的回答。
-            log.error("批准之后那一轮没跑起来 approval={}", approvalId, failure);
-            return new Result(ApprovalVerdict.GRANTED,
-                    "已批准，但接着做的那一轮出错了（见日志），结果可能还没送到。"
-                            + "让提这个请求的人再说一句“继续”。");
+            log.error("审批之后那一轮没跑起来 session={}", row.sessionKey(), failure);
+            return Reached.FAILED;
         }
-        return new Result(ApprovalVerdict.GRANTED, "已批准，这件事已经接着往下做了。");
+        return Reached.DELIVERED;
     }
 
     /** 落结论。返回 0 表示那一行已经不是"等着且没过期"了。 */
@@ -247,13 +266,54 @@ public class ApprovalService implements ApprovalDecider {
                 + "）。下一步就是执行它，不要再问用户要不要做。";
     }
 
-    /** 拒绝之后回给审批人的那一句。不调模型，所以它只是"这一条到此为止"的确认。 */
+    /**
+     * 拒绝之后交给模型的这句话。
+     *
+     * <p>三段都要有，逐条对着 OpenClaw 的 {@code buildExecDeniedFollowupPrompt}：
+     * <b>没有执行</b>、<b>不要重试</b>、<b>没有新输出</b>，最后一句是"向用户说明为什么"。
+     * 少了中间那两句，模型会把同一个调用原样再发一遍——而它已经被拒过，
+     * 再来一次只是让同一个人再点一次拒绝。
+     */
+    private static String deniedNote(String toolName, String reason) {
+        StringBuilder text = new StringBuilder("[审批被拒] 工具 ").append(toolName)
+                .append(" 的这次调用没有执行，也不会有新的输出。不要再重试同一个调用，")
+                .append("也不要引用早先任何一次执行的输出。");
+        if (reason != null && !reason.isBlank()) {
+            text.append("理由：").append(reason.strip()).append('。');
+        }
+        return text.append("向用户说明这次调用没有执行、以及为什么；不要声称拿到了新的结果。").toString();
+    }
+
+    /** 拒绝之后回给操作者的那一句（结论已经落了，还差"说到了哪儿"那句尾巴）。 */
     private static String deniedText(String toolName, String reason) {
         StringBuilder text = new StringBuilder("已拒绝，工具 ").append(toolName).append(" 的这次操作不会执行。");
         if (reason != null && !reason.isBlank()) {
             text.append("理由：").append(reason.strip()).append('。');
         }
-        return text.append("提请求的人可以换个做法再说一句。").toString();
+        return text.toString();
+    }
+
+    /** 批下来的尾巴：说清"接着做了"还是"没人接着做"。 */
+    private static String grantedTrailer(Reached reached) {
+        return switch (reached) {
+            case DELIVERED -> "这件事已经接着往下做了。";
+            case NO_AGENT -> "但这个部署没有 Agent 在跑，这件事不会自动接着做。";
+            case NO_ORIGIN -> "但这条请求没有留下完整的来处（哪段对话、发起人是谁），没法自动接着做。"
+                    + "让提这个请求的人再说一句“继续”。";
+            case FAILED -> "但接着做的那一轮出错了（见日志），结果可能还没送到。"
+                    + "让提这个请求的人再说一句“继续”。";
+        };
+    }
+
+    /** 拒掉的尾巴：说清"那段对话知道了"还是"没人可告知"。 */
+    private static String denialTrailer(Reached reached) {
+        return switch (reached) {
+            case DELIVERED -> "那段对话已经收到这条结论。";
+            case NO_AGENT -> "但这个部署没有 Agent 在跑，那段对话不会被告知。";
+            case NO_ORIGIN -> "但这条请求没有留下完整的来处，那段对话不会被告知——"
+                    + "让提这个请求的人知道这件事没做。";
+            case FAILED -> "结论已经落库，但那段对话没被通知到（见日志）。";
+        };
     }
 
     /**

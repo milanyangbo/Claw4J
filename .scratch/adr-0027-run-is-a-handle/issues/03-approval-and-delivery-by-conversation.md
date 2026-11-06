@@ -104,10 +104,11 @@ principal_snapshot text           -- 发起人身份快照（JSON），从 agent
       反例：把 `RunStatus.SUSPENDED` 加回去 → 枚举与 `V21` 的约束同时红。
       证据：同一条用例，`runs.find(first.runId()).status() == DONE`；
       库那一侧 `RunSchemaSqlTest#thereIsNoSuspendedStatus` 断言约束拒收 `suspended`。
-- [x] **拒绝不开新一轮**：拒绝之后 `agent_run` 仍是一行、`prompts` 仍是一条。
-      反例：把 `if (!approved)` 那支改成 `continueInConversation(...)` →
-      `denyingLeavesTheDecisionAndNeverCallsTheModel` 红（`expected DENIED but was GRANTED`）。
-      证据：同一条用例。
+- [x] **拒绝不执行，但那段对话要知道**：拒绝之后工具不执行、结论落库，**同一段对话收到
+      「没有执行、不要重试」那一句**（复核时按 OpenClaw 源码改的，见「复核」一节）。
+      反例：把拒绝那支的 `wake(...)` 换成"只落结论" →
+      `denyingTellsTheSameConversationTheCallDidNotRun` 红（`prompts` 只 1 条）。
+      证据：同一条用例（`[审批被拒]`、`不要重试`、`agent_run` 两行）。
 - [x] **审批卡片落在原对话**：卡片按请求自己的 `channel + chat_ref` 推，没有登记表。
       反例：`announce` 回到"最近用过的通道"——这里没有那个概念，替代的反例是
       `origin == null` 时不推（子 Agent 那一层），`ChatPipelineTest#theGateRegistersAndAnnouncesWithoutSuspendingAnything`
@@ -129,11 +130,12 @@ principal_snapshot text           -- 发起人身份快照（JSON），从 agent
       `ConversationLaneTest`（02 落地时验过），这里缺的是"审批与用户消息同时到达"这条组合。
       留给 A12 之前补，或第一次有人报"批准之后回答串了"时补。
 - [x] `./scripts/verify.sh` 全绿，跳过 0，覆盖率 ≥60%。
-      证据：666 条、失败 0、跳过 0，agent 69.0% / app 80.8%，10 文件 / 20 方法。
+      证据：667 条、失败 0、跳过 0，agent 68.5% / app 80.8%，10 文件 / 20 方法。
 
 ## 落地时注意
 
-- `ApprovalFlowTest` 里"拒绝后模型收到拒绝理由"那条要按 OpenClaw 改：**拒绝不再调模型**。
+- `ApprovalFlowTest` 里"拒绝后模型收到拒绝理由"那条要按 OpenClaw 改：拒绝**不执行**，
+  但要回灌一句"没有执行、不要重试"（见「复核」——我第一版把它做成了"什么都不说"，不对）。
   改之前先想清楚：这是"行为变更"，不是"测试放宽"——票面这一节就是依据。
 - `ScheduleFlowTest`、`RunLifecycleTest`、`ChatPipelineTest`、`HttpChatControllerTest` 里都有
   `new InboundMessage(..., runId, ...)` 的位置参数，删参数时逐个改，**不要**加一个"接收但忽略"的重载
@@ -156,8 +158,8 @@ principal_snapshot text           -- 发起人身份快照（JSON），从 agent
 | 表 | `V21__approval_conversation.sql`：审批行加 `session_key / channel / chat_ref / principal_snapshot`；`agent_run.status` 去掉 `suspended`（先把旧行迁成 `done`）；drop `agent_run_delivery` |
 | 请求来处 | `ApprovalLedger.Origin`（新的子 record）；`JdbcApprovalLedger` 写这四列，快照走 `PrincipalSnapshot.encode` |
 | 登记 | `RunApprovalGate#ask` 只剩"登记 + 推卡片"；`announce` 用 `ask.origin()` 的地址 |
-| 批准 | `ApprovalService#continueInConversation`：快照还原身份 → 组一条 `InboundMessage`（`sessionId` 显式给）→ `AgentPort#reply` |
-| 拒绝 | 只落结论 + 回一句话，**不调模型** |
+| 批准 | `ApprovalService#wake`：快照还原身份 → 组一条 `InboundMessage`（`sessionId` 显式给）→ `AgentPort#reply` |
+| 拒绝 | 结论落库 + 工具不执行，**同一段对话也走 `wake`**，note 是"没有执行、不要重试、没有新输出" |
 | 入口 | `ChatClientAgentPort#sessionIdOf` 认 `message.sessionId()`；`openRun` 只剩 `start` |
 | 装配 | `RunPersistenceConfiguration`：`approvalGate(ledger, cards)`、`approvalDecider(jdbc, agentPort, props)`、`runDelivery(runs, deliveries, registry)` |
 
@@ -195,3 +197,35 @@ principal_snapshot text           -- 发起人身份快照（JSON），从 agent
 - **同一对话串行的并发反例**（见判据）。
 - **`agent_run.result` / `notify_policy` 两列仍被写**：投递不再读它们，票 05 随表删。
 - **`GET /api/runs` 端点**仍在，票 05 换。
+- **`/new` 换段之后的迟到结论不丢弃**：OpenClaw 在这一支上做了"会话被 `/new` / `/reset`
+  改绑就丢掉这条 followup"（`expectedSessionId` / `isExecApprovalFollowupSessionRebound`），
+  我们这边没有指针的只读入口（`ConversationPointerStore` 只有会写会轮换的 `segmentOf`），
+  所以迟到的结论仍会落在请求原来那一段上。要补得先给指针开一个只读方法——
+  单独一件，不塞进本票。
+
+## 复核（2026-11-06，对着 openclaw/openclaw 源码）
+
+拿 `https://github.com/openclaw/openclaw` 的源码逐条对了一遍，**一处读反了，已改**：
+
+原文（`docs/tools/exec-approvals.md` §System events and denials）：
+
+> When an approval can be delivered, ordinary agent runs wait for the decision and receive the
+> exec result in the same turn. […] An operator denial returns a denied tool result without
+> running the command.
+>
+> - For main-agent async approvals with an originating session, OpenClaw posts the denial back
+>   into that session as an internal followup so the agent can stop waiting on the async command
+>   and avoid a missing-result repair.
+
+我这票早先引的是"遭拒絕或逾時的核准為終止狀態，不會以拒絕系統事件喚醒代理程式工作階段"，
+按它把拒绝做成了"什么都不说"。**那句说的是 `Exec denied` 这个 system event 不发，
+不是会话不收 followup**；源码里 `bash-tools.exec-approval-followup.ts` 的
+`buildExecDeniedFollowupPrompt` 就是拒绝那一支的提示词：`An async command did not run.` /
+`Do not run the command again.` / `There is no new command output.` / 让模型向用户解释。
+
+我们这种"一轮在拦下时就结束"的形状对应的是异步后续那一支，所以拒绝也要回灌。
+已改：`ApprovalService#decide` 的两支都走 `wake`，只换 note；判据与用例同步换成
+`denyingTellsTheSameConversationTheCallDidNotRun`。
+
+其余几条对得上：结果回原对话（`The final reply uses the original delivery path`）、
+卡片推原对话、发起人身份不是审批人、拒绝后不自动重试。
