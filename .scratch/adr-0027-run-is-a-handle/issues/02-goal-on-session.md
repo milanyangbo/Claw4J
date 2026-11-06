@@ -1,6 +1,6 @@
 # 02 goal 挂会话
 
-**Status:** ready-for-agent
+**Status:** resolved（2026-11-06）
 **依赖:** 无（与 01 可并行）
 **依据:** ADR-0027 决定三
 
@@ -107,21 +107,32 @@ OpenClaw 的 goal 是会话状态，不是"删除"。
 
 ## 判据
 
-- [ ] **一个会话只能有一个目标**：`start` 两次，第二次抛 `goal already exists`，库里仍是一行，
-      `objective` 还是第一个。
-- [ ] **只有 active 注入**：建目标 → 提示词里有 `进行中的目标：`；`/goal pause` 之后 → 提示词里没有；
-      `/goal resume` → 又出现。
-      反例：注入时不过滤状态（只判"有没有行"）→ 暂停后仍出现，红。
-- [ ] **换段即无目标**：`/new` 之后同一用户在提示词里看不到旧目标；旧段那一行仍在库里。
-      反例：goal 按 `owner`（userId@权限指纹）存而不是 `session_key` → 换段后还能看见，红。
-- [ ] **六态都在闭合词表里**：把 status 写成 `running` → 库直接拒绝（check 约束）。
-- [ ] **edit 不动状态与用量**：`active` + `tokens_used=1200` → `/goal edit ...` → 状态仍 active，
-      用量仍 1200，`revision` 加一。
-      反例：edit 走"先 clear 再 start"→ 用量归零，红。
-- [ ] **命令不进模型**：发 `/goal pause` 时模型调用次数为 0（用计数的假模型断）。
-- [ ] **多行目标原样保留**：`/goal start a\n  b\n  b` → 库里的 `objective` 保留换行与缩进。
-      反例：按空格切词重组 → 红。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，覆盖率 ≥60%。
+- [x] **一个会话只能有一个目标**：`start` 两次，第二次失败、库里仍是一行、`objective` 还是第一个。
+      反例：把 `insert … on conflict do nothing` 改成 `do update` → 静默覆盖，红。
+      证据：`ToolGovernanceTest#oneGoalPerSessionAndEditKeepsStatusAndUsage`（内存替身）、
+      `RunSchemaSqlTest#goalsAreSessionStateWithAClosedVocabulary`（主键那一半，真库）。
+- [x] **只有 active 注入**：建目标 → 提示词里有 `活跃目标：`；`/goal pause` 之后没有；`/goal resume` 又有。
+      反例：去掉 `filter(SessionGoal::injected)` → `ChatPipelineTest#onlyAnActiveGoalIsInjectedIntoEveryTurn`
+      在"暂停之后不再注入"那一句红。
+      证据：同一条用例。
+- [x] **换段即无目标，旧段那一行还在**：同一地址的 `seg-1` 有目标，`seg-2` 读到空；`seg-1` 仍然在。
+      反例：`SessionKeys.sessionIdOf(…, segment)` 丢掉段 → `seg-2` 读出 `seg-1` 的那个目标，红。
+      证据：`RunSchemaSqlTest#aFreshSegmentHasNoGoalAndEditKeepsStatusAndUsage`。
+- [x] **六态在闭合词表里**：写 `running` 被库拒绝。
+      反例：迁移里删掉 `conversation_goal_status_allowed` → 写进去了，红。
+      证据：`RunSchemaSqlTest#goalsAreSessionStateWithAClosedVocabulary`。
+- [x] **edit 不动状态与用量**：`active` + `tokens_used=1200` + 50k 预算 → `/goal edit` → 状态仍 active、
+      用量仍 1200、预算仍 50k、`revision` 2。
+      反例：`edit` 改成"先 clear 再 start" → 用量 1200→0，红。
+      证据：同上两条用例各断一次（内存 + 真库）。
+- [x] **命令不进模型**：发 `/goal 让 CI 变绿` 与 `/goal pause` 时模型调用次数不增。
+      证据：`ChatPipelineTest#onlyAnActiveGoalIsInjectedIntoEveryTurn` 里那两条 `model.prompts()`
+      断言（第一次 `isEmpty()`、第二次 `hasSize(1)`）。
+- [x] **多行目标原样保留**：`/goal start a\n  b\n    c` 解析出的目标逐字含那两个换行与缩进。
+      反例：按空白切词重组 → 红。
+      证据：`SessionMemoryTest#sessionIdFollowsIdentityAndPermissions` 末段。
+- [x] `./scripts/verify.sh` 全绿，跳过 0，覆盖率 ≥60%。
+      证据：673 条、失败 0、跳过 0，agent 66.5% / app 80.8%，10 文件 / 20 方法。
 
 ## 落地时注意
 
@@ -136,3 +147,69 @@ OpenClaw 的 goal 是会话状态，不是"删除"。
 - 不做 Local Codex 那种 "Resume" 断点续传（它保留 goal identity 与对话历史，我们没有那个运行时）。
 - 不做目标模板、目标历史、多目标队列——OpenClaw 明确"A goal is not a task queue"。
 - 不做 `usage_limited` 的触发逻辑：词表留着，但它由未来的用量限制进入，本线不进这个态。
+
+
+## 实现记录
+
+### 落在哪儿
+
+| 东西 | 位置 |
+| --- | --- |
+| 表 | `V20__conversation_goal.sql`：`claw4j_session.conversation_goal`，主键 `session_key`（含段） |
+| 六态 | `GoalStatus`：`active/paused/blocked/budget_limited/usage_limited/complete` + `resumable()` / `modelSettable()` |
+| 记录 | `SessionGoal`（record，目标原文只裁首尾） |
+| 存储 | `SessionGoalStore`（接口）+ `JdbcSessionGoalStore`：四条 `returning` 语句 + 一条 delete |
+| 工具 | `GoalTools`：`get_goal` / `create_goal` / `update_goal`，会话键从 `ChatMemory.CONVERSATION_ID` 取 |
+| 命令 | `GoalCommand`（sealed）+ `parse` / `execute`：十二个动作词，其余文本当新目标 |
+| 注入 | `ChatClientAgentPort#activeGoalLine`：只认 `active`，折成一行、截 200 字 |
+| 装配 | `SessionMemoryConfiguration`：store + 三个工具 + 权限 + 档位（`MINIMAL`） |
+
+### 四处与票面不一致（前两处是票面写错了）
+
+1. **`update_goal` 没有 `objective` 参数**。票面写"改状态 / 追加备注 / 改写目标"，但 OpenClaw 原文是
+   *"模型不能在不作说明的情况下暂停、恢复、清除或替换目标。这些操作仍然是操作员/会话通过
+   `/goal` 和重置命令执行的控制"*。所以工具只有 `status`（`complete` / `blocked`）+ `note`；
+   改写是人的按钮（`/goal edit`）。这条差别是实质的：给了模型 `objective` 就等于给了它
+   "把目标换成另一件事"的能力，而这正是它不该有的。
+2. **`SessionGoalStore` 是接口 + JDBC 实现**，票面只写了一个名字。理由：注入路径挂在
+   `ChatClientAgentPort` 上，而那个类的用例全是假模型、没有库；不开接口的话，每条
+   "提示词里有没有那一行"都要拉一个 Testcontainers。`ScheduleStore` 没开接口是因为它只在
+   工具里用、用例本来就走真库。
+3. **`StepKind.PLAN` 保留**。票面说"`kind='plan'` 的读取路径一起去掉"——读取路径确实去了
+   （`planOf` / `setPlan` / `markPlan` / `recap` 的 plan 段全删），但枚举值与 V7 的约束留着：
+   库里还有历史的 plan 行，`fromColumn` 认不出它们会让 `stepsOf` 直接抛。
+4. **`goalTools` 不跟着 `claw4j.run.enabled` 进退**。原来的 `update_plan` 跟着它，因为计划写在
+   `agent_step` 上；目标挂在会话里，关掉记账之后"这一段对话在往哪儿走"照样成立。
+
+### 顺带删掉的东西
+
+`UpdatePlanTool`（整个文件）、`RunStore#planOf/setPlan/markPlan` 与 `JdbcRunStore` 的实现、
+`RunPersistenceConfiguration` 里那三个 bean（工具 / 权限 / 档位）、`recap` 里的 `planBlock`。
+`RunSchemaSqlTest` 里三条计划用例随之删掉，但 V7 那条"已发生的一步不能是待做"的约束守门
+改写成了 `modelTurnsCannotBePending` 留着——它守的是表结构，与计划那条功能路无关。
+
+### 五个反例，各红一条
+
+| # | 改坏什么 | 红了哪条 |
+| --- | --- | --- |
+| 1 | 注入去掉 `filter(SessionGoal::injected)` | `onlyAnActiveGoalIsInjectedIntoEveryTurn`（暂停后仍注入） |
+| 2 | `SessionKeys#sessionIdOf` 丢掉段 | `aFreshSegmentHasNoGoalAndEditKeepsStatusAndUsage`（新段看得见旧目标） |
+| 3 | 迁移删掉 `conversation_goal_status_allowed` | `goalsAreSessionStateWithAClosedVocabulary`（`running` 写进去了） |
+| 4 | `edit` 改成先 clear 再 start | 同 #2（`expected: 1200L but was: 0L`） |
+| 5 | `/goal` 用前缀匹配 | `sessionIdFollowsIdentityAndPermissions`（`/goals 是什么` → `Start[objective=s 是什么]`） |
+
+### 没做
+
+- **`token_budget` / `tokens_used` 只建列不做账**：记账与 `budget_limited` 的迁移在票 04。
+  `/goal start` 也不收预算参数——OpenClaw 的原话是"`/goal start` 不接受 Token 预算标志；
+  预算只能通过面向模型的 `create_goal` 工具设置"。
+- **不做 Control UI 的目标胶囊、TUI 页脚**：那是前端。
+- **不做 `usage_limited` 的触发**：词表留着，等真有用量限制的那一天。
+
+## 收票时要补
+
+| 文件 | 补什么 |
+| --- | --- |
+| `docs/design/session-memory.md` | 一节"会话目标"：六态、只有 active 注入、`/new` 换段即无目标 |
+| `docs/adr/0027` | 落地顺序第 2 步标"已落地（02）" |
+| `docs/agents/guardrails.md` | 记一条：`/goal start` 不收预算参数（照 OpenClaw），要设预算只能让模型调 `create_goal` |

@@ -68,6 +68,8 @@ ADR-0024 与 ADR-0026 已经把"答完之后"这件事交给会话了，run 作�
 - 一个会话同时最多一个目标；
 - 六态：`active` / `paused` / `blocked` / `budget_limited` / `usage_limited` / `complete`；
 - 模型侧三个工具：`create_goal`（可带 token budget）、`get_goal`、`update_goal`；
+  其中 `update_goal` **只能标 `complete` 与 `blocked`**——暂停、恢复、清除、改写是操作员的按钮，
+  模型不该能悄悄改掉这一段对话的走向；
 - **只有 `active`** 的目标在每个带人类角色的回合注入一行"进行中的目标：…"；其余状态不注入，
   于是"操作员叫停"是持续生效的，直到有人恢复它；
 - `/goal` 命令族：`start`（`set` / `create`）、`edit`、`pause`、`resume`、`complete`（`done`）、
@@ -114,8 +116,8 @@ OpenClaw 有 `agents.defaults.timeoutSeconds`（默认 48 小时）兜住跑飞�
 
 迁移顺序**先建替代、再删旧的**，否则中间态是"审计断了、结果丢了"：
 
-1. 审计事件流水（`audit_event` 上线，`ToolCallAudit` 改写到它）
-2. goal 挂会话（模型工具、`/goal` 命令族、每回合注入、`/new` 清目标）
+1. 审计事件流水（`audit_event` 上线，`ToolCallAudit` 改写到它）—— **已落地**
+2. goal 挂会话（模型工具、`/goal` 命令族、每回合注入、`/new` 清目标）—— **已落地**
 3. 审批与投递按对话地址（拆掉续跑，删两个 `runId`）
 4. 预算并进 goal
 5. 删 `agent_run` / `agent_step` / `GET /api/runs` 与相关代码

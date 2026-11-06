@@ -91,12 +91,13 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 
 | 角色 | 可见表 | 可执行动作 |
 | --- | --- | --- |
-| `read-only`（缺省） | `*` | `read`、`use_skill`、`delegate_task`、`read_system`、`recall_session`、`update_plan`、`schedule_task`、`list_schedules`、`cancel_schedule` |
+| `read-only`（缺省） | `*` | `read`、`use_skill`、`delegate_task`、`read_system`、`recall_session`、`get_goal`、`create_goal`、`update_goal`、`schedule_task`、`list_schedules`、`cancel_schedule` |
 | `guest` | `region` | `read`、`use_skill`、`delegate_task` |
 | `admin` | `*` | `*` |
 
 动作名与工具登记的动作同口径：`read`（读表）、`use_skill`、`delegate_task`、`read_system`、
-`recall_session`、`update_plan`（改自己这一件事的计划）、`schedule_task`（定一个以后按点做的任务）、
+`recall_session`、`get_goal` / `create_goal` / `update_goal`（这一段对话的目标：读、建、标达成或阻塞）、
+`schedule_task`（定一个以后按点做的任务）、
 `list_schedules`、`cancel_schedule`（只碰自己的任务，按归属键判、不按编号判）、`run_script`（跑脚本包）、
 `draft_script`（交脚本草稿）、`send_email`（MCP 按工具覆盖时用）。
 表里没有的角色一律拒绝，没有默认角色兜底。**会话记忆按「人 + 权限 + 通道 + 对话 + 段」落库**（`SessionKeys`）：同一个人在网页私聊里查到的数字，不会出现在他十分钟后 @ 机器人的项目群里（听众不一样，权限指纹管不到这一层）；**换一份权限也是另一段会话**——降权之后，历史里躺着的数字读不到，而不是还记得（ADR-0007 的边界在会话这层同样成立）。**段是"这段对话的第几世"**：跨了逻辑日（默认 4 点，按 `claw4j.agent.zone`）或空闲超过 `idle-minutes`（默认 120）就换一个，换段 = 换对话，记忆与额度都从零开始（ADR-0026）。`recall_session` 跟着同一个粒度：它只回查当前这一段对话，看不到别的会话。**同一段对话同时只跑一件事**：连发两句时第二句排队等第一句说完（最多 `claw4j.agent.lane-wait`，默认 60 秒），等不到就回一句"现在有点忙"——不排队的话，第二句拼提示词时第一句的答案还没落库，长得就像"模型偶尔会忘事"。
@@ -410,7 +411,7 @@ public class TelegramChannelAutoConfiguration {
 
 门禁跑的是假模型与真容器，能证明"装配成立"，证明不了"能力真能用"。后者要一次真跑，
 **按工具逐条**给出命令与期望值在 **[`docs/capability-tests.md`](docs/capability-tests.md)**：
-本仓库的 21 个工具每个一条（8 个进程内 + 10 个自建 MCP + 3 个脚本包），
+本仓库的 23 个工具每个一条（10 个进程内 + 10 个自建 MCP + 3 个脚本包），
 外加两个第三方 MCP server 的"先取清单再点名"、5 个子 Agent、流式与非流式的成对调法、
 Java 与非 Java 实现的成对接口，以及越权与拦截的负向用例。
 
