@@ -56,8 +56,10 @@ import java.util.Set;
  *
  * <p><b>同一处还有第二道门：审批</b>（P01、P02）。鉴权通过之后，权限上标了
  * {@link io.github.claw4j.domain.principal.Approval#REQUIRED} 的动作要再问一句
- * {@link ApprovalGate}：没有一条同人、同工具、<b>同参数</b>的批准就换成一句"要先审批"，
- * 同时把这件事停在这一点（step awaiting、run suspended）。
+ * {@link ApprovalGate}：没有一条同人、同工具、<b>同参数</b>的批准就换成一句"要先审批"。
+ * <b>这一轮到此结束，没有东西在原地等</b>：不挂起执行、不留一条"等待中"的运行；
+ * 批准或拒绝之后由 {@code ApprovalService} 在那段对话里补一句话，让模型接着做——
+ * 这就是 OpenClaw 的 internal followup（原文与理由见那个类）。
  * 两道门在这里同一个位置、同一个机制（都不把工具调用往下传），因为它们的约束是同一条——
  * 判定必须在<b>工具执行之前</b>发生；分成两处实现的话，早晚有一处漏掉流式路径。
  * 但两句话术不合并：一个要改角色配置，一个要找人点按钮。

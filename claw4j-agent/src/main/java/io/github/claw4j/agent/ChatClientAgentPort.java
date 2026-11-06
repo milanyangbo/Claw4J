@@ -79,11 +79,14 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     private static final int GOAL_CHARS = 200;
 
     /**
-     * 根 span 的名字：**一次 run 的执行体**（P14）。
+     * 根 span 的名字：**一轮的执行体**（P14）。
      *
      * <p>不是"一次请求"：五个通道都把 {@code agent.reply} 丢进线程池，请求的 trace 在入池那一刻就断了；
-     * 而 run 跨通道、跨重试、跨进程重启（resume 时还是同一个 runId）。根放在 run 上，
-     * trace 的边界才与库里那张表的边界是同一件事。
+     * 而模型轮与工具调用都发生在入池之后。根放在这一轮上，trace 的边界才与
+     * "审计里那两条 {@code agent_run} 事件之间"是同一段。
+     *
+     * <p>编号只活一轮（ADR-0027）：{@code runId} 是这一轮的身份，不是能接上的把手——
+     * 下一轮是新的编号，同一段对话靠 {@code sessionKey} 连起来。
      */
     private static final String RUN_SPAN = "run";
 
@@ -400,15 +403,15 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         if (audit != null) {
             audit.runStarted(auditScope);
         }
-        // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
+        // 根 span 从"这一轮"开始，而不是从这次请求开始：模型轮与工具都发生在入池之后（见 RUN_SPAN）。
         try (SpanTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal()))) {
             try {
                 ChatResponse response;
                 String text;
-                // 一轮的 span 包住 call() **与收尾**：seq 要先落库才拿得到，
-                // 所以这段 duration 含那一次 INSERT（几十毫秒）。反过来（先关 span 再写 seq）
-                // 会让属性丢掉——已 end 的 span 上 setAttribute 是静默的空操作。
+                // 一轮的 span 包住 call() 与收尾，所以它量的是"这一轮从开跑到答完"的整段时长，
+                // 含收尾那一次审计 INSERT（几十毫秒）。span 上不写账本行号：
+                // 与审计的关联键只有 claw4j.run.id 一个（见 ATTR_RUN_ID）。
                 try (SpanTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                     response = promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
                             .call()

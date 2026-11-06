@@ -110,14 +110,14 @@ class ApprovalFlowTest {
     void freshTables() {
         jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("delete from claw4j_run.approval_request");
-            }
+    }
 
     /**
-     * 验收 1：没有批准时 run 挂起、请求直接返回、审批编号回到用户手里，工具一次都没执行。
+     * 验收 1：没有批准时这一轮照样收尾，审批行留痕，编号回到用户手里，工具一次都没执行。
      *
-     * <p>判据全在库里：{@code agent_run.status = suspended}、一条 {@code approval} 类型的
-     * step 状态是 awaiting。只断言回话里"提到要审批"是不够的——那样的话，
-     * "挂起"变成"回一句话然后照常跑完"也会绿。
+     * <p>判据落在库里：{@code audit_event} 里这一轮收在 {@code succeeded}，
+     * {@code approval_request} 多一行 pending。只断言回话里"提到要审批"是不够的——
+     * 那样的话，"回一句话然后照常把工具跑了"也会绿。
      */
     @Test
     @DisplayName("没有批准：这一轮以 done 收尾、审批行带上来处、编号回到用户手里、工具一次没执行")
