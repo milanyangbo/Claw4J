@@ -14,7 +14,7 @@ date: 2026-11-05
 | 定义 | 出处 | 谁在用 | 什么时候结束 |
 | --- | --- | --- | --- |
 | 一段对话的地址 | `SessionKeys.sessionIdOf`（owner + 通道 + chatId） | 记忆、压缩、召回、预算 | **永不结束** |
-| 一份额度的窗口 | `claw4j.run.budget.idle-minutes: 120`（`application.yml:253`） | `JdbcRunStore#spentOfSession` | 120 分钟没动静就清零 |
+| 一份额度的窗口 | `claw4j.run.budget.idle-minutes: 120`（`application.yml:253`）**——ADR-0027 已删**：额度移到目标上，会话不再有窗口 | `JdbcRunStore#spentOfSession`（已删） | ~~120 分钟没动静就清零~~ |
 | 一行存储记录 | `spring.ai.session.time-to-live: 30d`（`application.yml:43`） | `SessionCleanup` 每小时删 | 到期行被删（到期时间写在行上，**不随活动刷新**：仓储层没有任何 UPDATE 触及 `expires_at`） |
 | 定时任务的上下文 | `ScheduleScanner:176` 拿 `task.channelRef()` 当 chatId | 定时任务 | 跟着创建者的那段走 |
 

@@ -63,22 +63,20 @@ psql "$DATABASE_URL" -c "select id, session_id, status from claw4j_run.agent_run
 三个请求头：`X-Claw4j-User`（必填）、`X-Claw4j-Role`（角色，不填走默认 `read-only`）、
 `X-Claw4j-Chat-Id`（可选，不填按用户分）。
 
-**一段对话最多烧多少**：预算按会话累计（ADR-0025），三项分别是工具调用 6 次 / token 10 万 /
-耗时 900 秒（`claw4j.run.budget.*` 可调）。一段对话由**段**（ADR-0026）界定：
-跨了逻辑日（默认 4 点）或空闲 `claw4j.session.reset.idle-minutes`（默认 120）就换段，
-换段即换对话，三项从 0 重新开始——与 OpenClaw 的 idle reset 同构。三项里任何一项撞线，
-这一轮就停在那儿：不再调模型，回答里写明是哪一项用完了，库里那一行是 `budget_exhausted`。
+**一件事最多烧多少**：额度是**目标**的属性（ADR-0027 决定五），不是会话的：
 
 ```bash
-# 同一段对话里连着问（同一通道 + 同一 chatId），第 7 次工具调用会被拒：
-# "预算用尽（工具调用 6/6 次）：这件事停在这里（run xxxxxxxx），没有再调用模型。"
-psql "$DATABASE_URL" -c "select session_id, tool_calls, tokens, millis, touched_at
-  from claw4j_run.agent_session_budget order by touched_at desc limit 5"
-psql "$DATABASE_URL" -c "select id, status, budget_used, budget_tokens, budget_ms
-  from claw4j_run.agent_run order by created_at desc limit 5"
-# 换一段对话（换 chatId、换通道、或跨天/空闲换段）就是另一份额度。
-# 定时任务的 chatId 固定，两次运行落在同一段会话里合成累计，换段才清零。
+# 让模型建一个带预算的目标（只有 create_goal 能带 token_budget，/goal start 不收）
+# 然后正常提问；每轮收尾把 usage 记到目标上，撞上预算就进 budget_limited。
+psql "$DATABASE_URL" -c "select session_key, status, token_budget, tokens_used from claw4j_session.conversation_goal"
+# 额度用完的目标不再注入提示词（下一条消息的提示词里没有"活跃目标："），
+# 由人决定要不要接着做：/goal resume —— 开一个新的预算窗口（tokens_used 归零，预算不变）。
 ```
+
+**一轮最多调几次工具**：`claw4j.agent.tool-call-limit`（默认 6；单个工具 3 次，不可配）。
+它是**熔断**不是额度：到点就停、回一句"这一步做了太多次"，不改任何持久状态，
+也不动目标的状态。两者要分开看——一个回答"这件事花超了吗"（额度），
+一个回答"这一轮绕了太多次吗"（止损）。
 
 ## 0. 起实例
 
