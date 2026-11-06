@@ -20,6 +20,9 @@ import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.goal.GoalCommand;
+import io.github.claw4j.agent.goal.SessionGoal;
+import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.session.SessionCommand;
@@ -70,11 +73,16 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     /** 接上时给模型回看几步。 */
     private static final int RECAP_STEPS = 5;
 
-    /** recap 里计划最多列几步。计划一行一步，比 step 摘要紧凑，所以给得宽一些。 */
-    private static final int RECAP_PLAN_STEPS = 10;
-
     /** recap 里每一步与目标的字符上限。 */
     private static final int RECAP_CHARS = 120;
+
+    /**
+     * 注入的"活跃目标"那一行最多几个字。
+     *
+     * <p>OpenClaw 会截断过长的目标内容"使该行保持紧凑"。它只是一行提醒，
+     * 不是目标全文——要看全文走 {@code /goal} 或 {@code get_goal}。
+     */
+    private static final int GOAL_CHARS = 200;
 
     /**
      * 根 span 的名字：**一次 run 的执行体**（P14）。
@@ -166,6 +174,9 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      */
     private final ConversationLane lane;
 
+    /** 会话目标（ADR-0027）。为 null 表示没开目标存储。 */
+    private final SessionGoalStore goals;
+
     /**
      * 审计规则层（ADR-0027）：这一轮开始 / 结束各一条事件。
      *
@@ -224,6 +235,18 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
                                RunBudget budget, RunDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit) {
+        this(chatClient, compactor, runs, budget, delivery, tracer, pointers, lane, audit, null);
+    }
+
+    /**
+     * @param goals 会话目标的落点（ADR-0027 决定三）。为 null 表示这个部署没开目标存储：
+     *              于是每回合少注入那一行、{@code /goal} 那族命令回一句"用不了"。
+     *              注意它与"这一段没有目标"是两件事——前者是能力不在场，后者是常态
+     */
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
+                               RunBudget budget, RunDelivery delivery, RunTracer tracer,
+                               ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit,
+                               SessionGoalStore goals) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
         this.runs = runs;
@@ -233,6 +256,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         this.pointers = pointers;
         this.lane = lane;
         this.audit = audit;
+        this.goals = goals;
     }
 
     /**
@@ -376,6 +400,13 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         // 群聊与私聊必须是两段——同一份权限下，听众可以完全不同（ADR-0025）。
         // 段由指针给（ADR-0026）：跨天、空闲、或者用户发了 /new 就换一个。
         String sessionId = sessionIdOf(message, owner, parsed.reset());
+        // /goal 这一族与 /new 同层：认出来就当场办、回一句话，不进模型也不开 run
+        // （OpenClaw：纯命令消息绕过队列和模型）。放在 sessionId 之后，是因为它改的
+        // 就是这一段会话上的东西——/new /goal ... 这种组合因此落在新段上。
+        Optional<GoalCommand> goalCommand = GoalCommand.parse(parsed.text());
+        if (goalCommand.isPresent()) {
+            return new Turn(null, GoalCommand.execute(goalCommand.get(), goals, sessionId));
+        }
         // 送模型的是命令之后的内容：`/new 帮我查华南` 的第一句是"帮我查华南"，
         // 命令本身不该出现在提示词里，也不该成为这一轮的 run 目标。
         String masked = PiiRedactor.mask(parsed.text());
@@ -407,7 +438,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                 // 所以这段 duration 含那一次 INSERT（几十毫秒）。反过来（先关 span 再写 seq）
                 // 会让属性丢掉——已 end 的 span 上 setAttribute 是静默的空操作。
                 try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
-                    response = promptOf(message.principal(), owner, sessionId, promptText(opened, masked), runId)
+                    response = promptOf(message.principal(), owner, sessionId, promptText(opened, sessionId, masked), runId)
                             .call()
                             .chatResponse();
                     text = textOf(response);
@@ -462,6 +493,14 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         }
         String owner = SessionKeys.ownerOf(message.principal());
         String sessionId = sessionIdOf(message, owner, parsed.reset());
+        Optional<GoalCommand> goalCommand = GoalCommand.parse(parsed.text());
+        if (goalCommand.isPresent()) {
+            // 与 /new 那条同形：一帧正文 + 一帧空文本，调用方靠后者收尾。
+            onChunk.accept(OutboundMessage.of(message.chatId(),
+                    GoalCommand.execute(goalCommand.get(), goals, sessionId), null));
+            onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
+            return;
+        }
         String masked = PiiRedactor.mask(parsed.text());
         Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
@@ -483,7 +522,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             long startedAt = System.nanoTime();
             try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
-                    promptOf(message.principal(), owner, sessionId, promptText(opened, masked), runId)
+                    promptOf(message.principal(), owner, sessionId, promptText(opened, sessionId, masked), runId)
                             .stream()
                             .content()
                             // 每一块都带 runId：调用方可能只收到最后一块，收到中间块的也要能查到同一件事
@@ -679,31 +718,56 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      * 模型只能从头猜，而它的表现恰恰是"看起来答得挺好，其实是把第一轮重做了一遍"。
      * 会话记忆还在，但它记的是说过的话，不是"这件事做到第几步"。
      *
-     * <p><b>计划是另一段，单独列</b>（A03）：计划 step 记的是"打算怎么干、还剩什么没做"，
-     * 与"已经发生了什么"是两种读法。混在"最近几步"里的话，
-     * "还剩三步没做"会和"已完成三步"挤在同一段里，模型只能靠数行数去分辨。
+     * <p><b>"在往哪儿走"不在这里</b>：那是会话目标（{@link #activeGoalLine}），
+     * 它每回合都注入，与"接着做"无关。recap 只回答"已经发生了什么"——
+     * 把目标混进这一段的话，一个一直挂着的目标会被读成"这件事刚做过一步"。
      *
      * <p>只回看最近几步、每步截断：这段 recap 的用途是让模型知道下一步做什么，
      * 不是让它把历史重读一遍——全量塞进去会在长 run 上先撞上下文上限。
      */
-    private String promptText(Opened opened, String masked) {
+    private String promptText(Opened opened, String sessionId, String masked) {
+        String goalLine = activeGoalLine(sessionId);
         if (opened == null || !opened.resumed()) {
-            return masked;
+            return goalLine + masked;
         }
-        return recap(opened.run(), runs.stepsOf(opened.run().id())) + masked;
+        return goalLine + recap(opened.run(), runs.stepsOf(opened.run().id())) + masked;
+    }
+
+    /**
+     * 每回合那一行"活跃目标"（ADR-0027 决定三，照 OpenClaw 的注入形态）。
+     *
+     * <p><b>只有 {@code active} 才注入</b>。OpenClaw 的原话是"已暂停、已阻塞、预算受限、
+     * 用量受限和已完成的目标不会被注入，因此操作员的停止操作会持续生效，直到目标恢复"。
+     * 这一条是"叫停能生效"的唯一保证——注入只判"有没有行"的话，用户按了暂停，
+     * 下一轮模型还在往那个方向推进，而界面上写着"已暂停"。
+     *
+     * <p><b>折成一行</b>：目标原文可能有七行，而这里要的是一行上下文。
+     * 折行只影响注入，库里存的仍是原文。
+     */
+    private String activeGoalLine(String sessionId) {
+        if (goals == null || sessionId == null) {
+            return "";
+        }
+        return goals.of(sessionId)
+                .filter(SessionGoal::injected)
+                .map(goal -> "活跃目标：" + oneLine(goal.objective(), GOAL_CHARS)
+                        + " — 推进目标或更新其状态（get_goal/update_goal）。\n")
+                .orElse("");
+    }
+
+    /** 把多行折成一行再截断。连续空白压成一个空格，首尾不留。 */
+    private static String oneLine(String value, int max) {
+        String flat = value == null ? "" : value.replaceAll("\\s+", " ").strip();
+        return flat.length() <= max ? flat : flat.substring(0, max) + "…";
     }
 
     private static String recap(Run run, List<Step> steps) {
-        List<Step> plan = steps.stream().filter(step -> step.kind() == StepKind.PLAN).toList();
-        List<Step> happened = steps.stream().filter(step -> step.kind() != StepKind.PLAN).toList();
+        List<Step> happened = steps;
         StringBuilder text = new StringBuilder("[接着做这件事 ")
                 .append(run.id(), 0, Math.min(8, run.id().length()))
                 .append("]\n目标：")
                 .append(clip(run.goal(), RECAP_CHARS))
                 .append('\n');
-        if (!plan.isEmpty()) {
-            text.append(planBlock(plan));
-        }
         if (happened.isEmpty()) {
             text.append("还没有任何一步落下来。\n");
         } else {
@@ -716,32 +780,6 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
             }
         }
         return text.append("（以上是这件事已经做完的部分，直接接着做下一步，不要重做。）\n").toString();
-    }
-
-    /**
-     * 计划那一段：这是"还剩什么没做"唯一的来源（A03）。
-     *
-     * <p>会话被压过之后，模型手里的上下文里没有计划，只有这张表里还有。
-     * 不把它放进 recap，"继续"就会把已经做过的那一步重做一遍，
-     * 而<b>重做一遍看起来跟"接着做"一样正常</b>——这是这条最要紧的理由。
-     *
-     * <p>序号是计划内序号（清单里的第几个），不是 {@link Step#seq()}：
-     * 计划被重写过之后它的 seq 从当时那一步接着往下走，
-     * 模型手里的"第 2 步"指的是清单里的第二个。
-     */
-    private static String planBlock(List<Step> plan) {
-        long pending = plan.stream().filter(step -> step.status() == StepStatus.PENDING).count();
-        StringBuilder text = new StringBuilder("计划（共 ").append(plan.size())
-                .append(" 步，还有 ").append(pending).append(" 步没做）：\n");
-        for (int i = 0; i < plan.size() && i < RECAP_PLAN_STEPS; i++) {
-            Step step = plan.get(i);
-            text.append("第 ").append(i + 1).append(" 步 [").append(step.status().label()).append("] ")
-                    .append(clip(step.input(), RECAP_CHARS)).append('\n');
-        }
-        if (plan.size() > RECAP_PLAN_STEPS) {
-            text.append("（计划只列前 ").append(RECAP_PLAN_STEPS).append(" 步）\n");
-        }
-        return text.toString();
     }
 
     private static String clip(String value, int max) {

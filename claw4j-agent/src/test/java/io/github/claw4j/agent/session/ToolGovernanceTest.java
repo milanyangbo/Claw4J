@@ -1,6 +1,11 @@
 package io.github.claw4j.agent.session;
 
 import io.github.claw4j.agent.approval.CallFingerprint;
+import io.github.claw4j.agent.goal.GoalCommand;
+import io.github.claw4j.agent.goal.GoalStatus;
+import io.github.claw4j.agent.goal.GoalTools;
+import io.github.claw4j.agent.goal.SessionGoal;
+import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
@@ -25,6 +30,7 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.session.CreateSessionRequest;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.Session;
 import org.springframework.ai.session.SessionEvent;
@@ -443,6 +449,152 @@ class ToolGovernanceTest {
                 .isFalse();
     }
 
+    // ---------------------------------------------------------------- 会话目标（ADR-0027）
+
+    /**
+     * 目标挂在会话上、一个会话一个。这两条放在这个文件里，是因为它们与上面那一半问的是
+     * 同一个问题：**模型手上能改的东西到底有多大**。召回那一半是"别把别人的话带回来"，
+     * 目标这一半是"别悄悄改掉这一段对话的走向"。
+     *
+     * <p>用内存替身而不是真库：这里验的是规则（谁被拒、改完之后哪几格不动），
+     * 库那一侧（六态约束、主键唯一）由 {@code RunSchemaSqlTest} 在真 Postgres 上验。
+     */
+    @Test
+    @DisplayName("一个会话一个目标：再建一次失败且原文不变；edit 动目标不动状态与用量")
+    void oneGoalPerSessionAndEditKeepsStatusAndUsage() {
+        InMemoryGoals goals = new InMemoryGoals();
+        GoalTools tools = new GoalTools(goals);
+        ToolContext context = sessionOf("c-goal");
+
+        String created = call(tools, GoalTools.CREATE, "{\"objective\":\"让 CI 变绿\"}", context);
+        String again = call(tools, GoalTools.CREATE, "{\"objective\":\"换一个\"}", context);
+
+        assertThat(created).contains("已建目标").contains("让 CI 变绿");
+        assertThat(again)
+                .as("OpenClaw：清除当前目标之前再建会失败，而不是静默覆盖——"
+                        + "覆盖的话用户以为新建了，其实旧那个的状态与用量一起没了")
+                .contains("已经有目标");
+        assertThat(goals.of("c-goal").orElseThrow().objective()).isEqualTo("让 CI 变绿");
+
+        goals.addTokens("c-goal", 1200);
+        GoalCommand.execute(new GoalCommand.Edit("让 CI 变绿并更新文档"), goals, "c-goal").strip();
+
+        assertThat(goals.of("c-goal").orElseThrow())
+                .satisfies(goal -> {
+                    assertThat(goal.objective()).isEqualTo("让 CI 变绿并更新文档");
+                    assertThat(goal.status()).as("改个措辞不该把状态也改了").isEqualTo(GoalStatus.ACTIVE);
+                    assertThat(goal.tokensUsed())
+                            .as("先 clear 再 start 的写法会让用量归零——一个改措辞的动作把额度还回去了")
+                            .isEqualTo(1200);
+                    assertThat(goal.revision()).isEqualTo(2);
+                });
+    }
+
+    @Test
+    @DisplayName("模型只能标 complete / blocked：暂停、恢复、改写、清除都不归它")
+    void theModelCanOnlyMarkCompleteOrBlocked() {
+        InMemoryGoals goals = new InMemoryGoals();
+        GoalTools tools = new GoalTools(goals);
+        ToolContext context = sessionOf("c-goal");
+        call(tools, GoalTools.CREATE, "{\"objective\":\"让 CI 变绿\"}", context);
+
+        String paused = call(tools, GoalTools.UPDATE, "{\"status\":\"paused\"}", context);
+        assertThat(paused)
+                .as("OpenClaw：模型不能在不作说明的情况下暂停目标——那是操作员的按钮")
+                .contains("只能标 complete 或 blocked");
+        assertThat(goals.of("c-goal").orElseThrow().status())
+                .as("被拒之后状态一个字都不该动")
+                .isEqualTo(GoalStatus.ACTIVE);
+
+        String blocked = call(tools, GoalTools.UPDATE,
+                "{\"status\":\"blocked\",\"note\":\"等 CI 环境\"}", context);
+        assertThat(blocked).contains("已阻塞");
+        assertThat(goals.of("c-goal").orElseThrow().note()).isEqualTo("等 CI 环境");
+    }
+
+    private static ToolContext sessionOf(String sessionKey) {
+        return new ToolContext(Map.of(ChatMemory.CONVERSATION_ID, sessionKey));
+    }
+
+    private static String call(GoalTools tools, String name, String json, ToolContext context) {
+        for (ToolCallback callback : tools.getToolCallbacks()) {
+            if (callback.getToolDefinition().name().equals(name)) {
+                return callback.call(json, context);
+            }
+        }
+        throw new AssertionError("没有这个工具：" + name);
+    }
+
+    /**
+     * 内存版目标存储：这一层验的是规则（谁被拒、改完之后哪几格不动），
+     * 所以它照着 SQL 的语义写——{@code start} 撞已有目标返回空、
+     * {@code edit} 不动状态与用量、{@code setStatus} 撞终态返回空。
+     * 替身比实现宽容的话，用例会绿着而真库那边是坏的（真库那一份在 {@code RunSchemaSqlTest}）。
+     */
+    private static final class InMemoryGoals implements SessionGoalStore {
+
+        private static final Instant NOW = Instant.parse("2026-11-06T02:00:00Z");
+
+        private final Map<String, SessionGoal> rows = new LinkedHashMap<>();
+
+        @Override
+        public Optional<SessionGoal> of(String sessionKey) {
+            return Optional.ofNullable(rows.get(sessionKey));
+        }
+
+        @Override
+        public Optional<SessionGoal> start(String sessionKey, String objective, Long tokenBudget) {
+            if (rows.containsKey(sessionKey)) {
+                return Optional.empty();
+            }
+            return Optional.of(put(new SessionGoal(sessionKey, GoalStatus.ACTIVE, objective, null,
+                    tokenBudget, 0, 1, NOW, NOW)));
+        }
+
+        @Override
+        public Optional<SessionGoal> edit(String sessionKey, String objective) {
+            SessionGoal current = rows.get(sessionKey);
+            if (current == null) {
+                return Optional.empty();
+            }
+            return Optional.of(put(new SessionGoal(sessionKey, current.status(), objective,
+                    current.note(), current.tokenBudget(), current.tokensUsed(),
+                    current.revision() + 1, current.createdAt(), NOW)));
+        }
+
+        @Override
+        public Optional<SessionGoal> setStatus(String sessionKey, GoalStatus status, String note) {
+            SessionGoal current = rows.get(sessionKey);
+            if (current == null || current.status() == GoalStatus.COMPLETE) {
+                return Optional.empty();
+            }
+            return Optional.of(put(new SessionGoal(sessionKey, status, current.objective(), note,
+                    current.tokenBudget(), current.tokensUsed(), current.revision() + 1,
+                    current.createdAt(), NOW)));
+        }
+
+        @Override
+        public void addTokens(String sessionKey, long tokens) {
+            SessionGoal current = rows.get(sessionKey);
+            if (current == null) {
+                return;
+            }
+            put(new SessionGoal(sessionKey, current.status(), current.objective(), current.note(),
+                    current.tokenBudget(), current.tokensUsed() + tokens, current.revision(),
+                    current.createdAt(), NOW));
+        }
+
+        @Override
+        public boolean clear(String sessionKey) {
+            return rows.remove(sessionKey) != null;
+        }
+
+        private SessionGoal put(SessionGoal goal) {
+            rows.put(goal.sessionKey(), goal);
+            return goal;
+        }
+    }
+
     // ---------------------------------------------------------------- 假存储 / 假会话
 
     /** 只认 {@code append}：审计只该追加一行，其余方法被调到就是它越界了。 */
@@ -513,15 +665,7 @@ class ToolGovernanceTest {
             throw new UnsupportedOperationException("审计不该回读 step");
         }
 
-        @Override
-        public List<Step> planOf(String runId) {
-            throw new UnsupportedOperationException("审计不该读计划");
-        }
 
-        @Override
-        public Optional<List<Step>> setPlan(String runId, List<String> items) {
-            throw new UnsupportedOperationException("审计不该写计划");
-        }
 
         @Override
         public Optional<Budget> spent(String runId, java.time.Instant idleBefore) {
@@ -533,10 +677,6 @@ class ToolGovernanceTest {
             throw new UnsupportedOperationException("审计不该记用量");
         }
 
-        @Override
-        public Optional<Step> markPlan(String runId, int ordinal, StepStatus status) {
-            throw new UnsupportedOperationException("审计不该标计划");
-        }
     }
 
     /** 写的时候真抛的那种存储：验"兜住了没有"。其余方法与上面那个假存储同源，所以直接继承。 */

@@ -1,6 +1,9 @@
 package io.github.claw4j.agent.session;
 
 import com.zaxxer.hikari.HikariDataSource;
+import io.github.claw4j.agent.goal.GoalTools;
+import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
+import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
@@ -32,6 +35,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import javax.sql.DataSource;
@@ -289,6 +293,51 @@ public class SessionMemoryConfiguration implements DisposableBean {
                                                      ObjectProvider<MeterRegistry> meterRegistry) {
         return new ConversationPointers(store, reset, agent.zone(), Clock.systemUTC(),
                 meterRegistry.getIfAvailable());
+    }
+
+    /**
+     * 会话目标（ADR-0027 决定三）。表在 {@code claw4j_session}，用的是主连接池。
+     *
+     * <p>与会话指针同一条理由写全限定表名：不靠连接的 search_path，
+     * 也就不需要第二个 {@code DataSource}。
+     */
+    @Bean
+    @ConditionalOnMissingBean(SessionGoalStore.class)
+    public SessionGoalStore sessionGoalStore(JdbcTemplate jdbc,
+                                             ObjectProvider<MeterRegistry> meterRegistry) {
+        return new JdbcSessionGoalStore(jdbc, meterRegistry.getIfAvailable());
+    }
+
+    /**
+     * 三个目标工具（{@code get_goal} / {@code create_goal} / {@code update_goal}）。
+     *
+     * <p><b>不跟着 run 存储进退</b>：目标挂在会话上，run 关掉之后"这一段对话在往哪儿走"
+     * 照样成立。这也是它与原来那个 {@code update_plan} 最实质的区别——
+     * 那个工具跟着 {@code claw4j.run.enabled} 一起消失，而目标不该因为关了记账就没了。
+     */
+    @Bean
+    @ConditionalOnMissingBean(GoalTools.class)
+    public GoalTools goalTools(SessionGoalStore goals) {
+        return new GoalTools(goals);
+    }
+
+    /** 三个目标工具的权限。动作名与工具名同值，**不复用 read**：它们改的是这一段对话的走向，不是业务表。 */
+    @Bean
+    public ToolPermissionRegistry goalPermissionRegistry() {
+        return ToolPermissionRegistry.of(GoalTools.permissions());
+    }
+
+    /**
+     * 三个目标工具的档位：{@link ToolTier#MINIMAL}。
+     *
+     * <p>它们不碰业务表、不出网，读写的都是"这一段对话自己的状态"——与召回同一个档。
+     * 归进更高的档会让"只聊天"的部署丢掉目标，而目标恰恰是纯聊天场景最需要的那件东西
+     * （一段要做很多轮的活）。
+     */
+    @Bean
+    public ToolTierRegistry goalTierRegistry() {
+        return ToolTierRegistry.sameFor(List.of(GoalTools.GET, GoalTools.CREATE, GoalTools.UPDATE),
+                ToolTier.MINIMAL);
     }
 
     /**

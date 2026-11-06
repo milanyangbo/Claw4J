@@ -445,7 +445,7 @@ class ApplicationAssemblyTest {
         // 自己注入的那一个。P09 的用例里那个 "toolSearchTool" 是桩，不是真实 bean。
         assertThat(toolCatalog.names())
                 .as("清单来自容器里所有工具来源：示例业务工具与平台工具都在，说明这一份就是模型那一份")
-                .contains("querySales", "systemStatus", "update_plan");
+                .contains("querySales", "systemStatus", "get_goal");
         assertThat(toolCatalog.profile().tier())
                 .as("默认档位是 full：升级前后清单一样，这是 P09 定下的默认")
                 .isEqualTo(ToolTier.FULL);

@@ -8,6 +8,9 @@ import io.github.claw4j.agent.run.Budget;
 import io.github.claw4j.agent.run.DeliveryTarget;
 import io.github.claw4j.agent.run.Run;
 import io.github.claw4j.agent.run.RunStatus;
+import io.github.claw4j.agent.goal.GoalStatus;
+import io.github.claw4j.agent.goal.SessionGoal;
+import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.run.RunStore;
 import io.github.claw4j.agent.run.Step;
 import io.github.claw4j.agent.run.StepInput;
@@ -48,6 +51,7 @@ import reactor.core.publisher.Flux;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -375,37 +379,6 @@ class ChatPipelineTest {
         assertThat(sent.getLast()).contains("把三张表的口径对齐").contains("第 1 步").contains("继续");
     }
 
-    /**
-     * A03 的判据：接上时提示词里带着<b>计划，以及还剩哪几步没做</b>。
-     *
-     * <p>会话被压过之后，模型手里的上下文里没有计划，这段 recap 是"还剩什么"唯一的来源。
-     * 缺了它的表现不是答不上来，而是<b>把第 2 步重做一遍</b>——
-     * 那看起来跟"接着做"一模一样，只有对照计划才看得出。
-     */
-    @Test
-    @DisplayName("接上时提示词里带着计划与还剩哪几步：第 2 步标了已做就不会重做")
-    void resumeFeedsThePlanAndWhatIsLeftIntoThePrompt() {
-        FakeRuns runs = new FakeRuns();
-        List<String> sent = new ArrayList<>();
-        FixedChatModel model = new FixedChatModel(prompt -> {
-            sent.add(prompt.getInstructions().stream()
-                    .map(each -> each.getText() == null ? "" : each.getText())
-                    .reduce("", String::concat));
-            return answer("接着做第三步");
-        });
-        ChatClientAgentPort port = port(model, runs);
-
-        String runId = port.reply(message("chat-1", "把三张表的口径对齐")).runId();
-        runs.setPlan(runId, List.of("对齐订单表", "对齐退款表", "对齐优惠券表"));
-        runs.markPlan(runId, 2, StepStatus.DONE);
-        port.reply(continuation("chat-1", "继续", runId));
-
-        assertThat(sent.getLast()).contains("计划（共 3 步，还有 2 步没做）")
-                .contains("第 2 步 [已做] 对齐退款表")
-                .contains("第 3 步 [待做] 对齐优惠券表")
-                .contains("继续");
-    }
-
     /** 光有 runId 拿不到别人的事：接不上时另开一个，绝不把别人的事继续下去。 */
     @Test
     @DisplayName("别人的 runId 接不上：另开一个 run，那一句也不会记到对方的事上")
@@ -552,10 +525,109 @@ class ChatPipelineTest {
         return port(model, List.of(), READS_EVERYTHING);
     }
 
+    @Test
+    @DisplayName("活跃目标每回合进提示词，暂停之后不进；/goal 命令本身不调模型")
+    void onlyAnActiveGoalIsInjectedIntoEveryTurn() {
+        InMemoryGoals goals = new InMemoryGoals();
+        List<String> sent = new ArrayList<>();
+        FixedChatModel model = new FixedChatModel(prompt -> {
+            sent.add(prompt.getInstructions().stream()
+                    .map(each -> each.getText() == null ? "" : each.getText())
+                    .reduce("", String::concat));
+            return answer("好");
+        });
+        ChatClientAgentPort port = port(model, new FakeRuns(), goals);
+
+        port.reply(message("chat-1", "/goal 让 CI 变绿"));
+        assertThat(model.prompts())
+                .as("/goal 是命令：不进模型、不占一次调用（OpenClaw 的纯命令消息绕过队列和模型）")
+                .isEmpty();
+
+        port.reply(message("chat-1", "现在到哪一步了"));
+        assertThat(sent.getLast()).contains("活跃目标：让 CI 变绿");
+
+        port.reply(message("chat-1", "/goal pause"));
+        assertThat(model.prompts()).as("/goal pause 同样不调模型").hasSize(1);
+        port.reply(message("chat-1", "接着说"));
+        assertThat(sent.getLast())
+                .as("暂停之后不再注入。只判\"有没有目标\"的话，用户按了暂停、界面上写着已暂停，"
+                        + "下一轮模型还在往那个方向推进")
+                .doesNotContain("活跃目标：");
+
+        port.reply(message("chat-1", "/goal resume"));
+        port.reply(message("chat-1", "接着说"));
+        assertThat(sent.getLast()).as("恢复之后重新注入").contains("活跃目标：让 CI 变绿");
+    }
+
     private static ChatClientAgentPort port(FixedChatModel model, RunStore runs) {
+        return port(model, runs, null);
+    }
+
+    private static ChatClientAgentPort port(FixedChatModel model, RunStore runs,
+                                            SessionGoalStore goals) {
         return new ChatClientAgentPort(
                 client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))), List.of()),
-                null, runs);
+                null, runs, null, null, null, null, null, null, goals);
+    }
+
+    /**
+     * 内存版目标存储：这一层只验"哪一行进提示词"，所以只实现被调到的那几个方法。
+     *
+     * <p><b>为什么不共用一份</b>：{@code claw4j-agent} 的测试文件位已经用满 10 个
+     * （门禁按 {@code src/test} 下的 {@code *.java} 数，辅助类也占位），
+     * 而 {@code ToolGovernanceTest} 需要的是另一套语义（改写、用量）。两份各自很小，
+     * 共用要在两处之间传一个"语义更宽的替身"，反而更容易让一边的断言依赖另一边的实现。
+     */
+    private static final class InMemoryGoals implements SessionGoalStore {
+
+        private static final Instant NOW = Instant.parse("2026-11-06T02:00:00Z");
+
+        private final Map<String, SessionGoal> rows = new HashMap<>();
+
+        @Override
+        public Optional<SessionGoal> of(String sessionKey) {
+            return Optional.ofNullable(rows.get(sessionKey));
+        }
+
+        @Override
+        public Optional<SessionGoal> start(String sessionKey, String objective, Long tokenBudget) {
+            if (rows.containsKey(sessionKey)) {
+                return Optional.empty();
+            }
+            return Optional.of(put(new SessionGoal(sessionKey, GoalStatus.ACTIVE, objective, null,
+                    tokenBudget, 0, 1, NOW, NOW)));
+        }
+
+        @Override
+        public Optional<SessionGoal> edit(String sessionKey, String objective) {
+            throw new UnsupportedOperationException("这一层不测改写");
+        }
+
+        @Override
+        public Optional<SessionGoal> setStatus(String sessionKey, GoalStatus status, String note) {
+            SessionGoal current = rows.get(sessionKey);
+            if (current == null || current.status() == GoalStatus.COMPLETE) {
+                return Optional.empty();
+            }
+            return Optional.of(put(new SessionGoal(sessionKey, status, current.objective(), note,
+                    current.tokenBudget(), current.tokensUsed(), current.revision() + 1,
+                    current.createdAt(), NOW)));
+        }
+
+        @Override
+        public void addTokens(String sessionKey, long tokens) {
+            throw new UnsupportedOperationException("账在票 04 记");
+        }
+
+        @Override
+        public boolean clear(String sessionKey) {
+            return rows.remove(sessionKey) != null;
+        }
+
+        private SessionGoal put(SessionGoal goal) {
+            rows.put(goal.sessionKey(), goal);
+            return goal;
+        }
     }
 
     /**
@@ -668,23 +740,7 @@ class ChatPipelineTest {
          * <b>不模仿"重写后旧版不再被读到"</b>——那是 SQL 里的 {@code plan_ref} 切法，
          * 由 {@code RunSchemaSqlTest} 在真库上钉住；这里够让 recap 跑起来就行。
          */
-        @Override
-        public List<Step> planOf(String runId) {
-            return stepsOf(runId).stream().filter(step -> step.kind() == StepKind.PLAN).toList();
-        }
 
-        @Override
-        public Optional<List<Step>> setPlan(String runId, List<String> items) {
-            if (degraded) {
-                return Optional.empty();
-            }
-            List<Step> written = new ArrayList<>();
-            for (String item : items) {
-                append(new StepInput(runId, StepKind.PLAN, item, null, null, StepStatus.PENDING))
-                        .ifPresent(written::add);
-            }
-            return Optional.of(List.copyOf(written));
-        }
 
         /**
          * 内存版用量：与 {@code JdbcRunStore} 一样，读不到（这个 run 不在）是空。
@@ -702,18 +758,6 @@ class ChatPipelineTest {
             return Optional.of(now);
         }
 
-        @Override
-        public Optional<Step> markPlan(String runId, int ordinal, StepStatus status) {
-            List<Step> plan = planOf(runId);
-            if (ordinal < 1 || ordinal > plan.size()) {
-                return Optional.empty();
-            }
-            Step target = plan.get(ordinal - 1);
-            Step updated = new Step(target.runId(), target.seq(), target.kind(), target.input(),
-                    target.toolNames(), target.resultSummary(), status, target.createdAt());
-            steps.set(steps.indexOf(target), updated);
-            return Optional.of(updated);
-        }
 
         @Override
         public void suspend(String runId) {

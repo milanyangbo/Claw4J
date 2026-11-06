@@ -333,38 +333,4 @@ public class RunPersistenceConfiguration {
         return ToolTierRegistry.sameFor(ScheduleTools.permissions().keySet(), ToolTier.MESSAGING);
     }
 
-    /**
-     * 计划工具：模型用它把"打算怎么干"写进 run，也用它把某一步标成已做或跳过。
-     *
-     * <p>注册成单个 {@code ToolCallback} 而不是 provider：它是<b>一个</b>工具，
-     * 写哪一版计划由参数决定（与委派同一个形状）。
-     */
-    @Bean
-    public ToolCallback planToolCallback(RunStore runs) {
-        return new UpdatePlanTool(runs);
-    }
-
-    /**
-     * 计划工具的权限登记。
-     *
-     * <p><b>不用 {@code @ConditionalOnMissingBean(ToolPermissionRegistry.class)}</b>：
-     * 那个条件的语义是"容器里有了就让位"，而鉴权 Advisor 消费的是一张表的<b>列表</b>——
-     * 三个来源各登记各的时，后处理的那一个会静默不注册，它的工具从此一律按"未登记"被拒。
-     */
-    @Bean
-    public ToolPermissionRegistry runPlanPermissionRegistry() {
-        return ToolPermissionRegistry.of(Map.of(UpdatePlanTool.TOOL_NAME, UpdatePlanTool.permission()));
-    }
-
-    /**
-     * 计划工具的档位：{@link ToolTier#MINIMAL}。
-     *
-     * <p>它写的是"打算怎么干"，落在自己的 run 上，既不出网也不碰别人的数据。
-     * 把它归进更高的档会让"只聊天"的部署失去外置计划的能力——
-     * 而那正是长对话不丢线索的机制，与部署做不做业务无关。
-     */
-    @Bean
-    public ToolTierRegistry runPlanTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(UpdatePlanTool.TOOL_NAME), ToolTier.MINIMAL);
-    }
 }

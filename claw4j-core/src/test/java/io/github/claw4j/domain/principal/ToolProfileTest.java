@@ -30,7 +30,7 @@ class ToolProfileTest {
     /** 生产上的形状：每个工具一个值，各模块各登记各的。 */
     private static List<ToolTierRegistry> registries() {
         return List.of(
-                ToolTierRegistry.sameFor(Set.of("toolSearchTool", "systemStatus", "update_plan",
+                ToolTierRegistry.sameFor(Set.of("toolSearchTool", "systemStatus", "get_goal",
                         "recall_session"), ToolTier.MINIMAL),
                 ToolTierRegistry.sameFor(Set.of("querySales", "sendMail", "delegate_task"),
                         ToolTier.MESSAGING),
@@ -39,7 +39,7 @@ class ToolProfileTest {
     }
 
     private static final List<String> MANIFEST = List.of(
-            "toolSearchTool", "systemStatus", "update_plan", "recall_session",
+            "toolSearchTool", "systemStatus", "get_goal", "recall_session",
             "querySales", "sendMail", "delegate_task",
             "run_script", "propose_script",
             "echo", "serverTime");
@@ -68,7 +68,7 @@ class ToolProfileTest {
                 new ToolProfile(ToolTier.MESSAGING, Set.of(), Set.of()).select(MANIFEST, registries());
 
         // ADR-0020 的原话：把 run_script 拿掉，读消息与查表都不该受影响。
-        assertEquals(List.of("toolSearchTool", "systemStatus", "update_plan", "recall_session",
+        assertEquals(List.of("toolSearchTool", "systemStatus", "get_goal", "recall_session",
                 "querySales", "sendMail", "delegate_task"), selection.kept());
         // 挡掉的原因要分得清：这四个是档位不够，不是被 deny 排除的。
         assertEquals(List.of("run_script", "propose_script", "echo", "serverTime"), selection.byTier());
@@ -80,7 +80,7 @@ class ToolProfileTest {
         ToolProfile.Selection selection =
                 new ToolProfile(ToolTier.MINIMAL, Set.of(), Set.of()).select(MANIFEST, registries());
 
-        assertEquals(List.of("toolSearchTool", "systemStatus", "update_plan", "recall_session"),
+        assertEquals(List.of("toolSearchTool", "systemStatus", "get_goal", "recall_session"),
                 selection.kept());
     }
 

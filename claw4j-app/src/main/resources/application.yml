@@ -115,7 +115,9 @@ claw4j:
       #   delegate_task   委派给子 Agent。委派不提权：子 Agent 用父的身份，照样过鉴权看表
       #   read_system     看 JVM/容器指标。不是业务数据，也不是"能读表的人"就该看的运维信息
       #   recall_session  读自己的历史。不复用 read："能不能回忆"与"能不能查销售单"是两件事
-      #   update_plan     改自己这一件事（run）的计划。写的是 run 的 step，不是业务表
+      #   get_goal        看这一段对话的目标：状态、内容、用量。目标是会话状态，不是业务表
+      #   create_goal     给这一段对话定目标。已有目标时会失败——那是不静默覆盖的保证
+      #   update_goal     把目标标成达成或阻塞。暂停/恢复/清除/改写都不归模型，那是人的按钮
       #   schedule_task   定一个"以后按点做"的任务（P05）。给它是安全的：任务到点按创建者
       #                   **当时**的权限跑，所以它永远不比这个人现在能做的更多
       #   list_schedules  看自己有哪些定时任务
@@ -130,7 +132,8 @@ claw4j:
         read-only:
           tables: ["*"]
           actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session",
-                    "update_plan", "schedule_task", "list_schedules", "cancel_schedule"]
+                    "get_goal", "create_goal", "update_goal",
+                    "schedule_task", "list_schedules", "cancel_schedule"]
         # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"
         guest:
           tables: ["region"]

@@ -3,6 +3,11 @@ package io.github.claw4j.app;
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.goal.GoalStatus;
+import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
+import io.github.claw4j.agent.goal.SessionGoal;
+import io.github.claw4j.agent.goal.SessionGoalStore;
+import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.run.Budget;
 import io.github.claw4j.agent.run.JdbcRunStore;
 import io.github.claw4j.agent.run.Run;
@@ -15,7 +20,6 @@ import io.github.claw4j.agent.run.StepKind;
 
 import java.time.Instant;
 import io.github.claw4j.agent.run.StepStatus;
-import io.github.claw4j.agent.run.UpdatePlanTool;
 import io.github.claw4j.agent.session.ConversationPointerStore;
 import io.github.claw4j.agent.session.JdbcConversationPointerStore;
 import io.github.claw4j.agent.session.SessionResetProperties;
@@ -87,6 +91,7 @@ class RunSchemaSqlTest {
 
     @BeforeEach
     void freshTables() {
+        jdbc.update("delete from claw4j_session.conversation_goal");
         jdbc.update("delete from claw4j_session.conversation_pointer");
         jdbc.update("delete from claw4j_run.approval_request");
         jdbc.update("delete from claw4j_run.agent_step");
@@ -231,124 +236,93 @@ class RunSchemaSqlTest {
                 .isEqualTo("suspended");
     }
 
-    // ---------------------------------------------------------------- 计划外置（A03）
+    // ---------------------------------------------------------------- step 的状态约束（V7）
 
     /**
      * V7 那条按 kind 分支的约束。
      *
-     * <p>它挡的不是"写错字"，是两种读法的混淆：一件已经发生的事不能被标成待做，
-     * 而计划的一步也没有"失败"这回事——没做就是待做，做了就是已做。
-     * 这两句的下一步动作完全不同（接着往下做 vs 重试）。
+     * <p>它挡的不是"写错字"，是两种读法的混淆：一件已经发生的事不能被标成待做。
+     * "待做"是计划才有的状态，而计划那条路已经随 ADR-0027 换成会话目标了——
+     * 约束仍然留着：库里还有历史的 plan 行，约束对它们照样成立。
      */
     @Test
-    @DisplayName("计划能写待做与跳过；模型轮仍然只能是成了还是没成")
-    void planStatusIsAllowedOnlyForPlanSteps() {
+    @DisplayName("已经发生的一步不能是待做：待做是计划才有的状态")
+    void modelTurnsCannotBePending() {
         Run run = runs.start("u-1@fp-1", "fp-1", "goal").orElseThrow();
-
-        assertThat(runs.setPlan(run.id(), List.of("对齐订单表", "对齐退款表"))).isPresent();
-        assertThat(runs.markPlan(run.id(), 1, StepStatus.DONE)).isPresent();
-        assertThat(runs.markPlan(run.id(), 2, StepStatus.SKIPPED)).isPresent();
-        assertThat(runs.planOf(run.id())).extracting(Step::status)
-                .containsExactly(StepStatus.DONE, StepStatus.SKIPPED);
 
         assertThatThrownBy(() -> jdbc.update(
                 "insert into claw4j_run.agent_step (id, run_id, seq, kind, status)"
                         + " values ('s-turn-pending', ?, 90, 'model_turn', 'pending')", run.id()))
                 .as("已经发生的一步不能是待做")
                 .hasMessageContaining("ck_agent_step_status");
-        assertThatThrownBy(() -> jdbc.update(
-                "insert into claw4j_run.agent_step (id, run_id, seq, kind, status)"
-                        + " values ('s-plan-failed', ?, 91, 'plan', 'failed')", run.id()))
-                .as("计划的一步没有失败：没做就是待做")
-                .hasMessageContaining("ck_agent_step_status");
     }
+
+    // ---------------------------------------------------------------- 会话目标（ADR-0027）
 
     /**
-     * 计划内序号不等于 {@code seq}：模型手里的"第 2 步"是清单里的第二个。
+     * 目标挂在会话上（{@code claw4j_session}），不是挂在 run 上。
      *
-     * <p>这两者在计划没被重写过时恰好相等，所以这里<b>先把一轮模型回答插进去</b>把两者顶开——
-     * 相等的时候这条用例验不出任何东西。
+     * <p>这里的四条约束各有各的失败长相：状态词表错了是"存下一个没人认得的态"，
+     * 空白目标错了是注入那一行变成"活跃目标： — 推进目标…"（看起来一切正常），
+     * 预算 0 错了是"第一轮就预算受限"，主键错了是"一个会话两个目标、注入哪一行看运气"。
      */
     @Test
-    @DisplayName("计划按清单里的第几个标状态：不是 seq，换一个 store 读也照样")
-    void planIsMarkedByItsPositionInTheListNotBySeq() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "把三张表的口径对齐").orElseThrow();
-        runs.append(new StepInput(run.id(), StepKind.MODEL_TURN, "第一轮", null, "答一", StepStatus.DONE));
+    @DisplayName("六态之外写不进去；空白目标、0 预算、同一会话第二行都被库拒绝")
+    void goalsAreSessionStateWithAClosedVocabulary() {
+        jdbc.update("insert into claw4j_session.conversation_goal"
+                + " (session_key, status, objective) values ('k-a', 'active', '让 CI 变绿')");
 
-        RunStore restarted = new JdbcRunStore(jdbc);
-        restarted.setPlan(run.id(), List.of("对齐订单表", "对齐退款表", "对齐优惠券表"));
-        restarted.markPlan(run.id(), 1, StepStatus.DONE);
-
-        assertThat(restarted.planOf(run.id()))
-                .as("计划里只有计划那三步，不含模型轮")
-                .extracting(Step::input)
-                .containsExactly("对齐订单表", "对齐退款表", "对齐优惠券表");
-        assertThat(restarted.planOf(run.id())).extracting(Step::status)
-                .containsExactly(StepStatus.DONE, StepStatus.PENDING, StepStatus.PENDING);
-        assertThat(jdbc.queryForObject(
-                "select status from claw4j_run.agent_step where run_id = ? and seq = 1",
-                String.class, run.id()))
-                .as("seq = 1 是那一轮模型回答，不该被当成计划的第一步")
-                .isEqualTo("done");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_session.conversation_goal"
+                + " (session_key, status, objective) values ('k-b', 'running', '错的态')"))
+                .as("六态是闭合词表：写成 running 会被库拒绝，而不是存下一个没人认得的状态")
+                .hasMessageContaining("conversation_goal_status_allowed");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_session.conversation_goal"
+                + " (session_key, status, objective) values ('k-c', 'active', '   ')"))
+                .as("空白目标不是空目标，是存了一个空格")
+                .hasMessageContaining("conversation_goal_objective_present");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_session.conversation_goal"
+                + " (session_key, status, objective, token_budget)"
+                + " values ('k-d', 'active', 'x', 0)"))
+                .as("0 预算的意思是「一点额度都不给」，不限额的正确写法是不写这一列")
+                .hasMessageContaining("conversation_goal_budget_positive");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_session.conversation_goal"
+                + " (session_key, status, objective) values ('k-a', 'active', '同一个键再来一行')"))
+                .as("主键就是「一个会话一个目标」：不用标志位，因为标志位写得出一行都不是当前")
+                .hasMessageContaining("conversation_goal_pkey");
     }
 
-    /** 重写计划不是删计划：旧的那版不再算数，但审计还得能回答"当时打算怎么干"。 */
     @Test
-    @DisplayName("重写计划：旧的那版不再被读到，但仍留在库里")
-    void rewritingAPlanSupersedesTheOldOneWithoutDeletingIt() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "goal").orElseThrow();
-        runs.setPlan(run.id(), List.of("第一步", "第二步", "第三步"));
-        runs.markPlan(run.id(), 1, StepStatus.DONE);
+    @DisplayName("换段就是换行：新段天然没有目标；edit 不动状态与用量；已完成是终态")
+    void aFreshSegmentHasNoGoalAndEditKeepsStatusAndUsage() {
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, null);
+        String first = SessionKeys.sessionIdOf("u-1@fp-1", "web", "c-1", "seg-1");
+        String second = SessionKeys.sessionIdOf("u-1@fp-1", "web", "c-1", "seg-2");
 
-        runs.setPlan(run.id(), List.of("换个做法", "再来一步"));
+        goals.start(first, "让 CI 变绿", 50_000L);
+        goals.addTokens(first, 1200);
+        goals.edit(first, "让 CI 变绿并更新文档");
 
-        assertThat(runs.planOf(run.id())).extracting(Step::input)
-                .as("读到的只有当前这一版")
-                .containsExactly("换个做法", "再来一步");
-        assertThat(jdbc.queryForList(
-                "select input from claw4j_run.agent_step where run_id = ? and kind = 'plan' order by seq",
-                String.class, run.id()))
-                .as("旧的没被删")
-                .containsExactly("第一步", "第二步", "第三步", "换个做法", "再来一步");
-        assertThat(runs.markPlan(run.id(), 3, StepStatus.DONE))
-                .as("当前这版只有两步，第 3 步不存在").isEmpty();
-    }
+        SessionGoal edited = goals.of(first).orElseThrow();
+        assertThat(edited.objective()).isEqualTo("让 CI 变绿并更新文档");
+        assertThat(edited.status()).as("改个措辞不该把状态也改了").isEqualTo(GoalStatus.ACTIVE);
+        assertThat(edited.tokensUsed())
+                .as("先 clear 再 start 的写法会让用量归零——改个措辞把额度还回去了")
+                .isEqualTo(1200);
+        assertThat(edited.tokenBudget()).isEqualTo(50_000L);
+        assertThat(edited.revision()).isEqualTo(2);
 
-    /**
-     * 工具这一层的闭环：写进去、标上、回执里说清"还剩哪几步没做"。
-     *
-     * <p>回执要写"还剩什么"而不是回一个 JSON 让模型自己去数——
-     * 那等于把"还剩什么没做"又交回给自然语言，正是 A03 要消掉的那个错。
-     */
-    @Test
-    @DisplayName("计划工具：写进当前这一轮的 run，回执里说清还剩哪几步")
-    void planToolWritesThePlanOfTheCurrentRun() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "把三张表的口径对齐").orElseThrow();
-        UpdatePlanTool tool = new UpdatePlanTool(runs);
-        ToolContext context = new ToolContext(Map.of(ContextKeys.RUN_ID, run.id()));
+        assertThat(goals.of(second))
+                .as("/new 换段之后这一行读不到：不需要谁去删，新段的键根本不是这一个")
+                .isEmpty();
+        assertThat(goals.of(first)).as("旧段那一行还在（等会话 TTL 一起清）").isPresent();
 
-        String written = tool.call("{\"steps\":[\"对齐订单表\",\"对齐退款表\",\"对齐优惠券表\"]}", context);
-        String marked = tool.call("{\"done\":[2]}", context);
-
-        assertThat(written).contains("计划共 3 步").contains("第 1 步 [待做]")
-                .contains("还剩 3 步没做");
-        assertThat(marked).contains("第 2 步 [已做]").contains("还剩 2 步没做：第 1、3 步");
-        // 判据是库里那三行，不是回执的措辞：回执只是给模型看的那一份。
-        // 标的是清单里第二个（"对齐退款表"），不是 seq = 2 那一行——
-        // 这一轮里两者恰好相等，所以"第 2 步"到底指什么由上面那条用例专门钉住。
-        assertThat(runs.planOf(run.id())).extracting(Step::status)
-                .containsExactly(StepStatus.PENDING, StepStatus.DONE, StepStatus.PENDING);
-    }
-
-    /** 没有 run 就没有可写的落点：拒绝，而不是退化成"写到一个写死的 run 上"。 */
-    @Test
-    @DisplayName("上下文里没有 run：工具拒绝，不写到别的 run 上")
-    void planToolRefusesWhenThereIsNoRunInContext() {
-        UpdatePlanTool tool = new UpdatePlanTool(runs);
-
-        assertThat(tool.call("{\"steps\":[\"一步\"]}")).contains("这一轮没有 run");
-        assertThat(tool.call("{\"steps\":[\"一步\"]}", new ToolContext(Map.of())))
-                .contains("这一轮没有 run");
+        goals.setStatus(first, GoalStatus.COMPLETE, "推上去了");
+        assertThat(goals.setStatus(first, GoalStatus.ACTIVE, null))
+                .as("已完成是终态：恢复它等于把一件收尾的事重新打开，那不是恢复、是新建")
+                .isEmpty();
+        assertThat(goals.start(second, "另一件事", null))
+                .as("新段是干净的，可以有自己的目标")
+                .isPresent();
     }
 
     /**

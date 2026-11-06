@@ -8,6 +8,7 @@ import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionMaintenance;
+import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.session.SessionCommand;
 import io.github.claw4j.agent.session.SessionMaintenanceProperties;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
@@ -432,6 +433,36 @@ class SessionMemoryTest {
                 .as("不是命令的斜杠开头一律当普通问题：别的命令不归我们解释")
                 .isEqualTo(new SessionCommand.Parsed("/etc 的权限", false));
         assertThat(SessionCommand.parse("上周成交额").reset()).isFalse();
+
+        // ---- /goal 命令族（ADR-0027）：整词、别名、未知动作词当新目标、多行原文保留。
+        assertThat(GoalCommand.parse("/goal")).contains(new GoalCommand.Show());
+        assertThat(GoalCommand.parse("/goal status")).contains(new GoalCommand.Show());
+        assertThat(GoalCommand.parse("/goal 让 CI 变绿"))
+                .as("/goal 后面任何不是已知动作词的文本都是新目标（OpenClaw 原文）")
+                .contains(new GoalCommand.Start("让 CI 变绿"));
+        assertThat(GoalCommand.parse("/goal create 让 CI 变绿"))
+                .as("create 是 start 的别名，与 /goal start 等价")
+                .contains(new GoalCommand.Start("让 CI 变绿"));
+        assertThat(GoalCommand.parse("/goal done 已推上去"))
+                .as("done 是 complete 的别名")
+                .contains(new GoalCommand.Complete("已推上去"));
+        assertThat(GoalCommand.parse("/goal blocked 等 CI 环境"))
+                .contains(new GoalCommand.Block("等 CI 环境"));
+        assertThat(GoalCommand.parse("/goal edit 让 CI 变绿并更新文档"))
+                .contains(new GoalCommand.Edit("让 CI 变绿并更新文档"));
+        assertThat(GoalCommand.parse("/goal start a\n  b\n    c"))
+                .as("多行目标原样保留：折成空格会让一份清单变成一段读不懂的散文")
+                .contains(new GoalCommand.Start("a\n  b\n    c"));
+        assertThat(GoalCommand.parse("/goals 是什么"))
+                .as("前缀匹配会让一个普通问题被当成命令，而用户看到的是「我的问题它没回答」")
+                .isEmpty();
+        assertThat(GoalCommand.parse("/goal edit"))
+                .as("认出来了但参数不对：说清用法，而不是静默建一个空目标")
+                .hasValueSatisfying(command ->
+                        assertThat(command).isInstanceOf(GoalCommand.Invalid.class));
+        assertThat(SessionCommand.parse("/goal pause").reset())
+                .as("/goal 不是 /new：它不换段")
+                .isFalse();
     }
 
     private static ConversationPointers pointersAt(MemoryPointers store, Instant now, ZoneId zone) {

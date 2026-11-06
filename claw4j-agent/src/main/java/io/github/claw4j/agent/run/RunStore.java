@@ -194,32 +194,6 @@ public interface RunStore {
     List<Step> stepsOf(String runId);
 
     /**
-     * 这个 run <b>当前这版</b>的计划，按计划内顺序（seq 升序）。
-     * 没有计划时是空列表，不是 null——"没有计划"是常态，不是异常。
-     *
-     * <p><b>只返回当前这一版</b>：计划被重写之后旧的那版仍然在库里（审计要能回答
-     * "当时打算怎么干"），但"还剩什么没做"只能有一个答案。
-     * 哪一版是当前的由 {@code agent_run.plan_ref} 记着（V7 的注释）。
-     */
-    List<Step> planOf(String runId);
-
-    /**
-     * 整体重写这个 run 的计划。
-     *
-     * <p><b>重写而不是追加</b>：模型改主意时给的是"现在打算这么做的完整清单"。
-     * 追加两份清单的后果是"还剩什么没做"读到两个答案，
-     * 而那两个答案看起来都对——这正是"计划放在上下文里"会出的那个错的库上版本。
-     *
-     * <p><b>旧的那版不删</b>：删掉的话审计就少了一段"当时打算怎么干"，
-     * 而这张表存在的理由之一就是能回答这个问题（P07 的审计投影读的就是它）。
-     * 旧版只是不再被 {@link #planOf} 返回。
-     *
-     * @param items 按顺序写的每一步；调用方保证非空、无空白项
-     * @return 写入后的这版计划。空表示没记下来（与 {@link #append} 同一个降级口径）
-     */
-    Optional<List<Step>> setPlan(String runId, List<String> items);
-
-    /**
      * 这个 run 已经用掉的量（A04）：工具调用次数、token、耗时三项。
      *
      * <p><b>空表示"读不到"，不表示"没用掉"</b>：没有这个 run、或者存储降级，
@@ -244,15 +218,5 @@ public interface RunStore {
      */
     Optional<Budget> charge(String runId, int toolCalls, long tokens, long millis);
 
-    /**
-     * 把计划里的第 {@code ordinal} 步改成 {@code status}。
-     *
-     * <p><b>序号是计划内序号（从 1 开始），不是 {@code seq}</b>：计划被重写过之后
-     * 它的 seq 从当时那一步接着往下走，而模型手里的"第 2 步"指的是清单里的第二个。
-     * 让它去猜落库序号，等于把编号这件事推回给自然语言。
-     *
-     * @return 改后的那一步。没有这一步（序号越界）、或没记下来，都是空——
-     *         调用方对两者的动作一样（告诉模型"没能标上"）
-     */
-    Optional<Step> markPlan(String runId, int ordinal, StepStatus status);
+
 }
