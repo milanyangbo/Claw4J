@@ -2,6 +2,7 @@ package io.github.claw4j.agent.advisor;
 
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.CallFingerprint;
+import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.ApprovalLedger;
@@ -18,6 +19,7 @@ import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
 import org.springframework.ai.chat.client.advisor.api.StreamAdvisorChain;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -366,14 +368,27 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
         if (audit == null) {
             return;
         }
-        Principal principal = principalOf(context);
-        String runId = runIdOf(context);
         if (OUTCOME_NEEDS_APPROVAL.equals(denial.outcome())) {
-            audit.awaitingApproval(runId, principal, denial.tool(), denial.args(),
-                    denial.approvalId(), denial.text());
-        } else {
-            audit.rejected(runId, principal, denial.tool(), denial.args(), denial.text());
+            // 等审批不写审计（ADR-0027）：那件事的真相在 approval_request 一张表里
+            // （谁提的、批没批、谁批的、什么时候）。写两遍的代价是"今天有几条被拒"
+            // 要 union 两张表，而两张迟早对不上。
+            return;
         }
+        audit.rejected(scopeOf(context), denial.tool(), denial.args());
+    }
+
+    /** 被拦下来的那一次落在谁、哪一轮、哪段会话上。取不到就为空，审计照样写。 */
+    private static AuditEvent.Scope scopeOf(Map<String, Object> context) {
+        return AuditEvent.Scope.of(runIdOf(context), sessionKeyOf(context), principalOf(context), null);
+    }
+
+    /**
+     * 这一轮属于哪段会话。为 null 表示这条 advisor 链上没带会话标识——
+     * 那时审计仍有 runId 与 actor，按会话查不到，但"谁让什么工具做了什么"还在。
+     */
+    private static String sessionKeyOf(Map<String, Object> context) {
+        Object value = context == null ? null : context.get(ChatMemory.CONVERSATION_ID);
+        return value instanceof String key && !key.isBlank() ? key : null;
     }
 
     /**

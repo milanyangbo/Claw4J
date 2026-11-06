@@ -5,8 +5,9 @@ import io.github.claw4j.agent.approval.ApprovalProperties;
 import io.github.claw4j.agent.approval.ApprovalService;
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
 import io.github.claw4j.agent.approval.RunApprovalGate;
+import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
-import io.github.claw4j.agent.audit.AuditRetention;
+import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
@@ -108,29 +109,29 @@ public class RunPersistenceConfiguration {
     }
 
     /**
-     * 审计的落点（P07）：一次工具调用一行，写在 {@code agent_step} 上。
+     * 审计账本（ADR-0027 决定二）：一行 = 一次动作的开始或结束，元数据 only。
      *
-     * <p><b>为什么跟着 run 存储一起装</b>：审计行就是 step，没有 run 存储就没有可写的行。
-     * 关掉这一层时两个接缝拿到的都是 null——判定照常，只是事后查不到
+     * <p><b>它不再跟着 run 存储一起装</b>：审计与 run 是两件事——run 只是一轮的句柄，
+     * 而审计要回答"谁在什么时候让谁做了什么"。所以它自己的开关是 {@code claw4j.audit.enabled}，
+     * 自己的上限是 30 天 / 10 万行，不随 {@code claw4j.run.enabled} 一起消失。
+     */
+    @Bean
+    @ConditionalOnMissingBean(AuditLedger.class)
+    public AuditLedger auditLedger(JdbcTemplate jdbc, AuditProperties properties,
+                                   ObjectProvider<MeterRegistry> registry) {
+        return new AuditLedger(jdbc, registry.getIfAvailable(), properties.isEnabled());
+    }
+
+    /**
+     * 审计的规则层：什么时候该记一条什么事件、审批与执行怎么配对。
+     *
+     * <p>它缺席时两个接缝拿到的都是 null——判定照常，只是事后查不到
      * （与审批、预算、投递同一个判断：能力不在场，而不是假装它在）。
      */
     @Bean
     @ConditionalOnMissingBean(ToolCallAudit.class)
-    public ToolCallAudit toolCallAudit(RunStore runs) {
-        return new ToolCallAudit(runs);
-    }
-
-    /**
-     * 保留期到了就清（P07）：90 天这件事只有配一个数是不够的，得有人去删。
-     *
-     * <p>与缓存、会话那两个清理任务同一个形状（"配了 TTL 不等于会清理"已经踩过三次）。
-     * 删的是 run 与审批——step 跟着 run 级联，于是不会出现"有审计行、但它指向的执行记录没了"。
-     */
-    @Bean
-    @ConditionalOnMissingBean(AuditRetention.class)
-    public AuditRetention auditRetention(JdbcTemplate jdbc, AuditProperties properties,
-                                         ObjectProvider<MeterRegistry> registry) {
-        return new AuditRetention(jdbc, properties, registry.getIfAvailable());
+    public ToolCallAudit toolCallAudit(AuditLedger ledger) {
+        return new ToolCallAudit(ledger);
     }
 
     /**

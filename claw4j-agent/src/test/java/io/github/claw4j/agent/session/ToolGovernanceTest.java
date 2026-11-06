@@ -1,6 +1,9 @@
 package io.github.claw4j.agent.session;
 
 import io.github.claw4j.agent.approval.CallFingerprint;
+import io.github.claw4j.agent.audit.AuditAction;
+import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.run.Budget;
 import io.github.claw4j.agent.run.Run;
@@ -64,199 +67,192 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class ToolGovernanceTest {
 
-    // ---------------------------------------------------------------- 审计那一半（P07）
+    // ---------------------------------------------------------------- 审计那一半（ADR-0027）
 
     private static final String RUN = "run-1";
+
+    private static final String SESSION = "claw4j:user:u-analyst@fp-1:web:chat-a";
 
     private static final String TOOL = "querySales";
 
     private static final Principal CALLER =
             Principal.of("u-analyst", "analyst", Set.of("sales_order"), Set.of("read"));
 
-    private RecordingStore runs;
+    /** 真正落下来的事件。审计的形状变了（ADR-0027）：断言看事件，不看 step 行。 */
+    private List<AuditEvent> events;
 
     private ToolCallAudit audit;
 
     @BeforeEach
     void setUp() {
-        runs = new RecordingStore();
-        audit = new ToolCallAudit(runs);
+        events = new ArrayList<>();
+        audit = new ToolCallAudit(event -> {
+            events.add(event);
+            return Optional.of((long) events.size());
+        });
+    }
+
+    private static AuditEvent.Scope scope() {
+        return new AuditEvent.Scope(RUN, SESSION, null, "u-analyst", "analyst", "web");
     }
 
     @Test
-    @DisplayName("真跑了一次：一行 tool_calls，带人、角色、工具与「执行过」这个决定")
-    void anExecutedCallLandsAsOneRow() {
-        audit.executed(RUN, CALLER, TOOL, "{\"region\":\"华东\"}", null);
+    @DisplayName("真跑了一次：两条事件（开始 + 成功），同一次调用指纹相同")
+    void anExecutedCallLandsAsTwoEvents() {
+        audit.toolStarted(scope(), TOOL, "{\"region\":\"华东\"}");
+        audit.toolFinished(scope(), TOOL, "{\"region\":\"华东\"}", null);
 
-        StepInput row = runs.only();
-        assertThat(row.kind()).isEqualTo(StepKind.TOOL_CALLS);
-        assertThat(row.status()).isEqualTo(StepStatus.DONE);
-        assertThat(row.toolNames()).isEqualTo(TOOL);
-        assertThat(row.audit().actor()).isEqualTo("u-analyst");
-        assertThat(row.audit().role()).isEqualTo("analyst");
-        assertThat(row.audit().outcome()).isEqualTo(StepAudit.EXECUTED);
-        assertThat(row.runId()).isEqualTo(RUN);
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0).action()).isEqualTo(AuditAction.TOOL_ACTION_STARTED);
+        assertThat(events.get(1).action()).isEqualTo(AuditAction.TOOL_ACTION_FINISHED);
+        assertThat(events.get(1).status()).isEqualTo(AuditStatus.SUCCEEDED);
+        assertThat(events.get(0).callFingerprint())
+                .as("两条是同一次调用：指纹算的是同一份参数")
+                .isNotNull()
+                .isEqualTo(events.get(1).callFingerprint());
+        assertThat(events.get(1).scope().actor()).isEqualTo("u-analyst");
+        assertThat(events.get(1).scope().actorRole()).isEqualTo("analyst");
+        assertThat(events.get(1).toolName()).isEqualTo(TOOL);
     }
 
     /**
-     * 审计只留摘要与指纹：完整参数不进库。
+     * 参数原文与摘要都不进事件。
      *
-     * <p>把 {@code args_summary} 换成一整列 {@code text}、或者干脆把参数原文塞进
-     * {@code input}，这条会红——而那正是"审计变成业务数据第二份副本"的入口。
+     * <p>把摘要当"给人看的一格"加回来，这条会红——而它正是"审计变成业务数据第二份副本"的入口。
+     * OpenClaw 的原话是 never stores prompts, messages, tool arguments, tool results。
      */
     @Test
-    @DisplayName("超长参数只留前 200 字符与一个指纹：不成为另一张业务数据副本")
-    void theSummaryIsTruncatedAndTheRawArgumentsNeverLand() {
-        String verbatim = "{\"filter\":\"" + "华东区".repeat(120) + "\"}";
+    @DisplayName("参数原文与摘要都不进事件：审计不成为业务数据的第二份副本")
+    void theRawArgumentsNeverLand() {
+        String verbatim = "{\"phone\":\"13800138000\",\"note\":\"" + "华东区".repeat(120) + "\"}";
 
-        audit.executed(RUN, CALLER, TOOL, verbatim, null);
+        audit.toolStarted(scope(), TOOL, verbatim);
+        audit.toolFinished(scope(), TOOL, verbatim, null);
 
-        StepInput row = runs.only();
-        assertThat(row.input()).as("step 的 input 那一列装的是入站内容，工具参数不该钻进去").isNull();
-        assertThat(row.resultSummary()).as("产出侧同样不落原文").isNull();
-        assertThat(row.audit().argsSummary()).hasSize(ToolCallAudit.SUMMARY_CHARS + 1).endsWith("…");
-        assertThat(verbatim).startsWith(row.audit().argsSummary().substring(0, 20));
-        assertThat(row.audit().argsDigest())
-                .as("指纹是 64 位十六进制：能对上审批那条，但反推不回参数")
-                .isEqualTo(CallFingerprint.of(TOOL, verbatim).orElseThrow());
-    }
-
-    @Test
-    @DisplayName("摘要先脱敏再截断：截在前面的号码不能因为被截断就绕过掩码")
-    void theSummaryIsMaskedBeforeItIsTruncated() {
-        String phone = "13800138000";
-
-        audit.executed(RUN, CALLER, TOOL, "{\"phone\":\"" + phone + "\"}", null);
-
-        assertThat(runs.only().audit().argsSummary()).doesNotContain(phone);
+        assertThat(events).allSatisfy(event -> {
+            assertThat(event.toolName()).isEqualTo(TOOL);
+            assertThat(event.errorCode()).isNull();
+            assertThat(event.approvalId()).isNull();
+            assertThat(event.scope().sessionKey()).isEqualTo(SESSION);
+        });
+        assertThat(events.toString())
+                .as("指纹在，原文不在：一条贴了号码的参数不该整段进库")
+                .doesNotContain("13800138000")
+                .doesNotContain("华东区");
     }
 
     /**
-     * "这次调用是哪次批准的"：兑现那一侧记下的编号必须落到执行这一行上。
+     * "这次调用是哪次批准的"：兑现那一侧记下的编号必须落到执行事件上。
      *
-     * <p>三条断言各拦一种写法：① 编号根本不落（答不出"谁批的"）；② 同一轮里两次同参数调用
-     * 双双带上同一个编号（"一条批准只放行一次执行"在审计里成了两个答案）；
+     * <p>三条断言各拦一种写法：① 编号根本不落；② 同一轮里两次同参数调用双双带上同一个编号；
      * ③ 键里不带 {@code runId}（批准从另一轮漏过来，看起来完全正常）。
      */
     @Test
-    @DisplayName("兑现过的批准只落在它自己那一轮的执行行上，而且只落一次")
+    @DisplayName("兑现过的批准只落在它自己那一轮的执行事件上，而且只落一次")
     void aGrantLandsOnlyOnItsOwnExecution() {
         String args = "{\"to\":\"zhang@example.com\"}";
         String digest = CallFingerprint.of("sendEmail", args).orElseThrow();
 
         audit.granted(RUN, "sendEmail", digest, "approval-7");
-        audit.executed(RUN, CALLER, "sendEmail", args, null);
-        audit.executed(RUN, CALLER, "sendEmail", args, null);
-        audit.executed("run-2", CALLER, "sendEmail", args, null);
+        audit.toolFinished(scope(), "sendEmail", args, null);
+        audit.toolFinished(scope(), "sendEmail", args, null);
+        audit.toolFinished(new AuditEvent.Scope("run-2", SESSION, null, "u-analyst", "analyst", "web"),
+                "sendEmail", args, null);
 
-        assertThat(runs.rows).hasSize(3);
-        assertThat(runs.rows.get(0).audit().approvalId()).isEqualTo("approval-7");
-        assertThat(runs.rows.get(1).audit().approvalId())
+        assertThat(events).hasSize(3);
+        assertThat(events.get(0).approvalId()).isEqualTo("approval-7");
+        assertThat(events.get(1).approvalId())
                 .as("第二条同参数调用不该再搭上那条批准")
                 .isNull();
-        assertThat(runs.rows.get(2).audit().approvalId())
+        assertThat(events.get(2).approvalId())
                 .as("兑换记在别的 run 上不串味：键里带 runId")
                 .isNull();
     }
 
     @Test
-    @DisplayName("被拒：一行 rejected，带工具名与角色，理由是回给模型的那句话")
-    void aRejectedCallLandsWithItsReason() {
-        audit.rejected(RUN, CALLER, TOOL, "{\"region\":\"华东\"}",
-                "没有权限：角色 analyst 不允许访问表 sales_order（工具 querySales）。");
+    @DisplayName("被拒：一条 blocked，没有「开始」那一条，理由是错误码不是文案")
+    void aRejectedCallIsOneBlockedEvent() {
+        audit.rejected(scope(), TOOL, "{\"region\":\"华东\"}");
 
-        StepInput row = runs.only();
-        assertThat(row.audit().outcome()).isEqualTo(StepAudit.REJECTED);
-        assertThat(row.status()).isEqualTo(StepStatus.FAILED);
-        assertThat(row.toolNames()).isEqualTo(TOOL);
-        assertThat(row.audit().role()).isEqualTo("analyst");
-        assertThat(row.resultSummary()).startsWith("没有权限").contains("sales_order");
-        assertThat(row.audit().approvalId()).isNull();
-    }
-
-    @Test
-    @DisplayName("停在等审批：一行 awaiting_approval，带着审批编号，状态不是「等审批」")
-    void anAwaitingCallLandsWithTheApprovalId() {
-        audit.awaitingApproval(RUN, CALLER, "sendEmail", "{\"to\":\"zhang@example.com\"}",
-                "approval-9", "这个动作要先审批：工具 sendEmail 会执行 send_email 动作。");
-
-        StepInput row = runs.only();
-        assertThat(row.audit().outcome()).isEqualTo(StepAudit.AWAITING_APPROVAL);
-        assertThat(row.audit().approvalId()).isEqualTo("approval-9");
-        assertThat(row.status())
-                .as("等审批这个状态属于 approval 那一类 step，它会被结论改掉；"
-                        + "这一行记的是「这次调用没发生」，不该跟着变")
-                .isEqualTo(StepStatus.FAILED);
+        assertThat(events).hasSize(1);
+        AuditEvent event = events.getFirst();
+        assertThat(event.action()).isEqualTo(AuditAction.TOOL_ACTION_FINISHED);
+        assertThat(event.status()).isEqualTo(AuditStatus.BLOCKED);
+        assertThat(event.errorCode()).isEqualTo(AuditEvent.POLICY_DENIED);
+        assertThat(event.toolName()).isEqualTo(TOOL);
+        assertThat(event.scope().actorRole()).isEqualTo("analyst");
     }
 
     /**
-     * 工具自己抛了：那是"跑过但失败了"，与"被拦住"是两件事——前者修工具，后者改配置。
+     * 等审批一条都不写。
      *
-     * <p>只记异常类型不记 message：message 里常有数据（一条贴了 SQL 的报错就够搬走一张表）。
+     * <p>这一条守的是"同一个事实只在一处"：谁提的、批没批、谁批的，都在 {@code approval_request}
+     * 那一行上。审计再记一遍，第一个代价是"今天有几条被拒"要 union 两张表，
+     * 第二个代价是两张迟早对不上。
      */
     @Test
-    @DisplayName("工具抛异常：executed + failed，只记类型不记 message")
+    @DisplayName("等审批：一条审计事件都不写——那件事的真相在 approval_request 上")
+    void anAwaitingCallWritesNothing() {
+        audit.granted(RUN, "sendEmail", "digest", "approval-9");
+
+        assertThat(events).as("兑现只是记一条待配对的线索，不是一条事件").isEmpty();
+    }
+
+    @Test
+    @DisplayName("工具抛异常：结束事件是 failed + tool_error，异常类型名不进库")
     void aFailingToolIsStillAnExecution() {
-        audit.executed(RUN, CALLER, TOOL, "{}", "IllegalStateException");
+        audit.toolFinished(scope(), TOOL, "{}", "IllegalStateException");
 
-        StepInput row = runs.only();
-        assertThat(row.audit().outcome()).isEqualTo(StepAudit.EXECUTED);
-        assertThat(row.status()).isEqualTo(StepStatus.FAILED);
-        assertThat(row.resultSummary()).isEqualTo("工具抛出 IllegalStateException");
+        AuditEvent event = events.getFirst();
+        assertThat(event.status()).isEqualTo(AuditStatus.FAILED);
+        assertThat(event.errorCode()).isEqualTo(AuditEvent.TOOL_ERROR);
+        assertThat(event.toString())
+                .as("类型名是开放的，而 error_code 那一列是闭合口径；要查类型看 trace")
+                .doesNotContain("IllegalStateException");
     }
 
     @Test
-    @DisplayName("参数收不全（流式被拦在授权那一道）：指纹留空，摘要照记")
-    void aHalfReceivedArgumentLeavesNoDigest() {
-        audit.rejected(RUN, CALLER, TOOL, "{\"region\":", "没有权限：角色 analyst 不允许执行 read 动作。");
+    @DisplayName("参数收不全（流式被拦在授权那一道）：指纹留空，事件照写")
+    void aHalfReceivedArgumentLeavesNoFingerprint() {
+        audit.rejected(scope(), TOOL, "{\"region\":");
 
-        StepInput row = runs.only();
-        assertThat(row.audit().argsDigest()).isNull();
-        assertThat(row.audit().argsSummary()).isEqualTo("{\"region\":");
+        assertThat(events.getFirst().callFingerprint()).isNull();
+        assertThat(events.getFirst().status()).isEqualTo(AuditStatus.BLOCKED);
     }
 
     @Test
-    @DisplayName("不在任何一个 run 里：不写（没有可挂的落点），也不抛")
-    void nothingIsWrittenOutsideARun() {
-        assertThatCode(() -> audit.executed(null, CALLER, TOOL, "{}", null)).doesNotThrowAnyException();
-        assertThatCode(() -> audit.rejected(" ", CALLER, TOOL, "{}", "没有权限"))
+    @DisplayName("没有 runId 也写：「发生过」比字段齐全重要，只是那一格空")
+    void anEventWithoutARunIsStillWritten() {
+        audit.toolFinished(AuditEvent.Scope.empty(), TOOL, "{}", null);
+
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().scope().runId()).isNull();
+        assertThat(events.getFirst().toolName()).isEqualTo(TOOL);
+    }
+
+    @Test
+    @DisplayName("没有账本：整体空转，判定不受影响")
+    void withoutALedgerItSimplyWritesNothing() {
+        ToolCallAudit withoutLedger = new ToolCallAudit(null);
+
+        assertThatCode(() -> withoutLedger.toolFinished(scope(), TOOL, "{}", null))
                 .doesNotThrowAnyException();
-
-        assertThat(runs.rows).isEmpty();
-    }
-
-    @Test
-    @DisplayName("没有 run 存储：整体空转，判定不受影响")
-    void withoutAStoreItSimplyWritesNothing() {
-        ToolCallAudit withoutStore = new ToolCallAudit(null);
-
-        assertThatCode(() -> withoutStore.executed(RUN, CALLER, TOOL, "{}", null))
-                .doesNotThrowAnyException();
-        assertThatCode(() -> withoutStore.rejected(RUN, null, TOOL, "{}", "没有权限"))
+        assertThatCode(() -> withoutLedger.rejected(scope(), TOOL, "{}"))
                 .doesNotThrowAnyException();
     }
 
     /**
-     * 存储写的时候炸了（不是降级成空值，而是真抛）：仍然不该让一次工具调用失败。
-     *
-     * <p>审计是记账，不是回答的前置条件——与 {@code JdbcRunStore} 那句
-     * "库没迁也不能把提问打成 500" 是同一个判断，只是这里连它自己那一层也兜住了。
+     * 账本写的时候炸了：仍然不该让一次工具调用失败。审计是记账，不是回答的前置条件。
      */
     @Test
     @DisplayName("写审计时抛异常：吞掉，不影响这次工具调用")
-    void aBrokenStoreNeverBreaksTheCall() {
-        ToolCallAudit broken = new ToolCallAudit(new ThrowingStore());
+    void aBrokenLedgerNeverBreaksTheCall() {
+        ToolCallAudit broken = new ToolCallAudit(event -> {
+            throw new IllegalStateException("库挂了");
+        });
 
-        assertThatCode(() -> broken.executed(RUN, CALLER, TOOL, "{}", null))
+        assertThatCode(() -> broken.toolFinished(scope(), TOOL, "{}", null))
                 .doesNotThrowAnyException();
-    }
-
-    @Test
-    @DisplayName("决定只有三种：编一个第四种在构造时就被拒，而不是等库里的 check 报错")
-    void anUnknownOutcomeIsRejectedBeforeItReachesTheDatabase() {
-        assertThatThrownBy(() -> new StepAudit("u-1", "analyst", "denied", null, null, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("决定");
     }
 
     // ---------------------------------------------------------------- 召回那一半（只在本段对话里）

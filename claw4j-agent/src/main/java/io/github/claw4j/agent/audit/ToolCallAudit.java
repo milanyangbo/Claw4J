@@ -1,14 +1,6 @@
 package io.github.claw4j.agent.audit;
 
 import io.github.claw4j.agent.approval.CallFingerprint;
-import io.github.claw4j.agent.advisor.PiiRedactor;
-import io.github.claw4j.agent.run.RunStore;
-import io.github.claw4j.agent.run.Step;
-import io.github.claw4j.agent.run.StepAudit;
-import io.github.claw4j.agent.run.StepInput;
-import io.github.claw4j.agent.run.StepKind;
-import io.github.claw4j.agent.run.StepStatus;
-import io.github.claw4j.domain.principal.Principal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,46 +11,32 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 一次工具调用的审计行：谁来、以什么角色、调了什么工具、参数摘要与指纹、谁批的、什么决定（P07）。
+ * 审计的规则层（ADR-0027 决定二）：把"什么时候该记一条什么事件"这件事收在一处，
+ * 落库交给 {@link AuditLedger}。
  *
- * <p><b>它是 P07 唯一的写入口</b>，两个接缝都调它：鉴权 Advisor 在被拒与等审批时调
- * {@link #rejected} / {@link #awaitingApproval}，工具回调用 {@link #executed}。
- * 同一件事只有一个类在写，才有资格说"审计与执行是同一份真相"（ADR-0023）。
+ * <p><b>它记的是事件，不是"某次调用的行"</b>：一次工具调用产生两条
+ * （{@code tool.action.started} 与 {@code tool.action.finished}），一次运行两条
+ * （{@code agent.run.started} 与 {@code agent.run.finished}）。
+ * 这是 OpenClaw 的形状，也是审计能回答"跑了多久"的前提——只有结束那一条时，
+ * 两次调用的先后只能靠时间戳猜。
  *
- * <p><b>它不建表</b>：写的是一行 {@code agent_step}（kind = {@code tool_calls}），
- * 加上 {@link StepAudit} 那几个字段。读的时候走 {@code claw4j_run.audit_trail} 这个视图——
- * 视图把 step、run、approval 接在一起，于是"这次调用是哪次批准的、谁批的、结论是什么"
- * 一条 select 就能答。
+ * <p><b>等审批不写审计</b>：那件事的真相在 {@code approval_request} 一张表里
+ * （谁提的、批没批、谁批的、什么时候）。同一个事实写两遍，第一个代价是
+ * "今天有几条被拒"要 union 两张表，第二个代价是两张表迟早对不上。
  *
- * <p><b>只落摘要与指纹，不落原文</b>：参数原文里可能有凭据与个人信息（ADR-0016 同一条纪律），
- * 审计存的是 {@code sha256(工具名 + 规范化参数)} 与前 200 字符的脱敏摘要。
- * 摘要不是为了给人读全文，是为了让审批人与审计人认得出"这是一次查表"。
+ * <p><b>只写元数据</b>：参数原文、结果、异常消息都不进来。指纹用
+ * {@link CallFingerprint}，与审批那一侧同一个函数——于是"这次执行是哪次批准的"
+ * 能直接对上，而参数本身不进库。
  *
- * <p><b>唯一一处靠进程内状态的地方</b>：{@link #granted} 把"刚兑现的那条批准"
- * 记下来，等执行那一下由 {@link #executed} 取走——因为兑现发生在 Advisor 里，
- * 而执行发生在工具回调里，这两处拿不到同一份上下文（ToolContext 是每次执行现造的，
- * Advisor 的 param 进不去）。三条代价，写在这里而不是留给下一个人猜：
- *
- * <ul>
- *   <li>只在单进程内成立。多副本部署时兑现与执行可能落在不同进程上，
- *       那一行的 {@code approval_id} 会是空的——审计仍然有这一行，只是少了那条线。</li>
- *   <li>兑现了但没执行（流被掐断、进程重启）会留下一个不会被取走的条目。
- *       所以有 TTL 与容量上限：过期的先清，超上限整份清掉。丢了只影响那一条线。</li>
- *   <li>键里带 runId、工具名与指纹三样。只带工具名的话，同一轮里两个同工具不同参数的调用
- *       会互相顶掉；带上指纹之后，"同一次调用"这个判定与审批那一侧是同一个函数。</li>
- * </ul>
- *
- * <p><b>写不进去不抛</b>：审计是记账，不是回答的前置条件（与 {@code JdbcRunStore} 同一个口径）。
- * 降级的后果是"这一行没记上"，而不是让一次正常的工具调用失败。
+ * <p><b>唯一一处靠进程内状态的地方</b>：{@link #granted} 把"刚兑现的那条批准"记下来，
+ * 等执行那一下取走。兑现发生在 Advisor 里、执行发生在工具回调里，两处拿不到同一份上下文。
+ * 代价与之前一样，写在字段上而不是留给下一个人猜：只在单进程内成立、兑现了没执行会留下
+ * 一个不会被取走的条目、键里带 runId + 工具名 + 指纹三样。
  */
 public class ToolCallAudit {
 
-    /** 参数摘要的字符上限。与库里那一列（varchar(256)）留出余量的同一口径。 */
-    public static final int SUMMARY_CHARS = 200;
-
     /**
-     * 兑现与执行之间的那条线能活多久。取十分钟，与默认的审批有效期同一个量级：
-     * 一次兑现之后还没执行的调用，本来也不该在很久之后才出现。
+     * 兑现与执行之间的那条线能活多久。取十分钟，与默认的审批有效期同一个量级。
      */
     private static final Duration HANDOFF_TTL = Duration.ofMinutes(10);
 
@@ -70,25 +48,85 @@ public class ToolCallAudit {
 
     private static final Logger log = LoggerFactory.getLogger(ToolCallAudit.class);
 
-    /** 为 null 表示这个部署没有 run 存储：审计无处可写，于是什么都不写（而不是造一个假存储）。 */
-    private final RunStore runs;
+    /** 为 null 表示这个部署没有账本：审计无处可写，于是什么都不写（而不是造一个假账本）。 */
+    private final AuditSink ledger;
 
     /** 兑现过的批准，等着被执行那一下取走。键是 runId + 工具名 + 指纹。 */
     private final Map<String, Pending> granted = new ConcurrentHashMap<>();
 
-    public ToolCallAudit(RunStore runs) {
-        this.runs = runs;
+    public ToolCallAudit(AuditSink ledger) {
+        this.ledger = ledger;
     }
 
     /** 一条兑现过的批准，带着它的到期点（过了就不再被取走）。 */
     private record Pending(String approvalId, Instant expiresAt) {
     }
 
+    /** 一轮开始。 */
+    public Optional<Long> runStarted(AuditEvent.Scope scope) {
+        return write(AuditEvent.runStarted(scope));
+    }
+
+    /** 一轮结束。{@code status} 与 {@code errorCode} 是这一轮的结局。 */
+    public Optional<Long> runFinished(AuditEvent.Scope scope, AuditStatus status, String errorCode) {
+        return write(AuditEvent.runFinished(scope, status, errorCode));
+    }
+
     /**
-     * 记下"这一条批准刚刚被兑现了"，等执行那一下把它写进审计行。
+     * 一次工具调用开始。
      *
-     * <p>没有 runId 时不记：不在一个 run 里的调用（子 Agent 那一层还没有 runId）本来就不会
-     * 落审计行，记下来也只会占一个永远不会被取走的槽。
+     * <p><b>被策略挡住的调用不该调它</b>：那种调用根本没有开始，只有一条
+     * {@code finished / blocked}。两条都写的话，配额统计会把"想调但没调成"算成"调过"。
+     *
+     * @return 落下来的账本序号；空表示没写进去
+     */
+    public Optional<Long> toolStarted(AuditEvent.Scope scope, String toolName, String argsJson) {
+        if (isBlank(toolName)) {
+            return Optional.empty();
+        }
+        return write(AuditEvent.toolStarted(scope, toolName, fingerprint(toolName, argsJson)));
+    }
+
+    /**
+     * 一次工具调用结束（成功或抛异常）。
+     *
+     * @param failure 工具抛出的异常类型名；null 表示正常返回。
+     *                只用来判"成没成"，**类型名本身不落库**——那一列是归一化错误码，
+     *                而类型名是开放的。要查是哪个异常，trace 的 span 上有。
+     * @return 落下来的账本序号；空表示没写进去
+     */
+    public Optional<Long> toolFinished(AuditEvent.Scope scope, String toolName, String argsJson,
+                                       String failure) {
+        if (isBlank(toolName)) {
+            return Optional.empty();
+        }
+        String digest = fingerprint(toolName, argsJson);
+        return write(AuditEvent.toolFinished(scope, toolName, digest,
+                failure == null ? AuditStatus.SUCCEEDED : AuditStatus.FAILED,
+                failure == null ? null : AuditEvent.TOOL_ERROR,
+                take(scope == null ? null : scope.runId(), toolName, digest)));
+    }
+
+    /**
+     * 被拦下来了，而且再等也不会通过：没权限、或者这个工具的权限根本没登记。
+     *
+     * <p><b>只写一条 {@code finished / blocked}</b>：动作没有开始，就没有开始那一条。
+     * 回给模型的那句话（"缺 tools 权限"）不进来——审计记的是归一化错误码，
+     * 那句话的语气会随文案改动而变，把它写进"为什么没成"那一格，三个月后按它做统计就废了。
+     */
+    public Optional<Long> rejected(AuditEvent.Scope scope, String toolName, String argsJson) {
+        if (isBlank(toolName)) {
+            return Optional.empty();
+        }
+        return write(AuditEvent.toolFinished(scope, toolName, fingerprint(toolName, argsJson),
+                AuditStatus.BLOCKED, AuditEvent.POLICY_DENIED, null));
+    }
+
+    /**
+     * 记下"这一条批准刚刚被兑现了"，等执行那一下把它写进结束事件。
+     *
+     * <p>没有 runId 时不记：不在一个 run 里的调用本来也不会落审计，记下来只占一个
+     * 永远不会被取走的槽。
      */
     public void granted(String runId, String toolName, String argsDigest, String approvalId) {
         if (isBlank(runId) || isBlank(toolName) || isBlank(argsDigest) || isBlank(approvalId)) {
@@ -99,7 +137,7 @@ public class ToolCallAudit {
             if (granted.size() >= HANDOFF_LIMIT) {
                 // 清空而不是乱丢一条：这条线索没有"更重要"的那一条，而留一半只会让人以为它是完整的。
                 granted.clear();
-                log.info("审批与执行之间的待配对记录超过 {} 条，整份清掉；之后的审计行不会带审批编号",
+                log.info("审批与执行之间的待配对记录超过 {} 条，整份清掉；之后的审计事件不会带审批编号",
                         HANDOFF_LIMIT);
             }
         }
@@ -107,97 +145,23 @@ public class ToolCallAudit {
                 new Pending(approvalId, Instant.now().plus(HANDOFF_TTL)));
     }
 
-    /**
-     * 真跑了一次（工具自己抛了异常也算"跑过"：越权与报错是两件事，混在一起就分不出该改配置还是该修工具）。
-     *
-     * <p><b>返回落下来的那一行</b>（P14）：调用方要的是它的 {@code seq}。观测那一侧
-     * 把 {@code claw4j.step.seq} 写在工具 span 上，于是 trace 里的每一段都能按
-     * {@code (run_id, seq)} 反查到库里那一行——这是审计与观测**唯一**能对上号的地方，
-     * 也是这两件事仍然分开（表里不加 trace_id 列）的前提。
-     *
-     * <p>不返回 {@code seq} 的话，只能让 trace 里再存一份工具名加时间戳去猜，
-     * 而猜出来的对应关系在并发下会错位——错位的表现是"这一行审计对应到了别人的 span"，
-     * 它看起来完全正常。
-     *
-     * @param failure 工具抛出的异常类型名；null 表示正常返回。
-     *                只记类型不记 message：message 里常有数据（一条贴了 SQL 的报错就够搬走一张表）
-     * @return 落下来的那一行；空表示没落（没装存储、降级、或没有 runId）
-     */
-    public Optional<Step> executed(String runId, Principal principal, String toolName, String argsJson,
-                                   String failure) {
-        if (isBlank(runId) || isBlank(toolName)) {
-            return Optional.empty();
-        }
-        String digest = digestOf(toolName, argsJson);
-        return write(new StepInput(runId, StepKind.TOOL_CALLS, null, toolName,
-                failure == null ? null : "工具抛出 " + failure,
-                failure == null ? StepStatus.DONE : StepStatus.FAILED,
-                StepAudit.executed(userOf(principal), roleOf(principal), digest,
-                        summaryOf(argsJson), take(runId, toolName, digest))));
-    }
-
-    /**
-     * 被拦下来了，而且再等也不会通过：没权限、或者这个工具的权限根本没登记。
-     *
-     * @param reason 回给模型的那句话。它是我们自己的话（哪条不满足），不是业务数据，
-     *               所以可以整句进库——审计里那句"为什么"正是最常被查的一格
-     */
-    public void rejected(String runId, Principal principal, String toolName, String argsJson,
-                         String reason) {
-        String digest = digestOf(toolName, argsJson);
-        writeRefusal(runId, toolName, reason, StepAudit.rejected(
-                userOf(principal), roleOf(principal), digest, summaryOf(argsJson)));
-    }
-
-    /**
-     * 停在等人点头：这一行带着审批编号，批准之后它会被执行那一行接上。
-     *
-     * <p>status 记 {@link StepStatus#FAILED} 而不是 {@code awaiting}：
-     * "等审批"这个状态属于另一类 step（{@code approval}），而那一行会随着结论被改掉；
-     * 这一行记的是"这次调用没有发生"，它不该随着谁点了按钮而变。
-     */
-    public void awaitingApproval(String runId, Principal principal, String toolName, String argsJson,
-                                 String approvalId, String reason) {
-        String digest = digestOf(toolName, argsJson);
-        writeRefusal(runId, toolName, reason, StepAudit.awaiting(
-                userOf(principal), roleOf(principal), digest, summaryOf(argsJson), approvalId));
-    }
-
-    private void writeRefusal(String runId, String toolName, String reason, StepAudit audit) {
-        if (isBlank(runId) || isBlank(toolName)) {
-            return;
-        }
-        write(new StepInput(runId, StepKind.TOOL_CALLS, null, toolName, reason,
-                StepStatus.FAILED, audit));
-    }
-
-    /**
-     * 落一行。写不进去只记一条 debug：审计缺一行不该把一次调用打成失败。
-     *
-     * @return 落下来的那一行（调用方拿它的 seq）；空表示没落
-     */
-    private Optional<Step> write(StepInput input) {
-        if (runs == null) {
+    /** 写一条。写不进去只记一条 debug：审计缺一行不该把一次调用打成失败。 */
+    private Optional<Long> write(AuditEvent event) {
+        if (ledger == null) {
             return Optional.empty();
         }
         try {
-            Optional<Step> written = runs.append(input);
-            if (written.isEmpty()) {
-                log.debug("审计这一行没落下去：run={} tool={}", input.runId(), input.toolNames());
-            }
-            return written;
-        }
-        catch (RuntimeException failure) {
-            // 存储降级（库没迁、连接断了）在 store 那一层已经消化成空值；
-            // 能走到这里的是更意外的东西，仍然不该影响这一次工具调用。
-            log.debug("写审计行时出错：run={} tool={}", input.runId(), input.toolNames(), failure);
+            return ledger.record(event);
+        } catch (RuntimeException failure) {
+            // 账本自己已经吃掉了存储异常；能走到这里的是更意外的东西，仍然不该影响这一次调用。
+            log.debug("写审计事件时出错：{}", event.action().column(), failure);
             return Optional.empty();
         }
     }
 
     /** 取走那条"刚兑现的批准"。过期的当作没有：它已经不在有效期附近了，配上去只会误导。 */
     private String take(String runId, String toolName, String digest) {
-        if (isBlank(digest)) {
+        if (isBlank(runId) || isBlank(digest)) {
             return null;
         }
         Pending pending = granted.remove(key(runId, toolName, digest));
@@ -215,30 +179,8 @@ public class ToolCallAudit {
      * 参数指纹，与审批那条同一个函数。参数还没收全（流式下被拦在授权那一道）时为空——
      * 那时连"这一次是什么"都还说不清，记一个算出来的半截指纹比留空更糟。
      */
-    static String digestOf(String toolName, String argsJson) {
+    static String fingerprint(String toolName, String argsJson) {
         return CallFingerprint.of(toolName, argsJson).orElse(null);
-    }
-
-    /**
-     * 给人看的参数摘要：脱敏之后截断。
-     *
-     * <p>顺序与审批那一侧一致（先脱敏再截断）：反过来的话，一个手机号被截成两半，
-     * 两半都不再匹配号码规则，于是掩码失效、前半截原样进库。
-     */
-    static String summaryOf(String argsJson) {
-        if (argsJson == null || argsJson.isBlank()) {
-            return null;
-        }
-        String masked = PiiRedactor.mask(argsJson).strip();
-        return masked.length() <= SUMMARY_CHARS ? masked : masked.substring(0, SUMMARY_CHARS) + "…";
-    }
-
-    private static String userOf(Principal principal) {
-        return principal == null ? null : principal.userId();
-    }
-
-    private static String roleOf(Principal principal) {
-        return principal == null ? null : principal.role();
     }
 
     private static boolean isBlank(String value) {

@@ -1,14 +1,15 @@
 package io.github.claw4j.agent.observability;
 
 import io.github.claw4j.agent.ToolCallLog;
+import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.run.Budget;
 import io.github.claw4j.agent.run.RunBudget;
-import io.github.claw4j.agent.run.Step;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -187,12 +188,16 @@ public class MeteredToolCallback implements ToolCallback {
         }
         ToolCallLog.record(toolName);
         try (RunTracer.SpanScope span = openSpan()) {
+            // 开始那一条先写，结束那一条在两条出口各写一次：只有结束的话，
+            // "这个工具跑了多久"和"两个并发调用谁先开始"都只能靠时间戳猜。
+            AuditEvent.Scope scope = scopeOf(toolContext);
+            stampStep(span, toolStarted(scope, toolInput));
             try {
                 String result = delegate.call(toolInput, toolContext);
                 if (budget != null && runId != null) {
                     budget.chargeToolCall(runId);
                 }
-                stampStep(span, record(runId, toolContext, toolInput, null));
+                stampStep(span, toolFinished(scope, toolInput, null));
                 span.attribute(ATTR_OUTCOME, "ok");
                 count("ok");
                 return result;
@@ -200,7 +205,7 @@ public class MeteredToolCallback implements ToolCallback {
             catch (RuntimeException failure) {
                 // 抛异常也是一次"发生过的调用"：审计里它是 executed + failed，
                 // 与被拒绝（根本没执行）是两件事——修法与改配置完全不同。
-                stampStep(span, record(runId, toolContext, toolInput, failure.getClass().getSimpleName()));
+                stampStep(span, toolFinished(scope, toolInput, failure.getClass().getSimpleName()));
                 span.attribute(ATTR_OUTCOME, "error");
                 span.attribute(ATTR_ERROR_TYPE, failure.getClass().getSimpleName());
                 span.failed(failure);
@@ -224,24 +229,35 @@ public class MeteredToolCallback implements ToolCallback {
      * 而它看起来与"设成功了"一模一样——这类失败只会在别人抱怨"trace 里查不到对应审计行"时
      * 才被发现，那时离写出这行代码已经很久了。
      */
-    private static void stampStep(RunTracer.SpanScope span, Optional<Step> step) {
-        step.ifPresent(written -> span.attribute(ATTR_STEP_SEQ, Integer.toString(written.seq())));
+    private static void stampStep(RunTracer.SpanScope span, Optional<Long> seq) {
+        // 属性名不变（claw4j.step.seq）：它现在指的是审计账本序号，仍然是"这次调用在账本上的位置"。
+        seq.ifPresent(value -> span.attribute(ATTR_STEP_SEQ, Long.toString(value)));
+    }
+
+    private Optional<Long> toolStarted(AuditEvent.Scope scope, String toolInput) {
+        return audit == null ? Optional.empty() : audit.toolStarted(scope, toolName, toolInput);
+    }
+
+    private Optional<Long> toolFinished(AuditEvent.Scope scope, String toolInput, String failure) {
+        return audit == null ? Optional.empty() : audit.toolFinished(scope, toolName, toolInput, failure);
     }
 
     /**
-     * 落一行审计（P07），并把它交回去。
+     * 这一条事件的身份与位置。
      *
-     * <p>身份从工具上下文里取：入口把它与 runId 一起放进去了，而这里拿不到 Advisor 的上下文。
-     * 取不到身份时照样落一行——"有个工具跑了"本身就是审计要的事实，只是那一格没人。
+     * <p>身份从工具上下文里取：入口把 principal 与 runId 一起放进去了，而这里拿不到 Advisor 的上下文。
+     * 取不到身份时照样写——"有个工具跑了"本身就是审计要的事实，只是那一格没人。
      *
-     * @param failure 工具抛出的异常类型名；null 表示正常返回。只记类型不记 message
-     * @return 落下来的那一行；空表示没落（没装存储、降级、或读不到 runId）
+     * <p>通道留空：工具上下文里没有它，而为了填这一格去加一个 key，会让"审计"与"投递"
+     * 两条本来无关的线互相拉扯。按 runId / sessionKey 关联已经够查。
      */
-    private Optional<Step> record(String runId, ToolContext toolContext, String toolInput, String failure) {
-        if (audit == null) {
-            return Optional.empty();
+    private static AuditEvent.Scope scopeOf(ToolContext toolContext) {
+        if (toolContext == null) {
+            return AuditEvent.Scope.empty();
         }
-        return audit.executed(runId, principalOf(toolContext), toolName, toolInput, failure);
+        Object session = toolContext.getContext().get(ChatMemory.CONVERSATION_ID);
+        String sessionKey = session instanceof String value && !value.isBlank() ? value : null;
+        return AuditEvent.Scope.of(runIdOf(toolContext), sessionKey, principalOf(toolContext), null);
     }
 
     private static Principal principalOf(ToolContext toolContext) {

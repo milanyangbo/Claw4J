@@ -61,6 +61,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -272,11 +273,14 @@ class ObservabilityTest {
         int turnSeq = seqOf(spanOf("model.turn"));
 
         assertThat(written).extracting(Step::kind)
-                .as("先落工具那一行，收尾时再落模型轮")
-                .containsExactly(StepKind.TOOL_CALLS, StepKind.MODEL_TURN);
-        assertThat(written.get(toolSeq - 1).kind()).isEqualTo(StepKind.TOOL_CALLS);
-        assertThat(written.get(turnSeq - 1).kind()).isEqualTo(StepKind.MODEL_TURN);
-        assertThat(turnSeq).as("写死成 1 就查到工具那一行了，这条会红").isEqualTo(2);
+                .as("工具不再写 step（审计走独立账本，ADR-0027）；这里只剩收尾那一行")
+                .containsExactly(StepKind.MODEL_TURN);
+        assertThat(toolSeq)
+                .as("工具 span 带的是审计账本序号，不是 step 序号")
+                .isPositive();
+        assertThat(turnSeq)
+                .as("模型轮那一格也换成账本序号：两个序号空间混着用，反查就只有一个方向成立")
+                .isGreaterThan(toolSeq);
     }
 
     @Test
@@ -289,7 +293,7 @@ class ObservabilityTest {
             public String call(String toolInput) {
                 throw new IllegalStateException("库挂了");
             }
-        }, null, null, new ToolCallAudit(runs), tracer);
+        }, null, null, new ToolCallAudit(event -> Optional.of(1L)), tracer);
 
         assertThatThrownBy(() -> failing.call("{}",
                 new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"))))
@@ -380,7 +384,8 @@ class ObservabilityTest {
      */
     private ChatClientAgentPort tracedPort(ChatModel model, RunStore runs, RunTracer tracer,
                                            ToolCallback... tools) {
-        ToolCallAudit audit = new ToolCallAudit(runs);
+        AtomicLong auditSeq = new AtomicLong();
+        ToolCallAudit audit = new ToolCallAudit(event -> Optional.of(auditSeq.incrementAndGet()));
         List<ToolCallback> wrapped = new ArrayList<>();
         for (ToolCallback tool : tools) {
             wrapped.add(new MeteredToolCallback(tool, registry, null, audit, tracer));
@@ -388,7 +393,7 @@ class ObservabilityTest {
         ChatClient client = ChatPipelineTest.clientBuilder(model)
                 .defaultToolCallbacks(wrapped)
                 .build();
-        return new ChatClientAgentPort(client, null, runs, null, null, tracer);
+        return new ChatClientAgentPort(client, null, runs, null, null, tracer, null, null, audit);
     }
 
     /**

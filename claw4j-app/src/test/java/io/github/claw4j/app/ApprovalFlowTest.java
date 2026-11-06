@@ -8,6 +8,7 @@ import io.github.claw4j.agent.approval.ApprovalService;
 import io.github.claw4j.agent.approval.CallFingerprint;
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
 import io.github.claw4j.agent.approval.RunApprovalGate;
+import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.run.JdbcRunStore;
@@ -472,22 +473,29 @@ class ApprovalFlowTest {
         harness.decider().decide(approvalId, "approver-1", true, null);
 
         assertThat(tool.calls()).isEqualTo(1);
-        Map<String, Object> executed = onlyAuditRow(first.runId(), "executed");
-        assertThat(executed.get("tool")).isEqualTo(TOOL);
+        Map<String, Object> executed = onlyAuditRow(first.runId(), "succeeded");
+        assertThat(executed.get("tool_name")).isEqualTo(TOOL);
         assertThat(executed.get("actor")).isEqualTo("u-mailer");
         assertThat(executed.get("actor_role")).isEqualTo("mailer");
         assertThat(executed.get("approval_id")).isEqualTo(approvalId);
-        assertThat(executed.get("approved_by")).as("视图把审批那一侧接了过来").isEqualTo("approver-1");
-        assertThat(executed.get("approval_status")).isEqualTo("granted");
-        assertThat(executed.get("args_digest"))
+        assertThat(executed.get("call_fingerprint"))
+                .as("指纹与审批那条同一个函数，于是「这次执行是哪次批准的」能直接对上")
                 .isEqualTo(CallFingerprint.of(TOOL, ARGS).orElseThrow());
-        assertThat((String) executed.get("args_summary"))
-                .as("摘要够认出这是一封发给谁的周报，但它是摘要不是原文")
-                .contains("zhang@example.com")
-                .hasSizeLessThanOrEqualTo(201);
+        assertThat(executed.toString())
+                .as("审计不存参数原文，也不存摘要：那是业务数据的第二份副本")
+                .doesNotContain("zhang@example.com");
+        assertThat(jdbc.queryForObject(
+                "select decided_by from claw4j_run.approval_request where id = ?",
+                String.class, approvalId))
+                .as("谁批的仍然查得到——在审批表上，不在审计里。审计不复制别处的真相")
+                .isEqualTo("approver-1");
 
-        Map<String, Object> awaiting = onlyAuditRow(first.runId(), "awaiting_approval");
-        assertThat(awaiting.get("approval_id")).as("停在谁身上也要查得到").isEqualTo(approvalId);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_run.audit_event"
+                        + " where run_id = ? and kind = 'tool_action'", Integer.class, first.runId()))
+                .as("等审批不写审计：那件事的真相在 approval_request 上。"
+                        + "两条 = 开始 + 成功，没有第三条「停在谁身上」")
+                .isEqualTo(2);
     }
 
     /**
@@ -508,14 +516,17 @@ class ApprovalFlowTest {
         OutboundMessage reply = harness.port().reply(harness.reader("查一下上周华东区成交额"));
 
         assertThat(tool.calls()).as("工具一次都不该执行").isZero();
-        Map<String, Object> refused = onlyAuditRow(reply.runId(), "rejected");
-        assertThat(refused.get("tool")).isEqualTo(TOOL);
+        Map<String, Object> refused = onlyAuditRow(reply.runId(), "blocked");
+        assertThat(refused.get("tool_name")).isEqualTo(TOOL);
         assertThat(refused.get("actor")).isEqualTo("u-analyst");
         assertThat(refused.get("actor_role")).isEqualTo("analyst");
         assertThat(refused.get("approval_id")).as("被拒绝的调用没有批准可指").isNull();
-        assertThat((String) refused.get("reason"))
-                .startsWith(AuthorizationAdvisor.DENIAL_PREFIX)
-                .contains("sales_order");
+        assertThat(refused.get("error_code"))
+                .as("归一化错误码而不是文案：文案改了统计就废")
+                .isEqualTo("policy_denied");
+        assertThat(refused.toString())
+                .as("理由原文不进库；要查拒在哪条权限上看 trace")
+                .doesNotContain("sales_order");
     }
 
     // ---------------------------------------------------------------- 脚手架
@@ -539,7 +550,7 @@ class ApprovalFlowTest {
         private final Map<String, ToolPermission> declared = new HashMap<>();
 
         /** 审计落点（P07）：与生产同一条路——工具外面包一层计量/审计的 callback。 */
-        private final ToolCallAudit audit = new ToolCallAudit(runs);
+        private final ToolCallAudit audit = new ToolCallAudit(new AuditLedger(jdbc, null));
 
         private ChatClientAgentPort port;
 
@@ -667,11 +678,12 @@ class ApprovalFlowTest {
      * <p>查的是 {@code claw4j_run.audit_trail} 而不是 {@code agent_step}：
      * 那一层视图就是"审计"在库里的形状（P07），用例跟着读的人走。
      */
-    private static Map<String, Object> onlyAuditRow(String runId, String outcome) {
+    private static Map<String, Object> onlyAuditRow(String runId, String status) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "select * from claw4j_run.audit_trail where run_id = ? and outcome = ? order by at",
-                runId, outcome);
-        assertThat(rows).as("这一件事应当正好有一行 %s", outcome).hasSize(1);
+                "select * from claw4j_run.audit_event"
+                        + " where run_id = ? and action = 'tool.action.finished' and status = ?"
+                        + " order by seq", runId, status);
+        assertThat(rows).as("这一件事应当正好有一条 %s 的结束事件", status).hasSize(1);
         return rows.getFirst();
     }
 

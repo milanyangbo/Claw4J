@@ -394,6 +394,7 @@ public class AgentAutoConfiguration {
                                ObjectProvider<RunDelivery> delivery,
                                ObjectProvider<RunTracer> tracer,
                                ObjectProvider<ConversationPointers> pointers,
+                               ObjectProvider<ToolCallAudit> audit,
                                AgentProperties properties) {
         // run、预算、投递都走 ObjectProvider 而不是直接注入：没配存储时它们是缺席而不是失败，
         // 门照常住着，只是"这件事做完了没有"没人记、也没人在看额度（与压缩器同一个判断）。
@@ -412,6 +413,6 @@ public class AgentAutoConfiguration {
         return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(), runs.getIfAvailable(),
                 budget.getIfAvailable(), delivery.getIfAvailable(),
                 tracer.getIfAvailable(() -> RunTracer.NONE), pointers.getIfAvailable(),
-                new ConversationLane(properties.laneWait()));
+                new ConversationLane(properties.laneWait()), audit.getIfAvailable());
     }
 }

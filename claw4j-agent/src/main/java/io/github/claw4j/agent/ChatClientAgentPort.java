@@ -19,6 +19,9 @@ import io.github.claw4j.agent.run.StepKind;
 import io.github.claw4j.agent.run.StepStatus;
 import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.SessionCompactor;
+import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.audit.AuditStatus;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.session.SessionCommand;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
@@ -163,6 +166,14 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      */
     private final ConversationLane lane;
 
+    /**
+     * 审计规则层（ADR-0027）：这一轮开始 / 结束各一条事件。
+     *
+     * <p>为 null 时一行都不写。它不是"可选优化"——没开审计的部署本来就该零写入，
+     * 造一个空实现去假装它在，会让"审计到底有没有生效"这个问题没有答案。
+     */
+    private final ToolCallAudit audit;
+
     public ChatClientAgentPort(ChatClient chatClient) {
         this(chatClient, null, null, null, null);
     }
@@ -203,6 +214,16 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
                                RunBudget budget, RunDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers, ConversationLane lane) {
+        this(chatClient, compactor, runs, budget, delivery, tracer, pointers, lane, null);
+    }
+
+    /**
+     * @param audit 审计规则层（ADR-0027）。为 null 表示这个部署没开审计：判定与回答照常，
+     *              只是事后查不到——与预算、投递同一个判断（能力不在场，不是假装它在）
+     */
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
+                               RunBudget budget, RunDelivery delivery, RunTracer tracer,
+                               ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
         this.runs = runs;
@@ -211,6 +232,7 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         this.tracer = tracer == null ? RunTracer.NONE : tracer;
         this.pointers = pointers;
         this.lane = lane;
+        this.audit = audit;
     }
 
     /**
@@ -359,6 +381,12 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         String masked = PiiRedactor.mask(parsed.text());
         Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
+        // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
+                message.channel());
+        if (audit != null) {
+            audit.runStarted(auditScope);
+        }
         // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal(), opened))) {
@@ -384,12 +412,15 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                             .chatResponse();
                     text = textOf(response);
                     log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
-                    stampTurn(turn, closeTurn(runId, masked, text, answeredAt,
+                    stampTurn(turn, closeTurn(runId, auditScope, masked, text, answeredAt,
                             tokensOf(response), elapsedMillis(startedAt)), response);
                 }
                 return new Turn(runId, text);
             } catch (RuntimeException | Error failure) {
                 run.failed(failure);
+                if (audit != null) {
+                    audit.runFinished(auditScope, AuditStatus.FAILED, null);
+                }
                 fail(runId);
                 throw failure;
             }
@@ -434,6 +465,11 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         String masked = PiiRedactor.mask(parsed.text());
         Opened opened = openRun(message, owner, sessionId, masked);
         String runId = opened == null ? null : opened.run().id();
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
+                message.channel());
+        if (audit != null) {
+            audit.runStarted(auditScope);
+        }
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal(), opened))) {
             Optional<Budget> overBudget = exhaustedSpent(runId);
@@ -460,12 +496,15 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                             .blockLast();
                     // 流式的 token 记 0：汇总 usage 只在最后一帧上，而它未必到得了这一层
                     // （与"不拿估算值冒充真实值"同一个口径）。耗时照记——它不需要模型报。
-                    stampTurn(turn, closeTurn(runId, masked, answer.toString(), addressOf(message),
+                    stampTurn(turn, closeTurn(runId, auditScope, masked, answer.toString(), addressOf(message),
                             0L, elapsedMillis(startedAt)), null);
                 } catch (RuntimeException | Error failure) {
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
                     turn.failed(failure);
                     run.failed(failure);
+                    if (audit != null) {
+                        audit.runFinished(auditScope, AuditStatus.FAILED, null);
+                    }
                     fail(runId);
                     throw failure;
                 }
@@ -541,6 +580,11 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                 .filter(id -> !id.isBlank())
                 .orElseGet(() -> SessionKeys.sessionIdOf(run.owner(), null, null));
         String prompt = recap(run, runs.stepsOf(runId)) + "[审批有结论] " + note;
+        // 续跑也是一轮：开始与结束各一条事件，与普通那一轮同一个口径。
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, principal.get(), null);
+        if (audit != null) {
+            audit.runStarted(auditScope);
+        }
         long startedAt = System.nanoTime();
         // 续跑也是一次"执行这件事"：单独一条 trace，但根还是 run。不包的话这一轮的
         // model.turn 会成为一条没有根的 trace——图上表现为"有个模型轮不知道属于哪件事"。
@@ -554,12 +598,15 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
                     String text = textOf(response);
                     // 这一轮没有"就地回答"的地址：没有人正盯着一个请求等结果，
                     // 于是结果按通知策略送到登记过的每一个地方（A05）。
-                    stampTurn(turn, closeTurn(runId, "[审批] " + note, text, null,
+                    stampTurn(turn, closeTurn(runId, auditScope, "[审批] " + note, text, null,
                             tokensOf(response), elapsedMillis(startedAt)), response);
                     return Optional.ofNullable(text);
                 } catch (RuntimeException | Error failure) {
                     turn.failed(failure);
                     span.failed(failure);
+                    if (audit != null) {
+                        audit.runFinished(auditScope, AuditStatus.FAILED, null);
+                    }
                     fail(runId);
                     log.error("审批放行后 run {} 的续跑失败", runId, failure);
                     return Optional.empty();
@@ -722,8 +769,8 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      * 这件事停在 {@link RunStatus#BUDGET_EXHAUSTED}——它与 done 的下一步完全不同
      * （追加预算继续 vs 没有了），混成一个状态的话没人知道该重试还是该换做法。
      */
-    private Optional<Step> closeTurn(String runId, String input, String answer, DeliveryTarget answeredAt,
-                                     long tokens, long millis) {
+    private Optional<Long> closeTurn(String runId, AuditEvent.Scope scope, String input, String answer,
+                                     DeliveryTarget answeredAt, long tokens, long millis) {
         if (runs == null || runId == null) {
             return Optional.empty();
         }
@@ -736,10 +783,12 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         // 也不记 model_turn：这一轮实际上没跑完，记一步"已做"会让 recap 里的进度
         // 比事实多一步（模型下一轮就会跳过那件没做完的事）。
         if (isSuspended(runId)) {
+            // 这一轮确实结束了（回给用户的是"我需要你批准"），所以审计要有一条结束事件——
+            // 只有开始没有结束的那一行，看的人分不出"跑了很久"与"进程没了"。
             log.debug("run {} 这一轮停在等审批，不收尾", runId);
-            return Optional.empty();
+            return finishAudit(scope, AuditStatus.SUCCEEDED, null);
         }
-        Optional<Step> written = runs.append(new StepInput(runId, StepKind.MODEL_TURN, input, null,
+        runs.append(new StepInput(runId, StepKind.MODEL_TURN, input, null,
                 summary(answer), StepStatus.DONE));
         if (budget != null) {
             budget.chargeTurn(runId, tokens, millis);
@@ -747,9 +796,8 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         Optional<Budget> spent = budget == null ? Optional.empty() : budget.spent(runId);
         if (spent.isPresent() && budget.exhausted(spent.get())) {
             runs.finish(runId, RunStatus.BUDGET_EXHAUSTED);
-            // 这一步是落下来的：span 上仍要带上它的序号——"这一轮把额度烧完了"正是
-            // 最想按 (run_id, seq) 回库核对的那一轮。
-            return written;
+            // span 上仍要带上账本序号——"这一轮把额度烧完了"正是最想回库核对的那一轮。
+            return finishAudit(scope, AuditStatus.FAILED, AuditEvent.BUDGET_EXHAUSTED);
         }
         // 全文进 run：step 上的那份是截断摘要，回答"这一步得到了什么"；
         // 查结果的人要的是完整答案，而异步场景里没有一次请求在等着接它（A05）。
@@ -757,7 +805,12 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
         if (delivery != null) {
             delivery.announce(runId, RunStatus.DONE, answer, answeredAt);
         }
-        return written;
+        return finishAudit(scope, AuditStatus.SUCCEEDED, null);
+    }
+
+    /** 收尾那条审计事件的账本序号。没开审计时为空，span 上就不带这一格。 */
+    private Optional<Long> finishAudit(AuditEvent.Scope scope, AuditStatus status, String errorCode) {
+        return audit == null ? Optional.empty() : audit.runFinished(scope, status, errorCode);
     }
 
     /** 这一轮里有没有人把这件事实停下来了。读不到 run 时按"没有"处理（照常收尾）。 */
@@ -870,8 +923,10 @@ public class ChatClientAgentPort implements AgentPort, RunResumer, RunLauncher {
      *
      * @param response 可为 null（流式那一侧拿不到汇总 usage）
      */
-    private static void stampTurn(RunTracer.SpanScope turn, Optional<Step> step, ChatResponse response) {
-        step.ifPresent(written -> turn.attribute(ATTR_STEP_SEQ, Integer.toString(written.seq())));
+    private static void stampTurn(RunTracer.SpanScope turn, Optional<Long> seq, ChatResponse response) {
+        // 这一格现在装的是审计账本序号（ADR-0027）：工具与模型轮落在同一个账本上，
+        // 于是"哪一段 span 对应账本哪一行"只有一个答案。以前它装的是 step 序号，工具与模型轮分属两处。
+        seq.ifPresent(value -> turn.attribute(ATTR_STEP_SEQ, Long.toString(value)));
         long tokens = tokensOf(response);
         if (tokens > 0) {
             turn.attribute(ATTR_TOKENS, Long.toString(tokens));

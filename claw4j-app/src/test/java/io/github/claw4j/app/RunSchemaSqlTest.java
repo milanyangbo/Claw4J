@@ -2,7 +2,7 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
-import io.github.claw4j.agent.audit.AuditRetention;
+import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.run.Budget;
 import io.github.claw4j.agent.run.JdbcRunStore;
 import io.github.claw4j.agent.run.Run;
@@ -103,7 +103,7 @@ class RunSchemaSqlTest {
                 "select table_name from information_schema.tables where table_schema = 'claw4j_run'"
                         + " order by table_name", String.class))
                 .containsExactly("agent_run", "agent_run_delivery", "agent_schedule", "agent_session_budget",
-                        "agent_step", "approval_request", "audit_trail");
+                        "agent_step", "approval_request", "audit_event", "audit_trail");
 
         // 约束不是装饰：没有它，任何字符串都能当状态写进去，
         // "做到第几步"会在某天读出一个没人认得的状态——那时候没人知道该重试还是该重开。
@@ -653,39 +653,53 @@ class RunSchemaSqlTest {
     }
 
     /**
-     * 留存（P07）：{@code claw4j.audit.retention} 只是写在配置里的一个数，
-     * 没有清理任务的话那一天的行一条都不会消失（这个坑本项目踩过三次）。
+     * 留存（ADR-0027 决定二）：30 天与 10 万行，两个都是照 OpenClaw 的固定上限。
      *
-     * <p>删的是<b>整件旧事</b>：step 跟着 run 级联，所以不会出现"有审计行、但它指向的执行记录没了"。
-     * 审批没有外键（V10 说过为什么不设），所以要单独删，并且按<b>提出时间</b>算——
-     * 按结论时间算的话，挂了三个月没人点的那条永远不会被删。
+     * <p><b>判据是库的时钟，不是应用时间</b>：SQL 里用 {@code now()} 比，
+     * 于是"库里那一列与比较用的是同一个时钟"这件事不依赖应用服务器的时区设置。
+     *
+     * <p><b>上限按 {@code seq} 删，不按 {@code at} 删</b>：同一秒里写进来的几百条，
+     * 按时间删会随机丢一部分，而"账本上限"本来该是一个确定的位置。
      */
     @Test
-    @DisplayName("保留期到了整件旧事一起删：step 跟着 run 走，审批按提出时间算")
-    void theRetentionWindowDeletesWholeRunsAndStaleApprovals() {
-        Run current = runs.start("u-1@fp", "fp", "上周成交额").orElseThrow();
-        Run stale = runs.start("u-1@fp", "fp", "三个月前的成交额").orElseThrow();
-        runs.append(new StepInput(current.id(), StepKind.MODEL_TURN, "上周成交额", null, "128400",
-                StepStatus.DONE));
-        runs.append(new StepInput(stale.id(), StepKind.MODEL_TURN, "三个月前", null, "900", StepStatus.DONE));
-        granted("ap-fresh", "u-1", "sendEmail", DIGEST, "10 minutes");
-        granted("ap-stale", "u-1", "sendEmail", OTHER_DIGEST, "10 minutes");
-        jdbc.update("update claw4j_run.agent_run set created_at = now() - interval '100 days'"
-                + " where id = ?", stale.id());
-        jdbc.update("update claw4j_run.approval_request set requested_at = now() - interval '100 days'"
-                + " where id = ?", "ap-stale");
+    @DisplayName("审计按 30 天与 10 万行清：一个按时钟，一个按账本序号")
+    void theAuditLedgerPrunesByAgeAndSize() {
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (id, event_id, kind, action, status, actor, at)"
+                + " values (gen_random_uuid(), 'e-old', 'agent_run', 'agent.run.started',"
+                + " 'started', 'u-1', now() - interval '31 days')");
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (id, event_id, kind, action, status, actor)"
+                + " values (gen_random_uuid(), 'e-fresh', 'agent_run', 'agent.run.started',"
+                + " 'started', 'u-1')");
 
-        int purged = new AuditRetention(jdbc, new AuditProperties(), null).purge();
+        AuditLedger.Report aged = new AuditLedger(jdbc, null).prune();
 
-        assertThat(purged).as("一件旧事 + 一条旧审批").isEqualTo(2);
-        assertThat(runs.find(stale.id())).as("过了保留期的整件旧事").isEmpty();
-        assertThat(runs.find(current.id())).as("保留期内的不动").isPresent();
-        assertThat(jdbc.queryForList("select run_id from claw4j_run.agent_step", String.class))
-                .as("step 跟着 run 一起走，不会留下指向空处的审计行")
-                .containsExactly(current.id());
-        assertThat(jdbc.queryForList("select id from claw4j_run.approval_request", String.class))
-                .as("审批没有外键，得单独删——留下它等于留一条查不到执行记录的批准")
-                .containsExactly("ap-fresh");
+        assertThat(aged.expired()).as("31 天前那一条").isEqualTo(1);
+        assertThat(jdbc.queryForList("select event_id from claw4j_run.audit_event", String.class))
+                .as("30 天内不动").containsExactly("e-fresh");
+
+        // ---- 10 万行上限。一条 SQL 插进去，比循环十万次快得多，也比 sleep 诚实。
+        jdbc.update("delete from claw4j_run.audit_event");
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (id, event_id, kind, action, status)"
+                + " select gen_random_uuid(), 'bulk-' || g, 'agent_run', 'agent.run.started', 'started'"
+                + " from generate_series(1, 100001) g");
+
+        Long highest = jdbc.queryForObject("select max(seq) from claw4j_run.audit_event", Long.class);
+
+        AuditLedger.Report capped = new AuditLedger(jdbc, null).prune();
+
+        assertThat(capped.overLimit()).as("多出来的正好一条").isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.audit_event", Integer.class))
+                .as("留下 10 万条")
+                .isEqualTo(100000);
+        assertThat(jdbc.queryForObject("select min(seq) from claw4j_run.audit_event", Long.class))
+                .as("留下的是 seq 最大的 10 万条：按 at 删的话同一秒里会随机丢，"
+                        + "而账本上限本来该是一个确定的位置")
+                .isEqualTo(highest - 99_999);
+        assertThat(jdbc.queryForObject("select max(seq) from claw4j_run.audit_event", Long.class))
+                .isEqualTo(highest);
     }
 
     private void granted(String id, String owner, String tool, String digest, String offset) {
