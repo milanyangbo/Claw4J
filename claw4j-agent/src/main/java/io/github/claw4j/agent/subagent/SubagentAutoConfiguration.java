@@ -5,6 +5,7 @@ import io.github.claw4j.agent.ToolSearchProperties;
 import io.github.claw4j.agent.ToolsProperties;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
@@ -69,7 +70,8 @@ public class SubagentAutoConfiguration {
                                              // 工具循环只有一种（检索），它要索引与检索参数；
                                              // 两个 bean 都由 AgentAutoConfiguration 提供。
                                              ToolIndex toolIndex,
-                                             ToolSearchProperties toolSearch) {
+                                             ToolSearchProperties toolSearch,
+                                             AgentProperties agent) {
         var definitions = SubagentCatalog.load(Path.of(directory));
         var observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         var runner = new SubagentRunner(chatModel, observations,
@@ -78,7 +80,8 @@ public class SubagentAutoConfiguration {
                         tierRegistries.orderedStream().toList()),
                 authorizationAdvisor,
                 toolIndex,
-                toolSearch);
+                toolSearch,
+                agent.toolCallLimit());
         return new SubagentDelegation(definitions, runner);
     }
 
@@ -118,7 +121,7 @@ public class SubagentAutoConfiguration {
         // 档位在这里同一个理由（P09）：子 Agent 拿到的必须是**父被允许的那份清单**里的一批。
         // 用另一份策略的话，一个 messaging 部署可以靠"派给子 Agent"把手跑脚本的口子打开。
         return AgentAutoConfiguration.collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                        meterRegistry, null, null, RunTracer.NONE,
+                        meterRegistry, null, RunTracer.NONE,
                         toolPolicy.toProfile(), tierRegistries)
                 .stream()
                 .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(

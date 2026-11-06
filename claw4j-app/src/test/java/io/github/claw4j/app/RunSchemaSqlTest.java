@@ -107,7 +107,8 @@ class RunSchemaSqlTest {
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'claw4j_run'"
                         + " order by table_name", String.class))
-                .containsExactly("agent_run", "agent_schedule", "agent_session_budget",
+                .as("V22 之后 agent_session_budget 不在了：额度是目标的属性，不挂会话")
+                .containsExactly("agent_run", "agent_schedule",
                         "agent_step", "approval_request", "audit_event", "audit_trail");
 
         // 约束不是装饰：没有它，任何字符串都能当状态写进去，
@@ -290,29 +291,20 @@ class RunSchemaSqlTest {
     }
 
     /**
-     * 用量那三列（V8，A04）在 SQL 这一层的行为：默认 0，各自累加，换实例读得到。
+     * V22：会话级额度表没了（ADR-0027 决定五）。
      *
-     * <p>主链路那份（{@code RunBudgetTest}）验的是"什么时候扣、扣完停在哪"，
-     * 这里验的是"库真的会累加"——尤其 {@code +=} 而不是"读出来加一遍再写回"：
-     * 后一种写法在两轮并发时会用旧值覆盖新值，表现是额度凭空多出来。
+     * <p>这条判据存在的理由是"兼容层"那个诱惑：留着这张表"以防有人要查历史用量"，
+     * 下一个人就会往里加一列。历史用量在 {@code audit_event} 的
+     * {@code agent.run.finished} 上（票 01 已经把 token 带上）。
      */
     @Test
-    @DisplayName("用量与会话指针都只在库里长一行：前者累加，后者每次刷新 touched_at")
-    void budgetColumnsAccumulateAndThePointerKeepsOneRow() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "对齐三张表的口径").orElseThrow();
-        // EPOCH = 窗口永不过期：这条 run 没有会话归属（start 时没给会话键），
-        // 读的就是它自己那一行，这正是这里要验的 SQL 累加
-        assertThat(runs.spent(run.id(), Instant.EPOCH).orElseThrow()).isEqualTo(Budget.NONE);
-
-        runs.charge(run.id(), 2, 1_200L, 3_000L);
-        runs.charge(run.id(), 1, 300L, 500L);
-
-        RunStore restarted = new JdbcRunStore(jdbc);
-        assertThat(restarted.spent(run.id(), Instant.EPOCH).orElseThrow())
-                .isEqualTo(new Budget(3, 1_500L, 3_500L));
-        assertThat(restarted.find(run.id()).orElseThrow().spent())
-                .as("读 run 时也带上用量：停在 budget_exhausted 的 run 只能靠它回答'为什么停'")
-                .isEqualTo(new Budget(3, 1_500L, 3_500L));
+    @DisplayName("额度不再按会话累计：V22 之后 agent_session_budget 这张表不存在")
+    void theSessionBudgetTableIsGone() {
+        assertThat(jdbc.queryForObject(
+                "select count(*) from information_schema.tables where table_schema = 'claw4j_run'"
+                        + " and table_name = 'agent_session_budget'", Integer.class))
+                .as("表还在就说明有人又把它建回来了，或者 V22 没跑")
+                .isZero();
     }
 
     @Test

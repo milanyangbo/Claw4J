@@ -1,6 +1,6 @@
 # 04 预算并进 goal
 
-**Status:** ready-for-agent
+**Status:** resolved（2026-11-06）
 **依赖:** 02、03
 **依据:** ADR-0027 决定五
 
@@ -63,18 +63,29 @@ OpenClaw 没有这种"会话累计额度表"。它有：
 
 ## 判据
 
-- [ ] **到额度进 `budget_limited`**：goal 带 `token_budget=1000`，累计到 1000 之后 status 变
-      `budget_limited`，且下一轮的提示词里**没有**"进行中的目标"。
-      反例：把 `budget_limited` 也注入 → 红（那等于额度用完还逼模型继续）。
-- [ ] **`/goal resume` 开新窗口**：从 `budget_limited` resume → status 变 `active`，`tokens_used` 归零，
+- [x] **到额度进 `budget_limited`**：goal 带 `token_budget=100`，每轮 46，第三轮之后 status 变
+      `budget_limited`，且下一轮的提示词里**没有**"活跃目标"。
+      反例：把 `budget_limited` 也注入（`injected()` 改成 `status != COMPLETE`） →
+      `RunLifecycleTest#tokensOfATurnAreChargedToTheGoal` 红（"受限的目标不再注入"那条断言）。
+      证据：同一条用例（`tokens_used` 92 → 138、`budget_limited`、提示词不含"活跃目标："）。
+- [x] **`/goal resume` 开新窗口**：从 `budget_limited` resume → status 变 `active`，`tokens_used` 归零，
       `objective` 与 `token_budget` 不变。
-      反例：resume 不重置用量 → 下一轮立刻又 budget_limited，红。
-- [ ] **其他状态 resume 不清零**：`paused` → resume，`tokens_used` 保持原值。
-      反例：无条件归零 → 红（"暂停一下就能白拿一份额度"）。
-- [ ] **熔断不改 goal 状态**：把 `tool-call-limit` 设成 1，触发之后 goal 仍是 `active`。
-      反例：熔断时写 `budget_limited` → 红（两件事被合成一个）。
-- [ ] **表真的没了**：`V22` 之后 `agent_session_budget` 不存在；`RunBudget` 里没有按会话累计的 SQL。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，覆盖率 ≥60%。
+      反例：resume 里那句 `case when status = 'budget_limited' then 0 else tokens_used end` 改成无条件清零 →
+      同一条用例的**另一半**红（"暂停一下不该白拿一份额度"）。
+      证据：`RunLifecycleTest#resumingResetsTheWindowOnlyWhenTheBudgetWasReached`。
+- [x] **其他状态 resume 不清零**：`paused` → resume，`tokens_used` 保持 40。
+      证据：同一条用例的后半段。
+- [x] **熔断不改 goal 状态**：一直失败的工具轮次停在单工具上限，回的是我们自己的话，
+      goal 仍是 `active`。
+      反例：这一条靠结构成立——熔断那条路（Spring AI 的工具循环）根本拿不到 `SessionGoalStore`，
+      要写 `budget_limited` 得先把它接进来。用例把结果钉住，接了就会红。
+      证据：`ChatPipelineTest#theToolCallCapIsACircuitBreakerNotAQuota`。
+- [x] **表真的没了**：`V22` 之后 `agent_session_budget` 不存在；`RunBudget` / `RunBudgetProperties` /
+      `RunStore#spent|charge` 全部删除。
+      证据：`RunSchemaSqlTest#theSessionBudgetTableIsGone` 与 `migrationCreatesRunTablesInTheirOwnSchema`
+      的表清单（少了它）。
+- [x] `./scripts/verify.sh` 全绿，跳过 0，覆盖率 ≥60%。
+      证据：665 条、失败 0、跳过 0，agent 70.2% / app 80.8%，10 文件 / 20 方法。
 
 ## 落地时注意
 
@@ -89,3 +100,48 @@ OpenClaw 没有这种"会话累计额度表"。它有：
 - 不做 `usage_limited` 的触发（OpenClaw 自己也是"为未来保留"）。
 - 不保留 `agent_session_budget` 的读路径"以防有人要查历史用量"——历史用量在 `audit_event` 的
   `agent.run.finished` 上（票 01 已经带上 token 数）。
+
+## 实现记录
+
+### 落在哪儿
+
+| 东西 | 位置 |
+| --- | --- |
+| 表 | `V22__drop_session_budget.sql`：`drop table claw4j_run.agent_session_budget` |
+| 记账 | `SessionGoalStore#addTokens` 改成返回那一行，并在**同一条 SQL** 里撞线进 `budget_limited`：`JdbcSessionGoalStore.ADD_TOKENS` 的 `case when status not in ('complete','budget_limited') and token_budget is not null and tokens_used + ? >= token_budget` |
+| 收尾记账 | `ChatClientAgentPort#closeTurn` → `chargeGoal(scope, tokens)`；撞线时打一行 INFO（`used/budget`） |
+| 恢复 | `SessionGoalStore#resume`（新方法）：`set tokens_used = case when status = 'budget_limited' then 0 else tokens_used end, status = 'active'`；`GoalCommand` 的 resume 支改调它 |
+| 熔断 | `ToolCallBudget.toolCallingManager(registry, totalCalls)`；`claw4j.agent.tool-call-limit` 落在 `AgentProperties`（同一个 `claw4j.agent` 前缀）；父与子两条链都传它 |
+| 熔断话术 | `ChatClientAgentPort#cappedText`：看 `ToolCallLimitExceededException.FINISH_REASON`（公开常量，不做文本匹配），命中就换成 `TOOL_CALL_CAPPED` |
+| 删掉 | `RunBudget`、`RunBudgetProperties`、`RunStore#spent|charge` 与 JDBC 实现、`MeteredToolCallback` 的扣额分支、`ChatClientAgentPort` 的进门看额度与 `stopForBudget`、`elapsedMillis` |
+
+### 四处必须说明的
+
+1. **"撞线"只在第一次改状态**。第一版没有排掉 `budget_limited` 自己，于是超支之后**每一轮**
+   都会重新"进一次"受限状态、把 `revision` 加一——而 `revision` 记的是"谁改过它"。
+   用量仍然继续累加（OpenClaw 的量是"会话自目标建立以来的总量"，不是"这一段还剩多少"）。
+2. **流式那一轮的 token 记 0**。汇总 usage 只在最后一帧上，我们这一层拿不到（与"不拿估算值
+   冒充真实值"同一个口径）。代价写进了 `docs/agents/guardrails.md` 的已知偏差：
+   额度会少算流式那部分；要查真实花费看 `claw4j.model.tokens`。
+3. **`RunStatus.BUDGET_EXHAUSTED` 现在没有生产者**。额度不在 run 上了，这个状态只剩历史行；
+   票 05 随 `agent_run` 一起删，所以这里不单独改枚举。
+4. **`cappedText` 用 `finishReason` 而不是认话术**。Spring AI 把超限变成一代回答
+   （`ex.buildGeneration()`），文本是框架的英文原句；拿字符串去认"这是不是超限"会在框架
+   改一次措辞之后静默失效，而 `ToolCallLimitExceededException.FINISH_REASON` 是公开常量。
+
+### 对应 OpenClaw 的哪几句
+
+- 额度是目标的：`create_goal` 的 `token_budget`，"When usage reaches the budget, the goal moves
+  to `budget_limited`"，且 `budget_limited` **不注入**（"Paused, blocked, budget-limited,
+  usage-limited, and complete goals are not injected"）。
+- 恢复：`/goal resume` "restarts pursuit from the same objective with a fresh budget window"；
+  其余状态 "Token accounting continues unless the budget was reached"。
+- 熔断：我们没有 `agents.defaults.timeoutSeconds`（48 小时）那种 per-turn 超时，
+  所以用"一轮调几次"做更早的止损点——这条是我们自己的，理由写在 `ToolCallBudget` 的类注释里。
+
+### 没做
+
+- **流式那一轮的用量**（见上，已记进 guardrails）。
+- **`usage_limited`**：OpenClaw 自己标着"为未来的用量限制状态保留"，我们也不触发。
+- **`/goal start` 收预算**：OpenClaw 原文是"only the model-facing `create_goal` tool can set a
+  budget"，票 02 已经照做，这里不动。

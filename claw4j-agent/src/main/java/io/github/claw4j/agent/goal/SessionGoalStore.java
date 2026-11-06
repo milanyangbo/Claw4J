@@ -54,12 +54,37 @@ public interface SessionGoalStore {
     Optional<SessionGoal> setStatus(String sessionKey, GoalStatus status, String note);
 
     /**
-     * 累加用量。票 04（预算并进 goal）才有人调它，本票只建列不做账。
+     * 恢复一个目标：状态变 {@code active}，**额度用完的那一个顺手开新窗口**。
      *
-     * <p>它不返回新值：调用方什么时候需要读，什么时候自己 {@link #of}。
-     * 返回一个"可能过期的数"比不返回更容易被误用。
+     * <p>OpenClaw 原文两处合起来才是完整的规则：
+     * "Token accounting continues unless the budget was reached, in which case resume starts a
+     * fresh budget window." 所以清零只发生在 {@code budget_limited} 上——
+     * 无条件清零等于"暂停一下就能白拿一份额度"。
+     *
+     * <p>判定放在 SQL 里（{@code case when status = 'budget_limited'}）而不是先读再写：
+     * 先读再写会留下"读的时候还在额度里、写的时候已经超了"的窗口，
+     * 那个窗口里恢复出来的目标带着一个已经超支的用量，下一轮立刻又停下。
+     *
+     * @param note 可以为 null（等于把上一条说明清掉）
+     * @return 改后的那一行；空表示没有目标、目标是终态（{@link GoalStatus#COMPLETE}）、
+     *         或没写进去
      */
-    void addTokens(String sessionKey, long tokens);
+    Optional<SessionGoal> resume(String sessionKey, String note);
+
+    /**
+     * 记这一轮花掉的 token；**撞上预算就同时把状态改成 {@code budget_limited}**。
+     *
+     * <p>记账与判超在同一条语句里（OpenClaw：用量到达预算时目标进入 {@code budget_limited}）。
+     * 分两步的话，两条并发消息会各自读到"还没超"，各自加一笔，
+     * 结果是超了却没进受限状态——一个不会自己恢复的错。
+     *
+     * <p>已经 {@code complete} 的目标只记数不变状态：那是终态，
+     * 把它改成"额度用完"等于把一件做完的事重新打开。
+     *
+     * @param tokens 这一轮模型报上来的 token。拿不到传 0——记 0 至少看得出这一项没数
+     * @return 记完之后的这一行；空表示没有目标、或没写进去。调用方不需要它也能继续回答
+     */
+    Optional<SessionGoal> addTokens(String sessionKey, long tokens);
 
     /** 删掉这一行。{@code /goal clear} 用。@return 真的删掉了一行 */
     boolean clear(String sessionKey);

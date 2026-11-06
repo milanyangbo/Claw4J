@@ -293,7 +293,7 @@ class ObservabilityTest {
             public String call(String toolInput) {
                 throw new IllegalStateException("库挂了");
             }
-        }, null, null, new ToolCallAudit(event -> Optional.of(1L)), tracer);
+        }, null, new ToolCallAudit(event -> Optional.of(1L)), tracer);
 
         assertThatThrownBy(() -> failing.call("{}",
                 new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"))))
@@ -388,12 +388,12 @@ class ObservabilityTest {
         ToolCallAudit audit = new ToolCallAudit(event -> Optional.of(auditSeq.incrementAndGet()));
         List<ToolCallback> wrapped = new ArrayList<>();
         for (ToolCallback tool : tools) {
-            wrapped.add(new MeteredToolCallback(tool, registry, null, audit, tracer));
+            wrapped.add(new MeteredToolCallback(tool, registry, audit, tracer));
         }
         ChatClient client = ChatPipelineTest.clientBuilder(model)
                 .defaultToolCallbacks(wrapped)
                 .build();
-        return new ChatClientAgentPort(client, null, runs, null, null, tracer, null, null, audit);
+        return new ChatClientAgentPort(client, null, runs, null, tracer, null, null, audit);
     }
 
     /**

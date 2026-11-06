@@ -4,11 +4,9 @@ import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.RunTracer;
-import io.github.claw4j.agent.run.Budget;
 import io.github.claw4j.agent.run.DeliveryTarget;
 import io.github.claw4j.agent.run.Run;
 import io.github.claw4j.agent.run.RunDelivery;
-import io.github.claw4j.agent.run.RunBudget;
 import io.github.claw4j.agent.run.RunStatus;
 import io.github.claw4j.agent.run.RunStore;
 import io.github.claw4j.agent.run.RunLauncher;
@@ -20,6 +18,7 @@ import io.github.claw4j.agent.session.ConversationPointers;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.goal.GoalCommand;
+import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.audit.AuditStatus;
@@ -37,6 +36,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.model.tool.ToolCallLimitExceededException;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
 
 import java.util.HashMap;
@@ -119,6 +119,16 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
     /** 接上来的那一轮标一下：同一个 runId 会有多条 trace，这一条是"继续"，不是"开头"。 */
     private static final String ATTR_RESUMED = "claw4j.run.resumed";
 
+    /**
+     * 撞上工具调用上限时回给用户的那一句。
+     *
+     * <p>只说"停了"不够：用户会以为是自己那句话有问题。要说清<b>是这个动作被反复调了太多次</b>，
+     * 以及<b>下一步能做什么</b>（把要求说细一点）。
+     */
+    static final String TOOL_CALL_CAPPED =
+            "这一步做了太多次，我先停下。请把要求说得更具体一些（查哪张表、哪段时间），"
+                    + "我再试一次。";
+
     private final ChatClient chatClient;
 
     /**
@@ -133,12 +143,6 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      * （与 {@link #compactor} 同一个判断）。
      */
     private final RunStore runs;
-
-    /**
-     * 这一次 run 的预算。可以为 null——没有 run 存储就没有额度可记（A04）。
-     * 它与 {@link #runs} 同进同出：记账与限流分家的话，会出现"没记账却被拦住"的拒绝。
-     */
-    private final RunBudget budget;
 
     /**
      * 结果投递与回收（A05）。可以为 null——与上面两个同一个判断：没有 run 存储
@@ -185,25 +189,20 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
     private final ToolCallAudit audit;
 
     public ChatClientAgentPort(ChatClient chatClient) {
-        this(chatClient, null, null, null, null);
+        this(chatClient, null, null, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor) {
-        this(chatClient, compactor, null, null, null);
+        this(chatClient, compactor, null, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs) {
-        this(chatClient, compactor, runs, null, null);
+        this(chatClient, compactor, runs, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunBudget budget) {
-        this(chatClient, compactor, runs, budget, null);
-    }
-
-    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunBudget budget, RunDelivery delivery) {
-        this(chatClient, compactor, runs, budget, delivery, RunTracer.NONE);
+                               RunDelivery delivery) {
+        this(chatClient, compactor, runs, delivery, RunTracer.NONE);
     }
 
     /**
@@ -211,20 +210,20 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      *               没开观测的部署拿不到 bean，而"少一个 bean"不该让门都装不上
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunBudget budget, RunDelivery delivery, RunTracer tracer) {
-        this(chatClient, compactor, runs, budget, delivery, tracer, null);
+                               RunDelivery delivery, RunTracer tracer) {
+        this(chatClient, compactor, runs, delivery, tracer, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunBudget budget, RunDelivery delivery, RunTracer tracer,
+                               RunDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers) {
-        this(chatClient, compactor, runs, budget, delivery, tracer, pointers, null);
+        this(chatClient, compactor, runs, delivery, tracer, pointers, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunBudget budget, RunDelivery delivery, RunTracer tracer,
+                               RunDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers, ConversationLane lane) {
-        this(chatClient, compactor, runs, budget, delivery, tracer, pointers, lane, null);
+        this(chatClient, compactor, runs, delivery, tracer, pointers, lane, null);
     }
 
     /**
@@ -232,9 +231,9 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      *              只是事后查不到——与预算、投递同一个判断（能力不在场，不是假装它在）
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunBudget budget, RunDelivery delivery, RunTracer tracer,
+                               RunDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit) {
-        this(chatClient, compactor, runs, budget, delivery, tracer, pointers, lane, audit, null);
+        this(chatClient, compactor, runs, delivery, tracer, pointers, lane, audit, null);
     }
 
     /**
@@ -243,13 +242,12 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      *              注意它与"这一段没有目标"是两件事——前者是能力不在场，后者是常态
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor, RunStore runs,
-                               RunBudget budget, RunDelivery delivery, RunTracer tracer,
+                               RunDelivery delivery, RunTracer tracer,
                                ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit,
                                SessionGoalStore goals) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
         this.runs = runs;
-        this.budget = budget;
         this.delivery = delivery;
         this.tracer = tracer == null ? RunTracer.NONE : tracer;
         this.pointers = pointers;
@@ -425,16 +423,6 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
         // 根 span 从"这件事"开始，而不是从这次请求开始：run 的身份比请求活得久（见 RUN_SPAN）。
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal()))) {
-            // 进门先看额度：上一轮已经把额度烧完的 run，这一轮不该再调一次模型——
-            // 调了也只是再花一份钱去换一个"还是得停"的结论。
-            Optional<Budget> overBudget = exhaustedSpent(runId);
-            if (overBudget.isPresent()) {
-                // 停下来这件事本身要留痕：图上"这里少了一轮模型"与"模型一轮就答完了"
-                // 长得一样，而这句属性是唯一分得开它们的东西。
-                run.attribute(MeteredToolCallback.ATTR_OUTCOME, "budget_exhausted");
-                return new Turn(runId, stopForBudget(message, runId, overBudget.get()).text());
-            }
-            long startedAt = System.nanoTime();
             try {
                 ChatResponse response;
                 String text;
@@ -445,11 +433,11 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
                     response = promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
                             .call()
                             .chatResponse();
-                    text = textOf(response);
+                    text = cappedText(response);
                     log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
                     stampTurn(turn, closeTurn(runId, auditScope, masked, text,
                             pushTargetOf(answeredAt, message), message.notifyPolicy(),
-                            tokensOf(response), elapsedMillis(startedAt)), response);
+                            tokensOf(response)), response);
                 }
                 return new Turn(runId, text);
             } catch (RuntimeException | Error failure) {
@@ -516,15 +504,7 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
         }
         try (RunTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal()))) {
-            Optional<Budget> overBudget = exhaustedSpent(runId);
-            if (overBudget.isPresent()) {
-                run.attribute(MeteredToolCallback.ATTR_OUTCOME, "budget_exhausted");
-                onChunk.accept(stopForBudget(message, runId, overBudget.get()));
-                onChunk.accept(OutboundMessage.of(message.chatId(), "", runId));
-                return;
-            }
             StringBuilder answer = new StringBuilder();
-            long startedAt = System.nanoTime();
             try (RunTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
                     promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
@@ -539,10 +519,11 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
                             .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "", runId)))
                             .blockLast();
                     // 流式的 token 记 0：汇总 usage 只在最后一帧上，而它未必到得了这一层
-                    // （与"不拿估算值冒充真实值"同一个口径）。耗时照记——它不需要模型报。
+                    // （与"不拿估算值冒充真实值"同一个口径）。于是流式这一路不计入目标用量——
+                    // 这是能力不在场，不是"这一轮不花钱"（见票 04 的"没做"一节）。
                     stampTurn(turn, closeTurn(runId, auditScope, masked, answer.toString(),
                             pushTargetOf(addressOf(message), message), message.notifyPolicy(),
-                            0L, elapsedMillis(startedAt)), null);
+                            0L), null);
                 } catch (RuntimeException | Error failure) {
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
                     turn.failed(failure);
@@ -628,13 +609,16 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
      * <p><b>result_summary 是截断的摘要</b>：把它当成全文读是设计错误，
      * 完整回答在通道里；这里只需要能回答"这一步得到了什么"。
      *
-     * <p><b>收尾状态由额度决定，不是一律 done</b>：这一轮刚好把额度烧完时，
-     * 这件事停在 {@link RunStatus#BUDGET_EXHAUSTED}——它与 done 的下一步完全不同
-     * （追加预算继续 vs 没有了），混成一个状态的话没人知道该重试还是该换做法。
+     * <p><b>这一轮花掉的 token 记到目标上，不记到会话上</b>（ADR-0027 决定五）：
+     * OpenClaw 的额度是 goal 的属性（{@code create_goal} 的 {@code token_budget}），
+     * 用完进 {@code budget_limited}；会话本身没有"额度"这回事。
+     * 记账与判超在同一条 SQL 里（见 {@code JdbcSessionGoalStore#addTokens}）。
+     *
+     * <p><b>这一轮的状态不由额度决定</b>：用完额度不是"这一轮失败"，
+     * 它是这件事停下来了——状态在目标上，不在 run 上。
      */
     private Optional<Long> closeTurn(String runId, AuditEvent.Scope scope, String input, String answer,
-                                     DeliveryTarget pushTo, NotifyPolicy policy,
-                                     long tokens, long millis) {
+                                     DeliveryTarget pushTo, NotifyPolicy policy, long tokens) {
         if (runs == null || runId == null) {
             return Optional.empty();
         }
@@ -642,15 +626,7 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
         //
         runs.append(new StepInput(runId, StepKind.MODEL_TURN, input, null,
                 summary(answer), StepStatus.DONE));
-        if (budget != null) {
-            budget.chargeTurn(runId, tokens, millis);
-        }
-        Optional<Budget> spent = budget == null ? Optional.empty() : budget.spent(runId);
-        if (spent.isPresent() && budget.exhausted(spent.get())) {
-            runs.finish(runId, RunStatus.BUDGET_EXHAUSTED);
-            // span 上仍要带上账本序号——"这一轮把额度烧完了"正是最想回库核对的那一轮。
-            return finishAudit(scope, AuditStatus.FAILED, AuditEvent.BUDGET_EXHAUSTED);
-        }
+        chargeGoal(scope, tokens);
         // 全文进 run：step 上的那份是截断摘要，回答"这一步得到了什么"；
         // 查结果的人要的是完整答案，而异步场景里没有一次请求在等着接它（A05）。
         runs.finish(runId, RunStatus.DONE, answer);
@@ -686,32 +662,48 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
     }
 
     /**
-     * 进门那一问：这一件还有额度吗。
+     * 把这一轮花掉的 token 记到这段会话的目标上。
      *
-     * <p>读不到用量时（没有 run、存储降级）返回空——那种情况下放行，
-     * 因为管不住预算的失败姿势应该是"少记一笔"，不是"把活停了"。
+     * <p><b>没有目标就不记</b>：额度是目标的属性——没有目标就没有"这件事的预算"这回事。
+     * 记到一个不存在的东西上，等于把成本口径又挪回会话，而那正是本票拆掉的形状。
+     *
+     * <p><b>记不进去不影响回答</b>：目标存储降级（库连不上、迁移没跑过）时
+     * {@code addTokens} 返回空，这一轮照常收尾。少记一笔的代价远小于把用户的话打死；
+     * 那种降级由 {@code claw4j.goal.errors} 暴露。
      */
-    private Optional<Budget> exhaustedSpent(String runId) {
-        if (runs == null || runId == null || budget == null) {
-            return Optional.empty();
+    private void chargeGoal(AuditEvent.Scope scope, long tokens) {
+        if (goals == null || scope == null || scope.sessionKey() == null) {
+            return;
         }
-        return budget.spent(runId).filter(budget::exhausted);
+        goals.addTokens(scope.sessionKey(), tokens)
+                .filter(goal -> goal.status() == GoalStatus.BUDGET_LIMITED)
+                .ifPresent(goal -> log.info("目标撞上 token 预算，进入 budget_limited：session={} used={}/{}",
+                        goal.sessionKey(), goal.tokensUsed(), goal.tokenBudget()));
     }
 
     /**
-     * 超预算的结局：写明停在哪、为什么停，并且不调模型。
+     * 撞上工具调用上限时交给用户的那句话。
      *
-     * <p><b>这一步也会落库</b>：否则"这件事为什么停在第 3 轮"在库里查不到答案，
-     * 而那正是审计（P07）最常问的一句。状态是
-     * {@link StepStatus#FAILED}——这一轮没有发生，不是发生了但做得不好。
+     * <p><b>它是止损，不是额度</b>（ADR-0027 决定五）：OpenClaw 用
+     * {@code agents.defaults.timeoutSeconds}（48 小时）兜住跑飞的一轮，我们没有 per-turn 超时，
+     * 所以需要一个更早的止损点。它不改任何持久状态——额度是目标的 token budget，
+     * 而"这一轮绕了太多次"跟"这件事花超了"是两件事：前者要收手，后者要人决定加不加预算。
+     *
+     * <p><b>为什么在这里换掉那句话</b>：上限由 Spring AI 的工具循环执行
+     * （{@code ToolCallLimitBehavior.THROW}），它把超限变成一代回答，话是框架的英文原话、
+     * 内容是"limit exceeded"。这里是唯一既知道"这是一次回答"又知道"它撞的是哪条线"的地方，
+     * 换掉比让用户去读一句框架内部的话更合适。
+     *
+     * <p>判定看的是 {@code finishReason} 这个公开常量，不是文本匹配：
+     * 拿话术去认"这是不是超限"会在框架改一次措辞之后静默失效。
      */
-    private OutboundMessage stopForBudget(InboundMessage message, String runId, Budget spent) {
-        String text = budget.outcomeText(spent, runId);
-        runs.append(new StepInput(runId, StepKind.MODEL_TURN, PiiRedactor.mask(message.text()), null,
-                "预算用尽，没有调用模型：" + budget.reason(spent), StepStatus.FAILED));
-        runs.finish(runId, RunStatus.BUDGET_EXHAUSTED);
-        log.debug("run {} 的预算用尽，这一轮没有调用模型", runId);
-        return OutboundMessage.of(message.chatId(), text, runId);
+    private static String cappedText(ChatResponse response) {
+        String text = textOf(response);
+        boolean capped = response != null && response.getResult() != null
+                && response.getResult().getMetadata() != null
+                && ToolCallLimitExceededException.FINISH_REASON
+                .equals(response.getResult().getMetadata().getFinishReason());
+        return capped ? TOOL_CALL_CAPPED : text;
     }
 
     /** 回答文本。没有 generation 时是 null，而不是造一个空串去冒充"模型说了话"。 */
@@ -732,10 +724,6 @@ public class ChatClientAgentPort implements AgentPort, RunLauncher {
         }
         Integer total = response.getMetadata().getUsage().getTotalTokens();
         return total == null ? 0L : total.longValue();
-    }
-
-    private static long elapsedMillis(long startedAt) {
-        return (System.nanoTime() - startedAt) / 1_000_000L;
     }
 
     /** 收尾成失败。<b>不吞异常</b>：run 只负责记下"这件事没成"，怎么向上报告仍由调用方决定。 */

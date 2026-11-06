@@ -9,7 +9,6 @@ import io.github.claw4j.agent.observability.RunTracer;
 import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
-import io.github.claw4j.agent.run.RunBudget;
 import io.github.claw4j.agent.run.RunDelivery;
 import io.github.claw4j.agent.run.RunStore;
 import io.github.claw4j.agent.session.ConversationPointers;
@@ -110,7 +109,6 @@ public class AgentAutoConfiguration {
     public ToolCatalog toolCatalog(ObjectProvider<ToolCallback> toolCallbacks,
                                    ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                    ObjectProvider<MeterRegistry> meterRegistry,
-                                   ObjectProvider<RunBudget> runBudget,
                                    ObjectProvider<ToolCallAudit> audit,
                                    ObjectProvider<RunTracer> tracer,
                                    ObjectProvider<ToolTierRegistry> tierRegistries,
@@ -118,7 +116,7 @@ public class AgentAutoConfiguration {
                                    PersonaCatalog.Catalog personas) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
         List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                meterRegistry.getIfAvailable(), runBudget.getIfAvailable(), audit.getIfAvailable(),
+                meterRegistry.getIfAvailable(), audit.getIfAvailable(),
                 tracer.getIfAvailable(() -> RunTracer.NONE), profile, tierRegistries.orderedStream().toList());
         return new ToolCatalog(personas.selected().name(), profile, tools);
     }
@@ -148,7 +146,8 @@ public class AgentAutoConfiguration {
         //
         // ToolIndex 是必填参数而不是 ObjectProvider：循环只有"检索"这一种，
         // 没有索引时唯一的出路是启动就失败，而不是悄悄退化成全塞。
-        var toolCallingAdvisor = ToolSearch.toolLoop(toolSearch, toolIndex, observations);
+        var toolCallingAdvisor = ToolSearch.toolLoop(toolSearch, toolIndex, observations,
+                agent.toolCallLimit());
 
         // "这次用的是哪份人设、档位来自哪一层"必须能从日志里读出来。
         // 内置默认尤其要说：一份谁也没注意到的默认人设，比一份写错的配置更难查——
@@ -247,10 +246,8 @@ public class AgentAutoConfiguration {
      * 重名不在这里去重——两个来源导出同名工具是配置错误，该在清单断言上红，
      * 而不是被这里悄悄吞掉一个。
      *
-     * <p><b>计量与扣预算也在这里包</b>：这是所有工具的**唯一入口**（父 Agent 与子 Agent 都走它），
-     * 包在这一层就不会出现"某条路径上的工具调用没被记上、也没被扣"。
-     * 预算按 run 累计（{@link RunBudget}，A04），而 runId 由入口放进工具上下文——
-     * 也就是说"扣谁的额度"这件事在这里才第一次知道答案。
+     * <p><b>计量也在这里包</b>：这是所有工具的**唯一入口**（父 Agent 与子 Agent 都走它），
+     * 包在这一层就不会出现"某条路径上的工具调用没被记上"。
      *
      * <p><b>审计也在这里包</b>（P07）：它要的是同一个事实——"这次调用真的发生了"。
      * 放在这里而不是每个工具自己写，理由与预算相同：漏一条路径的表现是
@@ -261,9 +258,8 @@ public class AgentAutoConfiguration {
      * 的默认值，等于让某条装配路径漏传参数时静默少一段——而那种缺失在图上看起来
      * 与"这个工具没被调"完全一样。
      *
-     * @param budget 可以为 null：没有装配 run 存储时（{@code claw4j.run.enabled=false}）
-     *               工具照常调用，只是这一轮没有额度可扣
-     * @param audit  可以为 null：同上，没有 run 存储就没有可写的审计落点
+     * @param audit  可以为 null：没有装配 run 存储时（{@code claw4j.run.enabled=false}）
+     *               就没有可写的审计落点，工具照常调用
      * @param tracer 埋点入口。没有开观测时传 {@link RunTracer#NONE}，**不要传 null 让它去猜**
      * @param profile 这个部署的工具策略（P09）。**必填**：给它一个"不过滤"的默认值等于让
      *               某条装配路径漏传参数时静默全开，而这条路径正是父子两个 Agent 共用的那一条
@@ -272,7 +268,6 @@ public class AgentAutoConfiguration {
     public static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
                                                           ObjectProvider<ToolCallbackProvider> providers,
                                                           MeterRegistry registry,
-                                                          RunBudget budget,
                                                           ToolCallAudit audit,
                                                           RunTracer tracer,
                                                           ToolProfile profile,
@@ -296,7 +291,7 @@ public class AgentAutoConfiguration {
                 .filter(callback -> kept.contains(callback.getToolDefinition().name()))
                 // 显式转型，否则 stream 的元素类型被推断成 MeteredToolCallback，
                 // 与返回类型 List<ToolCallback> 对不上（它不是泛型类，推断不出父类型）。
-                .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, budget, audit, tracer))
+                .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, audit, tracer))
                 .toList();
     }
 
@@ -390,17 +385,16 @@ public class AgentAutoConfiguration {
     public AgentPort agentPort(ChatClient chatClient,
                                ObjectProvider<SessionCompactor> compactor,
                                ObjectProvider<RunStore> runs,
-                               ObjectProvider<RunBudget> budget,
                                ObjectProvider<RunDelivery> delivery,
                                ObjectProvider<RunTracer> tracer,
                                ObjectProvider<ConversationPointers> pointers,
                                ObjectProvider<ToolCallAudit> audit,
                                ObjectProvider<io.github.claw4j.agent.goal.SessionGoalStore> goals,
                                AgentProperties properties) {
-        // run、预算、投递都走 ObjectProvider 而不是直接注入：没配存储时它们是缺席而不是失败，
-        // 门照常住着，只是"这件事做完了没有"没人记、也没人在看额度（与压缩器同一个判断）。
-        // 三者同进同出：预算与收件地址都是 run 的属性，没有 run 就没有可扣的额度、
-        // 也没有"送到哪儿"。
+        // run 与投递都走 ObjectProvider 而不是直接注入：没配存储时它们是缺席而不是失败，
+        // 门照常住着，只是"这件事做完了没有"没人记（与压缩器同一个判断）。
+        // 两者同进同出：收件地址跟着那次运行走，没有 run 就没有"送到哪儿"。
+        // 额度不在这条链上了——它是目标的属性（ADR-0027 决定五）。
         //
         // trace 也一样（P14）：没开观测时传空实现，埋点代码仍然逐字相同地跑一遍——
         // 那不是浪费，是让"开着"与"关着"走同一条路，否则关着的那条路平时不执行，
@@ -412,7 +406,7 @@ public class AgentAutoConfiguration {
         // lane 不是可选项：它是"一段对话同时只有一个 run"那条正确性保证本身。
         // 不装配它，并发两条消息就会各跑各的，而失败长相是"模型偶尔会忘事"。
         return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(), runs.getIfAvailable(),
-                budget.getIfAvailable(), delivery.getIfAvailable(),
+                delivery.getIfAvailable(),
                 tracer.getIfAvailable(() -> RunTracer.NONE), pointers.getIfAvailable(),
                 new ConversationLane(properties.laneWait()), audit.getIfAvailable(),
                 goals.getIfAvailable());

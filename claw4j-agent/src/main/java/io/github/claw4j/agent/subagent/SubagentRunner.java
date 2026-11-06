@@ -40,7 +40,8 @@ import java.util.function.Supplier;
  * 于是"父看不到的表，派个 Subagent 就看得到"这条路从设计上不存在
  * （子 Agent 委派那份测试里 guest 那条盯着它）。
  *
- * <p><b>子也吃同一份调用预算</b>（3 / 6，见 {@link ToolCallBudget}），也走同一个工具循环
+ * <p><b>子也吃同一份熔断上限</b>（3 / {@code claw4j.agent.tool-call-limit}，
+ * 见 {@link ToolCallBudget}），也走同一个工具循环
  * （{@link ToolSearch#toolLoop}）：委派不能变成绕过预算的口子——否则"一个坏掉的脚本在子里循环"
  * 能一直烧下去，而父那一侧的预算看起来还一点没动。工具循环只有一种这件事也适用于这里：
  * 子那边同样是"先检索、再调用"，白名单里的工具先被索引进 {@link ToolIndex}，
@@ -80,18 +81,23 @@ public final class SubagentRunner {
 
     private final ToolSearchProperties toolSearch;
 
+    /** 一轮的工具调用熔断（与父同一份配置）：委派不该变成绕过它的口子。 */
+    private final int toolCallLimit;
+
     public SubagentRunner(ChatModel model,
                           ObservationRegistry observations,
                           Supplier<List<ToolCallback>> availableTools,
                           Advisor authorizationAdvisor,
                           ToolIndex toolIndex,
-                          ToolSearchProperties toolSearch) {
+                          ToolSearchProperties toolSearch,
+                          int toolCallLimit) {
         this.model = Objects.requireNonNull(model, "model");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.availableTools = Objects.requireNonNull(availableTools, "availableTools");
         this.authorizationAdvisor = Objects.requireNonNull(authorizationAdvisor, "authorizationAdvisor");
         this.toolIndex = Objects.requireNonNull(toolIndex, "toolIndex");
         this.toolSearch = Objects.requireNonNull(toolSearch, "toolSearch");
+        this.toolCallLimit = toolCallLimit;
     }
 
     /**
@@ -110,7 +116,7 @@ public final class SubagentRunner {
                 tools.stream().map(callback -> callback.getToolDefinition().name()).toList());
 
         ChatClient subagent = ChatClient.builder(model, observations, null, null,
-                        ToolSearch.toolLoop(toolSearch, toolIndex, observations))
+                        ToolSearch.toolLoop(toolSearch, toolIndex, observations, toolCallLimit))
                 .defaultSystem(definition.systemPrompt())
                 .defaultToolCallbacks(tools)
                 // 只挂鉴权：记忆与脱敏都不进子链（理由见类注释）。

@@ -100,11 +100,12 @@ public final class ToolSearch {
      */
     public static ToolSearchToolCallingAdvisor.Builder<?> toolLoop(ToolSearchProperties properties,
                                                                    ToolIndex toolIndex,
-                                                                   ObservationRegistry observations) {
+                                                                   ObservationRegistry observations,
+                                                                   int toolCallLimit) {
         return ToolSearchToolCallingAdvisor.builder()
                 .toolIndex(Objects.requireNonNull(toolIndex, "toolIndex"))
                 .maxResults(properties.maxResults())
                 .systemMessageSuffix(SYSTEM_SUFFIX)
-                .toolCallingManager(ToolCallBudget.toolCallingManager(observations));
+                .toolCallingManager(ToolCallBudget.toolCallingManager(observations, toolCallLimit));
     }
 }

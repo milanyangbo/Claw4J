@@ -525,7 +525,7 @@ class ModelAndToolSelectionTest {
         ChatClient client = ChatClient.builder(new FixedChatModel("好的"),
                         ObservationRegistry.NOOP, null, null,
                         ToolSearch.toolLoop(ToolSearchProperties.defaults(), new ChineseToolIndex(),
-                                ObservationRegistry.NOOP))
+                                ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS))
                 .defaultToolCallbacks(new RecordingTool("lookup", "128400", "查询销售成交额"))
                 .build();
 
@@ -743,7 +743,8 @@ class ModelAndToolSelectionTest {
                 // 与装配里那个 bean 同一条：检索工具自己按 read 放行
                 ToolPermissionRegistry.of(Map.of(ToolSearch.TOOL_NAME, ToolPermission.read())));
         return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
-                        ToolSearch.toolLoop(properties, index, ObservationRegistry.NOOP))
+                        ToolSearch.toolLoop(properties, index, ObservationRegistry.NOOP,
+                                ToolCallBudget.MAX_TOTAL_CALLS))
                 .defaultAdvisors(new AuthorizationAdvisor(registries))
                 .defaultToolCallbacks(tools)
                 .build();

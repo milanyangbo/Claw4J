@@ -178,6 +178,40 @@ class ChatPipelineTest {
         assertThat(third.calls()).isLessThanOrEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
     }
 
+    /**
+     * 熔断与额度的分界（ADR-0027 决定五）。
+     *
+     * <p>两件事必须分开：<b>这一轮绕了太多次</b>（止损，不改任何持久状态）与
+     * <b>这件事花超了</b>（额度，在目标上，进 {@code budget_limited}）。
+     * 合成一个数的话，运维看到"停了"分不清该加预算还是该让模型收敛。
+     *
+     * <p>回给用户的那句话也要是我们自己的：框架把它变成一代回答时用的是英文原话，
+     * 直接吐给用户等于把内部机制漏出去。
+     */
+    @Test
+    @DisplayName("撞上工具调用上限：回我们自己的话，目标状态一点都不动")
+    void theToolCallCapIsACircuitBreakerNotAQuota() {
+        InMemoryGoals goals = new InMemoryGoals();
+        RecordingTool tool = new RecordingTool("lookup", "还是不对");
+        FixedChatModel model = new FixedChatModel(prompt -> requestTool("lookup", "{}"), List.of());
+        ChatClientAgentPort port = new ChatClientAgentPort(
+                client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))),
+                        List.of(tool)),
+                null, new FakeRuns(), null, null, null, null, null, goals);
+
+        port.reply(message("chat-cap", "/goal 把三张表的口径对齐"));
+        String text = port.reply(message("chat-cap", "一直查")).text();
+
+        assertThat(tool.calls()).isEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
+        assertThat(text)
+                .as("给用户的是「这一步做了太多次」，不是框架的 limit exceeded")
+                .isEqualTo(ChatClientAgentPort.TOOL_CALL_CAPPED);
+        assertThat(goals.of(SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-cap"))
+                .orElseThrow().status())
+                .as("熔断不改目标状态：止损与额度是两件事")
+                .isEqualTo(GoalStatus.ACTIVE);
+    }
+
     @Test
     @DisplayName("鉴权放行后工具真的被调到，结果参与最终回答")
     void authorizedToolActuallyRunsInsideTheLoop() {
@@ -445,7 +479,7 @@ class ChatPipelineTest {
                                             SessionGoalStore goals) {
         return new ChatClientAgentPort(
                 client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))), List.of()),
-                null, runs, null, null, null, null, null, null, goals);
+                null, runs, null, null, null, null, null, goals);
     }
 
     /**
@@ -515,9 +549,38 @@ class ChatPipelineTest {
                     current.createdAt(), NOW)));
         }
 
+        /**
+         * 记账，并在撞上预算时进 {@code budget_limited}——与 {@code JdbcSessionGoalStore}
+         * 的 {@code case when ... then 'budget_limited'} 同一条规则。
+         * 这里重写一遍而不是跳过：主链路那份测试要断言"这一轮之后提示词里没有目标了"。
+         */
         @Override
-        public void addTokens(String sessionKey, long tokens) {
-            throw new UnsupportedOperationException("账在票 04 记");
+        public Optional<SessionGoal> addTokens(String sessionKey, long tokens) {
+            SessionGoal current = rows.get(sessionKey);
+            if (current == null) {
+                return Optional.empty();
+            }
+            long used = current.tokensUsed() + tokens;
+            boolean capped = current.status() != GoalStatus.COMPLETE
+                    && current.status() != GoalStatus.BUDGET_LIMITED
+                    && current.tokenBudget() != null && used >= current.tokenBudget();
+            return Optional.of(put(new SessionGoal(sessionKey,
+                    capped ? GoalStatus.BUDGET_LIMITED : current.status(),
+                    current.objective(), current.note(), current.tokenBudget(), used,
+                    current.revision() + (capped ? 1 : 0), current.createdAt(), NOW)));
+        }
+
+        /** 恢复：从 {@code budget_limited} 回来时开新窗口（用量清零），与 JDBC 那条语句一致。 */
+        @Override
+        public Optional<SessionGoal> resume(String sessionKey, String note) {
+            SessionGoal current = rows.get(sessionKey);
+            if (current == null || current.status() == GoalStatus.COMPLETE) {
+                return Optional.empty();
+            }
+            long used = current.status() == GoalStatus.BUDGET_LIMITED ? 0L : current.tokensUsed();
+            return Optional.of(put(new SessionGoal(sessionKey, GoalStatus.ACTIVE, current.objective(),
+                    note, current.tokenBudget(), used, current.revision() + 1,
+                    current.createdAt(), NOW)));
         }
 
         @Override
@@ -558,9 +621,6 @@ class ChatPipelineTest {
         /** 正在等审批的 run（P02 才会真的置这个状态，这里先留个口子）。 */
         final Set<String> awaitingApproval = new java.util.LinkedHashSet<>();
 
-        /** 每个 run 已用掉的量（A04）。 */
-        final Map<String, Budget> spent = new java.util.HashMap<>();
-
         /** 每个 run 的发起人（P02）：服务端续跑要用它鉴权。 */
         final Map<String, Principal> principals = new java.util.HashMap<>();
 
@@ -576,7 +636,6 @@ class ChatPipelineTest {
             Run run = new Run("run-" + (started.size() + 1), owner, principalDigest, goal,
                     RunStatus.RUNNING, notifyPolicy, Budget.NONE, null, Instant.now());
             started.add(run);
-            spent.put(run.id(), Budget.NONE);
             return Optional.of(run);
         }
 
@@ -626,23 +685,6 @@ class ChatPipelineTest {
          * <b>不模仿"重写后旧版不再被读到"</b>——那是 SQL 里的 {@code plan_ref} 切法，
          * 由 {@code RunSchemaSqlTest} 在真库上钉住；这里够让 recap 跑起来就行。
          */
-
-
-        /**
-         * 内存版用量：与 {@code JdbcRunStore} 一样，读不到（这个 run 不在）是空。
-         * <b>不模仿"降级"</b>——降级那条路由真库那份测试钉着，这里够主链路跑起来就行。
-         */
-        @Override
-        public Optional<Budget> spent(String runId, java.time.Instant idleBefore) {
-            return Optional.ofNullable(spent.get(runId));
-        }
-
-        @Override
-        public Optional<Budget> charge(String runId, int toolCalls, long tokens, long millis) {
-            Budget now = spent.getOrDefault(runId, Budget.NONE).plus(toolCalls, tokens, millis);
-            spent.put(runId, now);
-            return Optional.of(now);
-        }
 
 
         private Run replace(Run run, RunStatus status, String result) {
@@ -748,7 +790,8 @@ class ChatPipelineTest {
     static ChatClient.Builder clientBuilder(ChatModel model) {
         return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
                 ToolCallingAdvisor.builder()
-                        .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)));
+                        .toolCallingManager(ToolCallBudget.toolCallingManager(
+                                ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS)));
     }
 
     private static InboundMessage message(String chatId, String text) {

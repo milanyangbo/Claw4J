@@ -607,7 +607,7 @@ class ApprovalFlowTest {
         private RecordingTool withTool(String name, ToolPermission permission) {
             RecordingTool tool = new RecordingTool(name);
             declared.put(name, permission);
-            tools.add(new MeteredToolCallback(tool, null, null, audit));
+            tools.add(new MeteredToolCallback(tool, null, audit));
             return tool;
         }
 
@@ -616,7 +616,8 @@ class ApprovalFlowTest {
                 ChatClient chat = ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
                                 ToolCallingAdvisor.builder()
                                         .toolCallingManager(ToolCallBudget.toolCallingManager(
-                                                ObservationRegistry.NOOP)))
+                                                ObservationRegistry.NOOP,
+                                                ToolCallBudget.MAX_TOTAL_CALLS)))
                         .defaultAdvisors(new AuthorizationAdvisor(
                                 List.of(ToolPermissionRegistry.of(declared)),
                                 new RunApprovalGate(new JdbcApprovalLedger(jdbc, TTL.toMillis()), List.of()),

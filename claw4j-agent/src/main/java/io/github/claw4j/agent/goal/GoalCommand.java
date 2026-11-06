@@ -161,6 +161,11 @@ public sealed interface GoalCommand {
      *
      * <p>已完成的目标不能恢复：那是终态，OpenClaw 的原文是"目标处于终止状态。
      * 启动或恢复其他目标前，请先将其清除"。恢复它等于把一件收尾的事重新打开。
+     *
+     * <p><b>从 {@code budget_limited} 恢复会开新窗口</b>：用量清零、预算不变
+     * （"Resuming starts a new budget window at the current fresh token count"）。
+     * 清零这件事在 {@link SessionGoalStore#resume} 的那一条 SQL 里，因为只有它能原子地
+     * 回答"更新之前是不是 budget_limited"。
      */
     private static String resume(SessionGoalStore goals, String sessionKey, String note) {
         Optional<SessionGoal> current = goals.of(sessionKey);
@@ -176,8 +181,14 @@ public sealed interface GoalCommand {
             // "谁最后改的"就多出一条没有改动的痕迹。
             return "这个目标本来就是活跃的，没动它。\n" + GoalTools.render(current.get());
         }
-        return setStatus(goals, sessionKey, GoalStatus.ACTIVE, note,
-                "目标恢复为活跃，接下来的轮次会重新把它带进上下文。");
+        boolean freshWindow = current.get().status() == GoalStatus.BUDGET_LIMITED;
+        return goals.resume(sessionKey, note)
+                .map(changed -> freshWindow
+                        ? "目标恢复为活跃，额度开了新窗口（用量从 0 起算）。接下来的轮次会重新把它带进上下文。"
+                        : "目标恢复为活跃，接下来的轮次会重新把它带进上下文。")
+                .orElseGet(() -> goals.of(sessionKey)
+                        .map(ignored -> "没能改（库连不上，或者迁移没跑过）。")
+                        .orElse("这个会话还没有目标。用法：/goal <目标>"));
     }
 
     private static String setStatus(SessionGoalStore goals, String sessionKey, GoalStatus status,

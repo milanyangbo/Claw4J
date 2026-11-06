@@ -65,8 +65,36 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
             + " set status = ?, status_note = ?, revision = revision + 1, updated_at = now()"
             + " where session_key = ? and status <> 'complete'" + RETURNING;
 
+    /**
+     * 恢复：状态回 active；**只有 {@code budget_limited} 才把用量清零**（OpenClaw：resume 开新窗口）。
+     *
+     * <p>{@code status = 'budget_limited'} 判的是更新之前的那一行：PostgreSQL 保证同一条
+     * update 里所有 set 表达式读的都是同一份旧快照，所以这一句与 {@code status = 'active'}
+     * 不会互相看到对方刚写进去的值。
+     */
+    private static final String RESUME = "update claw4j_session.conversation_goal"
+            + " set tokens_used = case when status = 'budget_limited' then 0 else tokens_used end,"
+            + " status = 'active', status_note = ?, revision = revision + 1, updated_at = now()"
+            + " where session_key = ? and status <> 'complete'" + RETURNING;
+
+    /**
+     * 记账，并在撞上预算的同一条语句里进 {@code budget_limited}。
+     *
+     * <p>{@code token_budget is not null and tokens_used + ? >= token_budget} 里的
+     * {@code tokens_used} 是<b>更新之前</b>的值，所以这一句回答的是"加完这一笔有没有到"。
+     * 拆成"先加再读再改状态"会有两步之间的窗口：并发的两条消息各自看到没超，
+     * 结果超了却没进受限状态。
+     */
     private static final String ADD_TOKENS = "update claw4j_session.conversation_goal"
-            + " set tokens_used = tokens_used + ?, updated_at = now() where session_key = ?";
+            + " set tokens_used = tokens_used + ?,"
+            + " status = case when status not in ('complete', 'budget_limited')"
+            + "               and token_budget is not null and tokens_used + ? >= token_budget"
+            + "          then 'budget_limited' else status end,"
+            + " revision = revision + case when status not in ('complete', 'budget_limited')"
+            + "               and token_budget is not null and tokens_used + ? >= token_budget"
+            + "          then 1 else 0 end,"
+            + " updated_at = now()"
+            + " where session_key = ?" + RETURNING;
 
     private static final String CLEAR = "delete from claw4j_session.conversation_goal"
             + " where session_key = ?";
@@ -108,8 +136,15 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
     }
 
     @Override
-    public void addTokens(String sessionKey, long tokens) {
-        guard("给一个目标记用量", () -> jdbc.update(ADD_TOKENS, tokens, sessionKey));
+    public Optional<SessionGoal> resume(String sessionKey, String note) {
+        return guard("恢复一个目标", () -> jdbc.query(RESUME, ROW,
+                note, sessionKey).stream().findFirst().orElse(null));
+    }
+
+    @Override
+    public Optional<SessionGoal> addTokens(String sessionKey, long tokens) {
+        return guard("给一个目标记用量", () -> jdbc.query(ADD_TOKENS, ROW,
+                tokens, tokens, tokens, sessionKey).stream().findFirst().orElse(null));
     }
 
     @Override

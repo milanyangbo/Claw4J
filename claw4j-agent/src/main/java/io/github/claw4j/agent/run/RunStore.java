@@ -72,30 +72,4 @@ public interface RunStore {
     /** 一个 run 的全部 step，按序号升序。 */
     List<Step> stepsOf(String runId);
 
-    /**
-     * 这个 run 已经用掉的量（A04）：工具调用次数、token、耗时三项。
-     *
-     * <p><b>空表示"读不到"，不表示"没用掉"</b>：没有这个 run、或者存储降级，
-     * 都是空。调用方（{@link RunBudget}）对两者的动作一样——管不住就不拦。
-     * 用 {@link Budget#NONE} 去表示"读不到"会把"少记一笔"说成"一点没花"，
-     * 而那正是预算最怕听见的那种话。
-     *
-     * <p><b>读的是"这段会话"的累计，不是这一条 run</b>（ADR-0025）：run 活一轮，
-     * 按它记的数每轮都从 0 开始。所以先由 run 反查它属于哪段会话，再取那段会话
-     * 在窗口内的累计。{@code idleBefore} 之前没动过的会话视为已结束，计数清零——
-     * 这就是"空闲即新会话"，与 OpenClaw 的 idle reset 同构。
-     *
-     * @param idleBefore 窗口起点（现在减去空闲时长）。早于它的活动不算同一段对话
-     */
-    Optional<Budget> spent(String runId, Instant idleBefore);
-
-    /**
-     * 往上加一笔用量（A04）。三项各自累加，不传绝对值——
-     * 调用方算总数再写回会在并发下互相覆盖，而覆盖的表现是"额度凭空多出来"。
-     *
-     * @return 加完之后的用量。空表示没记下来（与 {@link #append} 同一个降级口径）
-     */
-    Optional<Budget> charge(String runId, int toolCalls, long tokens, long millis);
-
-
 }

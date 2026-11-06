@@ -586,15 +586,37 @@ class ToolGovernanceTest {
                     current.createdAt(), NOW)));
         }
 
+        /**
+         * 记账并判超，与 {@code JdbcSessionGoalStore} 那条 {@code case when} 同一条规则：
+         * 撞上预算就进 {@code budget_limited}，已经 complete 的不动状态。
+         */
         @Override
-        public void addTokens(String sessionKey, long tokens) {
+        public Optional<SessionGoal> addTokens(String sessionKey, long tokens) {
             SessionGoal current = rows.get(sessionKey);
             if (current == null) {
-                return;
+                return Optional.empty();
             }
-            put(new SessionGoal(sessionKey, current.status(), current.objective(), current.note(),
-                    current.tokenBudget(), current.tokensUsed() + tokens, current.revision(),
-                    current.createdAt(), NOW));
+            long used = current.tokensUsed() + tokens;
+            boolean capped = current.status() != GoalStatus.COMPLETE
+                    && current.status() != GoalStatus.BUDGET_LIMITED
+                    && current.tokenBudget() != null && used >= current.tokenBudget();
+            return Optional.of(put(new SessionGoal(sessionKey,
+                    capped ? GoalStatus.BUDGET_LIMITED : current.status(), current.objective(),
+                    current.note(), current.tokenBudget(), used,
+                    current.revision() + (capped ? 1 : 0), current.createdAt(), NOW)));
+        }
+
+        /** 恢复：从 {@code budget_limited} 回来时开新窗口；其余状态用量不动。 */
+        @Override
+        public Optional<SessionGoal> resume(String sessionKey, String note) {
+            SessionGoal current = rows.get(sessionKey);
+            if (current == null || current.status() == GoalStatus.COMPLETE) {
+                return Optional.empty();
+            }
+            long used = current.status() == GoalStatus.BUDGET_LIMITED ? 0L : current.tokensUsed();
+            return Optional.of(put(new SessionGoal(sessionKey, GoalStatus.ACTIVE,
+                    current.objective(), note, current.tokenBudget(), used,
+                    current.revision() + 1, current.createdAt(), NOW)));
         }
 
         @Override
@@ -648,17 +670,6 @@ class ToolGovernanceTest {
             throw new UnsupportedOperationException("审计不该回读 step");
         }
 
-
-
-        @Override
-        public Optional<Budget> spent(String runId, java.time.Instant idleBefore) {
-            throw new UnsupportedOperationException("审计不该读用量");
-        }
-
-        @Override
-        public Optional<Budget> charge(String runId, int toolCalls, long tokens, long millis) {
-            throw new UnsupportedOperationException("审计不该记用量");
-        }
 
     }
 

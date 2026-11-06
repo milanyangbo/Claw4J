@@ -7,8 +7,6 @@ import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.run.DeliveryTarget;
 import io.github.claw4j.agent.run.JdbcRunStore;
 import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunBudget;
-import io.github.claw4j.agent.run.RunBudgetProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.run.RunStatus;
 import io.github.claw4j.agent.schedule.Schedule;
@@ -376,8 +374,8 @@ class ScheduleFlowTest {
     }
 
     @Test
-    @DisplayName("两次到点各开一个 run、各记一笔预算：工具用的是任务主人的身份")
-    void eachFiringRunsWithTheOwnersIdentityAndItsOwnBudget() {
+    @DisplayName("两次到点各开一个 run：工具用的是任务主人的身份，各走各的会话")
+    void eachFiringRunsWithTheOwnersIdentity() {
         Recorder delivery = new Recorder();
         String id = dueTask(DAILY_NINE, NotifyPolicy.SILENT);
 
@@ -389,10 +387,12 @@ class ScheduleFlowTest {
                 String.class);
         assertThat(runIds).as("每次到点都是新的一件").hasSize(2);
         for (String runId : runIds) {
-            assertThat(runs.spent(runId, java.time.Instant.EPOCH).orElseThrow().toolCalls())
-                    .as("每次运行是自己的会话（cron:<taskId>:<时刻>），额度各 1。"
-                            + "以前它借用创建者那段对话，两次会合成 2——那 2 次还记在用户头上")
-                    .isEqualTo(1);
+            assertThat(jdbc.queryForObject(
+                    "select session_id from claw4j_run.agent_run where id = ?", String.class, runId))
+                    .as("每次运行是自己的会话（cron:<taskId>:<时刻>）："
+                            + "借用创建者那段对话的话，两次会落在同一段上下文里")
+                    .startsWith("claw4j:user:")
+                    .contains("cron:");
             assertThat(runs.find(runId).orElseThrow().owner())
                     .isEqualTo(SessionKeys.ownerOf(OWNER_PRINCIPAL));
         }
@@ -513,23 +513,21 @@ class ScheduleFlowTest {
     }
 
     /**
-     * 一个"到点就真的调一次工具"的门：预算、工具计数、鉴权链都是真的。
+     * 一个"到点就真的调一次工具"的门：工具计数、鉴权链都是真的。
      *
-     * <p>用它验的是这张票里最容易只写在文档上的两句：任务跑在主人的身份上（工具真的被放行），
-     * 以及<b>每次运行单独计预算</b>（两次到点各记一笔，不是合成两笔）。
+     * <p>用它验的是这张票里最容易只写在文档上的那句：任务跑在主人的身份上（工具真的被放行）。
      */
     private ChatClientAgentPort toolCallingPort() {
-        RunBudget budget = new RunBudget(runs, RunBudgetProperties.defaults(),
-                SessionResetProperties.defaults().idleMillis());
-        ToolCallback metered = new MeteredToolCallback(new RecordingTool(seenPrincipals), null, budget);
+        ToolCallback metered = new MeteredToolCallback(new RecordingTool(seenPrincipals), null);
         ChatClient chat = ChatClient.builder(new ToolThenAnswerModel(), ObservationRegistry.NOOP, null, null,
                         ToolCallingAdvisor.builder()
-                                .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+                                .toolCallingManager(ToolCallBudget.toolCallingManager(
+                                        ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS)))
                 // 鉴权链是生产那条：工具能跑通，说明这一次调用用的是任务主人那份权限
                 .defaultAdvisors(new AuthorizationAdvisor(permissions()))
                 .defaultToolCallbacks(metered)
                 .build();
-        return new ChatClientAgentPort(chat, null, runs, budget);
+        return new ChatClientAgentPort(chat, null, runs);
     }
 
     private ScheduleScanner toolCallingScanner(Recorder delivery) {
@@ -544,7 +542,8 @@ class ScheduleFlowTest {
     private static ChatClientAgentPort port(ChatModel model) {
         ChatClient chat = ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
                         ToolCallingAdvisor.builder()
-                                .toolCallingManager(ToolCallBudget.toolCallingManager(ObservationRegistry.NOOP)))
+                                .toolCallingManager(ToolCallBudget.toolCallingManager(
+                                        ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS)))
                 .build();
         return new ChatClientAgentPort(chat, null, runs);
     }

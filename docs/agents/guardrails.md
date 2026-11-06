@@ -40,6 +40,7 @@
 | 入站拦截挡不住改写 | 关键词子串匹配，同义词、全角字符、词间插空格都能绕过（框架文档自己写明不处理 homoglyph / 全角 / 零宽） | 它只挡**随口一问**，不是安全边界：越权的真实边界是鉴权（表级 × 动作级），外泄的边界是出站脱敏。词表空着时整个 Advisor 不装配，`claw4j.guard.sensitive-words` 是唯一开关 | `docs/design/inbound-guard.md` |
 | `resume` 不看租约：`RUNNING` 的 run 允许被"继续"接上 | 进程被杀之后库里这一行仍然是 `running`，而没有租约就分不出"还在跑"与"已经死了"——A02 的"杀进程后继续"只能走这条路。同一件真在跑的事被两个人同时"继续"时，后到的那条执行流落的 step 会撞 `(run_id, seq)` 唯一键，被 `guard` 吞掉、只记一个数 | `claw4j.run.resumed` / `resume_rejected` / `errors` 三个计数能看出走的是哪条路；要根治得给 run 加租约与心跳，那是另一次改动（改红线那一类的量级） | ADR-0016、`RunStatus` 的 javadoc、`JdbcRunStore#resume` |
 | 通知策略三档里只有两档可达：`state_changes` 的中间态没有生产者 | 挂起时推出去的是**审批卡片**（`ApprovalCards`），不是 `RunDelivery` 的通知；`done_only` 与 `silent` 正常。选 `state_changes` 的人今天拿不到额外那一句 | `claw4j.run.delivery{skipped,policy=…}` 能看出这一轮被策略跳过；审批人那边看卡片到没到。两者是两条路，别把"卡片到了"当成"通知策略生效了" | spec 的 Comments、`NotifyPolicy#announcesChange` |
+| 额度只在非流式那一轮记全 | 流式回答拿不到汇总 usage，那一轮按 0 记——目标上的 `tokens_used` 因此会少算流式那部分（与非流式同一句"不拿估算值冒充"的口径） | 额度这件事本来就是护栏不是账单（OpenClaw 也这么说）；要查"这次到底花了多少"看模型层的 `claw4j.model.tokens` 指标，它两条路都有 | 票 04、ADR-0027 决定五 |
 | 审批过期之后不重画卡片 | 过期在判定时生效：`decide` 拒绝过期请求，卡片渲染时也不带按钮——但**没有任何任务回头去改那张已经发出去的卡** | 点一下就拿到"这条审批已经过期了，让提请求的人重新发起"，不会变成"点了没反应"；`approval_request` 上的 `expires_at` 与 `status` 是真相，卡片只是它的一个快照 | spec 的 Comments、`ApprovalService#decide` |
 
 "会话记忆会把旧答案带进新问题"那行本身就是例子：先例记在第一次决定的那张票里，

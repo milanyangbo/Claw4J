@@ -1,15 +1,15 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.ChatClientAgentPort;
+import io.github.claw4j.agent.goal.GoalStatus;
+import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
+import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.OtelRunTracer;
 import io.github.claw4j.agent.observability.RunTracer;
-import io.github.claw4j.agent.run.Budget;
 import io.github.claw4j.agent.run.DeliveryTarget;
 import io.github.claw4j.agent.run.JdbcRunStore;
 import io.github.claw4j.agent.run.Run;
-import io.github.claw4j.agent.run.RunBudget;
-import io.github.claw4j.agent.run.RunBudgetProperties;
 import io.github.claw4j.agent.run.RunDelivery;
 import io.github.claw4j.agent.run.RunStatus;
 import io.github.claw4j.agent.run.RunStore;
@@ -96,8 +96,6 @@ class RunLifecycleTest {
 
     private RunStore runs;
 
-    private RunBudget budget;
-
     @BeforeAll
     static void migrate() {
         Flyway.configure()
@@ -115,65 +113,9 @@ class RunLifecycleTest {
         jdbc.update("delete from claw4j_run.agent_run");
         freshSessionTables();
         runs = new JdbcRunStore(jdbc);
-        budget = new RunBudget(runs, RunBudgetProperties.defaults(),
-                SessionResetProperties.defaults().idleMillis());
     }
 
     // ---------------------------------------------------------------- 花了多少（A04）
-
-    @Test
-    @DisplayName("一次 run 的第 7 次工具调用被拒：额度记在 run 上，不是每轮重置")
-    void seventhToolCallOfOneRunIsRefused() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "对齐三张表的口径").orElseThrow();
-        CountingTool tool = new CountingTool();
-        MeteredToolCallback metered = new MeteredToolCallback(tool, null, budget);
-        ToolContext context = new ToolContext(Map.of(ContextKeys.RUN_ID, run.id()));
-
-        // 三轮各两次。轮次在这里不改变任何结果——这正是 A04 之前的行为的反面：
-        // 那时额度每轮重置，这七次会全部放行，而"这件事一共烧了多少"没有地方记。
-        for (int turn = 0; turn < 3; turn++) {
-            metered.call("{}", context);
-            metered.call("{}", context);
-        }
-        assertThat(tool.calls()).as("前 6 次都真的执行了").isEqualTo(6);
-
-        String refused = metered.call("{}", context);
-
-        assertThat(refused).contains("预算用尽").contains("工具调用 6/6 次");
-        assertThat(tool.calls()).as("第 7 次不该真的碰到工具").isEqualTo(6);
-        assertThat(budget.spent(run.id()).orElseThrow().toolCalls())
-                .as("被拒的那次不算用掉的量：否则'还剩几次'会凭空少一次").isEqualTo(6);
-    }
-
-    @Test
-    @DisplayName("超预算：不再调模型，写明结局，状态 budget_exhausted 能从库里读回")
-    void exhaustedRunStopsWithAnOutcomeInTheDatabase() {
-        Principal principal = Principal.readOnly("u-1");
-        // 会话键在开 run 的时候就写进去：预算按会话累计，先扣后写的那几笔
-        // 会落在 run 行上，而判据读的是会话行——看起来像"一次都没花"（ADR-0025）。
-        String sessionId = SessionKeys.sessionIdOf(principal, null, "chat-budget");
-        Run run = runs.start(SessionKeys.ownerOf(principal), "fp-1", "对齐三张表的口径",
-                NotifyPolicy.DEFAULT, sessionId).orElseThrow();
-        InboundMessage message = new InboundMessage(
-                principal, "chat-budget", "接着做", Instant.now(), null,
-                null, NotifyPolicy.DEFAULT, null, sessionId);
-        for (int i = 0; i < 6; i++) {
-            assertThat(budget.chargeToolCall(run.id())).isTrue();
-        }
-        ChatClientAgentPort port = new ChatClientAgentPort(
-                ChatClient.builder(new NeverCalled()).build(), null, runs, budget);
-
-        OutboundMessage answer = port.reply(message);
-
-        assertThat(answer.text()).contains("预算用尽").contains("工具调用 6/6 次");
-        // 判据是库里那两个数：状态与"为什么停"，都不是回执的措辞。
-        // 这一轮是 reply 开出来的那一行——上面那条 run 只用来把会话额度扣光。
-        assertThat(runs.find(answer.runId()).orElseThrow().status())
-                .isEqualTo(RunStatus.BUDGET_EXHAUSTED);
-        assertThat(runs.stepsOf(answer.runId()))
-                .as("为什么停在这一轮，库里要答得出来——这是审计最常问的一句")
-                .anySatisfy(step -> assertThat(step.resultSummary()).contains("预算用尽"));
-    }
 
     @Test
     @DisplayName("一轮就是一件事、答完即收尾：跨轮不存在「还没做完的 run」")
@@ -181,7 +123,7 @@ class RunLifecycleTest {
         Principal principal = Principal.readOnly("u-1");
         String owner = SessionKeys.ownerOf(principal);
         ChatClientAgentPort port = new ChatClientAgentPort(
-                ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs, budget);
+                ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs);
 
         OutboundMessage first = port.reply(new InboundMessage(principal, "chat-1", "华东上周成交额是多少？"));
         OutboundMessage second = port.reply(new InboundMessage(principal, "chat-1", "那华南呢？"));
@@ -206,51 +148,70 @@ class RunLifecycleTest {
     }
 
     @Test
-    @DisplayName("一轮的 token 与耗时记到 run 上：模型报多少记多少，不估算")
-    void tokensAndWallClockOfATurnAreChargedToTheRun() {
+    @DisplayName("这一轮花掉的 token 记到目标上：撞上预算进 budget_limited，下一轮不再注入")
+    void tokensOfATurnAreChargedToTheGoal() {
         Principal principal = Principal.readOnly("u-1");
-        ChatClientAgentPort port = new ChatClientAgentPort(
-                ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs, budget);
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, null);
+        String sessionId = SessionKeys.sessionIdOf(principal, null, "chat-goal");
+        goals.start(sessionId, "把三张表的口径对齐", 100L);
 
-        OutboundMessage answer = port.reply(new InboundMessage(
-                principal, "chat-tokens", "上周华东成交额", Instant.now(), null));
+        List<String> prompts = new ArrayList<>();
+        ChatClientAgentPort port = goalPort(prompts);
 
-        Budget spent = budget.spent(answer.runId()).orElseThrow();
-        assertThat(spent.tokens()).as("12 + 34：模型报什么就记什么，不拿估算值补").isEqualTo(46L);
-        assertThat(spent.millis())
-                .as("耗时也照记（从进门到收尾实测）。这里只断言它非负——"
-                        + "一次本地往返可能真的不到 1 毫秒，写成 isPositive 会变成一条随机红的断言")
-                .isNotNegative();
-        assertThat(runs.find(answer.runId()).orElseThrow().status())
-                .as("没有撞线的一轮照常是 done，不是 budget_exhausted").isEqualTo(RunStatus.DONE);
+        // 每轮 12 + 34 = 46：两轮 92 还在预算内，第三轮 138 撞线。
+        port.reply(new InboundMessage(principal, "chat-goal", "先核对华东"));
+        port.reply(new InboundMessage(principal, "chat-goal", "再核对华南"));
+        assertThat(goals.of(sessionId).orElseThrow().status())
+                .as("还没到 100：目标照旧是活跃的").isEqualTo(GoalStatus.ACTIVE);
+        assertThat(goals.of(sessionId).orElseThrow().tokensUsed()).isEqualTo(92L);
+
+        port.reply(new InboundMessage(principal, "chat-goal", "最后核对一遍"));
+        assertThat(goals.of(sessionId).orElseThrow().status())
+                .as("到了 100 就进 budget_limited——不是这一轮失败，是这件事停下来了")
+                .isEqualTo(GoalStatus.BUDGET_LIMITED);
+        assertThat(goals.of(sessionId).orElseThrow().tokensUsed()).isEqualTo(138L);
+
+        port.reply(new InboundMessage(principal, "chat-goal", "接着说"));
+        assertThat(prompts.getLast())
+                .as("受限的目标不再注入：额度用完还逼模型继续，等于没停")
+                .doesNotContain("活跃目标：");
+        assertThat(jdbc.queryForObject(
+                "select status from claw4j_run.agent_run where id = "
+                        + "(select id from claw4j_run.agent_run order by created_at desc limit 1)",
+                String.class))
+                .as("这一轮本身照常跑完：额度状态在目标上，不在 run 上")
+                .isEqualTo("done");
     }
 
+    /**
+     * 恢复的两条规则（OpenClaw：resume 开新窗口，但只对"额度用完"那个状态）。
+     *
+     * <p>写在真库上：清零与判超都在一条 SQL 里（`case when status = 'budget_limited'`），
+     * 用内存替身验的是我写的 if，不是那条语句。
+     */
     @Test
-    @DisplayName("耗时是独立的一项：只撞它时，写明的结局要说是耗时")
-    void wallClockIsItsOwnDimension() {
-        Run run = runs.start("u-1@fp-1", "fp-1", "对齐三张表的口径").orElseThrow();
+    @DisplayName("/goal resume：额度用完的开新窗口，暂停过的用量照旧")
+    void resumingResetsTheWindowOnlyWhenTheBudgetWasReached() {
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, null);
+        String capped = "claw4j:user:u-1@fp-1:-:capped";
+        String paused = "claw4j:user:u-1@fp-1:-:paused";
+        goals.start(capped, "把三张表的口径对齐", 100L);
+        goals.addTokens(capped, 138L);
+        goals.start(paused, "等 CI 变绿", 100L);
+        goals.addTokens(paused, 40L);
+        goals.setStatus(paused, GoalStatus.PAUSED, "等 CI");
 
-        budget.chargeTurn(run.id(), 0L, 1_500L);
+        var resumed = goals.resume(capped, "再看看").orElseThrow();
 
-        assertThat(budget.spent(run.id()).orElseThrow().millis()).isEqualTo(1_500L);
-        Budget over = new Budget(0, 0L, 901_000L);
-        assertThat(budget.exhausted(over)).isTrue();
-        assertThat(budget.reason(over)).as("'预算用尽'四个字不够，得说清是哪一项").contains("耗时");
-    }
+        assertThat(resumed.status()).isEqualTo(GoalStatus.ACTIVE);
+        assertThat(resumed.tokensUsed()).as("新窗口：用量从 0 起算").isZero();
+        assertThat(resumed.objective()).isEqualTo("把三张表的口径对齐");
+        assertThat(resumed.tokenBudget()).as("预算本身不变").isEqualTo(100L);
 
-    @Test
-    @DisplayName("另一件事从零开始：定时任务每次运行各开一个 run，各计各的")
-    void anotherRunStartsFromZero() {
-        Run first = runs.start("u-1@fp-1", "fp-1", "第一件事").orElseThrow();
-        Run second = runs.start("u-1@fp-1", "fp-1", "第二件事").orElseThrow();
-
-        for (int i = 0; i < 6; i++) {
-            assertThat(budget.chargeToolCall(first.id())).isTrue();
-        }
-
-        assertThat(budget.chargeToolCall(first.id())).isFalse();
-        assertThat(budget.chargeToolCall(second.id()))
-                .as("额度是 run 的属性：一件事烧完不影响另一件").isTrue();
+        var back = goals.resume(paused, "继续").orElseThrow();
+        assertThat(back.tokensUsed())
+                .as("暂停一下不该白拿一份额度：只有限额那一个状态才清零")
+                .isEqualTo(40L);
     }
 
     // ---------------------------------------------------------------- 送到哪（A05）
@@ -323,14 +284,14 @@ class RunLifecycleTest {
         Principal principal = Principal.readOnly("u-1");
 
         Run plain = runs.start(owner("u-1"), "fp-1", "上周华东成交额").orElseThrow();
-        new ChatClientAgentPort(ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs, budget)
-                .reply(new InboundMessage(principal, "chat-1", "上周华东成交额", Instant.now(), null, plain.id()));
+        new ChatClientAgentPort(ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs)
+                .reply(new InboundMessage(principal, "chat-1", "上周华东成交额", Instant.now(), null));
 
         List<SpanData> spans = new CopyOnWriteArrayList<>();
         Run traced = runs.start(owner("u-1"), "fp-1", "上周华东成交额").orElseThrow();
-        new ChatClientAgentPort(ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs, budget,
+        new ChatClientAgentPort(ChatClient.builder(new FixedUsage(12, 34)).build(), null, runs,
                 null, tracerInto(spans))
-                .reply(new InboundMessage(principal, "chat-1", "上周华东成交额", Instant.now(), null, traced.id()));
+                .reply(new InboundMessage(principal, "chat-1", "上周华东成交额", Instant.now(), null));
 
         // 先证明真的画了：不然这条用例只证明了"什么都没发生"，而那种绿毫无意义。
         assertThat(spans).isNotEmpty();
@@ -471,6 +432,25 @@ class RunLifecycleTest {
         return SessionKeys.ownerOf(Principal.readOnly(userId));
     }
 
+    /**
+     * 一台会顺手记下提示词的端口：目标"注入没注入"只能从提示词上看，回执里看不出来。
+     * usage 固定 12 + 34，于是"记了多少账"有一个确定的数可判。
+     */
+    private ChatClientAgentPort goalPort(List<String> prompts) {
+        ChatModel model = new ChatModel() {
+
+            @Override
+            public ChatResponse call(Prompt prompt) {
+                prompts.add(prompt.getInstructions().stream()
+                        .map(message -> message.getText() == null ? "" : message.getText())
+                        .reduce("", String::concat));
+                return new FixedUsage(12, 34).call(prompt);
+            }
+        };
+        return new ChatClientAgentPort(ChatClient.builder(model).build(), null, runs,
+                null, null, null, null, null, new JdbcSessionGoalStore(jdbc, null));
+    }
+
     private RunDelivery delivery(OutboundDelivery... channels) {
         // 没有 registry 时照常投递，只是没有指标——与 run 落库同一个降级口径。
         return new RunDelivery(runs, List.of(channels), null);
@@ -502,34 +482,6 @@ class RunLifecycleTest {
                 .build());
     }
 
-    /** 一个只数自己被执行了几次的工具。 */
-    private static final class CountingTool implements ToolCallback {
-
-        private int calls;
-
-        /** 真的被执行的次数。被预算挡回的那一次不该算进来。 */
-        int calls() {
-            return calls;
-        }
-
-        @Override
-        public ToolDefinition getToolDefinition() {
-            return ToolDefinition.builder().name("lookup").description("查一张表").inputSchema("{}").build();
-        }
-
-        @Override
-        public String call(String toolInput) {
-            calls++;
-            return "128400";
-        }
-
-        @Override
-        public String call(String toolInput, ToolContext toolContext) {
-            calls++;
-            return "128400";
-        }
-    }
-
     /** 记下"谁收到了什么"，不抛：这一层要验的是投递的路由，不是平台的限流。 */
     private static final class Recording implements OutboundDelivery {
 
@@ -549,15 +501,6 @@ class RunLifecycleTest {
         @Override
         public void send(String channelRef, String text) {
             sent.add(channelRef + "|" + text);
-        }
-    }
-
-    /** 一旦被调用就红的模型：用它钉住"预算用尽时这一轮不该再调模型"。 */
-    private static final class NeverCalled implements ChatModel {
-
-        @Override
-        public ChatResponse call(Prompt prompt) {
-            throw new AssertionError("预算已经用尽，这一轮不该再调用模型");
         }
     }
 

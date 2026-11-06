@@ -3,8 +3,6 @@ package io.github.claw4j.agent.observability;
 import io.github.claw4j.agent.ToolCallLog;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.ToolCallAudit;
-import io.github.claw4j.agent.run.Budget;
-import io.github.claw4j.agent.run.RunBudget;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.micrometer.core.instrument.Counter;
@@ -17,8 +15,8 @@ import org.springframework.ai.tool.metadata.ToolMetadata;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
+import java.util.Objects;
 
 /**
  * 给一个工具加计量与一段 span：被调了几次、成没成、花了多久（P14 起还进 trace）；
@@ -30,11 +28,16 @@ import java.util.Optional;
  * 而"哪个工具被问得多"恰恰是按工具算才有用——它决定下一个该优化谁、哪个该收权限。
  * span 同理：一段 {@code tool.<名字>} 的 duration 只有挂在这里才是一次真实调用的耗时。
  *
- * <p><b>它做五件事，因为这五个事实同源</b>：计数的前提是"这次调用真的发生了"，
- * {@link ToolCallLog} 要记的、预算要扣的（{@link RunBudget}，A04）、
- * 审计要落的（{@link ToolCallAudit}，P07）、trace 要画的（{@link RunTracer}，P14）
- * 也都是同一件事。分成几个包装类会多几层对象，还会让"只包了计量那层"的路径悄悄漏掉另外几件——
+ * <p><b>它做四件事，因为这四个事实同源</b>：计数的前提是"这次调用真的发生了"，
+ * {@link ToolCallLog} 要记的、审计要落的（{@link ToolCallAudit}，P07）、
+ * trace 要画的（{@link RunTracer}，P14）也都是同一件事。分成几个包装类会多几层对象，
+ * 还会让"只包了计量那层"的路径悄悄漏掉另外几件——
  * 这个仓库已经因为"某条路径没被包上"出过一次问题（工具清单只收 provider 不收单个 callback）。
+ *
+ * <p><b>扣额度不在这里了</b>（ADR-0027 决定五）：额度是目标的 token budget，
+ * 按"轮"记账（{@code ChatClientAgentPort#closeTurn}）；而"这一轮绕了太多次"的止损由
+ * Spring AI 的工具循环执行。这里曾经按会话累计工具调用次数与耗时——
+ * 那是把"成本控制"与"失控保护"合成一个数，而两者该由不同的人处理。
  *
  * <p><b>没有 registry 时照样包</b>：记录"这一轮调过哪些工具"是语义缓存判断副作用的依据，
  * 与"有没有装 actuator"无关。装不装只影响计数报不报得出去。span 也一样：
@@ -72,12 +75,6 @@ public class MeteredToolCallback implements ToolCallback {
     private final MeterRegistry registry;
 
     /**
-     * 这一轮所属 run 的预算。可以为 null——没有装配 run 存储时（{@code claw4j.run.enabled=false}）
-     * 就没有任何一件"事"可记，也就没有可扣的额度。
-     */
-    private final RunBudget budget;
-
-    /**
      * 审计（P07）。可以为 null——没有 run 存储时就没有可写的落点。
      *
      * <p><b>为什么审计写在工具回调上</b>：这里是"这次调用真的发生了"唯一的落点。
@@ -94,32 +91,23 @@ public class MeteredToolCallback implements ToolCallback {
 
     /** @param registry 为 null 表示调用方没装 actuator：照常记录调用，只是没有指标可报 */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry) {
-        this(delegate, registry, null, null, RunTracer.NONE);
-    }
-
-    /**
-     * @param budget 为 null 表示这一轮没有 run，工具调用照常执行、只是不扣额度
-     */
-    public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry, RunBudget budget) {
-        this(delegate, registry, budget, null, RunTracer.NONE);
+        this(delegate, registry, null, RunTracer.NONE);
     }
 
     /**
      * @param audit 为 null 表示没装配 run 存储：计量照常，只是这一次调用不会留下一行审计
      */
-    public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry, RunBudget budget,
-                               ToolCallAudit audit) {
-        this(delegate, registry, budget, audit, RunTracer.NONE);
+    public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry, ToolCallAudit audit) {
+        this(delegate, registry, audit, RunTracer.NONE);
     }
 
     /**
      * @param tracer 为 null 时按空实现处理：埋点不该因为少一个参数就把调用打断
      */
-    public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry, RunBudget budget,
+    public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry,
                                ToolCallAudit audit, RunTracer tracer) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.registry = registry;
-        this.budget = budget;
         this.audit = audit;
         this.tracer = tracer == null ? RunTracer.NONE : tracer;
         this.toolName = delegate.getToolDefinition().name();
@@ -160,32 +148,15 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /**
-     * 带上下文的那一个重载：runId 只在它这里，预算也只能在扣（A04），审计同理（P07），
-     * step 序号也只在它这里拿得到（P14）。
+     * 带上下文的那一个重载：runId 与审计的 scope 只在它这里，step 序号也只在它这里拿得到（P14）。
      *
-     * <p><b>顶不住时回一句话，而不是抛异常</b>：抛出去会被工具循环当成"这个工具坏了"，
-     * 模型拿到的是一句错误，于是它多半会换一个工具再试一次——
-     * 而那正是一次新的工具调用，预算却刚刚才说过"没有了"。
-     *
-     * <p><b>只扣真的执行了的那些次</b>：被拒的那一次不算用掉的量，否则
-     * "还剩几次"会凭空少一次，而它正是下一次给不给的依据。审计也按同一个口径：
-     * 因预算没跑的那一次不落审计行——它不是"被谁拒绝的调用"，是"根本没发生"。
-     * span 照开一段，属性写着 {@code budget_refused}：trace 里"这里什么都没发生"
-     * 与"这里本该有三个工具"是两件事，缺了这一段，看图上就是模型自己没调。
+     * <p>这一层不再有"额度不够就不执行"的分支（ADR-0027 决定五）：
+     * 成本上限在目标的 token 预算上，按轮记账；这一轮绕了太多次由工具循环在上限处截断。
+     * 工具回调只回答"这次调用发生了什么"。
      */
     @Override
     public String call(String toolInput, ToolContext toolContext) {
         String runId = runIdOf(toolContext);
-        if (budget != null && runId != null) {
-            Optional<Budget> spent = budget.spent(runId);
-            if (spent.isPresent() && budget.exhausted(spent.get())) {
-                try (RunTracer.SpanScope span = openSpan()) {
-                    span.attribute(ATTR_OUTCOME, "budget_refused");
-                }
-                count("budget_refused");
-                return budget.refusalText(spent.get());
-            }
-        }
         ToolCallLog.record(toolName);
         try (RunTracer.SpanScope span = openSpan()) {
             // 开始那一条先写，结束那一条在两条出口各写一次：只有结束的话，
@@ -194,9 +165,6 @@ public class MeteredToolCallback implements ToolCallback {
             stampStep(span, toolStarted(scope, toolInput));
             try {
                 String result = delegate.call(toolInput, toolContext);
-                if (budget != null && runId != null) {
-                    budget.chargeToolCall(runId);
-                }
                 stampStep(span, toolFinished(scope, toolInput, null));
                 span.attribute(ATTR_OUTCOME, "ok");
                 count("ok");

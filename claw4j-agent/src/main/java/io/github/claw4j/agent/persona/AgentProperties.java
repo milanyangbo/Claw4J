@@ -22,12 +22,18 @@ import java.time.ZoneId;
  * 这个项目里已经有过同一个坑的另一个形状：调度那边 {@code ScheduleStore.zoneOf} 兜底也是系统默认。
  *
  * <p>默认 {@code Asia/Shanghai} 是业务口径，不是技术默认。海外部署要显式写自己的。
+ *
+ * <p><b>还有一个 {@code tool-call-limit}</b>：一轮里最多调几次工具（默认 6，见
+ * {@link io.github.claw4j.agent.ToolCallBudget}）。它<b>不是额度</b>——额度是目标上的
+ * token 预算（ADR-0027 决定五）。放在这里是因为它是"这个部署的 Agent 怎么跑"的一个数，
+ * 与预算那种"这件事能花多少"不是同一种东西。
  */
 @ConfigurationProperties("claw4j.agent")
 public record AgentProperties(String directory,
                               @Name("default") String defaultName,
                               ZoneId zone,
-                              Duration laneWait) {
+                              Duration laneWait,
+                              int toolCallLimit) {
 
     /** 业务所在时区。写出来是为了让"默认值是什么"能被搜到，而不是藏在代码里。 */
     public static final String DEFAULT_ZONE = "Asia/Shanghai";
@@ -49,11 +55,14 @@ public record AgentProperties(String directory,
         zone = zone == null ? ZoneId.of(DEFAULT_ZONE) : zone;
         // 负数不是一个可以解释的等待时长；0 是（见上），所以不能一起归一。
         laneWait = laneWait == null || laneWait.isNegative() ? DEFAULT_LANE_WAIT : laneWait;
+        // 0 与"没配"落到同一个默认值：0 在这里不是"不限"，那会让一轮可以无限绕。
+        toolCallLimit = toolCallLimit <= 0
+                ? io.github.claw4j.agent.ToolCallBudget.MAX_TOTAL_CALLS : toolCallLimit;
     }
 
     /** 全默认：没有人设目录，用内置的；时间是业务时区，lane 等 60 秒。 */
     public static AgentProperties defaults() {
-        return new AgentProperties(null, null, null, null);
+        return new AgentProperties(null, null, null, null, 0);
     }
 
     public boolean hasDirectory() {

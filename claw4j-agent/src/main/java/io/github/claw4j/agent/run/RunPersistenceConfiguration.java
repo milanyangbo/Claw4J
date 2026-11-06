@@ -96,7 +96,7 @@ import java.util.Map;
 @ConditionalOnSingleCandidate(DataSource.class)
 @ConditionalOnProperty(prefix = "claw4j.run", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableScheduling
-@EnableConfigurationProperties({RunBudgetProperties.class, ApprovalProperties.class,
+@EnableConfigurationProperties({ApprovalProperties.class,
         ScheduleProperties.class, AuditProperties.class, SessionResetProperties.class})
 public class RunPersistenceConfiguration {
 
@@ -184,20 +184,6 @@ public class RunPersistenceConfiguration {
         return new ApprovalService(jdbc,
                 new ApproverRoster(new LinkedHashSet<>(properties.getApprovers())),
                 agentPort.getIfAvailable());
-    }
-
-    /**
-     * 一次 run 的预算：三项按 run 累计（A04）。
-     *
-     * <p>它<b>不是</b>一个可选的装饰：没有它，一轮的 3 / 6 就是唯一的上限，
-     * 而那个上限每轮重置——一件跨三轮的事能烧掉三倍的调用而不触发任何一条。
-     */
-    @Bean
-    @ConditionalOnMissingBean(RunBudget.class)
-    public RunBudget runBudget(RunStore runs, RunBudgetProperties properties,
-                               SessionResetProperties reset) {
-        // 空闲窗口从会话那边来（ADR-0026）：额度因换段清零，这里是"换不了段的旧数据"的兜底。
-        return new RunBudget(runs, properties, reset.idleMillis());
     }
 
     /**

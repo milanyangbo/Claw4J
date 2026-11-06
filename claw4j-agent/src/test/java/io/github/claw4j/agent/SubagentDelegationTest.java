@@ -2,6 +2,7 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.observability.RunTracer;
+import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.subagent.SubagentAutoConfiguration;
 import io.github.claw4j.agent.subagent.SubagentCatalog;
 import io.github.claw4j.agent.subagent.SubagentDefinition;
@@ -327,7 +328,8 @@ class SubagentDelegationTest {
                 ToolsProperties.defaults(),
                 new AuthorizationAdvisor(List.of()),
                 new ChineseToolIndex(),
-                ToolSearchProperties.defaults());
+                ToolSearchProperties.defaults(),
+                AgentProperties.defaults());
 
         assertThat(task.getToolDefinition().name()).isEqualTo(SubagentDelegation.TOOL_NAME);
         assertThat(task.getToolDefinition().description()).contains("alpha").doesNotContain("先查数");
@@ -337,9 +339,7 @@ class SubagentDelegationTest {
                 beans.getBeanProvider(ToolCallback.class),
                 beans.getBeanProvider(ToolCallbackProvider.class),
                 beans.getBeanProvider(MeterRegistry.class).getIfAvailable(),
-                // 没有 run 预算：这一层验的是"两种形态都被收到"，不是"额度怎么扣"
-                null,
-                // 审计同理：这一条只关心清单里有什么（P07）
+                // 审计：这一条只关心清单里有什么（P07），不是"谁批的"
                 null,
                 // trace 也同理：这一条问的是清单，不是 span（P14）
                 RunTracer.NONE,
@@ -414,7 +414,8 @@ class SubagentDelegationTest {
         return new SubagentRunner(model, ObservationRegistry.NOOP, () -> tools,
                 new AuthorizationAdvisor(List.of(registry, searchTool)),
                 new ChineseToolIndex(),
-                ToolSearchProperties.defaults());
+                ToolSearchProperties.defaults(),
+                ToolCallBudget.MAX_TOTAL_CALLS);
     }
 
     private static SubagentDelegation delegation(List<SubagentDefinition> definitions, SubagentRunner runner) {
