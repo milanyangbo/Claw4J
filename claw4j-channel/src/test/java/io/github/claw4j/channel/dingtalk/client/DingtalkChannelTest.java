@@ -320,7 +320,7 @@ class DingtalkChannelTest {
             assertThat(context).hasSingleBean(DingtalkChannel.class);
             assertThat(context).hasSingleBean(DingtalkReplySender.class);
             assertThat(context.getBeansOfType(OutboundDelivery.class).values())
-                    .as("投递实现要能按通道名被 RunDelivery 找到")
+                    .as("投递实现要能按通道名被 ConversationDelivery 找到")
                     .singleElement()
                     .extracting(OutboundDelivery::channel)
                     .isEqualTo("dingtalk");

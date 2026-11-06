@@ -345,7 +345,7 @@ class SlackChannelTest {
             assertThat(context).hasSingleBean(SlackChannel.class);
             assertThat(context).hasSingleBean(SlackReplySender.class);
             assertThat(context.getBeansOfType(OutboundDelivery.class).values())
-                    .as("投递实现要能按通道名被 RunDelivery 找到")
+                    .as("投递实现要能按通道名被 ConversationDelivery 找到")
                     .singleElement()
                     .extracting(OutboundDelivery::channel)
                     .isEqualTo("slack");
