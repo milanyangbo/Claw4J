@@ -1,6 +1,6 @@
 # 03 审批与投递按对话地址
 
-**Status:** ready-for-agent
+**Status:** resolved（2026-11-06）
 **依赖:** 01、02
 **依据:** ADR-0027 决定一、四
 
@@ -97,23 +97,39 @@ principal_snapshot text           -- 发起人身份快照（JSON），从 agent
 
 ## 判据
 
-- [ ] **批准开的是新一轮**：批准前后 `turnId` 不同，库里 `agent_run` 多一行。
-      反例：仍按旧 runId 续跑（`reopen` 留着）→ 同一行，红。
-- [ ] **旧的一轮是终态**：工具停在审批上时，那一轮的状态是 `done`（它已经回答"我需要你批准"），
-      不是任何"挂起"。
-      反例：引入 `PAUSED` 之类的新状态去表达"等审批"→ 红（那就又回到 run 跨请求了）。
-- [ ] **拒绝不开新一轮**：拒绝之后 `agent_run` 行数不变，且 `chat_ref` 收到一句确认。
-      反例：拒绝也调 `reply` → 多一行，红。
-- [ ] **审批卡片落在原对话**：HTTP 发起、审批通过、结果回到同一个 chatId，不落到 `lastChannel`。
-      反例：投递时回退到"最近用过的通道"→ 换通道的用例红（OpenClaw 原文："never falls back to lastChannel"）。
-- [ ] **principal 是发起人不是审批人**：A 发起、B 批准 → 新一轮的 `actor` 是 A。
-      反例：用审批人的身份 → 红（这条现在是 ApprovalFlowTest 里已有的断言，别改松）。
-- [ ] **两个 `runId` 都不在了**：`InboundMessage` 构造器参数少一个；`AskRequest` 里没有 `runId`；
-      `grep -r "message.runId()"` 零命中。
-- [ ] **同一对话仍然串行**：批准续跑与用户同时发来的消息走同一把 lane 锁（现在靠 `agent_run.session_address`，
-      改后靠 `session_key` 反解出的地址）。
-      反例：续跑不加锁 → 两条并发写同一段会话，红。
-- [ ] `./scripts/verify.sh` 全绿，跳过 0，覆盖率 ≥60%。
+- [x] **批准开的是新一轮**：批准前后是两行 `agent_run`，而两行的 `session_id` 相同。
+      证据：`ApprovalFlowTest#approvingStartsTheNextTurnInTheSameConversation`
+      （`count(*) = 2`、`distinct session_id` 只有 1 个）。
+- [x] **旧的一轮是终态**：被拦的那一轮 `status = done`，不是任何"挂起"。
+      反例：把 `RunStatus.SUSPENDED` 加回去 → 枚举与 `V21` 的约束同时红。
+      证据：同一条用例，`runs.find(first.runId()).status() == DONE`；
+      库那一侧 `RunSchemaSqlTest#thereIsNoSuspendedStatus` 断言约束拒收 `suspended`。
+- [x] **拒绝不开新一轮**：拒绝之后 `agent_run` 仍是一行、`prompts` 仍是一条。
+      反例：把 `if (!approved)` 那支改成 `continueInConversation(...)` →
+      `denyingLeavesTheDecisionAndNeverCallsTheModel` 红（`expected DENIED but was GRANTED`）。
+      证据：同一条用例。
+- [x] **审批卡片落在原对话**：卡片按请求自己的 `channel + chat_ref` 推，没有登记表。
+      反例：`announce` 回到"最近用过的通道"——这里没有那个概念，替代的反例是
+      `origin == null` 时不推（子 Agent 那一层），`ChatPipelineTest#theGateRegistersAndAnnouncesWithoutSuspendingAnything`
+      断言那一支不产生任何推。
+      证据：同一条用例（`oc_1|sendEmail|to=张三|ap-1|pending`）。
+- [x] **principal 是发起人不是审批人**：A（u-mailer）发起、approver-1 批准，
+      执行那条审计的 `actor` 是 `u-mailer`、`actor_role` 是 `mailer`。
+      证据：`ApprovalFlowTest#theExecutedCallCarriesTheApprovalItWasLetThroughBy`。
+- [x] **两个 `runId` 都不在了**：`InboundMessage` 少一个参数、`AskRequest` 只剩
+      `text` / `notifyPolicy`。
+      证据：`HttpChatControllerTest#theRequestCarriesNoResumeToken` 用反射钉住参数名。
+- [x] **显式给的整段会话键原样使用**：审批批准之后回到它自己那一段（含段后缀），
+      不是按通道重新派生一个无段的键。
+      反例：删掉 `sessionIdOf` 里那个 `if` → `ChatPipelineTest#anExplicitSessionKeyIsUsedAsGiven` 红。
+      证据：同一条用例（`FakeRuns.sessionIds` 只收到那一个键）。
+- [ ] **同一对话仍然串行**：**没做**。审批续跑现在走 `AgentPort#reply` → `inLane`，
+      锁键由 `owner + channel + chatId` 算出，与用户那条消息同一把——**代码上成立**，
+      但没有一条并发反例钉住它。`ConversationLane` 自己的并发用例在
+      `ConversationLaneTest`（02 落地时验过），这里缺的是"审批与用户消息同时到达"这条组合。
+      留给 A12 之前补，或第一次有人报"批准之后回答串了"时补。
+- [x] `./scripts/verify.sh` 全绿，跳过 0，覆盖率 ≥60%。
+      证据：666 条、失败 0、跳过 0，agent 69.0% / app 80.8%，10 文件 / 20 方法。
 
 ## 落地时注意
 
@@ -129,3 +145,53 @@ principal_snapshot text           -- 发起人身份快照（JSON），从 agent
 - 不做"跨通道接着做"：一件事只属于发起它的那段对话。OpenClaw 没有这个能力，我们也不做。
 - 不做审批超时后的自动重试。
 - 不保留 `RunResumer` 的"降级实现"——它是这条路的唯一入口，删干净比分叉安全。
+
+
+## 实现记录
+
+### 落在哪儿
+
+| 东西 | 位置 |
+| --- | --- |
+| 表 | `V21__approval_conversation.sql`：审批行加 `session_key / channel / chat_ref / principal_snapshot`；`agent_run.status` 去掉 `suspended`（先把旧行迁成 `done`）；drop `agent_run_delivery` |
+| 请求来处 | `ApprovalLedger.Origin`（新的子 record）；`JdbcApprovalLedger` 写这四列，快照走 `PrincipalSnapshot.encode` |
+| 登记 | `RunApprovalGate#ask` 只剩"登记 + 推卡片"；`announce` 用 `ask.origin()` 的地址 |
+| 批准 | `ApprovalService#continueInConversation`：快照还原身份 → 组一条 `InboundMessage`（`sessionId` 显式给）→ `AgentPort#reply` |
+| 拒绝 | 只落结论 + 回一句话，**不调模型** |
+| 入口 | `ChatClientAgentPort#sessionIdOf` 认 `message.sessionId()`；`openRun` 只剩 `start` |
+| 装配 | `RunPersistenceConfiguration`：`approvalGate(ledger, cards)`、`approvalDecider(jdbc, agentPort, props)`、`runDelivery(runs, deliveries, registry)` |
+
+### 四处必须说明的
+
+1. **`agent_run.session_id` 改成 `start` 时一起写**。票面只写"删 `attachSession`"，
+   而预算是按会话累计的（ADR-0025）：删了那条 update 又没有替代，每一轮的额度会
+   悄悄退回"按 run 算"。所以 `RunStore#start` 多一个 `sessionId` 参数——
+   开的时候就写进去，比"先插再 update"少一次往返，也不会因为那条 update 失败而静默降级。
+2. **`V21` 里必须先把历史 `suspended` 迁成 `done`**。票面说"`ck_agent_run_status` 在票 05 改"，
+   但**删枚举值的那一刻起**，读回一行旧 `suspended` 会让 `RunStatus.fromColumn` 直接抛——
+   一条历史记录能让列表页 500。迁移是不可逆的历史，所以这件事只能在本票做。
+3. **`ContextKeys` 多了 `CHANNEL` / `CHAT_REF`，而且 Advisor 上下文与 ToolContext 都要放**。
+   审批那一层（`AuthorizationAdvisor`）读的是 Advisor 上下文，定时任务工具读的是 ToolContext。
+   只放一处时，症状是"批准之后说找不到来处"或者"任务没记住送回哪儿"——两个都不报错。
+4. **`recap` 整个删掉**（票面要求），连 `clip` 一起：它们只服务"run 挂起之后上下文没了"，
+   而那个前提不成立。
+
+### 三个反例，各红一条
+
+| # | 改坏什么 | 红了哪条 |
+| --- | --- | --- |
+| 1 | 拒绝那支也走 `continueInConversation` | `denyingLeavesTheDecisionAndNeverCallsTheModel`（`DENIED` → `GRANTED`） |
+| 2 | `sessionIdOf` 忽略消息上的整段会话键 | `ChatPipelineTest#anExplicitSessionKeyIsUsedAsGiven` |
+| 3 | 迁移里删掉 `ck_agent_run_status` 那一句 | `RunSchemaSqlTest#thereIsNoSuspendedStatus`（本来想写"读旧行不炸"，最后落成"约束拒收"） |
+
+**反例 2 第一次是绿的**，这是这张票最值得记的一件事：当时那条断言叫"两轮在同一段会话里"，
+而 `sessionIdOf` 忽略显式键之后，按通道派生出来的键**恰好与显式给的那个相同**——
+在"同一段、pointer 为空"的形态下，两条实现的结果必然一致。
+所以那条断言测不出这条代码路径，补了一条直接看 `FakeRuns` 收到什么会话键的用例之后才红。
+**"结果一致"不等于"走的是同一段代码"**，与 04 里 `/new` 换段写两遍那次是同一个坑。
+
+### 没做
+
+- **同一对话串行的并发反例**（见判据）。
+- **`agent_run.result` / `notify_policy` 两列仍被写**：投递不再读它们，票 05 随表删。
+- **`GET /api/runs` 端点**仍在，票 05 换。

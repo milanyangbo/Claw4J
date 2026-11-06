@@ -46,14 +46,18 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"核对上周口径","notifyPolicy":"silent"}'
 ```
 
-推给谁由库里的地址表决定（`claw4j_run.agent_run_delivery`，与 run 一对多）：
-在哪个通道问过，那个会话就是一个地址。同一件事在飞书问过、又在 HTTP 上续过，
-两个地址都在，结果两边都能被找到——而**就地回答过的那一个不重复推**，
-否则同一条内容会出现两遍。
+推给谁不用查表：结果回到**它开始的那段对话**（`channel + chatId`，ADR-0027 决定四）。
+没有登记表，也**不回退到「最近用过的通道」**——OpenClaw 的原文是 never falls back to lastChannel。
+同步请求那一轮的回答已经从响应里返回了，所以不重复推；定时任务与审批续跑没有人等结果，才推。
 
 ```bash
-psql "$DATABASE_URL" -c "select run_id, channel, channel_ref
-  from claw4j_run.agent_run_delivery order by created_at desc limit 10"
+# 这一轮的地址就在调度行 / 审批行上
+psql "$DATABASE_URL" -c "select channel, channel_ref, goal from claw4j_run.agent_schedule limit 10"
+```
+
+```bash
+# 那一轮从哪段对话来：run 上的 session_id 就是当时的会话键
+psql "$DATABASE_URL" -c "select id, session_id, status from claw4j_run.agent_run order by created_at desc limit 5"
 ```
 
 三个请求头：`X-Claw4j-User`（必填）、`X-Claw4j-Role`（角色，不填走默认 `read-only`）、
@@ -125,10 +129,15 @@ except Exception: print(0)'; }
 > `FeishuApprovalTest` 验卡片）；库里有那一行之后，下面两条能自己跑。
 
 ```bash
-# 停下来的样子：状态 suspended，那一步在等审批
+# 那一轮的样子：done（它回给用户的是「我需要你批准」），没有 suspended 这个状态
 curl -s --noproxy '*' localhost:8080/api/runs/<runId> -H 'X-Claw4j-User: ethan' \
   -H 'X-Claw4j-Role: admin'
-# {"runId":"...","status":"suspended","steps":[...{"kind":"approval","status":"awaiting",...}]}
+# {"turnId":"...","status":"done","steps":[...]}
+#
+# 批准之后发生的是同一段对话里的下一轮（新的一行 run），不是把这一行拉起来。
+# 这条请求自己的来处写在审批行上：
+psql "$DATABASE_URL" -c "select id, session_key, channel, chat_ref, status
+  from claw4j_run.approval_request order by requested_at desc limit 3"
 
 psql "$DATABASE_URL" -c "select id, owner, tool_name, left(args_digest,12) as digest,
   args_summary, status, expires_at, consumed_at
