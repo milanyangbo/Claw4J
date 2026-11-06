@@ -62,7 +62,7 @@ public class JdbcApprovalLedger implements ApprovalLedger {
      */
     private static final String ASK_SQL =
             "insert into claw4j_run.approval_request"
-                    + " (id, turn_id, owner, tool_name, args_digest, args_summary, status,"
+                    + " (id, run_id, owner, tool_name, args_digest, args_summary, status,"
                     + " session_key, channel, chat_ref, principal_snapshot,"
                     + " requested_at, expires_at)"
                     + " values (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, now(),"
@@ -111,7 +111,7 @@ public class JdbcApprovalLedger implements ApprovalLedger {
         // 而"哪段对话、发起人是谁"是这一条请求自己的属性，不该寄存在别处。
         Origin origin = ask.origin();
         try {
-            jdbc.update(ASK_SQL, id, ask.turnId(), ask.owner(), ask.toolName(), ask.argsDigest(),
+            jdbc.update(ASK_SQL, id, ask.runId(), ask.owner(), ask.toolName(), ask.argsDigest(),
                     ask.argsSummary(),
                     origin == null ? null : origin.sessionKey(),
                     origin == null ? null : origin.channel(),

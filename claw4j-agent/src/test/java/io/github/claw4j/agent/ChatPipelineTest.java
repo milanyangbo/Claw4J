@@ -292,18 +292,18 @@ class ChatPipelineTest {
      * 连续性靠会话键。这一条以前叫"开一个 run 并收尾"，而 run 已经不存了。
      */
     @Test
-    @DisplayName("一次提问两条审计事件：started 与 finished 成对，turnId 跟着回答出去")
+    @DisplayName("一次提问两条审计事件：started 与 finished 成对，runId 跟着回答出去")
     void replyLeavesTwoAuditEvents() {
         RecordingAudit audit = new RecordingAudit();
         ChatClientAgentPort port = port(new FixedChatModel("华东上周成交 128400"), audit.toolCallAudit());
 
         OutboundMessage answer = port.reply(message("chat-1", "上周华东成交额"));
 
-        assertThat(answer.turnId()).isNotNull();
+        assertThat(answer.runId()).isNotNull();
         assertThat(audit.actions()).containsExactly(
                 AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
         assertThat(audit.events).allSatisfy(event -> {
-            assertThat(event.scope().turnId()).as("两条事件属于同一轮").isEqualTo(answer.turnId());
+            assertThat(event.scope().runId()).as("两条事件属于同一轮").isEqualTo(answer.runId());
             assertThat(event.scope().sessionKey()).as("会话键进门就算好了").isNotNull();
             assertThat(event.scope().actor()).as("谁发起的").isEqualTo("u-1");
         });
@@ -327,9 +327,9 @@ class ChatPipelineTest {
         assertThat(audit.events.getLast().status()).isEqualTo(AuditStatus.FAILED);
     }
 
-    /** 流式每一块都带同一个 turnId：只收到中间块的调用方也要能认出同一批。 */
+    /** 流式每一块都带同一个 runId：只收到中间块的调用方也要能认出同一批。 */
     @Test
-    @DisplayName("流式：每一块都带同一个 turnId，结束事件只发生一次")
+    @DisplayName("流式：每一块都带同一个 runId，结束事件只发生一次")
     void streamChunksShareOneTurnId() {
         RecordingAudit audit = new RecordingAudit();
         List<OutboundMessage> chunks = new ArrayList<>();
@@ -340,8 +340,8 @@ class ChatPipelineTest {
         port.stream(message("chat-1", "讲一下"), chunks::add);
 
         assertThat(chunks).isNotEmpty();
-        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.turnId()).isNotNull());
-        assertThat(chunks.stream().map(OutboundMessage::turnId).distinct()).hasSize(1);
+        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.runId()).isNotNull());
+        assertThat(chunks.stream().map(OutboundMessage::runId).distinct()).hasSize(1);
         assertThat(audit.actions()).containsExactly(
                 AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
     }
@@ -365,7 +365,7 @@ class ChatPipelineTest {
         OutboundMessage answer = port.reply(message("chat-1", "上周华东成交额"));
 
         assertThat(answer.text()).isEqualTo("华东上周成交 128400");
-        assertThat(answer.turnId()).as("编号本地生成，不依赖任何存储").isNotNull();
+        assertThat(answer.runId()).as("编号本地生成，不依赖任何存储").isNotNull();
     }
 
     // ---------------------------------------------------------------- 审批门（P02）

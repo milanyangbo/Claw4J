@@ -17,16 +17,20 @@
 
 ## 落点
 
-### 1. `V23__drop_run.sql`
+### 1. `V24__drop_run.sql`
+
+（票面原先写 V23，实际版本号是 V24——V23 被票 01 的 `schema_version` 用掉了。）
 
 ```text
 drop view  if exists claw4j_run.audit_trail;      -- 票 01 之后没人读，但一直还在
 drop table if exists claw4j_run.agent_step;
-drop table if exists claw4j_run.agent_run_delivery;   -- 03 若已删则 no-op
+drop table if exists claw4j_run.agent_run_delivery;   -- 03 已删；if exists 是给没跑过 V21 的库
 drop table if exists claw4j_run.agent_run;
 ```
 
-`approval_request.run_id` 一列同时 drop（它没有外键，删起来没有级联问题）。
+`approval_request.run_id` 与 `audit_event.run_id` **保留原列名**，既不 drop 也不改名：
+它们装的是"哪一轮"，不是那个已经不存在的实体。审批行要能回答"这次批准是哪一轮发起的"，
+审计行要能回答"这条事件属于哪一轮"——删了就永远答不出来。改名同样是错的（见下面的修订记录）。
 
 ### 2. 删掉的类
 
@@ -53,7 +57,7 @@ core/domain/port/RunView.java          -- 若有对外读，改成 TurnView 或�
 
 | 类 | 改成 |
 | --- | --- |
-| `ChatClientAgentPort` | 不再注入 `RunStore`；`turnId` 本地生成（UUID），只用于 trace / 审计 / 返回值 |
+| `ChatClientAgentPort` | 不再注入 `RunStore`；`runId` 本地生成（UUID），只用于 trace / 审计 / 返回值 |
 | `AgentAutoConfiguration` / `RunPersistenceConfiguration` | 删 run 相关 bean；`AuditLedger` 的装配挪到审计配置里 |
 | `MeteredToolCallback` | 审计调用改成 `AuditLedger` 的两条事件 |
 | `AuthorizationAdvisor` | 同上；拒绝分支写 `tool.action.finished` / `blocked` |
@@ -62,13 +66,17 @@ core/domain/port/RunView.java          -- 若有对外读，改成 TurnView 或�
 
 ### 4. 端点
 
-- `GET /api/runs/{id}`、`GET /api/runs` **删除，不提供"按 turnId 查"的替代**。
-  理由：OpenClaw 没有这个能力，它有 `chat.history`（按会话取历史）。
-  取某次回答的正确方式是**会话历史**，不是"按一次运行查"——后者只有在"一件事能跨请求活着"时才有意义。
+- `GET /api/runs/{id}`、`GET /api/runs` **删除，不提供"按 runId 取运行状态"的替代**。
+  理由要说准：OpenClaw 没有的是"按一次运行取它的状态与步骤"——它根本没有持久 run；
+  它有的是"按 runId 过滤审计"（`audit.list { runId }`、`openclaw audit --run <id>`）
+  和"按 runId 中止"（`chat.abort`）。那两样是读路径与中止路径，不是运行实体，
+  所以它们的存在不构成"要留 run"的理由，也不能拿来当"OpenClaw 没有按 id 查"的证据。
+  取某次回答的正确方式是**会话历史**（`chat.history`），不是"按一次运行查"。
 - 若现有 HTTP 面还没有取会话历史的端点，本票补一个 `GET /api/conversations/{chatId}/history`，
   形状照 `chat.history`（支持 `limit`、返回条目带 `role` / `text` / `at`）。
-- `AskResponse.runId` 改名 `turnId`（票 03 已经改 Java 侧，这里落实 JSON 字段）。
-  前端如果还在读 `runId`，这是**破坏性变更**——要在 `README` 的升级说明里写一行。
+- `AskResponse.runId` **保持 `runId`，不改名**（ADR-0027 决定一）。票 03 一度改成了 `turnId`，
+  已随本票一并改回：OpenClaw 的 `chat.send` 返回的就是 `runId`，改名只会让迁过来的客户端断一次，
+  换不来任何东西。
 
 ### 5. 测试
 
@@ -91,27 +99,34 @@ core/domain/port/RunView.java          -- 若有对外读，改成 TurnView 或�
 | `GLOSSARY.md` | 删 `run` / `step` / `suspended` 条目；加 `turn`（一次运行）、`goal`（会话目标）、`audit_event` |
 | `AGENTS.md` | ADR 索引加 0027；"0016–0021 是六条裁决"那句改成"0016 / 0018 / 0020 被 0027 部分取代" |
 | `docs/design/` 里讲 run 的页 | 按新形状重写，不保留"历史上曾经有 run"的叙述——那属于 ADR，不属于设计文档 |
-| `README.md` | 升级说明：`runId` → `turnId`；`GET /api/runs` 下线 |
+| `README.md` | 升级说明：`GET /api/runs` 下线；`runId` 字段不变 |
 | `docs/agents/guardrails.md` | 记一条：删掉了本项目最大的一处"自己发明的实体" |
 | `docs/adr/0016`、`0018`、`0020`、`0023` | 各自顶部加一行 `superseded by 0027（部分）` 的指针，正文不动 |
 
 ## 判据
 
-- [x] **代码里没有 run 了**：`RunStore|RunStatus|BUDGET_EXHAUSTED|SUSPENDED|agent_step`
+- [x] **run 这个实体与它的状态机不在了**：`RunStore|RunStatus|BUDGET_EXHAUSTED|SUSPENDED|agent_step`
       在 `*/src/main` 下**零命中**（历史迁移除外，那是不可变的历史）。
       `agent_run` 只在一处还出现：`AuditAction` 的 `kind` 列值——那是照 OpenClaw 的记录分类
       （`agent.run.started` 的 kind 就叫 `agent_run`），不是那个被删掉的实体。
       证据：`Grep` 全库 `*/src/main/**`。
+      **剩下的只是名字，不是实体**：`RunTracer`（接口名，仍开 `run` / `model.turn` / `tool.*`
+      三种 span）、`RunApprovalGate`（类名）、`ATTR_STEP_SEQ = "claw4j.step.seq"`
+      （span 属性名，指向已删的 step 表）、`ATTR_RESUMED`（死常量，续跑删掉之后没有使用处）。
+      这四样不改行为，本票不动它们——改了只是让 diff 更大，记在这里等下一次顺手清。
+- [x] **错误码是 OpenClaw 的九项词表**：`AuditErrorCode` 是枚举，写不进词表外的值；
+      库里 `ck_audit_event_error_code` 同一条口径。
+      证据：`PersistenceSchemaTest#theErrorCodeVocabularyIsClosed`（插一个 `policy_denied` 被库拒绝）。
 - [x] **库里没有表了**：`V24` 之后 `claw4j_run` 里只剩 `agent_schedule`、`approval_request`、
       `audit_event`。证据：`PersistenceSchemaTest#migrationLeavesOnlyTheTablesThatSurvived`。
 - [x] **端点下线**：`RunQueryController` 与 `RunQuery` / `RunView` 一起删，`GET /api/runs/xxx`
       不再存在（404 由 Spring 的默认处理给）。`HttpEndpointsTest` 里那三条断言跟着删。
       **`GET /api/conversations/{chatId}/history` 没做**，理由见"没做"一节。
 - [x] **一次完整的问答仍然可用**：`ChatPipelineTest#replyLeavesTwoAuditEvents` 钉住
-      `agent.run.started` + `agent.run.finished` 成对、两条的 `turn_id` 与返回的 `turnId` 同值、
+      `agent.run.started` + `agent.run.finished` 成对、两条的 `run_id` 与返回的 `runId` 同值、
       `session_key` 与 `actor` 都在。
 - [x] **一次审批仍然可用**：`ApprovalFlowTest` 13 条全绿，批准之后是同一段对话里的新一轮
-      （`turnId` 与上一轮不同，`session_key` 相同）。
+      （`runId` 与上一轮不同，`session_key` 相同）。
 - [x] **定时任务仍然可用**：`ScheduleFlowTest#aDueTaskRunsOnTheOwnersBehalf` 读审计里那条
       `agent.run.started`：`actor` 是任务主人，`session_key` 含 `cron:`；`agent.run.finished`
       是 `succeeded`。
@@ -135,19 +150,20 @@ core/domain/port/RunView.java          -- 若有对外读，改成 TurnView 或�
 | 东西 | 位置 |
 | --- | --- |
 | 表 | `V24__drop_run.sql`：`drop view audit_trail` → `drop table agent_step` → `agent_run_delivery`（`if exists`）→ `agent_run`；`approval_request.run_id` 与 `audit_event.run_id` **改名**为 `turn_id`（不是删列，见下） |
-| 编号 | `ChatClientAgentPort` 里 `UUID.randomUUID()` 生成 `turnId`，不落任何表 |
+| 编号 | `ChatClientAgentPort` 里 `UUID.randomUUID()` 生成 `runId`，不落任何表 |
 | 投递 | `RunDelivery` → `ConversationDelivery`（`agent/channel`），只有 `announce`，不再实现 `RunQuery` |
 | 投递地址 | `DeliveryTarget` → `agent/channel` |
 | 启动接口 | `RunLauncher` → `TaskLauncher`（`agent`），定时任务那一侧的入参 |
 | 装配 | `RunPersistenceConfiguration` → `AgentPersistenceConfiguration`（`agent`），删 `runStore` bean，开关 `claw4j.run.enabled` → `claw4j.persistence.enabled` |
-| 审计列 | `AuditEvent.Scope.runId` → `turnId`；`audit_event.run_id` → `turn_id`，索引跟着 `alter index … rename` |
+| 审计列 | `AuditEvent.Scope` 的字段名与列名都保持 `runId` / `run_id`（修订后）|
 | 评测 | `EvalScorer` 的轨迹输入从 `List<Step>` 换成 `List<EvalScorer.Trace>`（一次工具调用一条，与审计同形） |
 
 ### 三处必须说明的
 
-1. **`run_id` 是改名不是删列。** 那两列装的是"这一轮的编号"，不是那个不存在的实体。
+1. **`run_id` 既不删也不改名。** 那两列装的是"这一轮的编号"，不是那个不存在的实体。
    审批行要能回答"这次批准是哪一轮发起的"，审计行要能回答"这条事件属于哪一轮"——
-   删了就永远答不出来。改名的代价只是索引重命名一次（PostgreSQL 会跟着更新列引用，不重建）。
+   删了就永远答不出来。改名（曾经改成 `turn_id`）换不来任何东西，还挡了客户端一次；
+   已改回 `run_id`（见下面的修订）。
 2. **`claw4j.run.enabled` → `claw4j.persistence.enabled`。** 这个开关管的是"要不要装
    审计 / 审批 / 调度这几样需要库的东西"，而 run 已经不在里面了。留着旧名字，
    下一个人会以为它管什么别的东西。
@@ -176,7 +192,27 @@ core/domain/port/RunView.java          -- 若有对外读，改成 TurnView 或�
 | `RunLifecycleTest`（12 条） | 改名 `TurnFlowTest`，删 3 条（run 生命周期、按 id 回收、trace 写 step 表），其余保留 |
 | `RunSchemaSqlTest`（16 条） | 改名 `PersistenceSchemaTest`，删 7 条（建表/读回来/序号分配/降级/suspended/待做/审计视图/一条批准一次执行），其余保留 |
 | `ChatPipelineTest` | 4 条改写成"读审计"（`RecordingAudit`），2 条删除（没有 run 存储的降级、等审批的 run 接不上） |
-| `ApprovalFlowTest` | `runs.find(…).status()` → `finishStatusOf(turnId)`（读审计的 finished 那一条）；`count(agent_run)` → `count(audit_event where action='agent.run.started')` |
+| `ApprovalFlowTest` | `runs.find(…).status()` → `finishStatusOf(runId)`（读审计的 finished 那一条）；`count(agent_run)` → `count(audit_event where action='agent.run.started')` |
 | `ScheduleFlowTest` | 端口接上真审计；会话断言从 `agent_run.session_id` 改读 `audit_event.session_key` |
-| `ObservabilityTest` | 删掉 mock 的 `RunStore`；`claw4j.run.id` 那条断言改成"等于回答里的 turnId" |
+| `ObservabilityTest` | 删掉 mock 的 `RunStore`；`claw4j.run.id` 那条断言改成"等于回答里的 runId" |
 | `HttpEndpointsTest` | 删三条 run 端点断言与两个夹具 |
+
+### 修订（2026-11-06 晚，按 OpenClaw 收敛）
+
+复核时对照 `packages/gateway-protocol/src/schema/audit.ts` 与 `docs/cli/audit.md`，发现两处不对齐，
+都已改。判断标准只有一条：OpenClaw 叫什么，我们就叫什么。
+
+1. **字段名改回 `runId`。** OpenClaw 的 `AuditEventSchema.runId` 是**必填**；`audit.list { runId }`、
+   `chat.abort { runId }`、hooks 的 `{ ok, runId }` 都用这个名字。`turnId` 在它那儿是另一个概念
+   （`worker-inference` 里 `{ sessionId, runId, turnId }` 三者并存，runId 可跨轮共享）。
+   本票原先改成 `turnId`，与 ADR-0027 决定一（"字段名不改"）直接冲突，也已让客户端断过一次。
+   已改回：`OutboundMessage`、`ContextKeys.RUN_ID`（`claw4j.runId`）、`AuditEvent.Scope`、
+   `ApprovalLedger.Ask`、`AskResponse`；列名保持 `run_id`，V24 里那两句 `rename column`
+   与索引改名一并删掉——迁移历史不该记录一次改错又改回来的反复。
+2. **错误码换成它的九项词表**（`V25__audit_error_code_vocabulary.sql`）。新增枚举
+   `AuditErrorCode`，九个值逐字相同；旧的四个值（`policy_denied` / `tool_error` / `timeout` /
+   `cancelled`）在迁移里按 `kind` 映射，随后加 `ck_audit_event_error_code`。
+   顺带补上原先漏掉的一处：运行失败那条事件的 `error_code` 一直是 null，现在是 `run_failed`。
+3. **票面判据 1 的说法改准了**：原来写"代码里没有 run 了"，但正则只查了五个符号，
+   `RunTracer` / `RunApprovalGate` / `claw4j.step.seq` / `ATTR_RESUMED` 都还在。它们是名字不是实体，
+   本票不动，但判据不能声称一件没有做到的事。

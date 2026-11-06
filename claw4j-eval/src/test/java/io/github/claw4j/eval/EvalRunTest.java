@@ -125,7 +125,7 @@ class EvalRunTest {
     private final ObjectMapper json = new ObjectMapper();
 
     /** 一跑一行的结果。{@code answer} 留在里面是为了报告：假红一眼能看出来。 */
-    private record CaseResult(EvalCase testCase, String turnId, String answer, EvalVerdict verdict,
+    private record CaseResult(EvalCase testCase, String runId, String answer, EvalVerdict verdict,
                               long millis) {
     }
 
@@ -188,14 +188,14 @@ class EvalRunTest {
         OutboundMessage answer = agent.reply(new InboundMessage(principal, chatId, testCase.question()));
         long millis = System.currentTimeMillis() - startedAt;
 
-        String turnId = answer.turnId();
-        if (turnId == null || turnId.isBlank()) {
-            throw new AssertionError("用例 " + testCase.id() + " 的回答没带 turnId。"
+        String runId = answer.runId();
+        if (runId == null || runId.isBlank()) {
+            throw new AssertionError("用例 " + testCase.id() + " 的回答没带 runId。"
                     + "评测靠它读回轨迹，为空说明审计没接上（ADR-0027）");
         }
         String text = answer.text();
-        return new CaseResult(testCase, turnId, text,
-                EvalScorer.judge(testCase, text, traceOf(turnId)), millis);
+        return new CaseResult(testCase, runId, text,
+                EvalScorer.judge(testCase, text, traceOf(runId)), millis);
     }
 
     /**
@@ -205,15 +205,15 @@ class EvalRunTest {
      * 以前读 {@code agent_step} 的 {@code tool_calls} 汇总行（逗号串好几个工具），
      * 那个形状分不出"调了两次同一个工具"，随 run 一起没了。
      */
-    private List<EvalScorer.Trace> traceOf(String turnId) {
+    private List<EvalScorer.Trace> traceOf(String runId) {
         return jdbc.query(
                 "select tool_name, status, error_code from claw4j_run.audit_event"
-                        + " where turn_id = ? and action = 'tool.action.finished' order by seq",
+                        + " where run_id = ? and action = 'tool.action.finished' order by seq",
                 (row, index) -> new EvalScorer.Trace(
                         row.getString("tool_name"),
                         "failed".equals(row.getString("status")),
                         row.getString("error_code")),
-                turnId);
+                runId);
     }
 
     /**
@@ -302,8 +302,8 @@ class EvalRunTest {
         // 回答原文（截断）进报告：判分是字符串包含，模型换个写法就假红。
         // 报告里没有原文的话，"红了"只能靠重跑一次去猜；有了它，一眼就能看出是不是判分的问题。
         row.put("answer", clip(result.answer()));
-        // turnId 留着：报告里的每一条都能回库查那一轮的审计事件，判分有争议时唯一的裁决入口。
-        row.put("turnId", result.turnId());
+        // runId 留着：报告里的每一条都能回库查那一轮的审计事件，判分有争议时唯一的裁决入口。
+        row.put("runId", result.runId());
         row.put("millis", result.millis());
         return row;
     }

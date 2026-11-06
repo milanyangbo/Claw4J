@@ -25,8 +25,11 @@ public final class ContextKeys {
      * <p><b>它是一个句柄，不是一件事</b>：一轮答完它就作废，没有状态、没有后续、
      * 也没有"按 id 接上它"那条路。它只用于把同一轮的三样东西对起来——
      * 审计的两条事件、trace 的一段 span、返回给调用方的回执。
-     * 以前它叫 {@code runId}，而那个名字背着一整套持久 run（状态机、跨请求续跑、
-     * 审批挂起、按 id 查结果），那些都不在了（ADR-0027）。
+     * <p><b>名字照 OpenClaw</b>：它的 {@code runId} 也是这个角色（{@code chat.send} 返回它、
+     * {@code chat.abort} 收它、{@code audit --run} 按它过滤），而且原话是"a possibly shared
+     * routing, session, or recovery correlation"。我们这里更窄——没有 recovery，也没有跨请求续跑，
+     * 所以一轮就是一个 {@code runId}。窄的那一侧不需要额外的名字：同一个概念在两边叫同一个名，
+     * 迁过去的客户端不用改字段。
      *
      * <p>放在这里而不是入口那个类上，是因为键名这种东西<b>只有一处定义才不会漂移</b>，
      * 而漂移的表现是"工具读到的值是 null"，看起来像"这一轮没有编号"——一个说得通的假象。
@@ -34,7 +37,7 @@ public final class ContextKeys {
      * <p><b>它是入口写进去的，不是模型传进来的</b>：工具不接这个参数，
      * 于是模型没有"往别人的轮次上写东西"这条路径。
      */
-    public static final String TURN_ID = "claw4j.turnId";
+    public static final String RUN_ID = "claw4j.runId";
 
     /**
      * 这一轮从哪个通道来、通道内的哪段会话（ADR-0027）。

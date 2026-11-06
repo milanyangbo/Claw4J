@@ -66,10 +66,10 @@ public class HttpChatController {
                            @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
                            @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
         OutboundMessage answer = channel.ask(inbound(request, user, role, chatId));
-        // turnId 跟着回答一起出去：它是"这一轮"的编号，用来串日志（ADR-0027）。
+        // runId 跟着回答一起出去：它是"这一轮"的编号，用来串日志（ADR-0027）。
         // <b>它不是续跑令牌</b>：拿它回来接不上任何东西——连续性靠会话，不靠这个 id。
         // 命令类回执没有编号，那是 null。
-        return new AskResponse(answer.chatId(), answer.text(), answer.turnId());
+        return new AskResponse(answer.chatId(), answer.text(), answer.runId());
     }
 
     /**
@@ -224,8 +224,8 @@ public class HttpChatController {
         }
     }
 
-    /** @param turnId 这一轮的编号（ADR-0027）。可以查、可以串日志，<b>但不能用来续跑</b> */
-    public record AskResponse(String chatId, String text, String turnId) {
+    /** @param runId 这一轮的编号（ADR-0027）。串日志用，<b>但不能用来续跑</b> */
+    public record AskResponse(String chatId, String text, String runId) {
     }
 
     public record ErrorResponse(String error) {

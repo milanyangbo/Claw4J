@@ -41,11 +41,14 @@ ADR-0024 与 ADR-0026 已经把"答完之后"这件事交给会话了，run 作�
 对外仍叫 `runId`（与 OpenClaw 同名同义），但语义收窄成四条：
 
 - 一次运行一个 UUID，在模型被调用之前就生成；
-- 随回答返回，用于**查审计**与**中止**；
+- 随回答返回。OpenClaw 里它就是 `chat.abort` 收的那个值、`openclaw audit --run` 过滤的那个值——
+  这两面（按 id 中止、按 id 查审计）本项目**还没做**，各自是一件事，不在这一版里；
 - **不落状态、不能续跑、不承载目标 / 预算 / 投递**；
 - 审计按它关联（`openclaw audit --run <id>` 就是按它过滤）。
 
 字段名不改，因为改名换不来任何东西，而"runId 能续跑"这个错觉才是要拆的。
+票 05 一度把它改成 `turnId`（理由是"每轮一个，更像 turn"），与这条决定相反；
+实现已经改回，本文与代码现在一致。
 
 ### 二、审计照 OpenClaw 的形状重建
 
@@ -56,7 +59,12 @@ ADR-0024 与 ADR-0026 已经把"答完之后"这件事交给会话了，run 作�
 3. **不存**提示词、消息体、工具参数、工具结果、命令输出、原始错误文本；
 4. 工具调用 id 只存**单向指纹**；工具名必须是模型可见的那个紧凑名，认不出就记 `unknown`；
 5. 状态是**闭合词表**：`started` / `succeeded` / `failed` / `cancelled` / `timed_out` / `blocked` / `unknown`；
-6. **30 天 + 10 万行**上限，启动时、每小时、每次写之后各清一次。
+6. **错误码也是闭合词表**，九个值，逐字照它的 `AuditEventErrorCodeSchema`：`run_failed` /
+   `run_cancelled` / `run_timed_out` / `run_blocked` / `tool_failed` / `tool_cancelled` /
+   `tool_timed_out` / `tool_blocked` / `tool_outcome_unknown`。前缀就是归属，`agent_run` 的事件配
+   `tool_*` 说明写的人弄错了层。这不是"顺便列几个字符串"：按 `error_code` 过滤时，
+   词表外的值一个都命中不了，而它们的缺席看起来像"没发生过"；
+7. **30 天 + 10 万行**上限，启动时、每小时、每次写之后各清一次。
 
 删掉 `agent_step` 表与 `audit_trail` 视图。ADR-0023 的"执行真相只有一份"这句话本身没错，
 错在把真相放在"某个 run 的第几步"上——真相是**事件**，事件不需要父亲。
@@ -124,7 +132,7 @@ OpenClaw 有 `agents.defaults.timeoutSeconds`（默认 48 小时）兜住跑飞�
 5. 删 `agent_run` / `agent_step` / `GET /api/runs` 与相关代码 —— **已落地**（`V24`）
 
 五步都走完了。落地的终点：`claw4j_run` 只剩 `agent_schedule` / `approval_request` /
-`audit_event` 三张表；一轮的编号是本地生成的 `turnId`，不落表；`GET /api/runs` 没了，
+`audit_event` 三张表；一轮的编号是本地生成的 `runId`，不落表；`GET /api/runs` 没了，
 按 id 取值这个能力随之消失（记在 `docs/agents/guardrails.md` 的已知偏差里）。
 
 配置面同时收敛两处，都要在实施时删掉，留着就是"配了不生效"：

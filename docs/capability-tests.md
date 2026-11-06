@@ -4,10 +4,10 @@
 
 | 接口 | 用途 |
 | --- | --- |
-| `POST /api/chat` | 同步，返回 `{"chatId":"...","text":"...","turnId":"..."}` |
+| `POST /api/chat` | 同步，返回 `{"chatId":"...","text":"...","runId":"..."}` |
 | `POST /api/chat/stream` | 流式，返回 SSE（`event:chunk` … `event:done`） |
 
-`turnId` 是**这一轮**的编号（ADR-0027）：本地生成，只用于串日志与认批次。
+`runId` 是**这一轮**的编号（ADR-0027）：本地生成，只用于串日志与认批次。
 **它不是续跑令牌**——拿它回来接不上任何东西。连续性靠会话：同一段对话里再说一句，
 模型看到的就是前文（`X-Claw4j-Chat-Id` 决定是不是同一段）。
 
@@ -35,7 +35,7 @@ psql "$DATABASE_URL" -c "select channel, channel_ref, goal from claw4j_run.agent
 
 ```bash
 # 那一轮从哪段对话来、成没成：审计里那两条事件带 session_key 与 actor
-psql "$DATABASE_URL" -c "select turn_id, action, status, session_key, actor, at \
+psql "$DATABASE_URL" -c "select run_id, action, status, session_key, actor, at \
   from claw4j_run.audit_event order by seq desc limit 10"
 ```
 
@@ -120,7 +120,7 @@ psql "$DATABASE_URL" -c "select id, owner, tool_name, left(args_digest,12) as di
 # 读一条请求现在的样子：卡片上有什么，这里就有什么（身份同样取自请求头）
 curl -s --noproxy '*' localhost:8080/api/approvals/<id> \
   -H 'X-Claw4j-User: ethan' -H 'X-Claw4j-Role: admin'
-# {"id":"...","turnId":"...","owner":"ethan","toolName":"mail_send",
+# {"id":"...","runId":"...","owner":"ethan","toolName":"mail_send",
 #  "argsSummary":"to=...","status":"pending","expired":false,"expiresAt":"..."}
 
 # 批 / 拒。请求体里没有"谁"——点按钮的人由通道认出来
@@ -405,7 +405,7 @@ claw4j:
 
 | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- |
-| 同步返回 | `t '这个进程堆内存上限多少？线程数呢？'` | 一个 JSON：`{"chatId":"http:ethan","text":"...","turnId":"..."}` |
+| 同步返回 | `t '这个进程堆内存上限多少？线程数呢？'` | 一个 JSON：`{"chatId":"http:ethan","text":"...","runId":"..."}` |
 | 流式返回 | `ts '这个进程堆内存上限多少？线程数呢？'` | 若干 `event:chunk` + 一个 `event:done`，**`done` 只出现一次** |
 | 两条路径都能触发工具 | 上面两条各跑一次 | `hit systemStatus` **+2**（只涨 1 说明有一条路径上的 Advisor 没生效） |
 | 流式下鉴权同样生效 | `U=guest9 R=guest ts '这个进程堆内存多少'` | 被拒；`hit systemStatus denied` +1 |
@@ -461,10 +461,10 @@ psql "$DATABASE_URL" -c "select actor, actor_role, tool_name, error_code, at
 # 这次调用是哪次批准的：结束事件上的 approval_id 与审批表同一个编号
 psql "$DATABASE_URL" -c "select seq, actor, tool_name, status, left(call_fingerprint,12) as digest,
   approval_id, at
-  from claw4j_run.audit_event where turn_id = '<turnId>' order by seq"
+  from claw4j_run.audit_event where run_id = '<runId>' order by seq"
 ```
 
-列：`seq / kind / action / status / error_code / turn_id / session_key / actor / actor_role /
+列：`seq / kind / action / status / error_code / run_id / session_key / actor / actor_role /
 channel / tool_name / call_fingerprint / approval_id / redaction / schema_version / at`。
 
 四条口径都在库里的行上验，不看模型措辞：
@@ -475,7 +475,7 @@ channel / tool_name / call_fingerprint / approval_id / redaction / schema_versio
   写两遍的第一个代价是"今天拒了几条"要 union 两张表，第二个代价是两张迟早对不上。
 - **只落指纹，不落参数**：`call_fingerprint` 是 `sha256(工具名 + 规范化参数)`，与审批表那一列
   同一个函数，所以"这次执行是哪次批准的"能直接对上；参数原文与摘要在库里一处都没有。
-  工具抛异常只记 `error_code = tool_error`，不记 message——message 里常有数据。
+  工具抛异常只记 `error_code = tool_failed`，不记 message——message 里常有数据。
 - **30 天 + 10 万行**（照 OpenClaw 的固定上限，不是配置项）：30 天按库的时钟判，
   10 万行按 `seq` 删最旧的；启动时、每小时、每 500 次写入各清一次。
 

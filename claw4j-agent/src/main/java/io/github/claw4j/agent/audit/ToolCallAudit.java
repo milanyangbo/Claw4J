@@ -68,7 +68,7 @@ public class ToolCallAudit {
     }
 
     /** 一轮结束。{@code status} 与 {@code errorCode} 是这一轮的结局。 */
-    public Optional<Long> runFinished(AuditEvent.Scope scope, AuditStatus status, String errorCode) {
+    public Optional<Long> runFinished(AuditEvent.Scope scope, AuditStatus status, AuditErrorCode errorCode) {
         return write(AuditEvent.runFinished(scope, status, errorCode));
     }
 
@@ -103,8 +103,8 @@ public class ToolCallAudit {
         String digest = fingerprint(toolName, argsJson);
         return write(AuditEvent.toolFinished(scope, toolName, digest,
                 failure == null ? AuditStatus.SUCCEEDED : AuditStatus.FAILED,
-                failure == null ? null : AuditEvent.TOOL_ERROR,
-                take(scope == null ? null : scope.turnId(), toolName, digest)));
+                failure == null ? null : AuditErrorCode.TOOL_FAILED,
+                take(scope == null ? null : scope.runId(), toolName, digest)));
     }
 
     /**
@@ -119,7 +119,7 @@ public class ToolCallAudit {
             return Optional.empty();
         }
         return write(AuditEvent.toolFinished(scope, toolName, fingerprint(toolName, argsJson),
-                AuditStatus.BLOCKED, AuditEvent.POLICY_DENIED, null));
+                AuditStatus.BLOCKED, AuditErrorCode.TOOL_BLOCKED, null));
     }
 
     /**

@@ -241,7 +241,7 @@ public class MeteredToolCallback implements ToolCallback {
         if (toolContext == null) {
             return null;
         }
-        Object value = toolContext.getContext().get(ContextKeys.TURN_ID);
+        Object value = toolContext.getContext().get(ContextKeys.RUN_ID);
         return value instanceof String runId && !runId.isBlank() ? runId : null;
     }
 

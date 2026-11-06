@@ -608,7 +608,7 @@ class ScheduleFlowTest {
     /** 模型那一侧看到的那一份上下文：身份 + 这一轮的 run（工具靠它找收件地址）。 */
     private static ToolContext toolContext(Principal principal) {
         return new ToolContext(Map.of(ContextKeys.PRINCIPAL, principal,
-                ContextKeys.TURN_ID, "run-from-chat",
+                ContextKeys.RUN_ID, "run-from-chat",
                 ContextKeys.CHANNEL, Recorder.CHANNEL,
                 ContextKeys.CHAT_REF, "oc_sched"));
     }

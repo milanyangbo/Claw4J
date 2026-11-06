@@ -61,7 +61,7 @@ public class AuditLedger implements AuditSink {
 
     private static final String INSERT = """
             insert into claw4j_run.audit_event
-                (id, event_id, kind, action, status, error_code, turn_id, session_key, agent_id,
+                (id, event_id, kind, action, status, error_code, run_id, session_key, agent_id,
                  actor, actor_role, channel, tool_name, call_fingerprint, approval_id)
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             returning seq
@@ -127,8 +127,9 @@ public class AuditLedger implements AuditSink {
                     event.action().kind(),
                     event.action().column(),
                     event.status().column(),
-                    event.errorCode(),
-                    scope.turnId(),
+                    // 词表是枚举，落库时才变成字符串——写一个词表外的值，在编译期就不成立。
+                    event.errorCode() == null ? null : event.errorCode().column(),
+                    scope.runId(),
                     scope.sessionKey(),
                     scope.agentId(),
                     scope.actor(),

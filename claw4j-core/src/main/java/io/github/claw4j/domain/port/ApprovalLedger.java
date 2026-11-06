@@ -66,7 +66,7 @@ public interface ApprovalLedger {
      *                    为 null 表示这一层还没有对话（子 Agent，A10）——那时结论落得下来，
      *                    但没有"接着做"这回事
      */
-    record Ask(String turnId, String owner, String toolName, String argsDigest, String argsSummary,
+    record Ask(String runId, String owner, String toolName, String argsDigest, String argsSummary,
                Origin origin) {
     }
 

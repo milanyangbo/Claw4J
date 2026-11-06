@@ -505,7 +505,7 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     private static String runIdOf(Map<String, Object> context) {
-        Object value = context == null ? null : context.get(ContextKeys.TURN_ID);
+        Object value = context == null ? null : context.get(ContextKeys.RUN_ID);
         return value instanceof String runId && !runId.isBlank() ? runId : null;
     }
 

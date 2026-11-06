@@ -78,7 +78,7 @@ public class RunApprovalGate implements ApprovalGate {
             // 没有来处（子 Agent 那一层）：没有"哪段对话"可推。编号仍然回给调用方。
             return;
         }
-        ApprovalDecider.Pending card = new ApprovalDecider.Pending(approvalId, ask.turnId(), ask.owner(),
+        ApprovalDecider.Pending card = new ApprovalDecider.Pending(approvalId, ask.runId(), ask.owner(),
                 ask.toolName(), ask.argsSummary(), "pending", false, null);
         for (ApprovalCards sender : cards) {
             if (!sender.channel().equals(origin.channel())) {

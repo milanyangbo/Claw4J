@@ -7,6 +7,7 @@ import io.github.claw4j.agent.goal.GoalTools;
 import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.audit.AuditAction;
+import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
@@ -175,7 +176,7 @@ class ToolGovernanceTest {
         AuditEvent event = events.getFirst();
         assertThat(event.action()).isEqualTo(AuditAction.TOOL_ACTION_FINISHED);
         assertThat(event.status()).isEqualTo(AuditStatus.BLOCKED);
-        assertThat(event.errorCode()).isEqualTo(AuditEvent.POLICY_DENIED);
+        assertThat(event.errorCode()).isEqualTo(AuditErrorCode.TOOL_BLOCKED);
         assertThat(event.toolName()).isEqualTo(TOOL);
         assertThat(event.scope().actorRole()).isEqualTo("analyst");
     }
@@ -196,13 +197,13 @@ class ToolGovernanceTest {
     }
 
     @Test
-    @DisplayName("工具抛异常：结束事件是 failed + tool_error，异常类型名不进库")
+    @DisplayName("工具抛异常：结束事件是 failed + tool_failed，异常类型名不进库")
     void aFailingToolIsStillAnExecution() {
         audit.toolFinished(scope(), TOOL, "{}", "IllegalStateException");
 
         AuditEvent event = events.getFirst();
         assertThat(event.status()).isEqualTo(AuditStatus.FAILED);
-        assertThat(event.errorCode()).isEqualTo(AuditEvent.TOOL_ERROR);
+        assertThat(event.errorCode()).isEqualTo(AuditErrorCode.TOOL_FAILED);
         assertThat(event.toString())
                 .as("类型名是开放的，而 error_code 那一列是闭合口径；要查类型看 trace")
                 .doesNotContain("IllegalStateException");
@@ -223,7 +224,7 @@ class ToolGovernanceTest {
         audit.toolFinished(AuditEvent.Scope.empty(), TOOL, "{}", null);
 
         assertThat(events).hasSize(1);
-        assertThat(events.getFirst().scope().turnId()).isNull();
+        assertThat(events.getFirst().scope().runId()).isNull();
         assertThat(events.getFirst().toolName()).isEqualTo(TOOL);
     }
 

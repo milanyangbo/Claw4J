@@ -229,9 +229,9 @@ class ObservabilityTest {
                 ? ChatPipelineTest.requestTool("querySales", "{}")
                 : withUsage(12, 34));
 
-        String turnId = tracedPort(model, tracer, new RecordingTool("querySales", "128400"))
+        String runId = tracedPort(model, tracer, new RecordingTool("querySales", "128400"))
                 .reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "上周华东成交额"))
-                .turnId();
+                .runId();
 
         SpanData run = spanOf("run");
         SpanData turn = spanOf("model.turn");
@@ -243,8 +243,8 @@ class ObservabilityTest {
                 .isEqualTo(turn.getSpanId());
         assertThat(tool.getTraceId()).isEqualTo(turn.getTraceId()).isEqualTo(run.getTraceId());
         assertThat(run.getAttributes().get(AttributeKey.stringKey("claw4j.run.id")))
-                .as("属性名沿用 OTel 的 run.id 约定，值就是这一轮的 turnId")
-                .isEqualTo(turnId);
+                .as("属性名沿用 OTel 的 run.id 约定，值就是这一轮的 runId")
+                .isEqualTo(runId);
         assertThat(tool.getAttributes().get(AttributeKey.stringKey("claw4j.tool"))).isEqualTo("querySales");
         assertThat(registry.getMeters()).extracting(meter -> meter.getId().getName())
                 .as("trace 不新增计数器：同一次工具调用不该被 counter 与 span 各记一遍，两份口径迟早会漂")
@@ -286,7 +286,7 @@ class ObservabilityTest {
         }, null, new ToolCallAudit(event -> Optional.of(1L)), tracer);
 
         assertThatThrownBy(() -> failing.call("{}",
-                new ToolContext(Map.of(ContextKeys.TURN_ID, "run-1"))))
+                new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"))))
                 .isInstanceOf(IllegalStateException.class);
 
         SpanData tool = spanOf("tool.querySales");

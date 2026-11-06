@@ -1,6 +1,7 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
+import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.goal.GoalStatus;
@@ -82,6 +83,8 @@ class PersistenceSchemaTest {
         jdbc.update("delete from claw4j_session.conversation_goal");
         jdbc.update("delete from claw4j_session.conversation_pointer");
         jdbc.update("delete from claw4j_run.approval_request");
+        // 审计也要清：上限那条用例会插十万行，留着会让"30 天只留一条"的断言看到别人的行。
+        jdbc.update("delete from claw4j_run.audit_event");
     }
 
     @Test
@@ -303,6 +306,39 @@ class PersistenceSchemaTest {
                 .isEqualTo(highest - 99_999);
         assertThat(jdbc.queryForObject("select max(seq) from claw4j_run.audit_event", Long.class))
                 .isEqualTo(highest);
+    }
+
+    @Test
+    @DisplayName("错误码是 OpenClaw 的九项闭合词表：枚举里的值都写得进去，旧词写不进去")
+    void theErrorCodeVocabularyIsClosed() {
+        // 词表逐字照 OpenClaw 的 AuditEventErrorCodeSchema。这条断言的理由不是"多一条约束"，
+        // 而是"按 error_code 过滤时词表外的值一个都命中不了，而它的缺席看起来像没发生过"。
+        //
+        // 两头都要验。只验"旧词写不进去"的话，把枚举值改成旧词，这条测试照样是绿的——
+        // 它压根没读枚举；只验"枚举里的都写得进去"的话，约束被删了也照样是绿的。
+        for (AuditErrorCode code : AuditErrorCode.values()) {
+            boolean runLevel = code.column().startsWith("run_");
+            jdbc.update("insert into claw4j_run.audit_event"
+                            + " (id, event_id, kind, action, status, error_code)"
+                            + " values (gen_random_uuid(), ?, ?, ?, 'blocked', ?)",
+                    "e-" + code.column(),
+                    runLevel ? "agent_run" : "tool_action",
+                    runLevel ? "agent.run.finished" : "tool.action.finished",
+                    code.column());
+        }
+
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (id, event_id, kind, action, status, error_code)"
+                + " values (gen_random_uuid(), 'e-old-word', 'tool_action', 'tool.action.finished',"
+                + " 'blocked', 'policy_denied')"))
+                .as("这是换词表之前的值，现在不在词表里")
+                .hasMessageContaining("ck_audit_event_error_code");
+
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_run.audit_event where error_code is not null",
+                Integer.class))
+                .as("枚举有几个值，就该有几行落下去")
+                .isEqualTo(AuditErrorCode.values().length);
     }
 
     private void granted(String id, String owner, String tool, String digest, String offset) {

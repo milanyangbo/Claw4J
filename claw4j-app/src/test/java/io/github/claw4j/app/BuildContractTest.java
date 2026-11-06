@@ -134,7 +134,7 @@ class BuildContractTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：到 24 全跑到，五个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：到 25 全跑到，五个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -144,12 +144,12 @@ class BuildContractTest {
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
                 .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
-                        "15", "16", "17", "18", "19", "20", "21", "22", "23", "24");
+                        "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25");
 
         var jdbc = new JdbcTemplate(dataSource());
 
         // 五个 schema 各自的归属：business 是示例插件的，其余是 agent 的
-        // （会话 claw4j_session、缓存 claw4j_cache、run 与 step 在 claw4j_run、
+        // （会话 claw4j_session、缓存 claw4j_cache、调度/审批/审计在 claw4j_run、
         // 知识库在 claw4j_rag）。**缓存与知识库是两个 schema**：合并的话，
         // 一段文档会被当成"有人问过"的答案吐出来，而它没有出处（P10）。
         assertThat(jdbc.queryForList(
