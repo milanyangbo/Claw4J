@@ -1,7 +1,7 @@
 /**
  * 领域模型。本包及其子包不得出现 Spring、Spring AI 或任何通道 SDK 的依赖 —— 这条边界由构建期检查保证，见 ADR-0004。
  *
- * <p>比 {@code channel.*} 那两个包还严一档：连 slf4j 都不许依赖（{@code DomainBoundaryTest}）。
+ * <p>比 {@code channel.*} 那两个包还严一档：连 slf4j 都不许依赖（{@code CoreBoundariesTest}）。
  * 这不是洁癖——domain 是唯一"换成任何框架都还能原样搬走"的东西，{@code AgentPort} 这条接缝
  * 就落在这里，它一旦认识日志门面，就说明有人在里面写实现而不是写契约了。
  *

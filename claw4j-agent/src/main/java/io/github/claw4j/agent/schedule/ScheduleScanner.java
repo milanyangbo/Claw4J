@@ -212,7 +212,7 @@ public class ScheduleScanner {
      * 这条通知是它们之间唯一的区别。
      *
      * <p>推不出去（HTTP 部署、或者通道没实现推）时只留一条 WARN：
-     * 停用已经落库，`disabled_reason` 与 {@code GET /api/runs} 那一侧仍然查得到。
+     * 停用已经落库，`disabled_reason` 就在那一行上，查调度表就能看到。
      */
     private void notifyDisabled(ScheduleStore.Due task, ScheduleStore.AfterFailure after, String error) {
         OutboundDelivery delivery = deliveryFor(task.channel());

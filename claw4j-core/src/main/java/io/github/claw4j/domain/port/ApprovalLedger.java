@@ -32,7 +32,7 @@ import java.util.Optional;
  * {@code ApprovalGate#denyAll()}——"没有审批设施"的失败姿势是拦住，不是放行。
  *
  * <p><b>这里不提供 {@code empty()} 那种空实现</b>：{@code domain.port} 只放契约
- * （{@code DomainBoundaryTest} 会红），而"没有审批时怎么办"是装配侧的决定，
+ * （{@code CoreBoundariesTest} 会红），而"没有审批时怎么办"是装配侧的决定，
  * 归 {@code ApprovalGate}。
  */
 public interface ApprovalLedger {

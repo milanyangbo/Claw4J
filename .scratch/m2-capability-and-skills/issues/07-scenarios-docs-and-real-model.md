@@ -57,3 +57,21 @@
 **注意:** 真实调用不进 CI，它是一次性的闭环证明，不是回归基线。回归基线是前面六张票留下的测试（M1 收尾时是 177 个）。
 
 **不要做:** 飞书长连接（另立 spec）；A2A 与可观测（M3）。
+
+## 修订（2026-11-07 评审）：两个测试文件名不再成立
+
+票面写的 `BudgetAcrossLayersTest` / `PermissionsAcrossLayersTest` **从来不存在**，
+今天也不按原名补。原因分两种：
+
+- **预算那条的语义已经变了。** 票面测的是"会话级 40/150 的工具调用预算"，那套随
+  ADR-0027 删掉了：额度现在是目标的 token 预算
+  （`TurnFlowTest#tokensOfATurnAreChargedToTheGoal`），工具调用变成熔断
+  （`ChatPipelineTest#totalBudgetStopsAcrossDifferentTools`——三个不同工具共用一个总数上限，
+  第 7 次截断）。"跨三层同清单"这个形状仍由它覆盖：熔断包在整个 `ToolCallback` 清单外面，
+  与工具来自 provider、单个 callback 还是脚本包无关。
+- **鉴权那条补了真的一条**：`ChatPipelineTest#aToolWithoutItsRegistryEntryIsRefused`——
+  某一层的工具没在权限表里，当场按"没有权限"拒掉、工具一次都没执行。
+  反例：把它登记进去，该用例立刻红。它守的正是 01 号票踩过的形状——
+  `@ConditionalOnMissingBean` 让某一层的注册表静默消失，表现是那一层被全放行。
+- **为什么不新增两个文件**：每个模块的测试文件数卡在 10、单文件 20 个用例，两个数都是硬线
+  （`scripts/verify.sh`），而所有模块正好 10 个文件。加文件会让门禁判红，所以并进已有文件。

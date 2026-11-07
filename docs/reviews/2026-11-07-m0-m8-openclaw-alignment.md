@@ -59,7 +59,7 @@
 | `HttpEndpointsTest.java:25` | 类注释仍写着 A05 的端点 |
 | `README.md:443` | 升级说明附近仍提到该端点 |
 
-`DomainBoundaryTest`（已改名 `CoreBoundariesTest`）——**6 处**，其中 4 处在 `src/main`：
+`DomainBoundaryTest`（已改名 `CoreBoundariesTest`）——**7 处**，其中 4 处在 `src/main`：
 
 `domain/port/package-info.java:5`、`domain/package-info.java:4`、`ApprovalVerdict.java:13`、
 `ApprovalLedger.java:35`、`ToolProfileTest.java:26`、`docs/adr/0010-*.md`。
@@ -125,7 +125,7 @@
 3. `deleteExpiredSessions` 生产无调用方 —— 成立（只有 `SessionMemoryTest` 调）；
 4. `BudgetAcrossLayersTest` / `PermissionsAcrossLayersTest` —— 全仓无此类。
 
-另外发现子代理低估了一处：`DomainBoundaryTest` 不是 1 处而是 6 处。
+另外发现子代理低估了一处：`DomainBoundaryTest` 不是 1 处而是 7 处（还包括 `claw4j-core/pom.xml` 的一行注释）。
 
 ## 四、没纳入的
 
@@ -138,3 +138,44 @@
 - `.scratch/review-2026-11-07/batch-c.md`（m3 + m4 + m5，14 张）
 - `.scratch/review-2026-11-07/batch-d.md`（m6 + m7，18 张）
 - `.scratch/review-2026-11-07/batch-e.md`（m8 两份，12 张）
+
+## 五、处理结果（2026-11-07 12:30）
+
+### 已改
+
+| 项 | 落点 |
+| --- | --- |
+| 失效指针 | `ScheduleTools`（这条会给模型看）、`NotifyPolicy`、`ScheduleScanner`、`HttpChannelAutoConfiguration`、`FeishuChannelAutoConfiguration`、`TaskLauncher`（`{@link RunResumer}`）、`HttpEndpointsTest`、`README` 的能力对照表四段 |
+| 死指针 7 处 | `DomainBoundaryTest` → `CoreBoundariesTest`：4 处 `src/main` javadoc、1 处测试、ADR-0010、ADR-0015 |
+| 死代码 | **不能删**——见下 |
+| 缺失回归 | 补 1 条，另 1 条判定为"不复建"——见下 |
+
+**关于"死代码"这个判断，我先前说错了。**
+`FaultTolerantSessionService#deleteExpiredSessions` 不是死代码，它是 `SessionRepository` 的
+`@Override`，删掉编译不过。它只是**没有调用方**。真正的处理是：
+把这件事写进它的 javadoc——"本仓库没有任何调用方，真正判过期的是 `SessionMaintenance`，
+别把它当成'配了 TTL 就会删'的证据"。
+
+**缺失的两条回归**：
+
+- `PermissionsAcrossLayersTest` → 补成 `ChatPipelineTest#aToolWithoutItsRegistryEntryIsRefused`：
+  某一层的工具没在权限表里，当场按"没有权限"拒掉、一次都没执行。
+  反例已验：把它登记进去，该用例立刻红。
+- `BudgetAcrossLayersTest` → **不复建**。它测的是会话级 40/150 的工具调用预算，
+  那套随 ADR-0027 删除了；今天对应的是"目标 token 预算 + 工具熔断"，
+  后者由 `ChatPipelineTest#totalBudgetStopsAcrossDifferentTools` 覆盖（三个不同工具共用
+  一个总数上限）。按旧名字补，只会补出一个测已不存在语义的空壳。
+
+两条都因为硬约束没有新增文件：每模块 10 个测试文件、单文件 20 个用例（`scripts/verify.sh`），
+而所有模块正好 10 个文件。
+
+### 两处裁决
+
+- **m5-02**：不新建 `application-mcp-third-party.yml`，也不加随包 profile。
+  真实落点是 `claw4j.capability.mcp.servers` 下的两个条目（`README.md` 与
+  `docs/capability-tests.md` 里就是它们）。理由：那两个 server 一个要本机 `npx`、
+  一个要出网，随包发默认 profile 会让"能不能启动"取决于开发机装没装 Node；
+  OpenClaw 同样是在配置里声明 `mcpServers`，没有"随包示例服务器清单"。
+- **m0-03**：票面加 superseded 指针，指向 ADR-0011（无 key 即启动失败）。
+  与 OpenClaw 同一条原则：凭据类错误是永久的，不重试也不降级
+  （它原文："permanent account and credential errors … fail fast instead of retrying forever"）。

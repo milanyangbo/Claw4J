@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 因为它们的共同后果是"配置写错了但系统照跑"，那比起不来更难查。
  *
  * <p>断言用 JUnit 自带的：core 的依赖面是设计的一部分（只有 JUnit 与 ArchUnit，
- * 见 {@code DomainBoundaryTest}），不为了断言好看给领域模块加一条测试依赖。
+ * 见 {@code CoreBoundariesTest}），不为了断言好看给领域模块加一条测试依赖。
  */
 class ToolProfileTest {
 

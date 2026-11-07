@@ -176,6 +176,35 @@ class ChatPipelineTest {
     }
 
     /**
+     * 跨层的权限登记（m2-capability-07 的本意）：三层工具共用一份"谁登记过"的口径，
+     * 某一层的工具不在表里，它就该像不存在一样被拒——而不是"少了一层，检查也跟着省了"。
+     *
+     * <p>挑这一条补，是因为它守的错法很具体：01 号票踩过 {@code @ConditionalOnMissingBean}
+     * 让某一层的注册表静默消失，表现是那一层的工具全被放行（或者全 500），而不是启动报错。
+     */
+    @Test
+    @DisplayName("某一层没登记这个工具：当场按「没有权限」拒掉，工具一次都没执行")
+    void aToolWithoutItsRegistryEntryIsRefused() {
+        RecordingTool builtin = new RecordingTool("lookup", "128400");
+        RecordingTool fromMcp = new RecordingTool("mcp_echo", "回声");
+        FixedChatModel model = new FixedChatModel(prompt -> requestTool("mcp_echo", "{}"), List.of());
+
+        // 只登记了第一层那一个工具：第二层这个在表里没有名字。
+        ToolPermissionRegistry onlyFirstLayer = ToolPermissionRegistry.of(Map.of(
+                "lookup", ToolPermission.read("sales_order")));
+
+        String text = port(model, List.of(builtin, fromMcp), onlyFirstLayer)
+                .reply(message("chat-layer", "回声一下")).text();
+
+        assertThat(fromMcp.calls())
+                .as("没有登记就是没有这条能力：连执行都不该开始")
+                .isZero();
+        assertThat(text)
+                .as("给用户的是一句能照着办的话，不是 500、也不是空回答")
+                .startsWith(AuthorizationAdvisor.DENIAL_PREFIX);
+    }
+
+    /**
      * 熔断与额度的分界（ADR-0027 决定五）。
      *
      * <p>两件事必须分开：<b>这一轮绕了太多次</b>（止损，不改任何持久状态）与

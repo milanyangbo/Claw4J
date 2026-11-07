@@ -278,8 +278,8 @@ public final class ScheduleTools implements ToolCallbackProvider {
                 + "- 到点会用你现在的身份重新核一遍权限再跑：权限被收回时它会停下并告诉你，"
                 + "不会带着旧权限继续\n"
                 + "- 结果：" + (notify == NotifyPolicy.SILENT ? "不主动推" : "跑完推一条")
-                + (addressable ? "" : "（这件事没有登记过会话，只能按 run id 查）")
-                + "，跑出来的每一个 run 都能用 GET /api/runs/{id} 取回全文";
+                + (addressable ? "，推到这段对话里"
+                        : "（这件事没有登记过会话，跑完只在审计里留一行）");
     }
 
     /** 时间点按任务自己的时区写。{@code null} 时区 = 部署所在时区，与解析时同一个口径。 */

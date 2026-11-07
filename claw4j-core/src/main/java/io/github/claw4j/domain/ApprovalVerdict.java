@@ -10,7 +10,7 @@ package io.github.claw4j.domain;
  * 是完全不同的下一步），所以它们各有各的名字，而不是合并成一句"操作失败"。
  *
  * <p><b>为什么不在 {@code domain.port} 里</b>：那个包只放契约（接口与 record），
- * 枚举是带实现的类型。这是机器守的边界，不是文风偏好——{@code DomainBoundaryTest} 会红。
+ * 枚举是带实现的类型。这是机器守的边界，不是文风偏好——{@code CoreBoundariesTest} 会红。
  */
 public enum ApprovalVerdict {
 

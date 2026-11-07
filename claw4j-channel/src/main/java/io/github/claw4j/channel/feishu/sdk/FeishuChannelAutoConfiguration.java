@@ -113,7 +113,7 @@ public class FeishuChannelAutoConfiguration {
          *
          * <p><b>只在凭据配齐时才有这个 bean</b>（本类外层那条 {@code @Conditional}）：
          * 没有凭据就拿不到发送器，而"有一个 send 什么都不做"比"这个通道不支持推"难查得多。
-         * 没有它的时候，飞书侧的结果仍然查得到——那是 {@code GET /api/runs/{id}} 那一读的事。
+         * 没有它的时候，飞书侧的结果仍然留在那段对话与审计里——只是没有人被主动通知。
          *
          * <p>条件写的是<b>名字</b>而不是类型：{@code @ConditionalOnMissingBean(OutboundDelivery.class)}
          * 会让第二个能推的通道（企微）永远注册不上——它们的 bean 类型相同，谁先装配谁赢。

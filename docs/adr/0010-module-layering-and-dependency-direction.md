@@ -46,7 +46,7 @@ ADR-0004 原本写的就是这五个模块；后来在写通道选型时偏离�
 ```
 
 - `claw4j-domain` 不依赖任何框架，是唯一零框架模块。（ADR-0015 之后它是 `claw4j-core` 的一部分，
-  包名不变；零框架这条性质由 `core` 的 enforcer 与 `DomainBoundaryTest` 继续守着。）
+  包名不变；零框架这条性质由 `core` 的 enforcer 与 `CoreBoundariesTest` 继续守着。）
 - `claw4j-agent` 与 `claw4j-channel` **互不依赖**。这条是本轮最重要的修正：之前两者之间没有任何依赖边，"入站消息怎么交给 Agent"根本没定义，等到 M1 写 HTTP 通道时必然要临时拍脑袋。
 - 接缝放在 `domain.port`：`AgentPort`（行为）+ `InboundMessage` / `OutboundMessage`（数据）。两边都只朝 domain 依赖，装配权交给 app。
 - `claw4j-app` 是唯一同时依赖四个模块的地方，也是唯一打 fat jar 的模块。

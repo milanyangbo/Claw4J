@@ -91,7 +91,8 @@ public class HttpChannelAutoConfiguration {
      * {@code GET/POST /api/approvals/{id}}（P03）：待批请求的读法与批/拒的入口。
      *
      * <p>{@link ApprovalDecider} 同样走 {@code ObjectProvider}：没有装配审批的部署里
-     * 端点仍在、只是全都 404——与 {@code /api/runs} 同一个口径，端点凭空消失比 404 难查。
+     * 端点仍在、只是全都 404——端点凭空消失比 404 难查：前者的症状是"路由不存在"，
+     * 后者是"这条路暂时没装能力"。
      *
      * <p><b>它与飞书卡片调的是同一个 {@code decide}</b>：这是这张票里"HTTP 可以独立于飞书用"
      * 那句话的落点——两套入口、一套规矩。

@@ -21,19 +21,16 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * HTTP 那一侧两个<b>非聊天</b>端点的对外形状：{@code /api/approvals}（P03）与
- * {@code GET /api/runs/{id}}（A05）。
+ * HTTP 那一侧<b>非聊天</b>端点的对外形状：{@code /api/approvals}（P03）。
  *
- * <p><b>为什么合成一份</b>：原本是两份，各有一段"为什么单独一份"的理由，而且都成立——
- * 审批那条要防"身份能自称"，查询那条要防"把不属于自己的那件事的形状透出去"。
- * 但两条问的是同一件事：<b>接口这一侧答得对不对</b>——状态码是不是分得开、该给的字段在不在、
- * 没装配时端点是不是还在。真正属于它们自己那半（谁能批、谁能看）都在别处：
- * 审批的在 {@code ApprovalService}，归属的在 agent 侧那份 {@code RunQuery} 实现里。
+ * <p><b>它问的是同一件事</b>：<b>接口这一侧答得对不对</b>——状态码是不是分得开、
+ * 该给的字段在不在、没装配时端点是不是还在。真正属于它自己那半（谁能批）在
+ * {@code ApprovalService} 里。
  *
- * <p>合并的另一个原因是硬约束：{@code claw4j-channel} 的测试文件数与别处一样卡在 10，
- * P13 要给 Slack 留一个位置。合成之后两段原有的理由都留在下面各自的小节里，没有丢。
+ * <p><b>没有"按 id 取一轮结果"的端点</b>（ADR-0027）：一轮的编号是句柄，答完即作废，
+ * 没有任何东西可以按它取回。要回答"那一轮说了什么"，读通道里的回答与 {@code audit_event}。
  *
- * <p>两条共同的判据，也写在这里：<b>没装配时端点仍要在</b>（{@code 404} 而不是端点消失——
+ * <p>判据两条：<b>没装配时端点仍要在</b>（{@code 404} 而不是端点消失——
  * 后者在客户端看来是"路径写错了"，排查方向完全不同），以及<b>认人失败一律 401</b>。
  */
 class HttpEndpointsTest {

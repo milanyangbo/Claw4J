@@ -39,7 +39,7 @@ ADR-0010 自己给过拆模块的判据：**独立发布周期**、**独立的 s
 加依赖都要付的。判据写下来就是为了在这种时候用上。
 
 **把 `channel.spi` / `channel.kernel` 并回 `claw4j-domain`**
-否决。`domain` 现在的承诺比"零框架"更严一档：**连 slf4j 都不许依赖**（`DomainBoundaryTest`），
+否决。`domain` 现在的承诺比"零框架"更严一档：**连 slf4j 都不许依赖**（`CoreBoundariesTest`），
 它不是洁癖——`AgentPort` 这条接缝落在那里，它一旦认识日志门面，就说明有人在里面写实现而不是写契约。
 并入 `kernel` 必然要带 slf4j，那条断言就得删。名字也会开始撒谎：一个装着入站编排的模块不该叫 domain。
 
@@ -67,7 +67,7 @@ claw4j-core
 - POM 里想加 Spring / Spring AI / 厂商 SDK / Reactor，`maven-enforcer-plugin` 在 `validate`
   阶段就红——`domain` 的那条规则搬到了这里，一条规则守一整个 artifact。
 - 两条 ArchUnit 规则分开保留，不合并：
-  `DomainBoundaryTest` 管 `domain` **不许依赖任何外部包**（比白名单更严，连日志都不行）；
+  `CoreBoundariesTest` 管 `domain` **不许依赖任何外部包**（比白名单更严，连日志都不行）；
   `CoreBoundaryTest` 管 `channel` 侧**只许** JDK / slf4j / domain / 自家代码。
   同一个 jar 里有两种强度的边界，是事实，不是重复。
 - 五个依赖 `claw4j-domain` 的模块改成依赖 `claw4j-core`；`claw4j-channel` 原本两个都写，现在只写一条。

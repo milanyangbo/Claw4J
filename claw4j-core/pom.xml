@@ -29,7 +29,7 @@
     -->
     <dependencies>
         <!-- 编排层要记日志；版本由 spring-boot-dependencies 管。
-             这是本模块唯一一条编译期依赖——domain 里连它都没有（见 DomainBoundaryTest）。 -->
+             这是本模块唯一一条编译期依赖——domain 里连它都没有（见 CoreBoundariesTest）。 -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>

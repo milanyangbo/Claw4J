@@ -78,6 +78,14 @@ public final class FaultTolerantSessionService implements SessionService {
         swallow(() -> delegate.delete(id), "删除会话 " + id);
     }
 
+    /**
+     * 框架 {@code SessionRepository} 的接口义务，本仓库**没有任何调用方**——
+     * 真正的过期清理按"多久没动"判，在 {@link SessionMaintenance} 里
+     * （框架那个 TTL 只写在建行那一刻，不随活动刷新，拿它删会把活跃的会话删掉）。
+     *
+     * <p>留着实现是因为接口要求；删掉这个方法编译不过。它的存在感只到"实现完整"为止，
+     * 别把它当成"过期就会删"的证据——那条要看 {@code SessionCleanup} 的档位。
+     */
     @Override
     public int deleteExpiredSessions(Instant now) {
         return fallback(() -> delegate.deleteExpiredSessions(now), () -> 0, "清理过期会话");
