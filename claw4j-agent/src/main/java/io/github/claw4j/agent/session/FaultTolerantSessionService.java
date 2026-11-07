@@ -30,6 +30,10 @@ import java.util.function.Supplier;
  * <p><b>降级不是静默</b>：每次降级都打一条 WARN，带上动作名。
  * "悄悄没记忆"和"库挂了"在用户看来一模一样，只能靠日志分开。
  *
+ * <p><b>为什么必须包在 bean 上，而不是在调用点 try/catch</b>：调这个接口的不只有我们。
+ * 框架的 {@code SessionMemoryAdvisor} 直接持有 {@code SessionService} 并往里读写历史，
+ * 那些调用点我们改不了——bean 是唯一能拦到它的位置。
+ *
  * <p>这里包的是 {@link SessionService} 而不是 {@code SessionRepository}：
  * 存储层的返回值是有语义的（{@code saveIfAbsent} 返回 false 表示"已存在"，
  * 上层会据此抛"会话已存在"），在那一层编一个假返回值，
@@ -79,13 +83,13 @@ public final class FaultTolerantSessionService implements SessionService {
     }
 
     /**
-     * 框架 {@link SessionService} 的<b>抽象方法</b>，本仓库没有任何调用方——
-     * 真正的过期清理按"多久没动"判，在 {@link SessionMaintenance} 里
-     * （框架那个 TTL 只写在建行那一刻，不随活动刷新，拿它删会把活跃的会话删掉）。
+     * 过期清理不在这一层：本仓库按"多久没动"判，在 {@link SessionMaintenance} 里
+     * （框架那个 TTL 只写在建行那一刻，不随活动刷新，拿它删会把活跃的会话删掉），
+     * 所以没有任何一处会调到这里。
      *
-     * <p>删不掉：{@code SessionService} 把它声明成 abstract，本类不实现就编译不过。
-     * 它的存在感只到"实现完整"为止，别把它当成"过期就会删"的证据——
-     * 那条要看 {@link SessionCleanup} 的档位。
+     * <p>仍然要有实现，是因为这一层是<b>整个接口的装饰器</b>：接口上有、我们不调的方法，
+     * 也得给出降级行为。只覆盖一部分的话，剩下那些方法在存储故障时会绕过降级直接抛给
+     * 调用方，而同一个 bean 的其他方法照常降级——一半降级比不降级更难查。
      */
     @Override
     public int deleteExpiredSessions(Instant now) {
