@@ -147,14 +147,30 @@
 | --- | --- |
 | 失效指针 | `ScheduleTools`（这条会给模型看）、`NotifyPolicy`、`ScheduleScanner`、`HttpChannelAutoConfiguration`、`FeishuChannelAutoConfiguration`、`TaskLauncher`（`{@link RunResumer}`）、`HttpEndpointsTest`、`README` 的能力对照表四段 |
 | 死指针 7 处 | `DomainBoundaryTest` → `CoreBoundariesTest`：4 处 `src/main` javadoc、1 处测试、ADR-0010、ADR-0015 |
-| 死代码 | **不能删**——见下 |
+| 死代码 | 那一条是接口义务、删不掉；另扫出 4 个真·零调用方法，已删——见下 |
 | 缺失回归 | 补 1 条，另 1 条判定为"不复建"——见下 |
 
 **关于"死代码"这个判断，我先前说错了。**
-`FaultTolerantSessionService#deleteExpiredSessions` 不是死代码，它是 `SessionRepository` 的
-`@Override`，删掉编译不过。它只是**没有调用方**。真正的处理是：
-把这件事写进它的 javadoc——"本仓库没有任何调用方，真正判过期的是 `SessionMaintenance`，
-别把它当成'配了 TTL 就会删'的证据"。
+`FaultTolerantSessionService#deleteExpiredSessions` 不是死代码，它是外部接口
+`org.springframework.ai.session.SessionService` 的**抽象方法**（`javap` 可见：
+`public abstract int deleteExpiredSessions(java.time.Instant)`），本类不实现就编译不过。
+它只是**没有调用方**。所以删不掉，只能把这件事写进 javadoc——
+"没有任何调用方，真正判过期的是 `SessionMaintenance`，别把它当成'配了 TTL 就会删'的证据"。
+
+**同一轮扫出的四个真·零调用方法已删**（全仓 `src/main` + `src/test` 无引用，
+不是 `@Override`、不是 `@Bean`、不是配置绑定入口）：
+
+| 位置 | 方法 | 为什么是死的 |
+| --- | --- | --- |
+| `NotifyPolicy:51` | `announcesChange()` | `state_changes` 这一档没有生产者，没人问"要不要推中间态" |
+| `GoalStatus:86` | `mutableWhenComplete()` | "完成之后不能直接 edit"由 `JdbcSessionGoalStore#EDIT` 的 SQL 挡，这个方法没人调 |
+| `AuditAction:41` | `isStart()` | "开始只能配 started"由 V19 的 check 约束挡 |
+| `McpConnection:99` | `requiredPermission()` | 唯一在用的是 `permissionFor(toolName)` |
+
+**剩下 10 个零调用方法是 Spring 的绑定入口，不能删**：`ModelProperties#setPrimary`、
+`ApprovalProperties#setTtl` 等，它们是 `claw4j.model.primary` / `claw4j.approval.ttl`
+这类配置键唯一的落点——删了不是"清理"，是配置项静默失效。
+
 
 **缺失的两条回归**：
 
@@ -177,5 +193,7 @@
   一个要出网，随包发默认 profile 会让"能不能启动"取决于开发机装没装 Node；
   OpenClaw 同样是在配置里声明 `mcpServers`，没有"随包示例服务器清单"。
 - **m0-03**：票面加 superseded 指针，指向 ADR-0011（无 key 即启动失败）。
-  与 OpenClaw 同一条原则：凭据类错误是永久的，不重试也不降级
-  （它原文："permanent account and credential errors … fail fast instead of retrying forever"）。
+  原则取自 OpenClaw："Permanent account and credential errors … fail fast instead of
+  retrying forever"（`docs/channels/slack/transports.md:71`，原文讲的是通道凭据）。**但"启动即失败"是我们
+  自己的选择**——OpenClaw 是多供应商网关，缺 key 照常启动、调用时才报错；我们只服务一个
+  部署，起得来但答不了比起不来更难查。

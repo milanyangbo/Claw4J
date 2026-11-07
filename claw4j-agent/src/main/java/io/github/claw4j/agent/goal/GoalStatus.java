@@ -76,18 +76,6 @@ public enum GoalStatus {
     }
 
     /**
-     * 能不能在达成之后直接改（edit / pause / block）。
-     *
-     * <p>不能。原文的排错表："{@code Goal error: goal is already complete}：
-     * 目标必须先被显式 resume 才能编辑、暂停或阻塞。要开始不同的目标就清除它"。
-     * 这不是"完成之后什么都不许做"，而是"想接着弄它就先 resume"——
-     * 不然一次误触就把一件已经收了尾的事改回进行中。
-     */
-    public boolean mutableWhenComplete() {
-        return this != COMPLETE;
-    }
-
-    /**
      * 模型能不能自己把目标改成这个状态。
      *
      * <p>只有 {@link #COMPLETE} 与 {@link #BLOCKED}。OpenClaw 的原话：

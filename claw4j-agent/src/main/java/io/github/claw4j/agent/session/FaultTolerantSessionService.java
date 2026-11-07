@@ -79,12 +79,13 @@ public final class FaultTolerantSessionService implements SessionService {
     }
 
     /**
-     * 框架 {@code SessionRepository} 的接口义务，本仓库**没有任何调用方**——
+     * 框架 {@link SessionService} 的<b>抽象方法</b>，本仓库没有任何调用方——
      * 真正的过期清理按"多久没动"判，在 {@link SessionMaintenance} 里
      * （框架那个 TTL 只写在建行那一刻，不随活动刷新，拿它删会把活跃的会话删掉）。
      *
-     * <p>留着实现是因为接口要求；删掉这个方法编译不过。它的存在感只到"实现完整"为止，
-     * 别把它当成"过期就会删"的证据——那条要看 {@code SessionCleanup} 的档位。
+     * <p>删不掉：{@code SessionService} 把它声明成 abstract，本类不实现就编译不过。
+     * 它的存在感只到"实现完整"为止，别把它当成"过期就会删"的证据——
+     * 那条要看 {@link SessionCleanup} 的档位。
      */
     @Override
     public int deleteExpiredSessions(Instant now) {

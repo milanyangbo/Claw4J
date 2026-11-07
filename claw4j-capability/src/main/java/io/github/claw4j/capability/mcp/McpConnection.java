@@ -95,11 +95,6 @@ public final class McpConnection implements AutoCloseable {
         return endpoint.name();
     }
 
-    /** 这个 server 导出的工具需要什么权限。由端点声明，本层不认识任何业务表。 */
-    public ToolPermission requiredPermission() {
-        return endpoint.permission();
-    }
-
     /** 某个工具实际要什么权限：端点按工具覆盖过就用覆盖，否则回落到 server 那一条。 */
     public ToolPermission permissionFor(String toolName) {
         return endpoint.permissionFor(toolName);

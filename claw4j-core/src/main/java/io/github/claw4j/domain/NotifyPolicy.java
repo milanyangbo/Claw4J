@@ -3,7 +3,7 @@ package io.github.claw4j.domain;
 /**
  * 一件事的通知策略：结果出来之后要不要主动去找人（ADR-0018）。
  *
- * <p>策略是 <b>run 的属性</b>，不是通道的属性。同一个人可以在飞书里盯着一件事、
+ * <p>策略是 <b>这一轮的属性</b>，不是通道的属性。同一个人可以在飞书里盯着一件事、
  * 同时让另一件定时跑——"吵不吵人"取决于那件事是怎么起头的，
  * 而不是它是从哪个通道问出来的。
  *
@@ -45,11 +45,6 @@ public enum NotifyPolicy {
     /** 终态（做完、失败、额度用尽）时要不要推一次。 */
     public boolean announcesFinish() {
         return this != SILENT;
-    }
-
-    /** 中间态（挂起等审批）时要不要也推一句。 */
-    public boolean announcesChange() {
-        return this == STATE_CHANGES;
     }
 
     /**

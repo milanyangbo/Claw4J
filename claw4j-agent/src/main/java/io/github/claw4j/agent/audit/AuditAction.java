@@ -36,9 +36,4 @@ public enum AuditAction {
     public String column() {
         return column;
     }
-
-    /** 开始那两条只能配 {@code started}，结束那两条不能配 {@code started}（库里有同一条约束）。 */
-    public boolean isStart() {
-        return this == AGENT_RUN_STARTED || this == TOOL_ACTION_STARTED;
-    }
 }
