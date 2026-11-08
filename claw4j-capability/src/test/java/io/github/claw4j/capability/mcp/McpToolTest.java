@@ -3,7 +3,6 @@ package io.github.claw4j.capability.mcp;
 import io.github.claw4j.capability.mcp.expose.McpExposure;
 import io.github.claw4j.capability.mcp.expose.McpExposureProperties;
 import io.github.claw4j.capability.mcp.stdio.InProcessStdioMcpServer;
-import io.github.claw4j.capability.mcp.stdio.PipedStdioClientTransport;
 import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.principal.Principal;
@@ -391,7 +390,7 @@ class McpToolTest {
                 .serverInfo("exposed", "1.0.0")
                 .tools(specifications)
                 .build();
-        McpSyncClient client = McpClient.sync(new PipedStdioClientTransport(clientReads, clientWrites))
+        McpSyncClient client = McpClient.sync(new InProcessStdioMcpServer.PipedStdioClientTransport(clientReads, clientWrites))
                 .clientInfo(new Implementation("probe-client", "1.0.0"))
                 .build();
         client.initialize();

@@ -67,8 +67,16 @@ class BuildContractTest {
 
     // ---------------------------------------------------------------- 不起进程（ADR-0002）
 
-    /** 全仓唯一被允许起进程的类。加第二个之前先想清楚"超时、目录锁、干净环境"这三句话还成不成立。 */
+    /**
+     * 全仓仅有的两个被允许起进程的类。
+     *
+     * <p>{@code LocalProcessRunner} 收 argv（脚本包走这条）；{@code ShellCommandRunner} 把命令交给
+     * {@code /bin/sh -c}（{@code exec} 走这条，票 01）。区别在**这条命令行是谁给的**：
+     * 包清单给的是 argv，模型给的是命令。加第三个之前先想清楚"超时、目录锁、干净环境"这三句话还成不成立。
+     */
     private static final String PROCESS_SPAWNER = "io.github.claw4j.capability.process.LocalProcessRunner";
+
+    private static final String SHELL_SPAWNER = "io.github.claw4j.capability.process.ShellCommandRunner";
 
     /**
      * 用 {@code callMethodWhere} 而不是 {@code callMethod(Runtime.class, "exec")}：
@@ -84,17 +92,44 @@ class BuildContractTest {
     static final ArchRule java_side_must_not_spawn_processes =
             noClasses().that().resideInAPackage("io.github.claw4j..")
                     .and().doNotHaveFullyQualifiedName(PROCESS_SPAWNER)
+                    .and().doNotHaveFullyQualifiedName(SHELL_SPAWNER)
                     .should().callMethodWhere(RUNTIME_EXEC)
                     .orShould().dependOnClassesThat().haveFullyQualifiedName("java.lang.ProcessBuilder")
-                    .because("起进程只发生在 " + PROCESS_SPAWNER + "，别处不自己拼命令行（ADR-0002）");
+                    .because("起进程只发生在 " + PROCESS_SPAWNER + " 与 " + SHELL_SPAWNER
+                            + "，别处不自己拼命令行（ADR-0002）");
+
+    /**
+     * 通用 shell 工具不许绕开我们自己的入口。它就在 classpath 上（`spring-ai-agent-utils` 的
+     * {@code ShellTools}：{@code Bash} / {@code BashOutput} / {@code KillShell}，参数是一个
+     * {@code String command}，由 {@code LocalExecBackend} 拼到 {@code /bin/bash -c} 后面）。
+     *
+     * <p><b>这条规则拦的不是 shell，是"绕过沙箱的 shell"</b>：{@code exec} 本身是正规能力（票 01），
+     * 但它的边界——工作区、{@code PATH}/加载器变量不许改、非 root、超时上限、白名单——全在
+     * {@code ExecTools} / {@code ShellCommandRunner} 里。直接注册 {@code ShellTools} 会把这些一次作废，
+     * 而上面那条 {@code ProcessBuilder} 规则看不见它（类在 jar 里，我们不 new 任何进程对象）。
+     */
+    private static final String SHELL_TOOLS = "org.springaicommunity.agent.tools.ShellTools";
+
+    @ArchTest
+    static final ArchRule shell_must_go_through_our_own_entry =
+            noClasses().that().resideInAPackage("io.github.claw4j..")
+                    .should().dependOnClassesThat().haveFullyQualifiedName(SHELL_TOOLS)
+                    .because("shell 只能经由 " + SHELL_SPAWNER + "：它绕开工作区、env 与审批那几条边界（票 01）");
 
     /**
      * 会命令解释器的写法。shell 会把参数里的分号当成第二条命令，
      * 于是"传一个参数"变成了"执行一段脚本"。注释里也不许出现——扫的是整份文件，
      * 区分代码与注释要写解析器，那份代价比"注释换个说法"贵得多。
+     *
+     * <p><b>唯一豁免：{@code ShellCommandRunner}</b>（票 01）。它的全部内容就是"把命令交给
+     * {@code /bin/sh -c}"，而那条命令是模型给的、已经过了白名单与工作区边界。
+     * 豁免的是这一个文件名，不是这批字面量——多一个文件想出现 {@code bash -c} 就得先改这里，
+     * 那一步和"要不要再开一个 shell 入口"是同一个决定。
      */
     private static final List<String> SHELL_INTERPRETERS =
             List.of("sh -c", "bash -c", "/bin/sh", "/bin/bash", "cmd.exe");
+
+    private static final String SHELL_ENTRY = "ShellCommandRunner.java";
 
     @Test
     @DisplayName("各模块主代码里没有手写的 shell 调用")
@@ -113,6 +148,9 @@ class BuildContractTest {
                 }
                 try (Stream<Path> files = Files.walk(sources)) {
                     for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
+                        if (file.getFileName().toString().equals(SHELL_ENTRY)) {
+                            continue;
+                        }
                         String content = Files.readString(file, StandardCharsets.UTF_8);
                         for (String interpreter : SHELL_INTERPRETERS) {
                             if (content.contains(interpreter)) {

@@ -5,3 +5,4 @@ io.github.claw4j.capability.mcp.expose.McpServerExposureAutoConfiguration
 io.github.claw4j.capability.script.ScriptPackageAutoConfiguration
 io.github.claw4j.capability.skill.SkillToolAutoConfiguration
 io.github.claw4j.capability.generator.GeneratorAutoConfiguration
+io.github.claw4j.capability.exec.ExecAutoConfiguration
