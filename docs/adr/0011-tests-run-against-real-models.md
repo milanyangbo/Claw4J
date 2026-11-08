@@ -5,6 +5,21 @@ status: accepted
 date: 2026-10-23
 ---
 
+> **部分失效（2026-11-08）**：本文"需要模型的测试一律连真实 DeepSeek"这条今天只剩一个角落成立。
+> 今天门禁里走模型的用例绝大多数换成 `FixedChatModel` / `SubagentModelStub` 替身 + 真容器，
+> 只有一条真模型用例——`ChatPipelineTest#realModelTurnsNaturalLanguageIntoTheRightToolCall`
+> （`ChatPipelineTest.java:265`）——连真实 DeepSeek，且它没有 key 时是**红**、不是跳过。
+> 真模型那条完整的线在 `docs/capability-tests.md`（一个工具一条，人工）与 `./scripts/eval.sh`。
+> 这条偏离已经记账：`docs/agents/guardrails.md:38`。
+>
+> **没失效的是开头那条"删掉 mock 兜底"**：生产装配今天仍然是"没 key 就起不来"
+> （`application.yml:56-58`、`RoutingModelConfiguration` 里 primary 那家没 key 直接抛）。
+> 也就是说本文的两个判断各走各的——生产侧照办，测试侧从"全部真模型"退到"一条真模型 + 其余替身"。
+>
+> 正文保留当时的推理，它记录的是"为什么当初这么想"，不是现状。
+> 另：下文 Considered Options 里的"真模型只跑 IT，`-Preal-model` 隔离"是**当时被否决的选项**，
+> 不是对现状的描述——那个 profile 后来确实删了，与本文的采纳结论一致。
+
 单元测试与集成测试**一律不再对 `ChatModel` 打桩**。需要模型的测试连真实 DeepSeek；
 `MockChatModel`（生产兜底）与 `ScriptedChatModel`（测试编排）两个假模型类一并删除。
 没有 API key 时测试**失败**，不跳过；key 从环境里取（本机 `set -a; . ./.env; set +a`）。

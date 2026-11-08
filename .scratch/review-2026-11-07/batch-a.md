@@ -20,10 +20,11 @@ OpenClaw 有 `.github/workflows/ci.yml`，这一条我们不跟：它的用例�
   的判定表第三行）。这不是兜底，是"没配就不装"。
 
 要区分开：测试里的 `FixedChatModel` 是**替身**，不是这条兜底——它只在 `src/test` 下，
-生产装配里根本没有它。门禁跑替身 + 真容器，真模型那条线在 `docs/capability-tests.md`
-与 `./scripts/eval.sh`。ADR-0011 标题那句"所有需要模型的测试连真实 DeepSeek"与今天
-不一致（`README.md:412`：门禁跑假模型与真容器），**按今天写**：门禁要能在离线、无 key
-的机器上跑。要恢复"测试连真模型"是另一件事，不在这两条之内。
+生产装配里根本没有它。门禁跑替身 + 真容器（真模型只剩一条用例：`ChatPipelineTest:265`），
+真模型那条完整的线在 `docs/capability-tests.md` 与 `./scripts/eval.sh`。
+那条真模型用例**要 key**：没有 `DEEPSEEK_API_KEY` 时它是红、不是跳过
+（`ChatPipelineTest:266-268`）——这是 ADR-0011 留下的唯一一条"无 key 即失败"。
+所以门禁不需要外网，但需要那把 key；要恢复"所有走模型的测试连真模型"是另一件事，不在这两条之内。
 
 ## m0-skeleton
 
@@ -61,7 +62,7 @@ OpenClaw 有 `.github/workflows/ci.yml`，这一条我们不跟：它的用例�
 
 ### 01 脚本化假模型与 `agent → tools` 依赖边
 - 判定：已过期
-- 代码证据：`claw4j-agent/pom.xml:27-31`（仍依赖 claw4j-capability）、`ChatPipelineTest.java:118-133`（两轮工具循环、工具执行两次仍在）、`ChatPipelineTest.java:818`（替身已换成 FixedChatModel）、`docs/adr/0011-tests-run-against-real-models.md:9`（ScriptedChatModel 删除）
+- 代码证据：`claw4j-agent/pom.xml:27-31`（仍依赖 claw4j-capability）、`ChatPipelineTest.java:118-133`（两轮工具循环、工具执行两次仍在）、`ChatPipelineTest.java:847`（`FixedChatModel` 就声明在这个文件里）、`docs/adr/0011-tests-run-against-real-models.md:9`（ScriptedChatModel 删除）
 - OpenClaw：`docs/tools/index.md:47`（工具有 profile/allow/deny 过滤），未找到"脚本化假模型/脚本耗尽报错"的对应物
 - 一句：依赖边与"先调工具、再据工具结果作答"的可测性都还在，但票面点名的 `ScriptedChatModel`/`ScriptedChatModelTest` 与"脚本耗尽明确失败"这一形态已不存在，桩工具也按计划被 05 换掉。
 
@@ -99,7 +100,7 @@ OpenClaw 有 `.github/workflows/ci.yml`，这一条我们不跟：它的用例�
 - 判定：已过期
 - 代码证据：`pom.xml:336-364`（profile 只剩 real-cli 与 eval，`real-model` 已删）、`docs/adr/0006...md:159-161`（"-Preal-model 一并删除"）、`README.md:366`（模型切换说明仍在）、`GLOSSARY.md:293-317`（Text-to-SQL/只读事务/脱敏术语仍在）、`README.md:412`（门禁跑的是假模型 + 真容器）
 - OpenClaw：`docs/concepts/model-providers/official-provider-plugins.md:23-25`（provider transport 可配），多供应商能力有对应物
-- 一句：真实闭环与文档落点仍在；票面"真实调用用 profile 隔离、默认不进 CI"两条今天都没有——`-Preal-model` 已删，CI 也不接（文首第 1 条）。门禁跑替身 + 真容器是现状（文首第 2 条末段），不是"与 ADR-0011 相反"的缺陷；真模型那条线走 `docs/capability-tests.md` 与 `./scripts/eval.sh`。
+- 一句：真实闭环与文档落点仍在；票面"真实调用用 profile 隔离、默认不进 CI"两条今天都没有——`-Preal-model` 已删，CI 也不接（文首第 1 条）。门禁跑替身 + 真容器（真模型只剩一条用例）是现状（文首第 2 条末段），不是"与 ADR-0011 相反"的缺陷；真模型那条线走 `docs/capability-tests.md` 与 `./scripts/eval.sh`。
 
 ## 本批小结
 - 一致 1 张（m1-06：会话键口径与 OpenClaw 的 channel+peer 隔离同形）
@@ -112,9 +113,14 @@ OpenClaw 有 `.github/workflows/ci.yml`，这一条我们不跟：它的用例�
   - m0-02：Redis 服务已按 ADR-0005 删除，只剩 Postgres
   - m1-01：`ScriptedChatModel` 与"脚本耗尽报错"已删除，替身改为 FixedChatModel
   - m1-07：`-Preal-model` 隔离已删除，真实调用不再有 profile 边界
-- 最值得修的两处（按代价排序）
-  1. m1-01 / m1-07 各加一行 superseded 指针（m0-03 已加，指向 ADR-0011）——否则后来者会照票面把 `ScriptedChatModel` 或 `-Preal-model` 加回来。
-  2. `docs/adr/0011-tests-run-against-real-models.md:47` 那句"真模型只跑 IT，`-Preal-model` 隔离"已经和现实相反（那个 profile 删了）。ADR 正文是当时的推理、不改，但要加一行指针说明它已被 ADR-0006 的修订与今天的门禁方式取代。
+- 两处收尾（2026-11-08 已做）
+  1. m1-01 / m1-07 各加了一节「修订」指针（m0-03 早前已加，指向 ADR-0011），
+     写明 `ScriptedChatModel` 与 `-Preal-model` 都已删除、不要再按票面加回来。
+  2. ADR-0011 顶部加「部分失效」指针（照 0016 的惯例，正文不动）：失效的是
+     "测试一律连真实 DeepSeek"这条——门禁跑替身 + 真容器，偏离记在
+     `docs/agents/guardrails.md:38`；"删掉 mock 兜底"那条仍然成立。
+     顺带在指针里点明 Considered Options 里的「真模型只跑 IT，`-Preal-model` 隔离」
+     是**当时被否决的选项**，不是对现状的描述——它是被否掉的那条，不是写错的那条。
 
 ## 本批不成立的两类建议（写下来免得再提）
 

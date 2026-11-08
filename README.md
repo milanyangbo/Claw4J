@@ -409,7 +409,8 @@ public class TelegramChannelAutoConfiguration {
 ./scripts/verify.sh     # 载入 .env → clean verify（全部用例 + 覆盖率下限）→ 用例数、跳过数、文件数核对
 ```
 
-门禁跑的是假模型与真容器，能证明"装配成立"，证明不了"能力真能用"。后者要一次真跑，
+门禁跑的是替身与真容器（真模型只留一条，验的是"一句话能不能翻成一次对的工具调用"），
+能证明"装配成立"，证明不了"能力真能用"。后者要一次真跑，
 **按工具逐条**给出命令与期望值在 **[`docs/capability-tests.md`](docs/capability-tests.md)**：
 本仓库的 23 个工具每个一条（10 个进程内 + 10 个自建 MCP + 3 个脚本包），
 外加两个第三方 MCP server 的"先取清单再点名"、5 个子 Agent、流式与非流式的成对调法、

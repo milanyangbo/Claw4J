@@ -120,3 +120,14 @@ Docker 在时往 stderr 打一行"正在用哪个镜像起库"，卡住的人知
 - Standards 轴提的 `AuthorizationAdvisor#denialText` 重复判定、`Principal#canUse` 是 Middle Man：
   前者是**归因**（已判定越权之后，为了说清"是动作还是表"再分项查一次），不是第二套判定；
   后者是给 Advisor 留的单一入口。都不改。
+
+## 修订（2026-11-08 评审）：`-Preal-model` 已删，CI 也不接
+
+票面"真实调用用 profile 隔离、默认不进 CI"这两条今天都不成立：
+
+- `-Preal-model` 随 ADR-0006 的修订删除，`pom.xml` 的 profile 只剩 `real-cli` 与 `eval`；
+- 不接 CI 是**决定**，不是欠账（`CONTRIBUTING.md:175`、`docs/agents/review.md:43`）。
+
+真模型那条线现在走 `docs/capability-tests.md`（一个工具一条，人工跑）与 `./scripts/eval.sh`；
+门禁跑的是替身 + 真容器（真模型只剩一条用例），这条偏离记在 `docs/agents/guardrails.md:38`。
+**不要再按票面把 `-Preal-model` 加回来。**
