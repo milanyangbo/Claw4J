@@ -47,7 +47,7 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 **另一种传输是 HTTP。** 对方的 server 已经跑着，我们只当一个 JSON-RPC 客户端：
 `transport: http`（Streamable HTTP，2025 版协议的标准）与 `transport: sse`（旧版 HTTP+SSE）
 走的是 `HttpMcpEndpoint`——不起进程、没有什么"对端的环境"，凭据放在请求头里。
-两者对上面那套连接生命周期（会话丢失重开、清单 fail-fast）完全透明：
+两者对上面那套连接生命周期（会话丢失重开、连不上时后台退避重试）完全透明：
 换传输只是换 `openTransport()` 返回的对象，这与 stdio 那条是同一个接缝。
 
 接**别人写的** server 不需要写 Java。`claw4j.capability.mcp.servers.<名字>` 下一段配置就是全部：

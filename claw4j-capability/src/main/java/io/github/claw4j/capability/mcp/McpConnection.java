@@ -30,6 +30,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       重放之后仍然丢会话，那是 server 真的不在了，交给上层去失败）。
  *   <li><b>连接建立时工具清单为空即失败</b>（fail-fast）。这条不在这里判，
  *       在 {@link McpToolProvider} 建出来的时候判——那里才是"这一层的工具到底有哪些"被决定的地方。
+ *   <li><b>重开也失败要上报</b>（票 03）：一次调用失败多半只是会话过期，重开一条就好；
+ *       重开也失败说明 server 真的不在了，那时叫一声，让上层记 DOWN 并开始退避重试。
+ *       不说的话，这个 server 就只剩"每次调用都失败"这一种表现，而它再也不会被重新连上。
  * </ol>
  *
  * <p>为什么不用 Spring AI 自动配置出来的 {@code McpSyncClient}：那些 client 由配置驱动建好之后
@@ -66,6 +69,15 @@ public final class McpConnection implements AutoCloseable {
     private final Object lock = new Object();
 
     private McpSyncClient client;
+
+    /**
+     * 重开也失败时叫一声（票 03）。为 null 表示没人关心这条连接的生死（单测、例子）。
+     *
+     * <p><b>为什么需要它</b>：一次调用失败是"会话丢了"，重开一条就好；<b>重开也失败</b>说明
+     * server 真的不在了。上层（{@link McpToolProvider}）要知道这件事，才能把状态记成 DOWN
+     * 并在后台退避重试——不然它就只是一次普通的工具失败，那个 server 再也不会被重新连上。
+     */
+    private volatile Runnable onLost;
 
     public McpConnection(McpServerEndpoint endpoint) {
         this(endpoint, REQUEST_TIMEOUT);
@@ -141,8 +153,38 @@ public final class McpConnection implements AutoCloseable {
                 throw failure;
             }
             log.warn("MCP server {} 的会话丢失，重新初始化连接（ADR-0002）：{}", name(), failure.getMessage());
-            return currentAfterReopening().callTool(request);
+            try {
+                return currentAfterReopening().callTool(request);
+            }
+            catch (RuntimeException hopeless) {
+                // 通知必须在锁外：上层要拿自己的锁去改状态，而这里不能与它形成交叉等待。
+                lost(hopeless);
+                throw hopeless;
+            }
         }
+    }
+
+    /**
+     * 告诉上层"这条连接重新建也建不起来了"。
+     *
+     * <p>回调里抛异常一律吞掉：它不该把"这次工具调用失败"变成另一种失败。
+     */
+    private void lost(RuntimeException failure) {
+        Runnable listener = onLost;
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.run();
+        }
+        catch (RuntimeException ignored) {
+            log.warn("MCP server {} 失联的处理本身失败了：{}", name(), failure.getMessage());
+        }
+    }
+
+    /** 上层接线用：连接重新建立也失败时叫一声。传 null 解除。 */
+    void onLost(Runnable listener) {
+        this.onLost = listener;
     }
 
     private McpSyncClient current() {

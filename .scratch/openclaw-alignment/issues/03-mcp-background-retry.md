@@ -8,6 +8,8 @@
 
 **Type:** task
 
+**Status:** resolved（2026-11-08）
+
 **Demo:** 第三方 MCP server 升级重启 40 秒。这段时间里照样能问、`querySales` 与 `systemStatus` 照常工作，
 只是那家的工具暂时看不见；40 秒后下一轮它就回来了，日志里有一行"第 2 次重试后恢复，工具 N 个"。
 **进程一次都没退。**
@@ -116,20 +118,33 @@ name, status(UP / DOWN), lastKnownTools(List<Tool>), attempt(int), nextRetryAt(I
 
 ## 验收判据（反例都要能红）
 
-- [ ] **连不上不再让应用起不来**：假端点第一次握手抛、第二次成功 → 上下文起得来，
-      清单里暂时没有它的工具，其他工具在。
-- [ ] **恢复之后下一轮可见**：让假端点第二次成功列出工具，再取一次清单（模拟下一轮），
-      断言那个工具在里面。反例：只把 `McpConnection` 改成会重连、清单仍是快照 → **这条红**
-      （这正是最容易漏的一半，所以它必须断在装配层）。
-- [ ] **退避递增**：可控 scheduler，断言 30s / 60s / 120s 三个点。反例：固定间隔 → 红。
-- [ ] **掉线保留上次清单**：先成功列出、再让传输失败，断言工具仍在清单里。反例："DOWN 就整份撤掉" → 红。
-- [ ] **配置错误仍然启动失败**：点名不导出的工具、重名、空清单三种，各一条；反例：把它们也改成重试 → 红。
-- [ ] **空清单归可恢复**：连得上但工具为 0 → 上下文起得来、状态 `DOWN`、日志里有"没导出工具"。反例：判成永久 → 红。
-- [ ] **`close()` 之后没有残留任务**：断言 scheduler 被关。反例：漏掉 → 红。
-- [ ] ADR-0002 加修订记录；`docs/design/capability-layers.md` 与 `docs/capability-tests.md` 里
-      "MCP 连不上就起不来"的表述同步（这两处今天写的就是旧口径）。
-- [ ] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（capability 现 85.6%，加类不会掉到线下，
-      但**新增的调度类必须有 Java 层用例**——`03` 这类后台线程最容易出现"零覆盖但不报错"）。
+- [x] **连不上不再让应用起不来**：`McpServersConfigTest#unreachableServerKeepsTheApplicationUp`
+      （配一个不存在的命令 → 上下文 `hasNotFailed`、`McpToolProvider` 在、状态 DOWN、`lastError` 指名 server）、
+      `McpServerRetryTest#unreachableServerDoesNotStopTheApplication`（坏端点 + 好端点并存 →
+      好端点 4 个工具照常在、启动清单里有 `broken → DOWN(30 秒后重试)` 与 `calc → UP(工具 4 个)`）。
+- [x] **恢复之后下一轮可见**，断在两个层次：
+      `McpServerRetryTest#recoveredServerShowsItsToolsOnTheNextLook`（第一次连不上 → 重试成功 →
+      `toolNames()` 立刻有那 4 个，日志"第 1 次重试后恢复，工具 4 个"）；
+      `ChatPipelineTest#aToolThatAppearsLaterIsVisibleAtTheNextTurn`（装配层：同一个
+      `ChatClient` 第一轮请求里 0 个工具，来源多出一个之后**第二轮请求**里就有它）。
+- [x] **退避递增**：`McpServerRetryTest#backoffDoublesAndCaps` 用只记录不真等的 scheduler，
+      断言 `30 / 60 / 120 / 240 / 480 / 600 / 600` 秒（封顶那两点也在，上限不真的封住是这条最容易漏的一半）。
+- [x] **掉线保留上次清单**：`McpServerRetryTest#lostServerKeepsItsLastKnownTools`（先成功列出 4 个 →
+      会话丢失且重开失败 → 状态 DOWN，但 4 个工具仍在清单里，日志写"保留上次成功列出的 4 个工具"）。
+- [x] **配置错误仍然启动失败**：点名不导出的工具 `McpToolTest#unknownToolNameInOverridesFailsWhenTheProviderIsBuilt`、
+      跨 server 重名 `#duplicateToolNamesAcrossServersFail`、命令为空
+      `McpServersConfigTest#stdioWithoutCommandFailsOnTheSpot` / URL 空 `#httpWithoutUrlFailsOnTheSpot`。
+      运行期才发现的配置错误另有一条：`McpServerRetryTest#misconfigurationFoundAtRecoveryStopsRetrying`。
+- [x] **空清单归可恢复**：`McpToolTest#emptyToolListIsRecoverableRatherThanFatal`（工具为空、状态 DOWN、
+      `lastError` 含"没导出"）。
+- [x] **`close()` 之后没有残留任务**：`McpServerRetryTest#closeStopsTheRetryLoop`
+      （`isShutdown` 为真、关掉之后排着的任务不再排出新的、可重复调用）。
+- [x] ADR-0002 加修订记录（"`listTools()` 为空即 fail-fast"收窄成"配置错误才当场失败"）；
+      `docs/design/capability-layers.md`、`docs/capability-tests.md` 同步。
+      **多改了一处**：`docs/design/extension-points.md` 第二节也写着"清单为空即失败"，
+      而 `capability-layers.md` 把读者指向那里（"失败姿势在 extension-points.md 的第二节"）——
+      只改两处会留下一个主动误导的指针。
+- [x] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（数字见 Comments）。
 
 ## 门禁余量
 

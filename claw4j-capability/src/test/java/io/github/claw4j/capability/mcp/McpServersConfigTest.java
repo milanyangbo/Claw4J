@@ -226,8 +226,8 @@ class McpServersConfigTest {
     }
 
     @Test
-    @DisplayName("配了一个不存在的命令：启动失败，且失败信息指名是哪个 server")
-    void unreachableServerFailsStartupWithItsName() {
+    @DisplayName("配了一个不存在的命令：应用照常起，那个 server 记 DOWN 等重试（票 03）")
+    void unreachableServerKeepsTheApplicationUp() {
         runner()
                 .withPropertyValues(
                         "claw4j.capability.mcp.servers.broken.command=/nonexistent/claw4j-no-such-binary",
@@ -236,10 +236,21 @@ class McpServersConfigTest {
                         "claw4j.capability.mcp.request-timeout=2s",
                         "claw4j.capability.mcp.initialization-timeout=2s")
                 .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .as("配了多个 server 时只报一句 IOException，等于让人在 yml 里二分")
-                            .hasStackTraceContaining("MCP server broken 连不上");
+                    assertThat(context)
+                            .as("对端重启 40 秒不该换来一次全站不可用：那在 K8s 上是 CrashLoopBackOff，"
+                                    + "连 HTTP 通道一起下线，而重试本来由编排层替我们做，代价是整个进程")
+                            .hasNotFailed();
+                    assertThat(context).hasSingleBean(McpToolProvider.class);
+                    assertThat(context.getBean(McpToolProvider.class).status())
+                            .singleElement()
+                            .satisfies(snapshot -> {
+                                assertThat(snapshot.name()).isEqualTo("broken");
+                                assertThat(snapshot.status()).isEqualTo(McpServerStatus.DOWN);
+                                assertThat(snapshot.lastError())
+                                        .as("日志里要认得出是哪一个 server：配了多个时只报一句 "
+                                                + "IOException，等于让人在 yml 里二分")
+                                        .contains("broken");
+                            });
                 });
     }
 

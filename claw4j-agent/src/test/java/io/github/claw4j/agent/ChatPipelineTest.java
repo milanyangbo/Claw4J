@@ -21,8 +21,10 @@ import io.github.claw4j.domain.port.ApprovalLedger;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolProfile;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -54,6 +56,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
@@ -785,6 +788,54 @@ class ChatPipelineTest {
                 .defaultAdvisors(advisors)
                 .defaultToolCallbacks(tools)
                 .build();
+    }
+
+    /**
+     * 工具清单是**每轮解析**的（票 03）：一个后来才出现的工具，下一轮请求里就看得见。
+     *
+     * <p>这半边最容易漏：只把连接改成"断了会自己重连"，清单仍是装配期拍下的那一份快照，
+     * 于是 MCP server 恢复之后连接是新的、工具永远是旧的那批——模型那边只会说
+     * "我没有这个能力"，而日志里一切正常。
+     *
+     * <p>这里用的是生产那条接法（{@code defaultToolCallbacks(catalog)}，让框架在每次请求时展开
+     * provider），不是自己拼一份 List：写成 {@code defaultToolCallbacks(catalog.tools())} 的实现
+     * 会在这条用例上红。
+     */
+    @Test
+    @DisplayName("后来才出现的工具，下一轮请求里就看得见（MCP 恢复走的就是这条路）")
+    void aToolThatAppearsLaterIsVisibleAtTheNextTurn() {
+        AtomicBoolean recovered = new AtomicBoolean();
+        RecordingTool lookup = new RecordingTool("lookup", "42");
+        ToolCatalog catalog = new ToolCatalog("test", ToolProfile.unrestricted(),
+                () -> recovered.get() ? List.of(lookup) : List.of());
+
+        FixedChatModel model = new FixedChatModel("好");
+        ChatClientAgentPort port = new ChatClientAgentPort(
+                clientBuilder(model).defaultToolCallbacks(catalog).build());
+
+        port.reply(message("chat-1", "先问一句"));
+        assertThat(toolNamesOf(model.prompts().getFirst()))
+                .as("第一次：那个外部能力还没连上，它不在清单里，也不该有一个占位的空壳")
+                .isEmpty();
+
+        recovered.set(true);
+        port.reply(message("chat-1", "再问一句"));
+
+        assertThat(toolNamesOf(model.prompts().getLast()))
+                .as("恢复之后必须下一轮就能用。快照版本的现场是：连接好了、日志没有一行红，模型说它没有这个能力")
+                .containsExactly("lookup");
+    }
+
+    /** 这一轮模型实际拿到的工具名。取的是请求选项，也就是工具循环真正用的那一份。 */
+    private static List<String> toolNamesOf(Prompt prompt) {
+        if (prompt.getOptions() instanceof ToolCallingChatOptions options
+                && options.getToolCallbacks() != null) {
+            return options.getToolCallbacks().stream()
+                    .map(callback -> callback.getToolDefinition().name())
+                    .toList();
+        }
+        // 一个工具都没有时框架不设这一格（null 而不是空表）：两者都是"这一轮没有工具"。
+        return List.of();
     }
 
     /**

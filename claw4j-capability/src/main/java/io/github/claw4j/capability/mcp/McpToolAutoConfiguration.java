@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Bean;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * MCP 这一层的装配：容器里有几个 {@link McpServerEndpoint}，就有几个 MCP 工具来源。
@@ -28,8 +29,9 @@ import java.util.List;
 public class McpToolAutoConfiguration {
 
     /**
-     * 每个端点一条连接。连接在这时候建立、工具清单在这时候取回，
-     * 于是"工具清单为空"表现为启动失败（见 {@link McpToolProvider} 的类注释）。
+     * 每个端点一条连接。连接在构造期内试一次：**连不上不再让应用起不来**（票 03）——
+     * 记 DOWN、后台按 30 秒起翻倍退避重试，工具在该 server 恢复之后的下一次解析里出现；
+     * 而配置错误（点名了没导出的工具、重名）照样启动失败，见 {@link McpToolProvider} 的类注释。
      */
     @Bean
     @ConditionalOnBean(McpServerEndpoint.class)
@@ -42,22 +44,28 @@ public class McpToolAutoConfiguration {
      * MCP 工具的权限登记表。登记的内容来自端点声明，
      * 声明成 {@code ToolPermission.read()} 且不带表就是"没有业务表权限"。
      *
+     * <p><b>它是活视图，不是装配期拍下的那张表</b>（票 03）：一个 server 恢复之后才出现的工具，
+     * 在这一层必须立刻答得出"要什么权限"。拍快照的代价是那些工具被当作"未登记"而拒绝——
+     * 方向是安全的，但现象是能力回来了却调不动，而日志里没有一处说得出为什么。
+     *
      * <p>没有这一张表时，MCP 工具会因"未登记权限"被拒——漏登记的失败方向是<b>拒绝</b>，
      * 不是放行（ADR-0007）。
      */
     @Bean
     @ConditionalOnBean(McpServerEndpoint.class)
     public ToolPermissionRegistry mcpToolPermissionRegistry(McpToolProvider provider) {
-        return ToolPermissionRegistry.of(provider.permissions());
+        return provider::permissionFor;
     }
 
     /**
      * 档位：{@link ToolTier#FULL}。
      *
      * <p>外部 server 的能力清单是**运行时**从远端拉来的，部署者没有机会逐条审过它到底会做什么；
-     * 而 MCP 的连接与清单都在装配期完成（见 {@link McpToolProvider}），
-     * 这里能拿到的只有"这一次连上之后有哪些名字"。所以整批归到最宽的那一档，
-     * 而不是逐条判断——逐条判断要对着一个随时会变的外部清单做决定。
+     * 所以整批归到最宽的那一档，而不是逐条判断——逐条判断要对着一个随时会变的外部清单做决定。
+     *
+     * <p>**同样是活视图**：档位是清单组装处（{@code ToolProfile#select}）用来判"这个工具该不该出现"的，
+     * 拍快照的话，恢复之后出现的工具会因为"查不到档位"让整个清单收集失败——
+     * 一个外部 server 的重启会把整轮对话打掉。
      *
      * <p>代价写在明处：一个 {@code messaging} 部署里，MCP 工具一个都不会出现，
      * 包括那些只读的。要让某个 server 进更低的档，是它自己的配置该回答的问题，
@@ -66,6 +74,8 @@ public class McpToolAutoConfiguration {
     @Bean
     @ConditionalOnBean(McpServerEndpoint.class)
     public ToolTierRegistry mcpToolTierRegistry(McpToolProvider provider) {
-        return ToolTierRegistry.sameFor(provider.permissions().keySet(), ToolTier.FULL);
+        return toolName -> provider.knowsTool(toolName)
+                ? Optional.of(ToolTier.FULL)
+                : Optional.empty();
     }
 }

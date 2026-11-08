@@ -44,6 +44,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import io.github.claw4j.agent.model.ModelConfiguration;
 
 /**
@@ -102,6 +106,11 @@ public class AgentAutoConfiguration {
      * <p>所以清单提成 bean，模型与 MCP 两个出口吃同一份。这不是"为了复用"，
      * 是为了让"外部看到的"能写成"模型能用的"的子集——一句话可以断言，两份各自算就不行。
      *
+     * <p><b>它给出去的是活视图</b>（票 03）：每次 {@code tools()} 都重新收一遍工具来源。
+     * MCP 那一层按 server 记状态、连不上就后台退避重试，而"这一轮看得见哪些"只能到这里才知道——
+     * 装配期拍下的那份快照会让恢复之后的能力永远回不来。两处日志（档位落点、MCP 恢复）因此
+     * 按"结论变了没有"去重，见 {@code signatureOf}。
+     *
      * @param toolPolicy 全局档位策略；人设文件里的 {@code tier} 覆盖它（只覆盖档位，不覆盖 allow / deny）
      */
     @Bean
@@ -114,10 +123,20 @@ public class AgentAutoConfiguration {
                                    ToolsProperties toolPolicy,
                                    PersonaCatalog.Catalog personas) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
-        List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                meterRegistry.getIfAvailable(), audit.getIfAvailable(),
-                tracer.getIfAvailable(() -> SpanTracer.NONE), profile, tierRegistries.orderedStream().toList());
-        return new ToolCatalog(personas.selected().name(), profile, tools);
+        // 结论变了才打日志（见 signatureOf）：清单现在是每轮解析的，每轮都打一行
+        // "挡掉 0 个"会把真正的告警淹掉，而"清单变了"本身是值得留一行的事件。
+        AtomicReference<String> reported = new AtomicReference<>();
+        return new ToolCatalog(personas.selected().name(), profile, () ->
+                collectToolCallbacks(toolCallbacks, toolCallbackProviders,
+                        meterRegistry.getIfAvailable(), audit.getIfAvailable(),
+                        tracer.getIfAvailable(() -> SpanTracer.NONE), profile,
+                        tierRegistries.orderedStream().toList(),
+                        selection -> {
+                            String signature = signatureOf(selection);
+                            if (!signature.equals(reported.getAndSet(signature))) {
+                                report(profile, selection);
+                            }
+                        }));
     }
 
     /**
@@ -165,7 +184,13 @@ public class AgentAutoConfiguration {
                 // 没有工具时是空数组，工具循环照常工作（只是无工具可检索）。
                 // 这份清单永远不会被整份塞进提示词：工具循环先把它们索引进 ToolIndex，
                 // 只把"找工具"那一个交给模型，查到谁再注入谁。
-                .defaultToolCallbacks(catalog.tools())
+                //
+                // **给它的是 provider，不是快照**（票 03）：框架在每次请求时展开 provider
+                // （DefaultChatClientUtils.toChatClientRequest 里那个循环），于是"这一轮模型
+                // 看得见哪些工具"每轮重新算一次。写成 defaultToolCallbacks(catalog.tools())
+                // 的话，MCP server 恢复之后连接是新的、清单还是启动那天那份——
+                // 模型那边只会说"我没有这个能力"。
+                .defaultToolCallbacks(catalog)
                 .build();
     }
 
@@ -271,8 +296,29 @@ public class AgentAutoConfiguration {
                                                           SpanTracer tracer,
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries) {
+        return collectToolCallbacks(callbacks, providers, registry, audit, tracer, profile, tierRegistries,
+                selection -> report(profile, selection));
+    }
+
+    /**
+     * 同上，但把"这次筛完的结论"交给调用方去处置。
+     *
+     * <p>多这个出口是因为清单变成了<b>每轮解析</b>（票 03）：日志只能打一份，
+     * 而"清单变了"与"每轮都一样"是两件不同的事。父链那条路按结论的签名去重（见 {@code toolCatalog}），
+     * 子链那条仍然每次委派报一次——它本来就是一个稀疏事件。
+     */
+    public static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
+                                                          ObjectProvider<ToolCallbackProvider> providers,
+                                                          MeterRegistry registry,
+                                                          ToolCallAudit audit,
+                                                          SpanTracer tracer,
+                                                          ToolProfile profile,
+                                                          List<ToolTierRegistry> tierRegistries,
+                                                          Consumer<ToolProfile.Selection> onSelection) {
         List<ToolCallback> collected = new ArrayList<>();
         callbacks.orderedStream().forEach(collected::add);
+        // provider 的 getToolCallbacks() 每次调用都重新问一次来源：MCP 那一层是活视图，
+        // 恢复之后出现的工具从这里进来（票 03）。这里不能缓存它的结果。
         providers.orderedStream()
                 .forEach(provider -> collected.addAll(List.of(provider.getToolCallbacks())));
 
@@ -281,7 +327,7 @@ public class AgentAutoConfiguration {
         ToolProfile.Selection selection = profile.select(
                 collected.stream().map(callback -> callback.getToolDefinition().name()).toList(),
                 tierRegistries);
-        report(profile, selection);
+        onSelection.accept(selection);
         Set<String> kept = Set.copyOf(selection.kept());
 
         // 一律包一层：没有 registry 时它只记"这一轮调过哪些工具"，不报指标。
@@ -316,6 +362,18 @@ public class AgentAutoConfiguration {
                     + "要么这个部署没装提供它的模块（正常），要么名字拼错了（不正常）——"
                     + "拼错的话那一条永远不生效。", selection.unused());
         }
+    }
+
+    /**
+     * 这次筛选的"结论指纹"：留下了哪些、被配置提到却不存在的是哪些。
+     *
+     * <p>用它去重是因为清单每轮解析（票 03）：内容一模一样时不该再打一遍日志，
+     * 而**内容变了**（MCP 恢复带进来一批工具、某个模块被裁掉）恰恰是要留一行的那件事。
+     * 挡掉的原因不进指纹：同一批名字被挡掉，原因不会在两次解析之间变。
+     */
+    private static String signatureOf(ToolProfile.Selection selection) {
+        return String.join(",", selection.kept()) + "|"
+                + String.join(",", selection.unused().stream().sorted().toList());
     }
 
 

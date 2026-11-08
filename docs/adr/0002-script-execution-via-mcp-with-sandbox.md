@@ -22,6 +22,7 @@ date: 2026-10-22
 > 顺带删掉一条检查：`SandboxPolicy#requireNoInjectedEnvironment` 撤销了——请求里不再有环境变量这一项，"调用方往执行环境里塞变量"在类型上就没有入口（结构上的保证比运行时再判一次更靠得住，它不会被人忘掉调用）。这一条要有测试守着：执行请求的类型里没有环境变量这一项——结构上就塞不进去，不依赖谁记得再判一次。
 >
 > 修订记录（2026-11-08，票 01 落地）：**新增一个被点名的例外，有意放宽而不是漏洞**。模型现在能跑 shell 命令（`Bash` / `BashOutput` / `KillShell` 三个工具，OpenClaw 的 `exec` + `process` 那一组能力）。它必须经解释器：管道、重定向、`&&` 是这条能力的**语法本身**，收成 argv 就不是它了。做法是第二个点名类 `ShellCommandRunner`（`claw4j-capability` 的 `capability.process`），只做 `ProcessBuilder("/bin/sh", "-c", command)`；判定（非 root、命令白名单、环境继承但拒改 `PATH`/`LD_*`/`DYLD_*`、超时）全在 `SandboxedExecBackend` 里，起进程之前判完。与脚本层的分界回到**这条字符串是谁给的**：包清单给的是 argv（数据），模型给的是命令（语法）。**代价写清**：模型能执行任意命令，管住它的是 `claw4j.tools.exec.mode`（`deny / allowlist / ask / full`）、授权表上的 `exec_command`（默认只给 `admin`）与白名单按整条命令匹配；本 ADR 第 37 行"不出现 `sh -c`"从此有两个点名例外，`BuildContractTest` 两个都点着名。上一条 Consequence 里"Java 侧不再出现 `sh -c`"应读作"除这两个被点名的类之外"。
+> 修订记录（2026-11-08，票 03 落地）：**"`listTools()` 为空即 fail-fast" 收窄成"配置错误才当场失败"**。连不上、握手超时、以及"连上了但一个工具都没导出"都归可恢复：应用照常起，那个 server 记 `DOWN`，后台按 30 秒起、每次翻倍、封顶 10 分钟退避重试；恢复之后工具在**下一次清单解析**里出现（清单是每轮解析的，不是装配期快照）。仍然启动失败的是"重试一万次也不会变"的那两种：`tools` 里点名了 server 没导出的工具、两个 server 导出同名工具。判据是"换个时间点还会不会错"——对端重启 40 秒换来一次全站不可用（K8s 上是 CrashLoopBackOff，连 HTTP 通道一起下线），而重试本来就由编排层替我们做，代价是整个进程。`Considered Options` 里那句"连接建立时 `listTools()` 为空即 fail-fast"应读作"空清单也重试，只有配置错误当场失败"；会话丢失重开那一条不变。
 
 ## Considered Options
 

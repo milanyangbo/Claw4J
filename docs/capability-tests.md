@@ -284,7 +284,9 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 
 ## 2. MCP：自己实现的 server（10 个）
 
-三个 server 默认就写在 `application-local.yml` 里（`local` 启动即连），连不上是**启动失败**。
+三个 server 默认就写在 `application-local.yml` 里（`local` 启动即连），**连不上不再是启动失败**：
+那个 server 记 `DOWN`、后台按 30 秒起翻倍退避重试，其余 server 与工具照常，等它对上之后
+工具在下一轮自动回到清单里（票 03）。
 
 ### 2.1 `demo_mcp_server.py`（Python，零依赖）
 
