@@ -19,11 +19,14 @@
 - 一句：三个关键取向（压旧的留新的、按比例触发、失败不拖垮这一轮）与 OpenClaw 同构；票面第一条“配在 `SessionMemoryAdvisor` 上”的自我推翻仍成立且有必要。
 
 ### 03 跨会话召回：问“上次那批单子怎么定的”能想起来
-- 判定：故意不同
-- 理由：票面 `m3-observability-and-memory/issues/03-cross-session-recall.md:10`：“召回范围从‘这个人的所有会话’改成‘当前这一段会话’”——因为会话键按通道+chatId 分段后，按 `owner` 查会把私聊内容带进群聊
-- 代码证据：`claw4j-agent/src/main/java/io/github/claw4j/agent/session/RecallSessionTool.java:175`（`getEvents(sessionId, …)` 而不是 `findEventsByUserId`）、`:169,350`（归属前缀校验）、`:307,330`（整段截断仍在）
-- OpenClaw：`docs/concepts/session-search.md:11-14`（`sessions_search` 跨会话搜，默认 `tools.sessions.visibility: "all"`，同一页 `:33` 明确允许跨 agent/跨用户）
-- 一句：功能从“跨会话”退成“段内检索”，是有据的收窄；OpenClaw 那个默认更宽，照抄会重新打开已修掉的泄露口子。
+- 判定：不一致（真偏差）——它有这个机制，是一个四值配置项、默认最宽；我们把它硬编码成最窄那个值，还把开关删了
+- 我们：`claw4j-agent/src/main/java/io/github/claw4j/agent/session/RecallSessionTool.java:175`（`getEvents(sessionId, …)`，只有当前这一段）、`:169`（身份前缀校验）、`:342-352`（`belongsTo`）
+- OpenClaw：`docs/gateway/config-tools/sessions-and-subagents.md` 的 `tools.sessions` 一节——`visibility: self | tree | agent | all`，**Default: `all`**（“every session on the Gateway, including other agents' and other users' transcripts”）；`self` 的定义是 “only the current session key”，正是我们今天的行为
+- OpenClaw：`docs/concepts/session-search.md:32-38`——“The default `tools.sessions.visibility: "all"` permits … **including other users' conversations**”；同一页还写明：“Per-peer DM routing separates conversation context **but does not restrict session-tool visibility**”
+- 例子：网页私聊里问过“华东区口径按签约主体算”，第二天在群里问“上次那个口径是多少”。今天：工具只在本段里找 → 返回“没找到” → 模型说“我没有相关记录”，用户以为机器人失忆。它默认 `all` 下这条能查回来（结果带 `sessionKey` 做出处）；它担心串台时的解法是**显式配 `self`/`agent`**，不是把能力删掉。它甚至明说了这一层不管 DM 分段——安全位在配置项，不在能力有无。
+- 对齐要改什么（成本：中）：`self` 变成 `visibility` 的一个取值，四值照它实现，默认 `all`；`agent`/`all` 需要一条跨会话查询（`SessionService` 只有 `getEvents` 与 `findEventsByUserId`，后者语义不是“全部会话”）。见 `.scratch/openclaw-alignment/issues/05-session-visibility.md`
+- 一句：那次“隔离修复”解决的是真泄露，但它用的手法是换掉整个查询范围，顺带把对齐点一起换掉了——`self` 该是这个开关的一档，不是唯一一档。
+
 
 ### 04 会话 TTL：过期不等于删除
 - 判定：已过期
@@ -81,11 +84,15 @@
 - 一句：键名本地化但语义一一对应；票面自述“`McpDemoConfiguration` 没删”这一缺口已由 m6-01 补完，今天全仓只剩文档引用。
 
 ### 02 接两个真的第三方 MCP server（stdio + HTTP）
-- 判定：故意不同
-- 理由：`claw4j-app/src/main/resources/application-local.yml:8-10`：“所以它不在 `application.yml` 里，也没有单独的 `mcp-*` profile —— 起 local 就是‘这台机器决定要连的那些’，一处看全”
-- 代码证据：`application-local.yml:70`（`claw4j.capability.mcp` 段在此）+ `RealThirdPartyMcpTest.java:39`（`@Tag("real-mcp")`）、`:55`（`npx -y @modelcontextprotocol/server-everything`）、`:82`（deepwiki）
-- OpenClaw：`docs/tools/mcp.md:96-108`（第三方 HTTP server 只暴露部分工具的配置样例，同样是“写配置不写代码”）
-- 一句：票面承诺的 `application-mcp-third-party.yml` 不存在，改成 local 一份配置；能力与实测都在，但票面里“YAML 原样贴进 application.yml”这句话今天无处可贴。
+- 判定：已过期（票面要的 `mcp-third-party` profile 不存在；替代形态与 OpenClaw 同形）
+- 理由：票面第 1 条是“`application.yml` 加 `mcp-third-party` profile”，实际是 `application-local.yml`（gitignored）+ `application-local.yml.example` 一份，解释写在 `application-local.yml.example:7-10`
+- 代码证据：`application-local.yml.example`（`claw4j.capability.mcp` 段在这里，注释：“起 local 就是‘这台机器决定要连的那些’，一处看全”）；`RealThirdPartyMcpTest.java:39`（`@Tag("real-mcp")`）、`:55`（`npx -y @modelcontextprotocol/server-everything`）、`:82`（deepwiki）
+- 代码证据：`application-mcp-stdio.yml` **仍在**，但那是“我们自己当 MCP server”的那一份（P11，`--spring.profiles.active=mcp-stdio`），不是这里的客户端清单——名字像、用途不同，别把它的存在当成“profile 没删干净”
+- OpenClaw：无 profile 概念——`docs/gateway/configuration.md:9-11`（一份可选 JSON5 配置 `~/.openclaw/openclaw.json`，缺了用安全默认值；换路径靠 `OPENCLAW_CONFIG_PATH`），`docs/tools/mcp.md:114-135`（第三方 server 就写在 `mcp.servers.<name>` 里，写配置不写代码）
+- 例子（为什么 profile 那条路不该走）：按票面做，仓库里会多一份 `application-mcp-third-party.yml`，默认构建不加载它。运维照着它把 `url` 填好，`--spring.profiles.active` 忘带（或 IDEA 里那行没勾上），现象是“我明明配了 server，模型说它没有这个工具”，而启动日志里一行都没有——**配置文件的“存在”被当成了“生效”**。收成本地一份之后：起 `local` 就是这台机器要连的全部，少一个 server 会在启动清单里点名（MCP 那一层是启动期就把清单收成一份，见 capability-02）。
+- 一处要改的字：`application-local.yml.example:7-10` 写着“也没有单独的 `mcp-*` profile”，而 `application-mcp-stdio.yml` 就在隔壁。这句话本身没错（它讲的是客户端清单），但读起来像“仓库里没有 `mcp-*` 的 yml”——补半句指一下那一份是干什么的。
+- 一句：票面的 profile 形态被推翻，替代形态（一份配置 + env 覆盖）反而与它同形；要补的是票面的 superseded 指针，不是再写一份 yml。
+
 
 ### 03 examples 里那些“非 Java”的能力，逐类说清怎么接进来
 - 判定：自研
@@ -111,10 +118,15 @@
 ## 本批小结
 - 一致 6：m3-01、m3-02、m3-06、m4-03、m5-01、m5-05
 - 自研 5：m3-05（OpenClaw 无语义缓存）、m4-01（无业务示例插件）、m4-02（无自带 MCP server 模块）、m5-03（无四类素材接入说明）、m5-04（无“示例必须被加载器读一遍”的做法）
-- 故意不同 2：m3-03（召回范围收窄到当前会话，防跨段泄露）、m5-02（profile 改为 local 单份配置，避免“配了不用”）
-- 不一致 0
-- 已过期 1：m3-04（`spring.ai.session.time-to-live` 已刻意移除，`deleteExpiredSessions` 无调用方，`claw4j.session.expired` 换成 `claw4j.session.maintenance.pruned`）
+- **故意不同 0**：这一档不再用来装“和它不一样、但我们有理由”的东西（口径同 batch-b）。
+  和它不一样就是偏差（不一致），它没有这个东西就是自研——自研要用例子说清，不能拿“我们有理由”当结论。
+- 不一致 1：
+  - **m3-03**（`recall_session` 的范围被硬编码成 `self`；它有 `tools.sessions.visibility` 四值、**默认 `all`**、
+    且明说这一层不受 DM 分段限制）→ 已拆成 `.scratch/openclaw-alignment/issues/05-session-visibility.md`
+- 已过期 2：m3-04（`spring.ai.session.time-to-live` 已刻意移除，`deleteExpiredSessions` 无调用方，`claw4j.session.expired` 换成 `claw4j.session.maintenance.pruned`）；m5-02（票面的 `mcp-third-party` profile 被推翻，替代形态与它同形）
 - 最值得修的三处（按代价排序）：
-  1. m3-04 的 `FaultTolerantSessionService#deleteExpiredSessions`（`:82-83`）已成为死代码，而票面与 ADR-0026 都还在引用它——“过期就会删”这条留存承诺今天只能靠 `mode: enforce` 才成立，读代码的人会以为它默认生效。
-  2. m5-02 的 `application-mcp-third-party.yml` 不存在，票面验收“这两段 YAML 原样贴进 `application.yml` 就能用”无处落地，照票面操作会找不到文件。
+  1. m3-03 的可见性开关——本批唯一落在产品行为上的偏差，票已拆好。
+  2. m3-04 的 `FaultTolerantSessionService#deleteExpiredSessions`（`:82-83`）已成为死代码，而票面与 ADR-0026 都还在引用它——“过期就会删”这条留存承诺今天只能靠 `mode: enforce` 才成立，读代码的人会以为它默认生效。
   3. m4-01 的“删依赖实验”只有一次性手工记录（没有自动化用例），插件契约一旦被无意破坏（例如某处 import 了示例类），回归不会红。
+- m5-02 只剩票面一句 superseded 指针（文档项，顺手做，不单独排）。
+
