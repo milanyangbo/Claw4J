@@ -26,7 +26,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * 入站队列落在 {@code claw4j_channel.inbound_event} 上（V27，票 04）。
+ * 入站队列落在 {@code claw4j_channel.inbound_event} 上（{@code V7__channel.sql}，票 04）。
  *
  * <p>表结构与四条判断（复合主键、tombstone、没有序号、孤儿回收不涨 attempts）在迁移文件里写着，
  * 这里只负责把它们翻译成 SQL。三件事值得单独说：
@@ -176,7 +176,7 @@ public class JdbcInboundStore implements InboundStore {
             case "completed" -> EnqueueOutcome.DUPLICATE_COMPLETED;
             case "failed" -> EnqueueOutcome.DUPLICATE_FAILED;
             default -> throw new IllegalStateException(
-                    "队列表里出现了词表外的状态：" + existing.getFirst() + "（V27 的 check 应该挡住它）");
+                    "队列表里出现了词表外的状态：" + existing.getFirst() + "（{@code V7__channel.sql} 的 check 应该挡住它）");
         };
     }
 

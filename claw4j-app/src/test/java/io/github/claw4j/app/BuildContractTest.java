@@ -258,7 +258,7 @@ class BuildContractTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：到 27 全跑到，六个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：1..7 全跑到，六个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -267,8 +267,7 @@ class BuildContractTest {
         // 谁先跑都会把迁移做完，盯着 migrationsExecuted 会变成一条看执行顺序的用例。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
-                        "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -276,7 +275,7 @@ class BuildContractTest {
         // （会话 claw4j_session、缓存 claw4j_cache、调度/审批/审计在 claw4j_run、
         // 知识库在 claw4j_rag、入站队列在 claw4j_channel）。**缓存与知识库是两个 schema**：
         // 合并的话，一段文档会被当成"有人问过"的答案吐出来，而它没有出处（P10）。
-        // 入站队列单独一个是因为它跟着**通道**走（V27）：它是"平台把消息交给了我们"这件事的账，
+        // 入站队列单独一个是因为它跟着**通道**走（V7）：它是"平台把消息交给了我们"这件事的账，
         // 与一次 agent 运行没有父子关系。
         assertThat(jdbc.queryForList(
                 "select schema_name from information_schema.schemata"
@@ -297,7 +296,7 @@ class BuildContractTest {
         var flyway = flyway();
         flyway.migrate();
 
-        // 15 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
+        // 7 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
         assertThat(flyway.migrate().migrationsExecuted)
                 .as("第二次调用不该再执行任何迁移")
                 .isZero();

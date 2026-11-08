@@ -30,7 +30,7 @@ A04 的判据是"一次 run 跨 3 轮共调 7 次工具，第 7 次被拒"。这
 ```
 
 三轮各调 6 次、一共 18 次，每一次都落在"新 run 的 0/6"之内。而三处文档
-（`V8__budget_dimensions.sql` 的列注释、`RunBudget` 类注释、`application.yml`）
+（`agent_run.budget_used` 的列注释、`RunBudget` 类注释、`application.yml`）
 都写着"按 run 累计、跨轮不重置（三轮各调两次会被第 7 次挡住）"。
 **文档承诺的防线，代码里没有。**
 

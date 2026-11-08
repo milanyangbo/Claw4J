@@ -59,7 +59,7 @@ public enum AuditErrorCode {
         this.column = column;
     }
 
-    /** 落库的写法，与 {@code V25__audit_error_code_vocabulary.sql} 的 check 约束逐字对应。 */
+    /** 落库的写法，与 {@code V6__run.sql} 的 check 约束逐字对应。 */
     public String column() {
         return column;
     }

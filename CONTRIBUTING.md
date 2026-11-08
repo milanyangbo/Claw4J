@@ -97,9 +97,18 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 
 | 版本 | 在哪 | 建什么 | 谁在用 |
 | --- | --- | --- | --- |
-| `V1` `V2` | `claw4j-example-sales` | 业务表与种子 | 示例插件自己的工具 |
-| `V3` | `claw4j-agent` | 会话表（`claw4j_session`） | `agent.session` |
-| `V4` `V5` | `claw4j-agent` | 语义缓存表（`claw4j_cache`） | `agent.cache` |
+| `V1` `V2` | `claw4j-example-sales` | 业务表与种子（`business`） | 示例插件自己的工具 |
+| `V3` | `claw4j-agent` | 会话四张表（`claw4j_session`） | `agent.session` / `agent.goal` |
+| `V4` | `claw4j-agent` | 语义缓存（`claw4j_cache`） | `agent.cache` |
+| `V5` | `claw4j-agent` | 知识库两张表（`claw4j_rag`） | `agent.rag` |
+| `V6` | `claw4j-agent` | 审批 / 定时任务 / 审计（`claw4j_run`） | `agent.approval` / `agent.schedule` / `agent.audit` |
+| `V7` | `claw4j-agent` | 入站队列（`claw4j_channel`） | `channel.kernel` / `agent.inbound` |
+
+**这五份是基线，不是历史。** 2026-11-09 把原来 `claw4j-agent` 侧的 25 个迁移（V3..V27）合并成了这五份：
+其中大半在反复改同一批表，而 `agent_run` / `agent_step` / `agent_run_delivery` 三张表最后整体删掉了。
+合并只删历史、不改设计——合并前后各 `pg_dump -s` 比过，结构差异 0。
+代价：**已经跑过旧迁移的库要重建**（V4..V27 在本地已经不存在，Flyway 校验会直接失败），
+开发库 drop 之后重启一次即可。生产没有部署过这套基线之前的历史。
 
 判据只有一条：**谁读这张表，DDL 就放在谁的模块里**。这三张框架表原先都在 `claw4j-capability`，
 而那个模块装的是 mcp / script / skill / generator，一条 JDBC 都不碰——于是它被迫依赖整套
@@ -110,7 +119,8 @@ Flyway 扫遍 classpath 上所有 `db/migration` 再**按版本号排序**，所
 新增一个迁移就是挑当前最大号 +1，跟在哪个模块无关。
 
 **不要回头改已提交的版本**——本地常驻库已经记过账了，改历史版本会让校验和不匹配，
-而删库重建正是这套迁移要替你免掉的事。
+而删库重建正是这套迁移要替你免掉的事。唯一一次例外是上面那次基线合并：那是**有意的重来**，
+不是修历史——它把"改过很多次的形状"落成一份干净的 DDL，代价一次付清。
 
 **注意**：Boot 4 把 Flyway 的自动配置拆成了独立 artifact，只放 `flyway-core` 时配置会静默不生效，
 见 [踩过的坑](docs/design/pitfalls.md) 第三条。三条依赖（`flyway-core` /

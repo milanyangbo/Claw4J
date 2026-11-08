@@ -32,7 +32,7 @@ public enum AuditAction {
         return kind;
     }
 
-    /** 落库的写法，与 {@code V19__audit_event.sql} 的 check 约束逐字对应。 */
+    /** 落库的写法，与 {@code V6__run.sql} 的 check 约束逐字对应。 */
     public String column() {
         return column;
     }
