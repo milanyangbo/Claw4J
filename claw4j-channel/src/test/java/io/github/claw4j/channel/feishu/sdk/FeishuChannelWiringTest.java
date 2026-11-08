@@ -1,11 +1,24 @@
 package io.github.claw4j.channel.feishu.sdk;
 
 import com.lark.oapi.event.EventDispatcher;
+import com.lark.oapi.event.model.Header;
+import com.lark.oapi.service.im.v1.model.EventMessage;
+import com.lark.oapi.service.im.v1.model.EventSender;
+import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1;
+import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1Data;
+import com.lark.oapi.service.im.v1.model.UserId;
 import com.lark.oapi.ws.exception.ClientException;
 import com.lark.oapi.ws.exception.ServerUnreachableException;
 import io.github.claw4j.channel.feishu.FeishuOutboundDelivery;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
+import io.github.claw4j.domain.inbound.ClaimRef;
+import io.github.claw4j.domain.inbound.ClaimedInbound;
+import io.github.claw4j.domain.inbound.EnqueueOutcome;
+import io.github.claw4j.domain.inbound.InboundStore;
+import io.github.claw4j.domain.inbound.QueuedInbound;
+import io.github.claw4j.domain.inbound.Retention;
+import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
@@ -18,10 +31,14 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -30,6 +47,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 飞书通道的装配条件：什么情况下它在容器里，什么情况下它连一个 bean 都不留。
@@ -273,6 +292,126 @@ class FeishuChannelWiringTest {
         assertThat(channel.state()).isEqualTo(FeishuConnectionState.STOPPED);
         assertThat(factory.opened()).isNotEmpty()
                 .allSatisfy(connection -> assertThat(connection.closed()).isTrue());
+    }
+
+    // ---------------------------------------------------------------- 事件回调的两条失败路径（票 04）
+
+    @Test
+    @DisplayName("落库失败不被回调吞掉：异常一路抛到平台那一侧，这条会被重推")
+    void aPersistFailureReachesThePlatform() {
+        FeishuLongConnectionChannel channel = channelWithDispatcher(new BrokenStore());
+
+        assertThatThrownBy(() -> channel.onMessage(textMessage("上周成交额")))
+                .as("吞掉它的现场最难查：平台以为我们收下了，库里没有这条，日志里只有一句处理失败")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("库连不上");
+    }
+
+    @Test
+    @DisplayName("翻译不了的消息照旧吞掉：抛出去平台只会重推同一条，而它还是翻不出来")
+    void anUntranslatableMessageIsSwallowedOnPurpose() {
+        FeishuLongConnectionChannel channel = channelWithDispatcher(new BrokenStore());
+
+        assertThatCode(() -> channel.onMessage(imageMessage())).doesNotThrowAnyException();
+    }
+
+    /**
+     * 一条能走完翻译的消息。SDK 的事件对象是 POJO，直接 new 出来就行——不需要凭据，也不需要网络。
+     */
+    private static P2MessageReceiveV1 textMessage(String text) {
+        EventMessage message = EventMessage.newBuilder()
+                .messageId("om_1").chatId("oc_demo").messageType("text")
+                .content("{\"text\":\"" + text + "\"}")
+                .createTime(String.valueOf(Instant.now().toEpochMilli()))
+                .build();
+        return event(message);
+    }
+
+    private static P2MessageReceiveV1 imageMessage() {
+        EventMessage message = EventMessage.newBuilder()
+                .messageId("om_2").chatId("oc_demo").messageType("image")
+                .content("{\"image_key\":\"img_1\"}")
+                .createTime(String.valueOf(Instant.now().toEpochMilli()))
+                .build();
+        return event(message);
+    }
+
+    private static P2MessageReceiveV1 event(EventMessage message) {
+        EventSender sender = new EventSender();
+        sender.setSenderId(UserId.newBuilder().openId("ou_zhang").build());
+
+        P2MessageReceiveV1Data data = new P2MessageReceiveV1Data();
+        data.setSender(sender);
+        data.setMessage(message);
+
+        Header header = new Header();
+        header.setEventId("evt-1");
+        header.setEventType("im.message.receive_v1");
+
+        P2MessageReceiveV1 event = new P2MessageReceiveV1();
+        event.setHeader(header);
+        event.setEvent(data);
+        return event;
+    }
+
+    /** 一个只服务这两条用例的通道：真的翻译器 + 真的调度器 + 一个落不了库的 store。 */
+    private static FeishuLongConnectionChannel channelWithDispatcher(InboundStore store) {
+        FeishuChannelProperties properties = new FeishuChannelProperties();
+        FeishuReplySender sender = (chatId, text) -> {
+        };
+        InboundDispatcher dispatcher = new InboundDispatcher(new NoopAgent(), Runnable::run,
+                senderId -> Optional.of(Principal.readOnly("u-1")), sender, "飞书", "feishu", null, store);
+        // 建连工厂给一个"一开就炸"的：这两条用例都不调 start()，它是必填参数而已。
+        FeishuConnectionFactory factory = events -> {
+            throw new IllegalStateException("这条用例不建连");
+        };
+        return new FeishuLongConnectionChannel(properties, dispatcher, new FeishuMessageTranslator(),
+                sender, null, factory);
+    }
+
+    /**
+     * 落不了库的 store：只有 {@code enqueue} 会炸。
+     *
+     * <p>它模拟的是"库挂了"这一件事，而这条路径的判据只有一个：**异常要冒到通道那一层**——
+     * 通道把它吞了，就等于什么都没发生（平台以为收下了，库里没有）。
+     */
+    private static final class BrokenStore implements InboundStore {
+
+        @Override
+        public EnqueueOutcome enqueue(QueuedInbound event, String laneKey) {
+            throw new IllegalStateException("库连不上");
+        }
+
+        @Override
+        public Optional<ClaimedInbound> claimNext(String queueName, Set<String> blockedLanes,
+                                                  String claimOwner) {
+            throw new UnsupportedOperationException("入队就失败了，走不到这里");
+        }
+
+        @Override
+        public boolean complete(ClaimRef claim, String metadataJson) {
+            throw new UnsupportedOperationException("入队就失败了，走不到这里");
+        }
+
+        @Override
+        public boolean release(ClaimRef claim, String lastError) {
+            throw new UnsupportedOperationException("入队就失败了，走不到这里");
+        }
+
+        @Override
+        public boolean fail(ClaimRef claim, String reason, String message) {
+            throw new UnsupportedOperationException("入队就失败了，走不到这里");
+        }
+
+        @Override
+        public int recoverStaleClaims(String queueName, Duration lease) {
+            return 0;
+        }
+
+        @Override
+        public int prune(Retention retention) {
+            return 0;
+        }
     }
 
     private static ServerUnreachableException handshakeTimeout() {

@@ -272,20 +272,35 @@ public class FeishuLongConnectionChannel implements ChatChannel {
     }
 
     /**
-     * 事件回调。这里返回就等于 ACK——调度层的 {@code accept} 只做去重与提交，不等模型。
+     * 事件回调。这里返回就等于 ACK——调度层的 {@code accept} 只做落库与提交，不等模型。
+     *
+     * <p><b>两条失败路径刻意不同</b>（票 04，照 OpenClaw 的 `docs/channels/feishu/setup.md:45`）：
+     *
+     * <ul>
+     *   <li><b>翻译不了</b>（图片、只有 @ 没有正文、正文不是 JSON）：吞掉并回一句人话。
+     *       抛出去平台会重推同一条，而重推的还是翻译不了——一次"失败 → 重推 → 再失败"能跑好几轮。</li>
+     *   <li><b>落不了库：往上抛。</b>平台会因此重推，而我们没有越过一条没落库的消息
+     *       （OpenClaw 的做法是关掉那条 socket，"instead of continuing past an uncommitted turn"）。
+     *       吞掉它的现场最难查：平台以为我们收下了，库里没有这条，日志里只有一句"处理失败"。</li>
+     * </ul>
+     *
+     * <p>包内可见是为了让用例直接打这两个分支——它们都不需要真凭据。
      */
-    private void onMessage(P2MessageReceiveV1 event) {
+    void onMessage(P2MessageReceiveV1 event) {
+        Optional<FeishuInboundEvent> inbound;
         try {
-            Optional<FeishuInboundEvent> inbound = translator.translate(event);
-            if (inbound.isEmpty()) {
-                replyCannotHandle(event);
-                return;
-            }
-            dispatcher.accept(inbound.get());
+            inbound = translator.translate(event);
         }
         catch (RuntimeException failure) {
-            log.error("飞书事件处理失败（不抛出，避免平台重推一条同样处理不了的消息）", failure);
+            log.error("飞书事件翻译失败（不抛出，避免平台重推一条同样处理不了的消息）", failure);
+            return;
         }
+        if (inbound.isEmpty()) {
+            replyCannotHandle(event);
+            return;
+        }
+        // 落库失败不在这里接：让它一路抛到平台那一侧，于是这条会被重推
+        dispatcher.accept(inbound.get());
     }
 
     /**

@@ -10,6 +10,8 @@
 
 **Type:** task
 
+**Status:** resolved（2026-11-08）
+
 **Demo:** 群里问一句"上周华东区成交额多少"，答到一半发版（`kill -9`）。重启之后那条回答自己补发到群里，
 **只发一次**；`select status, attempts from claw4j_channel.inbound_event` 能看到它从 `claimed` 回到
 `pending` 再走到 `completed`。
@@ -216,32 +218,38 @@ public interface InboundStore {
 
 ## 验收判据（反例都要能红）
 
-- [ ] **重启不丢**：入队一条（不执行）→ 新建 dispatcher（模拟重启，同一个 store）→ 启动恢复把它跑完并回推。
-      反例：删掉启动扫描 → 这条红。
-- [ ] **`claimed` 孤儿被回收，且 `attempts` 不变**：直接把一行改成 `claimed`、`claimed_at` 设成很久以前，
-      重启 → 回到 `pending`，`attempts` 仍是 0；再跑完。
-      反例一：只扫 `pending` → 红（这是最常见的一种"看起来做了恢复"）；
-      反例二：回收时 `attempts+1` → 红（这条挡的是"重启三次把额度耗光"）。
-- [ ] **重复投递只跑一次，且靠主键 + tombstone**：同一 `event_id` 两次 `accept` →
-      第二次是 `DUPLICATE_PENDING`（或 `DUPLICATE_COMPLETED`），只执行一次、`attempts` 不涨。
-      反例一：把主键删掉（换成内存表）→ 红；
-      反例二：`complete` 时把行删掉 → 红（重投会再跑一遍，这是 tombstone 存在的唯一理由）。
-- [ ] **同对话串行**：同一 `conversationId` 三条事件，第二次 `claimNext` 带着
-      `blockedLanes = {conversationId}` → 拿不到同车道的那条，只能拿到别的车道或空。
-      反例：不看 `blockedLanes` → 红。
-- [ ] **认领带令牌**：同一行两次 `claim` 只有一次返回（乐观 `update … where status='pending'`）；
-      用旧令牌 `complete` → 返回 false，不覆盖当前持有者的结论。
-      反例：`complete` 只按 `event_id` 更新 → 红。
-- [ ] **落库失败要抛**：假 store 抛异常 → `accept` 抛；通道侧只对这类抛
-      （`onMessage` 的两个分支各一条用例，用假的 `InboundStore`，不需要真凭据）。反例：吞掉 → 红。
-- [ ] **`prune` 不误删在跑的**：`claimed` 行不受 `pending` 档的影响；`completed` 过了 TTL 的行被删掉
-      （去重窗口随之失效，这是设计）。反例：不分状态一刀切 → 红。
-- [ ] **`persistence.enabled=false` 时不炸**：内存实现接得上，启动 `WARN` 一句，行为与今天一致。
-- [ ] **真库一条**：`Testcontainers` 上跑 V27，验主键幂等、状态流转、孤儿回收、`on conflict do nothing`
-      四件。
-- [ ] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（core 现 90.4%；新增的端口接口与
-      `InboundDispatcher` 改动都要有用例盖住，`JdbcInboundStore` 的覆盖率靠真库那条）。
-- [ ] `InboundDispatcher:60-63` 那段 javadoc 重写。**它是这条偏差的"理由"，留着会让下一个人照着它改回去。**
+- [x] **重启不丢**：`InboundDispatchTest#aRestartFinishesWhatThePreviousProcessQueued`
+      （上个进程只入队、任务还没跑就被"杀"→ 新 dispatcher 同一个 store，`start()` 把它跑完并回推）。
+- [x] **`claimed` 孤儿被回收，且 `attempts` 不变**：
+      `InboundDispatchTest#aClaimedOrphanIsRecoveredWithoutBurningAnAttempt`（认领后崩 → 恢复 → 跑完，
+      中途断言 `attempts` 仍是 0）、真库 `SearchSqlTest#aStaleClaimIsRecoveredWithoutBurningAnAttempt`
+      （`claimed_at` 设成 10 分钟前 → 回 `pending`、`attempts` 为 0、`claim_owner` 清空；
+      再认领 + `release` → `attempts` 变 1，证明**只有 release 涨**）。
+- [x] **重复投递只跑一次，且靠主键 + tombstone**：
+      `InboundDispatchTest#duplicateDeliveryRunsOnceButStillAcks`、
+      真库 `SearchSqlTest#enqueueIsIdempotentOnTheCompositeKey`（两次入队一行、第二次 `DUPLICATE_PENDING`）、
+      `#theRowGoesFromPendingToAContentFreeTombstone`（`payload_json` 变 `'null'`、行还在、
+      再投是 `DUPLICATE_COMPLETED`）。
+- [x] **同对话串行**：`InboundDispatchTest#theLaneAndTheClaimTokenBothGuardTheRow`
+      （三条事件两个车道；带 `blockedLanes={conv}` 拿不到同车道那条；两条车道都占时为空）。
+      另有一条从编排层看的：`#twoConversationsRunSideBySide`（不同会话不互相挡）。
+- [x] **认领带令牌**：同一条用例的后半段——回收并重新认领之后，旧令牌 `complete` / `release`
+      都返回 false。真库那条 `#theRowGoesFromPendingToAContentFreeTombstone` 走的也是带令牌的 SQL。
+- [x] **落库失败要抛**：`InboundDispatchTest#aPersistFailureIsThrownSoThePlatformRetries`；
+      通道侧两个分支各一条 `FeishuChannelWiringTest#aPersistFailureReachesThePlatform`
+      （抛）/ `#anUntranslatableMessageIsSwallowedOnPurpose`（吞）。都用假 `InboundStore`，不需真凭据。
+- [x] **`prune` 不误删在跑的**：真库 `SearchSqlTest#pruneFollowsTheStatusLadder`
+      （`claimed` 一行不动；`completed` 8 天前被删；`pending` 40 天前被删；`failed` 10 天前还在，
+      因为它的 TTL 是 30 天）。
+- [x] **`persistence.enabled=false` 时不炸**：`InboundDispatchTest#withoutAStoreNothingSurvivesARestart`
+      （没有 store 就退回内存实现；能跑，但重启之后那条没人接着跑——这就是构造时那句 WARN 说的事）。
+- [x] **真库四条**：`SearchSqlTest` 新增 4 条（幂等 + 复合主键 + 状态流转 + 孤儿回收），
+      后面又补了 1 条 `prune`，共 5 条；V27 由 `BuildContractTest` 那条迁移合成用例覆盖
+      （版本列到 27、六个 schema）。
+- [x] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（数字见 Comments）。
+- [x] `InboundDispatcher` 的类注释重写：旧那段"去重是进程内带 TTL 的缓存"整段删掉，换成
+      "落库 → 认领 → 执行 → 结算"，并把"为什么不是内存去重表"写成一句能拦住下一个人的话
+      （内存表解决的是多实例去重，而单实例形态下那件事本就不成立；真会丢消息的是"重启之后没人接着跑"）。
 
 ## 门禁余量
 
@@ -264,3 +272,46 @@ public interface InboundStore {
 - **不要顺便加"入站事件查询端点"**：那是新的读接口，要有自己的鉴权与分页判据。
 - **不要做它的 idle shortcut**（`enqueueAndClaim`：队列空时入队即 claimed）：省的是每次一条
   `UPDATE`，换来的是"入队即可直接 claimed"这条额外路径。首版只有 `enqueue` + `claimNext`。
+
+## Comments
+
+- 2026-11-08 实现。新增：V27 迁移、`domain.inbound` 六个契约（`InboundStore` / `EnqueueOutcome` /
+  `QueuedInbound` / `ClaimRef` / `ClaimedInbound` / `Retention`）、`channel.kernel.InMemoryInboundStore`、
+  `agent.inbound.JdbcInboundStore`；改 `InboundDispatcher`（重写）、`AgentPersistenceConfiguration`（一个 bean）、
+  四处通道装配（接 store + `start()`）、`FeishuLongConnectionChannel#onMessage`（两个分支分开）。
+- **端口不能放 `channel.kernel` 里**（票面写的），agent 的 `agentKnowsNoChannel` 架构闸当场报了 53 处：
+  ADR-0010 的边界是 `agent` 不认识 `channel`，而 JDBC 实现必须在 agent（它有 JdbcTemplate）。
+  于是端口搬到 `io.github.claw4j.domain.inbound`——`domain` 是两边都能依赖的那一层。
+  为什么不是 `domain.port`：那里有一条"只放接口与 record"的规则，而 `EnqueueOutcome` 是枚举。
+  顺带删掉 `QueuedInbound.of(queue, eventId, InboundEvent)`：它会让 domain 反向依赖 channel。
+- **`claimNext` / `recoverStaleClaims` 多一个 `queueName` 参数**（票面签名里没有）：一个 store bean
+  服务四个通道，不传队列名的话，飞书的认领会去抢 Slack 的活。语义照旧，只是把"哪个队列"显式化。
+- **重试的节奏由扫描给**（30 秒一次），不是立刻重试：`release` 之后那条事件的**车道**会被记进
+  `releasedLanes`，这一轮不再认领；下一轮 `sweep()` 解封。立刻重试的话，一个必然失败的调用
+  会在几秒里烧掉 5 次额度，而人还在等。中间几次失败**不说话**，到上限才回一句。
+- **线程池满不再是"回一句稍后再试"**：事件已经在库里，池满只是"这一轮没开始"，
+  那一条仍是 `pending`。原来那条路径（`OVERLOADED_REPLY`）连同常量一起删了——
+  ADR-0009 与 ADR-0026 里引用它的两处一并改/加修订记录（见下）。
+- **`onMessage` 两个分支分开**：翻译失败吞掉（重推还是翻译不了），落库失败往上抛
+  （平台重推，而我们没有越过一条没落库的消息）。这条不落地的后果最难查：平台以为收下了、库里没有。
+- **八处反例真跑了**（改完即还原，各自只红对应的那条/那几条）：
+  1. `start()` 不做启动恢复 → 孤儿那条红；
+  2. 回收时 `attempts+1` → 孤儿那条红（`expected: <0> but was: <1>`）；
+  3. `complete` 里删行 → 去重与重试计数三条红；
+  4. 认领不看 `blockedLanes` → 串行那条红（拿到 `evt-b` 而不是 `evt-c`）；
+  5. `accept` 吞掉落库失败 → 落库失败那条红（没抛）；
+  6. 结算不校验令牌 → 令牌那条红（旧令牌能写进去）；
+  7. `onMessage` 把 accept 重新包进 try/catch → 通道那条红；
+  8. `prune` 不分状态一刀切 → 真库那条红（`claimed` 被删）。
+- **门禁余量没按票面的办法腾**：票面说把"分段相关的几条挪进 `MessageContractTest`"，
+  但 `MessageSplitter` 是包内可见，挪到 `domain.port` 的测试里根本编译不过（试过了）。
+  改成**合并同类用例**：`theSameLaneIsNotClaimedTwice` + `anOldClaimTokenCannotOverwriteTheNewOwner`
+  → 一条；两条认人失败 → 一条；三条回执 → 一条；另外删掉两条已失效的
+  （TTL 窗口那条随 `SeenEventIds` 一起没了、线程池满那条随 `OVERLOADED_REPLY` 一起没了）。
+  文件数没变（core 仍 10 个），方法数正好 20。
+- **测试读不到日志**：`claw4j-core` 的测试 classpath 上没有 `spring-boot-test`，所以"启动 WARN 一句"
+  没法断言。改成用行为断言它说的是什么（没有 store → 重启之后没人接着跑），比读一行日志更硬。
+- 没做（票面本来就不在范围）：入站事件的查询端点、`enqueueAndClaim` 的 idle shortcut、
+  多实例去重、`attempts` 上限做成配置。
+- `JdbcInboundStore` 的 `prune` 与 `announce` 都是 `@PostConstruct`/`@Scheduled`，
+  与 `AuditLedger` 同一套调度；表没建（迁移没跑）时它吞掉异常只记 debug。

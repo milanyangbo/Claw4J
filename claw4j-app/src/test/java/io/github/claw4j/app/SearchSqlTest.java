@@ -11,6 +11,7 @@ import io.github.claw4j.agent.rag.RagProperties;
 import io.github.claw4j.domain.inbound.ClaimedInbound;
 import io.github.claw4j.domain.inbound.EnqueueOutcome;
 import io.github.claw4j.domain.inbound.QueuedInbound;
+import io.github.claw4j.domain.inbound.Retention;
 import io.github.claw4j.text.ChineseText;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
@@ -407,6 +408,33 @@ class SearchSqlTest {
         assertThat(((Number) rowOf("evt-3").get("attempts")).intValue())
                 .as("真正算一次失败的是 release")
                 .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("按状态分档清理：claimed 一行都不动，completed / failed 过了各自的 TTL 才删")
+    void pruneFollowsTheStatusLadder() {
+        JdbcInboundStore store = new JdbcInboundStore(jdbc);
+        store.enqueue(queued(QUEUE, "evt-claimed", "conv-a", "在跑的"), "conv-a");
+        store.enqueue(queued(QUEUE, "evt-pending", "conv-b", "排着很久的"), "conv-b");
+        store.enqueue(queued(QUEUE, "evt-done", "conv-c", "跑完很久的"), "conv-c");
+        store.enqueue(queued(QUEUE, "evt-failed", "conv-d", "死信十天的"), "conv-d");
+
+        store.claimNext(QUEUE, Set.of(), "worker-1");
+        // 四条都改成"很久以前"，再按 1 天 / 7 天 / 30 天三档清
+        jdbc.update("update claw4j_channel.inbound_event set updated_at = now() - interval '40 days'");
+        jdbc.update("update claw4j_channel.inbound_event set status = 'completed',"
+                + " completed_at = now() - interval '8 days', payload_json = 'null'"
+                + " where event_id = 'evt-done'");
+        jdbc.update("update claw4j_channel.inbound_event set status = 'failed',"
+                + " failed_at = now() - interval '10 days' where event_id = 'evt-failed'");
+
+        store.prune(new Retention(Duration.ofDays(1), Duration.ofDays(7), Duration.ofDays(30),
+                50_000, 10_000));
+
+        assertThat(jdbc.queryForList("select event_id from claw4j_channel.inbound_event order by event_id",
+                String.class))
+                .as("claimed 是正在跑的，删掉它等于那条消息永久消失；failed 还没到 30 天")
+                .containsExactly("evt-claimed", "evt-failed");
     }
 
     private static QueuedInbound queued(String queueName, String eventId, String conversationId, String text) {
