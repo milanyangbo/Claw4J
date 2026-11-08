@@ -126,7 +126,9 @@
 - **真偏差（要改）**：`m2-02` / `closeout-04` / `closeout-05`（对端重启一次换来一次全站不可用、
   一次消息永久丢失）、**`m3-03`**（它有 `tools.sessions.visibility` 四值、默认 `all`，
   我们硬编码成 `self` 还把开关删了——"怕串台"答案是配置成 `self`，不是删能力）。
-- **形态选择成立，但闸有洞**：`m2-08`（注册一个 `@Bean ShellTools` 不会被任何一道闸拦住）。
+- **能力缺口，顺带露出闸的洞**：`m2-08`（注册一个 `@Bean ShellTools` 不会被任何一道闸拦住）。
+  但补法不是禁令——通用 shell 是大模型的正经需求，`exec` 正是它的能力；我们缺的是那个能力，
+  所以落点是"照 `exec` 补一个带沙箱 / 白名单 / 审批的入口，规则拦裸装"（`issues/01-exec-tool.md`）。
 - **票面被推翻**：`m5-02`（`mcp-third-party` profile 不存在，替代的"一份配置"反而与它同形）。
 
 前五条拆成 `.scratch/openclaw-alignment/issues/01–05`；`m5-02` 只剩票面一句 superseded 指针。

