@@ -9,6 +9,8 @@ import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.ConversationDelivery;
+import io.github.claw4j.agent.inbound.JdbcInboundStore;
+import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
@@ -133,6 +135,24 @@ public class AgentPersistenceConfiguration {
     @ConditionalOnMissingBean(ApprovalLedger.class)
     public ApprovalLedger approvalLedger(JdbcTemplate jdbc, ApprovalProperties properties) {
         return new JdbcApprovalLedger(jdbc, properties.getTtl().toMillis());
+    }
+
+    /**
+     * 入站事件的落点（票 04）：先落库、再 ACK，重启之后没跑完的那条有人接着跑。
+     *
+     * <p><b>它跟着这一层进出</b>：没有 DataSource 就没有可写的表，入站退回到内存实现
+     * （{@code InboundDispatcher} 在拿不到这个 bean 时自己用内存那份，并 WARN 一句）。
+     * 两条路共用同一份 {@code accept} 逻辑——端口只有一套方法，调度层里没有
+     * {@code if (jdbc) … else …}，两套分支迟早会不一致。
+     *
+     * <p><b>它是这一层里唯一在入站主路径上的东西</b>：审计、审批、调度都是"事后"或"到点"，
+     * 而入站是每条消息都过一次。所以库慢了会直接体现在"消息没人接"上，
+     * 启动日志里那一句 {@code 入站事件落库} 就是给运维对这条因果用的。
+     */
+    @Bean
+    @ConditionalOnMissingBean(InboundStore.class)
+    public InboundStore inboundStore(JdbcTemplate jdbc) {
+        return new JdbcInboundStore(jdbc);
     }
 
     /**

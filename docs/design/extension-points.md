@@ -360,12 +360,15 @@ public interface AgentPort {
 1. **拿到消息尽快 ACK**，不要在收消息的线程里同步等 Agent。飞书要求 3 秒内处理完事件，
    否则重推；而一次带工具的回答可能十几秒。正确形状是「立刻 ACK → 异步编排 → 主动回推」。
 2. **用事件 id 做幂等**（`InboundMessage#eventId`）。重推不能让同一句话被处理两次。
+   幂等做在表上（复合主键 + tombstone），不是做在内存表里——内存表只能保证"这个过程里见过"。
 3. **认不出人就拒绝**，不要把匿名请求放进来，也不要回落到某个默认角色。
 
 ### 这三条已经有人替你实现了
 
-`claw4j-core` 的 `channel.kernel.InboundDispatcher` 做的就是这四件事：去重 → 认人 →
-异步 → 分段回推，以及"失败也要回一句"。它只认两个接口，你的通道只要把平台事件压成五列即可：
+`claw4j-core` 的 `channel.kernel.InboundDispatcher` 做的就是这几件事：**落库 → 认领 → 认人 →
+异步 → 分段回推**，以及"失败也要回一句"。它只认两个接口（`ReplySender` 与 `AgentPort`），
+外加一个 `domain.inbound.InboundStore`（不传就是内存实现，见下面的说明）。
+你的通道只要把平台事件压成五列即可：
 
 ```java
 // 1. 平台事件 → 五个字段（这里用 Telegram 的形状）
@@ -380,8 +383,17 @@ record TelegramUpdate(String updateId, long chatId, long fromId, String text, In
 ReplySender sender = (conversationId, text) -> telegram.sendMessage(conversationId, text);
 
 // 3. 接起来。accept 返回就是 ACK，它不等模型
-new InboundDispatcher(agentPort, executor, resolver, sender, "Telegram").accept(update);
+InboundDispatcher dispatcher = new InboundDispatcher(agentPort, executor, resolver, sender,
+        "Telegram", "telegram", null, store);
+dispatcher.start();                 // 启动恢复 + 定时扫描（放在端点开始接请求之前）
+dispatcher.accept(update);
 ```
+
+**最后那个 `store` 参数就是"重启不丢"**（票 04）：有库时传容器里那个
+`domain.inbound.InboundStore`（实现在 `claw4j-agent` 的 `JdbcInboundStore`，
+表是 `claw4j_channel.inbound_event`）；**不传就是内存实现**，行为与改造之前一致
+（重启之后没跑完的那条不会有人接着跑），构造时会 WARN 一句。两条路共用同一份 `accept` 逻辑——
+端口只有一套方法，调度层里没有 `if (jdbc) … else …`。
 
 为什么它能跨通道，而不是"飞书专用"：三个平台的回调在这五列上逐个对得上——
 飞书 `event_id` / `chat_id` / `open_id`、Telegram `update_id` / `chat.id` / `from.id`、

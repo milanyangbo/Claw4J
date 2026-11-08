@@ -2,10 +2,12 @@ package io.github.claw4j.channel.wecom.client;
 
 import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
+import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.channel.wecom.WecomOutboundDelivery;
 import io.github.claw4j.channel.wecom.WecomReplySender;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.OutboundDelivery;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -123,9 +125,13 @@ public class WecomChannelAutoConfiguration {
                                                                AgentPort agentPort,
                                                                @Qualifier(WECOM_EXECUTOR) Executor wecomExecutor,
                                                                WecomPrincipalResolver principalResolver,
-                                                               WecomReplySender replySender) {
+                                                               WecomReplySender replySender,
+                                                               ObjectProvider<InboundStore> store) {
             InboundDispatcher dispatcher = new InboundDispatcher(agentPort, wecomExecutor, principalResolver,
-                    replySender, "企业微信", WecomOutboundDelivery.CHANNEL, WecomChannel.RECEIPT_REPLY);
+                    replySender, "企业微信", WecomOutboundDelivery.CHANNEL, WecomChannel.RECEIPT_REPLY,
+                    store.getIfAvailable());
+            // 启动恢复 + 定时扫描。必须在端点开始接请求之前（见 Slack 那边同一句）。
+            dispatcher.start();
             return new WecomCallbackController(cipher, dispatcher, replySender);
         }
 

@@ -4,6 +4,7 @@ import io.github.claw4j.channel.feishu.FeishuOutboundDelivery;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
 import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
+import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalCards;
 import io.github.claw4j.domain.port.ApprovalDecider;
@@ -98,16 +99,28 @@ public class FeishuChannelAutoConfiguration {
             return new FeishuOpenApiReplySender(properties.getAppId(), properties.getAppSecret());
         }
 
-        @Bean
-        @ConditionalOnMissingBean
+        /**
+         * 入站编排（票 04）：先落库、再 ACK。
+         *
+         * <p><b>{@code store} 可以是空的</b>：没有 DataSource 的部署用内存实现，行为与改造之前一致
+         * （重启之后没跑完的那条不会有人接着跑），并且自己 WARN 一句。有库时它拿的是
+         * {@code claw4j_channel.inbound_event}——重启不丢、同对话串行。
+         *
+         * <p><b>生命周期交给容器</b>：{@code start()} 里做启动恢复（把上一个进程留下的
+         * {@code claimed} 收回）并起定时扫描；{@code stop()} 停掉它。不交给容器的话，
+         * 那两条都得靠人手调，而漏调的表现是"重启之后没人接着跑"——正是这一票要修的那件事。
+         */
+        @Bean(initMethod = "start", destroyMethod = "stop")
+        @ConditionalOnMissingBean(name = "feishuInboundDispatcher")
         public InboundDispatcher feishuInboundDispatcher(AgentPort agentPort,
                                                          @Qualifier(FEISHU_EXECUTOR) Executor feishuExecutor,
                                                          FeishuReplySender replySender,
-                                                         FeishuPrincipalResolver principalResolver) {
+                                                         FeishuPrincipalResolver principalResolver,
+                                                         ObjectProvider<InboundStore> store) {
             // 通道标识进去之后，从这里问出去的每一件事都会把"飞书这个会话"登记成收件地址。
             // 少传它的后果不是报错，是"在飞书开的头，别处做完之后飞书这头什么也收不到"。
             return new InboundDispatcher(agentPort, feishuExecutor, principalResolver, replySender,
-                    "飞书", FeishuOutboundDelivery.CHANNEL);
+                    "飞书", FeishuOutboundDelivery.CHANNEL, null, store.getIfAvailable());
         }
 
         /**

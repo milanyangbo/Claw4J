@@ -1,12 +1,16 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.cache.CacheProperties;
+import io.github.claw4j.agent.inbound.JdbcInboundStore;
 import io.github.claw4j.agent.cache.PgVectorSemanticCache;
 import io.github.claw4j.agent.cache.SemanticCache;
 import io.github.claw4j.agent.model.EmbeddingProperties;
 import io.github.claw4j.agent.rag.KnowledgeBase;
 import io.github.claw4j.agent.rag.PgVectorKnowledgeBase;
 import io.github.claw4j.agent.rag.RagProperties;
+import io.github.claw4j.domain.inbound.ClaimedInbound;
+import io.github.claw4j.domain.inbound.EnqueueOutcome;
+import io.github.claw4j.domain.inbound.QueuedInbound;
 import io.github.claw4j.text.ChineseText;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
@@ -18,8 +22,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.containers.PostgreSQLContainer;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -55,6 +63,9 @@ class SearchSqlTest {
 
     private static final String QUESTION = "上周华东成交额多少";
 
+    /** 入站队列的队列名：与生产同口径，就是通道名。 */
+    private static final String QUEUE = "feishu";
+
     /** 一个含"退货政策"字样的文档段：关键词通道该命中它。 */
     private static final String RETURNS_TEXT = "华东区自签收之日起 7 天内可无理由退货，这是本区的退货政策。";
 
@@ -87,6 +98,8 @@ class SearchSqlTest {
         jdbc.update("truncate claw4j_cache.semantic");
         // cascade：块随文档一起走，不需要第二句 truncate。
         jdbc.update("truncate claw4j_rag.document cascade");
+        // 入站队列（票 04）：它的行是 tombstone，不清的话上一条用例的"这条处理过"会带到这里
+        jdbc.update("truncate claw4j_channel.inbound_event");
         cache = new PgVectorSemanticCache(jdbc, CacheProperties.defaults());
     }
 
@@ -308,6 +321,102 @@ class SearchSqlTest {
     /** 向量通道不可用（embed 返回 null）：剩下的结果全部来自关键词那一路。 */
     private static KnowledgeBase knowledgeWithoutVectors() {
         return new PgVectorKnowledgeBase(jdbc, mock(EmbeddingModel.class), RagProperties.defaults());
+    }
+
+    // ---- 入站队列（票 04）：这些判断只在真库上成立 ----
+
+    @Test
+    @DisplayName("入队幂等：同一个 (队列, eventId) 插两次只有一行，第二次报 DUPLICATE_PENDING")
+    void enqueueIsIdempotentOnTheCompositeKey() {
+        JdbcInboundStore store = new JdbcInboundStore(jdbc);
+        QueuedInbound event = queued(QUEUE, "evt-1", "conv-a", "上周成交额");
+
+        assertThat(store.enqueue(event, "conv-a")).isEqualTo(EnqueueOutcome.ACCEPTED);
+        assertThat(store.enqueue(event, "conv-a"))
+                .as("on conflict do nothing 之后要回读：四种重复对调用方是三件不同的事")
+                .isEqualTo(EnqueueOutcome.DUPLICATE_PENDING);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_channel.inbound_event", Integer.class))
+                .as("重复插不加行——这就是那个主键的活")
+                .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("主键是 (queue_name, event_id)：同一个 eventId 在两个队列里各留一行")
+    void theSameEventIdInTwoQueuesIsTwoRows() {
+        JdbcInboundStore store = new JdbcInboundStore(jdbc);
+        QueuedInbound fromFeishu = queued("feishu", "evt-shared", "conv-a", "问题");
+        QueuedInbound fromSlack = queued("slack", "evt-shared", "conv-b", "问题");
+
+        assertThat(store.enqueue(fromFeishu, "conv-a")).isEqualTo(EnqueueOutcome.ACCEPTED);
+        assertThat(store.enqueue(fromSlack, "conv-b"))
+                .as("同一个平台的两个 bot 各自收到同一个事件时该各跑一次：单主键会把第二个吞掉")
+                .isEqualTo(EnqueueOutcome.ACCEPTED);
+
+        assertThat(jdbc.queryForList(
+                "select queue_name from claw4j_channel.inbound_event order by queue_name", String.class))
+                .containsExactly("feishu", "slack");
+    }
+
+    @Test
+    @DisplayName("状态流转 pending → claimed → completed：完成是 tombstone，内容抹掉、行留着")
+    void theRowGoesFromPendingToAContentFreeTombstone() {
+        JdbcInboundStore store = new JdbcInboundStore(jdbc);
+        QueuedInbound event = queued(QUEUE, "evt-2", "conv-a", "上周成交额");
+        store.enqueue(event, "conv-a");
+
+        ClaimedInbound claimed = store.claimNext(QUEUE, Set.of(), "worker-1").orElseThrow();
+        assertThat(rowOf("evt-2").get("status")).isEqualTo("claimed");
+        assertThat(rowOf("evt-2").get("claim_owner")).isEqualTo("worker-1");
+
+        assertThat(store.complete(claimed.claim(), "{}")).isTrue();
+
+        Map<String, Object> row = rowOf("evt-2");
+        assertThat(row.get("status")).isEqualTo("completed");
+        assertThat(row.get("payload_json"))
+                .as("完成之后不留内容副本：要追'说了什么'去看会话与审计")
+                .isEqualTo("null");
+        assertThat(row.get("claim_token")).isNull();
+        assertThat(row.get("completed_at")).isNotNull();
+        assertThat(store.enqueue(event, "conv-a"))
+                .as("行还在，所以重投撞得上它——删掉行等于重投会再跑一遍")
+                .isEqualTo(EnqueueOutcome.DUPLICATE_COMPLETED);
+    }
+
+    @Test
+    @DisplayName("孤儿回收：claimed 久了回 pending 且 attempts 不变；只有 release 才涨")
+    void aStaleClaimIsRecoveredWithoutBurningAnAttempt() {
+        JdbcInboundStore store = new JdbcInboundStore(jdbc);
+        store.enqueue(queued(QUEUE, "evt-3", "conv-a", "问题"), "conv-a");
+        // 造一个"上一个进程认领了十分钟还没结算"的现场
+        jdbc.update("update claw4j_channel.inbound_event set status = 'claimed', claim_token ="
+                + " gen_random_uuid(), claim_owner = 'dead-process',"
+                + " claimed_at = now() - interval '10 minutes' where event_id = 'evt-3'");
+
+        assertThat(store.recoverStaleClaims(QUEUE, Duration.ofMinutes(5))).isEqualTo(1);
+
+        Map<String, Object> row = rowOf("evt-3");
+        assertThat(row.get("status")).isEqualTo("pending");
+        assertThat(row.get("claim_owner")).isNull();
+        assertThat(((Number) row.get("attempts")).intValue())
+                .as("丢了一个认领人不算一次投递失败：涨 attempts 的话重启三次就把额度耗光")
+                .isZero();
+
+        ClaimedInbound again = store.claimNext(QUEUE, Set.of(), "worker-2").orElseThrow();
+        assertThat(store.release(again.claim(), "模型超时")).isTrue();
+        assertThat(((Number) rowOf("evt-3").get("attempts")).intValue())
+                .as("真正算一次失败的是 release")
+                .isEqualTo(1);
+    }
+
+    private static QueuedInbound queued(String queueName, String eventId, String conversationId, String text) {
+        return new QueuedInbound(queueName, eventId, conversationId, "u-1", text,
+                Instant.parse("2026-11-08T10:00:00Z"));
+    }
+
+    private static Map<String, Object> rowOf(String eventId) {
+        return jdbc.queryForMap("select status, payload_json, claim_token, claim_owner, completed_at,"
+                + " attempts from claw4j_channel.inbound_event where event_id = ?", eventId);
     }
 
     /** 1024 维、只有一位是 1：同一条向量之间余弦 1.0，不同维度上的偏移会把它拉到 0。 */
