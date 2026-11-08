@@ -1,5 +1,30 @@
 # batch A：m0-skeleton + m1-business-data-loop
 
+## 本批适用的两条已裁决口径
+
+这两条是**决定**，不是欠账，也不是"待修项"。本批里凡是与它们相抵的判定，都按这两条读。
+
+**1. 不接 CI。** 没有 GitHub Actions、没有 pre-commit hook，提交前的入口只有本地
+`./scripts/verify.sh`（`CONTRIBUTING.md:175`；`docs/agents/review.md:43` 原话是
+"有意为之，入口只有 `./scripts/verify.sh`。别再提第二遍"）。
+OpenClaw 有 `.github/workflows/ci.yml`，这一条我们不跟：它的用例要 runner 上有 Docker
+守护进程、要 `secrets.DEEPSEEK_API_KEY`，接上等于把"本机能跑"换成"上游能跑"，
+换不来任何东西。**m0-05 票面承诺的 CI 与 pre-commit hook 作废，不再补。**
+
+**2. 不用 mock 模型。** 生产装配里没有"没 key 就降级成假模型"这条路（ADR-0011）：
+
+- 一个 key 都没有 → 启动失败；
+- `claw4j.model.primary` 指的那一家没配 key → 启动失败，**不会**悄悄拿备用的顶上
+  （`application.yml:56-58`、`RoutingModelConfiguration.java:66-73`，异常里写明该配哪个变量）；
+- 唯一不报错的是"备家没配 key"：那一家不装配，主家照常工作（`RealChatModelCondition`
+  的判定表第三行）。这不是兜底，是"没配就不装"。
+
+要区分开：测试里的 `FixedChatModel` 是**替身**，不是这条兜底——它只在 `src/test` 下，
+生产装配里根本没有它。门禁跑替身 + 真容器，真模型那条线在 `docs/capability-tests.md`
+与 `./scripts/eval.sh`。ADR-0011 标题那句"所有需要模型的测试连真实 DeepSeek"与今天
+不一致（`README.md:412`：门禁跑假模型与真容器），**按今天写**：门禁要能在离线、无 key
+的机器上跑。要恢复"测试连真模型"是另一件事，不在这两条之内。
+
 ## m0-skeleton
 
 ### 01 仓库骨架与 legacy 隔离
@@ -15,10 +40,10 @@
 - 一句：Postgres(pgvector) 与"compose 可自动拉起"仍在，Redis 服务整块已删；代码里未找到 `@ServiceConnection`（只在 `docs/adr/0008-delivery-rhythm-and-depth-scope.md:39` 留着这句话），票面这一条今天只能算历史。
 
 ### 03 ChatClient 装配与 mock 模型跑通全链路
-- 判定：不一致
-- 代码证据：`claw4j-app/src/main/resources/application.yml:56`（"一个 key 都没有就启动失败（ADR-0011，没有 mock 兜底）"）、`docs/adr/0011-tests-run-against-real-models.md:8-9`（MockChatModel / ScriptedChatModel 一并删除）、`claw4j-agent/src/main/java/io/github/claw4j/agent/AgentAutoConfiguration.java:130-169`（ChatClient 装配仍在）、`claw4j-core/.../Principal.java:16`
+- 判定：故意不同（票面已被 ADR-0011 推翻，见文首第 2 条）
+- 代码证据：`claw4j-app/src/main/resources/application.yml:56`（"一个 key 都没有就启动失败（ADR-0011，没有 mock 兜底）"）、`docs/adr/0011-tests-run-against-real-models.md:8-9`（MockChatModel / ScriptedChatModel 一并删除）、`claw4j-agent/src/main/java/io/github/claw4j/agent/AgentAutoConfiguration.java:130-169`（ChatClient 装配仍在）、`claw4j-agent/.../model/RoutingModelConfiguration.java:66-73`（主模型没 key 就抛，不拿备用顶）、`claw4j-core/.../Principal.java:16`
 - OpenClaw：`docs/gateway/protocol.md:13-16`（自有 Gateway/WSS runtime），未找到 Spring AI 装配或"无 key 自动 mock"的对应设计
-- 一句：ChatClient 与零框架 Principal 都还在，但票面最核心的"没有 key 也能起并跑通一次问答"被 ADR-0011 反向改成"没 key 起不来"，是正面冲突而非演进。
+- 一句：ChatClient 与零框架 Principal 都还在；票面"没有 key 也能起并跑通一次问答"作废——今天一个 key 都没有、或 primary 那家没 key，启动就失败（票面顶部已加 superseded 指针）。**不要再按票面把 mock 兜底加回来。**
 
 ### 04 HTTP+SSE 通道端到端打通
 - 判定：自研
@@ -27,10 +52,10 @@
 - 一句：四个类的职责、401/503、`http:<user>` 回落与 finalChunk 契约今天都成立；票面点名的 `HttpChannelEndToEndTest`/`AdvisorNotSkippedOverHttpTest` 已不在，端到端改由 app 层承担（`ApplicationAssemblyTest.java:243`）。
 
 ### 05 CI 与质量门禁
-- 判定：不一致
-- 代码证据：`CONTRIBUTING.md:175`（"仓库没有接 CI，也没有 pre-commit hook"）、`docs/agents/review.md:43`（同口径，且写明"有意为之"）、`.github/` 与 `.githooks/` 均不存在（Glob 无结果）、`scripts/verify.sh:25`（八个模块的本地门禁）、`claw4j-core/pom.xml:98-113`（enforcer bannedDependencies 仍在）
+- 判定：故意不同（票面承诺已取消，见文首第 1 条）
+- 代码证据：`CONTRIBUTING.md:175`（"仓库没有接 CI，也没有 pre-commit hook"）、`docs/agents/review.md:43`（同口径，且写明"有意为之""别再提第二遍"）、`.github/` 与 `.githooks/` 均不存在（Glob 无结果）、`scripts/verify.sh:25`（八个模块的本地门禁）、`claw4j-core/pom.xml:98-113`（enforcer bannedDependencies 仍在）
 - OpenClaw：`.github/workflows/ci.yml:1`（有 CI 工作流）
-- 一句：ArchUnit + enforcer + 覆盖率闸仍在，但票面的"CI 只构建 claw4j-*"与"pre-commit hook"两条今天都不存在，而且是后来明确取消的，不是漏做。
+- 一句：ArchUnit + enforcer + 覆盖率闸仍在；票面的 CI 与 pre-commit hook **作废，不补**——门禁入口只有一个本地脚本，接 CI 要先在 runner 上备 Docker 与 key，换不来任何东西。
 
 ## m1-business-data-loop
 
@@ -74,20 +99,24 @@
 - 判定：已过期
 - 代码证据：`pom.xml:336-364`（profile 只剩 real-cli 与 eval，`real-model` 已删）、`docs/adr/0006...md:159-161`（"-Preal-model 一并删除"）、`README.md:366`（模型切换说明仍在）、`GLOSSARY.md:293-317`（Text-to-SQL/只读事务/脱敏术语仍在）、`README.md:412`（门禁跑的是假模型 + 真容器）
 - OpenClaw：`docs/concepts/model-providers/official-provider-plugins.md:23-25`（provider transport 可配），多供应商能力有对应物
-- 一句：真实闭环与文档落点仍在，但票面"真实调用用 profile 隔离、默认不进 CI"这一条今天不存在（既无 CI 也无 `-Preal-model`），且门禁本身已改为假模型，与 ADR-0011 相反。
+- 一句：真实闭环与文档落点仍在；票面"真实调用用 profile 隔离、默认不进 CI"两条今天都没有——`-Preal-model` 已删，CI 也不接（文首第 1 条）。门禁跑替身 + 真容器是现状（文首第 2 条末段），不是"与 ADR-0011 相反"的缺陷；真模型那条线走 `docs/capability-tests.md` 与 `./scripts/eval.sh`。
 
 ## 本批小结
 - 一致 1 张（m1-06：会话键口径与 OpenClaw 的 channel+peer 隔离同形）
 - 自研 6 张（m0-01 多模块骨架与 legacy 隔离、m0-04 HTTP+SSE 演示通道、m1-02 业务 schema/种子、m1-03 逐轮执行前鉴权、m1-04 出站 PII 脱敏、m1-05 Text-to-SQL 业务工具）
-- 故意不同 0 张
-- 不一致 2 张
-  - m0-03：票面"无 key 也能起并跑通"与今天"无 key 启动失败"正面冲突（`application.yml:56`、ADR-0011:8-9）
-  - m0-05：票面承诺的 CI 与 pre-commit hook 今天都不存在（`CONTRIBUTING.md:175`、`.github/` 缺失）
+- 故意不同 2 张——**两张都是票面被裁决推翻，不是缺一块**：
+  - m0-03：不用 mock 模型，配了模型没 key 就启动失败（文首第 2 条、ADR-0011）
+  - m0-05：不接 CI（文首第 1 条、`CONTRIBUTING.md:175`）
+- 不一致 0 张
 - 已过期 3 张
   - m0-02：Redis 服务已按 ADR-0005 删除，只剩 Postgres
   - m1-01：`ScriptedChatModel` 与"脚本耗尽报错"已删除，替身改为 FixedChatModel
   - m1-07：`-Preal-model` 隔离已删除，真实调用不再有 profile 边界
-- 最值得修的三处（按代价排序）
-  1. 给 m0-03 / m1-01 / m1-07 三张票各加一行 superseded 指针（指向 ADR-0011 / ADR-0006 修订），否则后来者会照票面把 mock 兜底加回来。
-  2. 统一 ADR-0011 与 `README.md:412` / `docs/agents/guardrails.md:38` 的口径——"测试连真模型"与"门禁跑假模型"今天同时成立，任选一边写清楚。
-  3. 决定 CI 到底接不接：不接就在 m0-05 票面写明"已取消"；接的话要同时补 Docker 与 `DEEPSEEK_API_KEY`，成本最高。
+- 最值得修的两处（按代价排序）
+  1. m1-01 / m1-07 各加一行 superseded 指针（m0-03 已加，指向 ADR-0011）——否则后来者会照票面把 `ScriptedChatModel` 或 `-Preal-model` 加回来。
+  2. `docs/adr/0011-tests-run-against-real-models.md:47` 那句"真模型只跑 IT，`-Preal-model` 隔离"已经和现实相反（那个 profile 删了）。ADR 正文是当时的推理、不改，但要加一行指针说明它已被 ADR-0006 的修订与今天的门禁方式取代。
+
+## 本批不成立的两类建议（写下来免得再提）
+
+- **"补 CI / 加 pre-commit hook"**：不接，见文首第 1 条。
+- **"给测试加 mock 兜底 / 让没 key 的部署也能起"**：不加，见文首第 2 条。
