@@ -9,7 +9,6 @@ import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.SessionEvent;
-import org.springframework.ai.session.SessionService;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.util.JsonHelper;
@@ -24,36 +23,37 @@ import java.util.Objects;
 /**
  * 把"回忆刚才说过什么"接成模型手上的一个工具：{@code recall_session}（M3-03）。
  *
- * <p><b>它只查当前这一段对话，不是这个人的所有会话。</b>会话键按"人 + 权限 + 通道 + chatId"
- * 分段（{@link SessionKeys}），召回跟着同一个粒度走：网页私聊里查到的 128,400，
- * 不会被它在项目群里念出来。权限指纹挡不住那一层——它保证"权限一样才共享"，
- * 而这里听众不一样。这是本类唯一真正的安全边界，靠 {@code recallsOnlyThisConversation} 守着。
+ * <p><b>它查多大范围是可配的，不是写死的</b>（票 05）：{@code claw4j.tools.sessions.visibility}
+ * 有四个值，照 OpenClaw 的 {@code tools.sessions.visibility}，默认 {@code all}。
+ * 范围解析收在 {@link SessionRecallScope} 里，这个类只管"取身份、取会话、拼结果"。
+ *
+ * <p><b>原来的口径是"只查当前这一段"，那只是 {@code self} 这一档</b>：会话键按
+ * "人 + 权限 + 通道 + chatId" 分段（{@link SessionKeys}），{@code self} 下召回跟着同一个粒度走——
+ * 网页私聊里查到的 128,400，不会被它在项目群里念出来。权限指纹挡不住那一层：
+ * 它保证"权限一样才共享"，而这里听众不一样。那次收窄是对的（真泄露），
+ * 但它不该把开关一起删掉：收窄是四档里的一档，不是唯一的一档。
  *
  * <p><b>为什么不直接用框架的 {@code CrossSessionRecallTools}</b>：它按
- * {@code SessionService#findEventsByUserId} 查（{@code WHERE user_id = ?}），而
- * {@code EventFilter} 里<b>没有会话字段</b>——想按会话收窄，框架这一层根本没有入口。
- * 所以这里自己拼 {@link EventFilter} 走 {@code getEvents(sessionId, filter)}，
- * 查询条件本身就把范围钉死在一段会话上，不靠事后过滤（事后过滤会在"没命中"和
- * "命中但被滤掉"之间撒谎）。
+ * {@code SessionService#findEventsByUserId} 查（{@code WHERE user_id = ?}），而我们的
+ * {@code user_id} 是 {@code userId@权限指纹}——跨用户时它一条都查不到，
+ * {@code all} 会静默退化成"什么也没有"，而那与"历史里没说过"在结果上完全一样。
+ * 跨会话那一档因此走 {@link CrossSessionEvents}（一条 SQL），{@code self} 仍然走
+ * {@code getEvents(sessionId, filter)}：查询条件本身把范围钉死，不靠事后过滤。
  *
  * <p><b>会话 id 由宿主写进工具上下文，模型没有参数可改</b>：键是
  * {@link ChatMemory#CONVERSATION_ID}，值来自 {@code ChatClientAgentPort}（那里已经算好
  * {@code sessionId}）。模型手上没有"换一个会话查"的入参，于是"查别人的聊天记录"
- * 这条路径不存在，而不是"存在但被拒绝"。
- *
- * <p><b>身份仍然要查一次</b>：不是用来限定查询范围，而是核对"这一段会话是不是你的"——
- * {@code sessionId} 必须以当前身份的归属键开头。防的是宿主把 sessionId 传错、
- * 或者将来有人调这个工具时把别人的会话 id 递进来。核不上就拒，不退化成"照样查"。
+ * 这条路径不是一个可以被点开的选项，而是一条按配置放开的范围。
  *
  * <p><b>关键词匹配，不是语义召回</b>：按词在事件正文里找，换个说法问同一件事它找不到。
- * 别在文档或提示词里写成"语义召回"——两者差的是 embedding 与一张向量表，那是票 05 的载体。
+ * 别在文档或提示词里写成"语义召回"——两者差的是 embedding 与一张向量表。
+ *
+ * <p><b>结果会截断再交给模型</b>：{@code pageSize} 有上限，整段文本再按字符裁一次。
+ * 五条长对话一口气塞进提示词，召回省下的上下文就白省了。
  *
  * <p><b>它现在的价值是"把被压缩掉的原文找回来"</b>：压缩会把早期事件归档或折成摘要
  * （{@code EventFilter} 的 {@code excludeArchived} 默认 false，归档的照样查得到），
  * 摘要留结论、丢细节；"上次那批单子到底怎么定的"这类细节只能靠关键词回查。
- *
- * <p>结果会截断再交给模型：{@code pageSize} 有上限，整段文本再按字符裁一次。
- * 五条长对话一口气塞进提示词，召回省下的上下文就白省了。
  */
 public final class RecallSessionTool implements ToolCallback {
 
@@ -95,14 +95,23 @@ public final class RecallSessionTool implements ToolCallback {
     static final int MAX_QUERY_TERMS = 20;
 
     /**
-     * 描述里点明四件事：这是本段对话里更早的部分（不是别的会话）、按关键词匹配（要挑词）、
-     * 只搜得到这一段、以及与"翻当前上下文"的区别。
-     * 不写清的话，模型会去搜别人会话里的内容，然后拿"没找到"当成"我没说过"。
+     * 工具描述里**不随范围变**的那一半：这是本段历史里更早的部分、按关键词匹配（要挑词）、
+     * 以及与"翻当前上下文"的区别。
+     *
+     * <p>范围那半句由 {@link #descriptionFor} 按生效值拼，不写死在这里：
+     * 写死"看不到别的会话"的话，{@code all} 下模型会拿这句去**拒绝**一次本来查得到的召回
+     * ——那是"模型被喂了错的能力清单"，与 {@code ScheduleTools} 那条同一类问题。
      */
-    private static final String DESCRIPTION = "在这一段对话的历史里按关键词搜索。"
+    private static final String DESCRIPTION_HEAD = "在会话历史里按关键词搜索。"
             + "用于回忆当前上下文里已经没有的内容（更早的、被压缩掉的细节，以前定过的口径）。"
-            + "按关键词匹配，多个词用英文逗号分隔；换个说法问同一件事它找不到，那就换一组更贴近原文的词。"
-            + "只搜得到这一段对话，看不到你在别的会话或群聊里说过的话。";
+            + "按关键词匹配，多个词用英文逗号分隔；换个说法问同一件事它找不到，那就换一组更贴近原文的词。";
+
+    /** 范围是当前这一段的说法。{@code tree} 也用它：子 Agent 会话今天不落库，差集是空的。 */
+    private static final String SELF_SCOPE = "范围是当前这一段对话：看不到你在别的会话或群聊里说过的话。";
+
+    /** 跨会话档的说法：要顺带交代"结果里带出处"，否则模型会把两段对话揉成一段回答。 */
+    private static final String CROSS_SCOPE = "范围是本部署的全部会话，"
+            + "包括其他用户与其他群聊；结果里每一条都带着它来自哪一段，引用时要说清是哪一段里的。";
 
     private static final String INPUT_SCHEMA = """
             {
@@ -129,17 +138,28 @@ public final class RecallSessionTool implements ToolCallback {
               "required": ["query"]
             }""";
 
-    private final SessionService sessionService;
+    private final SessionRecallScope scope;
 
     private final ToolDefinition definition;
 
-    public RecallSessionTool(SessionService sessionService) {
-        this.sessionService = Objects.requireNonNull(sessionService, "sessionService");
+    public RecallSessionTool(SessionRecallScope scope) {
+        this.scope = Objects.requireNonNull(scope, "scope");
         this.definition = ToolDefinition.builder()
                 .name(TOOL_NAME)
-                .description(DESCRIPTION)
+                .description(descriptionFor(scope.visibility()))
                 .inputSchema(INPUT_SCHEMA)
                 .build();
+    }
+
+    /**
+     * 工具描述 = 不变的那半 + 生效范围那半句。
+     *
+     * <p>包内可见是为了让用例能直接断言文本：范围改了而描述没改，症状是模型主动拒绝
+     * 一次查得到的召回，而日志上一个字都不会有。
+     */
+    static String descriptionFor(SessionVisibility visibility) {
+        SessionVisibility effective = visibility == null ? SessionVisibility.DEFAULT : visibility;
+        return DESCRIPTION_HEAD + (effective.crossSession() ? CROSS_SCOPE : SELF_SCOPE);
     }
 
     @Override
@@ -163,16 +183,18 @@ public final class RecallSessionTool implements ToolCallback {
         }
         String sessionId = sessionIdOf(toolContext);
         if (sessionId == null || sessionId.isBlank()) {
-            return "没有携带会话标识，这次不查历史：召回只在本段对话里找，"
+            return "没有携带会话标识，这次不查历史：召回要从当前这一段出发，"
                     + "没有会话标识就不知道该找哪一段。";
         }
-        if (!belongsTo(who, sessionId)) {
+        // 归属校验只在 self / tree 上做（口径在 SessionRecallScope#belongsTo 的注释里）。
+        // 跨会话档不核前缀，但身份还是要的——那一步在上面。
+        if (scope.visibility().checksOwnership() && !SessionRecallScope.belongsTo(who, sessionId)) {
             return "这段会话不属于当前身份，这次不查历史（会话键里带着权限指纹，"
                     + "换人或换角色都是另一段）。";
         }
         Map<String, Object> input = parse(toolInput);
         try {
-            return render(sessionService.getEvents(sessionId, filterOf(input)));
+            return render(scope.events(sessionId, filterOf(input)), scope.visibility());
         }
         catch (IllegalArgumentException bad) {
             // 参数问题回给模型让它自己改，不要抛出去变成整轮 500：
@@ -279,14 +301,18 @@ public final class RecallSessionTool implements ToolCallback {
     /**
      * 把命中的事件拼成给模型读的文本：一行一条，带时间与说话人。
      *
-     * <p><b>不再输出框架那份 JSON</b>：里面每一条都重复 {@code sessionId} 与四个键名，
-     * 而会话现在恒等于当前这一段——重复的字段只是白花 token。文本行读起来也更省事，
+     * <p><b>跨会话时每行再带 {@code sessionId}</b>：范围放开之后，"这条是从哪一段来的"
+     * 变成必需信息——不带的话模型会把两段对话的内容混成一段回答，而混出来的那句话
+     * 没有任何一处可以对照。{@code self} 下不带：那段恒等于当前这一段，重复只是白花 token。
+     *
+     * <p><b>不再输出框架那份 JSON</b>：里面每一条都重复四个键名，文本行读起来更省事，
      * 模型不需要解析就能直接用。
      *
      * <p>正文为空的（纯工具调用、附件消息）跳过：它们在搜索结果里是一行 {@code text:null}，
      * 占位置但不提供任何信息，而"条数上限 5"会被这种行吃掉。
      */
-    private static String render(List<SessionEvent> hits) {
+    private static String render(List<SessionEvent> hits, SessionVisibility visibility) {
+        boolean withOrigin = visibility.crossSession();
         StringBuilder out = new StringBuilder();
         for (SessionEvent event : hits) {
             Message message = event.getMessage();
@@ -297,14 +323,32 @@ public final class RecallSessionTool implements ToolCallback {
             if (!out.isEmpty()) {
                 out.append('\n');
             }
-            out.append("- ").append(event.getTimestamp()).append(' ')
+            out.append("- ");
+            if (withOrigin) {
+                out.append('[').append(event.getSessionId()).append("] ");
+            }
+            out.append(event.getTimestamp()).append(' ')
                     .append(labelOf(event)).append('：').append(text.strip());
         }
         if (out.isEmpty()) {
-            return "本段对话里没有找到匹配的记录。可以换一组更贴近原话的关键词"
-                    + "（多个词用英文逗号分隔），或者去掉 since 放宽时间范围。";
+            return emptyAnswer(visibility);
         }
         return truncate(out.toString());
+    }
+
+    /**
+     * "没找到"要按范围说，不能只有一句"没找到"。
+     *
+     * <p>{@code self} 下"没找到"是"这一段里没说过"；跨会话下是"整个部署都没说过"。
+     * 两句话在模型那里都能变成"我没说过"，在排查时却是两件事——
+     * 一句会让人去改关键词，另一句会让人去怀疑范围配错了。
+     */
+    private static String emptyAnswer(SessionVisibility visibility) {
+        String where = visibility.crossSession()
+                ? "全部会话里没有找到匹配的记录（范围：" + visibility.description() + "）"
+                : "本段对话里没有找到匹配的记录（范围：" + visibility.description() + "）";
+        return where + "。可以换一组更贴近原话的关键词"
+                + "（多个词用英文逗号分隔），或者去掉 since 放宽时间范围。";
     }
 
     /** 说话人。用中文，因为它直接读给用户听。 */
@@ -334,22 +378,6 @@ public final class RecallSessionTool implements ToolCallback {
         return result.substring(0, MAX_RESULT_CHARS)
                 + "\n…（结果过长已截断，只保留前 " + MAX_RESULT_CHARS + " 字。"
                 + "把关键词写得更贴近原文，或者加 since 缩小时间范围）";
-    }
-
-    /**
-     * 这一段会话是不是这个身份的。
-     *
-     * <p>会话 id 的形状是 {@code claw4j:user:<owner>:<通道>:<chatId>:<段>}，而 {@code owner}
-     * 里带着权限指纹（见 {@link SessionKeys#ownerOf}）。前缀对不上，说明要么换人了，
-     * 要么换权限了，要么宿主把别人的 id 递了进来——三种都不该查。
-     *
-     * <p><b>前缀只到 {@code <owner>:} 为止</b>，所以后面接 {@code <通道>:<chatId>} 还是
-     * 将来再加一段（ADR-0026 的段）都成立。反过来，把新维度拼在 owner 前面会让这条校验
-     * 对别人成立——那是一条静默的越权读，而不是一次报错。
-     */
-    private static boolean belongsTo(Principal who, String sessionId) {
-        String prefix = SessionKeys.PREFIX + SessionKeys.ownerOf(who) + SessionKeys.SESSION_SEPARATOR;
-        return sessionId.startsWith(prefix);
     }
 
     private static String sessionIdOf(ToolContext toolContext) {

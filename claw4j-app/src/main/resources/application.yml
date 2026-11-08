@@ -391,6 +391,21 @@ claw4j:
       #（; | & > < ` $( 换行）——否则 `ls; curl … | sh` 这种只看首词就能过。要管道就配 ask / full。
       allow: []
 
+    # ---- 会话可见性：recall_session 能看见哪些会话（票 05，照 OpenClaw 的 tools.sessions.visibility）----
+    # 四档，**默认 all** —— 它的原文就是 "Default: all (every session on the Gateway,
+    # including other agents' and other users' transcripts)"。
+    #   self   只有当前这一段对话
+    #   tree   当前 + 它派生的子 Agent 会话（子 Agent 会话今天不落库，暂等同 self）
+    #   agent  本 agent 的全部会话（我们只有一个 agent 命名空间，暂等同 all）
+    #   all    全部会话，含其他用户的
+    # **多用户、角色不同的部署必须配 self**：默认 all 意味着一个 read-only 身份能召回别人的
+    # 会话内容——那是它的默认，不是 bug；安全位就在这个配置项上。配成 self/tree 时它还要求
+    # "这段会话属于你"（核归属前缀），跨会话那两档不做这个核对。
+    # 写错的词（例如 everybody）启动失败并点名四个合法值：它的实现会静默回落成 all，
+    # 而"写错了"与"写的是 all"在日志上一模一样——那是 fail-open，这一处不照抄（见票 05）。
+    sessions:
+      visibility: ${CLAW4J_SESSION_VISIBILITY:all}
+
   # ---- 把自己交出去：当 MCP server 用（P11） ----
   # 默认关。开了之后在标准输入输出上说 MCP，Claude Code 这类客户端可以把这里的工具
   # 当成自己的工具调。交出去的工具只能是"模型能用的那一份"里的——不是另收一遍，

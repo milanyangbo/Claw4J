@@ -8,6 +8,8 @@ import io.github.claw4j.agent.model.EmbeddingProperties;
 import io.github.claw4j.agent.rag.KnowledgeBase;
 import io.github.claw4j.agent.rag.PgVectorKnowledgeBase;
 import io.github.claw4j.agent.rag.RagProperties;
+import io.github.claw4j.agent.session.CrossSessionEvents;
+import io.github.claw4j.agent.session.JdbcCrossSessionEvents;
 import io.github.claw4j.domain.inbound.ClaimedInbound;
 import io.github.claw4j.domain.inbound.EnqueueOutcome;
 import io.github.claw4j.domain.inbound.QueuedInbound;
@@ -19,6 +21,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.session.EventFilter;
+import org.springframework.ai.session.SessionEvent;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -101,6 +105,8 @@ class SearchSqlTest {
         jdbc.update("truncate claw4j_rag.document cascade");
         // 入站队列（票 04）：它的行是 tombstone，不清的话上一条用例的"这条处理过"会带到这里
         jdbc.update("truncate claw4j_channel.inbound_event");
+        // 会话（票 05）：事件靠外键跟着会话走，一句 cascade 两表都干净
+        jdbc.update("truncate claw4j_session.ai_session cascade");
         cache = new PgVectorSemanticCache(jdbc, CacheProperties.defaults());
     }
 
@@ -435,6 +441,90 @@ class SearchSqlTest {
                 String.class))
                 .as("claimed 是正在跑的，删掉它等于那条消息永久消失；failed 还没到 30 天")
                 .containsExactly("evt-claimed", "evt-failed");
+    }
+
+    // ---- 跨会话召回（票 05）：一条 SQL 要跨过 user_id，而 user_id 里带着权限指纹 ----
+
+    @Test
+    @DisplayName("跨会话召回：另一个用户的会话也查得到，synthetic 排除、归档保留")
+    void crossSessionRecallCrossesUsersAndSkipsSynthetic() {
+        String mine = "claw4j:user:u-1@fp-a:web:chat-a:seg-1";
+        String other = "claw4j:user:u-2@fp-b:web:chat-z:seg-1";
+        session(mine, "u-1@fp-a");
+        session(other, "u-2@fp-b");
+        event("evt-mine", mine, "华东区的成交口径按签约主体算", false, false);
+        event("evt-other", other, "华东区口径按签约主体算——u-2 说的", false, false);
+        event("evt-synthetic", mine, "华东区口径，这条是系统提示词", true, false);
+        event("evt-archived", other, "华东区口径，这条被压缩归档过", false, true);
+
+        List<SessionEvent> hits = new JdbcCrossSessionEvents(jdbc).find(EventFilter.builder()
+                .keywords(List.of("华东区口径", "华东区的成交口径"))
+                .matchMode(EventFilter.MatchMode.ANY)
+                .page(0)
+                .pageSize(5)
+                .excludeSynthetic(true)
+                .build());
+
+        assertThat(hits).extracting(SessionEvent::getId)
+                .as("跨用户是这条 SQL 存在的理由：按 user_id 查的话 u-2 那一条永远查不到，"
+                        + "而「查不到」与「没说过」在结果上一模一样")
+                .contains("evt-other", "evt-mine");
+        assertThat(hits).extracting(SessionEvent::getId)
+                .as("系统提示词与摘要不是「我说过的话」，每轮都有一条，召回它们只是白占上下文")
+                .doesNotContain("evt-synthetic");
+        assertThat(hits).extracting(SessionEvent::getId)
+                .as("归档的要保留：压缩把原文折成摘要之后，它是这个工具唯一的价值来源")
+                .contains("evt-archived");
+        assertThat(hits).allSatisfy(hit -> assertThat(hit.getTimestamp()).isNotNull());
+    }
+
+    @Test
+    @DisplayName("多关键词的括号与分页参数：ANY 不能漏出 synthetic，page/pageSize 也不许串位")
+    void crossSessionKeywordParenthesesAndPagingLineUp() {
+        String only = "claw4j:user:u-1@fp-a:web:chat-a:seg-1";
+        session(only, "u-1@fp-a");
+        event("evt-synthetic-south", only, "华南那边先按开票主体报", true, false);
+        event("evt-real-east", only, "华东区的成交口径按签约主体算", false, false);
+        event("evt-real-south", only, "华南那边的口径还是按开票主体", false, false);
+
+        CrossSessionEvents across = new JdbcCrossSessionEvents(jdbc);
+        List<SessionEvent> any = across.find(EventFilter.builder()
+                .keywords(List.of("华东区", "华南那边"))
+                .matchMode(EventFilter.MatchMode.ANY)
+                .page(0)
+                .pageSize(5)
+                .excludeSynthetic(true)
+                .build());
+
+        assertThat(any).extracting(SessionEvent::getId)
+                .as("关键词的那一段必须整体加括号：不加的话 `AND synthetic = false AND a OR b` "
+                        + "会让 b 一命中就无视 synthetic 与时间范围，而它看起来只是「少了个括号」")
+                .doesNotContain("evt-synthetic-south")
+                .contains("evt-real-east", "evt-real-south");
+
+        List<SessionEvent> secondPage = across.find(EventFilter.builder()
+                .keywords(List.of("口径", "成交"))
+                .matchMode(EventFilter.MatchMode.ANY)
+                .page(1)
+                .pageSize(1)
+                .excludeSynthetic(true)
+                .build());
+
+        assertThat(secondPage).extracting(SessionEvent::getId)
+                .as("LIMIT 与 OFFSET 两个参数反了的话这里会空（offset 落在总行数之外）")
+                .containsExactly("evt-real-south");
+    }
+
+    /** 会话行：事件有外键，不先建会话插不进去。 */
+    private static void session(String id, String userId) {
+        jdbc.update("insert into claw4j_session.ai_session (id, user_id, created_at)"
+                + " values (?, ?, now())", id, userId);
+    }
+
+    private static void event(String id, String sessionId, String text, boolean synthetic, boolean archived) {
+        jdbc.update("insert into claw4j_session.ai_session_event"
+                + " (id, session_id, timestamp, message_type, message_content, synthetic, archived)"
+                + " values (?, ?, now(), 'USER', ?, ?, ?)", id, sessionId, text, synthetic, archived);
     }
 
     private static QueuedInbound queued(String queueName, String eventId, String conversationId, String text) {

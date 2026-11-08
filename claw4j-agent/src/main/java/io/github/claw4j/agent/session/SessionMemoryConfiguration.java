@@ -70,7 +70,7 @@ import java.util.Map;
 @EnableScheduling
 @EnableConfigurationProperties({DataSourceProperties.class, SessionMemoryProperties.class,
         SessionServiceProperties.class, SessionResetProperties.class,
-        SessionMaintenanceProperties.class})
+        SessionMaintenanceProperties.class, SessionVisibilityProperties.class})
 public class SessionMemoryConfiguration implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(SessionMemoryConfiguration.class);
@@ -218,7 +218,21 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
-     * 召回工具（M3-03）：在这一段对话的历史里按关键词回查。
+     * 跨会话检索（票 05）：{@code visibility=agent|all} 时召回走这一条。
+     *
+     * <p>用主连接池、表名写全限定：与会话指针、会话目标同一类理由——
+     * 框架那条路要另开一个池把 {@code currentSchema} 指过去（见 {@link SessionSchema}），
+     * 而我们自己的 SQL 带上 schema 就不依赖连接的 {@code search_path}。
+     */
+    @Bean
+    @ConditionalOnMissingBean(CrossSessionEvents.class)
+    public CrossSessionEvents crossSessionEvents(JdbcTemplate jdbc) {
+        return new JdbcCrossSessionEvents(jdbc);
+    }
+
+    /**
+     * 召回工具（M3-03）：在会话历史里按关键词回查，范围由
+     * {@code claw4j.tools.sessions.visibility} 决定（票 05）。
      *
      * <p>注册成 {@code ToolCallback} 就会被 {@code AgentAutoConfiguration#chatClient} 收进清单，
      * 调用方不需要知道有"回忆"这个能力。工具检索开着时它一样会先被索引、
@@ -230,11 +244,30 @@ public class SessionMemoryConfiguration implements DisposableBean {
      *
      * <p>它拿到的是包了降级的 {@link FaultTolerantSessionService}：库挂的时候这里是
      * "没找到"，不是整轮 500。召回失败与记忆失败是同一类——都只影响这一段附加信息。
+     * 跨会话那一档自己也要降级成同样的一句话（见 {@link SessionRecallScope#events}），
+     * 否则同一个库挂掉，配 {@code self} 的部署答"没找到"、配 {@code all} 的部署整轮 500。
+     *
+     * <p><b>启动日志要说出生效范围</b>：默认 {@code all} 意味着 {@code read-only} 身份可以召回
+     * 别人的会话。不写这一行的话，"现在到底是哪一档"只能靠翻 yml——而 yml 里的值是占位符，
+     * 覆盖它的可能是环境变量。它自己用一条安全 finding 提示多 agent 场景
+     * （{@code docs/cli/security.md:39}），我们只有一个 agent 命名空间，那条永远不触发。
      */
     @Bean
     @ConditionalOnMissingBean(RecallSessionTool.class)
-    public RecallSessionTool recallSessionTool(SessionService sessionService) {
-        return new RecallSessionTool(sessionService);
+    public RecallSessionTool recallSessionTool(SessionService sessionService,
+                                               CrossSessionEvents across,
+                                               SessionVisibilityProperties properties) {
+        SessionVisibility visibility = properties.scope();
+        if (visibility == SessionVisibility.ALL) {
+            log.info("会话可见性 = all（照 OpenClaw 的默认值）：recall_session 可以跨用户召回，"
+                    + "结果里每条都带它来自哪一段。多用户、角色不同的部署要收紧，"
+                    + "配 claw4j.tools.sessions.visibility=self（或 tree / agent）。");
+        }
+        else {
+            log.info("会话可见性 = {}：{}（claw4j.tools.sessions.visibility）",
+                    visibility.key(), visibility.description());
+        }
+        return new RecallSessionTool(new SessionRecallScope(sessionService, across, visibility));
     }
 
     /**

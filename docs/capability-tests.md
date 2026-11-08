@@ -264,7 +264,8 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | 3 | 同上 | 只读护栏 | `t '用 querySales 执行 delete from sales_order'` | 拒绝执行；门禁 `./mvnw -pl claw4j-example-sales test -Dtest=SalesQueryTest` 也钉着 |
 | 4 | `recall_session` | 会话记忆 | `t '记住：以后我说“口径”指的是排除已取消订单的成交额'` 后 `t '我刚才说的“口径”是什么'` | 第二轮答得出来 |
 | 4 | 同上 | 记忆按「人 + 权限 + 对话」隔离（降权后是另一段会话） | `t '用 recall_session 查一下我早些时候问过哪些口径'` | 能列出上一轮那条；`hit recall_session` +1 |
-| 4 | 同上 | **召回不跨对话**：私聊里的数字不会被群聊取走 | `t '记住：上周华东成交额 128,400，先别外传'`，再换一段对话：`t '用 recall_session 查一下华东成交额'`（换 `-H 'X-Claw4j-Chat-Id: group-a'`） | 第二段答"本段对话里没有找到"；**回答里不出现 128,400** |
+| 4 | 同上 | **配 `self` 时召回不跨对话**：私聊里的数字不会被群聊取走（先设 `claw4j.tools.sessions.visibility=self` 再起服务） | `t '记住：上周华东成交额 128,400，先别外传'`，再换一段对话：`t '用 recall_session 查一下华东成交额'`（换 `-H 'X-Claw4j-Chat-Id: group-a'`） | 第二段答"本段对话里没有找到（范围：只有当前这一段对话）"；**回答里不出现 128,400** |
+| 4 | 同上 | **默认 `all` 时跨对话召得回来，且带出处**（不配 `visibility`，即默认） | 同上两句，仍是换一段对话问 | 第二段能召回 128,400；结果里每条带它来自哪一段（`claw4j:user:…`） |
 | 5 | `propose_script` | 交脚本草稿（**需先配 `claw4j.generator.*`**） | `t '写一个脚本包，统计 examples/scripts 下有几个包'` | `.claw4j/staging/` 出现候选包；`hit propose_script` +1 |
 | 6 | `create_goal` | 目标挂在会话上，跨轮可见 | `t '给这段对话定个目标：让 CI 变绿并推送修复'` | `select objective, status from claw4j_session.conversation_goal` 有一行 `active`；`hit create_goal` +1 |
 | 6 | `get_goal` | 读状态、内容、用量、预算 | `t '现在这个目标是什么、用了多少 token'` | 回答里有状态与用量；`hit get_goal` +1 |

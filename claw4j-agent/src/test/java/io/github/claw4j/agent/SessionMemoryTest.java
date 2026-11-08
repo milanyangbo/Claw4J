@@ -14,10 +14,13 @@ import io.github.claw4j.agent.session.SessionMaintenanceProperties;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
+import io.github.claw4j.agent.session.SessionVisibility;
+import io.github.claw4j.agent.session.SessionVisibilityProperties;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolTier;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
@@ -38,6 +41,9 @@ import org.springframework.ai.session.compaction.CompactionStrategy;
 import org.springframework.ai.session.compaction.CompactionTrigger;
 import org.springframework.ai.session.compaction.RecursiveSummarizationCompactionStrategy;
 import org.springframework.ai.session.compaction.TokenCountTrigger;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.CannotCreateTransactionException;
@@ -583,11 +589,10 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("清理间隔配成 0 或负数直接拒绝启动：调度器读的是占位符原文，归一不会改它拿到的值")
-    void cleanupIntervalMustBePositive() {
+    @DisplayName("清理的每个数越界都直接拒绝启动：0 是「全部过期」，负数是一个热循环在打库")
+    void maintenanceBoundsAreRejected() {
         assertThatThrownBy(() -> new SessionMemoryProperties(null, 0, 0, 0, 0, Duration.ZERO))
-                .as("fixedDelay=0 是「上一轮结束立刻下一轮」，一个热循环在打库；"
-                        + "而这里悄悄改成 1 小时，调度器照样拿到 0")
+                .as("fixedDelay=0 是「上一轮结束立刻下一轮」，而这里悄悄改成 1 小时，调度器照样拿到 0")
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cleanup-interval");
         assertThatThrownBy(() -> new SessionMemoryProperties(null, 0, 0, 0, 0, Duration.ofMinutes(-5)))
@@ -595,11 +600,7 @@ class SessionMemoryTest {
         assertThat(SessionMemoryProperties.defaults().cleanupInterval())
                 .as("键缺失才落默认值——「没配」有合理默认，「写 0」是写错了，两件事不能混")
                 .isEqualTo(SessionMemoryProperties.DEFAULT_CLEANUP_INTERVAL);
-    }
 
-    @Test
-    @DisplayName("清理的三个数越界直接拒绝启动：prune-after=0 是「全部过期」，max-entries=0 是「一个不留」")
-    void maintenanceBoundsAreRejected() {
         assertThatThrownBy(() -> new SessionMaintenanceProperties(null, Duration.ZERO, null))
                 .as("0 的意思是「所有段都过期」，第一次清理就会把会话表清空，"
                         + "而它看起来只是「把数调小一点」")
@@ -616,6 +617,59 @@ class SessionMemoryTest {
                 .as("拼错落回 warn，不是落回 enforce——错的方向必须朝「少删」那边倒")
                 .isEqualTo(SessionMaintenanceProperties.MODE_WARN);
         assertThat(new SessionMaintenanceProperties("ENFORCE", null, null).enforces()).isTrue();
+    }
+
+    @Test
+    @DisplayName("visibility 写错的词启动失败并点名四个合法值：回落成 all 是最危险的那种「容错」")
+    void visibilityMustBeOneOfFourWords() {
+        assertThat(SessionVisibilityProperties.defaults().scope())
+                .as("缺键落 all：照它的默认值（tools.sessions.visibility 原文就是 Default: all）")
+                .isEqualTo(SessionVisibility.ALL);
+
+        assertThatThrownBy(() -> new SessionVisibilityProperties("everybody"))
+                .as("上一行在拼错时回落，这里必须抛：mode 拼错能落向更保守的一侧，"
+                        + "而 visibility 的四个值没有「更保守」的默认——落哪个都是在猜授权范围，"
+                        + "且「写错了」与「写的是 all」在日志上一模一样")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("claw4j.tools.sessions.visibility")
+                .hasMessageContaining("self / tree / agent / all");
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(VisibilityOnly.class)
+                .withPropertyValues("claw4j.tools.sessions.visibility=everybody")
+                .run(context -> {
+                    assertThat(context)
+                            .as("绑定阶段就失败，不是第一次召回时才发现")
+                            .hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .as("报错要点名这个键与四个合法值，否则运维还得去翻文档")
+                            .hasStackTraceContaining("self / tree / agent / all");
+                });
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(VisibilityOnly.class)
+                .withPropertyValues("claw4j.tools.sessions.visibility=AGENT")
+                .run(context -> assertThat(context.getBean(SessionVisibilityProperties.class).scope())
+                        .as("大小写不敏感：yml 里写 AGENT 与 agent 是同一个档")
+                        .isEqualTo(SessionVisibility.AGENT));
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(VisibilityOnly.class)
+                .withPropertyValues("claw4j.tools.sessions.visibility=self",
+                        "claw4j.tools.profile=minimal")
+                .run(context -> {
+                    assertThat(context.getBean(SessionVisibilityProperties.class).scope())
+                            .isEqualTo(SessionVisibility.SELF);
+                    assertThat(context.getBean(ToolsProperties.class).profile())
+                            .as("同一个前缀下的两棵子树各绑各的：加了 sessions 之后 profile 不能绑丢")
+                            .isEqualTo(ToolTier.MINIMAL);
+                });
+    }
+
+    /** 只装那两个属性，不装整套会话装配：这条用例问的是"绑定会不会拒"，不是"记忆能不能跑"。 */
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties({SessionVisibilityProperties.class, ToolsProperties.class})
+    static class VisibilityOnly {
     }
 
     private static SessionMaintenance maintenance(JdbcTemplate jdbc, MeterRegistry registry) {

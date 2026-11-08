@@ -10,6 +10,11 @@
 > **2026-11-05 修订：召回范围从"这个人的所有会话"改成"当前这一段会话"。**
 > 会话键那时已经按"通道 + chatId"分段（ADR-0025），而召回还按 `owner` 查，
 > 于是私聊里的内容能被取到群聊里。见文末「隔离修复」。
+>
+> **2026-11-08 回填（openclaw-alignment 票 05）：那个范围现在是配置项，不再写死。**
+> `claw4j.tools.sessions.visibility` 四档（`self` / `tree` / `agent` / `all`），
+> 默认 `all`（照 OpenClaw 的 `tools.sessions.visibility`）。下面那次收窄成了 `self` 档的实现，
+> 不是"我们只做 `self`"——当时连开关一起删掉了，那是过度修复。
 
 **Demo:** 会话 A 里问"华东区的口径是什么"，得到答案；换一个会话 B 问"上次华东区的口径怎么定的"，
 回答里带上会话 A 的内容。
@@ -91,6 +96,12 @@ GET 9090/actuator/metrics/claw4j.tool.calls  → tool=recall_session, outcome=ok
 
 ## 隔离修复（2026-11-05）
 
+**这一节现在的定位是 `self` 这一档的由来，不是"我们只做 `self`"。** 2026-11-08 的票 05
+把它变回 OpenClaw 的四档（`claw4j.tools.sessions.visibility`，默认 `all`）：下面这套
+（`getEvents(sessionId, …)` + 核归属前缀）就是 `self` / `tree` 两档的实现，
+`agent` / `all` 另走一条跨会话查询。修的是真泄露，但当时连"范围"这个开关一起删掉了——
+收窄是四档里的一档，不是唯一的一档。
+
 会话键已经按"人 + 权限 + 通道 + chatId"分段（ADR-0025），但这个工具还在按 `owner` 查
 （`findEventsByUserId`，`WHERE user_id = ?`）。结果是：自动拼上下文那条路被分段挡住了，
 **工具这道后门还开着**——网页私聊里查到的 128,400，在项目群里让模型"回忆一下"就能取出来。
@@ -107,15 +118,19 @@ GET 9090/actuator/metrics/claw4j.tool.calls  → tool=recall_session, outcome=ok
   `CrossSessionRecallTools` 也没有暴露 sessionId 入参。按会话收窄只能自己查。
 - 会话 id 由 `ChatClientAgentPort` 写进工具上下文的 `ChatMemory.CONVERSATION_ID`，
   与框架自己的 `SessionEventTools` 是同一把键。**模型手上没有参数能改它**——
-  "查别人的聊天记录"这条路不存在，而不是"存在但被拒绝"。
-- 身份仍核一次：`sessionId` 必须以 `claw4j:user:<当前身份的 owner>:` 开头，核不上就拒。
+  范围是部署配的（票 05 的四档），不是模型挑的。
+- 身份核一次：`sessionId` 必须以 `claw4j:user:<当前身份的 owner>:` 开头，核不上就拒。
   它不参与查询（范围由会话定），防的是宿主传错或将来有人把别人的 id 递进来。
-- 输出从框架的 JSON 改成文本行（`- 时间 说话人：正文`）：会话恒等于当前这一段，
-  每条都重复的 `sessionId` 与四个键名只是白花 token。
+  **票 05 起这条只在 `self` / `tree` 上做**：`agent` / `all` 本来就允许跨用户，再核等于把范围收回 `self`。
+- 输出从框架的 JSON 改成文本行（`- 时间 说话人：正文`）：`self` 下会话恒等于当前这一段，
+  每条都重复的 `sessionId` 与四个键名只是白花 token。**跨会话那两档反过来要带 `sessionId`**
+  （票 05）——范围放开之后"这条从哪一段来的"是必需信息，不带的话模型会把两段对话揉成一段。
 - 顺带解决文末那条记账的一半：仍然会命中本轮刚发的那条提问（它本来就在这一段里），
   但它不再是"按人查"撞出来的，而是这一段里真实存在的一句。
 
-**反例（三条都真跑，跑完复原）**：
+**反例（三条都真跑，跑完复原）**——方法名是当时的；票 05 之后分别叫
+`selfScopeRecallsOnlyThisConversation`（合并了归档那一条）与
+`guardsRefuseInsteadOfWidening`（两条并成一条）：
 
 1. 把 `getEvents(sessionId, …)` 换回 `findEventsByUserId(owner, …)` →
    `recallsOnlyThisConversation` 变红，实际输出里出现"华东上周成交额 128,400.00，先别外传"。
