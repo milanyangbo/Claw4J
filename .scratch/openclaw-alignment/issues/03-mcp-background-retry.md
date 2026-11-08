@@ -167,3 +167,43 @@ name, status(UP / DOWN), lastKnownTools(List<Tool>), attempt(int), nextRetryAt(I
   混在一起会让"这个部署有没有装 MCP"看不出来。
 - **不要顺手把 `McpConnection#callTool` 的一次重放改成多次**：那是另一个判断（重放多次会重复产生副作用），
   与本票无关。
+
+## Comments
+
+- 2026-11-08 实现。新增三个类（`mcp` 下 `McpServerStatus` / `McpServerSnapshot`，
+  以及 `McpToolProvider` 的重写），改 `McpToolAutoConfiguration`（两张登记表改成活视图）、
+  `McpConnection`（重开也失败时上报）、`ToolCatalog`（从 record 改成活视图 + `ToolCallbackProvider`）、
+  `AgentAutoConfiguration`（`.defaultToolCallbacks(catalog)` + 日志按结论去重）。
+- **`ToolCatalog` 从快照改成活视图是这一票的主要工作量**，改法只有一处：让它实现
+  `ToolCallbackProvider`，`chatClient` 那边把 `defaultToolCallbacks(catalog.tools())` 换成
+  `defaultToolCallbacks(catalog)`。框架在**每次请求**时展开 provider
+  （`DefaultChatClientUtils.toChatClientRequest` 里那个循环就写在请求构造里），
+  于是"这一轮模型看得见哪些工具"每轮重新算一次。查过 `mergeToolCallbacks`：运行时那份**赢**，
+  provider 展开出来的就是它，所以不需要动 `ChatClientAgentPort`（它仍然只拼请求，不碰工具）。
+- **两张登记表也必须跟着活**，否则恢复回来的工具用不了：
+  `ToolPermissionRegistry` 拍快照 → 新工具是"未登记"（拒绝，方向安全但现象是能力回来了调不动）；
+  `ToolTierRegistry` 拍快照 → `ToolProfile#select` 查不到档位直接抛，**一个外部 server 的重启会把整轮对话打掉**。
+  两处都改成指向 `McpToolProvider` 的方法引用。
+- **掉线检测多写了一段**（票面没要求，但不写这条验收就是空的）：`McpConnection` 在
+  "会话丢失 → 重开 → 重开也失败"时回调一次，provider 收到才记 DOWN 并开始退避。
+  没有它，"UP → DOWN"这个迁移在代码里根本走不到（provider 不轮询活着的连接），
+  "保留上次清单"那条用例也就成了永远绿的空断言。回调在连接锁**外**调用，避免与 provider 的锁交叉。
+- **三处判断，都写进代码注释**：
+  1. 运行期才发现的配置错误不能"启动失败"（那时进程已经在跑），改成 `MISCONFIGURED` + ERROR + 不再重试；
+  2. 空清单归可恢复（server 刚起来、工具还没注册完是真实窗口）；
+  3. 退避成功后清零——下一次再断仍然等 30 秒，而不是直接等到 10 分钟。
+- **四处反例真跑了**（改完即还原，全是"只让对应那条红"）：
+  1. `ToolCatalog.getToolCallbacks()` 改回缓存快照 → `ChatPipelineTest#aToolThatAppearsLaterIsVisibleAtTheNextTurn` 红；
+  2. `backoff` 固定返回 30 秒 → `McpServerRetryTest#backoffDoublesAndCaps` 红；
+  3. `unavailable` 里清空 `tools` / `callbacks` / `permissions` → `#lostServerKeepsItsLastKnownTools` 红；
+  4. 空清单改成抛 `McpConfigException` → `McpToolTest#emptyToolListIsRecoverableRatherThanFatal` 报错。
+- **一处测试上的妥协，写在这里不藏**：`ChatPipelineTest` 那条用的是"生产那条接法"
+  （`defaultToolCallbacks(catalog)`），但它自己拼的 `ChatClient`——真正的接线那一行在
+  `AgentAutoConfiguration#chatClient` 的 bean 体里，没有用例直接覆盖它（app 那个全上下文里
+  没有能中途长出工具的来源）。所以它守的是机制，不是那一行；反例 1 证明了"机制退回快照会红"。
+- **门禁余量怎么腾的**：`InProcessStdioMcpServer`（0 条用例的辅助类，只有 `McpToolTest` 用）
+  并进 `McpToolTest` 当嵌套类，空出的文件位给 `McpServerRetryTest`——与票 01 把
+  `PipedStdioClientTransport` 并进它是同一个做法。
+- 没做：把自己暴露成 MCP server 那一侧（`McpExposure`）仍是装配期采样一次；
+  恢复回来的工具不会出现在交出去的 server 里，要重启才生效。它不在本票范围（那是"当 server"，
+  不是"接 server"），但**是同一类快照**，将来有人问"为什么外部客户端看不到刚恢复的工具"时从这里查。
