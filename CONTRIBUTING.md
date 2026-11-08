@@ -39,6 +39,12 @@ export JAVA_HOME=~/soft/jdk-21.jdk/Contents/Home
 ./mvnw -o clean verify           # 必须 clean：旧报告会让计数算上上一代
 ```
 
+**只跑一个模块时先 `install` 一次。** `./mvnw -o -pl claw4j-agent test` 读的是本地仓库里的
+兄弟模块 jar，那些 jar 是上次 `install` 时的——所以单模块测试不加 `-am` 就不可信，
+加了 `-am` 又每次都重编 core / capability（占掉一半墙钟时间）。
+先跑一次 `./mvnw -o -q -DskipTests install`，之后单模块测试就可以不带 `-am`。
+`./scripts/verify.sh` 走的是 `clean verify`，不受这条影响。
+
 ## 凭据
 
 真值一律走环境变量，不写进仓库（ADR-0002、ADR-0006）。仓库根目录放一个 `.env`（已被忽略）：

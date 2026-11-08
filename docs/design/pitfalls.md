@@ -326,3 +326,25 @@ P16 要让核心报出自己的版本号，而两条"免费"的路都不通：ja
 判据：加完 `<resources>` 之后别看构建绿不绿，去看产物——
 `unzip -l <jar> | grep '\.sql'`（迁移还在不在）与 `cat target/classes/META-INF/x.properties`
 （中文还在不在）。
+
+## 十八、"jar 里查不到"不等于"没有"：`strings` 报 fat file，toybox `grep` 恒空
+
+票 05 要确认三件事：`EventFilter#applyWindow` 是前向切片还是倒序窗口、
+`containsPattern` 的转义顺序、`fromUtc` 按哪个时区解释。三次"查不到"里有两次是工具在骗人：
+
+- `strings spring-ai-session-jdbc-0.10.0.jar` → `file format not recognized`。它是 zip，
+  不是纯文本，`strings` 对这种输入只能报错。
+- `javap -p -c Xxx | grep 'select\|where'` → 空，而常量池里明明有 `SELECT`。
+  本机 bash 的 `grep` 是 toybox 0.8.13，**不认 BRE 的 `\|`，且不报错、恒返回 0 行**。
+  据此得出的"这个方法里没有 SQL"就是错的。
+
+有效的姿势只有一条链：**解包 → `javap -p -c` 重定向到文件 → 用 Grep 工具查那个文件**。
+
+```bash
+cd /tmp && unzip -o -q ~/.m2/repository/org/springaicommunity/spring-ai-session-jdbc/0.10.0/*.jar -d saj
+JAVA_HOME=.../jdk-21.jdk/Contents/Home $JAVA_HOME/bin/javap -p -c org.springframework.ai.session.jdbc.JdbcSessionRepository > /tmp/jsr.txt
+# 然后用 Grep 工具查 /tmp/jsr.txt
+```
+
+判据：一次"没找到"不能当结论。要么你能说出"用哪个工具、在什么形态的输入上"找到它长什么样，
+要么就换一种工具再查一遍——**工具报错与工具没找到是两件事，而后者不会吭声**。

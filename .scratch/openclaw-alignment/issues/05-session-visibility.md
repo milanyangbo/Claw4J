@@ -168,7 +168,7 @@
       `self` 时出现。反例：描述写死成现状那句 → `all` 下模型会主动拒绝一次查得到的召回（断言描述文本）。
       → `RecallSessionTool#descriptionFor` + `everyValueTakesItsOwnBranch` 里的三条文本断言
 - [x] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（新增的 JDBC 查询有真库用例）。
-      → **682 条、失败 0、错误 0、跳过 0**；core 88.1 / channel 78.6 / capability 85.8 /
+      → **683 条、失败 0、错误 0、跳过 0**；core 88.1 / channel 78.6 / capability 85.8 /
       agent 70.0 / example-sales 93.8 / example-mcp 75.0 / app 80.8 / eval 82.6；
       文件 10、单文件 20。agent 从 73.2% 落到 70.0% 是新增的 SQL 分支与四档分支带来的，
       对应覆盖在两处：`SearchSqlTest` 三条真 Postgres 用例（跨用户 + synthetic/归档、括号 + 分页参数、schema 跟着配置走）
@@ -186,7 +186,7 @@
 | `SessionVisibilityProperties` | `@ConfigurationProperties("claw4j.tools.sessions")`，校验落在紧凑构造器 → 绑定阶段就失败 |
 | `SessionRecallScope` | 范围解析收一处：`self`/`tree` 走 `getEvents`，`agent`/`all` 走跨会话；`belongsTo` 搬进来 |
 | `CrossSessionEvents` | 跨会话检索端口（为什么不通用，见接口注释） |
-| `JdbcCrossSessionEvents` | 一条 SQL 查 `claw4j_session.ai_session_event`，主连接池、表名全限定 |
+| `JdbcCrossSessionEvents` | 一条 SQL 查配置的那个会话 schema 里的 `ai_session_event`，主连接池、表名全限定 |
 
 改：`RecallSessionTool`（构造参数换成 `SessionRecallScope`、描述按值拼、跨会话时每条带出处、
 "没找到"按范围说话、归属校验只在 self/tree 做）、`SessionMemoryConfiguration`（装配 + 启动日志）。
@@ -246,6 +246,39 @@
 
 没改的两条判断：`everyValueTakesItsOwnBranch` 里 `AGENT == ALL` 的相等断言不是零信息——它守的是
 "两档归到同一条路"（谁给 `AGENT` 单开一条分支、行为不同了，这条才红）；`keyword()` 那条选择见第 6 点。
+
+### 第二轮：schema 收口（2026-11-08，`retro` 之后）
+
+第一轮只修了跨会话召回那一处，另外三处仍然写死：`SessionMaintenance` 8 个表名、
+`JdbcConversationPointerStore` 2 个、`JdbcSessionGoalStore` 7 个。**这比"全都写死"更难发现**——
+看起来已经修过了。现在四处都从 `SessionMemoryProperties#schema()` 取。
+
+- **做法照 OpenClaw 的 `postgresStoreNamespace`**：他那边 schema 名只在一个地方派生
+  （`${prefix}_${store}_${storeId}`，`infra/database-engine/postgres-schema.ts:19-25`），
+  所有 SQL 从那个值取，不写第二份。我们的约束不同（手写 SQL 跑在主连接池上，只能写全限定名，
+  见 `SessionSchema` 的注释），但"一处派生"这一条照抄。
+- SQL 改成模板 + `%1$s`，构造时 `SessionSchema.qualifier(schema)` 展开成实例字段。
+  `%1$s` 可以重复引用同一个参数，所以一条多表语句只传一次；`delete ... in (<select>)` 那种
+  编译期拼接照样成立（拼完再 `formatted` 一次全展开）。
+  旧常量名保留、加 `_TEMPLATE` 后缀——它们从此是模板，不是可执行 SQL。
+- 新增构建规则 `BuildContractTest#sessionSchemaLiteralLivesInOnePlace`：扫 `claw4j-*/src/main/java`，
+  除 `SessionSchema.java` 外不许出现 `claw4j_session.`（注释行豁免——那里写的是"读起来像什么"，
+  为它写词法解析器不值）。
+- 新增真库用例 `SearchSqlTest#conversationPointersHonourTheConfiguredSchema`：表建在 `claw4j_alt`，
+  断言行真的落在那里。**断言必须看落库位置，不能只看返回值**——写死时 `segmentOf` 照样返回
+  `seg-1`，因为它确实写成功了，只是写进了另一张同名表。
+
+反例两条（都真跑，跑完复原）：
+
+| 把实现改坏成什么 | 红的用例 | 其余 |
+| --- | --- | --- |
+| 指针构造忽略 `schema` 参数、恒用默认 | `conversationPointersHonourTheConfiguredSchema`（count 0 ≠ 1） | 19 条全绿，且 `segment` 那句仍绿——印证"只看返回值会漏" |
+| goal store 一处 SQL 写回字面量 | `sessionSchemaLiteralLivesInOnePlace` | 12 条全绿 |
+
+未覆盖的一处要说清：装配层把 `session.schema()` 传成 `SessionSchema.DEFAULT_SCHEMA` 时**没有用例会红**
+（那时配的就是默认值，行为恰好一致）。守它的是 `TurnFlowTest` 的真库用例——只要传的值不是默认值，
+指针与目标的每条语句都会 `BadSqlGrammarException`；再叠上 `BuildContractTest` 那条"不许字面量"，
+两道加起来覆盖"改一处、四处跟上"这件事。
 
 
 ## 门禁余量（当时的估算 vs 实际落点）
