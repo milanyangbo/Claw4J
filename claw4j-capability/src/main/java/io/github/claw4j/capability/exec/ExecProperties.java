@@ -3,7 +3,6 @@ package io.github.claw4j.capability.exec;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.List;
 
 /**
@@ -17,19 +16,16 @@ import java.util.List;
  * <p><b>安全位不在 {@code mode} 上，在授权表上</b>：{@code exec_command} 这个动作默认只给 {@code admin}。
  * 把默认档放宽不等于"人人能跑命令"，因为没这个动作的身份连工具都调不到（ADR-0007）。
  *
- * <p><b>没有 {@code enabled}</b>：{@code mode=deny} 就是不装配。两个开关管同一件事，
- * 迟早出现"enabled=true 但 mode=deny"要人猜。
+ * <p><b>没有超时配置</b>：工具形态是 Spring AI 的 {@code Bash}，它的超时语义写死在
+ * {@code ExecSpec} 里（不给就 2 分钟，上限 10 分钟），我们不再多一层自己的默认值与上限——
+ * 两个默认值管一件事，模型看到的和实际生效的迟早不一样。
  *
- * @param mode           四档，见 {@link Mode}
- * @param workspace      命令只能在它里面跑；相对 {@code workdir} 也从它算。默认是进程的工作目录——
- *                       照它 {@code workdir} 默认 {@code cwd} 的做法，不额外要求建一个目录
- * @param allow          命令白名单：整条命令等于某一项、或以"某一项 + 空格"开头，且命令里不许有 shell 控制符
- * @param defaultTimeout 调用方没给 timeout 时用它
- * @param maxTimeout     上限，超过直接拒（不夹取）
+ * @param mode      四档，见 {@link Mode}
+ * @param workspace 命令只在它里面跑；默认是进程的工作目录，照它 {@code workdir} 默认 {@code cwd} 的做法
+ * @param allow     命令白名单：整条命令等于某一项、或以"某一项 + 空格"开头，且命令里不许有 shell 控制符
  */
 @ConfigurationProperties("claw4j.tools.exec")
-public record ExecProperties(Mode mode, Path workspace, List<String> allow,
-                             Duration defaultTimeout, Duration maxTimeout) {
+public record ExecProperties(Mode mode, Path workspace, List<String> allow) {
 
     public enum Mode {
 
@@ -50,7 +46,5 @@ public record ExecProperties(Mode mode, Path workspace, List<String> allow,
         mode = mode == null ? Mode.FULL : mode;
         workspace = workspace == null ? Path.of(".") : workspace;
         allow = allow == null ? List.of() : List.copyOf(allow);
-        defaultTimeout = defaultTimeout == null ? Duration.ofSeconds(10) : defaultTimeout;
-        maxTimeout = maxTimeout == null ? Duration.ofSeconds(30) : maxTimeout;
     }
 }

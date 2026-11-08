@@ -46,7 +46,7 @@ batch C 里还有两处（`m3-03`、`m5-02`），重判的结论见 `.scratch/re
 | --- | --- | --- | --- |
 | `02-channel-recoverable-reconnect` | 通道：可恢复失败走后台重连，永久错误仍失败 | 小偏中 | `docs/channels/slack/transports.md:71` |
 | `05-session-visibility` | 会话可见性：`self` 是它四值里的一档，默认 `all` | 小偏中（要一条跨会话查询） | `docs/gateway/config-tools/sessions-and-subagents.md`（`tools.sessions`） |
-| `01-exec-tool` | 通用 shell：照 `exec` 的形态补（四档 mode，默认 `full`；闸在授权表） | 中（要改一条红线） | `docs/tools/exec.md`、`permission-modes.md`、`exec-approvals.md` |
+| `01-exec-tool` | 通用 shell：工具用 Spring AI 的 `ShellTools`（`Bash` / `BashOutput` / `KillShell`），沙箱接在一个 `ExecBackend` 上；四档 mode，默认 `full`，闸在授权表 | 中（要改一条红线） | `docs/tools/exec.md`、`permission-modes.md`、`exec-approvals.md` |
 | `03-mcp-background-retry` | MCP：连不上后台退避重试，工具清单按轮解析 | 中偏大 | `docs/tools/mcp.md:44-45,61` |
 | `04-inbound-durable-queue` | 入站：先落库再 ACK，重启续跑，同对话串行 | 大 | `docs/channels/feishu/setup.md:43,45` |
 

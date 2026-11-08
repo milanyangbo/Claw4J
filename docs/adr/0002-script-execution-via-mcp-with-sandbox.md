@@ -20,6 +20,8 @@ date: 2026-10-22
 > **代价（红线被收窄了这一次）**：那条"全仓 `io.github.claw4j..` 不得依赖 `java.lang.ProcessBuilder`"的架构规则收窄成"除了 `LocalProcessRunner` 这一个类"。收窄而不是删除的理由：原先那条规则逼着脚本层把一条命令行交给社区包，而那条路是经命令解释器执行的——规则守住了"本项目不起进程"，却把"参数被解释器当成语法"这扇门留着，唯一挡它的是一处手写引号。也就是说，**这条红线原先拦住的不是错的东西，它拦住了"自己起进程"，却把真正要防的那件事放过去了**。删掉规则更省事，但那样"Java 侧不起进程"就没有任何机器证据，所以留着规则、只开一个点名的例外。按 `docs/agents/guardrails.md` 的规矩，这一步单独开票（`.scratch/m2-capability-and-skills/issues/08-script-layer-structured-argv.md`），没有混在修另外两个缺陷的那一批里。
 >
 > 顺带删掉一条检查：`SandboxPolicy#requireNoInjectedEnvironment` 撤销了——请求里不再有环境变量这一项，"调用方往执行环境里塞变量"在类型上就没有入口（结构上的保证比运行时再判一次更靠得住，它不会被人忘掉调用）。这一条要有测试守着：执行请求的类型里没有环境变量这一项——结构上就塞不进去，不依赖谁记得再判一次。
+>
+> 修订记录（2026-11-08，票 01 落地）：**新增一个被点名的例外，有意放宽而不是漏洞**。模型现在能跑 shell 命令（`Bash` / `BashOutput` / `KillShell` 三个工具，OpenClaw 的 `exec` + `process` 那一组能力）。它必须经解释器：管道、重定向、`&&` 是这条能力的**语法本身**，收成 argv 就不是它了。做法是第二个点名类 `ShellCommandRunner`（`claw4j-capability` 的 `capability.process`），只做 `ProcessBuilder("/bin/sh", "-c", command)`；判定（非 root、命令白名单、环境继承但拒改 `PATH`/`LD_*`/`DYLD_*`、超时）全在 `SandboxedExecBackend` 里，起进程之前判完。与脚本层的分界回到**这条字符串是谁给的**：包清单给的是 argv（数据），模型给的是命令（语法）。**代价写清**：模型能执行任意命令，管住它的是 `claw4j.tools.exec.mode`（`deny / allowlist / ask / full`）、授权表上的 `exec_command`（默认只给 `admin`）与白名单按整条命令匹配；本 ADR 第 37 行"不出现 `sh -c`"从此有两个点名例外，`BuildContractTest` 两个都点着名。上一条 Consequence 里"Java 侧不再出现 `sh -c`"应读作"除这两个被点名的类之外"。
 
 ## Considered Options
 

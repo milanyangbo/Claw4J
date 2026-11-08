@@ -3,6 +3,7 @@ package io.github.claw4j.app;
 import io.github.claw4j.plugin.CoreVersion;
 import io.github.claw4j.plugin.PluginContract;
 import com.tngtech.archunit.base.DescribedPredicate;
+import com.tngtech.archunit.core.domain.JavaConstructorCall;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
@@ -99,22 +100,38 @@ class BuildContractTest {
                             + "，别处不自己拼命令行（ADR-0002）");
 
     /**
-     * 通用 shell 工具不许绕开我们自己的入口。它就在 classpath 上（`spring-ai-agent-utils` 的
-     * {@code ShellTools}：{@code Bash} / {@code BashOutput} / {@code KillShell}，参数是一个
-     * {@code String command}，由 {@code LocalExecBackend} 拼到 {@code /bin/bash -c} 后面）。
+     * 通用 shell 工具（{@code spring-ai-agent-utils} 的 {@code ShellTools}：{@code Bash} /
+     * {@code BashOutput} / {@code KillShell}）**必须带着我们的沙箱后端出生**。
      *
-     * <p><b>这条规则拦的不是 shell，是"绕过沙箱的 shell"</b>：{@code exec} 本身是正规能力（票 01），
-     * 但它的边界——工作区、{@code PATH}/加载器变量不许改、非 root、超时上限、白名单——全在
-     * {@code ExecTools} / {@code ShellCommandRunner} 里。直接注册 {@code ShellTools} 会把这些一次作废，
-     * 而上面那条 {@code ProcessBuilder} 规则看不见它（类在 jar 里，我们不 new 任何进程对象）。
+     * <p><b>为什么是"只许在一个地方造它"而不是"不许依赖它"</b>：通用 shell 是正经能力（票 01），
+     * 我们用的就是它。真正要拦的是**裸造**——{@code ShellTools.builder().build()} 不给 backend 时
+     * 默认 {@code LocalExecBackend}，直接拼 {@code /bin/bash -c}，把 env 白名单、非 root、命令白名单
+     * 一次作废。而上面那条 {@code ProcessBuilder} 规则看不见它：类在 jar 里，我们不 new 任何进程对象。
+     *
+     * <p>于是规则收窄成一个点名：装配类亲手造它，造的时候塞的是 {@code SandboxedExecBackend}。
      */
     private static final String SHELL_TOOLS = "org.springaicommunity.agent.tools.ShellTools";
 
+    private static final String SHELL_TOOLS_ASSEMBLY = "io.github.claw4j.capability.exec.ExecAutoConfiguration";
+
+    /** {@code ShellTools.builder()} 与 {@code new ShellTools(...)} 都算"造"：两条路都能拿到裸后端。 */
+    private static final DescribedPredicate<JavaMethodCall> BUILDS_SHELL_TOOLS =
+            DescribedPredicate.describe("调用 ShellTools.builder()",
+                    call -> "builder".equals(call.getTarget().getName())
+                            && SHELL_TOOLS.equals(call.getTarget().getOwner().getName()));
+
+    private static final DescribedPredicate<JavaConstructorCall> CONSTRUCTS_SHELL_TOOLS =
+            DescribedPredicate.describe("new ShellTools(...)",
+                    call -> SHELL_TOOLS.equals(call.getTarget().getOwner().getName()));
+
     @ArchTest
-    static final ArchRule shell_must_go_through_our_own_entry =
+    static final ArchRule shell_tools_must_be_born_with_our_backend =
             noClasses().that().resideInAPackage("io.github.claw4j..")
-                    .should().dependOnClassesThat().haveFullyQualifiedName(SHELL_TOOLS)
-                    .because("shell 只能经由 " + SHELL_SPAWNER + "：它绕开工作区、env 与审批那几条边界（票 01）");
+                    .and().doNotHaveFullyQualifiedName(SHELL_TOOLS_ASSEMBLY)
+                    .should().callMethodWhere(BUILDS_SHELL_TOOLS)
+                    .orShould().callConstructorWhere(CONSTRUCTS_SHELL_TOOLS)
+                    .because("ShellTools 只许在 " + SHELL_TOOLS_ASSEMBLY + " 里造："
+                            + "别处造它默认拿到 LocalExecBackend，env 白名单与命令白名单一次作废（票 01）");
 
     /**
      * 会命令解释器的写法。shell 会把参数里的分号当成第二条命令，

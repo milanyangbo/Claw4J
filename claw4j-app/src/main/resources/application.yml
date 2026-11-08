@@ -367,18 +367,22 @@ claw4j:
     # 因为拼错也长这样，而拼错的那一条永远不生效。
     deny: []
 
-    # ---- 通用 shell：一条命令交给 /bin/sh，边界在工作区里（票 01，照 OpenClaw 的 exec） ----
+    # ---- 通用 shell：工具是 Spring AI 的 Bash / BashOutput / KillShell，边界在我们自己的后端里 ----
+    # （票 01，照 OpenClaw 的 exec 补的通用 shell；工具形态用现成的，不自己写）
     # 四档，默认 full —— 它未配置时报文写的就是 "full / off baseline"。它的推荐值是 auto，
     # 但 auto 要一个原生复核器（我们还没有），所以这一版没有那一档。
     #   deny      不装配这个工具
     #   allowlist 只跑白名单里的命令，未命中直接拒
-    #   ask       白名单命中也要人先批（比它的 ask 严，见票 01 偏离 2）
+    #   ask       白名单命中也要人先批（比它的 ask 严，见票 01 偏离 3）
     #   full      不判白名单、不批
     # **安全位不在 mode 上，在授权表上**：动作 exec_command 默认只给 admin，
     # read-only / guest 在下面的 roles 里就没有它。要更严就配 allowlist 或 ask。
     #
-    # 另外两件事：命令里的 PATH / LD_* / DYLD_* 覆盖会被拒（换解释器那条路），
-    # 命令继承本进程的环境——所以**不要把密钥 export 到进程环境**（本机与 CI 的 .env 会）。
+    # 工具参数只有 command / timeout / description / runInBackground —— 没有 workdir、没有 env：
+    # 目录固定是下面的 workspace（要换目录在命令里 cd），要临时改一个变量就写 FOO=bar cmd。
+    # 这两个不放进参数是故意的：放进去就得再判一遍"它有没有越界"。
+    # 命令里的 PATH / LD_* / DYLD_* 覆盖会被拒（换解释器那条路），
+    # 其余变量继承本进程的环境——所以**不要把密钥 export 到进程环境**（本机与 CI 的 .env 会）。
     exec:
       mode: ${CLAW4J_EXEC_MODE:full}
       # 默认是进程的工作目录（照它 workdir 默认 cwd 的做法）；填了就必须是已存在的目录，否则启动失败。
@@ -386,8 +390,6 @@ claw4j:
       # 白名单：整条命令等于某一项、或以"某一项 + 空格"开头，**且命令里不许有 shell 控制符**
       #（; | & > < ` $( 换行）——否则 `ls; curl … | sh` 这种只看首词就能过。要管道就配 ask / full。
       allow: []
-      default-timeout: 10s
-      max-timeout: 30s
 
   # ---- 把自己交出去：当 MCP server 用（P11） ----
   # 默认关。开了之后在标准输入输出上说 MCP，Claude Code 这类客户端可以把这里的工具

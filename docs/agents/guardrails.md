@@ -33,9 +33,8 @@
 | 两类沙箱都没有网络隔离与资源上限 | 第 ① 类：应用容器内的受限子进程，锁得住入口、参数、目录、环境、时长；第 ② 类：临时目录副本 + 只有 PATH + 5 秒，如实写 `NOT_ISOLATED` | 真正的网络隔离由部署层的容器网络策略给；联网脚本在静态检查那关被挡（`NETWORK_CLIENT` / `PY_NETWORK`） | 票 06、ADR-0002、ADR-0013 |
 | "非 root"取 `user.name` 而非 uid | uid 0 而 `user.name` 非 root 时会放行；macOS 与常见 runner 上恒非 root，等于从不触发 | 真正的保证是容器镜像的 `USER`；这一条只挡应用被跑成 root | 票 03 |
 | 入口脚本必须有可执行位与 shebang | 不再经命令解释器执行（票 08），这两件事从"能跑就行"变成硬要求 | 静态检查在落盘之前挡（`NO_SHEBANG`）；漏过去的执行侧给一句指名"第一行"的话 | 票 08、ADR-0002 修订 |
-| `exec` 只有前台形态，超时即杀 | OpenClaw 的 `yieldMs` 超时转后台，再用 `process` 工具读输出/杀进程；我们没有 `process`，留下的后台进程没有任何人能读到输出，也没有归宿（一轮是同步的） | 命令里自己带 `timeout` 只挡得住单次；要长跑就得写文件轮询。重开条件写在票 01 偏离 1（`background` 与 `process` 一起做） | 票 01 偏离 1 |
-| `exec` 的 `ask` 比它严：白名单命中也问人 | 它的 `ask` 是"allowlist 命中直接跑、未命中才问人"；我们的审批静态标在 `ToolPermission` 上，没法按参数内容动态决定 | 白名单先兜一层（未命中直接拒、不进卡片），人只决定"这一条现在要不要跑"——让审批人去读一条任意 shell 等于把人当 WAF。重开条件：`Approval` 支持按参数判定 | 票 01 偏离 2 |
-| `exec` 默认不批（`mode=full`） | 照它的 baseline（未配置时 `full` / `off`）；它的推荐值 `auto` 需要原生复核器，我们没有 | 闸在授权表：`exec_command` 只给 `admin`，`read-only` / `guest` 调不到这个工具；启动日志与 `application.yml` 注释都写明怎么收紧 | 票 01 |
+| `exec` 的 `ask` 比它严：白名单命中也问人 | 它的 `ask` 是"allowlist 命中直接跑、未命中才问人"；我们的审批静态标在 `ToolPermission` 上，没法按参数内容动态决定 | 白名单先兜一层（未命中直接拒、不进卡片），人只决定"这一条现在要不要跑"——让审批人去读一条任意 shell 等于把人当 WAF。重开条件：`Approval` 支持按参数判定 | 票 01 偏离 1 |
+| `exec` 默认不批（`mode=full`） | 照它的 baseline（未配置时 `full` / `off`）；它的推荐值 `auto` 需要原生复核器，我们没有 | 闸在授权表：`exec_command` 只给 `admin`，`read-only` / `guest` 调不到 `Bash` / `BashOutput` / `KillShell`；`application.yml` 注释写明怎么收紧 | 票 01 |
 | MCP 的"跨进程"在默认构建里是进程内 stdio | 进程内管道版（surefire 下拿子进程 classpath 太脆） | 真子进程的 server 打 `real-cli` tag，`-Preal-cli` 才跑 | 票 02、ADR-0014 |
 | 飞书 SDK 绑定层没有单测 | `channel.feishu.sdk` 那六个类只做"SDK 类型 ↔ 本项目类型"的翻译（翻译、发送、建连、条件装配），按票面约定不写单测；`claw4j-channel` 行覆盖率因此从 82.9% 掉到 61.0%，离 60% 的闸只剩 1 个点 | 装配那一层有几条钉着（凭据缺失/半配/SDK 不在 classpath/`enabled=false`/认人只看登记表/重复登记启动失败/凭据齐了但一个人没登记要在启动日志里说一声）。**真链路靠人工验一次**：2026-10-27 带真凭据起应用，日志出现"长连接已建立"，群里 @ 机器人收到真实回复（那条回复本身就是 `im().message().create` 发出去的），入站事件与回推都通了；同日再 @ 一次问"上周华东区成交额多少"，四段日志齐全，回答里数字（99,999.00，已对库核过）与三条口径都在，`claw4j.tool.calls{tool=querySales,outcome=ok}=1`。之后没有任何自动化守着它——SDK 升级或飞书改协议时会静默失效，只能靠再手验一次 | 票 05、票 06 |
 | 测试里有两个假 `ChatModel` | `FixedChatModel`、`SubagentModelStub`（ADR-0011 说不对 `ChatModel` 打桩） | 只在要验的东西不在模型身上时用 | M2-real 票 01 |
