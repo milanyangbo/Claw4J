@@ -93,3 +93,7 @@ batch C 里还有两处（`m3-03`、`m5-02`），重判的结论见 `.scratch/re
   （`docs/tools/exec.md`、`permission-modes.md`、`exec-approvals.md`），不是凭印象。
 - 原始证据在 `.scratch/review-2026-11-07/batch-b.md` 与 `batch-c.md`，
   对照物是 OpenClaw 源码 `/tmp/oc-ref-2`（评审当天在；`05` 拆票与 `01` 重写时都逐条核过原文）。
+- 2026-11-08 五张票全部 `resolved`。`05` 最后收尾，那条"不属于工程判断的取舍"已裁决：
+  **默认 `all`，照它的值**。裁决时从源码里多看到一处票面没写的事实——它对**非法值也回落成 `all`**
+  （`src/plugin-sdk/session-visibility.ts:132-138` 的 `return "all"`），我们改成启动失败。
+  这是一处有据的偏差，三段式写在票 `05` 的「一处不照抄」与 `docs/agents/guardrails.md` 的偏差表里。

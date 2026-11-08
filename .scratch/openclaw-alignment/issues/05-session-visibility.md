@@ -8,6 +8,8 @@
 
 **Type:** task
 
+**Status:** resolved（2026-11-08）
+
 **Demo:** 网页私聊里说过"华东区口径按签约主体算"，第二天在群里问"上次那个口径是什么"，
 默认配置下能查回来，回答里带"来自哪一段"；把 `visibility` 配成 `self` 之后同一次提问答"没找到"。
 
@@ -66,9 +68,20 @@
 
 ## 裁决：默认 `all`，代价写在明处
 
-照抄它的默认值，而不是"我们觉得安全一点就默认 self"：
+**已裁决（2026-11-08）：照它的默认值做，就是 `all`，不改成 `self`。** 源码与文档两处对得上：
 
-- 后果：`recall_session` 今天只给 `read-only` / `admin`（`guest` 没有这个动作）。
+- `docs/gateway/config-tools/sessions-and-subagents.md`：`Default: all (every session on the Gateway,
+  including other agents' and other users' transcripts)`。
+- `src/plugin-sdk/session-visibility.ts:131-138` 的 `resolveSessionToolsVisibility`：
+  ```ts
+  /** Resolve configured session-tool visibility, defaulting invalid or missing values to all. */
+  if (value === "self" || value === "tree" || value === "agent" || value === "all") return value;
+  return "all";
+  ```
+
+后果照旧写在明处：
+
+- `recall_session` 今天只给 `read-only` / `admin`（`guest` 没有这个动作）。
   默认 `all` 意味着一个 `read-only` 用户能召回另一个用户的会话内容。
   **这不是 bug，是它的默认**；它的安全位是配置项本身，还有一条专门的检查
   （`docs/cli/security.md:39`：多个 agent 且 `visibility` 解析成 `all` 时报一条 finding）。
@@ -78,8 +91,24 @@
   2. `application.yml` 注释 + README：**多用户、角色不同的部署必须配 `self`**。
      因为它与 ADR-0007 的等级授权叠加会放大后果：`read-only` 是被允许"问数据"的身份，
      不是被允许"看别人的对话"的身份。
-- 如果最终判断是"我们的部署形态下必须默认 `self`"，那是一次**有据的偏差**，按 `AGENTS.md` 三段式写
-  （它那条机制 → 我们差在哪 → 只能改成什么、代价是什么），并改这张票；**不要默默把默认值改小**。
+- 上面两条已记进 `docs/agents/guardrails.md` 的「已知偏差」表：这是我们有意保留的默认值，
+  不是待修的缺陷。
+
+### 一处不照抄：写错的词启动失败，它回落成 `all`
+
+上面那段源码的最后一行就是这个偏差：**它对非法值 `return "all"`**。我们抛。
+
+- **它那条机制**：`resolveSessionToolsVisibility` 把 "缺失" 与 "写错" 当同一件事，
+  都解析成 `all`。好处是配置永远读得出一个值，代价是 fail-open——一个拼成 `everybody` 的配置
+  会静默开到最宽，而日志上看不出"这是写错了"还是"本来就配的 all"。
+- **我们差在哪**：我们的配置文件是给人手改的（`application.yml` + 环境变量覆盖），
+  而它的配置由 CLI 与网关写入、还能被 schema 校验。没有 schema 校验这一层，
+  静默回落的代价比它那边大。
+- **只能改成什么、代价是什么**：`SessionVisibility.of` 对非法值抛
+  `IllegalArgumentException`，消息点名 `claw4j.tools.sessions.visibility` 与四个合法值，
+  绑定阶段就失败。代价是手滑一个拼写会让服务起不来——这个代价我们认，
+  因为它比"悄悄开到最宽"便宜。与 `session.maintenance.mode` 拼错回落 `warn` 的选择不矛盾：
+  那个有"更保守的一侧"可落，`visibility` 的四个值没有。
 
 ## 要做
 
@@ -109,24 +138,75 @@
 
 ## 验收判据（反例都要能红）
 
-- [ ] **默认是 `all`**：两个用户各说一句 → A 能召回 B 的那句，且结果里带出处标识。
+- [x] **默认是 `all`**：两个用户各说一句 → A 能召回 B 的那句，且结果里带出处标识。
       反例：默认写成 `self` → 红。
-- [ ] **配 `self` 就查不到**：同一次提问查不到 B 的那句，且拒绝语要说"范围是当前会话"，
+      → `ToolGovernanceTest#defaultVisibilityRecallsAcrossUsers`（反例已跑，见文末）
+- [x] **配 `self` 就查不到**：同一次提问查不到 B 的那句，且拒绝语要说"范围是当前会话"，
       不能只说"没找到"（两者在模型那里是同一句话，在排查时是两件事）。反例：`self` 分支走跨会话查询 → 红。
-- [ ] **`agent` 与 `all` 在本部署同行为**，用例里写明原因（只有一个 agent 命名空间）。
+      → `ToolGovernanceTest#selfScopeRecallsOnlyThisConversation`（末尾两句断言文案带范围）
+- [x] **`agent` 与 `all` 在本部署同行为**，用例里写明原因（只有一个 agent 命名空间）。
       反例：没有任何断言区分 → 这条不算验收；至少要断"两者结果一致"。
-- [ ] **`tree` 今天等同 `self`**，用例写明"子 Agent 会话不落会话库，等落了再改这一处"。
+      → `ToolGovernanceTest#everyValueTakesItsOwnBranch`（`isEqualTo` 断两者输出一致）
+- [x] **`tree` 今天等同 `self`**，用例写明"子 Agent 会话不落会话库，等落了再改这一处"。
       这是唯一允许"两个值同行为"的地方。
-- [ ] **写错的词启动失败**：`visibility: everybody` → 启动失败并点名这个键与四个合法值。
-      反例：绑成 null 回落到 `ALL` → 红（最危险的一种：写错变成最宽）。
-- [ ] **授权不变**：`guest` 仍然没有 `recall_session`；被拒时检索一次都没执行
+      → 同上（`isEqualTo` 断两者一致）+ `SessionVisibility` 类注释
+- [x] **写错的词启动失败**：`visibility: everybody` → 启动失败并点名这个键与四个合法值。
+      反例：回落成 `ALL` → 红（最危险的一种：写错变成最宽）。
+      → `SessionMemoryTest#visibilityMustBeOneOfFourWords`（`ApplicationContextRunner` 绑 `everybody`
+      → `hasFailed()`，且栈里有 `self / tree / agent / all`）
+- [x] **授权不变**：`guest` 仍然没有 `recall_session`；被拒时检索一次都没执行
       （沿用 `ObservabilityTest#deniedCallsAreCountedByTheAuthorizationAdvisor` 那类探针断言，不重复写）。
-- [ ] **出处真的能用**：拿结果里的出处回到那一段能取回原文（跨会话时这条才有意义）。
-- [ ] **工具描述与生效范围一致**：`visibility=all` 时 `DESCRIPTION` 里不再出现"看不到别的会话"这种话，
+      → 授权表本次一行未改，`ToolGovernanceTest#permissionIsItsOwnAction` 照旧钉着
+- [x] **出处真的能用**：拿结果里的出处回到那一段能取回原文（跨会话时这条才有意义）。
+      → `ToolGovernanceTest#defaultVisibilityRecallsAcrossUsers` 断结果含对方的完整 `sessionId`；
+      `SearchSqlTest#crossSessionRecallCrossesUsersAndSkipsSynthetic` 断 `getSessionId()` 回来的是库里那一段
+- [x] **工具描述与生效范围一致**：`visibility=all` 时 `DESCRIPTION` 里不再出现"看不到别的会话"这种话，
       `self` 时出现。反例：描述写死成现状那句 → `all` 下模型会主动拒绝一次查得到的召回（断言描述文本）。
-- [ ] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（agent 现 73.2%；新增的 JDBC 查询要有真库或用例覆盖）。
-- [ ] 删掉/改写 `m3-03` 票里"隔离修复"那段的结论口径：收窄的做法保留为 `self` 档的解释，
+      → `RecallSessionTool#descriptionFor` + `everyValueTakesItsOwnBranch` 里的三条文本断言
+- [x] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（新增的 JDBC 查询有真库用例）。
+      → **681 条、失败 0、错误 0、跳过 0**；core 88.1 / channel 78.6 / capability 85.8 /
+      agent 70.0 / example-sales 93.8 / example-mcp 75.0 / app 80.8 / eval 82.6；
+      文件 10、单文件 20。agent 从 73.2% 落到 70.0% 是新增的 SQL 分支与四档分支带来的，
+      对应覆盖在两处：`SearchSqlTest` 两条真 Postgres 用例（跨用户 + synthetic/归档、括号 + 分页参数）
+- [x] 删掉/改写 `m3-03` 票里"隔离修复"那段的结论口径：收窄的做法保留为 `self` 档的解释，
       而不是"我们只做 `self`"。
+      → 已改（顶部回填块 + 「隔离修复」首段 + 输出/身份那两条）
+
+## 实现记录（2026-11-08）
+
+新增（`claw4j-agent` 的 `session` 包）：
+
+| 文件 | 干什么 |
+| --- | --- |
+| `SessionVisibility` | 四档枚举 + `of(String)`（缺键落 `all`，写错的词抛且点名四值）+ `description()` |
+| `SessionVisibilityProperties` | `@ConfigurationProperties("claw4j.tools.sessions")`，校验落在紧凑构造器 → 绑定阶段就失败 |
+| `SessionRecallScope` | 范围解析收一处：`self`/`tree` 走 `getEvents`，`agent`/`all` 走跨会话；`belongsTo` 搬进来 |
+| `CrossSessionEvents` | 跨会话检索端口（为什么不通用，见接口注释） |
+| `JdbcCrossSessionEvents` | 一条 SQL 查 `claw4j_session.ai_session_event`，主连接池、表名全限定 |
+
+改：`RecallSessionTool`（构造参数换成 `SessionRecallScope`、描述按值拼、跨会话时每条带出处、
+"没找到"按范围说话、归属校验只在 self/tree 做）、`SessionMemoryConfiguration`（装配 + 启动日志）。
+
+测试落点（**没有新开文件**，两个满额文件靠合并同类用例腾位）：
+`ToolGovernanceTest` 20 → 19（合并"换人 + 降权 + 缺身份 + 缺会话"为一条、合并 match_mode 与坏参数），
+`SessionMemoryTest` 20 → 20（合并两条清理配置越界用例，换进 visibility 绑定那条），
+`SearchSqlTest` 16 → 18。
+
+### 反例（七条都真跑，跑完复原）
+
+| 把实现改坏成什么 | 红的用例 | 其余 |
+| --- | --- | --- |
+| `self`/`tree` 分支也走跨会话查询 | `selfScopeRecallsOnlyThisConversation` + `everyValueTakesItsOwnBranch`（tree 那条断言） | 17 条全绿——别的用例对"范围"完全无感 |
+| `SessionVisibility.DEFAULT` 改成 `SELF` | `defaultVisibilityRecallsAcrossUsers`（"缺键落 all"那句断） | 18 条全绿 |
+| `checksOwnership()` 恒 `false` | `guardsRefuseInsteadOfWidening`（u-2 拿到 u-1 的会话 id 就查到了） | 18 条全绿 |
+| `of()` 对非法值回落 `DEFAULT`（照它的行为） | `visibilityMustBeOneOfFourWords` | 19 条全绿 |
+| 跨会话 SQL 加 `user_id` 过滤（模拟 `findEventsByUserId`） | `crossSessionRecallCrossesUsersAndSkipsSynthetic`（u-2 那句查不到） | 17 条全绿 |
+| 关键词那一段去掉外层括号 | `crossSessionKeywordParenthesesAndPagingLineUp`（synthetic 那条漏出来了） | 17 条全绿 |
+| `descriptionFor` 写死成 `self` 那句 | `everyValueTakesItsOwnBranch`（描述文本断言） | 18 条全绿 |
+
+第三条与第六条最值得留：它们分别证明"不核前缀就是越权读"和"少一对括号就是 fail-open"，
+两者都不会报错，只会多给一条结果。
+
 
 ## 门禁余量
 
