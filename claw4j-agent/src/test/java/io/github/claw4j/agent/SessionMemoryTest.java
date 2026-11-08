@@ -182,6 +182,17 @@ class SessionMemoryTest {
                 .hasMessageContaining("空白");
         assertThatThrownBy(() -> SessionSchema.urlWithSchema("jdbc:postgresql://db/claw4j", "x?y"))
                 .isInstanceOf(IllegalArgumentException.class);
+
+        // 拼进 SQL 的那一路（跨会话召回）口径更严：标识符的位置没法用占位符，
+        // 只能拼字符串，所以这里必须挡住"能改写语句"的输入，而不是等第一条 SQL 报语法错。
+        assertThat(SessionSchema.qualifier("claw4j_session")).isEqualTo("claw4j_session.");
+        assertThatThrownBy(() -> SessionSchema.qualifier("claw4j_session; drop table ai_session"))
+                .as("分号与空格都不是标识符的一部分：这条要是放过去，拼出来的 SQL 是两条语句")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("claw4j.session.schema");
+        assertThatThrownBy(() -> SessionSchema.qualifier("会话"))
+                .as("非 ASCII 标识符在 Postgres 里要加引号才能用，本仓库不给这个口子")
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

@@ -27,7 +27,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record SessionVisibilityProperties(String visibility) {
 
     public SessionVisibilityProperties {
-        visibility = SessionVisibility.canonical(visibility);
+        visibility = SessionVisibility.of(visibility).key();
     }
 
     /** 生效范围。构造时已经验过一遍，这里是读的时候再解析一次（值来自 record，不会变）。 */

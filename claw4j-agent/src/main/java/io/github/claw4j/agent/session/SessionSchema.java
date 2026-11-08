@@ -45,4 +45,29 @@ public final class SessionSchema {
         }
         return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + trimmed;
     }
+
+    /**
+     * 把 schema 名变成可以拼进 SQL 的前缀（{@code claw4j_session.}），并在这里挡掉非法字符。
+     *
+     * <p><b>为什么需要这一道</b>：我们自己的 SQL 写全限定表名（不靠连接的 {@code search_path}，
+     * 见 {@link JdbcCrossSessionEvents}），而 schema 名来自配置。SQL 里标识符的位置没法用占位符，
+     * 只能拼字符串——那就必须在这里保证它真的是一个标识符，而不是一串能改写语句的东西。
+     *
+     * <p>口径比 {@link #urlWithSchema} 严：那边只挡空白与 {@code ?}（URL 里够用），
+     * 这边按 Postgres 的未加引号标识符收（首字母或下划线开头，其余字母数字下划线美元符，63 字节内）。
+     *
+     * @throws IllegalArgumentException 不是合法标识符时。拼错了会让每条 SQL 都报
+     *                                  {@code BadSqlGrammarException}，而那条错误在跨会话那一档
+     *                                  会被降级成"没找到"——在拼的时候拦住比事后翻日志便宜
+     */
+    public static String qualifier(String schema) {
+        Objects.requireNonNull(schema, "schema");
+        String trimmed = schema.trim();
+        if (!trimmed.matches("[A-Za-z_][A-Za-z0-9_$]{0,62}")) {
+            throw new IllegalArgumentException(
+                    "claw4j.session.schema 必须是合法的 Postgres 标识符（字母或下划线开头，"
+                            + "其余字母数字下划线美元符，最长 63），收到的是「" + schema + "」");
+        }
+        return trimmed + '.';
+    }
 }

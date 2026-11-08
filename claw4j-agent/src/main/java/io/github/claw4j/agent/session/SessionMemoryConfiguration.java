@@ -223,11 +223,16 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * <p>用主连接池、表名写全限定：与会话指针、会话目标同一类理由——
      * 框架那条路要另开一个池把 {@code currentSchema} 指过去（见 {@link SessionSchema}），
      * 而我们自己的 SQL 带上 schema 就不依赖连接的 {@code search_path}。
+     *
+     * <p>schema 从 {@link SessionMemoryProperties#schema()} 取，**不写字面量**：
+     * {@code claw4j.session.schema} 是可配的，写死的话改配之后这条 SQL 会报
+     * {@code BadSqlGrammarException}，而那一档的异常被降级成"没找到"——表现是
+     * "配什么都一样，永远查不到别人的会话"，且日志上只有一条 WARN。
      */
     @Bean
     @ConditionalOnMissingBean(CrossSessionEvents.class)
-    public CrossSessionEvents crossSessionEvents(JdbcTemplate jdbc) {
-        return new JdbcCrossSessionEvents(jdbc);
+    public CrossSessionEvents crossSessionEvents(JdbcTemplate jdbc, SessionMemoryProperties session) {
+        return new JdbcCrossSessionEvents(jdbc, session.schema());
     }
 
     /**

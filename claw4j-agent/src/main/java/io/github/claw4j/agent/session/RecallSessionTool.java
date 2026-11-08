@@ -25,7 +25,8 @@ import java.util.Objects;
  *
  * <p><b>它查多大范围是可配的，不是写死的</b>（票 05）：{@code claw4j.tools.sessions.visibility}
  * 有四个值，照 OpenClaw 的 {@code tools.sessions.visibility}，默认 {@code all}。
- * 范围解析收在 {@link SessionRecallScope} 里，这个类只管"取身份、取会话、拼结果"。
+ * "能不能问这一段"与"去哪查"都收在 {@link SessionRecallScope} 里，这个类只管
+ * 把三种拒绝翻成三句不同的话、让模型能自救，再拼结果。
  *
  * <p><b>原来的口径是"只查当前这一段"，那只是 {@code self} 这一档</b>：会话键按
  * "人 + 权限 + 通道 + chatId" 分段（{@link SessionKeys}），{@code self} 下召回跟着同一个粒度走——
@@ -176,21 +177,26 @@ public final class RecallSessionTool implements ToolCallback {
 
     @Override
     public String call(String toolInput, ToolContext toolContext) {
+        // 三件事都收在 scope.admit 里：有没有身份、有没有会话、这一段是不是他的。
+        // 工具这里只负责把三种拒绝翻成三句不同的话——它们在模型与排查的人那里是三件事。
         Principal who = principalOf(toolContext);
-        if (who == null || who.userId() == null || who.userId().isBlank()) {
-            return "没有携带身份，这次不查历史：召回要用身份核对这段会话是不是你的，"
-                    + "没有身份就分不出该查哪一段。";
-        }
         String sessionId = sessionIdOf(toolContext);
-        if (sessionId == null || sessionId.isBlank()) {
-            return "没有携带会话标识，这次不查历史：召回要从当前这一段出发，"
-                    + "没有会话标识就不知道该找哪一段。";
-        }
-        // 归属校验只在 self / tree 上做（口径在 SessionRecallScope#belongsTo 的注释里）。
-        // 跨会话档不核前缀，但身份还是要的——那一步在上面。
-        if (scope.visibility().checksOwnership() && !SessionRecallScope.belongsTo(who, sessionId)) {
-            return "这段会话不属于当前身份，这次不查历史（会话键里带着权限指纹，"
-                    + "换人或换角色都是另一段）。";
+        switch (scope.admit(who, sessionId)) {
+            case NO_PRINCIPAL -> {
+                return "没有携带身份，这次不查历史：召回要用身份核对这段会话是不是你的，"
+                        + "没有身份就分不出该查哪一段。";
+            }
+            case NO_SESSION -> {
+                return "没有携带会话标识，这次不查历史：召回要从当前这一段出发，"
+                        + "没有会话标识就不知道该找哪一段。";
+            }
+            case NOT_YOURS -> {
+                return "这段会话不属于当前身份，这次不查历史（会话键里带着权限指纹，"
+                        + "换人或换角色都是另一段）。";
+            }
+            case ADMITTED -> {
+                // 继续往下查。
+            }
         }
         Map<String, Object> input = parse(toolInput);
         try {

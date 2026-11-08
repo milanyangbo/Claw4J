@@ -15,11 +15,12 @@ import java.util.List;
  * {@code visibility=all} 静默退化成"这个人的这份权限"。
  *
  * <p><b>为什么不做成通用实现</b>：本方法只认召回工具真正会拼的那几样
- * （{@code keywords} / {@code matchMode} / {@code from} / {@code to} /
+ * （复数 {@code keywords} / {@code matchMode} / {@code from} / {@code to} /
  * {@code excludeSynthetic} / {@code excludeArchived} / {@code messageTypes} /
- * {@code page} / {@code pageSize}）。{@code pattern} 与 {@code lastN} 在 SQL 里是另一套语义
- * （方言正则、倒序窗口），而召回不用它们——设了就直接报不支持，而不是悄悄忽略：
- * 忽略的表现是"结果少了"，与"历史里没说过"在界面上完全一样。
+ * {@code page} / {@code pageSize}）。{@code pattern}、{@code lastN} 与单数 {@code keyword}
+ * 在 SQL 里是另一套语义（方言正则、倒序窗口、单值条件），而召回不用它们——
+ * 设了就直接报不支持，而不是悄悄忽略：忽略的表现是"结果少了"或"结果多了"，
+ * 而两者与"历史里本来就说过 / 没说过"在界面上完全一样。
  */
 public interface CrossSessionEvents {
 
@@ -27,7 +28,9 @@ public interface CrossSessionEvents {
      * 按过滤条件在全部会话里找，顺序与框架的 {@code getEvents} 一致（{@code seq} 升序，
      * 再按 {@code page}/{@code pageSize} 前向切片）。
      *
-     * @param filter 过滤与分页；不支持的条件会抛 {@link UnsupportedOperationException}
+     * @param filter 过滤与分页
+     * @throws UnsupportedOperationException 带了本接口不支持的条件（{@code pattern} /
+     *                                       {@code lastN} / 单数 {@code keyword}）时
      */
     List<SessionEvent> find(EventFilter filter);
 }

@@ -96,6 +96,10 @@
 
 ### 一处不照抄：写错的词启动失败，它回落成 `all`
 
+**这一条是实现期新增的，不是票面原有要求。** 票面原来只说"如果最终判断是必须默认 `self`，
+那是一次有据的偏差"；默认值判成 `all` 之后，这条不适用。实现时读源码发现下面这处，
+按 `AGENTS.md` 三段式记下来——用户的裁决是"默认值按它来"，没有说要连"非法值也静默放宽"一起照抄。
+
 上面那段源码的最后一行就是这个偏差：**它对非法值 `return "all"`**。我们抛。
 
 - **它那条机制**：`resolveSessionToolsVisibility` 把 "缺失" 与 "写错" 当同一件事，
@@ -164,10 +168,10 @@
       `self` 时出现。反例：描述写死成现状那句 → `all` 下模型会主动拒绝一次查得到的召回（断言描述文本）。
       → `RecallSessionTool#descriptionFor` + `everyValueTakesItsOwnBranch` 里的三条文本断言
 - [x] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（新增的 JDBC 查询有真库用例）。
-      → **681 条、失败 0、错误 0、跳过 0**；core 88.1 / channel 78.6 / capability 85.8 /
+      → **682 条、失败 0、错误 0、跳过 0**；core 88.1 / channel 78.6 / capability 85.8 /
       agent 70.0 / example-sales 93.8 / example-mcp 75.0 / app 80.8 / eval 82.6；
       文件 10、单文件 20。agent 从 73.2% 落到 70.0% 是新增的 SQL 分支与四档分支带来的，
-      对应覆盖在两处：`SearchSqlTest` 两条真 Postgres 用例（跨用户 + synthetic/归档、括号 + 分页参数）
+      对应覆盖在两处：`SearchSqlTest` 三条真 Postgres 用例（跨用户 + synthetic/归档、括号 + 分页参数、schema 跟着配置走）
 - [x] 删掉/改写 `m3-03` 票里"隔离修复"那段的结论口径：收窄的做法保留为 `self` 档的解释，
       而不是"我们只做 `self`"。
       → 已改（顶部回填块 + 「隔离修复」首段 + 输出/身份那两条）
@@ -190,31 +194,77 @@
 测试落点（**没有新开文件**，两个满额文件靠合并同类用例腾位）：
 `ToolGovernanceTest` 20 → 19（合并"换人 + 降权 + 缺身份 + 缺会话"为一条、合并 match_mode 与坏参数），
 `SessionMemoryTest` 20 → 20（合并两条清理配置越界用例，换进 visibility 绑定那条），
-`SearchSqlTest` 16 → 18。
+`SearchSqlTest` 16 → 19（另加一条"schema 从配置来"，见下面 review 记录第 1 条）。
 
-### 反例（七条都真跑，跑完复原）
+### 反例（九条都真跑，跑完复原）
 
 | 把实现改坏成什么 | 红的用例 | 其余 |
 | --- | --- | --- |
 | `self`/`tree` 分支也走跨会话查询 | `selfScopeRecallsOnlyThisConversation` + `everyValueTakesItsOwnBranch`（tree 那条断言） | 17 条全绿——别的用例对"范围"完全无感 |
 | `SessionVisibility.DEFAULT` 改成 `SELF` | `defaultVisibilityRecallsAcrossUsers`（"缺键落 all"那句断） | 18 条全绿 |
-| `checksOwnership()` 恒 `false` | `guardsRefuseInsteadOfWidening`（u-2 拿到 u-1 的会话 id 就查到了） | 18 条全绿 |
+| `admit` 不核归属前缀 | `guardsRefuseInsteadOfWidening`（u-2 拿到 u-1 的会话 id 就查到了） | 18 条全绿 |
 | `of()` 对非法值回落 `DEFAULT`（照它的行为） | `visibilityMustBeOneOfFourWords` | 19 条全绿 |
 | 跨会话 SQL 加 `user_id` 过滤（模拟 `findEventsByUserId`） | `crossSessionRecallCrossesUsersAndSkipsSynthetic`（u-2 那句查不到） | 17 条全绿 |
 | 关键词那一段去掉外层括号 | `crossSessionKeywordParenthesesAndPagingLineUp`（synthetic 那条漏出来了） | 17 条全绿 |
 | `descriptionFor` 写死成 `self` 那句 | `everyValueTakesItsOwnBranch`（描述文本断言） | 18 条全绿 |
+| 表名写死 `claw4j_session`（忽略 `claw4j.session.schema`） | `crossSessionEventsHonoursTheConfiguredSchema` | 18 条全绿 |
+| `LIMIT`/`OFFSET` 两个参数互换 | `crossSessionKeywordParenthesesAndPagingLineUp` + `crossSessionRecallCrossesUsersAndSkipsSynthetic` | 17 条全绿 |
 
 第三条与第六条最值得留：它们分别证明"不核前缀就是越权读"和"少一对括号就是 fail-open"，
 两者都不会报错，只会多给一条结果。
 
+### 评审后修复（2026-11-08，`code-review` 两轴各出一份报告）
 
-## 门禁余量
+八条发现里五条成立、三条是"判断"级。成立的都改了，其中两条是真缺陷：
 
-`claw4j-agent` 10 个文件满，`ToolGovernanceTest` 与 `SessionMemoryTest` 都已 20 条（满）。
-按现有空位分配：`KnowledgeRetrievalTest`（18 → 20）放"跨会话可见 / self 查不到"两条；
-`ChatPipelineTest`（19 → 20）放"写错的词启动失败"（它已经在管装配期失败）。
-还需要第 3 条时，把 `ToolGovernanceTest` 里"批准落在执行行上"与"批准不串到别的 run"合成一条
-（同一 setup、同一关切）腾位。**不要新开文件**。
+1. **schema 写死 `claw4j_session`，忽略 `claw4j.session.schema`**（真缺陷）。改配之后这条 SQL 报
+   `BadSqlGrammarException`，而那一档的异常被降级成"没找到"——表现是"配什么都一样，永远查不到别人的会话"，
+   日志里只有一条 WARN。修法：schema 从 `SessionMemoryProperties#schema()` 取，
+   并且 `SessionSchema#qualifier` 只放行合法 Postgres 标识符（标识符位置没法用占位符，只能拼）。
+   补了一条真库用例（把表建在另一个 schema 里，写死就查不到）。
+2. **降级不写日志**（与本仓"降级不是静默"冲突，`FaultTolerantSessionService` 的 javadoc 原文）。
+   修法：`SessionRecallScope` 在第一次 `DataAccessException` 时 WARN 一次（理由也在 javadoc 里：
+   "库挂了"与"这段历史确实没说过"在日志上一模一样，而处置差得很远）。
+3. **分页断言是假绿**：`page=1, pageSize=1` 时 offset 恰好等于 pageSize，两个参数互换后 SQL 一字不变。
+   第一版注释还写着"参数反了这里会空"——那句是没验过的断言。修法：`page=2, pageSize=1` + 三条命中数据，
+   互换之后条数从 1 变 2，能红。
+4. **`CrossSessionEvents` 的 javadoc 说抛 `UnsupportedOperationException`，实现用 `Assert.isNull`
+   抛的是 `IllegalArgumentException`**，而后者会被 `RecallSessionTool` 的 catch 接住，回一句
+   "召回参数不合法"给模型——那是编程错误，不是模型能改的参数。修法：改成显式抛
+   `UnsupportedOperationException`（工具不 catch 它，直接响）。
+5. **"范围解析收成一处"只做了一半**：`events(sessionId, filter)` 不接 `Principal`，归属判断还在工具里，
+   正是它注释里说要避免的"查询改了、归属校验没改"。修法：加 `admit(Principal, String)`，
+   返回四态（`ADMITTED` / `NO_PRINCIPAL` / `NO_SESSION` / `NOT_YOURS`），工具只做文案映射；
+   `checksOwnership()` 收到包内可见，第二处读它的路被堵掉。
+6. **单数 `keyword()` 会被静默忽略**（框架的 `EventFilter` 上两个字段都在）。判断：与其"顺手支持"
+   一条我们从不走、也从不被验的分支，不如显式拒——照 `pattern` / `lastN` 同一处理方式。
+7. 两处不实措辞：`SessionRecallScope` 注释写"四个分支"而实现只有两条路径（四档按
+   `crossSession()` 归并）；README 与 `guardrails.md` 写"启动日志第一行"，而它只是 bean 工厂里的
+   一条 `log.info`，排在第几行不由我们决定。两处都改了措辞。
+8. `canonical()` 是 `of(raw).key` 的单行转发（删了，properties 直接调 `of`）；`交叉会话` 那段注释里
+   一个错字（"整条被子"→"整条消息"）。
+
+没改的两条判断：`everyValueTakesItsOwnBranch` 里 `AGENT == ALL` 的相等断言不是零信息——它守的是
+"两档归到同一条路"（谁给 `AGENT` 单开一条分支、行为不同了，这条才红）；`keyword()` 那条选择见第 6 点。
+
+
+## 门禁余量（当时的估算 vs 实际落点）
+
+拆票时这里写的是：`claw4j-agent` 10 个文件满，`ToolGovernanceTest` 与 `SessionMemoryTest` 都已 20 条，
+按现有空位分配 `KnowledgeRetrievalTest`（18 → 20）放"跨会话可见 / self 查不到"两条、
+`ChatPipelineTest`（19 → 20）放"写错的词启动失败"。
+
+**实际落点与它不同，三个原因，没有一条是"懒得挪"**：
+
+- `KnowledgeRetrievalTest` 是**知识库**（RAG）的用例文件，与会话召回无关。把召回塞进去会让它变成
+  "什么都测"，下一个要查"召回的范围测过吗"的人不会去翻那里。
+- `ChatPipelineTest` 实际已经是 20 条（票面那个 19 是拆票当天的数），没有空位。
+- "写错的词启动失败"与 `SessionMemoryTest` 现有的"清理间隔配成 0 拒绝启动"
+  "prune-after=0 拒绝启动"是**同一类**（配置绑定期拒绝），放一起才是同类相邻。
+
+所以实际是：`ToolGovernanceTest` 20 → 19（合并四条守卫为一条、合并 match_mode 与坏参数腾位）、
+`SessionMemoryTest` 20 → 20（合并两条清理配置越界用例换位）、`SearchSqlTest` 16 → 19。
+**仍然没有新开文件**，三个文件都在 ≤20 的上限内。
 
 ## 不要做
 

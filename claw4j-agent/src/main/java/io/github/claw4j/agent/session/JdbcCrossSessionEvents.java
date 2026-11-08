@@ -39,11 +39,18 @@ import java.util.Map;
  */
 public final class JdbcCrossSessionEvents implements CrossSessionEvents {
 
-    /** 列清单与框架 {@code SELECT_EVENTS_BASE} 一字不差：行映射靠这些名字取值。 */
+    /**
+     * 列清单与框架 {@code SELECT_EVENTS_BASE} 一字不差：行映射靠这些名字取值。
+     *
+     * <p>表名是拼出来的（{@code %s} 来自 {@link SessionSchema#qualifier}）：schema 可配
+     * （{@code claw4j.session.schema}），写死 {@code claw4j_session} 的话，改配之后这条 SQL
+     * 会报 {@code BadSqlGrammarException}，而那一档的异常被降级成"没找到"——
+     * 表现是"配什么都一样，永远查不到别人的会话"。
+     */
     private static final String SELECT = """
             SELECT e.id, e.session_id, e.timestamp, e.message_type, e.message_content, \
             e.message_data, e.synthetic, e.archived, e.metadata
-            FROM claw4j_session.ai_session_event e WHERE 1 = 1""";
+            FROM %sai_session_event e WHERE 1 = 1""";
 
     /** 与 {@code JdbcSessionRepositoryDialect#getKeywordFilterFragment} 同形，但不带前缀的 {@code AND}。 */
     private static final String KEYWORD = "LOWER(COALESCE(e.message_content, '')) LIKE ? ESCAPE '!'";
@@ -57,7 +64,7 @@ public final class JdbcCrossSessionEvents implements CrossSessionEvents {
      * 其余的在召回里静默变成空正文。
      *
      * <p>{@code synthetic} 也照框架那样再写进 metadata 一份：{@code SessionEvent#isSynthetic}
-     * 读的就是这个键，不写的话整条被子都当成"用户说的"。
+     * 读的就是这个键，不写的话整条消息都会被当成"用户说的"。
      */
     private static final SessionEventCodec CODEC = new SessionEventCodec();
 
@@ -81,25 +88,43 @@ public final class JdbcCrossSessionEvents implements CrossSessionEvents {
 
     private final JdbcTemplate jdbc;
 
+    private final String select;
+
     /**
      * public 是为了让真库那条用例能直接构造它（{@code SearchSqlTest} 在 app 模块，
      * 与 {@code JdbcInboundStore} / {@code JdbcConversationPointerStore} 同一个形状）。
      * 这条 SQL 里 {@code ESCAPE '!'}、{@code LIMIT ? OFFSET ?}、{@code e.timestamp}
      * 三件事只有真 Postgres 能判，替身判不了。
+     *
+     * @param schema 会话表所在的 schema（{@code claw4j.session.schema}）。非法标识符在构造时
+     *               就抛，不留到第一条 SQL——那时候它会被降级成"没找到"
      */
-    public JdbcCrossSessionEvents(JdbcTemplate jdbc) {
+    public JdbcCrossSessionEvents(JdbcTemplate jdbc, String schema) {
         this.jdbc = jdbc;
+        this.select = SELECT.formatted(SessionSchema.qualifier(schema));
     }
 
     @Override
     public List<SessionEvent> find(EventFilter filter) {
         Assert.notNull(filter, "filter");
-        Assert.isNull(filter.pattern(),
-                "跨会话检索不支持正则条件：SQL 里那是另一套语义（方言正则），召回也不用它");
-        Assert.isNull(filter.lastN(),
-                "跨会话检索不支持 lastN：它是倒序窗口，与本类的升序分页不是一回事");
+        // 用 UnsupportedOperationException 而不是 IllegalArgumentException：后者会被
+        // RecallSessionTool 的 catch 接住，变成"召回参数不合法"回给模型——那是编程错误，
+        // 不是模型能自己改的参数，回一句"换个词试试"只会让它换个词再撞一次。
+        if (filter.pattern() != null) {
+            throw new UnsupportedOperationException(
+                    "跨会话检索不支持正则条件：SQL 里那是另一套语义（方言正则），召回也不用它");
+        }
+        if (filter.lastN() != null) {
+            throw new UnsupportedOperationException(
+                    "跨会话检索不支持 lastN：它是倒序窗口，与本类的升序分页不是一回事");
+        }
+        if (filter.keyword() != null) {
+            throw new UnsupportedOperationException(
+                    "跨会话检索只认复数 keywords：单数 keyword 在这里没有对应的 SQL 分支，"
+                            + "而忽略它的表现是「结果多了」，与「这段历史确实说过」分不开");
+        }
 
-        StringBuilder sql = new StringBuilder(SELECT);
+        StringBuilder sql = new StringBuilder(select);
         List<Object> args = new ArrayList<>();
         if (filter.excludeSynthetic()) {
             sql.append(" AND e.synthetic = false");
@@ -138,6 +163,10 @@ public final class JdbcCrossSessionEvents implements CrossSessionEvents {
 
     /**
      * 关键词：{@code any} 用 OR 连、{@code all} 用 AND 连，整体加一对括号。
+     *
+     * <p><b>只认复数 {@code keywords}，单数 {@code keyword} 直接拒</b>（{@link #find} 里那道断言）：
+     * {@code EventFilter} 上两个字段都在，照着"支持"就会多一条我们从不走、也就从不被验的分支；
+     * 而默默忽略它更糟——忽略的表现是"结果多了"，那与"这段历史本来就说过"在输出上分不开。
      *
      * <p>不加括号会跟前后的 {@code AND} 粘错：{@code all} 模式下
      * {@code AND a AND b} 碰巧还对，{@code any} 模式下 {@code AND a OR b} 就变成了

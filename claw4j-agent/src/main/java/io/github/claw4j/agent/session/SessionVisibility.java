@@ -72,8 +72,11 @@ public enum SessionVisibility {
      * <p>跨会话档不核：那两档本来就允许查别人的会话，再核前缀等于把范围又收回 {@code self}。
      * 但<b>身份仍然不能为空</b>——不是用来限定范围，而是"没有身份就没有'谁在问'这件事"，
      * 那种请求连该不该给都要靠猜。
+     *
+     * <p>包内可见：判定只应该发生在 {@link SessionRecallScope#admit} 里，调用点自己读这个值
+     * 就等于把"哪一档核不核"散到第二处，加第五档时又会漏改。
      */
-    public boolean checksOwnership() {
+    boolean checksOwnership() {
         return !crossSession();
     }
 
@@ -117,10 +120,5 @@ public enum SessionVisibility {
                     "claw4j.tools.sessions.visibility 只能是 self / tree / agent / all，收到的是 "
                             + "「" + raw.strip() + "」");
         };
-    }
-
-    /** 归一后的配置值，给 {@link SessionVisibilityProperties} 存在 record 里。 */
-    static String canonical(String raw) {
-        return of(raw).key;
     }
 }
