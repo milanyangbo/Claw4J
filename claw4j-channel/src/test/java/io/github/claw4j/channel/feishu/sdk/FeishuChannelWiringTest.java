@@ -1,5 +1,8 @@
 package io.github.claw4j.channel.feishu.sdk;
 
+import com.lark.oapi.event.EventDispatcher;
+import com.lark.oapi.ws.exception.ClientException;
+import com.lark.oapi.ws.exception.ServerUnreachableException;
 import io.github.claw4j.channel.feishu.FeishuOutboundDelivery;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
@@ -15,8 +18,15 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -188,6 +198,186 @@ class FeishuChannelWiringTest {
 
         assertThat(delivery.channel()).isEqualTo("feishu");
         assertThat(sent).containsExactly("oc_zhang|华东上周成交 128400");
+    }
+
+    // ---------------------------------------------------------------- 可恢复失败与重连（票 02）
+
+    @Test
+    @DisplayName("可恢复的连不上：应用照常起来，通道在，状态是 DISCONNECTED")
+    void recoverableConnectFailureDoesNotFailStartup() {
+        runner.withPropertyValues(APP_ID + "=cli_x", APP_SECRET + "=secret")
+                .withBean(FeishuConnectionFactory.class, () -> new FakeFactory(handshakeTimeout()))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(FeishuLongConnectionChannel.class);
+                    assertThat(context.getBean(FeishuLongConnectionChannel.class).state())
+                            .as("没连上不等于启动失败：后台在退避重连，其它通道照常工作")
+                            .isEqualTo(FeishuConnectionState.DISCONNECTED);
+                });
+    }
+
+    @Test
+    @DisplayName("凭据错仍然是启动失败，报错句说清「重启不会好」")
+    void permanentCredentialFailureStillFailsStartup() {
+        runner.withPropertyValues(APP_ID + "=cli_x", APP_SECRET + "=secret")
+                .withBean(FeishuConnectionFactory.class,
+                        () -> new FakeFactory(new ClientException(10014, "app not found")))
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("重启不会好")
+                            .hasStackTraceContaining("是否已发布");
+                });
+    }
+
+    @Test
+    @DisplayName("退避是 30 / 60 / 120 秒：每失败一次翻一倍")
+    void backoffDoublesFromThirtySeconds() {
+        RecordingScheduler scheduler = new RecordingScheduler(true);
+        FeishuLongConnectionChannel channel = channelWith(
+                new FakeFactory(handshakeTimeout(), handshakeTimeout(), handshakeTimeout()), scheduler);
+
+        channel.start();
+
+        assertThat(scheduler.delays()).as("第一次 30 秒，之后 60、120").containsExactly(30_000L, 60_000L, 120_000L);
+        assertThat(channel.state()).isEqualTo(FeishuConnectionState.CONNECTED);
+    }
+
+    @Test
+    @DisplayName("重连成功之后状态回 CONNECTED，且不再排新的重试")
+    void reconnectSucceedsAndStopsRetrying() {
+        RecordingScheduler scheduler = new RecordingScheduler(true);
+        FeishuLongConnectionChannel channel = channelWith(
+                new FakeFactory(handshakeTimeout(), handshakeTimeout()), scheduler);
+
+        channel.start();
+
+        assertThat(channel.state()).isEqualTo(FeishuConnectionState.CONNECTED);
+        assertThat(scheduler.delays()).as("成功之后不该再有第三个任务").containsExactly(30_000L, 60_000L);
+    }
+
+    @Test
+    @DisplayName("stop() 关掉定时器与连接，且可重复调用")
+    void stopCancelsScheduledReconnectAndClosesTheConnection() {
+        RecordingScheduler scheduler = new RecordingScheduler(false);
+        FakeFactory factory = new FakeFactory(handshakeTimeout());
+        FeishuLongConnectionChannel channel = channelWith(factory, scheduler);
+
+        channel.start();
+        assertThat(scheduler.delays()).as("排上了，但这一次不跑").containsExactly(30_000L);
+
+        channel.stop();
+        channel.stop();
+
+        assertThat(scheduler.isShutdown()).isTrue();
+        assertThat(channel.state()).isEqualTo(FeishuConnectionState.STOPPED);
+        assertThat(factory.opened()).isNotEmpty()
+                .allSatisfy(connection -> assertThat(connection.closed()).isTrue());
+    }
+
+    private static ServerUnreachableException handshakeTimeout() {
+        return new ServerUnreachableException("websocket handshake did not complete within 15000ms");
+    }
+
+    private static FeishuLongConnectionChannel channelWith(FeishuConnectionFactory factory,
+                                                          RecordingScheduler scheduler) {
+        FeishuChannelProperties properties = new FeishuChannelProperties();
+        properties.setAppId("cli_x");
+        properties.setAppSecret("secret");
+        // 只测建连：调度器、翻译器、回推在 start() 这条路上都用不到。
+        return new FeishuLongConnectionChannel(properties, null, null, null, null, factory, scheduler);
+    }
+
+    /** 按序给失败：第 n 次 {@code open()} 抛第 n 个异常，给完了就成功。 */
+    private static final class FakeFactory implements FeishuConnectionFactory {
+
+        private final Deque<Throwable> failures = new ArrayDeque<>();
+
+        private final List<FakeConnection> opened = new CopyOnWriteArrayList<>();
+
+        private FakeFactory(Throwable... failures) {
+            this.failures.addAll(List.of(failures));
+        }
+
+        @Override
+        public FeishuConnection open(EventDispatcher events) {
+            FakeConnection connection = new FakeConnection(failures.poll());
+            opened.add(connection);
+            return connection;
+        }
+
+        private List<FakeConnection> opened() {
+            return opened;
+        }
+    }
+
+    private static final class FakeConnection implements FeishuConnection {
+
+        private final Throwable failure;
+
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        private FakeConnection(Throwable failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public void start() {
+            if (failure instanceof RuntimeException unchecked) {
+                throw unchecked;
+            }
+        }
+
+        @Override
+        public void awaitReady(long timeoutMillis) throws Exception {
+            if (failure instanceof Exception checked && !(failure instanceof RuntimeException)) {
+                throw checked;
+            }
+        }
+
+        @Override
+        public void close() {
+            closed.set(true);
+        }
+
+        private boolean closed() {
+            return closed.get();
+        }
+    }
+
+    /**
+     * 只记录"排了多久之后跑"，不真的等 30 秒。
+     *
+     * <p>{@code immediate=true} 时顺手把任务同步跑掉，于是"第一次失败、第二次成功"这种序列
+     * 在一条用例里就走完了；{@code false} 时只记录，用来验 {@code stop()} 真的把排着的东西取消了。
+     */
+    private static final class RecordingScheduler extends ScheduledThreadPoolExecutor {
+
+        private final List<Long> delays = new CopyOnWriteArrayList<>();
+
+        private final boolean immediate;
+
+        private RecordingScheduler(boolean immediate) {
+            super(1, runnable -> {
+                Thread thread = new Thread(runnable, "claw4j-feishu-reconnect-test");
+                thread.setDaemon(true);
+                return thread;
+            });
+            this.immediate = immediate;
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+            delays.add(unit.toMillis(delay));
+            if (immediate) {
+                command.run();
+            }
+            return null;
+        }
+
+        private List<Long> delays() {
+            return delays;
+        }
     }
 
     /** 通道只需要一个 AgentPort 在场；这一份用例不验它做什么。 */    private static final class NoopAgent implements AgentPort {

@@ -8,6 +8,8 @@
 
 **Type:** task
 
+**Status:** resolved（2026-11-08）
+
 **Demo:** 把 `.env` 里的 `FEISHU_APP_ID` 改成一个不存在的应用 → 启动仍然失败，错误句点名"凭据"；
 在能连上的环境里拔网线再插回来 → 进程没退、`curl localhost:8080/...` 一直可用，
 日志里出现"第 N 次重试后连上"，群里 @ 机器人照常回答。
@@ -103,26 +105,30 @@ interface FeishuConnectionFactory {
 
 ## 验收判据
 
-- [ ] **可恢复失败不再让应用起不来**：`ApplicationContextRunner` + 假工厂（第一次 `start()` 抛
-      `IOException`）→ `assertThat(context).hasNotFailed()`，bean 在，`state()` 是 `DISCONNECTED`。
-      反例：把分类改回"一律永久" → 这条红。
-- [ ] **退避真的递增**：注入可控 scheduler（`ScheduledExecutorService` 替身，记录 `(delay, task)`），
-      断言三次的延迟是 **30s / 60s / 120s**。反例：写成固定 30s → 这条红。
-- [ ] **重连成功之后状态回 `CONNECTED`**，且之后不再有新的重试任务。
-      反例：成功后不停 → 断言"任务数不再增加"红。
-- [ ] **`stop()` 之后不再有任务**：断言 scheduler 被 `shutdown` 且队列为空；`stop()` 可重复调用不抛。
-      反例：`stop()` 里漏掉取消 → 这条红。
-- [ ] **永久错误仍然启动失败**：假工厂抛"凭据错"，`assertThat(context).hasFailed()`，
-      且 message 里点明是凭据/配置这一类。反例：把它也改成重试 → 这条红。
-- [ ] 现有四条退让不变（缺凭据 / 半配 / SDK 不在 classpath / `enabled=false`），
-      `FeishuChannelWiringTest` 原来那几条照旧绿。
-- [ ] `ChatChannel#start()` 的 javadoc（`:25-28`）同步成"永久失败才抛，可恢复失败由实现自己重试"——
-      不改它，下一个通道（Slack / 钉钉）会照着旧契约再写一遍一律抛。
-- [ ] `docs/agents/guardrails.md` 里"SDK 层不写单测"那条要改：现在**有一处可测了**（分类 + 退避 + 状态），
-      "翻译 SDK 对象"与"真的发一条消息"仍然不测。两件事说清楚，别把整包再留在"不可测"里。
-- [ ] ADR-0009 里"连不上就起不来"的表述加一条修订记录（不改正文）：
-      改成"永久错误起不来，可恢复错误后台重连并上报状态"。
-- [ ] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%（channel 模块现 74.2%，有余量）。
+- [x] **可恢复失败不再让应用起不来**：`ApplicationContextRunner` + 假工厂（`start()` 抛
+      `ServerUnreachableException`）→ `hasNotFailed()`，bean 在，`state()` 是 `DISCONNECTED`。
+      - `FeishuChannelWiringTest#recoverableConnectFailureDoesNotFailStartup`。
+      反例：把分类改成"一律永久" → 这条红（且另外三条重连用例一起红，见 Comments）。
+- [x] **退避真的递增**：注入记录型调度器（`ScheduledThreadPoolExecutor` 的子类，只记 delay 并同步跑），
+      三次的延迟是 **30s / 60s / 120s**。
+      - `#backoffDoublesFromThirtySeconds`。反例：`backoff` 写成固定 30s → 这条与下一条都红。
+- [x] **重连成功之后状态回 `CONNECTED`**，且之后不再有新的重试任务。
+      - `#reconnectSucceedsAndStopsRetrying`。反例同上（固定退避时"期望两个任务、实际三个"）。
+- [x] **`stop()` 之后不再有任务**：`isShutdown()` 为真、每条开出来的连接都 `closed`、
+      `stop()` 可重复调用不抛。
+      - `#stopCancelsScheduledReconnectAndClosesTheConnection`。反例：`stop()` 里漏掉
+      `shutdownNow()` → 这条红。
+- [x] **永久错误仍然启动失败**：假工厂抛 `ClientException(10014, "app not found")` →
+      `hasFailed()`，报错句含"重启不会好"与"是否已发布"。
+      - `#permanentCredentialFailureStillFailsStartup`。
+- [x] 现有四条退让不变（缺凭据 / 半配 / SDK 不在 classpath / `enabled=false`），
+      `FeishuChannelWiringTest` 原来那几条照旧绿（本文件 15 条全绿）。
+- [x] `ChatChannel#start()` 的 javadoc 同步成"永久失败才抛，可恢复失败由实现自己重试"。
+- [x] `docs/agents/guardrails.md` 里"SDK 层不写单测"那条改了：翻译与发送仍不测，**建连这一层进了默认构建**。
+- [x] ADR-0009 加了修订记录（正文未改）：那条"连不上就起不来"收窄成"只有永久错才起不来"。
+- [x] `./scripts/verify.sh` 全绿：**666 条用例、失败 0、错误 0、跳过 0**；
+      core 90.4% / **channel 77.7%**（自 75.4% 升）/ capability 85.4% / agent 73.2% / app 80.8%；
+      模块文件数 10、单文件方法数 20。
 
 ## 门禁余量
 
@@ -137,3 +143,35 @@ interface FeishuConnectionFactory {
 - **不要在重连里重放已经 ACK 的消息**——那是 `04` 号票的范围，两者混在一起会让"丢消息"这个问题
   看起来被这张票解决了。
 - **不要把状态接到 actuator 上顺手做个 `/health`**：那是新的观测面，要有自己的判据，不在本票。
+
+## Comments
+
+- 2026-11-08 实现。新增五个类（`feishu.sdk` 下 `FeishuConnection` / `FeishuConnectionFactory` /
+  `LarkFeishuConnectionFactory` / `FeishuConnectionFailures` / `FeishuConnectionState`），
+  改两个（`FeishuLongConnectionChannel`、`FeishuChannelAutoConfiguration`），文档三处
+  （`ChatChannel#start` javadoc、`guardrails.md` 一行、ADR-0009 修订记录）。
+- **SDK 的异常形状是按 2.8.7 的字节码现场钉的**，不是按名字猜的（`javap -p -c com.lark.oapi.ws.Client`）：
+  1. `awaitReady` 超时会抛 `ServerUnreachableException`（"websocket handshake did not complete
+     within %dms"），`close()` 也用这个类收掉还在等的 future（"websocket client closed"）；
+  2. 取连接地址那步：HTTP 非 200 或无响应体 → `ServerException`；业务码 `1`（system busy）
+     与 `1000040343` → 也是 `ServerException`；
+  3. **其它任何非 0 业务码 → `ClientException(code, msg)`**；本地凭据缺失也用它
+     （`appSecret` 与 `clientAssertionProvider` 都空 → `7104`，client assertion 空 → `7101`）；
+  4. `autoReconnect` 默认 `true`（构造器里 `if null → true`），但它只在**已连上之后断开**时有用；
+     首连失败只 `reconnect()` 一次就停。所以重连必须我们自己来。
+- **一处不确定，写在这里不藏**：`ClientException` 被整体判成永久。它的两个来源（服务端拒绝握手、
+  本地凭据缺失）都是"换个时间点还是错"，但如果哪天服务端把**限流**也做成非 0 业务码，
+  它会落进同一个类，于是一次限流会让应用起不来。当前取舍是"宁可错杀在启动"，
+  并把 `toString()`（形如 `ClientException: 10014: app not found`）整段写进日志让运维看见码。
+  SDK 没有 `getCode()`，要按码细分只能解析这个字符串——那时再改，不预先写一个会漂的解析器。
+- **与票面的一处偏离**：端口方法签成了 `open(EventDispatcher events)`，不是 `open()`。
+  `EventDispatcher` 是纯对象（不建连、不联网），而回调属于通道——让工厂自己造一个等于把
+  "收到消息怎么办"搬进 SDK 包里，那正是这条通道唯一需要被默认构建测到的部分。
+- **三组反例真跑了**（改完即还原，只有对应用例红）：
+  1. `backoff` 固定 30s + `stop()` 漏掉 `shutdownNow()` → 3 红（退避、成功后即停、stop 取消），
+     其余 12 条绿；
+  2. `ServerUnreachableException` 判成 PERMANENT → 4 红（含"可恢复不失败"那条），
+     其余 11 条绿；
+  3. 上面两次改动的组合都只影响重连那几条，装配与认人那 10 条一直绿。
+- 没做：健康端点（票面明确排除，那是新的观测面）、真实网络环境下的拔网线手验
+  （本机没有真凭据，只能靠日志与状态字段，票面 Demo 里那条要等带凭据的部署验一次）。

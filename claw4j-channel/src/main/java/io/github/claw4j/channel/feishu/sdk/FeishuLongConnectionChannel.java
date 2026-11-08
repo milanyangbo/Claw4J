@@ -9,7 +9,6 @@ import com.lark.oapi.event.cardcallback.model.P2CardActionTriggerData;
 import com.lark.oapi.event.cardcallback.model.P2CardActionTriggerResponse;
 import com.lark.oapi.service.im.ImService;
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1;
-import com.lark.oapi.ws.Client;
 import io.github.claw4j.channel.feishu.FeishuApprovalCard;
 import io.github.claw4j.channel.feishu.FeishuInboundEvent;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
@@ -18,8 +17,13 @@ import io.github.claw4j.channel.spi.ChatChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 飞书长连接通道：SDK 主动外连（不需要公网 IP、域名、内网穿透），把收到的事件交给入站调度。
@@ -27,11 +31,15 @@ import java.util.Optional;
  * <p>本类只做三件事：建连、把回调转给 {@link InboundDispatcher}、关连接。"什么时候 ACK、
  * 失败了说什么、长回答怎么切"全在调度层——那是唯一能被默认构建测到的部分，逻辑不该往这里搬。
  *
- * <p>两个刻意的选择：
+ * <p>三个刻意的选择：
  * <ul>
- *   <li><b>连不上就抛，让启动失败。</b>SDK 自己会重连，所以"没连上"很容易被误当成"还在连"。
- *       先 {@code start()} 再 {@code awaitReady(超时)}：超时没就绪，直接让整个应用起不来。
- *       带着一个收不到消息的通道在跑，是演示现场最难查的故障（ADR-0009 的既有约定）。</li>
+ *   <li><b>连不上的两类分开处理</b>（票 02，照 OpenClaw 的做法）。凭据错、应用未开通长连接
+ *       这类"换个时间点还是错"的，<b>启动失败</b>；网络、握手超时、对端不可用这类"等一会儿会好"的，
+ *       <b>不抛</b>——状态置 {@link FeishuConnectionState#DISCONNECTED}，后台按
+ *       30 秒起、每次翻倍、封顶 10 分钟退避重连。一次对端抖动不该让整个应用起不来
+ *       （那在 K8s 上是 CrashLoopBackOff，连 HTTP 通道也一起不可用）。</li>
+ *   <li><b>重连是"关掉旧的、开一条新的"</b>，不是让 SDK 救活失败的那条。SDK 的
+ *       {@code autoReconnect} 只在已经连上之后断开时有用，而且它的退避与状态都不归我们管。</li>
  *   <li><b>回调里绝不抛。</b>事件线程抛异常会触发平台重推，而重推的往往是同一条处理不了的消息，
  *       于是"失败 → 重推 → 再失败"能跑好几轮。异常收在这里记下来，比交给平台循环更可控。</li>
  * </ul>
@@ -39,6 +47,16 @@ import java.util.Optional;
 public class FeishuLongConnectionChannel implements ChatChannel {
 
     private static final Logger log = LoggerFactory.getLogger(FeishuLongConnectionChannel.class);
+
+    /**
+     * 第一次重连等 30 秒，之后每次翻倍，封顶 10 分钟。
+     *
+     * <p>数字照 OpenClaw（`docs/channels/slack/transports.md` 与 `docs/tools/mcp.md:61` 是同一组），
+     * 便于两边日志对着看。翻倍而不是固定：抖一下三十秒内就回来，对端真挂了也不必每分钟去撞一次。
+     */
+    static final Duration INITIAL_BACKOFF = Duration.ofSeconds(30);
+
+    static final Duration MAX_BACKOFF = Duration.ofMinutes(10);
 
     /**
      * 翻不出来的消息回什么。
@@ -65,19 +83,41 @@ public class FeishuLongConnectionChannel implements ChatChannel {
      */
     private final FeishuApprovalActions approvals;
 
-    /** 建连成功之后才有值；{@code stop()} 之后清空，所以它是可重复调用的。 */
-    private volatile Client client;
+    private final FeishuConnectionFactory connectionFactory;
+
+    /** 重连的定时器。守护线程：关不掉的线程会让 JVM 停不下来，那比"通道没连上"更坏。 */
+    private final ScheduledExecutorService scheduler;
+
+    private final AtomicReference<FeishuConnectionState> state =
+            new AtomicReference<>(FeishuConnectionState.CONNECTING);
+
+    /** 当前那条连接；{@code stop()} 之后清空，所以它是可重复调用的。 */
+    private volatile FeishuConnection connection;
 
     public FeishuLongConnectionChannel(FeishuChannelProperties properties,
                                        InboundDispatcher dispatcher,
                                        FeishuMessageTranslator translator,
                                        FeishuReplySender replySender,
-                                       FeishuApprovalActions approvals) {
+                                       FeishuApprovalActions approvals,
+                                       FeishuConnectionFactory connectionFactory) {
+        this(properties, dispatcher, translator, replySender, approvals, connectionFactory, newScheduler());
+    }
+
+    /** 测试用：把定时器换成能记录、能同步驱动的替身，退避序列才验得出来。 */
+    FeishuLongConnectionChannel(FeishuChannelProperties properties,
+                                InboundDispatcher dispatcher,
+                                FeishuMessageTranslator translator,
+                                FeishuReplySender replySender,
+                                FeishuApprovalActions approvals,
+                                FeishuConnectionFactory connectionFactory,
+                                ScheduledExecutorService scheduler) {
         this.properties = properties;
         this.dispatcher = dispatcher;
         this.translator = translator;
         this.replySender = replySender;
         this.approvals = approvals;
+        this.connectionFactory = connectionFactory;
+        this.scheduler = scheduler;
     }
 
     @Override
@@ -85,8 +125,132 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         return "feishu";
     }
 
+    /** 这条通道现在能不能收到消息。今天没有健康端点，状态的第一落点就是它和日志。 */
+    public FeishuConnectionState state() {
+        return state.get();
+    }
+
     @Override
-    public void start() {
+    public synchronized void start() {
+        // 只在"还没试过"时动手：重复调用（比如测试里手动 start 一次）不该再开第二条连接。
+        if (state.get() != FeishuConnectionState.CONNECTING) {
+            return;
+        }
+        EventDispatcher events = eventDispatcher();
+        try {
+            connect(events);
+            state.set(FeishuConnectionState.CONNECTED);
+            log.info("飞书通道就绪：长连接已建立（appId={}），入站事件会走 去重 → ACK → 异步执行 → 回推",
+                    mask(properties.getAppId()));
+        }
+        catch (Exception failure) {
+            FeishuConnectionFailures.Verdict verdict = FeishuConnectionFailures.classify(failure);
+            if (verdict.isPermanent()) {
+                state.set(FeishuConnectionState.STOPPED);
+                throw new IllegalStateException(
+                        "飞书长连接没建起来（" + verdict.reason() + "，重启不会好；appId="
+                                + mask(properties.getAppId()) + "）：" + failure.getMessage()
+                                + "。检查 claw4j.channel.feishu 的 app-id / app-secret，"
+                                + "以及飞书后台里这个应用是否已发布、是否开通了长连接。",
+                        failure);
+            }
+            state.set(FeishuConnectionState.DISCONNECTED);
+            log.warn("飞书长连接没建起来（{}），{} 秒后重试第 1 次（appId={}）：{}",
+                    verdict.reason(), INITIAL_BACKOFF.toSeconds(), mask(properties.getAppId()),
+                    failure.toString());
+            scheduleReconnect(events, 1, INITIAL_BACKOFF);
+        }
+    }
+
+    @Override
+    public synchronized void stop() {
+        // 顺序不能反：先停定时器、再关连接。反过来的话，关连接那一秒里排着的任务会重新建一条
+        // 没人管的连接。shutdownNow 可重复调用，所以 stop() 也就可以重复调用。
+        state.set(FeishuConnectionState.STOPPED);
+        scheduler.shutdownNow();
+        FeishuConnection closing = this.connection;
+        this.connection = null;
+        if (closing != null) {
+            closeQuietly(closing);
+            log.info("飞书通道关闭");
+        }
+    }
+
+    /**
+     * 建一条连接，成功才替换掉当前那条。
+     *
+     * <p>失败时**必须关掉这一次开出来的连接**：SDK 的 {@code close()} 会把 {@code userClosed}
+     * 置真，它自己的自动重连随之停下。不关就会有一条 SDK 在后台悄悄重连的连接，
+     * 与我们的重连叠在一起——同一条消息被两条连接各收一次。
+     */
+    private void connect(EventDispatcher events) throws Exception {
+        FeishuConnection opening = connectionFactory.open(events);
+        try {
+            opening.start();
+            opening.awaitReady(properties.getReadyTimeout().toMillis());
+        }
+        catch (Exception failure) {
+            closeQuietly(opening);
+            throw failure;
+        }
+        FeishuConnection previous = this.connection;
+        this.connection = opening;
+        if (previous != null) {
+            closeQuietly(previous);
+        }
+    }
+
+    private void scheduleReconnect(EventDispatcher events, int attempt, Duration delay) {
+        if (state.get() == FeishuConnectionState.STOPPED) {
+            return;
+        }
+        scheduler.schedule(() -> reconnect(events, attempt), delay.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    private void reconnect(EventDispatcher events, int attempt) {
+        if (state.get() == FeishuConnectionState.STOPPED) {
+            return;
+        }
+        try {
+            connect(events);
+            state.set(FeishuConnectionState.CONNECTED);
+            log.info("飞书长连接第 {} 次重试后连上（appId={}）", attempt, mask(properties.getAppId()));
+        }
+        catch (Exception failure) {
+            FeishuConnectionFailures.Verdict verdict = FeishuConnectionFailures.classify(failure);
+            if (verdict.isPermanent()) {
+                // 重试途中才变永久（比如应用被停用）：停下来，但不要把已经起来的应用带下去。
+                state.set(FeishuConnectionState.STOPPED);
+                log.error("飞书长连接第 {} 次重试遇到永久错（{}），停止重连（appId={}）：{}",
+                        attempt, verdict.reason(), mask(properties.getAppId()), failure.toString());
+                return;
+            }
+            Duration next = backoff(attempt + 1);
+            state.set(FeishuConnectionState.DISCONNECTED);
+            log.warn("飞书长连接第 {} 次重试失败（{}），下次 {} 秒后再试（appId={}）：{}",
+                    attempt, verdict.reason(), next.toSeconds(), mask(properties.getAppId()),
+                    failure.toString());
+            scheduleReconnect(events, attempt + 1, next);
+        }
+    }
+
+    /**
+     * 第 {@code attempt} 次重连之前等多久：30 秒起，每次翻倍，封顶 10 分钟。
+     * 上限必须真的封住——不封的话第 11 次就是 8.5 小时，那已经不像"还在重连"了。
+     */
+    static Duration backoff(int attempt) {
+        Duration delay = INITIAL_BACKOFF;
+        for (int step = 1; step < attempt; step++) {
+            delay = delay.multipliedBy(2);
+            if (delay.compareTo(MAX_BACKOFF) >= 0) {
+                return MAX_BACKOFF;
+            }
+        }
+        return delay;
+    }
+
+    /** 回调注册。卡片按钮与消息事件共用同一条长连接，所以两者都在这里挂。 */
+    private EventDispatcher eventDispatcher() {
         EventDispatcher.Builder events = EventDispatcher.newBuilder("", "")
                 .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
                     @Override
@@ -104,33 +268,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
                 }
             });
         }
-        EventDispatcher eventDispatcher = events.build();
-        // 长连接模式不需要 verification token 与 encrypt key：那两个参数是给公网回调做签名校验的。
-        Client starting = new Client.Builder(properties.getAppId(), properties.getAppSecret())
-                .eventHandler(eventDispatcher)
-                .build();
-        try {
-            starting.start();
-            starting.awaitReady(properties.getReadyTimeout().toMillis());
-        } catch (Exception failure) {
-            closeQuietly(starting);
-            throw new IllegalStateException(
-                    "飞书长连接没建起来（appId=" + mask(properties.getAppId()) + "）：" + failure.getMessage()
-                            + "。凭据错、应用未发布或未开启长连接、本机出不去，都会走到这里。", failure);
-        }
-        this.client = starting;
-        log.info("飞书通道就绪：长连接已建立（appId={}），入站事件会走 去重 → ACK → 异步执行 → 回推",
-                mask(properties.getAppId()));
-    }
-
-    @Override
-    public void stop() {
-        Client closing = this.client;
-        this.client = null;
-        if (closing != null) {
-            closing.close();
-            log.info("飞书通道关闭");
-        }
+        return events.build();
     }
 
     /**
@@ -144,7 +282,8 @@ public class FeishuLongConnectionChannel implements ChatChannel {
                 return;
             }
             dispatcher.accept(inbound.get());
-        } catch (RuntimeException failure) {
+        }
+        catch (RuntimeException failure) {
             log.error("飞书事件处理失败（不抛出，避免平台重推一条同样处理不了的消息）", failure);
         }
     }
@@ -159,7 +298,8 @@ public class FeishuLongConnectionChannel implements ChatChannel {
     private P2CardActionTriggerResponse onCardAction(P2CardActionTrigger event) {
         try {
             return responseOf(approvals.on(clickOf(event)));
-        } catch (RuntimeException failure) {
+        }
+        catch (RuntimeException failure) {
             log.error("飞书卡片回调失败（不抛出，避免平台重推同一次点击）", failure);
             return responseOf(FeishuApprovalActions.Outcome.of("error",
                     "这次点击没处理成功，稍后再点一次；如果一直这样，让管理员看服务日志。"));
@@ -211,7 +351,8 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         }
         try {
             replySender.send(chatId, CANNOT_HANDLE_REPLY);
-        } catch (RuntimeException failure) {
+        }
+        catch (RuntimeException failure) {
             log.error("回推'处理不了'失败：chatId={}", chatId, failure);
         }
     }
@@ -223,12 +364,21 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         return event.getEvent().getMessage().getChatId();
     }
 
-    private static void closeQuietly(Client client) {
+    private static void closeQuietly(FeishuConnection connection) {
         try {
-            client.close();
-        } catch (RuntimeException ignored) {
-            log.debug("建连失败后关闭客户端时又出错，忽略", ignored);
+            connection.close();
         }
+        catch (RuntimeException ignored) {
+            log.debug("关闭飞书连接时又出错，忽略", ignored);
+        }
+    }
+
+    private static ScheduledExecutorService newScheduler() {
+        return Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "claw4j-feishu-reconnect");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     /** App ID 不是密钥，但也没必要整串进日志：够对上配置就行。 */

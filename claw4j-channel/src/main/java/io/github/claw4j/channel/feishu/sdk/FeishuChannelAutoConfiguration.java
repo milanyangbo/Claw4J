@@ -34,7 +34,9 @@ import java.util.concurrent.Executor;
  *   <li><b>凭据不全</b> → 一个 bean 都不注册。只跑 HTTP 的部署不该因为"没配飞书"而起不来，
  *       也不该在容器里留一个拿空凭据建出来的客户端。</li>
  *   <li><b>凭据齐了但连不上</b> → 不在这里判断，交给 {@link FeishuLongConnectionChannel#start()}：
- *       它等握手超时之后抛，启动失败。这是 ADR-0009 的既有约定——半死的通道比起不来更难排查。</li>
+ *       它把失败分成两类（票 02）。凭据/应用状态这类"换个时间点还是错"的仍然抛，启动失败；
+ *       网络、握手超时、对端不可用这类"等一会儿会好"的<b>不抛</b>——通道照常装配，后台退避重连，
+ *       状态是 {@code DISCONNECTED}。一次对端抖动不该让整个应用起不来。</li>
  * </ol>
  *
  * <p>另外这里同时绑定 {@link HttpChannelProperties}：它是<b>两个通道共用的那张授权表</b>。
@@ -142,6 +144,16 @@ public class FeishuChannelAutoConfiguration {
         }
 
         /**
+         * 建连的工厂。单拎成一个 bean 是为了让"连不上"这件事能被测：默认实现里既没有凭据
+         * 也没有网络，重连与分类只能靠人工拔网线验。
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        public FeishuConnectionFactory feishuConnectionFactory(FeishuChannelProperties properties) {
+            return new LarkFeishuConnectionFactory(properties);
+        }
+
+        /**
          * 通道本体。卡片按钮的处理在装配时定下来：没有 {@link ApprovalDecider}（没开 run 存储）
          * 就不注册卡片回调——那种部署里也没有卡片可点，注册一个"点了说没装审批"的回调只是噪音。
          */
@@ -152,11 +164,13 @@ public class FeishuChannelAutoConfiguration {
                                                          FeishuMessageTranslator translator,
                                                          FeishuReplySender replySender,
                                                          FeishuPrincipalResolver principalResolver,
+                                                         FeishuConnectionFactory connectionFactory,
                                                          ObjectProvider<ApprovalDecider> deciders) {
             ApprovalDecider decider = deciders.getIfAvailable();
             FeishuApprovalActions approvals =
                     decider == null ? null : new FeishuApprovalActions(decider, principalResolver);
-            return new FeishuLongConnectionChannel(properties, dispatcher, translator, replySender, approvals);
+            return new FeishuLongConnectionChannel(properties, dispatcher, translator, replySender,
+                    approvals, connectionFactory);
         }
     }
 }
