@@ -148,3 +148,8 @@
   2. **capability-02（中偏大）**：工具清单从启动快照改成按轮解析，加一个后台重试与"不可用"占位的注册表。
   3. **closeout-04（最大）**：入站持久表 + 先落库再 ACK + 启动扫未完成 + 按对话串行。
   4. 文档指针（最便宜，可随手）：docs 正文里 28 处测试类名（`capability-tests.md` 占 17）。
+
+- 2026-11-08 已拆票：上面四处（`capability-02` / `capability-08` 的红线洞 / `closeout-04` / `closeout-05`）
+  落成 `.scratch/openclaw-alignment/issues/01–04`，顺序与代价写在 `.scratch/openclaw-alignment/spec.md`。
+  `01` 是 08 的机器闸，不是产品行为改动。
+
