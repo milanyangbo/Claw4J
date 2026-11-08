@@ -45,13 +45,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 三条"构建与装配"的契约：Java 侧不自己拼命令行（ADR-0002）、跨 jar 的迁移合成一套 schema、
- * 以及插件声明的核心区间必须对得上（P16）。
+ * 四条"构建与装配"的契约：Java 侧不自己拼命令行（ADR-0002）、会话 schema 只在一个地方写死、
+ * 跨 jar 的迁移合成一套 schema、以及插件声明的核心区间必须对得上（P16）。
  *
  * <p><b>为什么合成一份</b>：它们本来各占一个文件，但问的是同一类问题——<b>那些不会在运行时
  * 报错、只在某天以另一种形态暴露的约定</b>。手写 shell 的代价是"1.x 把宿主机交出去"；
- * 迁移版本号撞车的代价是"少建一张表，而启动日志完全正常"；插件版本对不上的代价是
- * "某次调用突然 {@code NoSuchMethodError}"，日志里没有一行提到版本。三者都只能靠在构建与
+ * 写死会话 schema 的代价是"改一次配置，一半功能继续读旧表"；迁移版本号撞车的代价是
+ * "少建一张表，而启动日志完全正常"；插件版本对不上的代价是
+ * "某次调用突然 {@code NoSuchMethodError}"，日志里没有一行提到版本。四者都只能靠在构建与
  * 启动期钉住。</p>
  *
  * <p>合并的直接原因是硬约束：{@code claw4j-app} 与别处一样卡在 10 个测试文件，
@@ -148,6 +149,12 @@ class BuildContractTest {
 
     private static final String SHELL_ENTRY = "ShellCommandRunner.java";
 
+    /** 会话 schema 的默认名。带点号才是"被拼进了表名"，不带点号的是那个常量自己。 */
+    private static final String SESSION_SCHEMA_LITERAL = "claw4j_session.";
+
+    /** 唯一允许持有它的文件：schema 名与"怎么拼进 SQL"都在这里定义。 */
+    private static final String SESSION_SCHEMA_HOLDER = "SessionSchema.java";
+
     @Test
     @DisplayName("各模块主代码里没有手写的 shell 调用")
     void noHandWrittenShellInvocations() throws IOException {
@@ -180,6 +187,68 @@ class BuildContractTest {
         }
 
         assertThat(offenders).isEmpty();
+    }
+
+    /**
+     * 会话 schema 的字面量只许出现在 {@link io.github.claw4j.agent.session.SessionSchema} 里。
+     *
+     * <p><b>为什么要有这条</b>：{@code claw4j.session.schema} 是可配的，而跑在主连接池上的
+     * 手写 SQL（会话指针、会话目标、清理任务、跨会话召回）不能靠连接的 {@code search_path}，
+     * 只能写全限定表名。每写死一处，改配之后就是"框架往新 schema 写、这一处读旧的"。
+     * 症状不是报错，是功能悄悄失效：指针永远换不出来、目标读不到、一行都没清出去。
+     *
+     * <p><b>它来自哪次事故</b>：票 05 只把跨会话召回那一处改成读配置，
+     * 另外三处（共 17 个表名）仍然写死。同一份代码里两种行为并存比"全都写死"更难发现，
+     * 因为它看起来已经修过了。
+     *
+     * <p>只查 {@code src/main/java}：测试里写全限定名是正常的（真库要建表、要 truncate）。
+     * 注释行不查——那里写的是"读起来像什么"，不参与执行；为了它写一个词法解析器不值。
+     */
+    @Test
+    @DisplayName("会话 schema 的字面量只许留在 SessionSchema：手写 SQL 一律从配置取")
+    void sessionSchemaLiteralLivesInOnePlace() throws IOException {
+        Path repository = Path.of("..").toRealPath();
+
+        List<String> offenders = new ArrayList<>();
+        try (Stream<Path> modules = Files.list(repository)) {
+            for (Path module : modules.filter(Files::isDirectory).sorted().toList()) {
+                if (!module.getFileName().toString().startsWith("claw4j-")) {
+                    continue;
+                }
+                Path sources = module.resolve("src/main/java");
+                if (!Files.isDirectory(sources)) {
+                    continue;
+                }
+                try (Stream<Path> files = Files.walk(sources)) {
+                    for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
+                        if (file.getFileName().toString().equals(SESSION_SCHEMA_HOLDER)) {
+                            continue;
+                        }
+                        collectSchemaLiterals(repository, file, offenders);
+                    }
+                }
+            }
+        }
+
+        assertThat(offenders)
+                .as("这些地方写死了会话 schema，改配之后它们继续指向旧 schema，"
+                        + "而症状是功能悄悄失效——不是报错")
+                .isEmpty();
+    }
+
+    /** 逐行找，跳过注释行。注释不执行，为它写解析器的代价比"换个说法"贵。 */
+    private static void collectSchemaLiterals(Path repository, Path file, List<String> offenders)
+            throws IOException {
+        List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i).strip();
+            if (line.startsWith("*") || line.startsWith("//") || line.startsWith("/*")) {
+                continue;
+            }
+            if (line.contains(SESSION_SCHEMA_LITERAL)) {
+                offenders.add(repository.relativize(file) + ":" + (i + 1));
+            }
+        }
     }
 
     // ---------------------------------------------------------------- 迁移合成一套 schema

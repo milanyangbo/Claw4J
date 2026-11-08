@@ -186,7 +186,9 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * 旧会话怎么清（ADR-0026 的收尾，判据照 OpenClaw 的 {@code session.maintenance}）。
      *
      * <p><b>用的是主连接池</b>：表名写全限定，与会话仓储那一路不同（那边框架生成的 SQL
-     * 不带前缀，必须另开一个池把 {@code currentSchema} 指过去）。
+     * 不带前缀，必须另开一个池把 {@code currentSchema} 指过去）。全限定名的 schema 段从
+     * {@link SessionMemoryProperties#schema()} 取，<b>不写字面量</b>：写死的话改配之后
+     * 框架往新 schema 写、这里清旧的，日志全绿而一行都没清对。
      *
      * <p><b>为什么把 {@code ScheduleProperties} 也依赖进来</b>：cron 的会话留存
      * （{@code claw4j.schedule.session-retention}）是清理这一侧读的，调度那一侧不读。
@@ -198,10 +200,11 @@ public class SessionMemoryConfiguration implements DisposableBean {
     public SessionMaintenance sessionMaintenance(JdbcTemplate jdbc,
                                                  SessionMaintenanceProperties properties,
                                                  io.github.claw4j.agent.schedule.ScheduleProperties schedule,
-                                                 ObjectProvider<MeterRegistry> meterRegistry) {
+                                                 ObjectProvider<MeterRegistry> meterRegistry,
+                                                 SessionMemoryProperties session) {
         MeterRegistry registry = meterRegistry.getIfAvailable();
         return new SessionMaintenance(jdbc, properties, schedule,
-                registry == null ? Metrics.globalRegistry : registry);
+                registry == null ? Metrics.globalRegistry : registry, session.schema());
     }
 
     /**
@@ -228,6 +231,8 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * {@code claw4j.session.schema} 是可配的，写死的话改配之后这条 SQL 会报
      * {@code BadSqlGrammarException}，而那一档的异常被降级成"没找到"——表现是
      * "配什么都一样，永远查不到别人的会话"，且日志上只有一条 WARN。
+     * 会话指针、会话目标、清理任务三处现在都从同一个键取（票 05 的评审修的），
+     * 所以"改一处配置、四处同时跟上"这件事有测试守着。
      */
     @Bean
     @ConditionalOnMissingBean(CrossSessionEvents.class)
@@ -298,18 +303,22 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
-     * 会话段的指针（ADR-0026）。表在 {@code claw4j_session}，但这个 bean 用的是<b>主连接池</b>。
+     * 会话段的指针（ADR-0026）。表在会话 schema 里，但这个 bean 用的是<b>主连接池</b>。
      *
      * <p>与会话仓储那一路不同：框架生成的 SQL 不带前缀，所以那边必须另开一个池把
      * {@code currentSchema} 指过去；这里的 SQL 全在我们手里、表名写全限定，
      * 不需要靠连接的 search_path。少一个 {@code DataSource} 的收益是实的——
      * 容器里出现两个，{@code @ConditionalOnSingleCandidate(DataSource.class)} 就不再成立，
      * 一整套 JDBC 自动配置会安静地不装配。
+     *
+     * <p>全限定名里的 schema 段从 {@link SessionMemoryProperties#schema()} 取，
+     * <b>与框架那一路同源</b>：写死的话改配之后指针留在旧 schema，换段判定与记忆读的不是同一批表。
      */
     @Bean
     @ConditionalOnMissingBean(ConversationPointerStore.class)
-    public ConversationPointerStore conversationPointerStore(JdbcTemplate jdbc) {
-        return new JdbcConversationPointerStore(jdbc);
+    public ConversationPointerStore conversationPointerStore(JdbcTemplate jdbc,
+                                                             SessionMemoryProperties session) {
+        return new JdbcConversationPointerStore(jdbc, session.schema());
     }
 
     /**
@@ -334,16 +343,18 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
-     * 会话目标（ADR-0027 决定三）。表在 {@code claw4j_session}，用的是主连接池。
+     * 会话目标（ADR-0027 决定三）。表在会话 schema 里，用的是主连接池。
      *
      * <p>与会话指针同一条理由写全限定表名：不靠连接的 search_path，
-     * 也就不需要第二个 {@code DataSource}。
+     * 也就不需要第二个 {@code DataSource}。schema 段同样从
+     * {@link SessionMemoryProperties#schema()} 取，不写字面量。
      */
     @Bean
     @ConditionalOnMissingBean(SessionGoalStore.class)
     public SessionGoalStore sessionGoalStore(JdbcTemplate jdbc,
-                                             ObjectProvider<MeterRegistry> meterRegistry) {
-        return new JdbcSessionGoalStore(jdbc, meterRegistry.getIfAvailable());
+                                             ObjectProvider<MeterRegistry> meterRegistry,
+                                             SessionMemoryProperties session) {
+        return new JdbcSessionGoalStore(jdbc, session.schema(), meterRegistry.getIfAvailable());
     }
 
     /**

@@ -16,6 +16,7 @@ import java.time.Instant;
 import io.github.claw4j.agent.session.ConversationPointerStore;
 import io.github.claw4j.agent.session.JdbcConversationPointerStore;
 import io.github.claw4j.agent.session.SessionResetProperties;
+import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.ApprovalLedger;
 import org.flywaydb.core.Flyway;
@@ -130,7 +131,7 @@ class PersistenceSchemaTest {
     @Test
     @DisplayName("换段就是换行：新段天然没有目标；edit 不动状态与用量；已完成是终态")
     void aFreshSegmentHasNoGoalAndEditKeepsStatusAndUsage() {
-        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, null);
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         String first = SessionKeys.sessionIdOf("u-1@fp-1", "web", "c-1", "seg-1");
         String second = SessionKeys.sessionIdOf("u-1@fp-1", "web", "c-1", "seg-2");
 

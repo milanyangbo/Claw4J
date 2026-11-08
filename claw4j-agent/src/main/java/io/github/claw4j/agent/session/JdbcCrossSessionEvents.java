@@ -19,7 +19,7 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 跨会话检索的真实现：一条 SQL 查 {@code claw4j_session.ai_session_event}（票 05）。
+ * 跨会话检索的真实现：一条 SQL 查配置的那个会话 schema 里的 {@code ai_session_event}（票 05）。
  *
  * <p><b>表名写全限定、用主连接池</b>：与会话仓储那一路不同（框架生成的 SQL 不带 schema，
  * 那边必须另开一个池把 {@code currentSchema} 指过去，见 {@link SessionSchema}）。

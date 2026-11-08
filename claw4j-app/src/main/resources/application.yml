@@ -246,6 +246,12 @@ claw4j:
 
   # ---- 记忆与一段对话的边界 ----
   session:
+    # 会话表落在哪个 schema。默认 claw4j_session，与业务数据的 business 分开（ADR-0005）。
+    # **改它会影响五处**：框架那一路（另开一个连接池把 currentSchema 指过去）、会话指针、
+    # 会话目标、清理任务、跨会话召回。后四个是手写全限定名的 SQL，都从这一个键取；
+    # 写死一处就会变成"框架往新 schema 写、那一处读旧表"，而症状是功能悄悄失效。
+    # 挡这件事的是 BuildContractTest#sessionSchemaLiteralLivesInOnePlace。
+    # schema: claw4j_session
     # 过期会话的清理间隔。写出来是为了让人知道有这个后台任务：不写也成立
     # （@Scheduled 上的默认值同样是 PT1H），但"有一个每小时删东西的任务"不该只活在代码里。
     # 压缩阈值那几个数走代码默认值，换模型时才需要动（见 SessionMemoryProperties）。

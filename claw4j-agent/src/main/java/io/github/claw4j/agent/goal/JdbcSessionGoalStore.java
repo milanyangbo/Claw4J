@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.goal;
 
+import io.github.claw4j.agent.session.SessionSchema;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -15,7 +16,7 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 /**
- * 目标落在 {@code claw4j_session.conversation_goal} 上（ADR-0027 决定三）。
+ * 目标落在会话 schema 的 {@code conversation_goal} 上（ADR-0027 决定三）。
  *
  * <p><b>主键就是"一个会话一个目标"</b>：不另加"当前目标"标志位。有标志位的版本里，
  * "两行都是当前"与"一行都不是"都写得出来，而修它要靠一条没人会写的唯一索引。
@@ -36,9 +37,17 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
 
     private static final Logger log = LoggerFactory.getLogger(JdbcSessionGoalStore.class);
 
-    private static final String COLUMNS = "select session_key, status, objective, status_note,"
+    /**
+     * SQL 模板里的 {@code %1$s} 是 schema 前缀，构造时由 {@link SessionSchema#qualifier} 展开。
+     *
+     * <p><b>为什么不留字面量 {@code claw4j_session}</b>：{@code claw4j.session.schema} 是可配的，
+     * 而本类用的是主连接池（{@code search_path} 里没有会话 schema），只能写全限定名。
+     * 写死的话改配之后这里每条语句都会报 {@code BadSqlGrammarException}，
+     * 而那个异常被 {@link #guard} 降级成"这一轮没有目标"——表现是目标功能无声消失。
+     */
+    private static final String COLUMNS_TEMPLATE = "select session_key, status, objective, status_note,"
             + " token_budget, tokens_used, revision, created_at, updated_at"
-            + " from claw4j_session.conversation_goal";
+            + " from %1$sconversation_goal";
 
     private static final String RETURNING = " returning session_key, status, objective, status_note,"
             + " token_budget, tokens_used, revision, created_at, updated_at";
@@ -48,7 +57,7 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * "已经有一个目标了"在这里是一个<b>正常结果</b>（返回空，调用方去说那句话），
      * 不是一次覆盖。
      */
-    private static final String START = "insert into claw4j_session.conversation_goal"
+    private static final String START_TEMPLATE = "insert into %1$sconversation_goal"
             + " (session_key, status, objective, token_budget) values (?, 'active', ?, ?)"
             + " on conflict (session_key) do nothing" + RETURNING;
 
@@ -60,7 +69,7 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * 少了这一句，一次误触就能把一件已经收了尾的事改回"还在做的样子"，
      * 而它的用量与完成时间都留在原处——那种行看起来正常，对不上账。
      */
-    private static final String EDIT = "update claw4j_session.conversation_goal"
+    private static final String EDIT_TEMPLATE = "update %1$sconversation_goal"
             + " set objective = ?, revision = revision + 1, updated_at = now()"
             + " where session_key = ? and status <> 'complete'" + RETURNING;
 
@@ -68,7 +77,7 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * 改状态。{@code status <> 'complete'} 写在 SQL 里：达成之后不能直接 pause / block，
      * 要先 resume（原文的排错表：{@code goal is already complete}）。
      */
-    private static final String SET_STATUS = "update claw4j_session.conversation_goal"
+    private static final String SET_STATUS_TEMPLATE = "update %1$sconversation_goal"
             + " set status = ?, status_note = ?, revision = revision + 1, updated_at = now()"
             + " where session_key = ? and status <> 'complete'" + RETURNING;
 
@@ -83,9 +92,9 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * 原文的状态表把 {@code complete} 写成"保持达成，直到你显式地用 {@code /goal resume}
      * 再次推进同一个目标"；命令表里也写着 resume "恢复已暂停、已阻塞、受限或<b>已完成</b>的目标"。
      * 别把另一句读成"不能恢复"：那句"终止状态"讲的是
-     * <b>不能直接 edit / pause / block</b>（见 {@link #EDIT} 与 {@link #SET_STATUS}）。
+     * <b>不能直接 edit / pause / block</b>（见 {@link #edit} 与 {@link #setStatus}）。
      */
-    private static final String RESUME = "update claw4j_session.conversation_goal"
+    private static final String RESUME_TEMPLATE = "update %1$sconversation_goal"
             + " set tokens_used = case when status = 'budget_limited' then 0 else tokens_used end,"
             + " status = 'active', status_note = ?, revision = revision + 1, updated_at = now()"
             + " where session_key = ? and status <> 'active'" + RETURNING;
@@ -98,7 +107,7 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * 拆成"先加再读再改状态"会有两步之间的窗口：并发的两条消息各自看到没超，
      * 结果超了却没进受限状态。
      */
-    private static final String ADD_TOKENS = "update claw4j_session.conversation_goal"
+    private static final String ADD_TOKENS_TEMPLATE = "update %1$sconversation_goal"
             + " set tokens_used = tokens_used + ?,"
             + " status = case when status not in ('complete', 'budget_limited')"
             + "               and token_budget is not null and tokens_used + ? >= token_budget"
@@ -109,60 +118,82 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
             + " updated_at = now()"
             + " where session_key = ?" + RETURNING;
 
-    private static final String CLEAR = "delete from claw4j_session.conversation_goal"
+    private static final String CLEAR_TEMPLATE = "delete from %1$sconversation_goal"
             + " where session_key = ?";
 
     private final JdbcTemplate jdbc;
 
     private final MeterRegistry registry;
 
+    /** 七条语句的 schema 前缀已在构造时展开：{@code claw4j.session.schema} 改了它们跟着改。 */
+    private final String columns;
+    private final String start;
+    private final String edit;
+    private final String setStatus;
+    private final String resume;
+    private final String addTokens;
+    private final String clear;
+
     /** 只在"从坏到好"与"从好到坏"的边沿打日志，不在每条失败上重复。 */
     private volatile boolean degraded;
 
-    public JdbcSessionGoalStore(JdbcTemplate jdbc, MeterRegistry registry) {
+    /**
+     * @param schema 会话表所在的 schema。<b>从 {@code claw4j.session.schema} 取，与框架那一路同源</b>：
+     *               本类在主连接池上跑（{@code search_path} 里没有会话 schema），只能写全限定名，
+     *               于是"落在哪个 schema"这件事必须由构造参数决定，不能由字面量决定
+     */
+    public JdbcSessionGoalStore(JdbcTemplate jdbc, String schema, MeterRegistry registry) {
         this.jdbc = jdbc;
         this.registry = registry;
+        String qualifier = SessionSchema.qualifier(schema);
+        this.columns = COLUMNS_TEMPLATE.formatted(qualifier);
+        this.start = START_TEMPLATE.formatted(qualifier);
+        this.edit = EDIT_TEMPLATE.formatted(qualifier);
+        this.setStatus = SET_STATUS_TEMPLATE.formatted(qualifier);
+        this.resume = RESUME_TEMPLATE.formatted(qualifier);
+        this.addTokens = ADD_TOKENS_TEMPLATE.formatted(qualifier);
+        this.clear = CLEAR_TEMPLATE.formatted(qualifier);
     }
 
     @Override
     public Optional<SessionGoal> of(String sessionKey) {
-        return guard("读一个会话的目标", () -> jdbc.query(COLUMNS + " where session_key = ?",
+        return guard("读一个会话的目标", () -> jdbc.query(columns + " where session_key = ?",
                 ROW, sessionKey).stream().findFirst().orElse(null));
     }
 
     @Override
     public Optional<SessionGoal> start(String sessionKey, String objective, Long tokenBudget) {
-        return guard("新建一个目标", () -> jdbc.query(START, ROW,
+        return guard("新建一个目标", () -> jdbc.query(start, ROW,
                 sessionKey, objective, tokenBudget).stream().findFirst().orElse(null));
     }
 
     @Override
     public Optional<SessionGoal> edit(String sessionKey, String objective) {
-        return guard("改写一个目标", () -> jdbc.query(EDIT, ROW,
+        return guard("改写一个目标", () -> jdbc.query(edit, ROW,
                 objective, sessionKey).stream().findFirst().orElse(null));
     }
 
     @Override
     public Optional<SessionGoal> setStatus(String sessionKey, GoalStatus status, String note) {
-        return guard("改一个目标的状态", () -> jdbc.query(SET_STATUS, ROW,
+        return guard("改一个目标的状态", () -> jdbc.query(setStatus, ROW,
                 status.column(), note, sessionKey).stream().findFirst().orElse(null));
     }
 
     @Override
     public Optional<SessionGoal> resume(String sessionKey, String note) {
-        return guard("恢复一个目标", () -> jdbc.query(RESUME, ROW,
+        return guard("恢复一个目标", () -> jdbc.query(resume, ROW,
                 note, sessionKey).stream().findFirst().orElse(null));
     }
 
     @Override
     public Optional<SessionGoal> addTokens(String sessionKey, long tokens) {
-        return guard("给一个目标记用量", () -> jdbc.query(ADD_TOKENS, ROW,
+        return guard("给一个目标记用量", () -> jdbc.query(addTokens, ROW,
                 tokens, tokens, tokens, sessionKey).stream().findFirst().orElse(null));
     }
 
     @Override
     public boolean clear(String sessionKey) {
-        return guard("删掉一个目标", () -> jdbc.update(CLEAR, sessionKey)).orElse(0) > 0;
+        return guard("删掉一个目标", () -> jdbc.update(clear, sessionKey)).orElse(0) > 0;
     }
 
     private <T> Optional<T> guard(String what, Supplier<T> work) {

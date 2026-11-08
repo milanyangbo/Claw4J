@@ -18,10 +18,12 @@ import java.util.Optional;
  * <p><b>{@code case} 与 {@code where} 的区别就在这</b>：{@code case} 版本永远更新一行、
  * 永远刷新 {@code touched_at}、永远返回段；{@code where} 版本三件事都只在"确实换段"时发生。
  *
- * <p><b>表名写全限定</b>（{@code claw4j_session.conversation_pointer}）：这个类用的是主连接池，
- * 它的 {@code search_path} 里没有 {@code claw4j_session}。会话那边另开一个池是因为
- * framework 生成的 SQL 不带前缀；这里 SQL 全在我们手里，为它多开一个池不划算——
- * 而且容器里出现第二个 {@code DataSource} 会安静地打掉一整套自动配置。
+ * <p><b>表名写全限定，schema 段来自配置</b>：这个类用的是主连接池，它的 {@code search_path}
+ * 里没有会话 schema。会话那边另开一个池是因为 framework 生成的 SQL 不带前缀；
+ * 这里 SQL 全在我们手里，为它多开一个池不划算——而且容器里出现第二个 {@code DataSource}
+ * 会安静地打掉一整套自动配置。所以只能写全限定名，而<b>schema 名必须与框架那一路同源</b>
+ * （都读 {@code claw4j.session.schema}）：写死字面量的话，改配之后框架往新 schema 写、
+ * 指针留在旧的，"换段"这件事从此对不上记忆。
  */
 public final class JdbcConversationPointerStore implements ConversationPointerStore {
 
@@ -33,8 +35,8 @@ public final class JdbcConversationPointerStore implements ConversationPointerSt
      * {@code on conflict do update} 里所有 {@code set} 表达式都基于同一份旧行快照，
      * 所以两个 {@code case} 不会互相看到对方刚写进去的值。
      */
-    private static final String DAILY_AND_IDLE = """
-            insert into claw4j_session.conversation_pointer
+    private static final String DAILY_AND_IDLE_TEMPLATE = """
+            insert into %1$sconversation_pointer
                    (owner, channel, chat_id, segment, touched_at, day_started)
             values (?, ?, ?, ?, ?, ?)
             on conflict (owner, channel, chat_id) do update set
@@ -51,8 +53,8 @@ public final class JdbcConversationPointerStore implements ConversationPointerSt
             """;
 
     /** 只看空闲（{@code mode: idle}）。与上面同构，少掉日历那一半。 */
-    private static final String IDLE_ONLY = """
-            insert into claw4j_session.conversation_pointer
+    private static final String IDLE_ONLY_TEMPLATE = """
+            insert into %1$sconversation_pointer
                    (owner, channel, chat_id, segment, touched_at, day_started)
             values (?, ?, ?, ?, ?, ?)
             on conflict (owner, channel, chat_id) do update set
@@ -68,8 +70,19 @@ public final class JdbcConversationPointerStore implements ConversationPointerSt
 
     private final JdbcTemplate jdbc;
 
-    public JdbcConversationPointerStore(JdbcTemplate jdbc) {
+    /** 两条语句的 schema 前缀已在构造时展开：{@code claw4j.session.schema} 改了它们跟着改。 */
+    private final String dailyAndIdle;
+    private final String idleOnly;
+
+    /**
+     * @param schema 会话表所在的 schema，与框架那一路同源（{@code claw4j.session.schema}）。
+     *               本类在主连接池上跑，只能写全限定名，所以它必须由参数决定
+     */
+    public JdbcConversationPointerStore(JdbcTemplate jdbc, String schema) {
         this.jdbc = jdbc;
+        String qualifier = SessionSchema.qualifier(schema);
+        this.dailyAndIdle = DAILY_AND_IDLE_TEMPLATE.formatted(qualifier);
+        this.idleOnly = IDLE_ONLY_TEMPLATE.formatted(qualifier);
     }
 
     @Override
@@ -79,10 +92,10 @@ public final class JdbcConversationPointerStore implements ConversationPointerSt
         Date today = Date.valueOf(rotation.today());
         boolean forced = rotation.forced();
         String segment = rotation.dailyGate()
-                ? jdbc.queryForObject(DAILY_AND_IDLE, String.class,
+                ? jdbc.queryForObject(dailyAndIdle, String.class,
                 key.owner(), key.channel(), key.chatId(), rotation.freshSegment(),
                 now, today, forced, today, idleBefore, forced, today, idleBefore)
-                : jdbc.queryForObject(IDLE_ONLY, String.class,
+                : jdbc.queryForObject(idleOnly, String.class,
                 key.owner(), key.channel(), key.chatId(), rotation.freshSegment(),
                 now, today, forced, idleBefore, forced, idleBefore);
         return Optional.ofNullable(segment);

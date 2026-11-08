@@ -410,7 +410,7 @@ class SessionMemoryTest {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         doReturn("seg-1").when(jdbc)
                 .queryForObject(anyString(), eq(String.class), any(Object[].class));
-        assertThat(new JdbcConversationPointerStore(jdbc).segmentOf(
+        assertThat(new JdbcConversationPointerStore(jdbc, SessionSchema.DEFAULT_SCHEMA).segmentOf(
                 new ConversationPointerStore.Key("u-1@fp", "web", "c-1"),
                 new ConversationPointerStore.Rotation("fresh", first, first.minusSeconds(7200),
                         LocalDate.of(2026, 11, 5), true, false)))
@@ -685,7 +685,7 @@ class SessionMemoryTest {
 
     private static SessionMaintenance maintenance(JdbcTemplate jdbc, MeterRegistry registry) {
         return new SessionMaintenance(jdbc, SessionMaintenanceProperties.defaults(),
-                ScheduleProperties.defaults(), registry);
+                ScheduleProperties.defaults(), registry, SessionSchema.DEFAULT_SCHEMA);
     }
 
     private static SessionCompactor compactor(SessionService sessions, MeterRegistry registry) {

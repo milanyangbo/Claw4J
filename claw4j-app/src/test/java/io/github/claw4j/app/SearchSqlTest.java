@@ -8,7 +8,9 @@ import io.github.claw4j.agent.model.EmbeddingProperties;
 import io.github.claw4j.agent.rag.KnowledgeBase;
 import io.github.claw4j.agent.rag.PgVectorKnowledgeBase;
 import io.github.claw4j.agent.rag.RagProperties;
+import io.github.claw4j.agent.session.ConversationPointerStore;
 import io.github.claw4j.agent.session.CrossSessionEvents;
+import io.github.claw4j.agent.session.JdbcConversationPointerStore;
 import io.github.claw4j.agent.session.JdbcCrossSessionEvents;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.inbound.ClaimedInbound;
@@ -30,6 +32,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -556,6 +559,46 @@ class SearchSqlTest {
                 .as("表名写死成 claw4j_session 的话这里一条都没有，而那个空结果会被降级成「没找到」——"
                         + "配了 claw4j.session.schema 却不生效，是本仓库最讨厌的那种「配了看起来生效」")
                 .containsExactly("alt-1");
+    }
+
+    /**
+     * 会话指针也读 {@code claw4j.session.schema}，不是只让召回那一条读。
+     *
+     * <p><b>这条防的是"修了一半"</b>：票 05 只把跨会话召回改成读配置，指针、目标、清理三处
+     * 仍然写死 {@code claw4j_session}。那比"全都写死"更难发现——看起来已经修过了。
+     *
+     * <p><b>断言必须看落库位置，不能只看返回值</b>：写死时 {@code segmentOf} 照样返回
+     * {@code seg-1}，因为它确实写成功了，只是写进了另一张同名表。所以这里查的是
+     * {@code claw4j_alt.conversation_pointer} 的行数——那一行才证明"配了哪个 schema 就写哪个"。
+     */
+    @Test
+    @DisplayName("会话指针跟着 claw4j.session.schema 走：写死的话它悄悄写进另一张表")
+    void conversationPointersHonourTheConfiguredSchema() {
+        jdbc.execute("drop schema if exists claw4j_alt cascade");
+        jdbc.execute("create schema claw4j_alt");
+        jdbc.execute("""
+                create table claw4j_alt.conversation_pointer (
+                    owner varchar(255) not null,
+                    channel varchar(64) not null,
+                    chat_id varchar(255) not null,
+                    segment varchar(64) not null,
+                    touched_at timestamp not null,
+                    day_started date not null,
+                    primary key (owner, channel, chat_id))
+                """);
+
+        Instant now = Instant.parse("2026-11-08T10:00:00Z");
+        Optional<String> segment = new JdbcConversationPointerStore(jdbc, "claw4j_alt")
+                .segmentOf(new ConversationPointerStore.Key("u-1@fp", "web", "c-1"),
+                        new ConversationPointerStore.Rotation("seg-1", now, now.minusSeconds(7200),
+                                LocalDate.of(2026, 11, 8), true, false));
+
+        assertThat(segment).contains("seg-1");
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_alt.conversation_pointer", Long.class))
+                .as("写死 claw4j_session 时这一行会落到那张表里：insert 不报错、返回值照常，"
+                        + "只有这里能看出配的 schema 没生效")
+                .isEqualTo(1L);
     }
 
     /** 会话行：事件有外键，不先建会话插不进去。 */

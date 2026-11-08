@@ -49,17 +49,17 @@ public final class SessionMaintenance {
     private static final Logger log = LoggerFactory.getLogger(SessionMaintenance.class);
 
     /** 一段时间没动静的段。{@code group by ... having} 让"取每组最后一次事件"只算一遍。 */
-    private static final String STALE_SEGMENTS = """
+    private static final String STALE_SEGMENTS_TEMPLATE = """
             select a.id
-            from claw4j_session.ai_session a
-            left join claw4j_session.ai_session_event e on e.session_id = a.id
+            from %1$sai_session a
+            left join %1$sai_session_event e on e.session_id = a.id
             where a.id not like ?
             group by a.id, a.created_at
             having coalesce(max(e."timestamp"), a.created_at) < ?
             """;
 
-    private static final String DELETE_STALE_SEGMENTS =
-            "delete from claw4j_session.ai_session where id in (" + STALE_SEGMENTS + ")";
+    private static final String DELETE_STALE_SEGMENTS_TEMPLATE =
+            "delete from %1$sai_session where id in (" + STALE_SEGMENTS_TEMPLATE + ")";
 
     /**
      * 一段时间没动静的指针行。
@@ -70,23 +70,23 @@ public final class SessionMaintenance {
      * <p>与桶级那条分开，是因为它们的依据不同：段看"最后一次事件"，桶看"最后一次访问"。
      * 一个刚换段的人可能一条事件都没写（换段那次是纯读），但指针行必须被刷新。
      */
-    private static final String STALE_CONVERSATIONS =
-            "select owner, channel, chat_id from claw4j_session.conversation_pointer where touched_at < ?";
+    private static final String STALE_CONVERSATIONS_TEMPLATE =
+            "select owner, channel, chat_id from %1$sconversation_pointer where touched_at < ?";
 
-    private static final String DELETE_STALE_CONVERSATIONS =
-            "delete from claw4j_session.conversation_pointer where touched_at < ?";
+    private static final String DELETE_STALE_CONVERSATIONS_TEMPLATE =
+            "delete from %1$sconversation_pointer where touched_at < ?";
 
     /** 超出 {@code max-entries} 的那些桶，最久没动的排在前面。 */
-    private static final String OVER_LIMIT = """
+    private static final String OVER_LIMIT_TEMPLATE = """
             select owner, channel, chat_id
-            from claw4j_session.conversation_pointer
+            from %1$sconversation_pointer
             order by touched_at desc, owner, channel, chat_id
             offset ?
             """;
 
-    private static final String DELETE_OVER_LIMIT = """
-            delete from claw4j_session.conversation_pointer
-            where (owner, channel, chat_id) in (""" + OVER_LIMIT + ")";
+    private static final String DELETE_OVER_LIMIT_TEMPLATE = """
+            delete from %1$sconversation_pointer
+            where (owner, channel, chat_id) in (""" + OVER_LIMIT_TEMPLATE + ")";
 
     /**
      * 定时运行留下的段。
@@ -96,17 +96,17 @@ public final class SessionMaintenance {
      * {@code chatId} 恰好含 {@code :cron:} 的自定义通道——那是保留字，写在
      * {@code SessionKeys} 的注释里。
      */
-    private static final String STALE_CRON_SEGMENTS = """
+    private static final String STALE_CRON_SEGMENTS_TEMPLATE = """
             select a.id
-            from claw4j_session.ai_session a
-            left join claw4j_session.ai_session_event e on e.session_id = a.id
+            from %1$sai_session a
+            left join %1$sai_session_event e on e.session_id = a.id
             where a.id like ?
             group by a.id, a.created_at
             having coalesce(max(e."timestamp"), a.created_at) < ?
             """;
 
-    private static final String DELETE_STALE_CRON_SEGMENTS =
-            "delete from claw4j_session.ai_session where id in (" + STALE_CRON_SEGMENTS + ")";
+    private static final String DELETE_STALE_CRON_SEGMENTS_TEMPLATE =
+            "delete from %1$sai_session where id in (" + STALE_CRON_SEGMENTS_TEMPLATE + ")";
 
     private static final String CRON_MARKER = "%:cron:%";
 
@@ -124,6 +124,16 @@ public final class SessionMaintenance {
     private final ScheduleProperties schedule;
     private final MeterRegistry registry;
 
+    /** 八条语句的 schema 前缀已在构造时展开：{@code claw4j.session.schema} 改了它们跟着改。 */
+    private final String staleSegments;
+    private final String deleteStaleSegments;
+    private final String staleConversations;
+    private final String deleteStaleConversations;
+    private final String overLimit;
+    private final String deleteOverLimit;
+    private final String staleCronSegments;
+    private final String deleteStaleCronSegments;
+
     private final AtomicLong prunableSegments = new AtomicLong();
     private final AtomicLong prunableConversations = new AtomicLong();
     private final AtomicLong prunableOverLimit = new AtomicLong();
@@ -131,12 +141,27 @@ public final class SessionMaintenance {
 
     private boolean warned;
 
+    /**
+     * @param schema 会话表所在的 schema。本类在主连接池上跑（{@code search_path} 里没有会话 schema），
+     *               只能写全限定名，所以"落在哪个 schema"必须由这个参数决定，不能由字面量决定。
+     *               <b>与框架那一路同源</b>：两边都读 {@code claw4j.session.schema}，
+     *               否则改配之后框架往新 schema 写、这里清旧的，看起来全绿而一行都没清对
+     */
     public SessionMaintenance(JdbcTemplate jdbc, SessionMaintenanceProperties properties,
-                              ScheduleProperties schedule, MeterRegistry registry) {
+                              ScheduleProperties schedule, MeterRegistry registry, String schema) {
         this.jdbc = jdbc;
         this.properties = properties;
         this.schedule = schedule;
         this.registry = registry;
+        String qualifier = SessionSchema.qualifier(schema);
+        this.staleSegments = STALE_SEGMENTS_TEMPLATE.formatted(qualifier);
+        this.deleteStaleSegments = DELETE_STALE_SEGMENTS_TEMPLATE.formatted(qualifier);
+        this.staleConversations = STALE_CONVERSATIONS_TEMPLATE.formatted(qualifier);
+        this.deleteStaleConversations = DELETE_STALE_CONVERSATIONS_TEMPLATE.formatted(qualifier);
+        this.overLimit = OVER_LIMIT_TEMPLATE.formatted(qualifier);
+        this.deleteOverLimit = DELETE_OVER_LIMIT_TEMPLATE.formatted(qualifier);
+        this.staleCronSegments = STALE_CRON_SEGMENTS_TEMPLATE.formatted(qualifier);
+        this.deleteStaleCronSegments = DELETE_STALE_CRON_SEGMENTS_TEMPLATE.formatted(qualifier);
         if (registry != null) {
             gauge("segments", prunableSegments);
             gauge("conversations", prunableConversations);
@@ -155,30 +180,30 @@ public final class SessionMaintenance {
         Instant segmentCutoff = now.minus(properties.pruneAfter());
         Instant cronCutoff = now.minus(schedule.sessionRetention());
         try {
-            long segments = measure(STALE_SEGMENTS, CRON_MARKER, timestamp(segmentCutoff));
-            long conversations = measure(STALE_CONVERSATIONS, timestamp(segmentCutoff));
+            long segments = measure(staleSegments, CRON_MARKER, timestamp(segmentCutoff));
+            long conversations = measure(staleConversations, timestamp(segmentCutoff));
             long maxEntries = properties.maxEntries();
-            long overLimit = measure(OVER_LIMIT, maxEntries);
-            long cron = measure(STALE_CRON_SEGMENTS, CRON_MARKER, timestamp(cronCutoff));
+            long overLimitRows = measure(overLimit, maxEntries);
+            long cron = measure(staleCronSegments, CRON_MARKER, timestamp(cronCutoff));
 
             prunableSegments.set(segments);
             prunableConversations.set(conversations);
-            prunableOverLimit.set(overLimit);
+            prunableOverLimit.set(overLimitRows);
             prunableCron.set(cron);
 
             if (!properties.enforces()) {
-                if (segments + conversations + overLimit + cron > 0) {
+                if (segments + conversations + overLimitRows + cron > 0) {
                     log.info("会话清理（warn，未执行）：段 {} / 桶 {} / 超限 {} / cron {}。"
                             + "设 claw4j.session.maintenance.mode=enforce 才会真删", segments, conversations,
-                            overLimit, cron);
+                            overLimitRows, cron);
                 }
-                return new Report(segments, conversations, overLimit, cron, false);
+                return new Report(segments, conversations, overLimitRows, cron, false);
             }
 
-            long prunedSegments = delete(DELETE_STALE_SEGMENTS, CRON_MARKER, timestamp(segmentCutoff));
-            long prunedConversations = delete(DELETE_STALE_CONVERSATIONS, timestamp(segmentCutoff));
-            long prunedOverLimit = delete(DELETE_OVER_LIMIT, maxEntries);
-            long prunedCron = delete(DELETE_STALE_CRON_SEGMENTS, CRON_MARKER, timestamp(cronCutoff));
+            long prunedSegments = delete(deleteStaleSegments, CRON_MARKER, timestamp(segmentCutoff));
+            long prunedConversations = delete(deleteStaleConversations, timestamp(segmentCutoff));
+            long prunedOverLimit = delete(deleteOverLimit, maxEntries);
+            long prunedCron = delete(deleteStaleCronSegments, CRON_MARKER, timestamp(cronCutoff));
 
             increment(PRUNED, "segments", prunedSegments);
             increment(PRUNED, "conversations", prunedConversations);
@@ -189,7 +214,7 @@ public final class SessionMaintenance {
                 log.info("会话清理：删了段 {} / 桶 {} / 超限 {} / cron {}",
                         prunedSegments, prunedConversations, prunedOverLimit, prunedCron);
             }
-            return new Report(segments, conversations, overLimit, cron,
+            return new Report(segments, conversations, overLimitRows, cron,
                     prunedSegments, prunedConversations, prunedOverLimit, prunedCron, true);
         } catch (DataAccessException unavailable) {
             // 只把第一条说清楚，后面的只计数：一小时一条全栈日志会把真正的问题淹掉。

@@ -15,6 +15,7 @@ import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.SessionMaintenance;
 import io.github.claw4j.agent.session.SessionMaintenanceProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
+import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -112,7 +113,7 @@ class TurnFlowTest {
     @DisplayName("这一轮花掉的 token 记到目标上：撞上预算进 budget_limited，下一轮不再注入")
     void tokensOfATurnAreChargedToTheGoal() {
         Principal principal = Principal.readOnly("u-1");
-        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, null);
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         String sessionId = SessionKeys.sessionIdOf(principal, null, "chat-goal");
         goals.start(sessionId, "把三张表的口径对齐", 100L);
 
@@ -152,7 +153,7 @@ class TurnFlowTest {
     @Test
     @DisplayName("/goal resume：额度用完的开新窗口，暂停过的用量照旧")
     void resumingResetsTheWindowOnlyWhenTheBudgetWasReached() {
-        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, null);
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         String capped = "claw4j:user:u-1@fp-1:-:capped";
         String paused = "claw4j:user:u-1@fp-1:-:paused";
         goals.start(capped, "把三张表的口径对齐", 100L);
@@ -189,7 +190,7 @@ class TurnFlowTest {
     @Test
     @DisplayName("达成的目标：能 resume 回来，但 resume 之前 edit / pause 都被挡住")
     void aCompletedGoalCanBeResumedButNotChangedInPlace() {
-        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, null);
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         String key = "claw4j:user:u-1@fp-1:-:done";
         goals.start(key, "把三张表的口径对齐", 100L);
         goals.addTokens(key, 40L);
@@ -327,7 +328,7 @@ class TurnFlowTest {
     private SessionMaintenance maintenance(String mode, int maxEntries, MeterRegistry registry) {
         return new SessionMaintenance(jdbc,
                 new SessionMaintenanceProperties(mode, Duration.ofDays(30), maxEntries),
-                ScheduleProperties.defaults(), registry);
+                ScheduleProperties.defaults(), registry, SessionSchema.DEFAULT_SCHEMA);
     }
 
     private void session(String id, String owner, Instant createdAt, Instant lastEventAt) {
@@ -384,7 +385,7 @@ class TurnFlowTest {
         return new ChatClientAgentPort(ChatClient.builder(model).build(), null,
                 null, null, null, null,
                 new ToolCallAudit(new AuditLedger(jdbc, null)),
-                new JdbcSessionGoalStore(jdbc, null));
+                new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null));
     }
 
     private ConversationDelivery delivery(OutboundDelivery... channels) {
