@@ -39,6 +39,10 @@ import java.util.function.Supplier;
  * 否则一次接口抖动就会让用户得到"知识库里没有这条"，而那与"文档确实没写"分不开。
  * 这一点比"排序对不对"重要得多，所以这里没有任何一条路径会抛出去。
  *
+ * <p><b>它只重排，不截断</b>：输入是候选池前 {@code candidates} 条，输出还是这些条（换了顺序）。
+ * "最终只留 top-k"是 {@link TopKDocumentPostProcessor} 的事——两件事分开，才不会出现
+ * "重排关了，提示词里就塞进 30 段"这种只在关掉某个开关时才出现的偏差。
+ *
  * <p><b>上限要说清</b>：它是专用 reranker，给的是 query 与文档的相关性分，可解释、可截断。
  * 但它不判断"这段能不能回答问题"——段落写得含糊、缺前提条件，它照样可能给高分。
  * 所以回答仍然要带出处，让人能回去看原文。
@@ -57,19 +61,19 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
 
     private final Duration timeout;
 
-    private final int topK;
+    private final int candidates;
 
     /** 每次请求现取：真值不进字段（P08 的同一条约束）。取不到时降级为不重排。 */
     private final Supplier<String> apiKey;
 
     public RerankDocumentPostProcessor(HttpClient http, ObjectMapper json, String url, String model,
-                                       Duration timeout, int topK, Supplier<String> apiKey) {
+                                       Duration timeout, int candidates, Supplier<String> apiKey) {
         this.http = Objects.requireNonNull(http, "http");
         this.json = Objects.requireNonNull(json, "json");
         this.url = Objects.requireNonNull(url, "url");
         this.model = Objects.requireNonNull(model, "model");
         this.timeout = Objects.requireNonNull(timeout, "timeout");
-        this.topK = topK;
+        this.candidates = Math.max(1, candidates);
         this.apiKey = Objects.requireNonNull(apiKey, "apiKey");
     }
 
@@ -78,22 +82,27 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
         if (documents == null || documents.isEmpty()) {
             return List.of();
         }
+        // 送进重排的条数由配置定：候选池比最终条数大，但没必要把整池都发过去（每次都是一次
+        // HTTP + 一次计费）。顺序是上游融合给的，所以"取前 N 条"就是"融合后最靠前的 N 条"。
+        List<Document> pool = documents.size() > candidates
+                ? List.copyOf(documents.subList(0, candidates))
+                : documents;
         // 一条候选没有"顺序"可排；两条以下重排也不可能改变集合内容。
-        if (documents.size() < 2 || query == null || query.text() == null || query.text().isBlank()) {
-            return documents;
+        if (pool.size() < 2 || query == null || query.text() == null || query.text().isBlank()) {
+            return pool;
         }
         try {
-            return reorder(documents, rerank(query.text(), documents));
+            return reorder(pool, rerank(query.text(), pool));
         }
         catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             log.warn("重排被中断，这一轮按候选原顺序继续");
-            return documents;
+            return pool;
         }
         catch (Exception failure) {
             log.warn("重排失败（{}），这一轮按候选原顺序继续：{}",
                     failure.getClass().getSimpleName(), failure.getMessage());
-            return documents;
+            return pool;
         }
     }
 
@@ -124,7 +133,7 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
     }
 
     /**
-     * 按返回的下标重排，截到 {@code topK}。
+     * 按返回的下标重排。**条数不变**：没被点到的候选按原顺序补在后面。
      *
      * <p>下面每一种"不合法的返回"都只丢那一项，不整体放弃：
      * 模型/服务给出半个答案时，丢掉的部分按原顺序补在后面，比"整轮不重排"更接近用户预期。
@@ -145,15 +154,12 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
                 continue;
             }
             reordered.add(documents.get(index));
-            if (reordered.size() >= topK) {
-                break;
-            }
         }
         if (reordered.isEmpty()) {
             return documents;
         }
-        // 没被点到的候选按原顺序补在后面，补到 topK 为止——它们的名次本来就在末尾。
-        for (int index = 0; index < documents.size() && reordered.size() < topK; index++) {
+        // 没被点到的候选按原顺序补在后面——它们的名次本来就在末尾。
+        for (int index = 0; index < documents.size(); index++) {
             if (taken.add(index)) {
                 reordered.add(documents.get(index));
             }

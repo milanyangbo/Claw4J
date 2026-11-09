@@ -27,8 +27,16 @@ import java.util.Set;
  * 求和本身就合并了，不需要额外的去重步骤——重复加到同一个键上的分数更高，这正是"两路都认可"
  * 该有的结果。
  *
- * <p>同类里不做"同一路内去重"之外的任何加工：不截断（截断是重排的事），不改分数（{@code Document}
- * 的 score 保持原值，融合分只用于排序、不往外传）。
+ * <p><b>融合分写回 {@link Document#getScore()}</b>，不留在内部 map 里。两个来源都指向同一件事：
+ * OpenClaw 的 {@code mergeHybridResults} 给结果对象赋的是 {@code score: rankingScore}（融合分就是
+ * 它对外的那一个分）；而 Spring AI 的排序信号本来就只有一个——{@code Document#getScore()}，
+ * advisor 里紧接着跑的官方 {@code ConcatenationDocumentJoiner} 是
+ * {@code sorted(comparingDouble(Document::getScore).reversed())}。不写回的话，它会把
+ * "只有全文那一路命中的块"（score 为 null → 按 0.0）整个甩到末尾，RRF 排出来的顺序当场作废，
+ * 且同分之间还取决于 HashMap 的迭代顺序。
+ *
+ * <p>同类里只做三件事：按 id 合并、同一路内去重、把融合分写进 {@code score}。**不截断**
+ * （截断只有一处，在 {@code TopKDocumentPostProcessor}，见 ADR-0020 的检索修订段）。
  */
 public class ReciprocalRankFusionJoiner implements DocumentJoiner {
 
@@ -75,11 +83,13 @@ public class ReciprocalRankFusionJoiner implements DocumentJoiner {
         }
 
         List<String> ordered = new ArrayList<>(byId.keySet());
-        // Stream.sorted 是稳定排序：融合分相同时保持"先被看到的那一路"的顺序。
+        // 稳定排序：融合分相同时保持"先被看到的那一路"的顺序。
         ordered.sort(Comparator.comparingDouble((String id) -> fused.getOrDefault(id, 0.0)).reversed());
         List<Document> merged = new ArrayList<>(ordered.size());
         for (String id : ordered) {
-            merged.add(byId.get(id));
+            // mutate() 会带上 id / text / metadata，只换 score：下游（含官方的
+            // ConcatenationDocumentJoiner）按 score 排序，融合分才会成为它的顺序。
+            merged.add(byId.get(id).mutate().score(fused.get(id)).build());
         }
         return merged;
     }

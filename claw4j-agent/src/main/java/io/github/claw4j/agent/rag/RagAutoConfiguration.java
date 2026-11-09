@@ -13,6 +13,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
+import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
 import org.springframework.ai.rag.retrieval.join.ConcatenationDocumentJoiner;
 import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
@@ -175,11 +176,12 @@ public class RagAutoConfiguration {
      *
      * <ul>
      *   <li>{@code rerank.enabled=false} → 不装（装配层判断，类里不再有第二个开关）；</li>
-     *   <li>没配 qwen 凭据 → 不装。调用时才取 key 的话，一个配错凭据的部署会每轮打一次 401，
-     *       而这件事在启动时就能说清楚。</li>
+     *   <li>凭据**在调用时取**，取不到就不重排（WARN 一行）。不在启动时判：凭据可能轮换，
+     *       {@code SpringSecretResolver} 明确不缓存，把"装不装 bean"钉死在启动那一刻
+     *       等于让一次轮换后的恢复必须重启进程。</li>
      * </ul>
      *
-     * <p>但**取不到 key 不等于启动失败**：重排是排序优化，不是检索的前提。
+     * <p>取不到 key 不等于启动失败：重排是排序优化，不是检索的前提。
      */
     @Bean
     @ConditionalOnProperty(value = "claw4j.rag.rerank.enabled", havingValue = "true", matchIfMissing = true)
@@ -218,13 +220,31 @@ public class RagAutoConfiguration {
         RerankDocumentPostProcessor processor = reranker.getIfAvailable();
         return RetrievalAugmentationAdvisor.builder()
                 .documentRetriever(retriever)
-                // 官方默认的 joiner：每个 query 只有一路结果（多路已经在 retriever 内部融过），
-                // 它在这里只做"去重 + 按分数排"，与我们的 RRF 不冲突。
+                // 官方默认的 joiner：多路已经在 retriever 内部融过，这里每个 query 只有一路，
+                // 它做"按 id 去重 + 按 score 倒序"。**所以融合分必须写进 Document 的 score**
+                // （见 ReciprocalRankFusionJoiner）——否则它按 0.0 把只有全文那一路命中的块甩到末尾，
+                // RRF 的顺序当场作废。这不是"绕过官方实现"，是照它的排序信号喂数据。
                 .documentJoiner(new ConcatenationDocumentJoiner())
-                .documentPostProcessors(processor == null ? List.of() : List.of(processor))
+                // 顺序即链路的顺序：先重排（换顺序、不截断），再截断到 top-k（唯一的截断点）。
+                // 重排关掉时截断照样在，提示词不会被候选池撑满。
+                .documentPostProcessors(postProcessors(processor, properties.topK()))
                 .queryAugmenter(augmenter)
                 .order(ORDER)
                 .build();
+    }
+
+    /**
+     * 重排在前面跑，截断最后跑；重排没装就只剩截断。
+     *
+     * <p><b>截断不跟着重排走</b>：重排是可以关的（默认开但是可选），而"注入几段"不是可选项。
+     * 两件事绑一起的话，关掉重排就会把两路候选池（默认 30 段）整个塞进提示词，
+     * 而那只在关掉一个开关时才出现，平时看不见。
+     */
+    static List<DocumentPostProcessor> postProcessors(RerankDocumentPostProcessor reranker, int topK) {
+        TopKDocumentPostProcessor truncation = new TopKDocumentPostProcessor(topK);
+        return reranker == null
+                ? List.of(truncation)
+                : List.of(reranker, truncation);
     }
 
     /**

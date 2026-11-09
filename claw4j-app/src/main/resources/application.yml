@@ -467,7 +467,8 @@ claw4j:
     # 文档目录，递归找 .md / .txt。启动后同步一次，按文件内容哈希跳过没变的；
     # 文件删了，库里的块也跟着删（目录是事实来源）。
     directory: ${CLAW4J_RAG_DIRECTORY:}
-    # 一次检索取回多少段（框架的 SearchRequest.topK）。
+    # 一次检索最终注入几段。**由 TopKDocumentPostProcessor 在链路最后截断**，不是框架的
+    # SearchRequest.topK——那一个是"每路召回多少"，由下面的 candidates-per-route 管。
     top-k: ${CLAW4J_RAG_TOP_K:5}
     # 相似度下限。**这个数没有实测依据**（与缓存那个 0.93 不是一回事），
     # 它只负责"把明显不相关的挡掉"。换成框架的检索之后分数就是余弦相似度，
@@ -492,7 +493,8 @@ claw4j:
     # 类型（连 `RerankModel` 接口都不存在）。落点是框架的 DocumentPostProcessor。
     rerank:
       enabled: ${CLAW4J_RAG_RERANK_ENABLED:true}
-      # 送进重排的条数；小于 top-k 时按 top-k 用。
+      # 送进重排的条数（输入上限）：候选池 30 条没必要整池发过去，一次 HTTP 一次计费。
+      # 重排只换顺序、不截断；"最终留几段"由上面的 top-k 在链路最后决定。
       candidates: ${CLAW4J_RAG_RERANK_CANDIDATES:10}
       # **是 compatible-api 不是 compatible-mode**：与 chat/embedding 那两个不是同一个前缀，
       # 所以单独配一个，不从 qwen 的 base-url 拼（拼接迟早拼错）。

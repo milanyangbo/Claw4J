@@ -89,12 +89,13 @@ public class HybridDocumentRetriever implements DocumentRetriever {
         if (vectorHits.isEmpty() && keywordHits.isEmpty()) {
             return List.of();
         }
+        List<Document> fused = joiner.join(Map.of(query, List.of(vectorHits, keywordHits)));
         if (log.isDebugEnabled()) {
+            // 融合后条数要现算：两路之和减掉的是重复命中的块，那正是"融合有没有起作用"的证据。
             log.debug("知识库「{}」：向量 {} 条、全文 {} 条，融合后 {} 条",
-                    query.text(), vectorHits.size(), keywordHits.size(),
-                    vectorHits.size() + keywordHits.size());
+                    query.text(), vectorHits.size(), keywordHits.size(), fused.size());
         }
-        return joiner.join(Map.of(query, List.of(vectorHits, keywordHits)));
+        return fused;
     }
 
     private static List<Document> attempt(DocumentRetriever retriever, Query query, String lane,

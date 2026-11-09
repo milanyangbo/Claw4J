@@ -12,6 +12,8 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.rag.Query;
+import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
+import org.springframework.ai.rag.retrieval.join.ConcatenationDocumentJoiner;
 import org.springframework.ai.rag.retrieval.join.DocumentJoiner;
 import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -30,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -138,7 +141,7 @@ class KnowledgeRetrievalTest {
     // ---- 融合：RRF 只看名次 ----
 
     @Test
-    @DisplayName("RRF 只看名次：两路都命中的排第一，同一路重复出现只算一次")
+    @DisplayName("RRF 只看名次：两路都命中的排第一，同一路重复出现只算一次，空的那一路不影响另一路")
     void rrfRanksByRankNotByRepeats() {
         Document both = doc("d1", "returns/a.md", 1);
         Document vectorOnly = doc("d2", "returns/b.md", 1);
@@ -157,17 +160,11 @@ class KnowledgeRetrievalTest {
         assertThat(repeated).extracting(Document::getId)
                 .as("重复拿分等于把这一路的分量偷偷加倍；d1 只该从第一路拿一次分")
                 .containsExactly("d1", "d2");
-    }
 
-    @Test
-    @DisplayName("只在一路出现的块也保留：融合不是交集")
-    void singleRouteSurvivorsStay() {
-        List<Document> merged = joiner().join(Map.of(query("SKU-2024"),
-                List.of(List.of(), List.of(doc("k1", "warehouse/sku.md", 1)))));
-
-        assertThat(merged).extracting(Document::getId)
-                .as("向量那一路空的时候，全文那一路的结果必须还在")
-                .containsExactly("k1");
+        assertThat(joiner().join(Map.of(query("SKU-2024"),
+                List.of(List.of(), List.of(doc("k1", "warehouse/sku.md", 1))))))
+                .as("向量那一路空的时候，全文那一路的结果必须还在——融合不是交集")
+                .extracting(Document::getId).containsExactly("k1");
     }
 
     // ---- 混合检索：一路挂了还有另一路 ----
@@ -334,22 +331,67 @@ class KnowledgeRetrievalTest {
     // ---- 重排：失败必须原样返回 ----
 
     @Test
-    @DisplayName("按返回的下标重排并截断")
-    void rerankReordersAndTruncates() throws Exception {
+    @DisplayName("重排只换顺序不截断：送进去的是候选池前 N 条，回来还是这些条")
+    void rerankReordersAndCapsInput() throws Exception {
         try (Stub endpoint = new Stub("""
                 {"results":[{"index":2,"relevance_score":0.9},
                             {"index":0,"relevance_score":0.5},
                             {"index":1,"relevance_score":0.2}]}
                 """)) {
-            List<Document> candidates = List.of(doc("d1", "a.md", 1), doc("d2", "b.md", 1),
-                    doc("d3", "c.md", 1));
+            List<Document> pool = List.of(doc("d1", "a.md", 1), doc("d2", "b.md", 1),
+                    doc("d3", "c.md", 1), doc("d4", "d.md", 1));
 
-            List<Document> ranked = endpoint.reranker(2).process(query("退货"), candidates);
+            List<Document> ranked = endpoint.reranker(3).process(query("退货"), pool);
 
             assertThat(ranked).extracting(Document::getId)
-                    .as("下标 2 分最高应排第一；topK=2 截断")
-                    .containsExactly("d3", "d1");
+                    .as("下标 2 分最高应排第一；三条全留着——截断是 TopK 那一步的事")
+                    .containsExactly("d3", "d1", "d2");
+            assertThat(ranked).extracting(Document::getId)
+                    .as("第 4 条在候选上限之外，根本不该送进重排")
+                    .doesNotContain("d4");
         }
+    }
+
+    @Test
+    @DisplayName("组合起来仍然对：融合分进 score、官方 joiner 不动顺序、截断只留 top-k（含重排关掉时）")
+    void fusedOrderSurvivesOfficialJoinerAndTopKCut() {
+        // 真库上两路给的分本来就不是一个量纲：向量那一路有余弦分，全文独有的块没有分。
+        Document shared = doc("both", "returns/a.md", 1).mutate().score(0.80).build();
+        Document vectorOnly = doc("v2", "returns/b.md", 1).mutate().score(0.90).build();
+        Document keywordOnly = doc("k1", "warehouse/sku.md", 1);
+
+        List<Document> fused = joiner().join(Map.of(query("SKU-2024"),
+                List.of(List.of(shared, vectorOnly), List.of(keywordOnly, shared))));
+
+        assertThat(fused).extracting(Document::getId)
+                .as("RRF：both 两路都命中排第一；k1 名次更靠前（1/61 > 1/62）")
+                .containsExactly("both", "k1", "v2");
+        assertThat(fused).allSatisfy(document -> assertThat(document.getScore())
+                .as("融合分必须写进 score，否则下游按 0.0 把它甩到末尾")
+                .isNotNull());
+
+        // advisor 里紧接着跑的就是这个官方 joiner，它按 score 倒序。
+        List<Document> joined = new ConcatenationDocumentJoiner()
+                .join(Map.of(query("SKU-2024"), List.of(fused)));
+
+        assertThat(joined).extracting(Document::getId)
+                .as("余弦 0.90 的 v2 不该压过「两路都认可」的 both，也不该把全文独有的 k1 甩到最后")
+                .containsExactly("both", "k1", "v2");
+        assertThat(new TopKDocumentPostProcessor(2).process(query("SKU-2024"), joined))
+                .extracting(Document::getId)
+                .as("最终只留 top-k，顺序沿用上面那一个")
+                .containsExactly("both", "k1");
+
+        // 重排关掉时截断必须还在：否则 30 段候选池会整个进提示词，而这只在关掉开关时出现。
+        List<Document> pool = new ArrayList<>();
+        for (int i = 0; i < 30; i++) {
+            pool.add(doc("d" + i, "returns/x.md", i));
+        }
+        List<Document> afterChain = pool;
+        for (DocumentPostProcessor step : RagAutoConfiguration.postProcessors(null, 5)) {
+            afterChain = step.process(query("退货"), afterChain);
+        }
+        assertThat(afterChain).as("没有重排时，链上只剩截断，且它照 top-k 生效").hasSize(5);
     }
 
     @Test
