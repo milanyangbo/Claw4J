@@ -138,9 +138,10 @@ other agents' and other users' transcripts)"。默认值不因为"我们觉得�
 
 ## 会话目标：这一段对话要一起达成什么
 
-一段会话上最多挂**一个**目标（`claw4j_session.conversation_goal`，主键就是会话键含段）。
+一段会话上最多挂**一个**目标——它是 `claw4j_session.session_entry` 上的 `goal_*` 列，
+不是另一张表（票 06）。那一行装的是**会话节点**：段、两个时间、累计用量与目标。
 它回答的是"这一段话在往哪儿走"，不是"这件事做到第几步"——**它不按步骤推进，也没有进度百分比**。
-照 OpenClaw 的形状（ADR-0027 决定三）：
+照 OpenClaw 的 `SessionEntry` 形状（它的 goal 就是 entry 里的一个对象）：
 
 - **六态**：`active` / `paused` / `blocked` / `budget_limited` / `usage_limited` / `complete`。
   `usage_limited` 现在进不去，词表留着（OpenClaw 自己也标着"为将来保留"）。
@@ -150,13 +151,25 @@ other agents' and other users' transcripts)"。默认值不因为"我们觉得�
   用户看到的是"状态变了、但没有回答"的一轮。
 - **模型只能标 `complete` 与 `blocked`**。暂停、恢复、清除、改写都是人的按钮（`/goal` 那一族），
   模型手上没有那几个参数。它能说的是"我做到了"与"我被卡住了"，不能悄悄把靶子挪走。
-- **额度是目标的属性**：`create_goal` 带 `token_budget`，每轮收尾把 usage 记上去，
-  撞线进 `budget_limited`。`/goal resume` 是唯一能开新窗口的动作，而且只对 `budget_limited` 开。
-  这条与"工具调用次数"是两件事：后者是一轮之内的熔断，到点就停、不改任何持久状态。
-- **`/new` 换段即无目标**：键含段，新段天然读不到旧的那一行，不需要谁去删。
+- **额度是目标的属性**：`create_goal` 带 `token_budget`，每轮收尾按**快照差**重算用量
+  （`max(旧值, 会话累计 - goal_token_start)`，不是"把这一轮加上去"），撞线进 `budget_limited`。
+  `goal_token_start_fresh=false` 表示建目标那一刻还没有可用快照：下一次真实用量到来时把它
+  采纳成起点，之前的花费不算给这个目标。`/goal resume` 是唯一能开新窗口的动作，
+  而且只对受限状态开。这条与"工具调用次数"是两件事：后者是一轮之内的熔断，
+  到点就停、不改任何持久状态。
+- **五个时刻分开存**：`goal_paused_at` / `goal_blocked_at` / `goal_completed_at` /
+  `goal_usage_limited_at` / `goal_budget_limited_at`。合用一个 `updated_at` 答不了
+  "首次完成时间"——重复 `complete` 要保留第一次那个值（`goal_completed_at = coalesce(旧值, now())`）。
+- **`goal_id` 是所有变更的条件**：清掉再建之后，旧界面上那个按钮带着上一个 id，
+  写语句 `where goal_id = ?` 匹配不到，于是它改不到新目标。
+- **`/new` 换段即无目标，而且是同一条写**：那条 `insert ... on conflict do update` 在换段时
+  把 17 个 `goal_*` 列一起置空、`total_tokens` 归零。不是"新段读不到旧行"——
+  旧实现那样做，行会留在库里，`goal_status='active'` 的部分索引会把它们算进"有几个目标在推进"。
 
 **为什么不挂在"一轮"上**：一轮答完就不存在了，跨轮盯着一个目标这件事在那个形状里根本表达不出来。
 目标与上下文、与段是同一层的东西（一份会话状态），所以它跟会话一起走、一起换段。
 
 **没做**：自动续跑（OpenClaw 在每轮正常收尾后会排一个隐藏的 nudge 继续推进同一个目标）。
 我们这里目标只影响提示词，不会自己拉下一轮——那是一件独立的事，记在票 02 的"没做"一节。
+`goal_continuation_turns` 列已经在了、恒 0；等续跑落地时它记"自动推进过几轮"
+（OpenClaw 的 `continuationTurns`，人工 start/resume 不计）。

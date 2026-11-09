@@ -152,3 +152,19 @@ returning segment;
 - **群聊按"房间"还是按"人"分段**：现在按人（`owner` 在键的前面），代价是群里两个人各自失忆。OpenClaw 按房间分。这是安全取舍，不是缺陷，但两份文档要说法一致。
 - **旧段能不能被工具召回**：OpenClaw 有 `sessions_history` / `sessions_search` 跨会话找。我们只有"当前这一段"。换段之后用户问"我们上次说的口径"，答案是"想不起来"。
 - **`at-hour` 的时区**：取 `claw4j.agent.zone`（默认 `Asia/Shanghai`），不取容器时区。这一条与 `AgentContextAdvisor` 拼"现在几点"用的是同一个来源，不能两处各取一次。
+
+## 修订记录
+
+**2026-11-09（票 06）：指针并进 `session_entry`，跨天判定改成存时刻。**
+
+上面那段 `conversation_pointer` 的 DDL 与 SQL 是当时的形状，保留作历史。现在：
+
+- 表叫 `claw4j_session.session_entry`，主键是**不含段的会话键**；`segment` 是它的一列。
+  这一行同时装着目标（`goal_*`），换段时同一条 `on conflict do update` 把目标列一起清空——
+  "换段"与"清目标"不再可能只做一半。
+- `day_started date` 换成 `session_started_at timestamptz`。旧版存的是"按当时的 at-hour 算好的
+  逻辑日"，改 `at-hour` 或改时区之后旧行不会重算；现在边界在读时算
+  （`SessionResetProperties#dailyResetAt`），改配置立刻生效。
+- 新增 `created_at`（跨段不变）、`previous_segment`（= 它的 `previousSessionId`）、
+  `total_tokens`（段级累计，换段清零；目标预算按 `total_tokens - goal_token_start` 算）。
+- `touched_at` 改名 `last_interaction_at`，与它的 `lastInteractionAt` 同名同义。

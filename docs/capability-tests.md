@@ -47,7 +47,7 @@ psql "$DATABASE_URL" -c "select run_id, action, status, session_key, actor, at \
 ```bash
 # 让模型建一个带预算的目标（只有 create_goal 能带 token_budget，/goal start 不收）
 # 然后正常提问；每轮收尾把 usage 记到目标上，撞上预算就进 budget_limited。
-psql "$DATABASE_URL" -c "select session_key, status, token_budget, tokens_used from claw4j_session.conversation_goal"
+psql "$DATABASE_URL" -c "select goal_id, goal_objective, goal_status, goal_token_budget, goal_tokens_used from claw4j_session.session_entry where goal_id is not null"
 # 额度用完的目标不再注入提示词（下一条消息的提示词里没有"活跃目标："），
 # 由人决定要不要接着做：/goal resume —— 开一个新的预算窗口（tokens_used 归零，预算不变）。
 ```
@@ -267,7 +267,7 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | 4 | 同上 | **配 `self` 时召回不跨对话**：私聊里的数字不会被群聊取走（先设 `claw4j.tools.sessions.visibility=self` 再起服务） | `t '记住：上周华东成交额 128,400，先别外传'`，再换一段对话：`t '用 recall_session 查一下华东成交额'`（换 `-H 'X-Claw4j-Chat-Id: group-a'`） | 第二段答"本段对话里没有找到（范围：只有当前这一段对话）"；**回答里不出现 128,400** |
 | 4 | 同上 | **默认 `all` 时跨对话召得回来，且带出处**（不配 `visibility`，即默认） | 同上两句，仍是换一段对话问 | 第二段能召回 128,400；结果里每条带它来自哪一段（`claw4j:user:…`） |
 | 5 | `propose_script` | 交脚本草稿（**需先配 `claw4j.generator.*`**） | `t '写一个脚本包，统计 examples/scripts 下有几个包'` | `.claw4j/staging/` 出现候选包；`hit propose_script` +1 |
-| 6 | `create_goal` | 目标挂在会话上，跨轮可见 | `t '给这段对话定个目标：让 CI 变绿并推送修复'` | `select objective, status from claw4j_session.conversation_goal` 有一行 `active`；`hit create_goal` +1 |
+| 6 | `create_goal` | 目标挂在会话上，跨轮可见 | `t '给这段对话定个目标：让 CI 变绿并推送修复'` | `select goal_objective, goal_status from claw4j_session.session_entry where goal_id is not null` 有一行 `active`；`hit create_goal` +1 |
 | 6 | `get_goal` | 读状态、内容、用量、预算 | `t '现在这个目标是什么、用了多少 token'` | 回答里有状态与用量；`hit get_goal` +1 |
 | 6 | `update_goal` | 模型只能标达成或阻塞 | `t '目标达成了，标一下'` | 状态变 `complete`；`hit update_goal` +1。再说 `t '把它暂停'` → 模型应回"暂停不归我"，状态不变 |
 | 6 | 同上 | **暂停之后不再注入**（叫停能生效） | `t '/goal pause 等 CI'`，再 `t '继续推进那个目标'` | 第二条的提示词里没有 `活跃目标：`；换一个新会话（`-H 'X-Claw4j-Chat-Id: c-2'`）也看不到 |

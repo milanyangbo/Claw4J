@@ -103,8 +103,9 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | `V5` | `claw4j-agent` | 知识库两张表（`claw4j_rag`） | `agent.rag` |
 | `V6` | `claw4j-agent` | 审批 / 定时任务 / 审计（`claw4j_run`） | `agent.approval` / `agent.schedule` / `agent.audit` |
 | `V7` | `claw4j-agent` | 入站队列（`claw4j_channel`） | `channel.kernel` / `agent.inbound` |
+| `V8` | `claw4j-agent` | 会话状态并成一张表（把 `conversation_pointer` 与 `conversation_goal` 回填进 `session_entry` 后删掉） | `agent.session` / `agent.goal` |
 
-**这五份是基线，不是历史。** 2026-11-09 把原来 `claw4j-agent` 侧的 25 个迁移（V3..V27）合并成了这五份：
+**这五份是基线，不是历史。**（`V8` 之后是新的一轮，不是基线的一部分。） 2026-11-09 把原来 `claw4j-agent` 侧的 25 个迁移（V3..V27）合并成了这五份：
 其中大半在反复改同一批表，而 `agent_run` / `agent_step` / `agent_run_delivery` 三张表最后整体删掉了。
 合并只删历史、不改设计——合并前后各 `pg_dump -s` 比过，结构差异 0。
 代价：**已经跑过旧迁移的库要重建**（V4..V27 在本地已经不存在，Flyway 校验会直接失败），

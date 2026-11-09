@@ -49,6 +49,7 @@ batch C 里还有两处（`m3-03`、`m5-02`），重判的结论见 `.scratch/re
 | `01-exec-tool` | 通用 shell：工具用 Spring AI 的 `ShellTools`（`Bash` / `BashOutput` / `KillShell`），沙箱接在一个 `ExecBackend` 上；四档 mode，默认 `full`，闸在授权表 | 中（要改一条红线） | `docs/tools/exec.md`、`permission-modes.md`、`exec-approvals.md` |
 | `03-mcp-background-retry` | MCP：连不上后台退避重试，工具清单按轮解析 | 中偏大 | `docs/tools/mcp.md:44-45,61` |
 | `04-inbound-durable-queue` | 入站：先落库再 ACK，重启续跑，同对话串行 | 大 | `docs/channels/feishu/setup.md:43,45` |
+| `06-session-entry-schema` | 会话状态一张表：goal 与指针按 `SessionEntry` 重做 | 大（两张表合成一张，token 记账改成快照差） | `packages/gateway-protocol/src/schema/sessions-goal.ts`、`src/config/sessions/types.ts`、`reset-policy.ts` |
 
 顺序不是"由易到难"凑出来的，是**依赖决定的**：
 
@@ -93,6 +94,12 @@ batch C 里还有两处（`m3-03`、`m5-02`），重判的结论见 `.scratch/re
   （`docs/tools/exec.md`、`permission-modes.md`、`exec-approvals.md`），不是凭印象。
 - 原始证据在 `.scratch/review-2026-11-07/batch-b.md` 与 `batch-c.md`，
   对照物是 OpenClaw 源码 `/tmp/oc-ref-2`（评审当天在；`05` 拆票与 `01` 重写时都逐条核过原文）。
+- 2026-11-09 加 `06` 并当天 `resolved`。它不是从 batch B/C 的"故意不同"里清出来的，而是 `05` 收尾后按
+  `SessionEntry` 逐字段 review 出来的：`conversation_goal` 少 9 个字段、多 1 个自造的 `revision`；
+  `conversation_pointer` 把"逻辑日"当事实存（它存的是 `sessionStartedAt`）；拆成两张表本身就让
+  `/new` 清目标这件事漏了（ADR-0027 写了，实现只 `rotate`）。结论是**并回一张表**
+  ——这正是它的 `SessionEntry` 形状，不是我们另设计一套。落地时改回一处：`SET_STATUS` 起初无条件挡
+  `complete`，而它的规则允许重复 complete（幂等、保留首次完成时间），已修并有用例。
 - 2026-11-08 五张票全部 `resolved`。`05` 最后收尾，那条"不属于工程判断的取舍"已裁决：
   **默认 `all`，照它的值**。裁决时从源码里多看到一处票面没写的事实——它对**非法值也回落成 `all`**
   （`src/plugin-sdk/session-visibility.ts:132-138` 的 `return "all"`），我们改成启动失败。

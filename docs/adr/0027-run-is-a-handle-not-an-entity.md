@@ -162,3 +162,17 @@ OpenClaw 有 `agents.defaults.timeoutSeconds`（默认 48 小时）兜住跑飞�
 - 真出现"一件事必须停三天等外部系统回调"的诉求时，重新引入的应该是**工作流**（有状态、有租约、
   有补偿），不是把 run 复活。复活 run 只会把这七类职责再长回来一遍。
 - 真需要按"一件事"做成本分摊时，重新讨论。当前口径是"会话 + 目标"。
+
+## 修订记录
+
+**2026-11-09（票 06）：决定三的 goal 落在 `session_entry` 上，字段照 `SessionGoalSchema` 补齐。**
+
+- 目标不再单独一张 `conversation_goal`。它是 `claw4j_session.session_entry` 的 `goal_*` 列——
+  与它的 `SessionEntry.goal` 同一个形状。两张表拆开时，`/new` 只换段没清目标，
+  旧段的 goal 行永久留着，还被 `where status='active'` 的部分索引算进"在推进的目标数"。
+- 补齐字段：`id`（UUID，所有变更的条件）、`tokenStart` / `tokenStartFresh`（预算窗口的起点）、
+  `continuationTurns`、五个时刻（`pausedAt` / `blockedAt` / `completedAt` /
+  `usageLimitedAt` / `budgetLimitedAt`）、`schemaVersion`。删掉自造的 `revision`
+  ——它没有这个字段，而我们也没拿它做条件。
+- 用量改成**快照差**（`max(旧值, 会话累计 - tokenStart)`），不是增量累加；漏记一轮下一轮能补回来。
+- `/new` 清目标是同一条 update 的一部分，不靠"新段读不到旧行"。
