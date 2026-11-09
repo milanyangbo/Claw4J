@@ -6,7 +6,33 @@
 **Blocked by:** 01 —— 省下的 token 与命中率都要在指标里看得见，否则这个功能只是增加了一层
 不确定的行为，没有人能判断它值不值。
 
-**Status:** resolved
+**Status:** resolved（2026-11-09 换用官方 `SemanticCacheAdvisor` 后重新收口，见文末实现记录）
+
+## 方案变更（2026-11-09）：改用官方 `SemanticCacheAdvisor`
+
+裁决：框架有 `SemanticCacheAdvisor` 就用它，不再自己写 advisor。下面「实现记录」里那套
+`CacheAdvisor` 作废，改成官方 advisor 负责"什么时候查、什么时候写"，我们只实现它的存储接口
+`org.springframework.ai.chat.cache.semantic.SemanticCache`（落在 pgvector 上）。
+
+**这不是少写代码，是六件事必须跟着挪**，否则切过去就是功能退化：
+
+| 官方的行为（2.0.2 字节码） | 不处置的后果 | 我们的处置 |
+| --- | --- | --- |
+| `extractContextHash` 是 private，值 = `SHA-256(系统提示词)` | 权限不进提示词，ctx 与"谁能看什么"无关 | 系统提示词里加权限标识（`PermissionFingerprint` 全文） |
+| 系统提示词里带着"此刻是 HH:mm" | 整份提示词每分钟变，ctx 跟着变，缓存活不过 60 秒 | 时间粒度从分钟降到天 |
+| `adviseStream` 对每个 chunk 都调 `set` | 增量片段（甚至空内容）被写进库，下次原样发出去 | `set` 要求 `finishReason` 非空且文本非空 |
+| `set` 只判 `chatResponse() != null`，没有副作用钩子 | `run_script` 那一轮被缓存，第二次直接返回"已执行成功" | `set` 里读 `ToolCallLog`（ThreadLocal），非 `read` 动作不写 |
+| `get`/`set` 的 ctx 是 `String`，default 实现直接丢弃 | 只覆写一参版本时隔离静默失效 | 只覆写两参版本；一参版本 fail-closed（直接 miss） |
+| 默认 order `-2147483448`，排在记忆之前 | 命中时记忆还没写这条消息，会话缺一轮 | 显式传 `DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER + 50` |
+| 接口要求 `VectorStore getStore()` | 我们的表不是 `vector_store` 的 schema | 返回抛 `UnsupportedOperationException` 的壳；advisor 不调用它（字节码确认 0 次） |
+| 命中时原样返回，无标记、无指标 | 分不清"答得快"是缓存还是模型 | `get` 返回前拼标记、打点 |
+
+**表结构不动**：`claw4j_cache.semantic.fingerprint` 从此存 ctx（提示词哈希），其余列含义不变；
+`expires_at`、唯一键、不给向量建索引这三条理由都不变。
+
+**砍掉**：`nearestInFingerprint` / `nearestAnyFingerprint` 两条诊断查询。它们只用来把 miss 的
+reason 分成 `different-entities` 与 `different-permission`，官方接口没有对应入参，
+留着等于在存储层再造一套判定。reason 收敛成 `no-candidate` / `below-threshold` / `no-context`。
 
 **Demo:** 同一个角色连着问两个措辞不同、意思相同的问题，第二次的
 `claw4j.cache.hits` 加一、`claw4j.model.calls` 不变，回答里带一句"（同上次）"。
@@ -164,9 +190,72 @@ metrics: hits=1, misses{no-candidate}=1, {below-threshold}=2,
 ### 没做
 
 - 缓存工具结果（票面明确不做）：工具结果的窗口只有几分钟，收益与复杂度不成比例。
-- 流式写缓存：拼接增量块"是增量还是累计"因供应商而异，拼错就是缓存一条重复十遍的回答。
-  流式**只读**，同步路径负责填。
+- 流式写缓存：~~流式只读~~（2026-11-09 改）框架的 advisor 在流式路径上对每个 chunk 都调 `set`，
+  "不写"只能挡在实现里：判 `finishReason` 或非零 usage，中间块自然不写。
 - 相似问题的改写/合并（票面明确不做）。
 - 缓存命中那一轮的会话事件：记忆 Advisor 在缓存外面，它的 after 照样把"（同上次）"写回会话，
   所以会话是连续的——这一点是排 order 时特意验过的，不是碰巧。
 
+
+## 实现记录（2026-11-09，换成官方 advisor 之后）
+
+上面「落地」与「实现记录（2026-10-27）」两节描述的是 `CacheAdvisor` 那套，已作废。现状：
+
+| 文件 | 变化 |
+| --- | --- |
+| `PgVectorSemanticCache` | 改成实现框架的 `SemanticCache`；实体签名、阈值、TTL、命中标记、指标、副作用判定都在这里 |
+| `CacheAdvisor` / 自有 `SemanticCache` | 删除 |
+| `CacheAutoConfiguration` | 注册 `SemanticCacheAdvisor`，显式 order（框架默认那个排在记忆之前） |
+| `SemanticCacheCleanup` | 依赖具体实现：`deleteExpired()` 不在框架接口里，接口只有语义为"全删"的 `clear()` |
+| `PromptComposition` | 加「数据范围」段（权限指纹），时间粒度从分钟降到天 |
+| `AgentContextAdvisor` | 从 `ContextKeys.PRINCIPAL` 取身份，传指纹 |
+| `ToolCallLog` | 加 `begin()` / `roundOpenHere()`：跨线程时"看不到工具记录"不等于"没有副作用" |
+| `pom.xml` | 只取 `SemanticCache` 与 `SemanticCacheAdvisor` 两个类型，exclude `jedis` 与 `spring-ai-redis-store` |
+
+门禁：691 条、失败 0、跳过 0；agent 69.8% / app 80.8%；测试文件 10、单文件 20。
+
+三条反例（各只红对应的一条）：
+
+- 去掉 `get` 里的 ctx 判空 → `noContextNeverHits` 红（会去查库）。
+- `isComplete` 只判 `usage != null` → `streamingChunksAreNotStored` 红。原因：
+  `ChatResponse.builder().build()` 会填 `EmptyUsage`，它的 `getPromptTokens()` 返回 0 而不是 null。
+- 时间粒度改回分钟 → `sameDayKeepsThePromptStable` 红。
+
+**真模型那条偶发**：`ApplicationAssemblyTest#aDueScheduleStartsARunWithARealModel` 第一次全量跑
+多了 `tool.action.started/finished` 两条事件（模型自己去调工具了），单跑与第二次全量都过。
+断言 `containsExactly` 钉的是"到点跑了一轮"，不是"模型不许调工具"——待观察，连续出现再改判据。
+
+**文档同步**：`docs/design/semantic-cache.md` 第 160 节整节重写、
+`pitfalls.md` 第十三条的「现在」段、`ADR-0005` 第 8/51/139 行、`ADR-0026` 第 128 行、
+`application.yml` 的注释。
+
+## 第二次方案变更（2026-11-09 晚）：存储也改成官方的
+
+裁决：官方怎么来就怎么来；**官方没有的能力，我们不实现**。判据写进了
+`docs/agents/alignment.md`（这一节就是它的来源）。
+
+删掉的东西（全是"官方没有、我们自己加"的）：
+
+| 删掉 | 它原来是干什么的 |
+| --- | --- |
+| `PgVectorSemanticCache` | 自写的 pgvector 存储（表结构、唯一键、TTL、实体签名） |
+| `SemanticCacheCleanup` | 自写的过期清理任务 |
+| `ToolCallLog` | 只服务"这一轮有副作用就不缓存" |
+| `entitySignature` / `entities` 列 | 把时间词与数字编进上下文键 |
+| 命中标记「（同上次）」 | 让用户看得出这轮是缓存 |
+| `claw4j.cache.hits` / `misses` | 命中率指标 |
+
+换成的：`DefaultSemanticCache` + Redis Stack（`redis/redis-stack-server`，必须有 RediSearch）。
+`V9__drop_semantic_cache.sql` 删掉 `claw4j_cache` schema。`CacheProperties` 只剩
+`similarity-threshold` 与 `redis-uri`。
+
+**两条代价，明确记账**：
+
+1. **缓存变成强依赖**。索引在 `afterPropertiesSet` 里建（那一步连 Redis，连不上就启动失败）；
+   `adviseCall` 调 `get`/`set` 没有 try，运行中 Redis 挂掉这一轮报错。
+   我们不再包一层去抹平——"缓存不参与可用性"那条承诺本来只对旧实现成立。
+2. **「上周」与「上上周」会互相命中**（余弦 0.9950，阈值挡不住），而且**缓存不过期**
+   （官方 `ttl` 字段是死代码）。逻辑失效靠提示词里的日期让 `contextHash` 每天变一次，
+   物理行靠 Redis 的 `maxmemory-policy allkeys-lru` 淘汰。
+
+门禁与反例见下面的实现记录。
