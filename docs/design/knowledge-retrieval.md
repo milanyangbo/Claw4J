@@ -67,8 +67,8 @@ OpenClaw 源码副本（`/tmp/oc-ref-2`）里查得到：
   当**召回闸门**的判定模型——那个闸门问的是"这一页能不能帮上忙？"。
 
 差别在**用途**：它是一对一的**判定**（这段资料值不值得进上下文），我们做的是列表**重排**
-（10 条候选按相关性重排、截到 topK）。端点形状一样（`/rerank` + `relevance_score` 0~1），
-所以这一层是"对齐到端点、不对齐到用法"。
+（10 条候选按相关性排序，只换顺序不改条数；截断是链路最后单独一步）。端点形状一样
+（`/rerank` + `relevance_score` 0~1），所以这一层是"对齐到端点、不对齐到用法"。
 
 仍然要自写 HTTP，因为 Spring AI 2.0.2 没有 rerank 类型（第六节）——**这一条没有变**。
 
@@ -242,7 +242,7 @@ where content ilike '%' || ? || '%' escape '\'
 不加这个索引也**能正确工作**，只是每次全文查询扫全表。所以它是"性能开关"，建失败不该让启动失败
 ——降级成一行 WARN，检索照跑（见第七节）。
 
-## 五、融合：RRF，只看排名
+## 五、融合：RRF 排序，融合分写回 `score`，截断在最后一步
 
 `ReciprocalRankFusionJoiner` 实现官方 `DocumentJoiner`：
 
@@ -250,15 +250,49 @@ where content ilike '%' || ? || '%' escape '\'
 score(d) = Σ_route  1 / (k + rank_route(d))     k = 60，论文默认值
 ```
 
-为什么不是官方的 `ConcatenationDocumentJoiner`：它按 `Document.getScore()` 倒序，
-而两路分数不同源（余弦 vs 空）。用它会得到"向量那一路永远排在前面"的稳定错误——
-且错得很安静，因为结果看起来总是有条理的。
+**融合分要写回 `Document#getScore()`**，不留在内部 map 里。原因不是偏好，是链路决定的：
 
-为什么不是加权求和：要加权就得先把两路分数归一到同一量纲，而"归一到多少"又是一个
-没有依据的常数。RRF 只要求每路给得出**顺序**，这是两路都天然有的东西。
+- advisor 里紧接着跑的是官方的 `ConcatenationDocumentJoiner`（`RagAutoConfiguration` 装配的
+  就是这个），反编译可见它是 `sorted(comparingDouble(Document::getScore).reversed())`，
+  分数为 null 时按 `0.0`。不写回的话，"只有全文那一路命中的块"会被甩到末尾——而那正是
+  hybrid 存在的理由（`SKU-2024` 这类编号查询）；同分之间还会退化成 `HashMap` 的迭代顺序，
+  每次跑都可能不一样。
+- Spring AI 的排序信号本来就只有一个：`Document#getScore()`。喂给它融合分，就是照它的契约办事
+  （`2026-11-09` 修：原实现只把融合分用于内部排序，结果被官方 joiner 按原分数重排掉）。
+
+**与 OpenClaw 对齐的两点**：
+
+| 关注点 | OpenClaw | 我们 |
+| --- | --- | --- |
+| 融合结果的分 | `mergeHybridResults` 给结果赋 `score: rankingScore`（融合分就是它对外那一个分） | 同上，`mutate().score(fused)` |
+| 最终截断 | `slice(0, maxResults)` 放在融合与选择**之后**（`manager-search-retrieval.ts`） | `TopKDocumentPostProcessor`，post-processor 链的**最后**一步 |
+
+**与 OpenClaw 有意的一处分歧：融合公式**。它用加权（默认 `vectorWeight 0.7` / `textWeight 0.3`），
+并且先把关键词分按"最强命中"归一（`createKeywordScoreScale`，建立在 BM25 的饱和形状
+`relevance / (1 - relevance)` 上）。我们用的是 RRF。原因在关键词那一路的形状：
+
+- 它的关键词分来自数据库（`fullText.rank` + trigram 校准），是一个可比的 0~1 分；
+- 我们的是 `ILIKE` 命中次数——只有"提了几次"，没有"多相关"。中文上 `similarity()` 恒 0
+  （第四节），拿不到 trigram 分，所以只能数命中。
+
+给命中次数编一个归一化系数去凑加权，那个系数就是拍出来的，比"只看名次"更没依据。**要改成加权，
+前提是关键词那一路能给出分**（上 `pg_search`/ParadeDB 的 BM25，或中文分词扩展 + 换镜像），
+那是另一个决定，不在这一层自己解决。
+
+为什么不用加权求和（与 OpenClaw 无关的通用理由）：加权要先归一，而"归一到多少"没有依据。
+RRF 只要求每路给得出**顺序**，这是两路都天然有的东西。
 
 去重键是 `Document.getId()`：两路查的是同一张表，同一个块在两路命中时 id 相同。
 RRF 的求和本身就能合并，不需要额外的去重步骤。
+
+### 截断只做一次，且不跟着重排走
+
+`TopKDocumentPostProcessor` 是链路里唯一截断的地方，`claw4j.rag.top-k` 在那里生效。
+它单独存在，而不是并进重排：重排可关（`rerank.enabled=false`），"注入几段"不可选。
+绑在一起的话，关掉重排就会把两路候选池（默认 30 段）整个塞进提示词，而这只在关掉开关时出现
+（`2026-11-09` 修：`top-k` 原先没有任何读取点，重排开着时注入 10 段、关着时 30 段）。
+
+顺序也是它的语义：重排在前面换顺序但不改条数，截断在后面保序地切。两处都不重排第二遍。
 
 ### 与 `MultiQueryExpander` 无关
 
@@ -302,11 +336,12 @@ Authorization: Bearer <同一个 key>
 ### 位置与实现
 
 `RerankDocumentPostProcessor implements DocumentPostProcessor`：
-输入候选（默认 10 条）、调一次端点、按返回的 `index` 重排、截到 `topK`。
+取候选池前 `rerank.candidates` 条（默认 10）、调一次端点、按返回的 `index` 重排。
+**它只换顺序，不改条数**——"最终留几段"是 `TopKDocumentPostProcessor` 的事（第五节末）。
 `return_documents=false`——只要下标与分数，文本我们手上已经有，不必来回传。
 
-HTTP 用 Spring 自带的 `RestClient`，不引 DashScope 的 Java SDK：那会带进一整套阿里云
-依赖，而这里只有一个端点、一个请求体。
+HTTP 用 JDK 自带的 `java.net.http.HttpClient`，不用 `RestClient`：`claw4j-agent` 的 classpath
+上没有 `spring-web`（依赖树查过），为一个调用引一整个 web 模块不值得，而 Jackson 本来就在。
 
 **这是本项目唯一一处"官方没有、我们直接调 HTTP"的能力**，按 `alignment.md` 记账：
 接口位置是框架的（`DocumentPostProcessor`），调用层是自写的——而这不是"我们选了自己写"，
@@ -320,7 +355,7 @@ HTTP 用 Spring 自带的 `RestClient`，不引 DashScope 的 Java SDK：那会�
 | HTTP 4xx / 5xx | 候选**原样返回**，WARN 一行（含状态码，不含 key） |
 | 超时（默认 2 秒） | 同上 |
 | 响应缺 `results`，或下标越界 / 重复 | 丢弃非法项，剩下的按原顺序补在后面；一条都不合法就原样返回 |
-| 没有 `QWEN_API_KEY` | rerank 禁用并 INFO 一行；向量那一路本来就依赖它，缺 key 时知识库整体起不来 |
+| 没有 `QWEN_API_KEY` | 这一轮**不重排**，DEBUG 一行（默认开，但凭据在调用时取：`SpringSecretResolver` 不缓存，凭据轮换后不必重启。不在启动时禁用它，否则"补上凭据"也要重启才生效） |
 | `claw4j.rag.rerank.enabled=false` | 不调端点 |
 
 重排是排序优化，不是检索。它挂掉时结果必须还在——否则一次接口抖动就会让用户得到
@@ -345,7 +380,7 @@ HTTP 用 Spring 自带的 `RestClient`，不引 DashScope 的 Java SDK：那会�
 | rerank 失败 | 候选原样返回（第六节） |
 | `pg_trgm` 索引建不出来 | WARN 一行，查询扫全表，结果不变 |
 | `pg_trgm` 扩展装不上 | **不降级**：`V5` 里 `create extension` 直接让迁移失败，进程起不来（"索引"与"扩展"是两件事，见第四节） |
-| 没有 `QWEN_API_KEY` | rerank 禁用并 INFO 一行；向量那一路本来就依赖它，缺 key 时知识库整体起不来（与本次改动无关） |
+| 没有 `QWEN_API_KEY` | 这一轮不重排（DEBUG 一行），检索与截断照常；向量那一路本来就依赖它，缺 key 时知识库整体起不来（与本次改动无关） |
 
 "返回空"只针对**某一路不可用**，不针对"库连不上"。后者会让 retriever 抛出，而
 `RetrievalAugmentationAdvisor.before()` 没有 try/catch（第三节第三条），于是**这一轮对话失败**。
@@ -357,15 +392,15 @@ HTTP 用 Spring 自带的 `RestClient`，不引 DashScope 的 Java SDK：那会�
 ```yaml
 claw4j:
   rag:
-    top-k: 5                          # 最终返回几段
+    top-k: 5                          # 最终注入几段（由 TopKDocumentPostProcessor 在最后截断）
     min-similarity: 0.5               # 只作用于向量那一路
     chunk-size: 800                   # token，交给 TokenTextSplitter
     hybrid:
       enabled: true                   # 关掉 = 只有向量，等价于上一版行为
-      candidates-per-route: 15        # 每路各召回多少，再融合
+      candidates-per-route: 15        # 每路各召回多少（这是"召回"，不是"最终注入"）
     rerank:
       enabled: true
-      candidates: 10                  # 送进重排的条数（必须 ≥ top-k）
+      candidates: 10                  # 送进重排的条数（输入上限，小于 top-k 时按 top-k 用）
       base-url: https://dashscope.aliyuncs.com/compatible-api/v1
       model: qwen3-rerank
       timeout: 2s
@@ -416,6 +451,8 @@ claw4j:
 | 向量那一路真的起作用 | 问"东西买了能退吗"，首条是 `returns/east-china.md`（字面不重合） | `SearchSqlTest` |
 | 两路结果会合并去重 | 同一块被两路命中时，结果里只出现一次 | `KnowledgeRetrievalTest`（替身） |
 | RRF 真的按排名融合 | 构造"向量第 3、全文第 1"的块，融合后应排在"两路都第 2"的块之前 | `KnowledgeRetrievalTest` |
+| 融合分是**下游**的排序信号 | 过了官方 `ConcatenationDocumentJoiner` 之后顺序不变：余弦 0.90 的块不该压过"两路都命中"的块，也不该把只有全文命中的块甩到最后 | `KnowledgeRetrievalTest#fusedOrderSurvivesOfficialJoinerAndTopKCut` |
+| `top-k` 真的生效 | 30 条候选过完 post-processor 链只剩 5 条；**重排关掉时也一样** | 同上 |
 | 重排真的改变顺序 | 替身 reranker 返回倒序，结果顺序跟着变 | `KnowledgeRetrievalTest` |
 | 重排结果非法时不丢结果 | 替身返回越界下标 / 空 `results`，结果条数与候选一致、顺序不变 | `KnowledgeRetrievalTest` |
 | 某一路挂了不影响另一路 | 全文 SQL 抛异常，向量结果照返 | `KnowledgeRetrievalTest` |

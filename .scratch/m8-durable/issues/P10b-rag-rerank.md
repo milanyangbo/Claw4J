@@ -17,8 +17,9 @@
   随包插件、默认启用；`docs/providers/rerank.md` 把任何 `/rerank` 端点接成 **Decision model**；
   `docs/plugins/knowledge/memory-provider.md:175` 推荐 `gte-reranker-modernbert-base` 当
   **召回闸门**的判定模型（问的是"这一页能不能帮上忙？"）。
-- **用途不同**：它是一对一**判定**（值不值得进上下文），我们是列表**重排**（10 条候选排序 +
-  截到 topK）。端点形状一样（`/rerank` + `relevance_score` 0~1），用法不同。
+- **用途不同**：它是一对一**判定**（值不值得进上下文），我们是列表**重排**（10 条候选排序，
+  只换顺序、不改条数；"最终留几段"由 `TopKDocumentPostProcessor` 决定）。端点形状一样
+  （`/rerank` + `relevance_score` 0~1），用法不同。
 - **Spring AI 2.0.2 没有 rerank 类型**：BOM 里没有模块，逐个 jar 扫 `rerank` 是 0 命中，
   **连 `RerankModel` 这个接口都不存在**。所以"实现框架的 rerank 接口"这条路不成立。
 
@@ -60,7 +61,7 @@ Authorization: Bearer <同一个 QWEN_API_KEY>
 | HTTP 4xx / 5xx | 候选原样返回，WARN 一行（只记状态码，不记 body——错误响应可能回显我们刚发过去的整段文档） |
 | 超时（默认 2s） | 同上 |
 | 响应缺 `results` | 同上 |
-| 下标越界 / 重复 | 丢掉那一项，其余按返回顺序，没被点到的按原顺序补在后面，补到 `topK` |
+| 下标越界 / 重复 | 丢掉那一项，其余按返回顺序，没被点到的按原顺序补在后面（**条数不变**） |
 | 取不到 key | 跳过重排（DEBUG 一行），调用时才取 key，真值不进字段（P08 同一条约束） |
 | `claw4j.rag.rerank.enabled=false` | 装配层不装这个 bean（类里不再有第二个开关） |
 | 候选 < 2 条 / query 为空 | 不调端点，原样返回 |
@@ -75,15 +76,18 @@ claw4j:
   rag:
     rerank:
       enabled: true
-      candidates: 10     # 送进重排的条数；实际取 max(top-k, 它)
+      candidates: 10     # 送进重排的条数（输入上限）；实际取 max(top-k, 它)
       base-url: https://dashscope.aliyuncs.com/compatible-api/v1
       model: qwen3-rerank
       timeout: 2s
       # key 不在这里：复用 claw4j.model.qwen.api-key，不引第二把钥匙
 ```
 
-`rerankCandidates()` 取 `max(topK, candidates)`：少于最终要返回的条数，"重排之后取 topK"
-会取到候选之外——这种错只在结果只剩两三条时才看得出来。
+`rerankCandidates()` 取 `max(topK, candidates)`：少于最终要返回的条数，截断就没有候选可选——
+这种错只在结果只剩两三条时才看得出来。
+
+**`candidates` 是输入上限，不是输出条数**：重排只换顺序、不改条数（2026-11-09 深夜改）。
+最终只留几段由 `TopKDocumentPostProcessor` 决定（见 P10a 第七之二节）。
 
 ## 五、TDD 用例清单
 
@@ -92,29 +96,36 @@ claw4j:
 
 | # | 功能点（判行为） | 用例 | 先红的样子 | 反例 |
 | --- | --- | --- | --- | --- |
-| 1 | 按返回的下标重排，并截到 `topK` | `#rerankReordersAndTruncates` | 忽略 `results`、照原顺序返回 → 顺序不变 | 待验 |
+| 1 | 按返回的下标重排，**只换顺序不截断**；候选上限之外的条目不送进端点 | `#rerankReordersAndCapsInput` | 忽略 `results`、照原顺序返回 → 顺序不变 | 待验（2026-11-09 改过断言） |
 | 2 | 下标越界 / 重复：丢掉那一项，其余补在后面，**条数不变** | `#invalidIndexesAreDroppedNotFatal` | 越界直接 `get(9)` → `IndexOutOfBoundsException`，整轮失败 | 待验 |
 | 3 | 端点 500：候选原样返回，不抛 | `#endpointFailureReturnsCandidatesAsIs` | 非 200 时抛出去 → 一次接口抖动就是一次对话失败 | 待验 |
 | 4 | 端点超时：原样返回，且不把中断标志留给当前线程 | `#timeoutReturnsCandidatesAsIs` | 超时后抛 / 不 restart 中断 → 后续调用被 InterruptedException 打断 | **实测** |
 | 5 | 关掉 `rerank.enabled` 时不装这个 bean | 待补（见第六节） | 开关只写在配置里、bean 照装 → "配了关但还在调" | 未守 |
-| 6 | 没有 qwen 凭据时不装（而不是每轮打一次 401） | 待补（见第六节） | 调用时才取 key → 配错凭据的部署每轮 401 | 未守 |
+| 6 | 取不到 qwen 凭据时这一轮不重排（DEBUG 一行），不抛、不每轮 401 | 实现如此，但无用例 | 去掉 key 判空 → 每轮打一次 401 | 未守（见第六节，2026-11-09 裁决不改装配） |
 
-## 六、这一票没守住的两条（缺口）
+## 六、没守住的一条、以及一条改了口的裁决
 
 | 判据 | 现状 | 该长在哪 |
 | --- | --- | --- |
 | `rerank.enabled=false` → 容器里没有 `RerankDocumentPostProcessor` | `advisorIsRegisteredAfterMemory` 虽然设了这个属性，但只断言 order，没断言 bean 缺席 | `KnowledgeRetrievalTest`，`ApplicationContextRunner` 里加 `doesNotHaveBean` |
-| 没有 qwen 凭据 → 不装 | 装配层靠 `@ConditionalOnProperty` + 构造时取 key，但没有用例 | 同上 |
 
-两条都是"装配条件"，一条用例能同时盖住；写在这一节而不是勾在验收里，理由与 P10a 第六节相同：
-勾了就是"文档承诺比代码走得远"。
+写在这一节而不是勾在验收里，理由与 P10a 第六节相同：勾了就是"文档承诺比代码走得远"。
+
+**"没凭据就不装"这条撤了（2026-11-09 深夜裁决）**。原来写的是"启动时判一次、没有凭据就不装
+bean"，理由是"配错凭据的部署会每轮打一次 401"。不这么做的原因是与本项目自己的凭据层冲突：
+`SecretResolver` 明确**不缓存**、凭据轮换后不必重启；把"装不装 bean"钉死在启动那一刻，
+等于让一次轮换后的恢复必须重启进程——而恢复能力比省掉一条 401 更值钱。
+
+现在的行为：调用时取 key，取不到就跳过重排（DEBUG 一行），检索与截断照常。401 那种情况的代价是
+每轮一行 WARN（`rerank` 的失败姿势本身就不抛），不是整轮失败。这一条按"实现即裁决"记在这里，
+不再挂成缺口。
 
 ## 七、实现记录
 
 | 文件 | 变化 |
 | --- | --- |
 | `RerankDocumentPostProcessor` | 调通义 `qwen3-rerank`，任何失败原样返回；JDK `HttpClient`（`claw4j-agent` 的 classpath 上没有 `spring-web`，为一个调用引整个 web 模块不值得） |
-| `RagAutoConfiguration#knowledgeReranker` | 两个条件都是"要么完整可用、要么不装"：`enabled=false` 不装、没凭据不装 |
+| `RagAutoConfiguration#knowledgeReranker` | `enabled=false` 不装（装配层判断）；凭据在**调用时**取，取不到就不重排（见第六节） |
 | `RagProperties.Rerank` | `enabled / candidates / base-url / model / timeout`，`rerankUrl()` 只在一处拼 |
 | `application.yml` | 新增 `claw4j.rag.rerank.*` 与注释 |
 
@@ -123,13 +134,13 @@ claw4j:
 
 ## 八、验收
 
-- [x] 重排改变顺序并截断（`rerankReordersAndTruncates`）
+- [x] 重排改变顺序、**不改条数**（`rerankReordersAndCapsInput`）；截断归 `TopKDocumentPostProcessor`
 - [x] 非法下标不丢结果（`invalidIndexesAreDroppedNotFatal`）
 - [x] 500 / 超时都原样返回，且不留中断标志（两条）
 - [x] 只记状态码不记 body（错误响应会回显我们发过去的文档）
 - [x] `rerankUrl()` 与 `rerankCandidates()` 各只一处
 - [x] `./scripts/verify.sh` 全绿、跳过 0、覆盖率 ≥60%
-- [ ] 第六节那两条装配条件——**未做**，见那一节
+- [ ] 第六节那条装配条件（`enabled=false` 时 bean 缺席）——**未做**
 
 ## Comments
 

@@ -214,6 +214,28 @@ OpenClaw 的七条企业属性里我们明确差的一条：**凭据有主**。�
 > 身份变了触发全量重建。
 > 论证、代价与退场条件都在 **ADR-0028**，执行票是 `P10c`。这一段只留指针，不在这里重复。
 
+> **2026-11-09 深夜，第四次修订：检索的"最后一公里"——融合分与截断。**
+>
+> code review 发现两件事：`claw4j.rag.top-k` 没有任何读取点（重排开着时注入 10 段、关着时
+> 30 段，而日志一直说"最终取 5 段"）；融合顺序被 advisor 里的官方
+> `ConcatenationDocumentJoiner` 按 `Document#getScore()` 重排掉（它把只有全文命中的块按 0.0
+> 甩到末尾，同分之间还取决于 `HashMap` 顺序）。
+>
+> 裁决两条，都照两边的既有形状，不新增概念：
+>
+> 1. **融合分写回 `Document#getScore()`**。OpenClaw 的 `mergeHybridResults` 给结果赋的就是
+>    `score: rankingScore`；Spring AI 的排序信号只有 `getScore()` 一个。写回去之后，
+>    官方 joiner 的排序与 RRF 的顺序是同一个顺序——不是绕过它，是照它的契约喂数据。
+> 2. **截断只做一次，放在 post-processor 链的最后**（`TopKDocumentPostProcessor`）。
+>    OpenClaw 也是 `slice(0, maxResults)` 放在融合与选择之后。截断**不跟着重排走**：
+>    重排可关，注入几段不可选，绑在一起就会在关掉重排时把 30 段塞进提示词。
+>
+> **一处分歧，写明理由**：融合公式仍是 RRF，不照 OpenClaw 的加权（`0.7 / 0.3` + 关键词分按
+> 最强命中归一）。原因是关键词那一路的形状不同——它的分来自数据库的 BM25
+> （`fullText.rank` + trigram 校准），我们的是 `ILIKE` 命中次数（中文拿不到 trigram 分，
+> 见设计文档第四节）。给"次数"编一个归一卷积去凑加权，那个系数就是拍出来的。要改成加权，
+> 前提是先让关键词那一路能给分（`pg_search`/ParadeDB 或中文分词扩展 + 换镜像），那是另一个决定。
+
 **P11 · 反向 MCP server（把自己暴露出去）**
 
 `spring-ai-starter-mcp-server` 本地已有 2.0.2 可直接用。补齐的是 OpenClaw `mcp serve` 那种反向用法：

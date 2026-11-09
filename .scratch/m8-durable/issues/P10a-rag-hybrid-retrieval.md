@@ -118,7 +118,8 @@ RRF 正好只要顺序。
 | 文件 | 变化 |
 | --- | --- |
 | `KeywordDocumentRetriever` | 全文那一路：整句 + 纯 ASCII 锚点，`ILIKE` + 通配符转义 |
-| `ReciprocalRankFusionJoiner` | RRF（k=60），按 `Document#getId` 求和去重 |
+| `ReciprocalRankFusionJoiner` | RRF（k=60），按 `Document#getId` 求和去重；**融合分写回 `Document#getScore()`** |
+| `TopKDocumentPostProcessor` | 链路里唯一的截断点，`claw4j.rag.top-k` 在这里生效（重排关掉时也在） |
 | `HybridDocumentRetriever` | 两路 + 融合 + 从 `Query.context()` 取 `Principal` 判 `read`/`doc` |
 | `RagAutoConfiguration` | 注册 `RetrievalAugmentationAdvisor`（自定义模板 + `allowEmptyContext(true)` + `documentFormatter`）；启动建 trigram 索引 |
 | `KnowledgeTools` / `KnowledgeBase` / `VectorStoreKnowledgeBase` | **删除**（advisor 每轮检索，留工具就是双份） |
@@ -129,6 +130,28 @@ RRF 正好只要顺序。
 
 门禁（2026-11-09 实测）：**661 条、失败 0、跳过 0**；agent 69.7% / app 80.8%；
 测试文件 10 个/模块、单文件最多 20 条。
+
+## 七之二、code review 修的两条（2026-11-09 深夜，提交后）
+
+两件事都是**装配层的错**，部件各自的用例全绿也照样存在——所以修的时候先补了一条组合用例。
+
+| # | 症状 | 根因（查过字节码，不是推测） | 修法（照谁） |
+| --- | --- | --- | --- |
+| 1 | `claw4j.rag.top-k` 没有任何读取点：重排开着时注入 10 段、关掉时 30 段，启动日志却一直说"最终取 5 段" | Spring AI 没有"最终取几条"的部件（`DocumentPostProcessor` 在 2.0.2 里零实现），而 `VectorStoreDocumentRetriever#topK` 是**召回**条数 | 新增 `TopKDocumentPostProcessor`，挂在 post-processor 链最后。照 OpenClaw 把 `slice(0, maxResults)` 放在融合与选择之后 |
+| 2 | RRF 排出来的顺序被 advisor 里的官方 joiner 重排掉：只有全文命中的块（score 为 null）按 0.0 甩到末尾，同分之间还取决于 `HashMap` 顺序 | 反编译 `ConcatenationDocumentJoiner.join`：`toMap(...).values().stream().sorted(comparingDouble(Document::getScore).reversed())`，null → 0.0 | 融合分写回 `Document#getScore()`（`mutate().score(fused)`）。OpenClaw 的 `mergeHybridResults` 也是把融合分赋给结果的 `score`；Spring AI 的排序信号只有这一个 |
+
+**截断为什么不并进重排**：重排可关（`rerank.enabled=false`），"注入几段"不可选。绑在一起
+就会在关掉重排时把两路候选池整个塞进提示词，而那只在关掉开关时出现。重排因此**只换顺序、
+不改条数**，`rerank.candidates` 的含义收敛成"送进重排的条数（输入上限）"。
+
+**融合公式仍是 RRF，不照 OpenClaw 的加权 0.7/0.3**：它的关键词分来自数据库 BM25
+（`fullText.rank` + trigram 校准），我们的是 `ILIKE` 命中次数（中文拿不到 trigram 分）。
+给"次数"编一个归一化系数去凑加权，那个系数就是拍出来的。要改，前提是先让关键词那一路能给分
+（`pg_search`/ParadeDB 或中文分词扩展 + 换镜像），那是另一个决定。分歧记在 ADR-0020 第四次修订段。
+
+反例（各只红一条用例）：去掉 `mutate().score(...)` → `fusedOrderSurvivesOfficialJoinerAndTopKCut`
+红在"余弦 0.90 的块压过两路都命中的块"；让 `postProcessors` 在重排关掉时返回空列表 →
+同一条用例红在"Expected size: 5 but was: 30"。
 
 ## 八、验收
 
@@ -142,6 +165,8 @@ RRF 正好只要顺序。
 - [x] 装配与开关：advisor 排在记忆之后；缺目录、空目录都启动失败
 - [x] 索引幂等（`claw4j_rag.source` 的 hash）
 - [x] `searchDocs` 工具与它的两张注册表删除，默认部署的工具清单里没有它
+- [x] 融合分写进 `Document#getScore()`，过官方 joiner 之后顺序不变（组合用例）
+- [x] `top-k` 生效：30 条候选过完链只剩 5 条，重排关掉时也一样（组合用例）
 - [x] `./scripts/verify.sh` 全绿、跳过 0、覆盖率 ≥60%
 - [ ] 第六节那三条缺口——**未做**，见那一节
 
@@ -163,3 +188,10 @@ RRF 正好只要顺序。
 - 降级矩阵的真相与设计文档原来写的有一处差：`pg_trgm` 扩展缺失**不是运行期降级**，
   而是 `V5` 里 `create extension` 直接让迁移失败（启动失败）。运行期只有"某一路抛异常 →
   那一路返回空 + WARN 一行"，没有"扩展缺失就禁用全文那一路"这条路径。
+- **2026-11-09 深夜，提交后的 code review 揪出两条**，都已修（细节见第七之二节）：
+  `top-k` 没有读取点（截断缺失）与 RRF 顺序被官方 joiner 重排掉（融合分没写回 `score`）。
+  两条的共同点是"部件各自有测试、装配起来就错"，所以补的是一条**组合**用例，而不是再加两个单元用例。
+  为腾门禁位（agent 10/10 文件、本文件 20/20 用例），把 `singleRouteSurvivorsStay` 并进了
+  `rrfRanksByRankNotByRepeats`（同一被测对象、同一主题），条数不变。
+- 融合公式与 OpenClaw 的加权有分歧，**没有**改。理由写在第七之二节与 ADR-0020 第四次修订段：
+  我们的关键词那一路只有命中次数，没有可比的分数；照抄加权就得先编一个归一化系数。

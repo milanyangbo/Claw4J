@@ -57,7 +57,8 @@ try/catch 去维持"缓存不参与可用性"——那是拿自研代码给自�
 | --- | --- |
 | `RankFusion`（上一版删掉的那个）：自有类、自有签名、没有调用点 | 自研 |
 | `ReciprocalRankFusionJoiner implements DocumentJoiner` | 实现 |
-| `RerankingDocumentPostProcessor implements DocumentPostProcessor` | 实现 |
+| `RerankDocumentPostProcessor implements DocumentPostProcessor` | 实现（接口在，官方零实现，槽位是官方留的） |
+| `TopKDocumentPostProcessor implements DocumentPostProcessor` | 实现（同上。它补的是"框架没有最终截断部件"这个空位，不是自造概念——OpenClaw 同一位置也是 `slice(0, maxResults)`） |
 | `SemanticTextSplitter extends TextSplitter`（ADR-0028） | 实现（扩展点是 `splitText`） |
 
 判据 3 的答案就是**接口名**。答得出接口名，并且调用点是框架留的槽位，就是实现；
