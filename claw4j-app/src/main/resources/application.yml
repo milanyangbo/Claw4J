@@ -304,6 +304,9 @@ claw4j:
     # 太短则审批人开个会回来卡片已经作废，人会开始要求刷新而不是点按钮；
     # 太长则一条被忘掉的请求三天后还能放行，而三天前的上下文早就不是现在要干的事了。
     # 过期判定用的是库的时钟（now() 与 expires_at 同一个来源），不是应用进程的。
+    # 到点的 pending 由清扫落成 expired（decision=deny、terminal_reason=timeout、resolver_kind=system）：
+    # 不落终态的话它会永远停在 pending，审计里看起来还在等人批。节拍默认一分钟，
+    # 要改就写 claw4j.approval.sweep-interval（如 30s），默认值在 ApprovalService 的注解上。
     ttl: 10m
     # 谁能批。与 claw4j.channel.http.roles 是两张表：那个回答"能读哪些表"，
     # 这个回答"愿意为别人的操作负责"。挂到角色上的话，任何一次提权都会静默扩大审批面。

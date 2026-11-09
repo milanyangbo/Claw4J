@@ -15,7 +15,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * 审批账本的 JDBC 落点，表在 {@code claw4j_run.approval_request}（V10、V11）。
+ * 审批账本的 JDBC 落点，表在 {@code claw4j_run.approval_request}（V6）。
  *
  * <p><b>读失败按"没有批准"处理</b>，与账本那一层"写不进去就降级"的方向相反。
  * 那边落不进去只少一行审计（对话照常），这边读不出来却要决定"放不放一个还没人批过的动作"——
@@ -45,11 +45,15 @@ public class JdbcApprovalLedger implements ApprovalLedger {
      *
      * <p>同一个人同一工具同一参数有多条有效批准时取最晚到期的那个：这不改变"有效"这个判定，
      * 只是让先兑现哪一条是确定的。
+     *
+     * <p><b>状态是 {@code allowed} 不是 {@code granted}</b>（2026-11-09 对齐 openclaw 的五态）：
+     * granted 是我们自己起的名字，表上只有 allowed。{@code consumed_by} 与 {@code consumed_at}
+     * 一起写：表上的约束要求这两列同进同退，而"谁用掉的"是事后追责的入口。
      */
     private static final String REDEEM_SQL =
-            "update claw4j_run.approval_request set consumed_at = now() where id = ("
+            "update claw4j_run.approval_request set consumed_at = now(), consumed_by = ? where id = ("
                     + " select id from claw4j_run.approval_request"
-                    + " where owner = ? and tool_name = ? and args_digest = ? and status = 'granted'"
+                    + " where owner = ? and tool_name = ? and args_digest = ? and status = 'allowed'"
                     + " and consumed_at is null and expires_at > now()"
                     + " order by expires_at desc limit 1 for update skip locked)"
                     + " returning id, expires_at";
@@ -87,7 +91,7 @@ public class JdbcApprovalLedger implements ApprovalLedger {
             return Optional.empty();
         }
         try {
-            Optional<Grant> granted = jdbc.query(REDEEM_SQL, this::grantOf, owner, toolName, argsDigest)
+            Optional<Grant> granted = jdbc.query(REDEEM_SQL, this::grantOf, owner, owner, toolName, argsDigest)
                     .stream().findFirst();
             if (degraded) {
                 degraded = false;

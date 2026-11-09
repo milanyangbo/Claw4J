@@ -243,15 +243,18 @@ class ApprovalFlowTest {
      * 合并成一句"操作失败"，点按钮的人只能再点一次。
      */
     @Test
-    @DisplayName("过期之后批不动：结论是 EXPIRED，审批行仍是 pending，要重发一次才有新的一轮")
+    @DisplayName("过期之后批不动：结论是 EXPIRED，那一行当场落成 expired 终态，要重发一次才有新的一轮")
     void anExpiredRequestCannotBeApproved() {
         Harness harness = new Harness(requestTool(ARGS), answer("不该走到这里"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
         OutboundMessage first = harness.port().reply(harness.mailer("发一封给张三的周报"));
         String approvalId = onlyPendingId();
-        jdbc.update("update claw4j_run.approval_request set expires_at = now() - interval '1 second'"
-                + " where id = ?", approvalId);
+        // 时间整体推到过去，而不是只改 expires_at：表上有 expires_at >= requested_at，
+        // 单改一列等于造一条"一出生就过期"的行，那是算错了，不是过期了。
+        jdbc.update("update claw4j_run.approval_request"
+                + " set requested_at = now() - interval '11 minutes',"
+                + " expires_at = now() - interval '1 second' where id = ?", approvalId);
 
         ApprovalDecider.Result result = harness.decider().decide(approvalId, "approver-1", true, null);
 
@@ -260,8 +263,16 @@ class ApprovalFlowTest {
         assertThat(finishStatusOf(first.runId()))
                 .as("过期的批准不能补点；而这一轮本来就是 done（它回给用户的是「我需要你批准」）")
                 .isEqualTo("succeeded");
-        assertThat(jdbc.queryForObject("select status from claw4j_run.approval_request where id = ?",
-                String.class, approvalId)).isEqualTo("pending");
+        // 过期要落终态（2026-11-09 对齐 openclaw 的五态）：只靠 expires_at 比较的话，
+        // 这一行会永远停在 pending，审计里看起来还在等人批——而那个人早就走开了。
+        Map<String, Object> row = jdbc.queryForMap(
+                "select status, decision, terminal_reason, resolver_kind, resolved_at"
+                        + " from claw4j_run.approval_request where id = ?", approvalId);
+        assertThat(row.get("status")).isEqualTo("expired");
+        assertThat(row.get("decision")).as("过期在结论上是拒绝").isEqualTo("deny");
+        assertThat(row.get("terminal_reason")).as("是超时，不是有人拒了").isEqualTo("timeout");
+        assertThat(row.get("resolver_kind")).as("没有人在场：系统判的").isEqualTo("system");
+        assertThat(row.get("resolved_at")).isNotNull();
     }
 
     /**
@@ -321,9 +332,9 @@ class ApprovalFlowTest {
         assertThat(outsider.verdict()).isEqualTo(ApprovalVerdict.NOT_APPROVER);
         assertThat(outsider.detail()).contains("claw4j.approval.approvers");
         assertThat(tool.calls()).isZero();
-        assertThat(jdbc.queryForObject("select decided_by from claw4j_run.approval_request where id = ?",
+        assertThat(jdbc.queryForObject("select resolver_id from claw4j_run.approval_request where id = ?",
                 String.class, approvalId))
-                .as("连 decided_by 都不该被写上：那一行还是没人碰过的样子")
+                .as("连 resolver_id 都不该被写上：那一行还是没人碰过的样子")
                 .isNull();
         assertThat(finishStatusOf(first.runId())).isEqualTo("succeeded");
     }
@@ -423,7 +434,7 @@ class ApprovalFlowTest {
      * 但兑现过就作废（所以同一份参数不能连放两次）。
      *
      * <p>第一次批准在这里刻意<b>没有被消耗</b>——续跑时模型没再发起工具调用，
-     * 于是那条 granted 还躺在库里。这正是"批了但没执行"的真实形状。
+     * 于是那条 allowed 还躺在库里。这正是"批了但没执行"的真实形状。
      */
     @Test
     @DisplayName("一条批准能跨 run 复用，但用过一次就废")
@@ -511,14 +522,14 @@ class ApprovalFlowTest {
         assertThat(executed.get("actor")).isEqualTo("u-mailer");
         assertThat(executed.get("actor_role")).isEqualTo("mailer");
         assertThat(executed.get("approval_id")).isEqualTo(approvalId);
-        assertThat(executed.get("call_fingerprint"))
+        assertThat(executed.get("args_digest"))
                 .as("指纹与审批那条同一个函数，于是「这次执行是哪次批准的」能直接对上")
                 .isEqualTo(CallFingerprint.of(TOOL, ARGS).orElseThrow());
         assertThat(executed.toString())
                 .as("审计不存参数原文，也不存摘要：那是业务数据的第二份副本")
                 .doesNotContain("zhang@example.com");
         assertThat(jdbc.queryForObject(
-                "select decided_by from claw4j_run.approval_request where id = ?",
+                "select resolver_id from claw4j_run.approval_request where id = ?",
                 String.class, approvalId))
                 .as("谁批的仍然查得到——在审批表上，不在审计里。审计不复制别处的真相")
                 .isEqualTo("approver-1");

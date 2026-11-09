@@ -1,5 +1,6 @@
 package io.github.claw4j.app;
 
+import io.github.claw4j.agent.approval.ApprovalService;
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.github.claw4j.agent.audit.AuditErrorCode;
@@ -18,6 +19,7 @@ import io.github.claw4j.agent.session.SessionEntryStore;
 import io.github.claw4j.agent.session.JdbcSessionEntryStore;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
+import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.ApprovalLedger;
 import org.flywaydb.core.Flyway;
@@ -37,6 +39,7 @@ import java.time.Duration;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -361,32 +364,95 @@ class PersistenceSchemaTest {
     }
 
     @Test
-    @DisplayName("审批表只认三种状态；有结论必须有决定时间，还挂着的不能有")
+    @DisplayName("审批表五态与终态列绑在一起：未知状态、批了没时间、过期没说为什么，都进不去")
     void approvalRequestPinsItsStatusAndDecision() {
         jdbc.update("insert into claw4j_run.approval_request"
                         + " (id, owner, tool_name, status, expires_at)"
                         + " values ('ap-pending', 'u-1', 'sendEmail', 'pending', now() + interval '10 minutes')");
 
-        // decided_at 一并写上，是为了让这条只可能撞状态那一条约束：
-        // 约束的检查顺序不由我们决定，不写它的话，'maybe' 会先撞"有结论必须有决定时间"，
-        // 于是这条用例红在另一条约束上，看起来像"状态约束不存在"。
-        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.approval_request"
-                + " (id, owner, tool_name, status, expires_at, decided_at)"
-                + " values ('ap-maybe', 'u-1', 'sendEmail', 'maybe',"
-                + " now() + interval '10 minutes', now())"))
-                .as("未知状态必须被拒")
-                .hasMessageContaining("ck_approval_request_status");
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.approval_request"
                 + " (id, owner, tool_name, status, expires_at)"
-                + " values ('ap-granted-no-time', 'u-1', 'sendEmail', 'granted', now() + interval '10 minutes')"))
-                .as("批了但没批：没有决定时间的 granted 追不回来")
-                .hasMessageContaining("ck_approval_request_decided");
+                + " values ('ap-maybe', 'u-1', 'sendEmail', 'maybe', now() + interval '10 minutes')"))
+                .as("未知状态必须被拒")
+                // 两条都可能先触发：status 那条词表约束，与 state 那条穷举五态的约束，
+                // 对一个未知值都会拒。PG 的检查顺序不属于契约，钉死其中一条会让这条用例
+                // 在"约束重排"时无谓地红，而它真正要守的是"未知状态进不来"。
+                .hasMessageContaining("ck_approval_request_");
+
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.approval_request"
-                + " (id, owner, tool_name, status, expires_at, decided_at)"
+                + " (id, owner, tool_name, status, expires_at)"
+                + " values ('ap-allowed-no-time', 'u-1', 'sendEmail', 'allowed',"
+                + " now() + interval '10 minutes')"))
+                .as("批了但没批：没有结论时间的 allowed 追不回来")
+                .hasMessageContaining("ck_approval_request_state");
+
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.approval_request"
+                + " (id, owner, tool_name, status, expires_at, resolved_at)"
                 + " values ('ap-pending-with-time', 'u-1', 'sendEmail', 'pending',"
                 + " now() + interval '10 minutes', now())"))
-                .as("还挂着的请求不该有决定时间")
-                .hasMessageContaining("ck_approval_request_decided");
+                .as("还挂着的请求不该有结论时间")
+                .hasMessageContaining("ck_approval_request_state");
+
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.approval_request"
+                + " (id, owner, tool_name, status, decision, terminal_reason, resolved_at,"
+                + " resolver_kind, expires_at)"
+                + " values ('ap-expired-says-user', 'u-1', 'sendEmail', 'expired', 'deny',"
+                + " 'user', now(), 'system', now() + interval '10 minutes')"))
+                .as("过期只能由超时结束：写 user 等于说有人做过决定")
+                .hasMessageContaining("ck_approval_request_state");
+
+        // 只撞 consumed 那一条：allow-always 本来就该有结论时间，但不该带兑现时间。
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.approval_request"
+                + " (id, owner, tool_name, status, decision, terminal_reason, resolved_at,"
+                + " resolver_kind, consumed_at, consumed_by, expires_at)"
+                + " values ('ap-always-consumed', 'u-1', 'sendEmail', 'allowed', 'allow-always',"
+                + " 'user', now(), 'channel', now(), 'u-1', now() + interval '10 minutes')"))
+                .as("只有 allow-once 会被兑现：长期批准没有「用掉」这回事")
+                .hasMessageContaining("ck_approval_request_consumed");
+
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.approval_request"
+                + " (id, owner, tool_name, status, requested_at, expires_at)"
+                + " values ('ap-backwards', 'u-1', 'sendEmail', 'pending', now(),"
+                + " now() - interval '1 minute')"))
+                .as("过期点早于请求时间：那条批准一出生就过期，只可能是算错了")
+                .hasMessageContaining("ck_approval_request_times");
+    }
+
+    @Test
+    @DisplayName("清扫只把到点的 pending 落成 expired：没到点的不动，已经有结论的也不动")
+    void theSweepClosesOnlyOverduePendingRows() {
+        // 三条：到点的 pending、没到点的 pending、已经 allowed 但时间同样过去了。
+        // 第三条是关键——清扫按 status 过滤，不是按时间过滤；否则一次清扫会把
+        // 所有"批准过、也已到期"的行从 allowed 改成 expired，而那条批准原本是有效的。
+        jdbc.update("insert into claw4j_run.approval_request"
+                + " (id, owner, tool_name, status, requested_at, expires_at)"
+                + " values ('ap-due', 'u-1', 'sendEmail', 'pending',"
+                + " now() - interval '11 minutes', now() - interval '1 minute')");
+        jdbc.update("insert into claw4j_run.approval_request"
+                + " (id, owner, tool_name, status, expires_at)"
+                + " values ('ap-later', 'u-1', 'sendEmail', 'pending', now() + interval '10 minutes')");
+        jdbc.update("insert into claw4j_run.approval_request"
+                + " (id, owner, tool_name, status, decision, terminal_reason, requested_at,"
+                + " resolved_at, resolver_kind, expires_at)"
+                + " values ('ap-allowed', 'u-1', 'sendEmail', 'allowed', 'allow-once', 'user',"
+                + " now() - interval '11 minutes', now() - interval '10 minutes', 'channel',"
+                + " now() - interval '1 minute')");
+
+        int expired = new ApprovalService(jdbc, new ApproverRoster(Set.of()), null).expireDue();
+
+        assertThat(expired).as("只有那一条到点的 pending").isEqualTo(1);
+        assertThat(jdbc.queryForObject("select status from claw4j_run.approval_request where id = 'ap-due'",
+                String.class)).isEqualTo("expired");
+        assertThat(jdbc.queryForMap("select decision, terminal_reason, resolver_kind"
+                + " from claw4j_run.approval_request where id = 'ap-due'"))
+                .as("过期在结论上是拒绝、原因是超时、判定者是系统")
+                .containsEntry("decision", "deny")
+                .containsEntry("terminal_reason", "timeout")
+                .containsEntry("resolver_kind", "system");
+        assertThat(jdbc.queryForObject("select status from claw4j_run.approval_request where id = 'ap-later'",
+                String.class)).as("还没到点的不该被写").isEqualTo("pending");
+        assertThat(jdbc.queryForObject("select status from claw4j_run.approval_request where id = 'ap-allowed'",
+                String.class)).as("已经有结论的行不动它").isEqualTo("allowed");
     }
 
     /**
@@ -409,9 +475,10 @@ class PersistenceSchemaTest {
         granted("ap-other-person", "u-2", "sendEmail", DIGEST, "10 minutes");
         granted("ap-other-args", "u-1", "sendEmail", OTHER_DIGEST, "10 minutes");
         jdbc.update("insert into claw4j_run.approval_request"
-                + " (id, owner, tool_name, args_digest, status, reason, expires_at, decided_at)"
-                + " values ('ap-denied', 'u-1', 'draftScript', '" + DIGEST + "', 'denied',"
-                + " '这批脚本不该进生产', now() + interval '10 minutes', now())");
+                + " (id, owner, tool_name, args_digest, status, decision, terminal_reason,"
+                + " reason, resolved_at, resolver_kind, expires_at)"
+                + " values ('ap-denied', 'u-1', 'draftScript', '" + DIGEST + "', 'denied', 'deny',"
+                + " 'user', '这批脚本不该进生产', now(), 'channel', now() + interval '10 minutes')");
 
         // 参数不同是另一次：那条只放行它自己那一种参数
         assertThat(ledger.redeem("u-1", "sendEmail", OTHER_DIGEST)).get()
@@ -455,12 +522,12 @@ class PersistenceSchemaTest {
     @DisplayName("审计按 30 天与 10 万行清：一个按时钟，一个按账本序号")
     void theAuditLedgerPrunesByAgeAndSize() {
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status, actor, run_id, at)"
-                + " values (gen_random_uuid(), 'e-old', 'agent_run', 'agent.run.started',"
+                + " (event_id, kind, action, status, actor, run_id, at)"
+                + " values ('e-old', 'agent_run', 'agent.run.started',"
                 + " 'started', 'u-1', 'run-1', now() - interval '31 days')");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status, actor, run_id)"
-                + " values (gen_random_uuid(), 'e-fresh', 'agent_run', 'agent.run.started',"
+                + " (event_id, kind, action, status, actor, run_id)"
+                + " values ('e-fresh', 'agent_run', 'agent.run.started',"
                 + " 'started', 'u-1', 'run-2')");
 
         AuditLedger.Report aged = new AuditLedger(jdbc, null).prune();
@@ -472,8 +539,8 @@ class PersistenceSchemaTest {
         // ---- 10 万行上限。一条 SQL 插进去，比循环十万次快得多，也比 sleep 诚实。
         jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status, run_id)"
-                + " select gen_random_uuid(), 'bulk-' || g, 'agent_run', 'agent.run.started',"
+                + " (event_id, kind, action, status, run_id)"
+                + " select 'bulk-' || g, 'agent_run', 'agent.run.started',"
                 + " 'started', 'run-bulk' from generate_series(1, 100001) g");
 
         Long highest = jdbc.queryForObject("select max(seq) from claw4j_run.audit_event", Long.class);
@@ -503,8 +570,8 @@ class PersistenceSchemaTest {
         for (AuditErrorCode code : AuditErrorCode.values()) {
             boolean runLevel = code.column().startsWith("run_");
             jdbc.update("insert into claw4j_run.audit_event"
-                            + " (id, event_id, kind, action, status, error_code, run_id)"
-                            + " values (gen_random_uuid(), ?, ?, ?, 'blocked', ?, 'run-1')",
+                            + " (event_id, kind, action, status, error_code, run_id)"
+                            + " values (?, ?, ?, 'blocked', ?, 'run-1')",
                     "e-" + code.column(),
                     runLevel ? "agent_run" : "tool_action",
                     runLevel ? "agent.run.finished" : "tool.action.finished",
@@ -512,8 +579,8 @@ class PersistenceSchemaTest {
         }
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status, error_code, run_id)"
-                + " values (gen_random_uuid(), 'e-old-word', 'tool_action', 'tool.action.finished',"
+                + " (event_id, kind, action, status, error_code, run_id)"
+                + " values ('e-old-word', 'tool_action', 'tool.action.finished',"
                 + " 'blocked', 'policy_denied', 'run-1')"))
                 .as("这是换词表之前的值，现在不在词表里")
                 .hasMessageContaining("ck_audit_event_error_code");
@@ -532,13 +599,13 @@ class PersistenceSchemaTest {
         // 库拒绝空值；账本在没有编号时直接跳过（否则每一行都撞约束，write_errors 会一直涨，
         // 把"没有归属"错报成"库坏了"）。
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status, run_id)"
-                + " values (gen_random_uuid(), 'e-with-run', 'agent_run', 'agent.run.started',"
+                + " (event_id, kind, action, status, run_id)"
+                + " values ('e-with-run', 'agent_run', 'agent.run.started',"
                 + " 'started', 'run-1')");
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (id, event_id, kind, action, status)"
-                + " values (gen_random_uuid(), 'e-no-run', 'agent_run', 'agent.run.started', 'started')"))
+                + " (event_id, kind, action, status)"
+                + " values ('e-no-run', 'agent_run', 'agent.run.started', 'started')"))
                 .as("没有 run_id 的行会被库拒绝")
                 .hasMessageContaining("run_id");
 
@@ -557,11 +624,20 @@ class PersistenceSchemaTest {
                 .as("那一行没有落库").isEqualTo(1);
     }
 
+    /**
+     * 一条有效的批准（allowed / allow-once / 人批的）。
+     *
+     * <p>{@code requested_at} 必须显式早于 {@code expires_at}：表上有时间单调约束，
+     * 而"已经过期的批准"这条用例把它传到负数——默认的 now() 会让它一出生就违反约束，
+     * 于是用例红在时间约束上，看起来像"过期判定不存在"。
+     */
     private void granted(String id, String owner, String tool, String digest, String offset) {
         jdbc.update("insert into claw4j_run.approval_request"
-                        + " (id, owner, tool_name, args_digest, status, expires_at, decided_at, decided_by)"
-                        + " values (?, ?, ?, ?, 'granted', now() + interval '" + offset + "', now(),"
-                        + " 'approver-1')",
+                        + " (id, owner, tool_name, args_digest, status, decision, terminal_reason,"
+                        + " requested_at, resolved_at, resolver_kind, resolver_id, expires_at)"
+                        + " values (?, ?, ?, ?, 'allowed', 'allow-once', 'user',"
+                        + " now() + interval '" + offset + "' - interval '10 minutes', now(),"
+                        + " 'channel', 'approver-1', now() + interval '" + offset + "')",
                 id, owner, tool, digest);
     }
 }

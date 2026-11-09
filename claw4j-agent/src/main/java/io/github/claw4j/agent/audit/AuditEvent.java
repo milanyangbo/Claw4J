@@ -17,12 +17,12 @@ import io.github.claw4j.domain.principal.Principal;
  * @param action          四类之一
  * @param status          闭合词表里的结局
  * @param errorCode       归一化错误码（{@link AuditErrorCode}），不是异常消息原文
- * @param toolName        工具名；运行类事件为空
- * @param callFingerprint 工具调用 id 的单向指纹；运行类事件为空
- * @param approvalId      放行这次调用的审批编号；没有审批时为空
+ * @param toolName   工具名；运行类事件为空
+ * @param argsDigest 参数指纹；运行类事件为空
+ * @param approvalId 放行这次调用的审批编号；没有审批时为空
  */
 public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
-                         AuditErrorCode errorCode, String toolName, String callFingerprint,
+                         AuditErrorCode errorCode, String toolName, String argsDigest,
                          String approvalId) {
 
     /**
@@ -65,15 +65,15 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     }
 
     /** 一个工具开始执行。被策略挡住的调用**没有**这一条——它根本没开始。 */
-    public static AuditEvent toolStarted(Scope scope, String toolName, String callFingerprint) {
+    public static AuditEvent toolStarted(Scope scope, String toolName, String argsDigest) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_STARTED, AuditStatus.STARTED,
-                null, toolName, callFingerprint, null);
+                null, toolName, argsDigest, null);
     }
 
     /** 一个工具结束（成功、失败、被拒、超时都走这一条，用 {@code status} 分开）。 */
-    public static AuditEvent toolFinished(Scope scope, String toolName, String callFingerprint,
+    public static AuditEvent toolFinished(Scope scope, String toolName, String argsDigest,
                                           AuditStatus status, AuditErrorCode errorCode, String approvalId) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_FINISHED, status,
-                errorCode, toolName, callFingerprint, approvalId);
+                errorCode, toolName, argsDigest, approvalId);
     }
 }

@@ -69,9 +69,9 @@ public class AuditLedger implements AuditSink {
 
     private static final String INSERT = """
             insert into claw4j_run.audit_event
-                (id, event_id, kind, action, status, error_code, run_id, session_key, agent_id,
-                 actor, actor_role, channel, tool_name, call_fingerprint, approval_id)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
+                 actor, actor_role, channel, tool_name, args_digest, approval_id)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String PURGE_AGE =
@@ -133,7 +133,6 @@ public class AuditLedger implements AuditSink {
         }
         try {
             jdbc.update(INSERT,
-                    UUID.randomUUID(),
                     // event_id 单独生成而不是复用主键：OpenClaw 用它去重（同一条事件重复投递只留一行）。
                     // 我们的写入是同步单次的，没有重放路径，所以现在它只是一个唯一值；
                     // 将来真的需要重放时，调用方带一个稳定的 id 进来就能直接对上，不用改表。
@@ -150,7 +149,7 @@ public class AuditLedger implements AuditSink {
                     scope.actorRole(),
                     scope.channel(),
                     event.toolName(),
-                    event.callFingerprint(),
+                    event.argsDigest(),
                     event.approvalId());
             pruneIfDue();
         } catch (RuntimeException failure) {

@@ -11,6 +11,7 @@ import io.github.claw4j.domain.principal.Principal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -66,13 +67,53 @@ public class ApprovalService implements ApprovalDecider {
      * 落结论，并且只在"还挂着、还没过期"的那一行上落得下来。
      *
      * <p>把 {@code expires_at > now()} 放进 where 而不是先查后判：先查后判会留下一个
-     * 窗口——查的时候还在有效期内，写的时候已经过了。那个窗口里落下的 granted，
+     * 窗口——查的时候还在有效期内，写的时候已经过了。那个窗口里落下的 allowed，
      * 是一条"批得太晚但还是生效了"的记录。
+     *
+     * <p><b>为什么是四列一起写</b>（status / decision / terminal_reason / resolved_*）：
+     * 表上是五态一致性的 CHECK，少写一列就落不进去。这不是多余的行数——它保证
+     * "有终态"与"说得出谁在什么时候定的、为什么"同时成立。原来只有 decided_at 一列时，
+     * expired 与 denied 在库里长得一样，事后分不出是没人看还是有人不同意。
      */
     private static final String CLAIM_SQL =
-            "update claw4j_run.approval_request set status = ?, decided_at = now(),"
-                    + " decided_by = ?, reason = ?"
+            "update claw4j_run.approval_request set status = ?, decision = ?,"
+                    + " terminal_reason = 'user', resolved_at = now(), resolver_kind = ?,"
+                    + " resolver_id = ?, reason = ?"
                     + " where id = ? and status = 'pending' and expires_at > now()";
+
+    /**
+     * 把"还挂着但已经过点"的行落成终态。
+     *
+     * <p><b>为什么要写这一条</b>：只靠 {@code expires_at <= now()} 判"失效"能答
+     * "现在还有效吗"，答不了"这条最后怎么了"。不落终态的话，一行过期的审批会永远停在
+     * pending——审计里它看起来还在等人批，而那个人早就走开了。openclaw 的 expireDue
+     * 做的就是这件事（status=expired / decision=deny / terminal_reason=timeout /
+     * resolver_kind=system），这里照同一个形状写。
+     *
+     * <p><b>一条 update 扫全部到期行</b>，不是逐条：清扫是后台动作，一次往返比 N 次好。
+     * 判据在 where 里，所以并发的两次清扫不会重复写（第二次已经看不到 pending 的行）。
+     */
+    private static final String EXPIRE_SQL =
+            "update claw4j_run.approval_request"
+                    + " set status = 'expired', decision = 'deny', terminal_reason = 'timeout',"
+                    + " resolved_at = now(), resolver_kind = 'system'"
+                    + " where status = 'pending' and expires_at <= now()";
+
+    /**
+     * 只落这一条。用户点了一张已经过期的卡片时用它。
+     *
+     * <p><b>为什么不等到清扫那一分钟</b>：点下去的人此刻就该拿到"过期了"，而且库里
+     * 也该当场有结论。等清扫的后果是同一个事实在两处说得不一样——回话是"过期"，
+     * 库里还是 pending，中间那一分钟查库的人会以为还有人在等。
+     */
+    private static final String EXPIRE_ONE_SQL =
+            "update claw4j_run.approval_request"
+                    + " set status = 'expired', decision = 'deny', terminal_reason = 'timeout',"
+                    + " resolved_at = now(), resolver_kind = 'system'"
+                    + " where id = ? and status = 'pending' and expires_at <= now()";
+
+    /** 结论是人在卡片上点的。openclaw 的四档里我们只有这一档与 system（清扫）。 */
+    private static final String RESOLVER_KIND_CHANNEL = "channel";
 
     /**
      * 读一条请求现在的样子：资格判定要 {@code owner}，落不下去时要拿状态与过期与否解释，
@@ -124,7 +165,12 @@ public class ApprovalService implements ApprovalDecider {
             return new Result(refused.get(), refusalText(refused.get()));
         }
         if (claim(approvalId, approver, approved, reason) == 0) {
-            // 读的时候还在等，写的时候落不下来：已经有结论 / 刚好过期 / 另一个人刚落完。
+            // 读的时候还在等，写的时候落不下来：刚好过期 / 已经有结论 / 另一个人刚落完。
+            // 先试图把它落成 expired：过期这件事本来就该当场有结论，不该等清扫。
+            if (expireOne(approvalId)) {
+                return new Result(ApprovalVerdict.EXPIRED,
+                        "这条审批已经过期了。让提这个请求的人重新发起一次——过期的批准不能补点。");
+            }
             return explanationOf(row);
         }
         if (!approved) {
@@ -197,12 +243,57 @@ public class ApprovalService implements ApprovalDecider {
     /** 落结论。返回 0 表示那一行已经不是"等着且没过期"了。 */
     private int claim(String approvalId, String approver, boolean approved, String reason) {
         try {
-            return jdbc.update(CLAIM_SQL, approved ? "granted" : "denied", approver, reason, approvalId);
+            return jdbc.update(CLAIM_SQL,
+                    approved ? "allowed" : "denied",
+                    approved ? "allow-once" : "deny",
+                    RESOLVER_KIND_CHANNEL,
+                    approver,
+                    reason,
+                    approvalId);
         }
         catch (RuntimeException failure) {
             // 落不下来时不能假装批了：调用方（审批卡片）要告诉点按钮的人"没生效"，让他再点一次。
             log.error("审批结论落不下来 approval={}", approvalId, failure);
             return 0;
+        }
+    }
+
+    /**
+     * 把到点的请求落成 expired。由容器按 {@code claw4j.approval.sweep-interval} 调（默认一分钟）。
+     *
+     * <p><b>失败只记 debug</b>：清扫是后台维护，库连不上时下一轮再来。让它抛出去的话，
+     * 一次库抖动会在日志里堆出一串相同的栈，而下一分钟照样会重试。
+     *
+     * @return 这一轮落成终态的行数
+     */
+    @Scheduled(fixedDelayString = "${claw4j.approval.sweep-interval:PT1M}")
+    public int expireDue() {
+        try {
+            int expired = jdbc.update(EXPIRE_SQL);
+            if (expired > 0) {
+                log.info("审批清扫：{} 条超时未处理，已落成 expired", expired);
+            }
+            return expired;
+        }
+        catch (RuntimeException failure) {
+            log.debug("审批清扫这一轮没跑成", failure);
+            return 0;
+        }
+    }
+
+    /**
+     * 只落这一条到期行。返回 true 表示它确实是"还挂着且已过期"，刚刚被落成了 expired。
+     *
+     * <p>落不下来（并发、库出错）就返回 false，让调用方走原来的解释分支——
+     * 这里不该抢着说"过期了"，除非库里真的写出了这个结论。
+     */
+    private boolean expireOne(String approvalId) {
+        try {
+            return jdbc.update(EXPIRE_ONE_SQL, approvalId) > 0;
+        }
+        catch (RuntimeException failure) {
+            log.debug("这条审批没能落成 expired approval={}", approvalId, failure);
+            return false;
         }
     }
 
@@ -238,17 +329,21 @@ public class ApprovalService implements ApprovalDecider {
     /**
      * 落不下来时，究竟是哪一种落不下来。
      *
-     * <p>三种答案分开，因为它们对应三句完全不同的话：已经定过（别点了，看结果）、
-     * 过期了（让他重新发起）、以及读的时候还在等但写的时候被人抢先了。
+     * <p>三种答案分开，因为它们对应三句完全不同的话：过期了（让他重新发起）、
+     * 已经定过（别点了，看结果）、以及读的时候还在等但写的时候被人抢先了。
+     *
+     * <p><b>先说过期，再说已定</b>：清扫会把过期写成终态，那时 {@code status} 已经是
+     * expired 而不是 pending。若先判"非 pending 就是已定过"，过期的人会收到
+     * "已经有结论了"——他会以为有人批过，而实际是没人理它。
      */
     private static Result explanationOf(Row row) {
+        if ("expired".equals(row.status()) || ("pending".equals(row.status()) && row.expired())) {
+            return new Result(ApprovalVerdict.EXPIRED,
+                    "这条审批已经过期了。让提这个请求的人重新发起一次——过期的批准不能补点。");
+        }
         if (!"pending".equals(row.status())) {
             return new Result(ApprovalVerdict.ALREADY_DECIDED,
                     "这条审批已经有结论了（" + row.status() + "），再点一次不会改变它。");
-        }
-        if (row.expired()) {
-            return new Result(ApprovalVerdict.EXPIRED,
-                    "这条审批已经过期了。让提这个请求的人重新发起一次——过期的批准不能补点。");
         }
         // 还挂着、也没过期，却更新不到：只可能是并发（另一个人刚落下结论）。
         return new Result(ApprovalVerdict.ALREADY_DECIDED, "这条审批刚刚被别人定过结论了。");

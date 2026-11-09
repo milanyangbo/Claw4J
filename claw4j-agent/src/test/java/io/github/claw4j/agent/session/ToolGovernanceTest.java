@@ -102,10 +102,10 @@ class ToolGovernanceTest {
         assertThat(events.get(0).action()).isEqualTo(AuditAction.TOOL_ACTION_STARTED);
         assertThat(events.get(1).action()).isEqualTo(AuditAction.TOOL_ACTION_FINISHED);
         assertThat(events.get(1).status()).isEqualTo(AuditStatus.SUCCEEDED);
-        assertThat(events.get(0).callFingerprint())
+        assertThat(events.get(0).argsDigest())
                 .as("两条是同一次调用：指纹算的是同一份参数")
                 .isNotNull()
-                .isEqualTo(events.get(1).callFingerprint());
+                .isEqualTo(events.get(1).argsDigest());
         assertThat(events.get(1).scope().actor()).isEqualTo("u-analyst");
         assertThat(events.get(1).scope().actorRole()).isEqualTo("analyst");
         assertThat(events.get(1).toolName()).isEqualTo(TOOL);
@@ -212,7 +212,7 @@ class ToolGovernanceTest {
     void aHalfReceivedArgumentLeavesNoFingerprint() {
         audit.rejected(scope(), TOOL, "{\"region\":");
 
-        assertThat(events.getFirst().callFingerprint()).isNull();
+        assertThat(events.getFirst().argsDigest()).isNull();
         assertThat(events.getFirst().status()).isEqualTo(AuditStatus.BLOCKED);
     }
 
