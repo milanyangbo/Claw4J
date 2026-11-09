@@ -115,8 +115,8 @@ psql "$DATABASE_URL" -c "select id, session_key, channel, chat_ref, status
   from claw4j_run.approval_request order by requested_at desc limit 3"
 
 psql "$DATABASE_URL" -c "select id, owner, tool_name, left(args_digest,12) as digest,
-  args_summary, status, expires_at, consumed_at
-  from claw4j_run.approval_request order by created_at desc limit 5"
+  args_summary, status, decision, terminal_reason, expires_at, consumed_at
+  from claw4j_run.approval_request order by requested_at desc limit 5"
 
 # 读一条请求现在的样子：卡片上有什么，这里就有什么（身份同样取自请求头）
 curl -s --noproxy '*' localhost:8080/api/approvals/<id> \
@@ -467,13 +467,13 @@ psql "$DATABASE_URL" -c "select actor, actor_role, tool_name, error_code, at
   where status = 'blocked' and at > current_date order by at desc"
 
 # 这次调用是哪次批准的：结束事件上的 approval_id 与审批表同一个编号
-psql "$DATABASE_URL" -c "select seq, actor, tool_name, status, left(call_fingerprint,12) as digest,
+psql "$DATABASE_URL" -c "select seq, actor, tool_name, status, left(args_digest,12) as digest,
   approval_id, at
   from claw4j_run.audit_event where run_id = '<runId>' order by seq"
 ```
 
 列：`seq / kind / action / status / error_code / run_id / session_key / actor / actor_role /
-channel / tool_name / call_fingerprint / approval_id / redaction / schema_version / at`。
+channel / tool_name / args_digest / approval_id / redaction / schema_version / at`。
 
 四条口径都在库里的行上验，不看模型措辞：
 
@@ -481,7 +481,7 @@ channel / tool_name / call_fingerprint / approval_id / redaction / schema_versio
   只有 `finished / blocked`——它根本没开始，写两条会让"想调但没调成"被算成"调过"。
 - **等审批不写审计**：那件事的真相在 `approval_request`（谁提的、批没批、谁批的、什么时候）。
   写两遍的第一个代价是"今天拒了几条"要 union 两张表，第二个代价是两张迟早对不上。
-- **只落指纹，不落参数**：`call_fingerprint` 是 `sha256(工具名 + 规范化参数)`，与审批表那一列
+- **只落指纹，不落参数**：`args_digest` 是 `sha256(工具名 + 规范化参数)`，与审批表那一列
   同一个函数，所以"这次执行是哪次批准的"能直接对上；参数原文与摘要在库里一处都没有。
   工具抛异常只记 `error_code = tool_failed`，不记 message——message 里常有数据。
 - **30 天 + 10 万行**（照 OpenClaw 的固定上限，不是配置项）：30 天按库的时钟判，
