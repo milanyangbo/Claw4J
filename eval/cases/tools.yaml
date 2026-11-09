@@ -5,6 +5,11 @@
 #
 # expectTools 按集合包含比：多调不算错，少调才错。
 # 所以"不该调工具"的用例写成空列表（显式写 []，不写就是漏字段，会红）。
+# 2026-11-09：`searchDocs` 工具已删除——知识库改由 `RetrievalAugmentationAdvisor`
+# 在每轮请求里自动检索。原来靠这个工具表达的判据（选没选对工具、没权限时被拒）
+# 在这里不再成立：前者没有工具可选，后者下沉到了 retriever（由
+# `KnowledgeRetrievalTest.withoutDocPermissionNothingIsRetrieved` 守着）。
+
 
 - id: tools-sales-question
   question: 上周华北区的成交额是多少？
@@ -17,7 +22,7 @@
   question: 华东区无理由退货几天？
   principal: read-only
   mustMention: ["after-sales.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 制度类问题走搜索，不该去查业务表
 
 - id: tools-schema-question
@@ -42,7 +47,7 @@
   question: 知识库里写了华东退货 7 天，那上周华东的成交额是多少？
   principal: read-only
   mustMention: ["128400"]
-  expectTools: ["querySales", "searchDocs"]
+  expectTools: ["querySales"]
   note: 一句话里两件事，两个工具都要调。这是"集合包含"最值钱的一条：
         少一个就红，多调不算错。
         身份必须是 read-only，不能是 analyst：analyst 的表清单刻意不含 doc，
@@ -53,7 +58,7 @@
   question: 上周华东的退货单里，政策规定的窗口是几天？
   principal: read-only
   mustMention: ["after-sales.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 这里的"上周"会诱导去查数，但问的是政策。判轨迹能看见它有没有被带偏
 
 - id: tools-no-tool-needed

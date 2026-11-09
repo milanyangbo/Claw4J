@@ -1,5 +1,10 @@
 # 知识库类：命中、出处、答不上来时说什么。
 #
+# 2026-11-09：检索改由 `RetrievalAugmentationAdvisor` 在每轮请求里自动完成，
+# 原来那个 `searchDocs` 工具已删除。所以这批用例的 `expectTools` 都置空——
+# "调没调工具"不再是判据（没有工具可调），判据只剩 `mustMention` 里的文件名与数字：
+# 它们要么被检索进上下文、要么没有，模型无法同义替换。
+#
 # 事实来源是 examples/knowledge/ 下那两份文档（评测跑起来时由 claw4j.rag.directory 指向它）。
 # mustMention 里的文件名不是装饰：KnowledgeTools 的返回里每一段都带出处，
 # "回答带着出处"与"把某段文档当成答案吐出来"的区别全在这里。
@@ -12,21 +17,21 @@
   principal: read-only
   mustMention: ["after-sales.md", "7"]
   mustNotMention: []
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 华东 7 天。答成 5 天（华南）时这两个锚一个都命中不了
 
 - id: knowledge-south-return-window
   question: 华南区的无理由退货窗口是几天？
   principal: read-only
   mustMention: ["after-sales.md", "5"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 华南 5 天，比华东短两天。与上一条成对——检索串了文档就会答成 7
 
 - id: knowledge-return-window-start
   question: 退货的 7 天是从签收日算还是从付款日算？
   principal: read-only
   mustMention: ["after-sales.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 以签收日期为准。这条判的是"读没读到那一句"，数字锚在这里不可靠（7 与 15 都在文档里）
 
 - id: knowledge-citation
@@ -34,7 +39,7 @@
   principal: read-only
   mustMention: ["after-sales.md"]
   mustNotMention: []
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 首轮全量时它红了：答对 after-sales.md 之后补了一句 pricing.md 里的退款口径
         （折扣订单按实付金额退），而原先 mustNotMention 禁了 pricing.md。
         问出处时答错文档的表现是"只说 pricing.md"，那种情况 after-sales.md 不会出现，
@@ -45,7 +50,7 @@
   question: 退货入库验收之后，退款几个工作日内发起？
   principal: read-only
   mustMention: ["after-sales.md", "3"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 3 个工作日。银行卡渠道另有 1 至 3 个工作日，两条数字都在文档里
 
 - id: knowledge-bank-refund
@@ -53,7 +58,7 @@
   principal: read-only
   mustMention: ["after-sales.md", "3"]
   mustNotMention: ["5"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 银行卡通常再需 1 至 3 个工作日。mustNotMention 放 5 是防它去答成退货窗口
 
 - id: knowledge-discount-9-to-8
@@ -61,7 +66,7 @@
   principal: read-only
   mustMention: ["pricing.md"]
   mustNotMention: ["after-sales.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 区域销售经理。判据是"引对了文档"：这两份文档都提到"审批"，串了就是假命中
 
 - id: knowledge-discount-below-8
@@ -69,14 +74,14 @@
   principal: read-only
   mustMention: ["pricing.md"]
   mustNotMention: ["after-sales.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 事业部负责人。与上一条成对，判的是能不能分辨同一份文档里的两档
 
 - id: knowledge-refund-basis
   question: 折扣订单发生退货时，按哪个金额退款？
   principal: read-only
   mustMention: ["pricing.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 按实付金额，不按标价。这条最容易被"常识"答错——而常识答对时没有出处，
         所以锚在文件名上
 
@@ -84,7 +89,7 @@
   question: 样品单要不要走报价审批？
   principal: read-only
   mustMention: ["pricing.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 样品单不属于报价，走售后流程。两段都在 pricing.md 里，
         答成"要审批"就是按常识补的
 
@@ -92,14 +97,14 @@
   question: 线下门店买的商品能不能无理由退货？
   principal: read-only
   mustMention: ["after-sales.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 适用范围含线上商城与线下门店，经销渠道按合同单独约定
 
 - id: knowledge-unknown
   question: 2027 年的差旅报销标准是多少？
   principal: read-only
   mustMention: []
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 知识库里没有这条。这条不判命中（编出来的数字无法穷举），它靠人看报告：
         正确表现是"知识库没有查到"，错误表现是编一个标准出来。
         留它是因为"拿不到时不要编"是 KnowledgeTools 描述里写明白的一条

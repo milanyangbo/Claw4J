@@ -1,439 +1,513 @@
 package io.github.claw4j.agent.rag;
 
+import com.sun.net.httpserver.HttpServer;
 import io.github.claw4j.agent.PermissionFingerprint;
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
-import io.github.claw4j.domain.principal.ToolTier;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.rag.Query;
+import org.springframework.ai.rag.retrieval.join.DocumentJoiner;
+import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.TransactionStatus;
 
 import javax.sql.DataSource;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.ArrayList;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 知识库这一层：**目录怎么进库**、**一个问题怎么变成几段带出处的文本**、**工具怎么说话**。
+ * 知识库这一层：**目录怎么进库**、**两路怎么融合**、**重排失败时结果还在不在**。
  *
- * <p><b>SQL 那一半不在这里</b>：生成列能不能建、{@code to_tsvector('simple', bigrams)}
- * 到底切出几个 token、两路各取一次 topK 的结果对不对，都在 app 的 {@code SearchSqlTest}
- * 里用真 Postgres 验——那几条只有真库答得了（生成列要求函数 immutable，不满足时建表就失败）。
- * 这里对 {@link JdbcTemplate} 用替身，只断言"这个类发了什么、拿回来之后怎么处理"。
+ * <p><b>这里是替身，不是真库</b>：真库那几条（表结构、编号命中、通配符真跑）在
+ * {@code claw4j-app} 的 {@code SearchSqlTest}。分开的理由是这里要构造"向量那一路抛异常"
+ * 这类真库上做不到的场景。
  *
- * <p><b>为什么替身要真的调用 {@code RowMapper}</b>：{@link PgVectorKnowledgeBase} 里那两段
- * 行映射（哪一列映射到 {@code Hit} 的哪个字段）是它自己的代码，替身直接返回 {@code Hit}
- * 就把这半边跳过去了——而"列名写错"正是这种代码最常见的错法。所以这里的假库把
- * {@link ResultSet} 也做了替身，让真正的映射逻辑跑一遍。
- *
- * <p><b>两个"没有"必须分得开</b>：库里一段都没有（索引没建起来 / 目录配错）与库里有 N 段
- * 但没有一段相关，是两个不同的部署状态。见 {@link #anEmptyLibraryIsSaidAwayFromNoMatch}。
+ * <p><b>2026-11-09 之后被测对象变了</b>：曾经测的是自有的 {@code KnowledgeBase} 与
+ * {@code searchDocs} 工具；现在检索由 {@code RetrievalAugmentationAdvisor} 在每轮请求里
+ * 自动完成，工具已删除。所以这里测的是三个"实现官方接口"的类 + 装配条件。
  */
 class KnowledgeRetrievalTest {
 
-    private static final float[] VECTOR = {0.1f, 0.2f, 0.3f};
+    private static final String DIGEST = "a".repeat(64);
 
-    // ---------------------------------------------------------------- 索引
-
-    @Test
-    @DisplayName("目录里每份文档都进库：报告写清重建几份、多少块，块里存的是切好的 bigram")
-    void indexesEveryDocumentAndSaysWhatItDid(@TempDir Path root) throws Exception {
-        write(root, "after-sales.md", "华东区退货七天内可退换。\n\n退货运费由买家承担。");
-        write(root, "pricing.txt", "华东区满 199 包邮。");
-
-        JdbcTemplate jdbc = jdbc();
-        when(jdbc.queryForObject(contains("insert into claw4j_rag.document"), eq(Long.class), any(), any()))
-                .thenReturn(1L);
-        when(jdbc.queryForObject(contains("count(*) from claw4j_rag.chunk"), eq(Integer.class)))
-                .thenReturn(2);
-
-        KnowledgeIndexer.Stats stats = indexer(jdbc, directory(root)).index();
-
-        assertThat(stats.indexed()).as("两份文档都该重建").isEqualTo(2);
-        assertThat(stats.skipped()).isZero();
-        assertThat(stats.removed()).isZero();
-        assertThat(stats.chunks()).as("块的数目取自库，不是自己数的").isEqualTo(2);
-        verify(jdbc, times(2)).update(contains("insert into claw4j_rag.chunk"), any(), any(), any(),
-                argThat(bigrams -> bigrams.toString().contains(" ")
-                        && !bigrams.toString().isBlank()),
-                anyString());
-        verify(jdbc, times(2)).update(contains("delete from claw4j_rag.chunk"), any(Long.class));
-    }
+    // ---- 索引器：目录是事实来源 ----
 
     @Test
-    @DisplayName("内容没变就跳过：按文件内容的 SHA-256 比，不是按修改时间")
-    void unchangedFilesAreSkippedByContentHash(@TempDir Path root) throws Exception {
-        String content = "华东区退货七天内可退换。";
-        write(root, "after-sales.md", content);
+    @DisplayName("内容没变就跳过：靠 claw4j_rag.source 的 hash，不重算 embedding")
+    void unchangedFileIsSkipped(@TempDir Path docs) throws IOException {
+        String body = "# 退货\n\n华东区 7 天无理由退货。";
+        Files.writeString(docs.resolve("a.md"), body);
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(contains("content_hash"), eq(String.class), any(), any()))
+                .thenReturn(List.of(PermissionFingerprint.sha256(body)));
+        // 切块身份也对得上，才轮到"比 hash"
+        when(jdbc.queryForList(contains("index_meta"), eq(String.class), any()))
+                .thenReturn(List.of(KnowledgeIndexer.identityOf(200)));
+        VectorStore store = mock(VectorStore.class);
 
-        JdbcTemplate jdbc = jdbc();
-        when(jdbc.queryForList(contains("select content_hash"), eq(String.class), any()))
-                .thenReturn(List.of(PermissionFingerprint.sha256(content)));
-        when(jdbc.queryForObject(contains("count(*) from claw4j_rag.chunk"), eq(Integer.class)))
-                .thenReturn(2);
+        KnowledgeIndexer.Stats stats = new KnowledgeIndexer(jdbc, store, mock(EmbeddingModel.class),
+                props(docs)).index();
 
-        KnowledgeIndexer.Stats stats = indexer(jdbc, directory(root)).index();
-
-        assertThat(stats.skipped()).as("哈希一样就是没变").isEqualTo(1);
+        assertThat(stats.skipped()).as("hash 相等就是没变").isEqualTo(1);
         assertThat(stats.indexed()).isZero();
-        verify(jdbc, never()).queryForObject(contains("insert into claw4j_rag.document"),
-                eq(Long.class), any(), any());
-        verify(jdbc, never()).update(contains("insert into claw4j_rag.chunk"), any(), any(), any(),
-                anyString(), anyString());
+        verify(store, never()).add(any());
     }
 
     @Test
-    @DisplayName("目录里没有的，库里也删掉：否则出处指向一个已经被删掉的文件")
-    void filesGoneFromTheDirectoryAreRemoved(@TempDir Path root) throws Exception {
-        write(root, "after-sales.md", "华东区退货七天内可退换。");
+    @DisplayName("重建一份文档先删后加：块的编号会整体前移，旧尾巴留着就是返回不存在的原文")
+    void reindexDeletesBeforeAdding(@TempDir Path docs) throws IOException {
+        Files.writeString(docs.resolve("a.md"), "# 新版本\n\n改过的内容。");
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(contains("content_hash"), eq(String.class), any(), any()))
+                .thenReturn(List.of());
+        when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(1);
+        VectorStore store = mock(VectorStore.class);
 
-        JdbcTemplate jdbc = jdbc();
-        when(jdbc.queryForObject(contains("insert into claw4j_rag.document"), eq(Long.class), any(), any()))
-                .thenReturn(1L);
-        when(jdbc.queryForList(contains("select source from claw4j_rag.document"), eq(String.class)))
-                .thenReturn(List.of("pricing.md"));
+        new KnowledgeIndexer(jdbc, store, mock(EmbeddingModel.class), props(docs)).index();
 
-        KnowledgeIndexer.Stats stats = indexer(jdbc, directory(root)).index();
-
-        assertThat(stats.removed()).isEqualTo(1);
-        verify(jdbc).update(contains("delete from claw4j_rag.document"), eq("pricing.md"));
+        var order = inOrder(store);
+        order.verify(store).delete(any(Filter.Expression.class));
+        order.verify(store).add(any());
     }
 
     @Test
-    @DisplayName("只有空白的文件不算一块：一个还没写内容的 placeholder 不该让启动失败")
-    void aBlankFileLeavesNoChunk(@TempDir Path root) throws Exception {
-        write(root, "todo.md", "   \n\n  ");
+    @DisplayName("文件删了块也删：目录里没有的东西留在库里，出处就指回一个不存在的文件")
+    void removedFileLeavesNoChunks(@TempDir Path docs) throws IOException {
+        Files.writeString(docs.resolve("b.md"), "# 还在的文件\n\n内容。");
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(contains("content_hash"), eq(String.class), any(), any()))
+                .thenReturn(List.of());
+        when(jdbc.queryForList(contains("select path"), eq(String.class), any()))
+                .thenReturn(List.of("a.md"));
+        when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(0);
+        VectorStore store = mock(VectorStore.class);
 
-        JdbcTemplate jdbc = jdbc();
-        when(jdbc.queryForObject(contains("count(*) from claw4j_rag.chunk"), eq(Integer.class)))
-                .thenReturn(0);
+        KnowledgeIndexer.Stats stats = new KnowledgeIndexer(jdbc, store, mock(EmbeddingModel.class),
+                props(docs)).index();
 
-        KnowledgeIndexer.Stats stats = indexer(jdbc, directory(root)).index();
-
-        assertThat(stats.chunks()).isZero();
-        verify(jdbc, never()).update(contains("insert into claw4j_rag.chunk"), any(), any(), any(),
-                anyString(), anyString());
+        assertThat(stats.removed()).as("目录里已经没有它了").isEqualTo(1);
+        // 断言的是"文件账被删"，不是"块被删"：块由同一句 deleteChunksOf 带走，
+        // 而 b.md 是新文件也会走一次删除——数 delete 次数会随着夹具变化而抖。
+        verify(jdbc).update(anyString(), eq("a.md"), eq(KnowledgeIndexer.SOURCE_KIND));
     }
 
     @Test
-    @DisplayName("目录里一个可索引文件都没有：失败并点名，不是「建起来了但库是空的」")
-    void anEmptyDirectoryFailsLoudly(@TempDir Path root) throws Exception {
-        Files.writeString(root.resolve("notes.json"), "{}", StandardCharsets.UTF_8);
+    @DisplayName("目录里一个可索引文件都没有：启动失败，不是空知识库")
+    void emptyDirectoryFailsLoudly(@TempDir Path docs) {
+        KnowledgeIndexer indexer = new KnowledgeIndexer(mock(JdbcTemplate.class),
+                mock(VectorStore.class), mock(EmbeddingModel.class), props(docs));
 
-        assertThatThrownBy(() -> indexer(jdbc(), directory(root)).index())
-                .isInstanceOf(IllegalStateException.class)
+        assertThatThrownBy(indexer::index)
+                .as("空知识库让每次检索都答「没有相关资料」，与「这段确实没写」分不开")
                 .hasMessageContaining("没有可索引");
     }
 
+    // ---- 融合：RRF 只看名次 ----
+
     @Test
-    @DisplayName("路径不是目录（写错了）：同样当场失败，不安静地建出一个空库")
-    void aMissingDirectoryFailsLoudly(@TempDir Path root) {
-        assertThatThrownBy(() -> indexer(jdbc(), directory(root.resolve("nope"))).index())
+    @DisplayName("RRF 只看名次：两路都命中的排第一，同一路重复出现只算一次")
+    void rrfRanksByRankNotByRepeats() {
+        Document both = doc("d1", "returns/a.md", 1);
+        Document vectorOnly = doc("d2", "returns/b.md", 1);
+        Document keywordOnly = doc("d3", "returns/c.md", 1);
+
+        List<Document> merged = joiner().join(Map.of(query("退货"),
+                List.of(List.of(vectorOnly, both), List.of(both, keywordOnly))));
+
+        assertThat(merged).extracting(Document::getId)
+                .as("d1 两路都命中（1/61 + 1/62），单路命中的不该压过它")
+                .startsWith("d1");
+        assertThat(merged).extracting(Document::getId).containsExactlyInAnyOrder("d1", "d2", "d3");
+
+        List<Document> repeated = joiner().join(Map.of(query("退货"),
+                List.of(List.of(both, both), List.of(vectorOnly))));
+        assertThat(repeated).extracting(Document::getId)
+                .as("重复拿分等于把这一路的分量偷偷加倍；d1 只该从第一路拿一次分")
+                .containsExactly("d1", "d2");
+    }
+
+    @Test
+    @DisplayName("只在一路出现的块也保留：融合不是交集")
+    void singleRouteSurvivorsStay() {
+        List<Document> merged = joiner().join(Map.of(query("SKU-2024"),
+                List.of(List.of(), List.of(doc("k1", "warehouse/sku.md", 1)))));
+
+        assertThat(merged).extracting(Document::getId)
+                .as("向量那一路空的时候，全文那一路的结果必须还在")
+                .containsExactly("k1");
+    }
+
+    // ---- 混合检索：一路挂了还有另一路 ----
+
+    @Test
+    @DisplayName("两路都调用，结果按 id 去重")
+    void bothRoutesAreCalledAndMerged() {
+        Document shared = doc("d1", "returns/a.md", 1);
+        AtomicReference<Query> vectorSaw = new AtomicReference<>();
+        AtomicReference<Query> keywordSaw = new AtomicReference<>();
+
+        DocumentRetriever hybrid = new HybridDocumentRetriever(
+                q -> {
+                    vectorSaw.set(q);
+                    return List.of(shared);
+                },
+                q -> {
+                    keywordSaw.set(q);
+                    return List.of(shared);
+                },
+                joiner());
+
+        List<Document> found = hybrid.retrieve(query("退货"));
+
+        assertThat(found).extracting(Document::getId)
+                .as("同一个块两路都命中时只留一条").containsExactly("d1");
+        assertThat(vectorSaw.get()).as("两路都必须被调用").isNotNull();
+        assertThat(keywordSaw.get().text()).isEqualTo("退货");
+    }
+
+    @Test
+    @DisplayName("向量那一路抛异常：全文那一路照返，不把这一路的问题算成整轮失败")
+    void vectorFailureFallsBackToKeyword() {
+        Document keywordHit = doc("k1", "warehouse/sku-2024.md", 2);
+
+        DocumentRetriever hybrid = new HybridDocumentRetriever(
+                q -> {
+                    throw new IllegalStateException("向量服务超时");
+                },
+                q -> List.of(keywordHit),
+                joiner());
+
+        assertThat(hybrid.retrieve(query("SKU-2024")))
+                .as("一路挂了不该让「问编号」这件事直接失败")
+                .extracting(Document::getId).containsExactly("k1");
+    }
+
+    @Test
+    @DisplayName("两路都抛：抛出去。检索是回答的依据，「没查」不能伪装成「没写」")
+    void bothRoutesFailingThrows() {
+        DocumentRetriever hybrid = new HybridDocumentRetriever(
+                q -> {
+                    throw new IllegalStateException("向量挂了");
+                },
+                q -> {
+                    throw new IllegalStateException("库挂了");
+                },
+                joiner());
+
+        assertThatThrownBy(() -> hybrid.retrieve(query("退货")))
+                .as("两路都不可用时这一轮必须失败——否则用户会以为文档里没写")
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("不是一个目录");
+                .hasMessageContaining("向量挂了");
     }
 
     @Test
-    @DisplayName("压根没配目录：索引器自己也不接受，装配期就该拦住")
-    void withoutADirectoryItRefusesToIndex() {
-        assertThatThrownBy(() -> indexer(jdbc(), RagProperties.defaults()).index())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("claw4j.rag.directory");
+    @DisplayName("没有身份、或没有 doc 读权限：都不检索，也都不抛")
+    void nothingIsRetrievedWithoutIdentityOrDocPermission() {
+        DocumentRetriever hybrid = new HybridDocumentRetriever(
+                q -> {
+                    throw new AssertionError("不该调用向量那一路");
+                },
+                q -> {
+                    throw new AssertionError("不该调用全文那一路");
+                },
+                joiner());
+
+        assertThat(hybrid.retrieve(new Query("退货")))
+                .as("没有身份时不该检索").isEmpty();
+
+        Principal guest = Principal.of("u-1", "guest", Set.of("region"), Set.of(ToolPermission.READ));
+        assertThat(hybrid.retrieve(withPrincipal("退货", guest)))
+                .as("判据与工具时代同一个 ToolPermission：没有 doc 就不查").isEmpty();
+    }
+
+    // ---- 全文那一路：通配符 ----
+
+    @Test
+    @DisplayName("通配符转义：问「5%」不会变成「匹配所有含 5 的块」")
+    void likeWildcardsAreEscaped() {
+        assertThat(KeywordDocumentRetriever.escapeLike("折扣率 5%")).isEqualTo("折扣率 5\\%");
+        assertThat(KeywordDocumentRetriever.escapeLike("a_b")).isEqualTo("a\\_b");
+        assertThat(KeywordDocumentRetriever.escapeLike("c:\\x")).isEqualTo("c:\\\\x");
     }
 
     @Test
-    @DisplayName("向量算不出来就失败：索引没建起来，不能假装建起来了")
-    void anEmbeddingThatComesBackNullFailsTheIndex(@TempDir Path root) throws Exception {
-        write(root, "after-sales.md", "华东区退货七天内可退换。");
+    @DisplayName("全文那一路的 SQL 带 escape 与 limit，参数是转义后的 pattern")
+    void keywordSqlEscapesAndBounds() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.query(anyString(), any(RowMapper.class), any(), any(), any(), any(), any()))
+                .thenReturn(List.of());
 
+        new KeywordDocumentRetriever(jdbc, "docs", 7).retrieve(query("5% 折扣"));
+
+        verify(jdbc).query(contains("escape"), any(RowMapper.class),
+                eq("docs"), eq("%5\\% 折扣%"), eq("5% 折扣"), eq("5% 折扣"), eq(7));
+    }
+
+    // ---- 语义切块：句子之间判语义，token 只做上限（ADR-0028） ----
+
+    @Test
+    @DisplayName("块超 token 上限才硬切：字数只在超限时出现，且切开不丢字")
+    void oversizedBlockIsSplitByTokenLimit() {
+        String longText = "退货".repeat(200);
+        SemanticTextSplitter splitter = new SemanticTextSplitter(mock(EmbeddingModel.class), 20);
+
+        List<String> chunks = texts(splitter.apply(List.of(new Document(longText))));
+
+        assertThat(chunks).as("不切的话 embedding 那边输入超限").hasSizeGreaterThan(1);
+        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk).isNotBlank());
+    }
+
+    @Test
+    @DisplayName("embedding 挂了只丢向量断点：句首「然而」照切，不整篇退回纯 token")
+    void embeddingFailureKeepsTransitionBreaks() {
         EmbeddingModel embeddings = mock(EmbeddingModel.class);
-        KnowledgeIndexer indexer = indexer(jdbc(), embeddings, directory(root));
-        when(embeddings.embed(anyString())).thenReturn(null);
+        when(embeddings.embed(anyList())).thenThrow(new IllegalStateException("向量服务超时"));
+        SemanticTextSplitter splitter = new SemanticTextSplitter(embeddings, 200);
 
-        assertThatThrownBy(indexer::index)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("返回空");
-    }
+        List<String> chunks = texts(splitter.apply(List.of(new Document(
+                "华东区七天无理由退货。生鲜商品不适用。然而跨境商品另按海关规定处理。"))));
 
-    // ---------------------------------------------------------------- 检索
-
-    @Test
-    @DisplayName("两路各出一半：都排过的浮到最前，只有一路命中的也都在")
-    void bothChannelsAreFusedIntoOneAnswer() {
-        List<String> statements = new ArrayList<>();
-        JdbcTemplate jdbc = jdbc();
-        doAnswer(answer -> {
-            String sql = answer.getArgument(0);
-            statements.add(sql);
-            RowMapper<?> mapper = answer.getArgument(1);
-            return sql.contains("with scored as")
-                    ? rows(mapper, hit("after-sales.md", 1, "华东区退货七天内可退换", 0.91),
-                    hit("pricing.md", 1, "华东区满 199 包邮", 0.62))
-                    : rows(mapper, hit("pricing.md", 1, "华东区满 199 包邮", 0.30),
-                    hit("logistics.md", 2, "华南区次日达", 0.21));
-        }).when(jdbc).query(anyString(), any(RowMapper.class), any(), any(), any());
-
-        List<KnowledgeBase.Hit> hits = knowledgeBase(jdbc).search("华东区怎么退货");
-
-        assertThat(hits).as("RRF 只数排名：两路都排到的排在最前，其余按各自的排名接在后面")
-                .extracting(KnowledgeBase.Hit::source)
-                .containsExactly("pricing.md", "after-sales.md", "logistics.md");
-        assertThat(statements).as("两路都要发出去：删掉一路这条会红").hasSize(2);
+        assertThat(chunks).as("断点来自句首「然而」，不是向量").hasSize(2);
+        assertThat(chunks.get(1)).startsWith("然而");
     }
 
     @Test
-    @DisplayName("空问题一条 SQL 都不发：省一次往返，也免得「这条 SQL 为什么永远返回空」")
-    void aBlankQueryTouchesNeitherChannel() {
-        JdbcTemplate jdbc = jdbc();
+    @DisplayName("向量条数与句子组数不符：只丢向量断点，不按下标配对")
+    void mismatchedEmbeddingCountIgnoresVectors() {
         EmbeddingModel embeddings = mock(EmbeddingModel.class);
+        when(embeddings.embed(anyList())).thenReturn(List.of(new float[] {1, 0}));
+        SemanticTextSplitter splitter = new SemanticTextSplitter(embeddings, 200);
 
-        assertThat(knowledgeBase(jdbc, embeddings).search("   ")).isEmpty();
-        verifyNoInteractions(jdbc);
-        verifyNoInteractions(embeddings);
+        List<String> chunks = texts(splitter.apply(List.of(new Document(
+                "华东区七天无理由退货。生鲜商品不适用。然而跨境商品另按海关规定处理。"))));
+
+        assertThat(chunks).as("配不上就当作没有向量，转折词那条照常生效").hasSize(2);
+        verify(embeddings).embed(anyList());
     }
 
     @Test
-    @DisplayName("向量服务抖了：只丢那一路，关键词那一路照样给答案")
-    void aBrokenEmbeddingLeavesTheKeywordChannelAlone() {
-        List<String> statements = new ArrayList<>();
-        JdbcTemplate jdbc = jdbc();
-        doAnswer(answer -> {
-            statements.add(answer.getArgument(0));
-            RowMapper<?> mapper = answer.getArgument(1);
-            return rows(mapper, hit("after-sales.md", 1, "华东区退货七天内可退换", 0.30));
-        }).when(jdbc).query(anyString(), any(RowMapper.class), any(), any(), any());
+    @DisplayName("句子数少于 3 时一次 embedding 都不调：没有「相邻组」可言")
+    void fewSentencesSkipEmbedding() {
         EmbeddingModel embeddings = mock(EmbeddingModel.class);
-        PgVectorKnowledgeBase knowledge = knowledgeBase(jdbc, embeddings);
-        when(embeddings.embed(anyString())).thenThrow(new IllegalStateException("通义 503"));
+        SemanticTextSplitter splitter = new SemanticTextSplitter(embeddings, 200);
 
-        List<KnowledgeBase.Hit> hits = knowledge.search("退货政策");
+        List<String> chunks = texts(splitter.apply(List.of(new Document(
+                "华东区七天无理由退货。生鲜商品不适用。"))));
 
-        assertThat(hits).extracting(KnowledgeBase.Hit::source).containsExactly("after-sales.md");
-        assertThat(statements).as("向量那一路没发出去，关键词那一路发了")
-                .hasSize(1).allSatisfy(sql -> assertThat(sql).doesNotContain("with scored as"));
+        assertThat(chunks).hasSize(1);
+        verify(embeddings, never()).embed(anyList());
+    }
+
+    // ---- 重排：失败必须原样返回 ----
+
+    @Test
+    @DisplayName("按返回的下标重排并截断")
+    void rerankReordersAndTruncates() throws Exception {
+        try (Stub endpoint = new Stub("""
+                {"results":[{"index":2,"relevance_score":0.9},
+                            {"index":0,"relevance_score":0.5},
+                            {"index":1,"relevance_score":0.2}]}
+                """)) {
+            List<Document> candidates = List.of(doc("d1", "a.md", 1), doc("d2", "b.md", 1),
+                    doc("d3", "c.md", 1));
+
+            List<Document> ranked = endpoint.reranker(2).process(query("退货"), candidates);
+
+            assertThat(ranked).extracting(Document::getId)
+                    .as("下标 2 分最高应排第一；topK=2 截断")
+                    .containsExactly("d3", "d1");
+        }
     }
 
     @Test
-    @DisplayName("问题里全是标点：关键词那一路跳过，不是发一条永远为空的查询")
-    void aQueryWithNothingToTokeniseSkipsTheKeywordChannel() {
-        List<String> statements = new ArrayList<>();
-        JdbcTemplate jdbc = jdbc();
-        doAnswer(answer -> {
-            statements.add(answer.getArgument(0));
-            return rows(answer.getArgument(1), hit("after-sales.md", 1, "华东区退货七天内可退换", 0.8));
-        }).when(jdbc).query(anyString(), any(RowMapper.class), any(), any(), any());
+    @DisplayName("重排的三种失败姿势都不丢结果：越界下标、端点 500、超时")
+    void rerankFailuresReturnCandidatesAsIs() throws Exception {
+        List<Document> candidates = List.of(doc("d1", "a.md", 1), doc("d2", "b.md", 1),
+                doc("d3", "c.md", 1));
 
-        List<KnowledgeBase.Hit> hits = knowledgeBase(jdbc).search("？！！");
+        try (Stub endpoint = new Stub("""
+                {"results":[{"index":9,"relevance_score":0.9},
+                            {"index":1,"relevance_score":0.8},
+                            {"index":1,"relevance_score":0.7}]}
+                """)) {
+            assertThat(endpoint.reranker(3).process(query("退货"), candidates))
+                    .as("9 越界丢弃、重复的 1 只算一次；剩下的按原顺序补")
+                    .extracting(Document::getId).containsExactly("d2", "d1", "d3");
+        }
 
-        assertThat(hits).hasSize(1);
-        assertThat(statements).hasSize(1).allSatisfy(sql -> assertThat(sql).doesNotContain("ts_rank"));
+        try (Stub endpoint = new Stub("boom", 500)) {
+            assertThat(endpoint.reranker(3).process(query("退货"), candidates))
+                    .as("重排是排序优化，不是检索：端点挂了结果必须还在")
+                    .extracting(Document::getId).containsExactly("d1", "d2", "d3");
+        }
+
+        try (Stub endpoint = new Stub("{}", 200, 400)) {
+            assertThat(endpoint.reranker(Duration.ofMillis(80), 3).process(query("退货"), candidates))
+                    .as("超时同样原样返回").extracting(Document::getId)
+                    .containsExactly("d1", "d2", "d3");
+            assertThat(Thread.currentThread().isInterrupted())
+                    .as("超时/中断之后不能把中断标志留给下一次调用")
+                    .isFalse();
+        }
+    }
+
+    // ---- 装配 ----
+
+    @Test
+    @DisplayName("配了目录才装 advisor，且 order 排在记忆之后")
+    void advisorIsRegisteredAfterMemory(@TempDir Path docs) throws IOException {
+        Files.writeString(docs.resolve("a.md"), "# 退货\n\n华东区 7 天无理由退货。");
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(RagAutoConfiguration.class))
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+                .withBean(EmbeddingModel.class, () -> mock(EmbeddingModel.class))
+                .withBean(VectorStore.class, () -> mock(VectorStore.class))
+                .withPropertyValues("claw4j.rag.enabled=true", "claw4j.rag.directory=" + docs,
+                        "claw4j.rag.rerank.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    Advisor advisor = context.getBean(Advisor.class);
+                    assertThat(advisor.getOrder())
+                            .as("排在记忆之后，否则检索看到的是没有历史的一轮")
+                            .isGreaterThan(Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER);
+                });
     }
 
     @Test
-    @DisplayName("库里有几块：count 拿不到数就当 0，不抛")
-    void chunkCountFallsBackToZero() {
-        JdbcTemplate jdbc = jdbc();
-        when(jdbc.queryForObject(contains("count(*) from claw4j_rag.chunk"), eq(Integer.class)))
-                .thenReturn(7, (Integer) null);
-
-        KnowledgeBase knowledge = knowledgeBase(jdbc);
-
-        assertThat(knowledge.chunkCount()).isEqualTo(7);
-        assertThat(knowledge.chunkCount()).as("null 不是「未知」，是「一段都没有」").isZero();
+    @DisplayName("开着却没配目录：启动失败并点名，不是空知识库")
+    void missingDirectoryFailsAtStartup() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(RagAutoConfiguration.class))
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+                .withPropertyValues("claw4j.rag.enabled=true")
+                .run(context -> {
+                    Throwable failure = context.getStartupFailure();
+                    assertThat(failure).as("没配目录时装配阶段就必须失败").isNotNull();
+                    Throwable root = failure;
+                    while (root.getCause() != null) {
+                        root = root.getCause();
+                    }
+                    assertThat(root).hasMessageContaining("claw4j.rag.directory");
+                });
     }
 
-    // ---------------------------------------------------------------- 工具
+    // ---- 夹具 ----
 
-    @Test
-    @DisplayName("工具的回答里每段都带出处：这就是「回答带出处」与「把文档当答案吐出去」的分界")
-    void theAnswerCarriesTheCitationOfEveryPassage() {
-        KnowledgeTools tools = new KnowledgeTools(new FixedBase(List.of(
-                hit("after-sales.md", 2, "退货运费由买家承担。", 0.5),
-                hit("pricing.txt", 1, "华东区满 199 包邮。", 0.3)), 12));
-
-        String answer = tools.searchDocs("退货谁出运费");
-
-        assertThat(answer).contains("检索到 2 段")
-                .contains("[1] after-sales.md 第 2 段").contains("退货运费由买家承担。")
-                .contains("[2] pricing.txt 第 1 段");
+    private static List<String> texts(List<Document> documents) {
+        return documents.stream().map(Document::getText).toList();
     }
 
-    @Test
-    @DisplayName("「库是空的」与「没有这段」说两句不同的话：前者是部署问题，后者是知识没写")
-    void anEmptyLibraryIsSaidAwayFromNoMatch() {
-        String empty = new KnowledgeTools(new FixedBase(List.of(), 0)).searchDocs("退货政策");
-        String noMatch = new KnowledgeTools(new FixedBase(List.of(), 12)).searchDocs("退货政策");
-
-        assertThat(empty).contains("一段文档都没有").contains("部署");
-        assertThat(noMatch).as("有 12 段却一条没命中：问题问得不对，或这段确实没写")
-                .contains("12 段").contains("没有匹配到");
-        assertThat(empty).isNotEqualTo(noMatch);
+    private static RagProperties props(Path docs) {
+        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null);
     }
 
-    // ---------------------------------------------------------------- 装配与授权
-
-    @Test
-    @DisplayName("知识库默认关：不配 claw4j.rag.enabled 时没有检索 bean，也没有工具")
-    void knowledgeBaseIsOffByDefault() {
-        ragRunner().run(context -> assertThat(context)
-                .as("默认关是有意的：它要一份文档目录与一次 embedding 调用，绝大多数部署没有这两样")
-                .doesNotHaveBean(KnowledgeBase.class)
-                .doesNotHaveBean(KnowledgeTools.class));
+    private static DocumentJoiner joiner() {
+        return new ReciprocalRankFusionJoiner();
     }
 
-    @Test
-    @DisplayName("开着却没配目录：启动失败并点名，不是「启动成功但库是空的」")
-    void knowledgeBaseWithoutDirectoryFailsLoudly() {
-        ragRunner().withPropertyValues("claw4j.rag.enabled=true").run(context -> {
-            assertThat(context)
-                    .as("空知识库的表现是每次检索都答「没有相关资料」，"
-                            + "而那与「这段确实没写」在用户看来完全一样")
-                    .hasFailed();
-            assertThat(context.getStartupFailure())
-                    .hasStackTraceContaining("claw4j.rag.directory");
-        });
+    private static Document doc(String id, String path, int index) {
+        return new Document(id, "内容 " + id, RagMetadata.of(path, KnowledgeIndexer.SOURCE_KIND,
+                String.valueOf(index), DIGEST));
+    }
+
+    private static Query query(String text) {
+        return new Query(text, List.of(), Map.of(ContextKeys.PRINCIPAL, Principal.readOnly("u-1")));
+    }
+
+    private static Query withPrincipal(String text, Principal principal) {
+        return new Query(text, List.of(), Map.of(ContextKeys.PRINCIPAL, principal));
     }
 
     /**
-     * 授权：{@code read} 动作 + 伪表名 {@code doc}。
+     * 一个最小的 rerank 端点。
      *
-     * <p>这一条只断言"登记对了、判据对得上"。**"被拒之后检索一次都没执行"不在这里**：
-     * 那是鉴权 Advisor 的通用行为（它把工具调用请求整个拦下，不让它进入工具循环），
-     * 已由 {@code ObservabilityTest#deniedCallsAreCountedByTheAuthorizationAdvisor}
-     * 用探针把 {@code tool.calls()} 断言成 0。这里再验一遍就是验 Advisor，不是验知识库。
+     * <p>用 JDK 自带的 {@link HttpServer}，不引 WireMock：这里要验的是"客户端怎么处理
+     * 一个不听话的响应"，不是 HTTP 协议本身。
      */
-    @Test
-    @DisplayName("searchDocs 登记成 read + 伪表 doc：只给 region 的身份看不到知识库")
-    void searchDocsIsOneReadActionOnTheDocTable() {
-        RagAutoConfiguration config = new RagAutoConfiguration();
-        ToolPermissionRegistry permissions = config.knowledgeToolPermissionRegistry();
-        ToolPermission permission = permissions.permissionFor(KnowledgeTools.TOOL_NAME).orElseThrow();
+    private static final class Stub implements AutoCloseable {
 
-        assertThat(permission.action()).isEqualTo(ToolPermission.READ);
-        assertThat(permission.tables()).containsExactly(RagAutoConfiguration.DOC_TABLE);
-        assertThat(Principal.of("u-1", "read-only", Set.of("*"), Set.of(ToolPermission.READ))
-                .canUse(permission)).isTrue();
-        assertThat(Principal.of("u-2", "guest", Set.of("region"), Set.of(ToolPermission.READ))
-                .canUse(permission))
-                .as("guest 能读 region 不等于能读知识库——这是想让他看不到，不是漏配")
-                .isFalse();
-        assertThat(config.knowledgeToolTierRegistry().tierFor(KnowledgeTools.TOOL_NAME))
-                .as("与查表同一档：只会聊天的部署也该答得出政策，那是它的本职")
-                .contains(ToolTier.MESSAGING);
-    }
+        private final HttpServer server;
 
-    // ---------------------------------------------------------------- 零件
-
-    /** 起一个能走到"目录校验"的上下文：库、向量模型、事务管理器都给，失败只可能来自配置。 */
-    private static ApplicationContextRunner ragRunner() {
-        return new ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(RagAutoConfiguration.class))
-                .withBean(DataSource.class, () -> mock(DataSource.class))
-                .withBean(JdbcTemplate.class, KnowledgeRetrievalTest::jdbc)
-                .withBean(EmbeddingModel.class, () -> mock(EmbeddingModel.class))
-                .withBean(PlatformTransactionManager.class, KnowledgeRetrievalTest::transactions);
-    }
-
-    private static KnowledgeIndexer indexer(JdbcTemplate jdbc, RagProperties properties) {
-        return indexer(jdbc, mock(EmbeddingModel.class), properties);
-    }
-
-    /** 索引器：向量一律给同一份，测试关心的是"发了几条 SQL、块长怎么算"。 */
-    private static KnowledgeIndexer indexer(JdbcTemplate jdbc, EmbeddingModel embeddings,
-                                           RagProperties properties) {
-        if (embeddings != null) {
-            when(embeddings.embed(anyString())).thenReturn(VECTOR);
+        Stub(String body) throws IOException {
+            this(body, 200, 0);
         }
-        return new KnowledgeIndexer(jdbc, embeddings, properties, transactions());
-    }
 
-    private static PgVectorKnowledgeBase knowledgeBase(JdbcTemplate jdbc) {
-        return knowledgeBase(jdbc, mock(EmbeddingModel.class));
-    }
-
-    private static PgVectorKnowledgeBase knowledgeBase(JdbcTemplate jdbc, EmbeddingModel embeddings) {
-        when(embeddings.embed(anyString())).thenReturn(VECTOR);
-        return new PgVectorKnowledgeBase(jdbc, embeddings, RagProperties.defaults());
-    }
-
-    private static RagProperties directory(Path root) {
-        return new RagProperties(root.toString(), 5, 0.5, 800);
-    }
-
-    private static JdbcTemplate jdbc() {
-        return mock(JdbcTemplate.class);
-    }
-
-    private static PlatformTransactionManager transactions() {
-        PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
-        when(manager.getTransaction(any(TransactionDefinition.class)))
-                .thenReturn(mock(TransactionStatus.class));
-        return manager;
-    }
-
-    private static void write(Path root, String name, String content) throws Exception {
-        Files.writeString(root.resolve(name), content, StandardCharsets.UTF_8);
-    }
-
-    /** 让真正的行映射跑一遍：列名写错就取不到值，而不是被替身蒙过去。 */
-    private static List<KnowledgeBase.Hit> rows(RowMapper<?> mapper, KnowledgeBase.Hit... hits)
-            throws SQLException {
-        List<KnowledgeBase.Hit> mapped = new ArrayList<>(hits.length);
-        for (int i = 0; i < hits.length; i++) {
-            ResultSet rs = mock(ResultSet.class);
-            when(rs.getString("source")).thenReturn(hits[i].source());
-            when(rs.getInt("ordinal")).thenReturn(hits[i].ordinal());
-            when(rs.getString("text")).thenReturn(hits[i].text());
-            when(rs.getDouble("score")).thenReturn(hits[i].score());
-            mapped.add((KnowledgeBase.Hit) mapper.mapRow(rs, i));
+        Stub(String body, int status) throws IOException {
+            this(body, status, 0);
         }
-        return mapped;
-    }
 
-    private static KnowledgeBase.Hit hit(String source, int ordinal, String text, double score) {
-        return new KnowledgeBase.Hit(source, ordinal, text, score);
-    }
+        Stub(String body, int status, long delayMillis) throws IOException {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/reranks", exchange -> {
+                if (delayMillis > 0) {
+                    try {
+                        Thread.sleep(delayMillis);
+                    }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(status, bytes.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(bytes);
+                }
+            });
+            server.start();
+        }
 
-    /** 只回答"有哪几段"的检索：工具那一半只关心怎么说话，不关心怎么查。 */
-    private record FixedBase(List<KnowledgeBase.Hit> hits, int chunks) implements KnowledgeBase {
+        RerankDocumentPostProcessor reranker(int topK) {
+            return reranker(Duration.ofSeconds(2), topK);
+        }
 
-        @Override
-        public List<Hit> search(String query) {
-            return hits;
+        RerankDocumentPostProcessor reranker(Duration timeout, int topK) {
+            return new RerankDocumentPostProcessor(
+                    HttpClient.newHttpClient(),
+                    new com.fasterxml.jackson.databind.ObjectMapper(),
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/reranks",
+                    "qwen3-rerank", timeout, topK, () -> "test-key");
         }
 
         @Override
-        public int chunkCount() {
-            return chunks;
+        public void close() {
+            server.stop(0);
         }
     }
 }

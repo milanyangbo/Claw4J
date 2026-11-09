@@ -10,6 +10,11 @@
 #
 # guest 在 principals.yaml 里是 tables: []、actions: ["read"]，所以业务表与知识库
 # 那张伪表 doc 都碰不到。改那一条，这里所有引用它的用例一致受影响。
+# 2026-11-09：`searchDocs` 工具已删除——知识库改由 `RetrievalAugmentationAdvisor`
+# 在每轮请求里自动检索。原来靠这个工具表达的判据（选没选对工具、没权限时被拒）
+# 在这里不再成立：前者没有工具可选，后者下沉到了 retriever（由
+# `KnowledgeRetrievalTest.withoutDocPermissionNothingIsRetrieved` 守着）。
+
 
 - id: authz-guest-sales
   question: 上周华东区的成交额是多少？
@@ -57,7 +62,7 @@
   question: 华东区无理由退货几天？
   principal: guest
   mustNotMention: ["after-sales.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   expectRefusal: true
   note: 知识库在授权表里是伪表名 doc。空表清单看不到它——
         "能查业务表不等于能看制度文档"在另一侧也成立
@@ -89,5 +94,5 @@
   question: 退款到账要几个工作日？
   principal: read-only
   mustMention: ["after-sales.md"]
-  expectTools: ["searchDocs"]
+  expectTools: []
   note: 只读身份能看知识库（tables 里有 "*"，含伪表 doc）

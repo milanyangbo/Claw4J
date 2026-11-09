@@ -1,15 +1,24 @@
 package io.github.claw4j.agent.rag;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.claw4j.agent.model.EmbeddingAutoConfiguration;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
-import io.github.claw4j.domain.principal.ToolTier;
-import io.github.claw4j.domain.principal.ToolTierRegistry;
+import io.github.claw4j.agent.model.EmbeddingProperties;
+import io.github.claw4j.agent.model.ModelProperties;
+import io.github.claw4j.secret.SecretResolver;
+import io.github.claw4j.capability.secret.SpringSecretResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
+import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
+import org.springframework.ai.rag.retrieval.join.ConcatenationDocumentJoiner;
+import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
+import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
+import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -17,11 +26,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.transaction.PlatformTransactionManager;
 
 import javax.sql.DataSource;
+import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
 
@@ -37,16 +48,31 @@ import java.util.Map;
  * 反过来（启动成功但库是空的）更糟：每次检索都答"没有相关资料"，而那与"这段确实没写"
  * 在用户看来完全一样。
  *
+ * <p><b>检索由官方的 {@link RetrievalAugmentationAdvisor} 在每轮请求里自动完成</b>：
+ * 不是模型自己决定调不调（原来那个 {@code searchDocs} 工具已删除——留着就是每轮两次检索）。
+ * 所以"开着知识库"等于"这个部署是带知识库的助手"，每轮一次检索是它的预期成本。
+ *
+ * <p><b>三处必须改的默认行为</b>（反编译 {@code before()} 与 {@code ContextualQueryAugmenter}
+ * 得到，见 {@code docs/design/knowledge-retrieval.md} 第三节）：
+ *
+ * <ol>
+ *   <li>默认模板会把用户消息整个换掉并要求"只按上下文回答" → 传自定义模板，无关就不引用；</li>
+ *   <li>{@code allowEmptyContext} 默认 false，空检索时直接回"无法回答" → 设 true；</li>
+ *   <li>{@code before()} 没有 try/catch，检索抛异常即整轮失败 → 接受（"库挂了"不该伪装成
+ *       "文档没写"），但重排必须在实现内部吞掉。</li>
+ * </ol>
+ *
  * <p><b>向量模型从 {@link EmbeddingAutoConfiguration} 来</b>，不在这里装配：缓存与知识库
  * 共用同一个模型、同一份凭据，两处各装一个的话，"用哪个模型"会有两个答案。
  *
  * <p><b>索引在启动后跑一次</b>（{@link ApplicationRunner}），不是每次提问都跑：
- * 目录是事实来源，进程生命周期内它不会变；要重新索引就重启。这一版不提供"模型主动重建索引"
+ * 目录是事实来源，进程生命周期内它不会变；要重新索引就重启。不提供"模型主动重建索引"
  * 的工具——写知识库是运维的事，让模型能写就是给它一个把提示注入落库的口子。
  */
 @AutoConfiguration(after = EmbeddingAutoConfiguration.class,
-        afterName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
-@ConditionalOnClass({JdbcTemplate.class, EmbeddingModel.class, KnowledgeBase.class})
+        afterName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
+        beforeName = "io.github.claw4j.agent.AgentAutoConfiguration")
+@ConditionalOnClass({JdbcTemplate.class, EmbeddingModel.class, RetrievalAugmentationAdvisor.class})
 @ConditionalOnBean(DataSource.class)
 @ConditionalOnProperty(value = "claw4j.rag.enabled", havingValue = "true")
 @EnableConfigurationProperties(RagProperties.class)
@@ -55,97 +81,243 @@ public class RagAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(RagAutoConfiguration.class);
 
     /**
-     * 知识库在授权表里占的"表名"。
-     *
-     * <p><b>它是伪表名</b>：{@code claw4j_rag.chunk} 不是业务表，但鉴权问的是同一个问题——
-     * "这个身份能不能看这份数据"。复用 {@code read} 动作 + 一个表名，好处是"能不能看知识库"
-     * 与"能不能查销售单"用同一套授权表表达，不必新增一个动作名（新增动作名意味着所有角色
-     * 配置都要改一遍才能检索）。
-     *
-     * <p>代价要在 {@code application.yml} 的注释里写出来：只给了 {@code region} 的角色
-     * （如 {@code guest}）默认看不到知识库。那是**想要**的默认，但不写出来就会变成
-     * "配了知识库，可某些人问什么都说没有"。
+     * 知识库的向量表所在 schema。**表名与 schema 名只在这里写一次**：索引器、关键词那一路
+     * 与建表的一侧都引用它。两处各写一遍字符串的后果是"表建在 A、查的是 B"，
+     * 而那种错不会报错，只会让"库是空的"永远为真。
      */
-    static final String DOC_TABLE = "doc";
+    static final String VECTOR_SCHEMA = "claw4j_rag";
 
-    @Bean
-    @ConditionalOnMissingBean(KnowledgeBase.class)
-    public KnowledgeBase knowledgeBase(JdbcTemplate jdbc, EmbeddingModel embeddings,
-                                       RagProperties properties) {
-        return new PgVectorKnowledgeBase(jdbc, embeddings, properties);
-    }
+    /** 官方默认表名。由 {@code PgVectorStore} 建（{@code initializeSchema}），迁移里不建。 */
+    static final String VECTOR_TABLE = "vector_store";
 
     /**
-     * 索引器。目录没配就在这里失败——**装配期**失败比启动后失败好：
-     * 后者会先打一行"应用已启动"，然后才在一个 {@code ApplicationRunner} 里炸，
-     * 看起来像"起来了又挂了"。
+     * {@code content} 上的 trigram 索引名。
+     *
+     * <p>PG 的标识符上限 63 字符，这个名字 32 个，留了余量。
      */
-    @Bean
-    @ConditionalOnMissingBean(KnowledgeIndexer.class)
-    public KnowledgeIndexer knowledgeIndexer(JdbcTemplate jdbc, EmbeddingModel embeddings,
-                                             RagProperties properties,
-                                             PlatformTransactionManager transactions) {
+    static final String TRIGRAM_INDEX = "ix_rag_vector_store_content_trgm";
+
+    /**
+     * 排在记忆之后。
+     *
+     * <p>{@code before()} 取的是 {@code prompt.getInstructions()}，记忆 advisor 还没加载历史时
+     * 那个列表里只有本轮消息。顺序写错的表现是"检索用不到上文"——多轮里问"那它呢"，
+     * 检索拿到的是"那它呢"三个字，而它本来可能是一句完整的问题。
+     *
+     * <p>也不用负数：默认的 {@code 0} 会与 {@code AgentContextAdvisor}（{@code HIGHEST_PRECEDENCE + 2}）
+     * 抢在前面，虽然两者改的不是同一条消息，但"人格还没拼好就检索"没有好处。
+     */
+    static final int ORDER = Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER + 10;
+
+    /**
+     * 开着就必须有目录，**在构造期判定**。
+     *
+     * <p>放在这里而不是某个 {@code @Bean} 方法里，是因为 bean 的创建顺序不由我们决定：
+     * 向量库那个 bean 会去连库建表，如果它先于索引器被创建，"没配目录"这件事就永远轮不到
+     * 被说出来——报出来的是"连不上库"。判据属于配置，就该配置一绑好就判。
+     */
+    public RagAutoConfiguration(RagProperties properties) {
         if (!properties.hasDirectory()) {
             throw new IllegalStateException(
                     "claw4j.rag.enabled=true 但没配 claw4j.rag.directory："
                             + "知识库没有文档来源，检索会永远返回空。配一个目录，或者把它关掉");
         }
-        log.info("知识库已启用：目录 {}、每路取 {} 条、向量下限 {}、块长 {} 字符",
-                properties.directory(), properties.topK(), properties.minSimilarity(),
-                properties.maxChars());
-        return new KnowledgeIndexer(jdbc, embeddings, properties, transactions);
-    }
-
-    /** 启动后同步一次。失败会让启动失败——空知识库不该被当成"正常启动"。 */
-    @Bean
-    public ApplicationRunner knowledgeIndexRunner(KnowledgeIndexer indexer) {
-        return args -> indexer.index();
-    }
-
-    @Bean
-    @ConditionalOnMissingBean(KnowledgeTools.class)
-    public KnowledgeTools knowledgeTools(KnowledgeBase knowledge) {
-        return new KnowledgeTools(knowledge);
     }
 
     /**
-     * 工具来源。
-     *
-     * <p><b>不要写 {@code @ConditionalOnMissingBean(ToolCallbackProvider.class)}</b>：
-     * 那条条件的语义是"容器里已经有 provider 了就让位"，于是这个来源一旦排在别的来源后面
-     * 就静默消失——不报错、不告警，只是模型手上没这个工具（{@code SalesExampleAutoConfiguration}
-     * 里踩过同一个坑）。
+     * 官方默认表名、官方距离函数、不建向量索引（HNSW / IVFFlat 都是近似召回，
+     * 漏掉真正相关的那段不会以任何方式被看见；块数上万之后再单独一个迁移开）。
      */
     @Bean
-    @ConditionalOnBean(KnowledgeTools.class)
-    public ToolCallbackProvider knowledgeToolCallbackProvider(KnowledgeTools tools) {
-        return MethodToolCallbackProvider.builder().toolObjects(tools).build();
+    @ConditionalOnMissingBean(VectorStore.class)
+    public VectorStore knowledgeVectorStore(JdbcTemplate jdbc, EmbeddingModel embeddings,
+                                            EmbeddingProperties embedding) {
+        return PgVectorStore.builder(jdbc, embeddings)
+                .schemaName(VECTOR_SCHEMA)
+                .vectorTableName(VECTOR_TABLE)
+                .dimensions(embedding.dimensions())
+                .idType(PgVectorStore.PgIdType.UUID)
+                .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
+                .indexType(PgVectorStore.PgIndexType.NONE)
+                .initializeSchema(true)
+                .build();
     }
 
     /**
-     * 权限：{@code read} + 伪表 {@code doc}。
+     * 两路召回 + 融合。
      *
-     * <p>与工具放在同一个类里是刻意的：只有写这个工具的人知道它会碰什么（ADR-0007）。
+     * <p><b>向量那一路是官方的 {@link VectorStoreDocumentRetriever}</b>，只装配；
+     * 全文那一路是我们实现同一个官方接口的 {@link KeywordDocumentRetriever}；
+     * 融合是实现官方 {@code DocumentJoiner} 的 {@link ReciprocalRankFusionJoiner}。
+     *
+     * <p>{@code hybrid.enabled=false} 时**不装**全文那一路（传 null），而不是"装了不调用"——
+     * 后者会让"配置说关了、代码里还在跑"这种偏差多一处藏身地。
      */
     @Bean
-    public ToolPermissionRegistry knowledgeToolPermissionRegistry() {
-        return ToolPermissionRegistry.of(Map.of(
-                KnowledgeTools.TOOL_NAME, ToolPermission.read(DOC_TABLE)));
+    @ConditionalOnMissingBean(DocumentRetriever.class)
+    public DocumentRetriever knowledgeDocumentRetriever(VectorStore vectorStore, JdbcTemplate jdbc,
+                                                        RagProperties properties) {
+        RagProperties.Hybrid hybrid = properties.hybrid();
+        DocumentRetriever vector = VectorStoreDocumentRetriever.builder()
+                .vectorStore(vectorStore)
+                .topK(hybrid.candidatesPerRoute())
+                .similarityThreshold(properties.minSimilarity())
+                .build();
+        DocumentRetriever keyword = hybrid.enabled()
+                ? new KeywordDocumentRetriever(jdbc, KnowledgeIndexer.SOURCE_KIND,
+                        hybrid.candidatesPerRoute())
+                : null;
+        return new HybridDocumentRetriever(vector, keyword, new ReciprocalRankFusionJoiner());
     }
 
     /**
-     * 档位：{@link ToolTier#MESSAGING}。
+     * 重排。两个条件都是"要么完整可用、要么不装"：
      *
-     * <p>与"查表"同一档，理由也一样：知识库回答的是业务问题（政策、规定、口径），
-     * 而 {@code messaging} 是"只做消息与问答"那种最常见的落地形态。把它推到
-     * {@code coding} 或 {@code full}，等于让一个只会聊天的部署连政策都查不到——
-     * 那不是"裁剪能力"，是"这个助手不会回答业务问题"。
+     * <ul>
+     *   <li>{@code rerank.enabled=false} → 不装（装配层判断，类里不再有第二个开关）；</li>
+     *   <li>没配 qwen 凭据 → 不装。调用时才取 key 的话，一个配错凭据的部署会每轮打一次 401，
+     *       而这件事在启动时就能说清楚。</li>
+     * </ul>
      *
-     * <p>不放进 {@code minimal}：那一档只有找工具、看状态、改计划、回忆会话四件事，
-     * 是"最小能动"的集合；检索文档需要索引、向量与一张表，不属于"最小"。
+     * <p>但**取不到 key 不等于启动失败**：重排是排序优化，不是检索的前提。
      */
     @Bean
-    public ToolTierRegistry knowledgeToolTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(KnowledgeTools.TOOL_NAME), ToolTier.MESSAGING);
+    @ConditionalOnProperty(value = "claw4j.rag.rerank.enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(RerankDocumentPostProcessor.class)
+    public RerankDocumentPostProcessor knowledgeReranker(ModelProperties model, RagProperties properties,
+                                                         Environment environment, ObjectMapper json) {
+        ModelProperties.Qwen qwen = model.getQwen();
+        SecretResolver secrets = SpringSecretResolver.of(environment);
+        HttpClient http = HttpClient.newBuilder()
+                .connectTimeout(properties.rerank().timeout())
+                .build();
+        log.info("知识库重排已启用：{}（模型 {}，候选 {} 条，超时 {}）",
+                properties.rerank().rerankUrl(), properties.rerank().model(),
+                properties.rerankCandidates(), properties.rerank().timeout());
+        return new RerankDocumentPostProcessor(http, json, properties.rerank().rerankUrl(),
+                properties.rerank().model(), properties.rerank().timeout(),
+                properties.rerankCandidates(),
+                () -> qwen.apiKey().render(secrets));
+    }
+
+    /**
+     * 编排器。这是整个知识库能力的入口——没有它就只剩一个没人调的 retriever 工厂。
+     *
+     * <p>它注册成 {@link Advisor}：{@code AgentAutoConfiguration#chatClient} 用
+     * {@code ObjectProvider<Advisor>} 收容器里所有的 advisor，这里不点名任何 ChatClient。
+     */
+    @Bean
+    @ConditionalOnMissingBean(RetrievalAugmentationAdvisor.class)
+    public Advisor knowledgeAugmentationAdvisor(DocumentRetriever retriever, RagProperties properties,
+                                                ObjectProvider<RerankDocumentPostProcessor> reranker) {
+        ContextualQueryAugmenter augmenter = ContextualQueryAugmenter.builder()
+                .promptTemplate(new PromptTemplate(PROMPT_TEMPLATE))
+                .allowEmptyContext(true)
+                .documentFormatter(RagAutoConfiguration::formatDocuments)
+                .build();
+        RerankDocumentPostProcessor processor = reranker.getIfAvailable();
+        return RetrievalAugmentationAdvisor.builder()
+                .documentRetriever(retriever)
+                // 官方默认的 joiner：每个 query 只有一路结果（多路已经在 retriever 内部融过），
+                // 它在这里只做"去重 + 按分数排"，与我们的 RRF 不冲突。
+                .documentJoiner(new ConcatenationDocumentJoiner())
+                .documentPostProcessors(processor == null ? List.of() : List.of(processor))
+                .queryAugmenter(augmenter)
+                .order(ORDER)
+                .build();
+    }
+
+    /**
+     * 增强模板。**这是对官方默认模板的替换**，不是可选的风格调整：
+     *
+     * <p>官方默认模板要求"只根据上下文回答，不在上下文里就说不知道"，会把用户消息整个换成
+     * 一个 RAG 提问。装在一个通用助手上，问"你好"也会被要求"只按资料回答"——人格、工具、
+     * 常识全被压住。这里改成"资料相关就用、无关就忽略"，既保留 RAG 的好处，又不劫持对话。
+     *
+     * <p>{@code {query}} 与 {@code {context}} 两个占位符是 {@code PromptAssert} 要求的，
+     * 少一个会在构建时抛。
+     */
+    static final String PROMPT_TEMPLATE = """
+            下面是从内部知识库里检索到的资料，可能相关、也可能不相关。
+
+            ---------------------
+            {context}
+            ---------------------
+
+            用法：
+            1. 资料确实回答了问题，就据此回答，并在句末用资料开头的编号标出处（例如「见 [2]」）。
+            2. 资料与问题无关，就忽略它，按你平时的方式回答，不要提"资料里没有"。
+            3. 不要在资料之外编造规定、数字或流程。
+
+            问题：{query}
+
+            回答：
+            """;
+
+    /**
+     * 每段的注入格式：{@code [n] 路径 第 N 段} + 正文。
+     *
+     * <p>「带出处」这条从"工具返回值"搬到了这里。拼法只该有一处——两处拼就会写出两种格式，
+     * 而其中一种一定漏掉出处，模型照着漏的那种引用，用户就回不到原文。
+     */
+    static String formatDocuments(List<Document> documents) {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < documents.size(); i++) {
+            Document document = documents.get(i);
+            String citation = RagMetadata.citation(document);
+            text.append('[').append(i + 1).append("] ").append(citation).append('\n')
+                    .append(document.getText()).append('\n');
+        }
+        return text.toString();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(KnowledgeIndexer.class)
+    public KnowledgeIndexer knowledgeIndexer(JdbcTemplate jdbc, VectorStore vectorStore,
+                                            EmbeddingModel embeddings, RagProperties properties) {
+        log.info("知识库已启用：目录 {}、最终取 {} 段、每路候选 {}、相似度下限 {}、块长 {} token、"
+                        + "混合检索 {}、重排 {}",
+                properties.directory(), properties.topK(),
+                properties.hybrid().candidatesPerRoute(), properties.minSimilarity(),
+                properties.chunkSize(),
+                properties.hybrid().enabled() ? "开" : "关",
+                properties.rerank().enabled() ? "开" : "关");
+        return new KnowledgeIndexer(jdbc, vectorStore, embeddings, properties);
+    }
+
+    /**
+     * 启动后：先建 trigram 索引，再同步一次目录。
+     *
+     * <p><b>索引为什么在这里建</b>：`vector_store` 由框架建，迁移跑的时候它还不存在，
+     * 所以 `V5` 只建扩展。索引建不出来只 WARN——它影响的是速度，不是结果。
+     *
+     * <p>同步失败会让启动失败：空知识库不该被当成"正常启动"。
+     */
+    @Bean
+    public ApplicationRunner knowledgeIndexRunner(KnowledgeIndexer indexer, JdbcTemplate jdbc) {
+        return args -> {
+            ensureTrigramIndex(jdbc);
+            indexer.index();
+        };
+    }
+
+    /**
+     * 建全文那一路的索引。
+     *
+     * <p>{@code if not exists} 让它幂等：每次启动都执行一次，第二次是空操作。
+     *
+     * <p>失败只 WARN：没有这个索引时 `ilike '%q%'` 走全表扫描，结果一模一样，只是慢。
+     * 把一个性能优化做成启动失败，等于"索引没建起来就用不了知识库"。
+     */
+    private static void ensureTrigramIndex(JdbcTemplate jdbc) {
+        try {
+            jdbc.execute("create index if not exists " + TRIGRAM_INDEX
+                    + " on " + VECTOR_SCHEMA + "." + VECTOR_TABLE
+                    + " using gin (content gin_trgm_ops)");
+        }
+        catch (RuntimeException failure) {
+            log.warn("在 {}.{}(content) 上建 trigram 索引失败，全文检索会走全表扫描（结果不变）：{}",
+                    VECTOR_SCHEMA, VECTOR_TABLE, failure.getMessage());
+        }
     }
 }

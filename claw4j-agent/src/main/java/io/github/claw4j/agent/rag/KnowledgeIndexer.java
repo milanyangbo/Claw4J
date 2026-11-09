@@ -1,20 +1,23 @@
 package io.github.claw4j.agent.rag;
 
 import io.github.claw4j.agent.PermissionFingerprint;
-import io.github.claw4j.text.ChineseText;
-import io.github.claw4j.text.TextChunker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.transformer.splitter.TextSplitter;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -24,64 +27,107 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * 把目录里的文档同步进库。目录是事实来源：文件改了重建、文件删了块也删。
+ * 把目录里的文档同步进知识库。目录是事实来源：文件改了重建、文件删了块也删。
  *
  * <p><b>为什么以目录为准</b>：知识库没有"编辑"入口（模型不该能往里写，那等于给它一个把
  * 提示注入落库的口子）。既然唯一的写入口是文件，那么"库里有、目录里没有"就是一种残留，
  * 留着它会让检索返回一段已经不存在的文档——出处指过去，人打开文件却找不到那段。
  *
- * <p><b>按内容哈希跳过</b>：每次启动都重算全部 embedding，等于每次重启烧一遍 token，
- * 而且块的 ordinal 会与上一次错位（出处会漂）。哈希只覆盖内容，不覆盖路径——
- * 文件改名会被当成"删掉旧的 + 新增一份"，这是对的：出处里的路径变了。
+ * <p><b>按内容哈希跳过</b>：靠 {@code claw4j_rag.source} 那张表（照 OpenClaw 的
+ * {@code memory_index_sources}）。框架的 {@code VectorStore} 没有"这份文件上次是什么样"的账，
+ * 所以这张表是我们必须自己留的一张——没有它，每次启动都要把全部文档重算一遍 embedding。
  *
- * <p><b>先算向量再进事务</b>：{@code embed} 是一次网络调用。放在事务里就是"拿着数据库连接
- * 等 HTTP"，一份文档有十几块时会占住连接几十秒。所以先全部算好，再在一个短事务里
- * 删旧块、写新块、更新哈希——中途崩了要么全旧要么全新，不会留下"哈希已更新、块是空的"。
+ * <p><b>但哈希不是唯一的判据</b>：切块实现变了，内容没变的文件也得重建。这件事靠
+ * {@code claw4j_rag.index_meta} 一行身份（照 OpenClaw 的 {@code memory_index_meta}）——
+ * 身份不一致就全量重建，而不是每行挂一个版本号。
+ *
+ * <p><b>写入全部走框架</b>：切块见 {@link SemanticTextSplitter}（ADR-0028），写块与删块是
+ * {@code VectorStore.add} / {@code delete(filter)}。不再有手拼的 insert/delete。
+ *
+ * <p><b>没有事务，靠"哈希最后写"保证可重来</b>：一份文档的顺序是
+ * 删旧块 → 加新块 → 更新哈希。中间任何一步失败，哈希仍是旧的，下次同步会重来一遍。
+ * 这样做的代价要说清：在"旧块已删、新块还没写完"的窗口里，这份文档检索不到——
+ * 而它只发生在启动同步期间，那时没有请求在查。反过来（把 embedding 算在事务里）
+ * 会拿着数据库连接等 HTTP，一份长文档就占住连接几十秒。
  */
 public class KnowledgeIndexer {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeIndexer.class);
 
+    /** 来源类别。今天只有一处文档目录；写进键里是为了将来多接一份目录时不用改表。 */
+    static final String SOURCE_KIND = "docs";
+
     private static final String FIND_HASH =
-            "select content_hash from claw4j_rag.document where source = ?";
+            "select content_hash from claw4j_rag.source where path = ? and source = ?";
 
-    private static final String UPSERT_DOCUMENT = """
-            insert into claw4j_rag.document (source, content_hash)
-            values (?, ?)
-            on conflict (source) do update
+    private static final String UPSERT_SOURCE = """
+            insert into claw4j_rag.source (path, source, content_hash, mtime, size, indexed_at)
+            values (?, ?, ?, ?, ?, now())
+            on conflict (path, source) do update
                 set content_hash = excluded.content_hash,
+                    mtime = excluded.mtime,
+                    size = excluded.size,
                     indexed_at = now()
-            returning id
             """;
 
-    private static final String DELETE_CHUNKS =
-            "delete from claw4j_rag.chunk where document_id = ?";
+    private static final String ALL_PATHS =
+            "select path from claw4j_rag.source where source = ?";
 
-    private static final String INSERT_CHUNK = """
-            insert into claw4j_rag.chunk (document_id, ordinal, text, bigrams, embedding)
-            values (?, ?, ?, ?, ?::vector)
-            """;
+    private static final String DELETE_SOURCE =
+            "delete from claw4j_rag.source where path = ? and source = ?";
 
-    private static final String ALL_SOURCES = "select source from claw4j_rag.document";
+    private static final String COUNT_CHUNKS =
+            "select count(*) from " + RagAutoConfiguration.VECTOR_SCHEMA + "."
+                    + RagAutoConfiguration.VECTOR_TABLE;
 
-    private static final String DELETE_DOCUMENT = "delete from claw4j_rag.document where source = ?";
+    /** 索引身份的 key。照 OpenClaw 的 {@code memory_index_meta_v1}：一行 key + 一个 JSON 值。 */
+    public static final String META_KEY = "index_meta_v1";
 
-    private static final String COUNT_CHUNKS = "select count(*) from claw4j_rag.chunk";
+    /**
+     * 切块实现的版本。
+     *
+     * <p>**改切块算法、词表、阈值、最少句数都要加一**：身份一变，下次启动就全量重建。
+     * 不这样做的话，hash 没变的文件永远不重建，库里会混着两套边界的块且没有任何迹象。
+     */
+    static final int CHUNKING_VERSION = 1;
+
+    private static final String FIND_META =
+            "select value from " + RagAutoConfiguration.VECTOR_SCHEMA + ".index_meta where key = ?";
+
+    private static final String UPSERT_META =
+            "insert into " + RagAutoConfiguration.VECTOR_SCHEMA + ".index_meta (key, value) values (?, ?) "
+                    + "on conflict (key) do update set value = excluded.value";
 
     private final JdbcTemplate jdbc;
 
-    private final EmbeddingModel embeddings;
+    private final VectorStore vectorStore;
 
     private final RagProperties properties;
 
-    private final TransactionTemplate transactions;
+    /**
+     * 切块器。**两级**：句子之间按语义断（转折词 + 向量跃迁），块超 token 上限才硬切。
+     * 裁决见 ADR-0028；算法在 `claw4j-core` 的 {@code ChunkPlanner}。
+     */
+    private final TextSplitter splitter;
 
-    public KnowledgeIndexer(JdbcTemplate jdbc, EmbeddingModel embeddings, RagProperties properties,
-                            PlatformTransactionManager transactions) {
+    public KnowledgeIndexer(JdbcTemplate jdbc, VectorStore vectorStore, EmbeddingModel embeddings,
+                            RagProperties properties) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
-        this.embeddings = Objects.requireNonNull(embeddings, "embeddings");
+        this.vectorStore = Objects.requireNonNull(vectorStore, "vectorStore");
         this.properties = Objects.requireNonNull(properties, "properties");
-        this.transactions = new TransactionTemplate(Objects.requireNonNull(transactions, "transactions"));
+        this.splitter = new SemanticTextSplitter(Objects.requireNonNull(embeddings, "embeddings"),
+                properties.chunkSize());
+    }
+
+    /**
+     * 索引身份：切块实现版本 + token 上限。
+     *
+     * <p>写进 {@code claw4j_rag.index_meta} 一行（照 OpenClaw 的 {@code memory_index_meta}），
+     * 值是一个固定的 JSON 串——只有我们写它，所以按字符串比较就够，不需要再解析一遍。
+     * {@code chunkTokens} 也进身份，因为改 {@code chunk-size} 同样会改变块边界。
+     */
+    public static String identityOf(int chunkSize) {
+        return "{\"chunkingVersion\":" + CHUNKING_VERSION + ",\"chunkTokens\":" + chunkSize + "}";
     }
 
     /**
@@ -118,76 +164,124 @@ public class KnowledgeIndexer {
                     + "而那与「这段确实没写」分不开——所以这里直接失败");
         }
 
+        String identity = identityOf(properties.chunkSize());
+        boolean rebuildAll = !identity.equals(storedIdentity());
+        if (rebuildAll) {
+            log.info("知识库切块身份与库里不一致（或还没有身份），这次全量重建：{}", identity);
+        }
+
         int indexed = 0;
         int skipped = 0;
         Set<String> present = new HashSet<>();
         for (Path file : files) {
-            String source = sourceOf(root, file);
-            present.add(source);
+            String path = pathOf(root, file);
+            present.add(path);
             String content = read(file);
             String hash = PermissionFingerprint.sha256(content);
-            if (hash.equals(existingHash(source))) {
+            // 身份不符时**不看 hash**：切块算法变了，内容没变也要按新边界重建。
+            if (!rebuildAll && hash.equals(existingHash(path))) {
                 skipped++;
                 continue;
             }
-            indexOne(source, content, hash);
+            indexOne(path, content, hash, file);
             indexed++;
         }
         int removed = removeMissing(present);
+        // 身份最后写：任何一份文档失败，它仍是旧值，下次启动会再全量重来一遍。
+        if (rebuildAll) {
+            writeIdentity(identity);
+        }
         int chunks = chunkCount();
-        log.info("知识库同步完成：{} 份文档里重建 {} 份、跳过 {} 份、删掉 {} 份，现有 {} 段（目录 {}）",
-                files.size(), indexed, skipped, removed, chunks, root.toAbsolutePath());
+        log.info("知识库同步完成：{} 份文档里重建 {} 份、跳过 {} 份、删掉 {} 份，现有 {} 段"
+                        + "（切块 {}，目录 {}）",
+                files.size(), indexed, skipped, removed, chunks, identity, root.toAbsolutePath());
         return new Stats(indexed, skipped, removed, chunks);
     }
 
-    /** 拼出路径、切块、算向量，然后在一个短事务里换掉这份文档的全部块。 */
-    private void indexOne(String source, String content, String hash) {
-        List<TextChunker.Chunk> chunks = TextChunker.split(content, properties.maxChars());
+    /**
+     * 重建一份文档：删旧块 → 加新块 → 最后写哈希。
+     *
+     * <p><b>哈希最后写</b>：它是"这份文档已经完整进库"的标志。先写哈希再写块的话，
+     * 中间失败会留下一条"hash 说已索引、块却只有一半"的记录，而下次同步会跳过它——
+     * 知识库从此永久缺一段，且没有任何迹象。
+     */
+    private void indexOne(String path, String content, String hash, Path file) {
+        List<Document> chunks = chunk(path, content, hash);
         if (chunks.isEmpty()) {
             // 文件只有空白：把它当作"存在但没有内容"。**不写空块**，也不当失败——
             // 一个还没写内容的 placeholder 文件不该让整个进程起不来。
-            log.warn("{} 里没有可索引的内容（只有空白），跳过", source);
+            log.warn("{} 里没有可索引的内容（只有空白），跳过", path);
             return;
         }
-        List<ReadyChunk> ready = new ArrayList<>(chunks.size());
-        for (TextChunker.Chunk chunk : chunks) {
-            float[] embedding = embeddings.embed(chunk.text());
-            if (embedding == null) {
-                throw new IllegalStateException("算不出 " + source + " 第 " + chunk.ordinal()
-                        + " 段的向量：embedding 服务返回空。索引没建起来，不能假装建起来了");
-            }
-            ready.add(new ReadyChunk(chunk, embedding));
-        }
+        // 先删后加：块的编号会随内容变化而整体前移，不删的话上次的尾巴还在库里，
+        // 检索会返回一段已经不存在的原文。
+        deleteChunksOf(path);
+        vectorStore.add(chunks);
+        jdbc.update(UPSERT_SOURCE, path, SOURCE_KIND, hash, mtimeOf(file), sizeOf(file));
+    }
 
-        transactions.executeWithoutResult(status -> {
-            Long documentId = jdbc.queryForObject(UPSERT_DOCUMENT, Long.class, source, hash);
-            if (documentId == null) {
-                throw new IllegalStateException("写不进文档记录：" + source);
+    /**
+     * 删掉一份文档的全部块。
+     *
+     * <p>按 metadata 过滤而不是按 id：一块一块按 id 删要求我们把上次的 id 都记住，
+     * 而那需要另一张表（并且那张表会与 vector_store 不一致）。过滤条件是这份文档的身份，
+     * 不依赖上一次写入记了什么。
+     */
+    private void deleteChunksOf(String path) {
+        FilterExpressionBuilder filters = new FilterExpressionBuilder();
+        vectorStore.delete(filters.and(
+                filters.eq(RagMetadata.PATH, path),
+                filters.eq(RagMetadata.SOURCE, SOURCE_KIND)).build());
+    }
+
+    /**
+     * 切块并给每块装上出处。
+     *
+     * <p><b>为什么 metadata 重新造而不是沿用切块器给的</b>：{@code TokenTextSplitter} 会往
+     * metadata 里塞它自己的 {@code chunk_index} 之类的键。沿用它意味着"第几段"有两套口径
+     * （它从 0 起、我们对外从 1 起），而出处是要给人读的，两套口径迟早对不上。
+     */
+    private List<Document> chunk(String path, String content, String hash) {
+        List<Document> pieces = splitter.apply(List.of(new Document(content)));
+        List<Document> chunks = new ArrayList<>(pieces.size());
+        int index = 0;
+        for (Document piece : pieces) {
+            if (piece.getText() == null || piece.getText().isBlank()) {
+                continue;
             }
-            // 先删后插：块的 ordinal 会随内容变化而整体前移，逐条 upsert 会留下上次的尾巴。
-            jdbc.update(DELETE_CHUNKS, documentId);
-            for (ReadyChunk chunk : ready) {
-                jdbc.update(INSERT_CHUNK, documentId, chunk.chunk().ordinal(), chunk.chunk().text(),
-                        ChineseText.bigrams(chunk.chunk().text()), vectorLiteral(chunk.embedding()));
-            }
-        });
+            index++;
+            chunks.add(new Document(piece.getText(),
+                    RagMetadata.of(path, SOURCE_KIND, String.valueOf(index), hash)));
+        }
+        return chunks;
     }
 
     private int removeMissing(Set<String> present) {
-        List<String> stored = jdbc.queryForList(ALL_SOURCES, String.class);
+        List<String> stored = jdbc.queryForList(ALL_PATHS, String.class, SOURCE_KIND);
         int removed = 0;
-        for (String source : stored) {
-            if (!present.contains(source)) {
-                jdbc.update(DELETE_DOCUMENT, source);
+        for (String path : stored) {
+            if (!present.contains(path)) {
+                deleteChunksOf(path);
+                jdbc.update(DELETE_SOURCE, path, SOURCE_KIND);
                 removed++;
             }
         }
         return removed;
     }
 
-    private String existingHash(String source) {
-        List<String> hashes = jdbc.queryForList(FIND_HASH, String.class, source);
+    private String existingHash(String path) {
+        List<String> hashes = jdbc.queryForList(FIND_HASH, String.class, path, SOURCE_KIND);
         return hashes.isEmpty() ? null : hashes.getFirst();
+    }
+
+    /** 库里记着的切块身份。没有这一行（升级前、或第一次跑）返回 {@code null}，按"全量重建"处理。 */
+    private String storedIdentity() {
+        List<String> values = jdbc.queryForList(FIND_META, String.class, META_KEY);
+        return values.isEmpty() ? null : values.getFirst();
+    }
+
+    private void writeIdentity(String identity) {
+        jdbc.update(UPSERT_META, META_KEY, identity);
     }
 
     private int chunkCount() {
@@ -214,7 +308,7 @@ public class KnowledgeIndexer {
     }
 
     /** 出处里的路径用正斜杠：Windows 上跑出来的 {@code \} 放进 URL 或 JSON 都要再转义。 */
-    private static String sourceOf(Path root, Path file) {
+    private static String pathOf(Path root, Path file) {
         return root.relativize(file).toString().replace('\\', '/');
     }
 
@@ -227,19 +321,33 @@ public class KnowledgeIndexer {
         }
     }
 
-    /** 与 {@link PgVectorKnowledgeBase} 里那份同形；两处的理由见那边的注释。 */
-    private static String vectorLiteral(float[] embedding) {
-        StringBuilder literal = new StringBuilder(embedding.length * 12 + 2).append('[');
-        for (int i = 0; i < embedding.length; i++) {
-            if (i > 0) {
-                literal.append(',');
-            }
-            literal.append(embedding[i]);
+    private static long sizeOf(Path file) {
+        try {
+            return Files.size(file);
         }
-        return literal.append(']').toString();
+        catch (IOException failure) {
+            // 与 mtime 同理：字节数只用于排障，读不到就当没有。
+            log.debug("读不到 {} 的字节数", file, failure);
+            return 0L;
+        }
     }
 
-    /** 已经算好向量的一块，进事务之前就准备好。 */
-    private record ReadyChunk(TextChunker.Chunk chunk, float[] embedding) {
+    /**
+     * 文件的修改时刻。
+     *
+     * <p><b>返回 {@code OffsetDateTime} 而不是 {@code Instant}</b>：pgjdbc 不认 Instant，
+     * 传进去会报 "Can't infer the SQL type to use for an instance of java.time.Instant"——
+     * 而那条错在启动同步时才出现，看起来像 SQL 语法问题。其它几处写 timestamptz 的地方
+     * 用的是同一个类型，口径一致。
+     */
+    private static OffsetDateTime mtimeOf(Path file) {
+        try {
+            FileTime time = Files.getLastModifiedTime(file);
+            return OffsetDateTime.ofInstant(time.toInstant(), ZoneOffset.UTC);
+        }
+        catch (IOException failure) {
+            // mtime 只用于排障（hash 才是判据），读不到就当没有，不必让同步失败。
+            return null;
+        }
     }
 }

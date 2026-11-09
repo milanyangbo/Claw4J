@@ -110,7 +110,7 @@ class EvalCaseSetTest {
 
         assertThat(catalog)
                 .as("一个 @Tool 都没扫到：扫描器坏了，这条校验会变成恒真")
-                .contains("querySales", "searchDocs");
+                .contains("querySales", "systemStatus");
         assertThat(cases()).allSatisfy(testCase -> assertThat(catalog)
                 .as("用例 %s 引用了不存在的工具 %s（当前清单：%s）",
                         testCase.id(), testCase.expectTools(), catalog)
@@ -344,7 +344,8 @@ class EvalCaseSetTest {
      *
      * <p><b>它只覆盖注解式工具，这是一个已知边界</b>：几个工具（定时任务、计划、会话回忆）
      * 是手工构造 {@code ToolDefinition} 的，没有 {@code @Tool} 注解，扫不到。
-     * 现在用例里只引用 {@code querySales} 与 {@code searchDocs}，两个都在覆盖范围内；
+     * 现在用例里只引用 {@code querySales}，它在覆盖范围内（知识库曾经的 {@code searchDocs}
+     * 在 2026-11-09 改由 {@code RetrievalAugmentationAdvisor} 自动检索，工具已删除）；
      * 以后要给手工构造的那几个写用例，得先把它们加进这份清单（或者改用具名常量登记），
      * 否则这里会报"工具不存在"——报错里带着当前清单，一眼能看出是扫描边界的问题。
      *

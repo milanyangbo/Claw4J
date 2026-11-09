@@ -53,6 +53,18 @@
             <artifactId>spring-ai-client-chat</artifactId>
         </dependency>
         <!--
+          知识库的编排（P10）：`RetrievalAugmentationAdvisor` + 三个槽位接口
+          （`DocumentRetriever` / `DocumentJoiner` / `DocumentPostProcessor`）。
+
+          这个模块是"纯编排"，不带任何存储实现——正因为如此，我们才在里面补
+          `KeywordDocumentRetriever`（全文那一路）与 `RerankDocumentPostProcessor`（重排）：
+          官方给了接口没给实现，不是我们绕开它自己造 API。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-rag</artifactId>
+        </dependency>
+        <!--
           语义缓存（M3-05）：用框架的实现，不再自己写存储。
           `spring-ai-redis-semantic-cache` 提供 `SemanticCacheAdvisor` 与 `DefaultSemanticCache`，
           缓存落 Redis Stack（RediSearch + RedisJSON）。它把 jedis 与 `spring-ai-redis-store`
@@ -65,6 +77,16 @@
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-redis-store</artifactId>
+        </dependency>
+        <!--
+          知识库（P10）：检索与存储都用框架的，不再自己拼 SQL。
+          `PgVectorStore` 自带建表（vector_store）、向量写入与相似度检索；
+          切块用 `spring-ai-commons` 里的 `TokenTextSplitter`（已在传递依赖里）。
+          维度由装配时传进去的 dimensions 决定，与本项目 claw4j.model.embedding 一致。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-pgvector-store</artifactId>
         </dependency>
         <!--
           工具检索（M3-06）：工具多到塞不进提示词时，让模型先找工具再调。

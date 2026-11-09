@@ -23,8 +23,8 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  *       <td>纯模型，连日志都不该知道</td></tr>
  *   <tr><td>{@code channel..}</td><td>JDK、slf4j、domain、自己</td>
  *       <td>编排要记日志，但不需要别的</td></tr>
- *   <tr><td>{@code text..}</td><td>只有 JDK 与自己</td>
- *       <td>切词、切块、融合是纯函数；它一旦伸手去拿框架，就没法被单独拿去用</td></tr>
+ *   <tr><td>{@code chunk..}</td><td>只有 JDK 与自己</td>
+ *       <td>切句、分组、断点、成块是纯函数；它一旦伸手去拿框架或 tokenizer，就没法被单独拿去用</td></tr>
  * </table>
  *
  * <p><b>为什么合并成一份而不是三个文件</b>：门禁按文件数卡（10 个），而这三条都是
@@ -40,7 +40,7 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * 根本没有那个包，规则会匹配到零个类然后报绿——一条永远为真的断言比没有断言更糟。
  */
 @AnalyzeClasses(packages = {"io.github.claw4j.domain", "io.github.claw4j.channel",
-        "io.github.claw4j.text"}, importOptions = ImportOption.DoNotIncludeTests.class)
+        "io.github.claw4j.chunk"}, importOptions = ImportOption.DoNotIncludeTests.class)
 class CoreBoundariesTest {
 
     @ArchTest
@@ -77,17 +77,31 @@ class CoreBoundariesTest {
                             "io.github.claw4j.capability..");
 
     /**
-     * 文本工具是纯函数：切词、切块、融合都只碰 JDK。
+     * 切块算法只碰 JDK：它吃字符串与向量、吐下标，能脱离 Spring AI 单独用。
      *
-     * <p><b>这一条不是形式主义</b>：它保证了"中文检索的切分规则"可以被任何模块用，
-     * 包括将来一个不跑 Spring 的批处理进程。一旦这里 import 了 Spring 的类型
-     * （比如顺手用了 {@code StringUtils}），那个"能单独拿去用"的属性就没了，
-     * 而没有任何调用点会因此报错——它只是不再成立。
+     * <p>这条规则换过一次对象：P10 时守的是 {@code text..}（切词、切块、融合），那批类随关键词
+     * 通道一起删掉后规则也删了；P10c 把语义切块的纯函数放进 {@code chunk..}，规则跟着搬回来。
+     *
+     * <p><b>改这个包的名字时两处都要改</b>：{@code @AnalyzeClasses} 的包列表与这条规则。
+     * 只改一处的话规则匹配零个类，而 ArchUnit 对空集是**失败**的——反过来若用
+     * {@code noClasses().that()...} 形成"没有对象"的规则，就会静默报绿。
      */
     @ArchTest
-    static final ArchRule textHelpersStayFrameworkFree =
-            classes().that().resideInAPackage("io.github.claw4j.text..")
+    static final ArchRule chunkPlannerTouchesNothingButTheJdk =
+            classes().that().resideInAPackage("io.github.claw4j.chunk..")
                     .should().onlyDependOnClassesThat().resideInAnyPackage(
                             "java..",
-                            "io.github.claw4j.text..");
+                            "io.github.claw4j.chunk..");
+
+    /*
+     * 文本工具那条规则（`io.github.claw4j.text..` 只碰 JDK）已经没有对象了，所以删掉。
+     *
+     * 2026-11-09：切块改用框架的 `TokenTextSplitter`、融合改用 `DocumentJoiner` 的实现、
+     * 中文分词随关键词通道一起撤掉——这个包空了。ArchUnit 对"规则没检查到任何类"是**失败**的
+     * （它不接受空集悄悄通过），所以这不是放宽规则，是删掉一条没有对象的规则。
+     * 如果哪天又有了纯函数式的文本工具，加回来时连同这条规则一起加。
+     *
+     * 同日晚些时候又有了：语义切块的纯函数进了 `chunk..`，规则在上面的
+     * `chunkPlannerTouchesNothingButTheJdk` 里，形式与当初那条一样（白名单只放 java）。
+     */
 }

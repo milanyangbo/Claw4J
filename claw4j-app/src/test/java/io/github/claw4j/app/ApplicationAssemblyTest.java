@@ -6,7 +6,7 @@ import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
-import io.github.claw4j.agent.rag.KnowledgeBase;
+import io.github.claw4j.agent.rag.HybridDocumentRetriever;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.capability.mcp.expose.McpExposure;
 import io.github.claw4j.capability.mcp.expose.McpExposureProperties;
@@ -460,8 +460,8 @@ class ApplicationAssemblyTest {
         assertThat(toolCatalog.names())
                 .as("默认关是有意的：知识库要一份文档目录与一次 embedding 调用，开了才在清单里")
                 .doesNotContain("searchDocs");
-        assertThat(context.getBeanNamesForType(KnowledgeBase.class))
-                .as("关着时连 bean 都不装，不是「装了但没挂上去」")
+        assertThat(context.getBeanNamesForType(HybridDocumentRetriever.class))
+                .as("关着时连 retriever 都不装，不是「装了但没挂上去」")
                 .isEmpty();
     }
 

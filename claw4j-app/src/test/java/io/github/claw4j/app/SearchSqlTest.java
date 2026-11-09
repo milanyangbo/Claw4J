@@ -2,9 +2,13 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.inbound.JdbcInboundStore;
 import io.github.claw4j.agent.model.EmbeddingProperties;
-import io.github.claw4j.agent.rag.KnowledgeBase;
-import io.github.claw4j.agent.rag.PgVectorKnowledgeBase;
+import io.github.claw4j.agent.rag.HybridDocumentRetriever;
+import io.github.claw4j.agent.rag.KeywordDocumentRetriever;
+import io.github.claw4j.agent.rag.KnowledgeIndexer;
 import io.github.claw4j.agent.rag.RagProperties;
+import io.github.claw4j.agent.rag.ReciprocalRankFusionJoiner;
+import io.github.claw4j.domain.ContextKeys;
+import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.agent.session.SessionEntryStore;
 import io.github.claw4j.agent.session.CrossSessionEvents;
 import io.github.claw4j.agent.session.JdbcSessionEntryStore;
@@ -15,32 +19,46 @@ import io.github.claw4j.domain.inbound.ClaimedInbound;
 import io.github.claw4j.domain.inbound.EnqueueOutcome;
 import io.github.claw4j.domain.inbound.QueuedInbound;
 import io.github.claw4j.domain.inbound.Retention;
-import io.github.claw4j.text.ChineseText;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.Embedding;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingRequest;
 import org.springframework.ai.embedding.EmbeddingResponse;
+import org.springframework.ai.rag.Query;
+import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
+import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.SessionEvent;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.containers.PostgreSQLContainer;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.net.URISyntaxException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -67,12 +85,6 @@ class SearchSqlTest {
     /** 入站队列的队列名：与生产同口径，就是通道名。 */
     private static final String QUEUE = "feishu";
 
-    /** 一个含"退货政策"字样的文档段：关键词通道该命中它。 */
-    private static final String RETURNS_TEXT = "华东区自签收之日起 7 天内可无理由退货，这是本区的退货政策。";
-
-    /** 一段语义接近但字面完全不重合的文字：只有向量通道能把它找回来。 */
-    private static final String FRESH_TEXT = "生鲜与定制类商品不适用上述条款，签收后不再受理。";
-
     /** 容器要在任何 @BeforeAll 之前起来：迁移要读它的端口。 */
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
@@ -86,160 +98,311 @@ class SearchSqlTest {
 
     private static JdbcTemplate jdbc;
 
+    /**
+     * 框架的向量库。表由它建（迁移里不建），所以必须在这里建一次——不建的话
+     * {@code truncate} 与检索都指向一个不存在的对象。
+     */
+    private static VectorStore STORE;
+
+    /** 每个用例一份文档目录，互不串味。 */
+    @TempDir
+    Path docs;
+
     @BeforeAll
     static void dataSource() {
         jdbc = new JdbcTemplate(new DriverManagerDataSource(
                 POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
+        STORE = buildStore();
     }
 
     @BeforeEach
     void freshTables() {
-        // cascade：块随文档一起走，不需要第二句 truncate。
-        jdbc.update("truncate claw4j_rag.document cascade");
+        // 块与文件账都清：上一个用例的文档留在库里，会让"只回一条"变成"回两条"，
+        // 而那种失败看起来像阈值失效。
+        jdbc.update("truncate claw4j_rag.vector_store");
+        jdbc.update("truncate claw4j_rag.source");
+        // 索引身份也要清：留着上一个用例的身份会让"第一次索引"变成"跳过 40 份"
+        jdbc.update("truncate claw4j_rag.index_meta");
         // 入站队列（票 04）：它的行是 tombstone，不清的话上一条用例的"这条处理过"会带到这里
         jdbc.update("truncate claw4j_channel.inbound_event");
         // 会话（票 05）：事件靠外键跟着会话走，一句 cascade 两表都干净
         jdbc.update("truncate claw4j_session.ai_session cascade");
     }
 
-    // ---- 知识库（P10） ----
+    // ---- 知识库（P10）：混合检索（向量 + 全文） ----
 
     @Test
-    @DisplayName("两路各自都在起作用：字面命中的与语义接近的都要回来")
-    void eachChannelContributes() {
-        // A 段：文字里有"退货"，但向量离问题很远（正交，相似度 0 → 低于 0.5 的下限）。
-        insertChunk("after-sales.md", 1, RETURNS_TEXT, vector(5));
-        // B 段：字面与"退货政策"完全不重合，向量与问题同向 → 只有向量通道能捞到它。
-        insertChunk("exceptions.md", 1, FRESH_TEXT, vector(0));
+    @DisplayName("编号类查询只有全文那一路找得到：SKU-2024 不会连 SKU-2025 一起捞回来")
+    void keywordLaneFindsTheExactCode() {
+        indexCorpus();
+        List<String> citations = citations(new KeywordDocumentRetriever(jdbc, "docs", 15)
+                .retrieve(question("SKU-2024 还剩多少")));
 
-        List<KnowledgeBase.Hit> hits = knowledgeReturningQueryVector().search("退货政策");
-
-        assertThat(hits)
-                .as("两路各贡献一条；只做成一路的话这里会少一条，而『能查到』那种断言照样绿")
-                .extracting(KnowledgeBase.Hit::source)
-                .containsExactlyInAnyOrder("after-sales.md", "exceptions.md");
-        assertThat(hits).allSatisfy(hit -> assertThat(hit.citation())
-                .as("出处是这一层的存在理由，任何一条都不能缺")
-                .contains(hit.source())
-                .contains("第 " + hit.ordinal() + " 段"));
+        assertThat(citations)
+                .as("整句「SKU-2024 还剩多少」在文档里并不存在，能命中说明抽了字面锚点")
+                .isNotEmpty();
+        assertThat(citations).allMatch(c -> c.startsWith("warehouse/sku-2024-stock.md"));
     }
 
     @Test
-    @DisplayName("中文关键词真能命中：整句当 token 的那种实现在这里会红")
-    void chineseKeywordActuallyMatches() {
-        insertChunk("after-sales.md", 1, RETURNS_TEXT, vector(5));
-        insertChunk("pricing.md", 1, "折扣按实付金额退款，不按标价退款。", vector(5));
+    @DisplayName("混合之后的第 1 条就是那份文档：两路都命中，RRF 把它顶到最前")
+    void hybridRanksTheExactDocumentFirst() {
+        indexCorpus();
 
-        // 只让关键词通道工作：mock 的 embed 返回 null（算不出向量）。
-        List<KnowledgeBase.Hit> hits = knowledgeWithoutVectors().search("退货政策");
-
-        assertThat(hits)
-                .as("bigrams 列与生成列 tsv 是这条用例的全部；把原文直接交给 to_tsvector 的话，"
-                        + "整句是一个 token，这里会是空")
-                .extracting(KnowledgeBase.Hit::source)
-                .containsExactly("after-sales.md");
+        assertThat(citations(search("SKU-2024 还剩多少", true)).getFirst())
+                .as("向量那一路只认「warehouse 那一类」，精确到哪一份要靠全文 + 融合")
+                .startsWith("warehouse/sku-2024-stock.md");
     }
 
     @Test
-    @DisplayName("单字查询走前缀：不是空，也不是全库")
-    void singleCharacterQueryUsesPrefix() {
-        insertChunk("after-sales.md", 1, RETURNS_TEXT, vector(5));
-        insertChunk("pricing.md", 1, "折扣按实付金额退款，不按标价退款。", vector(5));
+    @DisplayName("近义改写只有向量那一路接得住：字面完全不重合")
+    void vectorLaneCatchesParaphrase() {
+        indexCorpus();
 
-        List<KnowledgeBase.Hit> hits = knowledgeWithoutVectors().search("退");
+        List<String> citations = citations(search("东西买了能退吗", true));
 
-        assertThat(hits)
-                .as("两段里都含『退』（退货 / 退款），所以两条都要在——空说明前缀没生效，"
-                        + "两条以上说明 tsquery 退化成别的语义")
-                .hasSize(2);
+        assertThat(citations)
+                .as("「东西买了能退吗」与「自签收之日起 7 天内可无理由退货」一个字都不重，"
+                        + "能召回退货那组说明向量那一路接住了")
+                .anyMatch(c -> c.startsWith("returns/"));
+        assertThat(citations)
+                .as("向量那一路不能只靠关键词：命中「退货」那几句时，不含它的段落不该排在前面")
+                .allMatch(c -> !c.startsWith("warehouse/sku"));
     }
 
     @Test
-    @DisplayName("出处指得回原文：source + ordinal 能取回同一段文字")
+    @DisplayName("出处指得回原文：path + index 能在库里取回同一段文字")
     void citationPointsBackToTheSource() {
-        insertChunk("after-sales.md", 2, RETURNS_TEXT, vector(0));
+        indexCorpus();
 
-        KnowledgeBase.Hit hit = knowledgeReturningQueryVector().search("退货政策").getFirst();
+        Document hit = search("退货政策", true).getFirst();
+        String path = String.valueOf(hit.getMetadata().get("path"));
+        int index = ((Number) hit.getMetadata().get("index")).intValue();
 
         assertThat(jdbc.queryForObject("""
-                select c.text from claw4j_rag.chunk c
-                join claw4j_rag.document d on d.id = c.document_id
-                where d.source = ? and c.ordinal = ?
-                """, String.class, hit.source(), hit.ordinal()))
+                select content from claw4j_rag.vector_store
+                where metadata->>'path' = ? and (metadata->>'index')::int = ?
+                """, String.class, path, index))
                 .as("出处必须能指回原文，否则它只是一行好看的字符串")
-                .isEqualTo(hit.text());
+                .isEqualTo(hit.getText());
     }
 
     @Test
-    @DisplayName("不是缓存：文档块不进缓存表，同一段检索两次都带出处")
-    void documentsNeverLandInTheSemanticCache() {
-        insertChunk("after-sales.md", 1, RETURNS_TEXT, vector(0));
+    @DisplayName("内容没变就跳过：第二次同步不重算 embedding")
+    void unchangedFileIsSkipped() {
+        copyCorpus();
+        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties());
 
-        KnowledgeBase knowledge = knowledgeReturningQueryVector();
-        List<KnowledgeBase.Hit> first = knowledge.search("退货政策");
-        List<KnowledgeBase.Hit> second = knowledge.search("退货政策");
+        KnowledgeIndexer.Stats first = indexer.index();
+        KnowledgeIndexer.Stats second = indexer.index();
 
-        assertThat(second).as("第二次照样真的去查，不像缓存那样返回上一次的回答")
-                .hasSize(first.size())
-                .allSatisfy(hit -> assertThat(hit.citation()).isNotBlank());
-        assertThat(jdbc.queryForObject(
-                "select count(*) from pg_class where oid = to_regclass('claw4j_cache.semantic')",
-                Integer.class))
-                .as("语义缓存改落 Redis 之后这张表应当被 V9 删掉；它还在就是还有东西往里写")
+        assertThat(first.indexed()).isEqualTo(40);
+        assertThat(second.skipped()).as("靠的是 claw4j_rag.source 里那份 hash").isEqualTo(40);
+        assertThat(second.indexed()).isZero();
+        assertThat(second.chunks()).as("跳过的那 40 份不能被清空").isEqualTo(first.chunks());
+    }
+
+    @Test
+    @DisplayName("切块身份变了：内容一个字节没改也要全量重建（照 OpenClaw 的 index identity）")
+    void indexMetaChangeRebuildsEverything() {
+        copyCorpus();
+        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties());
+        indexer.index();
+
+        // 模拟"切块实现升了一版"：身份对不上。hash 全是好的，但边界已经换了。
+        jdbc.update("update claw4j_rag.index_meta set value = ? where key = ?",
+                "{\"chunkingVersion\":0,\"chunkTokens\":200}", KnowledgeIndexer.META_KEY);
+
+        KnowledgeIndexer.Stats rebuilt = indexer.index();
+
+        assertThat(rebuilt.indexed()).as("身份不符就不该再看 hash").isEqualTo(40);
+        assertThat(rebuilt.skipped()).isZero();
+        assertThat(jdbc.queryForObject("select value from claw4j_rag.index_meta where key = ?",
+                String.class, KnowledgeIndexer.META_KEY))
+                .as("重建完写回当前身份，第二次才会跳过")
+                .isEqualTo(KnowledgeIndexer.identityOf(properties().chunkSize()));
+        assertThat(jdbc.queryForObject("""
+                select count(*) from information_schema.columns
+                where table_schema = 'claw4j_rag' and table_name = 'source' and column_name like '%chunk%'
+                """, Integer.class))
+                .as("身份在 index_meta 里，不给文件行加列——OpenClaw 的源头表也没有")
                 .isZero();
     }
 
     @Test
-    @DisplayName("tsv 是生成列、索引是 GIN：这两件事只有建表时才知道成不成立")
-    void tsvIsAGeneratedColumnWithAGinIndex() {
-        assertThat(jdbc.queryForObject("""
-                select attgenerated from pg_attribute
-                where attrelid = 'claw4j_rag.chunk'::regclass and attname = 'tsv'
-                """, String.class))
-                .as("生成列要求 to_tsvector('simple', …) 是 immutable；换成依赖配置的写法就建不出来")
-                .isEqualTo("s");
-
-        assertThat(jdbc.queryForList("""
-                select indexdef from pg_indexes
-                where tablename = 'chunk' and schemaname = 'claw4j_rag'
-                """, String.class))
-                .anySatisfy(definition -> assertThat(definition).containsIgnoringCase("gin").contains("tsv"));
-
-        assertThat(columnType("claw4j_rag.chunk", "embedding"))
-                .as("与缓存那张表同一个维度：两张表用的是同一个模型")
+    @DisplayName("表是框架建的：id 是 uuid、向量维度跟配置走、metadata 是 json")
+    void theVectorTableIsTheFrameworkShape() {
+        assertThat(columnType("claw4j_rag.vector_store", "id")).isEqualTo("uuid");
+        assertThat(columnType("claw4j_rag.vector_store", "content")).isEqualTo("text");
+        assertThat(columnType("claw4j_rag.vector_store", "metadata")).isIn("json", "jsonb");
+        assertThat(columnType("claw4j_rag.vector_store", "embedding"))
+                .as("维度来自 claw4j.model.embedding：不一致时插入直接报错，"
+                        + "所以这里是「建表那一步对不对」的唯一证据")
                 .isEqualTo("vector(" + EmbeddingProperties.DEFAULT_DIMENSIONS + ")");
     }
 
-    // ---- 夹具 ----
+    @Test
+    @DisplayName("通配符被转义：问「5%」回来的每一段都必须真的含「5%」这两个字")
+    void percentSignIsNotAWildcard() {
+        indexCorpus();
+
+        List<Document> hits = new KeywordDocumentRetriever(jdbc, "docs", 15)
+                .retrieve(question("5%"));
+
+        assertThat(hits).as("语料里有两段含字面「5%」（价差、盘点差异率），该被找到").isNotEmpty();
+        assertThat(hits).allSatisfy(hit -> assertThat(hit.getText())
+                .as("不转义时 pattern 是 %5%%，「95 折」「5 个点」也会回来——它们不含「5%」")
+                .contains("5%"));
+    }
+
+    // ---- 知识库的夹具 ----
+
+    private void indexCorpus() {
+        copyCorpus();
+        new KnowledgeIndexer(jdbc, store(), embeddings(), properties()).index();
+    }
+
+    /** 把 40 份语料复制到本用例的临时目录：有些用例要改文件（重建、删除），不能动源目录。 */
+    private void copyCorpus() {
+        Path source = corpusRoot();
+        try (Stream<Path> files = Files.walk(source)) {
+            for (Path file : files.filter(Files::isRegularFile).toList()) {
+                Path target = docs.resolve(source.relativize(file).toString());
+                Files.createDirectories(target.getParent());
+                Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+        catch (IOException failure) {
+            throw new UncheckedIOException("复制不了语料 " + source, failure);
+        }
+    }
+
+    private static Path corpusRoot() {
+        try {
+            return Path.of(SearchSqlTest.class.getClassLoader().getResource("rag-corpus").toURI());
+        }
+        catch (URISyntaxException | NullPointerException missing) {
+            throw new IllegalStateException("测试类路径上找不到 rag-corpus", missing);
+        }
+    }
+
+    private List<Document> search(String text, boolean hybrid) {
+        DocumentRetriever vector = VectorStoreDocumentRetriever.builder()
+                .vectorStore(store())
+                .topK(40)
+                .similarityThreshold(0.5)
+                .build();
+        DocumentRetriever keyword = hybrid
+                ? new KeywordDocumentRetriever(jdbc, "docs", 15)
+                : null;
+        DocumentRetriever retriever = new HybridDocumentRetriever(vector, keyword,
+                new ReciprocalRankFusionJoiner());
+        return retriever.retrieve(question(text));
+    }
+
+    private static Query question(String text) {
+        return new Query(text, List.of(),
+                Map.of(ContextKeys.PRINCIPAL, Principal.readOnly("u-1")));
+    }
+
+    private static List<String> citations(List<Document> documents) {
+        return documents.stream().map(io.github.claw4j.agent.rag.RagMetadata::citation).toList();
+    }
+
+    private RagProperties properties() {
+        // 块长 200 token：40 份短文档要切出足够多的块，"候选 15 条"才有区分度。
+        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null);
+    }
+
+    /** 检索与索引共用同一个 store：表由它建（迁移里不建），两个用例之间也不会重复启动。 */
+    private static VectorStore store() {
+        return STORE;
+    }
+
+    private static VectorStore buildStore() {
+        PgVectorStore store = PgVectorStore.builder(jdbc, embeddings())
+                .schemaName("claw4j_rag")
+                .vectorTableName("vector_store")
+                .dimensions(EmbeddingProperties.DEFAULT_DIMENSIONS)
+                .idType(PgVectorStore.PgIdType.UUID)
+                .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
+                .indexType(PgVectorStore.PgIndexType.NONE)
+                .initializeSchema(true)
+                .build();
+        try {
+            // 不走 Spring 生命周期，所以手动触发一次：建表就在这一步。
+            store.afterPropertiesSet();
+        }
+        catch (Exception failure) {
+            throw new IllegalStateException("建不出 vector_store", failure);
+        }
+        return store;
+    }
 
     /**
-     * 插一份文档的一段。
+     * 一个按"含不含退货"给向量的假模型。
      *
-     * <p>{@code bigrams} 走生产代码里的同一个切分（{@link ChineseText#bigrams}），不在这里另写一份——
-     * 另写一份的话，切错了这条用例也跟着错，两边一起绿。
+     * <p><b>两个方法都要实现</b>：索引时 {@code PgVectorStore.add} 走
+     * {@code call(EmbeddingRequest)}（批量入口），检索时走 {@code embed(String)}
+     * （默认实现会落到 {@code embed(Document)}）。只实现一个的话，另一条路会在运行时报
+     * {@code UnsupportedOperation}——而那条错只在真库跑起来之后才出现。
      */
-    private static void insertChunk(String source, int ordinal, String text, float[] embedding) {
-        Long documentId = jdbc.queryForObject("""
-                insert into claw4j_rag.document (source, content_hash) values (?, ?)
-                on conflict (source) do update set content_hash = excluded.content_hash
-                returning id
-                """, Long.class, source, "hash-" + source);
-        jdbc.update("""
-                insert into claw4j_rag.chunk (document_id, ordinal, text, bigrams, embedding)
-                values (?, ?, ?, ?, ?::vector)
-                """, documentId, ordinal, text, ChineseText.bigrams(text), literal(embedding));
+    private static EmbeddingModel embeddings() {
+        return new EmbeddingModel() {
+
+            @Override
+            public EmbeddingResponse call(EmbeddingRequest request) {
+                List<Embedding> batch = new ArrayList<>();
+                List<String> inputs = request.getInstructions();
+                for (int i = 0; i < inputs.size(); i++) {
+                    batch.add(new Embedding(vectorFor(inputs.get(i)), i));
+                }
+                return new EmbeddingResponse(batch);
+            }
+
+            @Override
+            public float[] embed(Document document) {
+                return vectorFor(document.getText());
+            }
+        };
     }
 
-    /** 向量通道可用：问题被映射到第 0 维，与"语义接近"的那一段同向。 */
-    private static KnowledgeBase knowledgeReturningQueryVector() {
-        EmbeddingModel embeddings = mock(EmbeddingModel.class);
-        when(embeddings.embed("退货政策")).thenReturn(vector(0));
-        return new PgVectorKnowledgeBase(jdbc, embeddings, RagProperties.defaults());
+    /**
+     * 假模型按**业务域**给方向：五个域各一个正交方向，其余落到第六个。
+     *
+     * <p>这样"语义"等于"属于哪个域"——正是混合检索要验证的东西：向量把问题路由到正确的域，
+     * 全文那一路在域内精确到某一份。真 embedding 的语义比这细，但测试要的是**可复现的路由**，
+     * 不是"模型像不像人"。
+     */
+    private static float[] vectorFor(String text) {
+        if (text == null) {
+            return vector(5);
+        }
+        if (containsAny(text, "退", "售后", "发票")) {
+            return vector(0);
+        }
+        if (containsAny(text, "SKU", "仓", "冷链", "拣货", "盘点")) {
+            return vector(1);
+        }
+        if (containsAny(text, "折扣", "返点", "促销", "价保", "价差")) {
+            return vector(2);
+        }
+        if (containsAny(text, "会员", "积分", "权益", "账户")) {
+            return vector(3);
+        }
+        if (containsAny(text, "工单", "SLA", "投诉", "值班", "复盘", "升级")) {
+            return vector(4);
+        }
+        return vector(5);
     }
 
-    /** 向量通道不可用（embed 返回 null）：剩下的结果全部来自关键词那一路。 */
-    private static KnowledgeBase knowledgeWithoutVectors() {
-        return new PgVectorKnowledgeBase(jdbc, mock(EmbeddingModel.class), RagProperties.defaults());
+    private static boolean containsAny(String text, String... needles) {
+        for (String needle : needles) {
+            if (text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ---- 入站队列（票 04）：这些判断只在真库上成立 ----
