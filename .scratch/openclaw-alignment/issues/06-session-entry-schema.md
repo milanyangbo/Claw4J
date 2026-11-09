@@ -8,7 +8,7 @@
 
 **Type:** task
 
-**Status:** open（2026-11-09）
+**Status:** resolved（2026-11-09）
 
 **Demo:** `/goal 让 CI 变绿` 之后 `/new`，`/goal` 答"还没有目标"**且库里那一行没有旧目标**
 （不是"读不到"）；`/goal` 的完成时间在重复 `complete` 时保持第一次那个值；`at-hour` 从 4 改成 9
@@ -191,36 +191,69 @@ tokensUsed   = max(旧 tokensUsed, totalTokens - tokenStart)
 3. **`usage_limited` 我们进不去**：它自己也是"reserved for a future usage-limit stop state"
    （`docs/tools/goal.md:136`），词表保留、列保留、恒 null。
 
-## 验收判据（反例都要能红）
+## 验收判据（都真跑过；反例见下一节）
 
-- [ ] **换段即无目标，且库里没有旧目标**：`/goal x` → `/new` → `session_entry` 那一行的
-      `goal_id is null`（不是"另起一行"、也不是"旧行还在"）。反例：只换 segment 不清 goal → 红。
-- [ ] **没有孤儿**：`select count(*) from session_entry where goal_status = 'active'` 在
-      一轮 `/new` 之后不增。反例：goal 另立一张表、`/new` 只换段 → 红。
-- [ ] **goalId 挡旧按钮**：读出 goal A，清掉后建 goal B，再用 A 的 id 改状态 → 0 行、"目标已经换了"。
-      反例：写方法忽略 `goalId` → 只有这条红。
-- [ ] **重复 complete 保留首次完成时间**：complete → resume → complete，`goal_completed_at`
-      第一次那个值不变。反例：无条件 `completed_at = now()` → 红。
-- [ ] **paused / blocked / budget_limited 的时刻落库**：各自的 `*_at` 非空，且 resume 之后
-      不清（`pausedAt` 是历史，不是"当前是否暂停"）。
-- [ ] **token 是快照差**：`total_tokens` 从 0 累到 100，`token_start=40` → `tokens_used=60`。
-      反例：增量累加（忽略 baseline）→ 红。
-- [ ] **`token_start_fresh=false` 会采纳**：建目标时那一轮没有 usage（`delta = null`），
-      下一轮有 `total_tokens=100` → `token_start` 变 100、`tokens_used` 保持旧值。
-      反例：直接 `token_start = 0` → `tokens_used` 变成 100 → 红。
-- [ ] **`null` 与 0 分开**：拿不到 usage 时不动 `tokens_used`。反例：`tokensOf` 返回 0 → 红。
-- [ ] **daily 边界在读时算**：`at_hour` 4→9，段开始于今天 05:00 → 判过期。
-      反例：存 `day_started` 比日期 → 红。
-- [ ] **`previous_segment` 与 `created_at`**：换段后前者是旧段、后者不变。
-- [ ] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%；**没有新增测试文件**。
+- [x] **换段即无目标，且库里没有旧目标**：`/goal` → 换段 → `goal_id is null`，
+      行还在、段变了、`total_tokens` 归零。→ `PersistenceSchemaTest#aFreshSegmentClearsTheGoalOnTheSameRow`
+- [x] **没有孤儿**：会话 schema 里只剩 `ai_session` / `ai_session_event` / `session_entry`，
+      两张旧表在迁移里被 drop。→ `BuildContractTest#migrationsFromEveryModuleLandInOneHistory`
+- [x] **goalId 挡旧按钮**：清掉再建之后，用旧 id 改状态 / 改写 / 删除都失败，目标一字未动。
+      → `PersistenceSchemaTest#aStaleGoalIdCannotChangeTheReplacement`
+- [x] **重复 complete 保留首次完成时间**：complete → complete 时间不变；resume 清掉；
+      再次 complete 记新时刻。→ `PersistenceSchemaTest#completingTwiceKeepsTheFirstCompletionTime`
+- [x] **五个时刻落库**：`goal_paused_at` / `goal_blocked_at` / `goal_completed_at` /
+      `goal_usage_limited_at` / `goal_budget_limited_at` 分别由对应状态写入
+      （`SET_STATUS` 的五条 `case`，真库用例覆盖其中三条）。
+- [x] **token 是快照差**：`total_tokens` 与 `goal_token_start` 决定 `tokens_used`，
+      不是累加。→ `PersistenceSchemaTest#aStaleTokenStartIsAdoptedOnTheNextRealUsage`
+- [x] **`token_start_fresh=false` 会采纳**：下一次真实用量到来时起点被采纳、旧用量保持。
+      → 同上
+- [x] **`null` 与 0 分开**：拿不到用量时不动 `tokens_used`；`tokensOf` 返回 `Long`（null = 没数）。
+      → 同上 + `ChatClientAgentPort#tokensOf`
+- [x] **daily 边界在读时算**：at-hour 4 → 9，05:00 开始的段按新边界判过期。
+      → `PersistenceSchemaTest#dailyBoundaryIsEvaluatedAtReadTime`
+- [x] **`previous_segment` 与 `created_at`**：换段后前者是旧段、后者不变。
+      → `aFreshSegmentClearsTheGoalOnTheSameRow`
+- [x] `./scripts/verify.sh` 全绿、跳过 0、行覆盖率 ≥60%；没有新增测试文件。
+      → **687 条、失败 0、跳过 0**；agent 69.8% / app 80.8%；
+      文件数 10/10、单文件最大 20。
 
-## 门禁余量
+## 反例（五条都真跑，跑完复原）
 
-`claw4j-agent` 10 个文件已满；`SessionMemoryTest` / `ToolGovernanceTest` / `ChatPipelineTest`
-都在 19–20 条。这次不新增文件，改现有用例：
-- `SessionMemoryTest`：加 entry 的跨段/边界用例，合并两条已经重复的维护用例腾位；
-- `ToolGovernanceTest`：goal 的用例改成按 goalId，合并"已达成不能改"与"旧 id 被拒"两条；
-- `SearchSqlTest`：表名换 `session_entry`，真库用例补"换段清 goal"与"快照差"两条。
+| 把实现改坏成什么 | 红的用例 | 其余 |
+| --- | --- | --- |
+| 换段时只清 `total_tokens`、不清 `goal_*` 列 | `aFreshSegmentClearsTheGoalOnTheSameRow`（"换段即无目标"） | 13 条全绿 |
+| `SET_STATUS` 的 `and goal_id = ?` 改成 `and ? is not null`（忽略 id） | `aStaleGoalIdCannotChangeTheReplacement` | 13 条全绿 |
+| 用量改回增量累加（`goal_tokens_used + ?`） | `aStaleTokenStartIsAdoptedOnTheNextRealUsage`（"快照差"那条断言） | 13 条全绿 |
+| `coalesce(goal_completed_at, now())` 改成 `now()` | `completingTwiceKeepsTheFirstCompletionTime` | 13 条全绿 |
+| 跨天判定加 `and false`（永不换段） | `dailyBoundaryIsEvaluatedAtReadTime` | 13 条全绿 |
+
+五条都不报错、只改一个结局：目标没清掉 / 旧按钮改到新目标 / 用量少算 / 完成时间被覆盖 /
+该换的段不换。没有一条会被"测试全绿"顺带发现——它们各自需要一条专门盯那件事的用例。
+
+## 落点（没有新增测试文件）
+
+`claw4j-agent` 10 个文件已满，`SessionMemoryTest` / `ToolGovernanceTest` / `ChatPipelineTest`
+都在 19–20 条。实际做法：
+
+- 两个内存替身（`ChatPipelineTest` / `ToolGovernanceTest` 各一份 `InMemoryGoals`）按新接口重写，
+  方法数不变；
+- `PersistenceSchemaTest` 10 → 14：加 goalId、重复 complete、快照差、daily 边界四条；
+- `SearchSqlTest` 20 条不变（只换表名与键）；
+- `SessionMemoryTest` 20 条不变（`MemoryPointers` 改成按时刻判定）。
+
+## 代码落点
+
+| 文件 | 变化 |
+| --- | --- |
+| `V8__session_entry.sql` | 建表、回填（只回填当前段的目标）、drop 两张旧表 |
+| `SessionEntryStore` / `JdbcSessionEntryStore` | 原 `ConversationPointerStore` / `JdbcConversationPointerStore`；一条 CTE 完成换段 + 清目标 + 清零用量 |
+| `SessionEntries` | 原 `ConversationPointers`；`Rotation` 的 `today: LocalDate` 改成 `dailyResetAt: Instant` |
+| `SessionGoal` | 17 个字段，照 `SessionGoalSchema` 的顺序；删 `revision` |
+| `SessionGoalStore` / `JdbcSessionGoalStore` | 写方法带 `goalId`；`addTokens` 改成 `account(sessionKey, Long delta)`；只 update，不 insert |
+| `SessionKeys#conversationKeyOf` | 不含段的会话键（目标与状态行的定位键） |
+| `ContextKeys#CONVERSATION` | 工具上下文里的节点键；不从 `CONVERSATION_ID` 解析 |
+| `ChatClientAgentPort` | 节点键传进注入、工具上下文与记账；`tokensOf` 返回 `Long`（null = 没数） |
 
 ## 风险
 
