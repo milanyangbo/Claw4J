@@ -6,7 +6,7 @@ import io.github.claw4j.agent.rag.HybridDocumentRetriever;
 import io.github.claw4j.agent.rag.KeywordDocumentRetriever;
 import io.github.claw4j.agent.rag.KnowledgeIndexer;
 import io.github.claw4j.agent.rag.RagProperties;
-import io.github.claw4j.agent.rag.ReciprocalRankFusionJoiner;
+import io.github.claw4j.agent.rag.WeightedScoreJoiner;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.agent.session.SessionEntryStore;
@@ -135,17 +135,21 @@ class SearchSqlTest {
     @DisplayName("编号类查询只有全文那一路找得到：SKU-2024 不会连 SKU-2025 一起捞回来")
     void keywordLaneFindsTheExactCode() {
         indexCorpus();
-        List<String> citations = citations(new KeywordDocumentRetriever(jdbc, "docs", 15)
-                .retrieve(question("SKU-2024 还剩多少")));
+        List<Document> hits = new KeywordDocumentRetriever(jdbc, "docs", 15)
+                .retrieve(question("SKU-2024 还剩多少"));
+        List<String> citations = citations(hits);
 
         assertThat(citations)
                 .as("整句「SKU-2024 还剩多少」在文档里并不存在，能命中说明抽了字面锚点")
                 .isNotEmpty();
         assertThat(citations).allMatch(c -> c.startsWith("warehouse/sku-2024-stock.md"));
+        assertThat(hits).allSatisfy(hit -> assertThat(hit.getScore())
+                .as("命中次数要落进 score：融合按它加权，缺了就是全文那一路白召回")
+                .isPositive());
     }
 
     @Test
-    @DisplayName("混合之后的第 1 条就是那份文档：两路都命中，RRF 把它顶到最前")
+    @DisplayName("混合之后的第 1 条就是那份文档：两路都命中，加权融合把它顶到最前")
     void hybridRanksTheExactDocumentFirst() {
         indexCorpus();
 
@@ -296,7 +300,7 @@ class SearchSqlTest {
                 ? new KeywordDocumentRetriever(jdbc, "docs", 15)
                 : null;
         DocumentRetriever retriever = new HybridDocumentRetriever(vector, keyword,
-                new ReciprocalRankFusionJoiner());
+                new WeightedScoreJoiner());
         return retriever.retrieve(question(text));
     }
 

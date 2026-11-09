@@ -149,7 +149,7 @@ public class RagAutoConfiguration {
      *
      * <p><b>向量那一路是官方的 {@link VectorStoreDocumentRetriever}</b>，只装配；
      * 全文那一路是我们实现同一个官方接口的 {@link KeywordDocumentRetriever}；
-     * 融合是实现官方 {@code DocumentJoiner} 的 {@link ReciprocalRankFusionJoiner}。
+     * 融合是实现官方 {@code DocumentJoiner} 的 {@link WeightedScoreJoiner}（0.7 / 0.3，与 OpenClaw 同权重）。
      *
      * <p>{@code hybrid.enabled=false} 时**不装**全文那一路（传 null），而不是"装了不调用"——
      * 后者会让"配置说关了、代码里还在跑"这种偏差多一处藏身地。
@@ -168,7 +168,7 @@ public class RagAutoConfiguration {
                 ? new KeywordDocumentRetriever(jdbc, KnowledgeIndexer.SOURCE_KIND,
                         hybrid.candidatesPerRoute())
                 : null;
-        return new HybridDocumentRetriever(vector, keyword, new ReciprocalRankFusionJoiner());
+        return new HybridDocumentRetriever(vector, keyword, new WeightedScoreJoiner());
     }
 
     /**
@@ -222,8 +222,8 @@ public class RagAutoConfiguration {
                 .documentRetriever(retriever)
                 // 官方默认的 joiner：多路已经在 retriever 内部融过，这里每个 query 只有一路，
                 // 它做"按 id 去重 + 按 score 倒序"。**所以融合分必须写进 Document 的 score**
-                // （见 ReciprocalRankFusionJoiner）——否则它按 0.0 把只有全文那一路命中的块甩到末尾，
-                // RRF 的顺序当场作废。这不是"绕过官方实现"，是照它的排序信号喂数据。
+                // （见 WeightedScoreJoiner）——否则它按 0.0 把只有全文那一路命中的块甩到末尾，
+                // 融合的顺序当场作废。这不是"绕过官方实现"，是照它的排序信号喂数据。
                 .documentJoiner(new ConcatenationDocumentJoiner())
                 // 顺序即链路的顺序：先重排（换顺序、不截断），再截断到 top-k（唯一的截断点）。
                 // 重排关掉时截断照样在，提示词不会被候选池撑满。

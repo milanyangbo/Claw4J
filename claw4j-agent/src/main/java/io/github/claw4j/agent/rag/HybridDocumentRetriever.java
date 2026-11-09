@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 混合检索：向量 + 全文两路，用 {@link ReciprocalRankFusionJoiner} 融合。
+ * 混合检索：向量 + 全文两路，用 {@link WeightedScoreJoiner} 融合（0.7 / 0.3）。
  *
  * <p><b>为什么两路都在一个类里</b>：`RetrievalAugmentationAdvisor.Builder#documentRetriever`
  * 是**单数字段**，而它交给 `DocumentJoiner` 的每个 query 只带一路结果（字节码里
@@ -57,10 +57,15 @@ public class HybridDocumentRetriever implements DocumentRetriever {
     /** 全文那一路。{@code hybrid.enabled=false} 时是 null——不是"装了但不调用"，是不装。 */
     private final DocumentRetriever keyword;
 
-    private final DocumentJoiner joiner;
+    /**
+     * 融合。类型是具体的 {@link WeightedScoreJoiner} 而不是 {@link DocumentJoiner}：
+     * 加权要知道"哪一路是向量、哪一路是全文"，而官方签名里没有这个信息，
+     * 靠位置猜一次就够危险了，不该留一个能传任意 joiner 进来的口子。
+     */
+    private final WeightedScoreJoiner joiner;
 
     public HybridDocumentRetriever(DocumentRetriever vector, DocumentRetriever keyword,
-                                   DocumentJoiner joiner) {
+                                   WeightedScoreJoiner joiner) {
         this.vector = Objects.requireNonNull(vector, "vector");
         this.joiner = Objects.requireNonNull(joiner, "joiner");
         this.keyword = keyword;
@@ -89,7 +94,7 @@ public class HybridDocumentRetriever implements DocumentRetriever {
         if (vectorHits.isEmpty() && keywordHits.isEmpty()) {
             return List.of();
         }
-        List<Document> fused = joiner.join(Map.of(query, List.of(vectorHits, keywordHits)));
+        List<Document> fused = joiner.join(vectorHits, keywordHits);
         if (log.isDebugEnabled()) {
             // 融合后条数要现算：两路之和减掉的是重复命中的块，那正是"融合有没有起作用"的证据。
             log.debug("知识库「{}」：向量 {} 条、全文 {} 条，融合后 {} 条",

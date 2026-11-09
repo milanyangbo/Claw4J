@@ -167,7 +167,7 @@ OpenClaw 的七条企业属性里我们明确差的一条：**凭据有主**。�
 > | 槽位 | 官方 | 我们填 |
 > | --- | --- | --- |
 > | `DocumentRetriever` | 只有 `VectorStoreDocumentRetriever` | `KeywordDocumentRetriever`（全文那一路） |
-> | `DocumentJoiner` | `ConcatenationDocumentJoiner` 按 score 排，两路分数不可比 | `ReciprocalRankFusionJoiner`（只看排名） |
+> | `DocumentJoiner` | `ConcatenationDocumentJoiner` 按 score 排，两路分数不可比 | `ReciprocalRankFusionJoiner`（只看排名；**第五次修订已换成 `WeightedScoreJoiner`**，见文末） |
 > | `DocumentPostProcessor` | **零实现** | `RerankingDocumentPostProcessor`（专用 reranker：通义 `qwen3-rerank`） |
 >
 > 编排本身也用官方的 `RetrievalAugmentationAdvisor`（2026-11-09 用户裁决：官方有的能力就用，
@@ -230,11 +230,33 @@ OpenClaw 的七条企业属性里我们明确差的一条：**凭据有主**。�
 >    OpenClaw 也是 `slice(0, maxResults)` 放在融合与选择之后。截断**不跟着重排走**：
 >    重排可关，注入几段不可选，绑在一起就会在关掉重排时把 30 段塞进提示词。
 >
-> **一处分歧，写明理由**：融合公式仍是 RRF，不照 OpenClaw 的加权（`0.7 / 0.3` + 关键词分按
-> 最强命中归一）。原因是关键词那一路的形状不同——它的分来自数据库的 BM25
-> （`fullText.rank` + trigram 校准），我们的是 `ILIKE` 命中次数（中文拿不到 trigram 分，
-> 见设计文档第四节）。给"次数"编一个归一卷积去凑加权，那个系数就是拍出来的。要改成加权，
-> 前提是先让关键词那一路能给分（`pg_search`/ParadeDB 或中文分词扩展 + 换镜像），那是另一个决定。
+> **一处分歧（第四次修订时留着，第五次修订已撤，见下一段）**：融合公式仍是 RRF，不照 OpenClaw
+> 的加权（`0.7 / 0.3` + 关键词分按最强命中归一）。原因是关键词那一路的形状不同——它的分来自
+> 数据库的 BM25（`fullText.rank` + trigram 校准），我们的是 `ILIKE` 命中次数（中文拿不到
+> trigram 分，见设计文档第四节）。给"次数"编一个归一化系数去凑加权，那个系数就是拍出来的。
+
+> **2026-11-09 第五次修订：融合改成 OpenClaw 的加权 0.7 / 0.3，撤掉上一段那处分歧。**
+>
+> 用户裁决："改成 OpenClaw 的加权 0.7/0.3"。上一段拒绝的理由是"关键词那一路只有命中次数、
+> 没有可比的分数"——**那个前提是可以补的**：让全文那一路把命中次数写进
+> `Document#getScore()`，融合时按"本次查询的最强命中"归一成 0~1（这正是 OpenClaw
+> `createKeywordScoreScale` 的第一步），两路就都在同一个量纲上了。
+>
+> 三个细节都照它的形状：
+>
+> | 关注点 | OpenClaw | 我们 |
+> | --- | --- | --- |
+> | 权重 | `hybrid: { vectorWeight: 0.7, textWeight: 0.3 }`（`src/agents/memory-search.ts:165`），**常量、不可配**（配置键已进死键清单） | `WeightedScoreJoiner.VECTOR_WEIGHT / TEXT_WEIGHT` 两个常量，不加配置 |
+> | 关键词分归一 | `createKeywordScoreScale`：按"这一问的最强命中"度量 | `share = hits / 本次最大 hits` |
+> | 同分定序 | `rankingScore` 相同时按 path、startLine、endLine 兜底 | 融合分相同则按出处路径、段号 |
+>
+> **没有照搬 `relevance = score / (1 - score)` 那一步**：它是为还原 BM25 的饱和曲线，而计数
+> 本来就是线性的，套上去只会把分布压扁。归一之后两路都在 0~1，权重才真的是权重。
+> 这是唯一一处适配，写在设计文档第五节。
+>
+> **代价写清楚**：只有全文命中的块封顶 0.3，因此排序上会输给余弦高于 0.43 的向量命中
+> （`0.7 × 0.43 ≈ 0.3`）。0.7/0.3 的用途是"编号类查询别被挤掉**召回**"，不是"让字面命中排第一"
+> ——召回不变（那些块仍在候选里），只是名次靠后。真要让它们靠前，改的是权重常量，不是别处。
 
 **P11 · 反向 MCP server（把自己暴露出去）**
 

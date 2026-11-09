@@ -1,4 +1,4 @@
-# P10a · 知识库混合检索：全文那一路 + RRF 融合，编排交给官方 advisor
+# P10a · 知识库混合检索：全文那一路 + 加权融合（0.7/0.3），编排交给官方 advisor
 
 **Status:** done（2026-11-09 实现；本票是把 P10 文末「第二次方案变更」与「实现记录」拆出来的，
 见 Comments 第一条）
@@ -20,7 +20,7 @@
 | 编排 | `RetrievalAugmentationAdvisor` | 只装配（显式 `order`，排在记忆之后） |
 | 向量那一路 | `VectorStoreDocumentRetriever`（唯一实现） | 只装配 |
 | 全文那一路 | `DocumentRetriever`（接口，**无**文本实现） | `KeywordDocumentRetriever` |
-| 融合 | `DocumentJoiner` + `ConcatenationDocumentJoiner`（按 score 排，两路分数不可比） | `ReciprocalRankFusionJoiner` |
+| 融合 | `DocumentJoiner` + `ConcatenationDocumentJoiner`（按 score 排） | `WeightedScoreJoiner`（0.7 向量 + 0.3 全文，与 OpenClaw 同权重） |
 | 重排 | `DocumentPostProcessor`（零实现） | 不在本票，见 **P10b** |
 
 三个"我们写"的都是**实现官方接口**，没有新增一个自有概念——与上一版删掉的 `RankFusion`
@@ -51,8 +51,9 @@
 | `similarity('SKU-2024', 'SKU-2024 的剩余库存是多少')` | 0.5 |
 
 `similarity()` 的分母是块长，块越长越接近 0；`word_similarity()` 依赖词边界，中文没有空格。
-**能用的只有子串匹配**，这与 OpenClaw 的 FTS5 trigram 同形。所以那一路不产分数，只产顺序——
-RRF 正好只要顺序。
+**能用的只有子串匹配**，这与 OpenClaw 的 FTS5 trigram 同形。所以那一路给的是**命中次数**：
+融合前按"本次查询的最强命中"归一成 0~1（OpenClaw `createKeywordScoreScale` 的第一步），
+再加权（0.7 / 0.3）。改用加权是 2026-11-09 的裁决，之前用的是 RRF。
 
 两条实现约束，都是实测撞出来的：
 
@@ -82,11 +83,11 @@ RRF 正好只要顺序。
 | # | 功能点（判行为） | 用例（先写这个） | 先红的样子 | 反例 |
 | --- | --- | --- | --- | --- |
 | 1 | 编号类查询只有全文那一路找得到，且不把 `SKU-2025` 一起捞回来 | `SearchSqlTest#keywordLaneFindsTheExactCode`（真库） | 去掉锚点抽取、整句查 → 语料里不是连续子串，返回空 | 待验 |
-| 2 | 混合之后第 1 条就是那份文档（两路都命中，RRF 顶到最前） | `SearchSqlTest#hybridRanksTheExactDocumentFirst`（真库） | 关掉 `hybrid.enabled` → 首条不是 `warehouse/sku-2024-stock.md`（向量只认"warehouse 这一类"） | 待验 |
+| 2 | 混合之后第 1 条就是那份文档（两路都命中，加权把它顶到最前） | `SearchSqlTest#hybridRanksTheExactDocumentFirst`（真库） | 关掉 `hybrid.enabled` → 首条不是 `warehouse/sku-2024-stock.md`（向量只认"warehouse 这一类"） | 待验 |
 | 3 | 近义改写只有向量那一路接得住（字面 0 重合） | `SearchSqlTest#vectorLaneCatchesParaphrase`（真库） | 只留全文那一路 → 「东西买了能退吗」一条都不回来 | 待验 |
 | 4 | 通配符被转义：问「5%」回来的每一段都必须真的含 `5%` | `SearchSqlTest#percentSignIsNotAWildcard`（真库） | `escapeLike` 直接返回原文 → pattern 变 `%5%%`，「95 折」也回来 | **实测** |
 | 5 | 转义只在一处、转义规则对 `%` `_` `\` 都成立，且 SQL 带 `escape` 与 `limit` | `KnowledgeRetrievalTest#likeWildcardsAreEscaped`、`#keywordSqlEscapesAndBounds` | 同上 | **实测** |
-| 6 | RRF 只看名次：两路都命中的块排第一 | `KnowledgeRetrievalTest#bothRoutesBeatSingleRoute` | 换成 `ConcatenationDocumentJoiner`（按 score 排）→ 两路分数不同源，顺序不再是名次 | 待验 |
+| 6 | 加权：两路都命中的块排第一、只有全文的封顶 0.3、同一路重复不加分 | `KnowledgeRetrievalTest#weightedFusionAddsLanesAndCapsTextOnly` | 把 `TEXT_WEIGHT` 改成 0 → 分数断言立刻红 | 待验 |
 | 7 | 融合不是交集：只在一路出现的块必须保留 | `KnowledgeRetrievalTest#singleRouteSurvivorsStay` | 改成取两路交集 → 向量空时结果全没了 | 待验 |
 | 8 | 同一路里重复出现只算一次名次（否则等于把这一路的分量偷偷加倍） | `KnowledgeRetrievalTest#duplicateInOneRouteCountsOnce` | 按出现次数累加 → 重复项反超 | 待验 |
 | 9 | 两路都被调用，结果按 id 去重 | `KnowledgeRetrievalTest#bothRoutesAreCalledAndMerged` | 只调一路 / 不去重 → 同一块出现两次 | 待验 |
@@ -118,7 +119,7 @@ RRF 正好只要顺序。
 | 文件 | 变化 |
 | --- | --- |
 | `KeywordDocumentRetriever` | 全文那一路：整句 + 纯 ASCII 锚点，`ILIKE` + 通配符转义 |
-| `ReciprocalRankFusionJoiner` | RRF（k=60），按 `Document#getId` 求和去重；**融合分写回 `Document#getScore()`** |
+| `WeightedScoreJoiner` | 0.7×余弦 + 0.3×命中份额；同一路内去重；同分按出处定序；**融合分写回 `Document#getScore()`** |
 | `TopKDocumentPostProcessor` | 链路里唯一的截断点，`claw4j.rag.top-k` 在这里生效（重排关掉时也在） |
 | `HybridDocumentRetriever` | 两路 + 融合 + 从 `Query.context()` 取 `Principal` 判 `read`/`doc` |
 | `RagAutoConfiguration` | 注册 `RetrievalAugmentationAdvisor`（自定义模板 + `allowEmptyContext(true)` + `documentFormatter`）；启动建 trigram 索引 |
@@ -138,20 +139,27 @@ RRF 正好只要顺序。
 | # | 症状 | 根因（查过字节码，不是推测） | 修法（照谁） |
 | --- | --- | --- | --- |
 | 1 | `claw4j.rag.top-k` 没有任何读取点：重排开着时注入 10 段、关掉时 30 段，启动日志却一直说"最终取 5 段" | Spring AI 没有"最终取几条"的部件（`DocumentPostProcessor` 在 2.0.2 里零实现），而 `VectorStoreDocumentRetriever#topK` 是**召回**条数 | 新增 `TopKDocumentPostProcessor`，挂在 post-processor 链最后。照 OpenClaw 把 `slice(0, maxResults)` 放在融合与选择之后 |
-| 2 | RRF 排出来的顺序被 advisor 里的官方 joiner 重排掉：只有全文命中的块（score 为 null）按 0.0 甩到末尾，同分之间还取决于 `HashMap` 顺序 | 反编译 `ConcatenationDocumentJoiner.join`：`toMap(...).values().stream().sorted(comparingDouble(Document::getScore).reversed())`，null → 0.0 | 融合分写回 `Document#getScore()`（`mutate().score(fused)`）。OpenClaw 的 `mergeHybridResults` 也是把融合分赋给结果的 `score`；Spring AI 的排序信号只有这一个 |
+| 2 | 融合排出来的顺序被 advisor 里的官方 joiner 重排掉：只有全文命中的块（score 为 null）按 0.0 甩到末尾，同分之间还取决于 `HashMap` 顺序 | 反编译 `ConcatenationDocumentJoiner.join`：`toMap(...).values().stream().sorted(comparingDouble(Document::getScore).reversed())`，null → 0.0 | 融合分写回 `Document#getScore()`（`mutate().score(fused)`）。OpenClaw 的 `mergeHybridResults` 也是把融合分赋给结果的 `score`；Spring AI 的排序信号只有这一个 |
 
 **截断为什么不并进重排**：重排可关（`rerank.enabled=false`），"注入几段"不可选。绑在一起
 就会在关掉重排时把两路候选池整个塞进提示词，而那只在关掉开关时出现。重排因此**只换顺序、
 不改条数**，`rerank.candidates` 的含义收敛成"送进重排的条数（输入上限）"。
 
-**融合公式仍是 RRF，不照 OpenClaw 的加权 0.7/0.3**：它的关键词分来自数据库 BM25
-（`fullText.rank` + trigram 校准），我们的是 `ILIKE` 命中次数（中文拿不到 trigram 分）。
-给"次数"编一个归一化系数去凑加权，那个系数就是拍出来的。要改，前提是先让关键词那一路能给分
-（`pg_search`/ParadeDB 或中文分词扩展 + 换镜像），那是另一个决定。分歧记在 ADR-0020 第四次修订段。
+**融合公式在这里改过一次（同日深夜，第五次修订）**：review 时留的是 RRF，理由是"关键词那一路
+只有命中次数、没有可比的分数"。用户随后裁决"改成 OpenClaw 的加权 0.7/0.3"——理由成立，
+因为那个前提可以补：让全文那一路把命中次数写进 `Document#getScore()`，融合时按"本次查询的最强
+命中"归一成 0~1（`createKeywordScoreScale` 的第一步），两路就同量纲了。所以 `ReciprocalRankFusionJoiner`
+换成 `WeightedScoreJoiner`。**没照搬 `score/(1-score)` 那一步**（它为还原 BM25 饱和曲线，计数是线性的）。
+
+代价记账：只有全文命中的块封顶 0.3，排序上输给余弦 > 0.43 的向量命中。0.7/0.3 的用途是保住
+**召回**，不是让字面命中排第一。
 
 反例（各只红一条用例）：去掉 `mutate().score(...)` → `fusedOrderSurvivesOfficialJoinerAndTopKCut`
 红在"余弦 0.90 的块压过两路都命中的块"；让 `postProcessors` 在重排关掉时返回空列表 →
-同一条用例红在"Expected size: 5 but was: 30"。
+同一条用例红在"Expected size: 5 but was: 30"；去掉同一路内去重 →
+`weightedFusionAddsLanesAndCapsTextOnly` 红在"重复不该让分数超过 1.0"；
+`KeywordDocumentRetriever` 的 mapper 不写 `.score(...)` → 真库那条
+`keywordLaneFindsTheExactCode` 红在"命中次数要落进 score"。
 
 ## 八、验收
 
@@ -159,7 +167,7 @@ RRF 正好只要顺序。
 - [x] 混合后首条是那份文档（`hybridRanksTheExactDocumentFirst`）
 - [x] 近义改写靠向量（`vectorLaneCatchesParaphrase`）
 - [x] 通配符转义，结果不膨胀（`percentSignIsNotAWildcard` + 两条替身用例）
-- [x] RRF 按名次融合、不取交集、同路重复只算一次（三条）
+- [x] 加权融合：两路都命中加分、只有全文的封顶 0.3、同路重复不加分、不取交集
 - [x] 一路挂不拖另一路；两路都挂才抛（两条）
 - [x] 权限下沉：没有身份 / 没有 `doc` 读权限都不检索（两条）
 - [x] 装配与开关：advisor 排在记忆之后；缺目录、空目录都启动失败
@@ -193,5 +201,7 @@ RRF 正好只要顺序。
   两条的共同点是"部件各自有测试、装配起来就错"，所以补的是一条**组合**用例，而不是再加两个单元用例。
   为腾门禁位（agent 10/10 文件、本文件 20/20 用例），把 `singleRouteSurvivorsStay` 并进了
   `rrfRanksByRankNotByRepeats`（同一被测对象、同一主题），条数不变。
-- 融合公式与 OpenClaw 的加权有分歧，**没有**改。理由写在第七之二节与 ADR-0020 第四次修订段：
-  我们的关键词那一路只有命中次数，没有可比的分数；照抄加权就得先编一个归一化系数。
+- 融合公式当时与 OpenClaw 的加权有分歧，review 里留着 RRF；**同日深夜用户裁决改成加权 0.7/0.3**，
+  已换（`WeightedScoreJoiner`）。上一段"没有改"的结论作废，理由与做法见第七之二节与 ADR-0020
+  第五次修订段：前提是"关键词那一路没有可比的分数"，而那个前提可以补——把命中次数写进 score、
+  按本次最强命中归一即可，不必编一个系数。

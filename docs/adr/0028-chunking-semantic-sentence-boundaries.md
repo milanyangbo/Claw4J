@@ -149,7 +149,7 @@ core 不能依赖它，所以"超长再硬切"由 `SemanticTextSplitter` 调 `To
 **判据 3 怎么答**（`alignment.md`：每加一个类先回答"它哪个部件对应"）：
 
 - 对外那层：`DocumentTransformer` / `TextSplitter`——实现官方扩展点，与
-  `KeywordDocumentRetriever`、`ReciprocalRankFusionJoiner` 同类。
+  `KeywordDocumentRetriever`、`WeightedScoreJoiner` 同类。
 - core 那层：**没有官方对应物**，它属于"这一层本来是新增能力"的内部实现（见 Context 第一节：
   语义切块官方没有）。拆成两个包不改变这个性质，也不能拿它去证明"我们没自研"——
   承认是新增，记账在 Consequences 第 7 条。

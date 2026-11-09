@@ -88,7 +88,7 @@ RetrievalAugmentationAdvisor                     ← 官方编排器，装了就
         ├─ documentRetriever: HybridDocumentRetriever      ← 实现官方 DocumentRetriever
         │      ├─ VectorStoreDocumentRetriever（官方，只装配）
         │      └─ KeywordDocumentRetriever（实现官方接口）
-        │      └─ 内部用 ReciprocalRankFusionJoiner 融合两路
+        │      └─ 内部用 WeightedScoreJoiner 融合两路（0.7 / 0.3）
         │
         ├─ documentJoiner: ConcatenationDocumentJoiner     ← 官方默认，去重 + 排序
         ├─ documentPostProcessors: RerankDocumentPostProcessor  ← 实现官方 DocumentPostProcessor
@@ -100,7 +100,7 @@ RetrievalAugmentationAdvisor                     ← 官方编排器，装了就
 `RetrievalAugmentationAdvisor.Builder` 的 `documentRetriever` 是**单数字段**；而它交给
 `DocumentJoiner` 的每个 query 只带一路结果（字节码里 `List.of(retriever 的结果)` 包了一层）。
 所以 joiner 的"多路"入口在 advisor 这条路上用不到——多路只能在 `HybridDocumentRetriever`
-内部完成。我们仍然用官方 `DocumentJoiner` 接口做融合（`ReciprocalRankFusionJoiner`），
+内部完成。我们仍然用官方 `DocumentJoiner` 接口做融合（`WeightedScoreJoiner`），
 只是调用点是 retriever 内部，不是 advisor 传进去的那个。
 
 ### 官方 advisor 的三个默认行为，必须改
@@ -189,14 +189,16 @@ select similarity('退货', '无理由退货');
 
 子串匹配是布尔，没有分数。三档可选：
 
-| 方案 | 打分 | 问题 |
+| 方案 | 打分 | 结论 |
 | --- | --- | --- |
 | `similarity()` | 0~1 | 实测对中文长文本恒 0，不可用 |
-| 命中次数 | 整数，可归一 | 需要自己定义归一化，等于自造打分法 |
-| **只用排名** | 不定义 | RRF 只需要每路的顺序，见第五节 |
+| **命中次数** | 整数，融合时归一 | **选它**：`hits` 落进 `Document#getScore()`，融合按"本次最大命中"归一成 0~1（第五节） |
+| 只用排名 | 不定义 | 上一版用 RRF 时的做法，第五次修订撤了 |
 
-选第三个：**关键词那一路按"命中次数降序、同一文档按块号升序"排序，把分数留空**。
-RRF 不读分数，所以"余弦 0.93 与命中 2 次谁更高"这个不可比的问题根本不会出现。
+选第二个的代价要说清：归一化系数是"这一问的最强命中"——那是 OpenClaw 的口径，不是我们拍的；
+但**两路之间的可比性仍然是个近似**：计数除以最大值，与余弦相似度不是同一个物理量，
+0.7/0.3 只是把它们拉到同一个区间。要真正可比，得让关键词那一路也由数据库给分
+（`pg_search`/ParadeDB 的 BM25，或中文分词扩展 + 换镜像）——那是另一个决定，没做。
 
 ### SQL
 
@@ -242,48 +244,50 @@ where content ilike '%' || ? || '%' escape '\'
 不加这个索引也**能正确工作**，只是每次全文查询扫全表。所以它是"性能开关"，建失败不该让启动失败
 ——降级成一行 WARN，检索照跑（见第七节）。
 
-## 五、融合：RRF 排序，融合分写回 `score`，截断在最后一步
+## 五、融合：加权 0.7 / 0.3，融合分写回 `score`，截断在最后一步
 
-`ReciprocalRankFusionJoiner` 实现官方 `DocumentJoiner`：
+`WeightedScoreJoiner` 实现官方 `DocumentJoiner`：
 
 ```
-score(d) = Σ_route  1 / (k + rank_route(d))     k = 60，论文默认值
+score(d) = 0.7 × 向量分(d) + 0.3 × 全文分(d)
+全文分(d) = 命中次数(d) / 本次查询的最大命中次数        （0~1）
 ```
+
+权重是**常量**（`VECTOR_WEIGHT = 0.7` / `TEXT_WEIGHT = 0.3`），不做配置。这与 OpenClaw 一致：
+`src/agents/memory-search.ts:165` 里 `hybrid: { vectorWeight: 0.7, textWeight: 0.3 }` 是硬编码，
+而它的配置键 `memory.search.query.hybrid.vectorWeight` 已经在死键清单里（撤了）。
+
+**两路的分怎么变成可比的**：向量那一路给的是余弦（0~1）；全文那一路给的是命中次数，融合前按
+"这一问的最强命中"归一成 0~1——这是 OpenClaw `createKeywordScoreScale` 的第一步。
+**没有照搬它的 `relevance = score / (1 - score)` 反饱和**：那一步为还原 BM25 的饱和曲线，
+而计数本来就是线性的，套上去只会把分布压扁。归一之后两路都在 0~1，权重才真的是权重。
+这是唯一一处适配，理由是分本身的形状不同，不是"我们觉得这样更好"。
+
+**代价（写在这里，不藏）**：只有全文命中的块封顶 0.3，排序上会输给余弦高于 0.43 的向量命中
+（`0.7 × 0.43 ≈ 0.3`）。0.7/0.3 的用途是"编号类查询别被挤出**召回**"，不是"让字面命中排第一"。
+召回不受影响——那些块仍在候选里，只是名次靠后；要让它们靠前，改的是权重常量。
 
 **融合分要写回 `Document#getScore()`**，不留在内部 map 里。原因不是偏好，是链路决定的：
 
 - advisor 里紧接着跑的是官方的 `ConcatenationDocumentJoiner`（`RagAutoConfiguration` 装配的
   就是这个），反编译可见它是 `sorted(comparingDouble(Document::getScore).reversed())`，
-  分数为 null 时按 `0.0`。不写回的话，"只有全文那一路命中的块"会被甩到末尾——而那正是
-  hybrid 存在的理由（`SKU-2024` 这类编号查询）；同分之间还会退化成 `HashMap` 的迭代顺序，
-  每次跑都可能不一样。
-- Spring AI 的排序信号本来就只有一个：`Document#getScore()`。喂给它融合分，就是照它的契约办事
-  （`2026-11-09` 修：原实现只把融合分用于内部排序，结果被官方 joiner 按原分数重排掉）。
+  分数为 null 时按 `0.0`。不写回的话，融合算得再对也会被它按原分数重排；
+  同分之间还会退化成 `HashMap` 的迭代顺序，每次跑都可能不一样。
+- Spring AI 的排序信号本来就只有一个：`Document#getScore()`。喂给它融合分，就是照它的契约办事。
 
-**与 OpenClaw 对齐的两点**：
+**同分定序**：融合分相同（只有全文命中的块常常同为一个命中数）时，按出处路径、段号兜底——
+OpenClaw 也是 `rankingScore` 相同后比 path / startLine / endLine。不定序就是不确定。
+
+**与 OpenClaw 对齐的三点**：
 
 | 关注点 | OpenClaw | 我们 |
 | --- | --- | --- |
-| 融合结果的分 | `mergeHybridResults` 给结果赋 `score: rankingScore`（融合分就是它对外那一个分） | 同上，`mutate().score(fused)` |
-| 最终截断 | `slice(0, maxResults)` 放在融合与选择**之后**（`manager-search-retrieval.ts`） | `TopKDocumentPostProcessor`，post-processor 链的**最后**一步 |
-
-**与 OpenClaw 有意的一处分歧：融合公式**。它用加权（默认 `vectorWeight 0.7` / `textWeight 0.3`），
-并且先把关键词分按"最强命中"归一（`createKeywordScoreScale`，建立在 BM25 的饱和形状
-`relevance / (1 - relevance)` 上）。我们用的是 RRF。原因在关键词那一路的形状：
-
-- 它的关键词分来自数据库（`fullText.rank` + trigram 校准），是一个可比的 0~1 分；
-- 我们的是 `ILIKE` 命中次数——只有"提了几次"，没有"多相关"。中文上 `similarity()` 恒 0
-  （第四节），拿不到 trigram 分，所以只能数命中。
-
-给命中次数编一个归一化系数去凑加权，那个系数就是拍出来的，比"只看名次"更没依据。**要改成加权，
-前提是关键词那一路能给出分**（上 `pg_search`/ParadeDB 的 BM25，或中文分词扩展 + 换镜像），
-那是另一个决定，不在这一层自己解决。
-
-为什么不用加权求和（与 OpenClaw 无关的通用理由）：加权要先归一，而"归一到多少"没有依据。
-RRF 只要求每路给得出**顺序**，这是两路都天然有的东西。
+| 权重 | `vectorWeight 0.7` / `textWeight 0.3`，常量 | 两个常量，不加配置 |
+| 融合结果的分 | `mergeHybridResults` 给结果赋 `score: rankingScore` | `mutate().score(fused)` |
+| 最终截断 | `slice(0, maxResults)` 放在融合与选择**之后** | `TopKDocumentPostProcessor`，链的**最后**一步 |
 
 去重键是 `Document.getId()`：两路查的是同一张表，同一个块在两路命中时 id 相同。
-RRF 的求和本身就能合并，不需要额外的去重步骤。
+**每一路内部先去重**：同一块在一路里出现两次就给两次权重，等于把这一路的分量偷偷加倍。
 
 ### 截断只做一次，且不跟着重排走
 
@@ -450,7 +454,7 @@ claw4j:
 | 全文那一路真的起作用 | 问 `SKU-2024 还剩多少`，首条出处是 `sku-2024-stock.md`；关掉 hybrid 后首条不是它 | 前一半 `SearchSqlTest`（真库）；**后一半是缺口**（`search(..., false)` 从没调过），见 P10a 第六节 |
 | 向量那一路真的起作用 | 问"东西买了能退吗"，首条是 `returns/east-china.md`（字面不重合） | `SearchSqlTest` |
 | 两路结果会合并去重 | 同一块被两路命中时，结果里只出现一次 | `KnowledgeRetrievalTest`（替身） |
-| RRF 真的按排名融合 | 构造"向量第 3、全文第 1"的块，融合后应排在"两路都第 2"的块之前 | `KnowledgeRetrievalTest` |
+| 加权融合真的在加权 | 两路都命中的块（0.7×0.9 + 0.3×1 = 0.93）压过只有向量的同名分数块（0.63）；只有全文的封顶 0.3；同一路重复不加分 | `KnowledgeRetrievalTest#weightedFusionAddsLanesAndCapsTextOnly` |
 | 融合分是**下游**的排序信号 | 过了官方 `ConcatenationDocumentJoiner` 之后顺序不变：余弦 0.90 的块不该压过"两路都命中"的块，也不该把只有全文命中的块甩到最后 | `KnowledgeRetrievalTest#fusedOrderSurvivesOfficialJoinerAndTopKCut` |
 | `top-k` 真的生效 | 30 条候选过完 post-processor 链只剩 5 条；**重排关掉时也一样** | 同上 |
 | 重排真的改变顺序 | 替身 reranker 返回倒序，结果顺序跟着变 | `KnowledgeRetrievalTest` |

@@ -82,14 +82,15 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
         }
         String raw = query.text();
         List<String> terms = searchTerms(raw);
-        List<Object> args = new ArrayList<>(terms.size() * 2 + 2);
+        List<Object> args = new ArrayList<>(terms.size() * 3 + 2);
+        // 参数顺序 = SQL 文本里 ? 出现的顺序：先 select 里那组命中次数，再 where，最后 limit。
+        for (String term : terms) {
+            args.add(term);
+            args.add(term);
+        }
         args.add(sourceKind);
         for (String term : terms) {
             args.add("%" + escapeLike(term) + "%");
-        }
-        for (String term : terms) {
-            args.add(term);
-            args.add(term);
         }
         args.add(candidates);
 
@@ -124,9 +125,11 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
      *
      * <p><b>命中次数求和</b>：整句命中一次与锚点命中一次都算一分，这正是"这段提到了多少"的
      * 粗估。分母用 `length(term)` 是为了把"一次命中"归一成 1 分——不除的话，长词命中一次会
-     * 等于短词命中三次，那是拿词长当相关度。**所以长短词每次命中的权重相同**，这与 OpenClaw
-     * 那边"关键词分来自数据库的 BM25、再按最强命中归一"不是一回事：我们这一路只有次数，
-     * 没有可比的分数（融合为什么用 RRF 而不照它的加权，见 ADR-0020 的检索修订段）。
+     * 等于短词命中三次，那是拿词长当相关度。**所以长短词每次命中的权重相同**。
+     *
+     * <p>**命中次数既是排序依据、也是 `Document#getScore()`**：融合那一步要按它对两路做加权
+     * （{@link WeightedScoreJoiner} 会把它按"本次查询的最强命中"归一）。之前这里只排序不给分，
+     * 于是融合只能看名次——那正是 RRF 的由来；现在有了分，就照 OpenClaw 的加权走。
      *
      * <p>`lower()` 两侧都套：`ilike` 不区分大小写，但 `replace` 区分——不统一会把
      * `SKU-2024` 与 `sku-2024` 算成两种命中。
@@ -140,10 +143,12 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
                     .append("(length(content) - length(replace(lower(content), lower(?), ''))) / length(?)");
         }
         return "select id, content, metadata->>'path' as path, metadata->>'source' as source,"
-                + " metadata->>'index' as ordinal, metadata->>'content_hash' as hash"
+                + " metadata->>'index' as ordinal, metadata->>'content_hash' as hash,"
+                + " (" + hits + ") as hits"
                 + " from claw4j_rag.vector_store"
                 + " where metadata->>'source' = ? and (" + where + ")"
-                + " order by (" + hits + ") desc, (metadata->>'index')::int"
+                // 按输出列名排序（Postgres 允许），这样命中表达式的 ? 只出现一次。
+                + " order by hits desc, (metadata->>'index')::int"
                 + " limit ?";
     }
 
@@ -164,10 +169,15 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
      *
      * <p>解析 JSON 要处理 `PGobject`、类型转换与缺键三种情况，而这里只需要四个键。
      * `->>'key'` 在库里就做完，取回来直接是字符串。
+     *
+     * <p><b>分数是命中次数</b>（`hits` 那一列）：融合要按它对两路加权。不在这里归一，
+     * 归一属于融合（"按本次查询的最强命中"度量，见 {@link WeightedScoreJoiner}）。
      */
-    private static final RowMapper<Document> MAPPER = (rs, rowNum) -> new Document(
-            rs.getString("id"),
-            rs.getString("content"),
-            RagMetadata.of(rs.getString("path"), rs.getString("source"),
-                    rs.getString("ordinal"), rs.getString("hash")));
+    private static final RowMapper<Document> MAPPER = (rs, rowNum) -> Document.builder()
+            .id(rs.getString("id"))
+            .text(rs.getString("content"))
+            .metadata(RagMetadata.of(rs.getString("path"), rs.getString("source"),
+                    rs.getString("ordinal"), rs.getString("hash")))
+            .score(rs.getDouble("hits"))
+            .build();
 }

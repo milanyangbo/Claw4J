@@ -14,7 +14,6 @@ import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.rag.Query;
 import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
 import org.springframework.ai.rag.retrieval.join.ConcatenationDocumentJoiner;
-import org.springframework.ai.rag.retrieval.join.DocumentJoiner;
 import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.Filter;
@@ -40,6 +39,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -138,31 +138,35 @@ class KnowledgeRetrievalTest {
                 .hasMessageContaining("没有可索引");
     }
 
-    // ---- 融合：RRF 只看名次 ----
+    // ---- 融合：加权 0.7 / 0.3，与 OpenClaw 同权重 ----
 
     @Test
-    @DisplayName("RRF 只看名次：两路都命中的排第一，同一路重复出现只算一次，空的那一路不影响另一路")
-    void rrfRanksByRankNotByRepeats() {
-        Document both = doc("d1", "returns/a.md", 1);
-        Document vectorOnly = doc("d2", "returns/b.md", 1);
-        Document keywordOnly = doc("d3", "returns/c.md", 1);
+    @DisplayName("两路都命中加分、同一路重复不加分、只有全文命中的封顶 0.3")
+    void weightedFusionAddsLanesAndCapsTextOnly() {
+        Document both = scored("both", "returns/a.md", 1, 0.9);
+        Document vectorOnly = scored("v2", "returns/b.md", 1, 0.9);
+        Document keywordOnly = doc("k1", "warehouse/sku.md", 1).mutate().score(4.0).build();
+        Document keywordBoth = doc("both", "returns/a.md", 1).mutate().score(4.0).build();
 
-        List<Document> merged = joiner().join(Map.of(query("退货"),
-                List.of(List.of(vectorOnly, both), List.of(both, keywordOnly))));
+        List<Document> merged = joiner().join(List.of(vectorOnly, both),
+                List.of(keywordBoth, keywordOnly));
 
         assertThat(merged).extracting(Document::getId)
-                .as("d1 两路都命中（1/61 + 1/62），单路命中的不该压过它")
-                .startsWith("d1");
-        assertThat(merged).extracting(Document::getId).containsExactlyInAnyOrder("d1", "d2", "d3");
+                .as("both 两路都命中：0.7*0.9 + 0.3*1 = 0.93，压过只有向量的 0.63")
+                .containsExactly("both", "v2", "k1");
+        assertThat(scoreOf(merged, "both")).isCloseTo(0.93, within(1e-9));
+        assertThat(scoreOf(merged, "v2")).as("向量只有一半权重").isCloseTo(0.63, within(1e-9));
+        assertThat(scoreOf(merged, "k1"))
+                .as("只有全文命中的块封顶 0.3（share=1 时），排序上输给余弦 > 0.43 的向量命中")
+                .isCloseTo(0.3, within(1e-9));
 
-        List<Document> repeated = joiner().join(Map.of(query("退货"),
-                List.of(List.of(both, both), List.of(vectorOnly))));
-        assertThat(repeated).extracting(Document::getId)
-                .as("重复拿分等于把这一路的分量偷偷加倍；d1 只该从第一路拿一次分")
-                .containsExactly("d1", "d2");
+        // 同一路里重复出现只算一次：重复拿分等于把这一路的分量偷偷加倍。
+        List<Document> repeated = joiner().join(List.of(vectorOnly, both),
+                List.of(keywordBoth, keywordBoth, keywordOnly));
+        assertThat(scoreOf(repeated, "both")).as("重复不该让分数超过 1.0")
+                .isCloseTo(0.93, within(1e-9));
 
-        assertThat(joiner().join(Map.of(query("SKU-2024"),
-                List.of(List.of(), List.of(doc("k1", "warehouse/sku.md", 1))))))
+        assertThat(joiner().join(List.of(), List.of(keywordOnly)))
                 .as("向量那一路空的时候，全文那一路的结果必须还在——融合不是交集")
                 .extracting(Document::getId).containsExactly("k1");
     }
@@ -261,7 +265,7 @@ class KnowledgeRetrievalTest {
     }
 
     @Test
-    @DisplayName("全文那一路的 SQL 带 escape 与 limit，参数是转义后的 pattern")
+    @DisplayName("全文那一路的 SQL 带 escape 与 limit，参数按 ? 在 SQL 里出现的顺序给")
     void keywordSqlEscapesAndBounds() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         when(jdbc.query(anyString(), any(RowMapper.class), any(), any(), any(), any(), any()))
@@ -269,8 +273,9 @@ class KnowledgeRetrievalTest {
 
         new KeywordDocumentRetriever(jdbc, "docs", 7).retrieve(query("5% 折扣"));
 
+        // 顺序 = select 里的命中次数（term、term）→ where（source、转义后的 pattern）→ limit。
         verify(jdbc).query(contains("escape"), any(RowMapper.class),
-                eq("docs"), eq("%5\\% 折扣%"), eq("5% 折扣"), eq("5% 折扣"), eq(7));
+                eq("5% 折扣"), eq("5% 折扣"), eq("docs"), eq("%5\\% 折扣%"), eq(7));
     }
 
     // ---- 语义切块：句子之间判语义，token 只做上限（ADR-0028） ----
@@ -355,32 +360,32 @@ class KnowledgeRetrievalTest {
     @Test
     @DisplayName("组合起来仍然对：融合分进 score、官方 joiner 不动顺序、截断只留 top-k（含重排关掉时）")
     void fusedOrderSurvivesOfficialJoinerAndTopKCut() {
-        // 真库上两路给的分本来就不是一个量纲：向量那一路有余弦分，全文独有的块没有分。
-        Document shared = doc("both", "returns/a.md", 1).mutate().score(0.80).build();
-        Document vectorOnly = doc("v2", "returns/b.md", 1).mutate().score(0.90).build();
-        Document keywordOnly = doc("k1", "warehouse/sku.md", 1);
+        // 真库上两路给的分本来就不是一个量纲：向量那一路是余弦，全文那一路是命中次数。
+        Document a = scored("a", "returns/a.md", 1, 0.90);
+        Document b = scored("b", "returns/b.md", 1, 0.80);
+        Document bByText = doc("b", "returns/b.md", 1).mutate().score(2.0).build();
+        Document cByText = doc("c", "warehouse/sku.md", 1).mutate().score(4.0).build();
 
-        List<Document> fused = joiner().join(Map.of(query("SKU-2024"),
-                List.of(List.of(shared, vectorOnly), List.of(keywordOnly, shared))));
+        List<Document> fused = joiner().join(List.of(a, b), List.of(bByText, cByText));
 
         assertThat(fused).extracting(Document::getId)
-                .as("RRF：both 两路都命中排第一；k1 名次更靠前（1/61 > 1/62）")
-                .containsExactly("both", "k1", "v2");
+                .as("b 两路都命中：0.7*0.8 + 0.3*(2/4) = 0.71，压过余弦 0.90 的 a（0.63）")
+                .containsExactly("b", "a", "c");
         assertThat(fused).allSatisfy(document -> assertThat(document.getScore())
                 .as("融合分必须写进 score，否则下游按 0.0 把它甩到末尾")
                 .isNotNull());
 
         // advisor 里紧接着跑的就是这个官方 joiner，它按 score 倒序。
         List<Document> joined = new ConcatenationDocumentJoiner()
-                .join(Map.of(query("SKU-2024"), List.of(fused)));
+                .join(Map.of(query("退货"), List.of(fused)));
 
         assertThat(joined).extracting(Document::getId)
-                .as("余弦 0.90 的 v2 不该压过「两路都认可」的 both，也不该把全文独有的 k1 甩到最后")
-                .containsExactly("both", "k1", "v2");
-        assertThat(new TopKDocumentPostProcessor(2).process(query("SKU-2024"), joined))
+                .as("余弦 0.90 的 a 不该压过「两路都认可」的 b，也不该把全文独有的 c 甩到最前")
+                .containsExactly("b", "a", "c");
+        assertThat(new TopKDocumentPostProcessor(2).process(query("退货"), joined))
                 .extracting(Document::getId)
                 .as("最终只留 top-k，顺序沿用上面那一个")
-                .containsExactly("both", "k1");
+                .containsExactly("b", "a");
 
         // 重排关掉时截断必须还在：否则 30 段候选池会整个进提示词，而这只在关掉开关时出现。
         List<Document> pool = new ArrayList<>();
@@ -479,8 +484,17 @@ class KnowledgeRetrievalTest {
         return new RagProperties(docs.toString(), 5, 0.5, 200, null, null);
     }
 
-    private static DocumentJoiner joiner() {
-        return new ReciprocalRankFusionJoiner();
+    private static WeightedScoreJoiner joiner() {
+        return new WeightedScoreJoiner();
+    }
+
+    private static Document scored(String id, String path, int index, double score) {
+        return doc(id, path, index).mutate().score(score).build();
+    }
+
+    private static double scoreOf(List<Document> documents, String id) {
+        return documents.stream().filter(document -> id.equals(document.getId()))
+                .findFirst().orElseThrow().getScore();
     }
 
     private static Document doc(String id, String path, int index) {

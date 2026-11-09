@@ -56,7 +56,7 @@ try/catch 去维持"缓存不参与可用性"——那是拿自研代码给自�
 | 写法 | 判定 |
 | --- | --- |
 | `RankFusion`（上一版删掉的那个）：自有类、自有签名、没有调用点 | 自研 |
-| `ReciprocalRankFusionJoiner implements DocumentJoiner` | 实现 |
+| `WeightedScoreJoiner implements DocumentJoiner` | 实现（融合公式照 OpenClaw 的 0.7/0.3） |
 | `RerankDocumentPostProcessor implements DocumentPostProcessor` | 实现（接口在，官方零实现，槽位是官方留的） |
 | `TopKDocumentPostProcessor implements DocumentPostProcessor` | 实现（同上。它补的是"框架没有最终截断部件"这个空位，不是自造概念——OpenClaw 同一位置也是 `slice(0, maxResults)`） |
 | `SemanticTextSplitter extends TextSplitter`（ADR-0028） | 实现（扩展点是 `splitText`） |

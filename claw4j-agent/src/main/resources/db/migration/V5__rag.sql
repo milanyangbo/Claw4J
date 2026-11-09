@@ -18,7 +18,7 @@
 -- **关键词那一路在 2026-11-09 晚加回来了**：不再是自建的 bigram + tsvector，而是照 OpenClaw
 -- 的 FTS5 trigram 形态——`content ilike '%q%'` 子串匹配，GIN trgm 索引加速。那一路实现的是
 -- 框架的 `DocumentRetriever` 接口（`KeywordDocumentRetriever`），融合用框架的 `DocumentJoiner`
--- 接口（`ReciprocalRankFusionJoiner`），都不是自有 API。所以这个文件只管扩展与文件账。
+-- 接口（`WeightedScoreJoiner`，权重照 OpenClaw 的 0.7/0.3），都不是自有 API。所以这个文件只管扩展与文件账。
 create schema if not exists claw4j_rag;
 
 -- pgvector 在会话/缓存那两个迁移里已经建过，这里重复一次是为了"只跑这个文件"的场景也不会失败。
@@ -27,7 +27,7 @@ create extension if not exists vector;
 -- 全文那一路的索引类型：`content ilike '%q%'` 由 GIN trgm 加速。
 --
 -- **它不产分数**——`similarity()` 对中文长文本恒 0（分母是块长），`word_similarity()` 依赖词边界，
--- 中文没有空格。所以那一路只排顺序，融合交给 RRF。实测数据在
+-- 中文没有空格。所以那一路给的是命中次数，融合时按最强命中归一再加权。实测数据在
 -- `docs/design/knowledge-retrieval.md` 第四节。
 --
 -- 扩展在这里建，**索引不在这里建**：`vector_store` 由 `PgVectorStore` 在应用启动时创建，
