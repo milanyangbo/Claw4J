@@ -72,14 +72,20 @@ try/catch，于是打算给它加一层壳。正确顺序是先看它的形状�
 4. 判据表必须标"谁守"。这一轮靠它揪出四处"文档承诺比代码走得远"——判定表里写着行为，
    实际没有用例，等于写了没实现。
 
-## 四、还软的四处（建议，本轮未改）
+## 四、四条建议的评估结果（3 条落地、1 条删除）
 
-| 建议 | 补哪个洞 |
-| --- | --- |
-| `alignment.md` 加判据 4：**写表 / 列 / 迁移之前，先在参考实现里指出那张表**（给出 `文件:行`） | 第 2、4、5 三处都是"目的对齐、载体自创" |
-| 票面加一行"装配用例"：凡链式装配，必须有一条走全链的用例，输入取上一环真实输出 | 第 9、10 |
-| 涉及"参考实现有没有 X"的结论，必须附**搜索命令 + 命中数**，不接受"我搜过" | 第 7 |
-| 同一件事开始返工（方案第二次被推翻）→ 停手写 ADR，不再改代码 | 这一轮语义缓存、分块、融合都返工过；分块返工到第三次才落定 |
+写完这节才去查两边的原文，结果第 4 条被删、第 1 条换形式——**提建议这一步本身又犯了一次第二节的错**。
+落点与出处：
+
+| 原来的建议 | 查到的对应物 | 结果 |
+| --- | --- | --- |
+| `alignment.md` 加判据 4：写表 / 列 / 迁移前，先指出参考实现里那张表 | OpenClaw 管的是**授权**不是过程：`Ask before ... intentional schema/durability/retention/permission changes beyond bug fix`、`read approval checkpoint before schema ... changes`。Spring AI 没有对应物（它是被参照方） | **换形式落地**：`AGENTS.md` 新增"先分清要不要问"（可回退的自己定，schema / 契约 / 权限语义先问）。"指出那张表"是我发明的过程，它管的是"这件事该不该由你做" |
+| 票面加"装配用例"：链式装配走全链 | `Prove behavior at the owning boundary`、`could it pass while the original task stays broken?`、`update and run the tests of every consumer of what changed`；Spring AI 侧对应的是独立的 `spring-ai-integration-tests` 模块 | **落地**：`docs/agents/testing.md` 判据二。原文已有"跨模块装配"这一类，但只覆盖"没挂上"；补的是**挂上了但链上的值被改写**，以及**改一处要跑它的消费者** |
+| "参考实现有没有 X"必须附搜索命令与命中数 | `a fix that cannot name the line where the bug shows has an unverified premise`；`tool output = evidence; verify against source and observed behavior` | **落地**：`docs/agents/alignment.md` 四问第 1 问——指不出行就是没查，结论还是前提 |
+| 方案返工到第二次 → 停手写 ADR | **两边都没有**。它的 `Two identical tooling failures without new evidence, or 10 min without progress` 讲的是**重试**，不是方案返工 | **删除**。阈值是我拍的；留着它就是再开一个"自创规则"的口子，而这正是本节要治的病 |
+
+一处仍然空缺：装配那条只落到"要断末端条数与顺序"，没有落到"哪种改动必须补一条全链用例"。
+不补的理由是 OpenClaw 那边也是判据（`could it pass while ...`）而不是清单，照它的形状更好。
 
 ## 五、未解决（5 条，附不做的理由）
 
@@ -95,7 +101,7 @@ try/catch，于是打算给它加一层壳。正确顺序是先看它的形状�
 
 不算"做完"，算"没白做"：
 
-- 动笔前 30 分钟给得出参考实现的 `文件:行`，或者写明"它没有"并附搜索命令与命中数。
-- 每一处新增的表 / 列 / 类，能一句话说出它对应谁；说不出的不进 diff。
-- 链式装配至少一条全链用例，且反例能单独把它改红。
+- 动笔前给得出参考实现的 `文件:行`，或者写明"查过、怎么查的、命中多少"。指不出行的结论不进 ADR。
+- 新增表 / 列 / 类之前先过一道"要不要问"：schema、公开契约、权限语义属于**先问**，不问它对应谁。
+- 装配的断言断末端那个会被别人改的东西（条数、顺序），并且改了谁就把它的消费者跑一遍。
 - 覆盖率不是目标；"哪条判据没有用例"才是要看的那张表。

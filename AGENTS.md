@@ -27,6 +27,15 @@
 
 ## 一件事怎么落地：ADR → 票 → 代码，顺序不能换
 
+**先分清要不要问。** 可回退、不用人重审的事自己定（改文案、挑实现、补测试、写文档）；
+下面这些**先问、问完再动**（问的是人，不是先开票）：新增配置项、改公开契约、
+**schema / 持久化 / 保留期 / 权限语义的改动**、换付费服务、破坏性操作。
+判据一句话：**改错了能不能自己退回来**。
+这条照 OpenClaw 的 `Ask before new config options, breaking public contracts, intentional
+schema/durability/retention/permission changes beyond bug fix`（它 `AGENTS.md` 的
+Authority and safety）与 `read approval checkpoint before schema ... changes`——
+2026-11-09 的 V6 改列名、V10 加表都是自己拍的，偏差就从这里开始。
+
 改行为之前先有三样东西，缺一样都别动代码：
 
 1. **ADR**（`docs/adr/`）：裁决、代价、退场条件。官方或 OpenClaw 有对应物的，先照它的形状；
