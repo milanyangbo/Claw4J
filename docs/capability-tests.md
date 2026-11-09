@@ -495,6 +495,27 @@ channel / tool_name / args_digest / approval_id / redaction / schema_version / a
 留存窗口删整件旧事）与 `app/ApprovalFlowTest`（执行那一行带着放行它的审批编号、
 被拒落一行带工具名与角色）；写入侧的十三个用例在 `agent/ToolCallAuditTest`。
 
+## 知识库（P10）：混合检索与重排怎么验
+
+前提：`CLAW4J_RAG_ENABLED=true`、`claw4j.rag.directory` 指向一份文档目录（里面有含
+`SKU-2024` 的文件），`QWEN_API_KEY` 在。
+
+三条判据，都不看模型措辞，看**首条出处**：
+
+1. **全文那一路在跑**：问「SKU-2024 还剩多少」。编号类查询向量认不出，首条出处必须是
+   那份含编号的文件。加 `--claw4j.rag.hybrid.enabled=false` 重启再问一次，首条应当变掉
+   （或直接答没查到）——两次的差别就是全文那一路带来的。
+2. **向量那一路在跑**：问「东西买了能退吗」，而文档里写的是「自签收之日起 7 天内可无理由退货」。
+   字面不重合，首条出处必须是那份退货政策。
+3. **重排改了顺序**：加 `--claw4j.rag.rerank.enabled=false` 记下顺序，重启去掉它再问一次。
+   顺序应当变化，且第一条更像"真的回答了问题"，而不是"提到了这几个字"。
+
+日志里看两件事：
+
+- 正常时 rerank 没有 WARN；
+- 把 `--claw4j.rag.rerank.base-url` 改成一个连不上的地址，回答**照常返回**（WARN 里有状态码）——
+  这是"重排挂了不影响检索"的现场。返回"没查到"就说明降级写错了。
+
 ## 没跑通时按这个顺序看
 
 1. `hit toolSearchTool` 涨没涨：没涨是工具循环没装上；涨了但目标工具没涨，是**检索没找到**（那句话没带关键词）；

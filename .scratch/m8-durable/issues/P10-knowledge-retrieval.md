@@ -1,6 +1,7 @@
 # P10 · 知识库检索：向量 + 关键词混合，结果带出处
 
-**Status:** done（2026-11-03 实现，`58fc525`）
+**Status:** in-progress（2026-11-03 实现；2026-11-09 存储换成 `PgVectorStore`，同日晚把
+「混合检索与重排」拆成 P10a / P10b，见文末「已拆票」）
 **Blocked by:** None（但下面第一节的裁决是先决条件，开工前已经定了）
 
 ## 背景
@@ -356,3 +357,77 @@ create index chunk_tsv on claw4j_rag.chunk using gin (tsv);
   事务外被调用——把 `embed` 挪进事务，那些用例会照绿，但线上的连接会被 HTTP 占住几十秒。
 - 一个已知的、有意不做的：空文件（只有空白）不算失败也不算一块，只 warn 一句。
   理由是"placeholder 文件不该让进程起不来"，代价是"索引了几份"与"库里多了几块"不是一对一。
+
+## 方案变更（2026-11-09）：存储与检索改用框架的 `PgVectorStore`
+
+裁决与 M3-05 语义缓存同一次：**官方有的能力就用官方实现，官方没有的东西我们不自己造**。
+本票原来那套（自建 `document` + `chunk` 两张表、手拼「向量 + bigram 全文」两条 SQL、
+再在 Java 里做 RRF 融合）整体撤掉，换成：
+
+| 层 | 原来 | 现在 |
+| --- | --- | --- |
+| 表 | 自建 `claw4j_rag.document` / `.chunk` | `claw4j_rag.vector_store`，**由 `PgVectorStore` 建**（`initializeSchema`） |
+| 文件账 | `document.source` + `content_hash` | `claw4j_rag.source`，照 OpenClaw 的 `memory_index_sources` |
+| 切块 | `TextChunker`（按字符） | `TokenTextSplitter`（按 token） |
+| 检索 | 两条 SQL + `RankFusion`（RRF） | `VectorStore.similaritySearch(SearchRequest)` |
+| 写入 | 手写 insert/delete | `VectorStore.add` / `delete(filter)` |
+
+### 为什么文件账要自己留一张表
+
+不是又想自建。OpenClaw 的 `memory_index_sources`（`packages/memory-host-sdk/src/host/memory-schema.ts`）
+就是这张表：`path / source / hash / mtime / size`，一行一个文件，用来跳过内容没变的文件。
+框架的 `VectorStore` 只有 Document 的概念，没有"这份文件上次是什么样"的账——
+不留它，每次启动都要把全部文档重算一遍 embedding。
+
+### 丢掉的：关键词通道
+
+OpenClaw 的检索是混合的（SQLite FTS + BLOB 向量），但那是它自己的实现。
+Spring AI 的 `VectorStore` 只有相似度一路，没有全文检索的对应物。所以第一节那整套论证
+（中文分词的四条路、bigram 的实测、`tsv` 生成列与 GIN）**随通道一起作废**。
+
+代价要正面写：`SKU-2024`、`华东一区`、`A-07 号仓` 这类"字面精确但语义无关"的查询会退化——
+向量认不出编号。原来关键词通道认得出。要补回来只能再写一条全文路径，那就是这次删掉的东西。
+
+### 另外三处代价
+
+1. **embedding 在 `add` 内部算**：原来说明过的"先算向量再进事务"做不到，框架的 `add` 就是
+   "算 + 写"一体。改法是把事务去掉，靠**哈希最后写**保证可重来：删旧块 → 加新块 → 更新哈希，
+   任一步失败哈希仍是旧的，下次同步重来。窗口内这份文档检索不到，而它只在启动同步期间。
+2. **块长单位从字符变成 token**：`max-chars` 改名 `chunk-size`，默认 800 token（框架默认值）。
+   同一个数字块大了约一半，所以刻意跟框架默认对齐，不传一个"看起来没变"的 800。
+3. **没有 `start_line` / `end_line`**：OpenClaw 的 chunk 有行号，因为它的记忆文件按行组织。
+   我们的切块器不产行号，metadata 里只有 `path / source / index / content_hash`。
+   代价是出处只能说到"第 N 段"，不能说到"第 30–42 行"。
+
+### 验收判据的调整
+
+| 原判据 | 现在 |
+| --- | --- |
+| 中文关键词真能命中 | **删**（没有关键词通道）；由"相似度下限生效"替代 |
+| 单字不炸也不空 | **删**（没有 tsquery） |
+| 两路各自都在起作用 | **删**；由"重建一份文档只留新块"与"文件删了块也删"替代 |
+| 出处可追溯 | 保留，改为按 `metadata->>'path'` + `'index'` 回查 `vector_store.content` |
+| 不是缓存 | 保留 |
+| 表与阈值分开 | 保留（`claw4j_rag` 与 Redis 上的缓存） |
+| `SQL 真跑` | 改为"表是框架建的"：`id` 是 uuid、`metadata` 是 json、`embedding` 维度跟配置走 |
+| 索引幂等 | 保留（靠 `claw4j_rag.source` 的 hash） |
+| 权限 / 开关 / 空库 | 保留，不变 |
+
+用例落点：`SearchSqlTest`（真库，7 条）与 `KnowledgeRetrievalTest`（替身，16 条）。
+`KnowledgeTextTest` 与 `ChineseText` / `TextChunker` / `RankFusion` 随通道一起删除。
+
+## 已拆票：混合检索与重排 → P10a / P10b（2026-11-09 晚）
+
+本票原本在下面记了第三次改动的裁决、判据与实现记录（全文那一路、RRF 融合、官方
+`RetrievalAugmentationAdvisor`、40 份语料、重排）。按 2026-11-09 的裁决拆成两张票，
+内容整段搬过去，这里不再重复：
+
+| 票 | 范围 | 能单独回退吗 |
+| --- | --- | --- |
+| `P10a-rag-hybrid-retrieval.md` | 全文那一路 + RRF 融合 + advisor 编排 + 语料 40 份 + 删 `searchDocs` | 能：`claw4j.rag.hybrid.enabled=false` 退回单路向量 |
+| `P10b-rag-rerank.md` | 通义 `qwen3-rerank` 落在 `DocumentPostProcessor` | 能：`claw4j.rag.rerank.enabled=false` |
+| `P10c-rag-semantic-chunking.md` | 分块：照 LangChain `SemanticChunker` 的句子级语义断点 + 句首转折词，token 只做上限（**未开工**，裁决见 ADR-0028） | 算法版本由 `claw4j_rag.index_meta`（照 OpenClaw 的 KV 身份）兜住，改回纯 token 只需改回切块器 |
+
+拆分口径就是"能不能单独关掉、单独回退"：P10b 之所以有自己一张票，因为它是全项目唯一一处
+直接调供应商 HTTP 的能力，退场条件（框架出 rerank 模块）得写在它自己的票上。
+设计论证在 `docs/design/knowledge-retrieval.md`；本票只管到"存储换成 `PgVectorStore`"为止的那一版。

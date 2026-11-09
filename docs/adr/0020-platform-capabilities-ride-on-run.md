@@ -147,6 +147,73 @@ OpenClaw 的七条企业属性里我们明确差的一条：**凭据有主**。�
 判据（写在票里的前置限制）：Postgres 默认分词器对中文**失效**——`to_tsvector('simple', 中文)`
 切不出词。这条票开工前要先定 pg_bigm、应用侧抽词、还是外部检索，否则"混合检索"名不副实。
 
+> **2026-11-09 修订：混合检索撤回，只做向量。**
+>
+> 换成框架的 `VectorStore`（`PgVectorStore`）之后，关键词那一路没有对应物——
+> Spring AI 只有相似度检索，混合检索是 OpenClaw 自己的实现（SQLite FTS + BLOB 向量）。
+> 所以上一段那个前置限制（中文分词走哪条路）**随通道一起作废**，`bigrams` 列、
+> `tsv` 生成列、GIN 索引与 RRF 融合全部删除。
+>
+> 代价正面记：`SKU-2024` 这类"字面精确、语义无关"的查询会退化。补回来只能是再写一条
+> 全文路径——那就是这次删掉的东西。表也不再是我们设计的两张（`document` / `chunk`），
+> 而是框架建的 `vector_store`，只留一张照 OpenClaw `memory_index_sources` 的文件账
+> （`claw4j_rag.source`）用来跳过没变的文件。细节见 `P10` 票面的「方案变更」一节。
+
+> **2026-11-09 晚，第三次修订：混合检索与重排加回来，但落在框架的接口上。**
+>
+> 上一段撤回的依据是"官方没有全文检索，补回来就得自己造一套"。这条依据只在
+> "自己造 API"这个前提下成立。框架的 RAG 模块其实留了三个槽位，且都只有一个空壳或单路实现：
+>
+> | 槽位 | 官方 | 我们填 |
+> | --- | --- | --- |
+> | `DocumentRetriever` | 只有 `VectorStoreDocumentRetriever` | `KeywordDocumentRetriever`（全文那一路） |
+> | `DocumentJoiner` | `ConcatenationDocumentJoiner` 按 score 排，两路分数不可比 | `ReciprocalRankFusionJoiner`（只看排名） |
+> | `DocumentPostProcessor` | **零实现** | `RerankingDocumentPostProcessor`（专用 reranker：通义 `qwen3-rerank`） |
+>
+> 编排本身也用官方的 `RetrievalAugmentationAdvisor`（2026-11-09 用户裁决：官方有的能力就用，
+> 冲突改我们这边）。它有三处默认行为必须改：默认模板要求"只按上下文回答"（会压住人格与工具）、
+> `allowEmptyContext` 默认 false（闲聊全部回"无法回答"）、`before()` 没有 try/catch
+> （检索抛异常即整轮失败）。前两处传自定义 `promptTemplate` 与 `allowEmptyContext(true)` 解决，
+> 第三处接受——"库挂了"不该伪装成"文档没写"。原来那个 `searchDocs` 工具随之删除：
+> advisor 每轮已检索，留工具就是每轮两次。
+>
+> 所以这次新增的是一份"官方接口的实现"，不是一份自有 API——与上一节删掉的
+> `RankFusion` / 自有检索接口不是一回事。
+>
+> 全文那一路在 Postgres 上的形态，照 OpenClaw 的 FTS5 trigram 走：**子串匹配**
+> （`content ilike '%q%'` + GIN trgm 索引），不是分词、也不是 `similarity()` 打分。
+> 实测 `similarity('退货政策', 一段确实含这四个字的长文本)` 返回 **0**，分母是块长；
+> `word_similarity` 依赖词边界，中文没有空格。所以那一路只产顺序，不产分数——
+> RRF 正好只要顺序。
+>
+> **rerank：对齐到端点，不对齐到用法**（2026-11-09 更正）。OpenClaw **有** rerank：
+> `extensions/rerank/` 是随包插件（默认启用），`docs/providers/rerank.md` 把任何 `/rerank`
+> 端点接成 Decision model；`docs/plugins/knowledge/memory-provider.md:175` 推荐
+> `gte-reranker-modernbert-base` 当**召回闸门**的判定模型。它是一对一判定（这段资料值不值得
+> 进上下文），我们是列表重排（10 条候选排序 + 截断），端点形状一样、用法不同。
+> 官方 2.0.2 仍然没有 rerank 类型（BOM 逐个 jar 扫描，连 `RerankModel` 接口都不存在），
+> 所以直连通义的 `qwen3-rerank`（OpenAI 兼容端点，复用现有 `QWEN_API_KEY`）。
+> 落在 `DocumentPostProcessor`；这是本项目唯一一处"官方没有、直接调 HTTP"的能力，
+> 退场条件是框架出 rerank 模块。实测三段候选的分数是 0.657 / 0.588 / 0.281——
+> 真正讲政策的那段排在第一，分差够截断。
+>
+> 细节、实测数据、语料与判据见 `docs/design/knowledge-retrieval.md` 与 `P10a` / `P10b` 票面
+> （2026-11-09 拆票：混合检索一张、重排一张，后者能单独关掉、单独回退）。
+>
+> 编号口径照旧：**不属于新能力，就不给新号**。这两张是 P10 的同一次变更拆出来的，记作
+> `P10a` / `P10b`；P17–P19 已经被 M9 占着，往下续号会撞上沙箱加固那三张。
+>
+> **2026-11-09 再追加一次修订：分块改成句子级语义断点，另立 ADR-0028。**
+>
+> 分块原来只是一件事——`TokenTextSplitter(800)`。用户要求"除了按 token，也要按语义方式切割；
+> 基于句子语义差异，转折词或话题跃迁触发；先看有没有开源实现，不要自己想"。于是它有了独立裁决：
+> **算法照 LangChain `SemanticChunker`**（句子 → `buffer_size=1` 的句子组 → 余弦距离 →
+> 第 95 百分位断点 → `min_chunk_size` 合小块），只换中文断句正则、并叠加一条"句首转折词断块"
+> 的用户规则；**字数只在块超 `chunk-size` 时出现一次**。切块身份落在一张 KV 表
+> `claw4j_rag.index_meta`（照 OpenClaw 的 `memory_index_meta`，不是给文件行加列），
+> 身份变了触发全量重建。
+> 论证、代价与退场条件都在 **ADR-0028**，执行票是 `P10c`。这一段只留指针，不在这里重复。
+
 **P11 · 反向 MCP server（把自己暴露出去）**
 
 `spring-ai-starter-mcp-server` 本地已有 2.0.2 可直接用。补齐的是 OpenClaw `mcp serve` 那种反向用法：

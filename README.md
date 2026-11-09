@@ -22,7 +22,7 @@
 | --- | --- |
 | **五条通道，同一份逻辑** | HTTP+SSE（给网关/前端）、飞书长连接（给群聊）、企业微信自建应用（给企业内）、钉钉机器人（给企业内，**明文 JSON + header 验签**）、Slack（给团队，**整包验签 + 答案回线程**）；通道只做"收进来 → 认出是谁 → 发出去"，去重/认人/异步/回推只有一份 |
 | **五种能力来源，对模型是一回事** | Java `@Tool`、MCP server（stdio / HTTP 都行）、受限脚本包、Agent Skill、子 Agent |
-| **知识库检索带出处** | 一份文档目录 + 两路检索（向量 + 中文关键词），按 RRF 排名融合，每段都带「文档 + 第几段」；文档块**不进**缓存表 |
+| **知识库检索带出处** | 一份文档目录 + `RetrievalAugmentationAdvisor`（官方编排）+ 混合检索（向量 + 全文两路，RRF 融合）+ 通义 `qwen3-rerank` 重排；两路与融合实现 `DocumentRetriever` / `DocumentJoiner` / `DocumentPostProcessor`；每段都带「文档 + 第几段」；文档块**不进**缓存表 |
 | **一轮一个 trace** | 配一个 OTLP 端点就把整条链路导出去：根 span 是 **run**（不是请求——请求在进线程池那一刻就断了），工具与模型轮挂在它下面，与审计靠 `claw4j.run.id` 对上；**默认不导**，也不新增任何计数器 |
 | **也能反过来当 MCP server** | `claw4j.mcp.server.expose` 点名几个工具，Claude Code 这类客户端就能像用别的工具一样调它们；交出去的只能是模型能用的那一份里的 |
 | **插件要报它要的核心版本** | 插件 jar 里一份 `META-INF/claw4j-plugin.properties` 写 `requires-core=>=0.1.0 <0.2.0`；启动时对一次——**在任何 bean 被创建之前**，不匹配就停，并指出是哪个 jar 的哪句话。不是等到某次调用 `NoSuchMethodError`。没有跳过校验的开关；这道闸装在 `claw4j-app` 的启动路径上 |
@@ -150,7 +150,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | 无（纯文本） |
 | 一个子 Agent | 一份 `*.md`（front matter + 正文），配 `claw4j.subagents.directory` | 无（纯文本） |
 | **一个 agent（人设）** | 一份 `*.md`（front matter + 正文）+ 可选口径，配 `claw4j.agent.directory` 与 `claw4j.agent.default` | 无（纯文本） |
-| **一份知识库** | 一个目录（`*.md` / `*.txt`）+ 配 `claw4j.rag.directory` | 无（切词、切块、融合都在 `claw4j-core` 的 `text` 包） |
+| **一份知识库** | 一个目录（`*.md` / `*.txt`）+ 配 `claw4j.rag.directory` | 无（切块 `TokenTextSplitter`、编排是官方 advisor、检索与融合是框架接口的实现；全文那一路用 PG 的 `pg_trgm`，重排用通义 `qwen3-rerank`） |
 | 一条通道 | `ChatChannel` 实现 + 自己的端点 | `claw4j-core`，**不带任何 IM SDK** |
 
 ### 1. 一个工具：三个文件
@@ -374,6 +374,9 @@ public class TelegramChannelAutoConfiguration {
 | `SLACK_SIGNING_SECRET` / `SLACK_BOT_TOKEN` | 否 | Slack，两个都配才装配。**两把各管一头**：signing-secret 只验签，bot-token（`xoxb-` 开头、长期有效）只发消息。混了的表现是"回调全被拒"或"收得到发不出" |
 | `CLAW4J_RAG_ENABLED` | 否 | 打开知识库。**开了就必须配目录**，否则启动失败（空知识库比失败更糟） |
 | `CLAW4J_RAG_DIRECTORY` | 否 | 文档目录，启动后同步一次，按文件内容哈希跳过没变的 |
+| `CLAW4J_RAG_HYBRID_ENABLED` | 否 | 混合检索（向量 + 全文）。默认 `true`；关掉只剩向量，`SKU-2024` 这类编号查询会退化 |
+| `CLAW4J_RAG_RERANK_ENABLED` | 否 | 用通义的 `qwen3-rerank` 重排候选。默认 `true`，复用 `QWEN_API_KEY`；端点挂了只影响顺序，不影响结果 |
+| `CLAW4J_RAG_RERANK_BASE_URL` | 否 | 重排端点，默认 `https://dashscope.aliyuncs.com/compatible-api/v1`。**注意是 `compatible-api` 不是 `compatible-mode`** |
 | `CLAW4J_OBSERVABILITY_ENABLED` / `OTLP_ENDPOINT` | 否 | trace 导出，**两个都要**：只开开关不配端点时一条都不导，启动日志会点名缺哪一项（不回落 `localhost:4318`，否则表现成"连不上"而不是"没配"）。指标仍走 actuator，trace 只走 OTLP |
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用 |
 | `CLAW4J_REDIS_IMAGE` | 否 | 换 Redis Stack 镜像源，与 compose 共用 |

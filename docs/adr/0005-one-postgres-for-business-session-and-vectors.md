@@ -24,6 +24,13 @@ date: 2026-10-22
 
 - `spring-ai-session` 走 **`org.springaicommunity:spring-ai-starter-session-jdbc`**（版本见根 pom 的 `spring-ai-session.version`，当前 0.10.0），会话表与业务表同库不同 schema。生产禁止用 `InMemorySessionRepository`（多实例失忆）。
 - 向量检索用 pgvector，走 Spring AI 的 PgVectorStore；业务库用同一实例，`vector` 扩展只需装一次。
+  （2026-11-09 校正：知识库一开始没照这条做——自建了 `claw4j_rag.document` / `chunk` 两张表、
+  手拼两条 SQL 做混合检索。现在回到 PgVectorStore：表由它建（`vector_store`），
+  只留一张照 OpenClaw `memory_index_sources` 的文件账 `claw4j_rag.source`。）
+  知识库的全文那一路另需 **`pg_trgm`**：`vector_store.content` 上的 GIN 索引（`gin_trgm_ops`）
+  加速 `ILIKE`，这是 OpenClaw 的 FTS5 trigram 在本库上的等价物。它是 PG 自带的 contrib，
+  `pgvector/pgvector:pg16` 镜像里已有，`V5` 里 `create extension if not exists`。
+  所以这个实例上装两个扩展：`vector`、`pg_trgm`。
 - Redis 只留 Lettuce 一个客户端；1.x 的 Jedis、Redisson 依赖不再引入，扫描类命令（`KEYS`）一律替换为带游标的迭代。
   （2026-10-26 修正：引回 Redis 做语义缓存时客户端要 **Jedis** 而不是 Lettuce，见修订记录。
   ~~2026-10-27 再修正：不引 Redis 了，语义缓存走库里的 pgvector，上面这条随之作废——见第二次修订。~~）

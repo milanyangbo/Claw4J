@@ -100,7 +100,7 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | `V1` `V2` | `claw4j-example-sales` | 业务表与种子（`business`） | 示例插件自己的工具 |
 | `V3` | `claw4j-agent` | 会话四张表（`claw4j_session`） | `agent.session` / `agent.goal` |
 | `V4` | `claw4j-agent` | 语义缓存（`claw4j_cache`）——**已被 `V9` 删掉** | 曾经是 `agent.cache` |
-| `V5` | `claw4j-agent` | 知识库两张表（`claw4j_rag`） | `agent.rag` |
+| `V5` | `claw4j-agent` | 知识库的文件账 `claw4j_rag.source`（块与向量在框架建的 `vector_store` 里）+ `pg_trgm` 扩展（全文那一路的 GIN 索引在应用启动时建，表归框架） | `agent.rag` |
 | `V6` | `claw4j-agent` | 审批 / 定时任务 / 审计（`claw4j_run`） | `agent.approval` / `agent.schedule` / `agent.audit` |
 | `V7` | `claw4j-agent` | 入站队列（`claw4j_channel`） | `channel.kernel` / `agent.inbound` |
 | `V8` | `claw4j-agent` | 会话状态并成一张表（把 `conversation_pointer` 与 `conversation_goal` 回填进 `session_entry` 后删掉） | `agent.session` / `agent.goal` |

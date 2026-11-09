@@ -48,6 +48,21 @@ try/catch 去维持"缓存不参与可用性"——那是拿自研代码给自�
 第 3 问答"不能改"时，走 `AGENTS.md` 里那条三段式（它那条机制是什么 → 我们差在哪 →
 只能改成什么、代价是什么），等人判断，不自己拍。
 
+## 接口实现不是自研（2026-11-09 知识库）
+
+判据 1 说的是"它没有的**能力**"，不是"它的接口没有**实现**"。两者在 diff 上很像，
+区分只有一个问题：**这个类实现的是不是框架定义的接口？**
+
+| 写法 | 判定 |
+| --- | --- |
+| `RankFusion`（上一版删掉的那个）：自有类、自有签名、没有调用点 | 自研 |
+| `ReciprocalRankFusionJoiner implements DocumentJoiner` | 实现 |
+| `RerankingDocumentPostProcessor implements DocumentPostProcessor` | 实现 |
+| `SemanticTextSplitter extends TextSplitter`（ADR-0028） | 实现（扩展点是 `splitText`） |
+
+判据 3 的答案就是**接口名**。答得出接口名，并且调用点是框架留的槽位，就是实现；
+答不出，就是自研。
+
 ## 这条同样适用于 OpenClaw
 
 OpenClaw 不是"参考实现"，是**判据来源**。它的机制优先于"这样也说得通"；

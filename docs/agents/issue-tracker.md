@@ -9,6 +9,9 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
 - Triage state is recorded as a `Status:` line near the top of each issue file. Which vocabulary that line takes depends on the file: `spec.md` uses triage roles, `issues/NN-*.md` uses the wayfinder lifecycle (`claimed` / `resolved`). See `triage-labels.md` for both, and don't invent a third word
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- 每张票面必须有两节：**裁决来源**（一行指到 ADR / `docs/design/`，不在这里重复论证）与
+  **TDD 用例清单**（每条功能点一行：判什么行为 → 用例名 → 先红的样子）。一时补不上的判据，
+  单列一节写"缺口"，不许勾进验收——勾了就是文档承诺比代码走得远
 - Planning text in a ticket is a **forecast until it is a fact**: write "预计落在 X" as 预计, and correct it when the work lands. A bare "落在 X" gets read as a requirement by the next reviewer — 票 05 的"门禁余量"一节预计落 `KnowledgeRetrievalTest` / `ChatPipelineTest`，实际落在另外三个文件，评审时就被报成了"文档没同步"
 
 ## When a skill says "publish to the issue tracker"
