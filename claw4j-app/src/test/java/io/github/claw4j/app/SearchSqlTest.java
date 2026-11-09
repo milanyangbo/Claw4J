@@ -1,9 +1,6 @@
 package io.github.claw4j.app;
 
-import io.github.claw4j.agent.cache.CacheProperties;
 import io.github.claw4j.agent.inbound.JdbcInboundStore;
-import io.github.claw4j.agent.cache.PgVectorSemanticCache;
-import io.github.claw4j.agent.cache.SemanticCache;
 import io.github.claw4j.agent.model.EmbeddingProperties;
 import io.github.claw4j.agent.rag.KnowledgeBase;
 import io.github.claw4j.agent.rag.PgVectorKnowledgeBase;
@@ -24,7 +21,14 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.EmbeddingRequest;
+import org.springframework.ai.embedding.EmbeddingResponse;
 import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.SessionEvent;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -60,18 +64,6 @@ import static org.mockito.Mockito.when;
  */
 class SearchSqlTest {
 
-    /**
-     * 实体签名是 SHA-256 十六进制，正好 64 个字符，把 {@code entities varchar(64)} 卡满。
-     * 拿 {@code "sig-a"} 这种五个字符的串去写，列宽被改小了照样绿——那是这条用例本来要防的事。
-     */
-    private static final String SIG_LAST_WEEK = "0f".repeat(32);
-
-    private static final String SIG_THIS_WEEK = "1e".repeat(32);
-
-    private static final String FP_READ_SALES = "fp-1";
-
-    private static final String QUESTION = "上周华东成交额多少";
-
     /** 入站队列的队列名：与生产同口径，就是通道名。 */
     private static final String QUEUE = "feishu";
 
@@ -94,8 +86,6 @@ class SearchSqlTest {
 
     private static JdbcTemplate jdbc;
 
-    private PgVectorSemanticCache cache;
-
     @BeforeAll
     static void dataSource() {
         jdbc = new JdbcTemplate(new DriverManagerDataSource(
@@ -104,96 +94,12 @@ class SearchSqlTest {
 
     @BeforeEach
     void freshTables() {
-        jdbc.update("truncate claw4j_cache.semantic");
         // cascade：块随文档一起走，不需要第二句 truncate。
         jdbc.update("truncate claw4j_rag.document cascade");
         // 入站队列（票 04）：它的行是 tombstone，不清的话上一条用例的"这条处理过"会带到这里
         jdbc.update("truncate claw4j_channel.inbound_event");
         // 会话（票 05）：事件靠外键跟着会话走，一句 cascade 两表都干净
         jdbc.update("truncate claw4j_session.ai_session cascade");
-        cache = new PgVectorSemanticCache(jdbc, CacheProperties.defaults());
-    }
-
-    // ---- 语义缓存 ----
-
-    @Test
-    @DisplayName("写进去的能原样取回来：类型转换与向量维度都对得上")
-    void storedAnswerComesBack() {
-        cache.store(FP_READ_SALES, SIG_LAST_WEEK, QUESTION, vector(1), "上周华东成交 128400 元");
-
-        Optional<SemanticCache.Candidate> found = cache.nearest(FP_READ_SALES, SIG_LAST_WEEK, vector(1));
-
-        assertThat(found).as("同一个上下文里刚写的一条，取不回来就是表没建成").isPresent();
-        assertThat(found.get().answer()).isEqualTo("上周华东成交 128400 元");
-        assertThat(found.get().question()).isEqualTo(QUESTION);
-        assertThat(found.get().similarity()).isCloseTo(1.0, within(1e-6));
-    }
-
-    @Test
-    @DisplayName("同一个上下文写两遍只留一行，换个实体各留一行：唯一键必须含 entities")
-    void sameQuestionOverwritesWithinOneContextOnly() {
-        cache.store(FP_READ_SALES, SIG_LAST_WEEK, QUESTION, vector(1), "旧的");
-        cache.store(FP_READ_SALES, SIG_LAST_WEEK, QUESTION, vector(1), "新的");
-
-        assertThat(cache.nearest(FP_READ_SALES, SIG_LAST_WEEK, vector(1)).orElseThrow().answer())
-                .as("同一个上下文里应当覆盖，不是新增")
-                .isEqualTo("新的");
-
-        cache.store(FP_READ_SALES, SIG_THIS_WEEK, QUESTION, vector(1), "另一段时间");
-
-        assertThat(rowCount())
-                .as("同一个问题落在两个实体上下文里就是两行：唯一键少了 entities，"
-                        + "后写的会静默覆盖先写的，两个时间窗从此共用一个答案")
-                .isEqualTo(2);
-        assertThat(cache.nearest(FP_READ_SALES, SIG_LAST_WEEK, vector(1)).orElseThrow().answer())
-                .as("另一段时间写进来，不该动到这段时间的答案")
-                .isEqualTo("新的");
-    }
-
-    @Test
-    @DisplayName("上下文不同就不互相检索，但诊断两条路看得见它")
-    void otherContextIsNotAHit() {
-        cache.store(FP_READ_SALES, SIG_LAST_WEEK, QUESTION, vector(1), "答案");
-
-        assertThat(cache.nearest(FP_READ_SALES, SIG_THIS_WEEK, vector(1)))
-                .as("换个实体就是另一个上下文，这是命中判定的第一条")
-                .isEmpty();
-        assertThat(cache.nearest("fp-2", SIG_LAST_WEEK, vector(1)))
-                .as("换个权限也不再同一个上下文里")
-                .isEmpty();
-
-        assertThat(cache.nearestInFingerprint(FP_READ_SALES, vector(1)))
-                .as("同权限不限实体：用来把 miss 说成 different-entities")
-                .isPresent();
-        assertThat(cache.nearestAnyFingerprint(vector(1)))
-                .as("全库：用来把 miss 说成 different-permission")
-                .isPresent();
-    }
-
-    @Test
-    @DisplayName("过期的行不参与命中，清理任务真删得掉")
-    void expiredRowIsInvisibleAndThenDeleted() {
-        cache.store(FP_READ_SALES, SIG_LAST_WEEK, QUESTION, vector(1), "答案");
-        jdbc.update("update claw4j_cache.semantic set expires_at = now() - interval '1 minute'");
-
-        assertThat(cache.nearest(FP_READ_SALES, SIG_LAST_WEEK, vector(1)))
-                .as("过期判定写在 where 里而不是取出来再过滤：一条过期的老问题不该参与竞争")
-                .isEmpty();
-        assertThat(cache.deleteExpired()).isEqualTo(1);
-        assertThat(rowCount()).isZero();
-    }
-
-    @Test
-    @DisplayName("列型对得上：embedding 的维度来自配置，entities 的宽度要装得下一个签名")
-    void columnTypesMatchWhatTheCodeWrites() {
-        assertThat(columnType("claw4j_cache.semantic", "embedding"))
-                .as("两边各改一半的话，插入时才报错——而那个异常在生产里被 remember 吞掉了")
-                .isEqualTo("vector(" + EmbeddingProperties.DEFAULT_DIMENSIONS + ")");
-
-        assertThat(columnType("claw4j_cache.semantic", "entities"))
-                .as("签名是 64 个十六进制字符，正好卡满这一列。列宽被改小之后 store 抛错、"
-                        + "被 remember 吞掉，表现是缓存永远命不中")
-                .isEqualTo("character varying(64)");
     }
 
     // ---- 知识库（P10） ----
@@ -276,8 +182,10 @@ class SearchSqlTest {
         assertThat(second).as("第二次照样真的去查，不像缓存那样返回上一次的回答")
                 .hasSize(first.size())
                 .allSatisfy(hit -> assertThat(hit.citation()).isNotBlank());
-        assertThat(rowCount())
-                .as("缓存表里出现文档块，就是这套设计最坏的形态：一段文档被当成『有人问过』的答案")
+        assertThat(jdbc.queryForObject(
+                "select count(*) from pg_class where oid = to_regclass('claw4j_cache.semantic')",
+                Integer.class))
+                .as("语义缓存改落 Redis 之后这张表应当被 V9 删掉；它还在就是还有东西往里写")
                 .isZero();
     }
 
@@ -661,10 +569,6 @@ class SearchSqlTest {
             literal.append(embedding[i]);
         }
         return literal.append(']').toString();
-    }
-
-    private static int rowCount() {
-        return jdbc.queryForObject("select count(*) from claw4j_cache.semantic", Integer.class);
     }
 
     private static String columnType(String table, String column) {

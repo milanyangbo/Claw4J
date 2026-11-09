@@ -587,8 +587,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * 记下"模型这一轮"，扣掉这一轮花掉的 token 与耗时，然后收尾（A04）。
      *
      * <p><b>这里只记模型轮，工具调用不归它记</b>：这一层看不到工具循环里调了什么——
-     * {@code ToolCallLog} 是 ThreadLocal，线程池复用时读到的是上一轮的集合（它自己的
-     * 注释里就写着这个坑），猜一个填上去比留空更糟。工具调用那一项由
+     * 猜一个填上去比留空更糟。工具调用那一项由
      * {@code MeteredToolCallback} 在调用发生的地方扣额度（A04），并在同一处落一行审计（P07）——
      * 那里才真的知道"这次调用发生了"。要回答"这一轮调了哪些工具"，读 step 表里的
      * {@link StepKind#TOOL_CALLS} 行，不要读这里。

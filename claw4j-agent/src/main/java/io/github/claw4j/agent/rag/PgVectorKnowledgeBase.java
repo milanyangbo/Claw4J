@@ -147,7 +147,7 @@ public class PgVectorKnowledgeBase implements KnowledgeBase {
     /**
      * 拼成 pgvector 的字面量 {@code [0.1,0.2,...]}。
      *
-     * <p>与 {@code PgVectorSemanticCache} 里那份同形，刻意各写一份：那一份是包内可见的，
+     * <p>那份实现已经随语义缓存改落 Redis 而删除，这里的向量字面量自己写一份：
      * 为了共用要把它改成 public，于是两个互不相干的能力（缓存、检索）在代码上互相引用。
      * 代价是"维度检查"有两处——两处都必须与 {@code vector(1024)} 对齐，
      * 而维度不符时 Postgres 会直接报错，不会静默截断，所以它不会安静地错。

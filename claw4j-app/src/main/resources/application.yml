@@ -432,18 +432,23 @@ claw4j:
       tables: ["*"]
 
   # ---- 语义缓存：只在配了通义 key 时整套装配（向量走 text-embedding-v3，复用 qwen 凭据） ----
-  # 只配 DeepSeek 的环境没有这个能力，对话照常——它是成本优化，不是依赖。
+  # 只配 DeepSeek 的环境没有这个能力，对话照常。
   cache:
     enabled: ${CLAW4J_CACHE_ENABLED:true}
     # 0.93 取的是"宁漏不误"那一侧：换指标（0.9154）与同义改写（0.9117~0.9501）的分数是交叠的，
     # 任何阈值都分不开，只能选往哪边错——漏了只是没省到钱，误了是给出另一个问题的答案。
     # 完整的实测表在 CacheProperties.DEFAULT_SIMILARITY_THRESHOLD 的 javadoc 里。
     similarity-threshold: ${CLAW4J_CACHE_THRESHOLD:0.93}
-    # 1 小时：问的是"上周/本周"这种相对时间，答案随日历翻页而变，24 小时会在跨周一时给出上一周的。
-    # 另外「上周」与「上上周」的相似度高达 0.995，比同义改写还高，单靠阈值挡不住——所以问题里的
-    # 时间词与数字被编进缓存上下文键（不可配，见 CacheAdvisor#entitySignature）。
-    time-to-live: PT1H
-    cleanup-interval: PT1H
+    # 缓存落 Redis Stack（RediSearch + RedisJSON）。**普通 Redis 不行**：向量索引建不出来。
+    #
+    # **它现在是强依赖**（照框架实现走之后的既定状态）：索引在启动时建，连不上就启动失败；
+    # 运行中挂掉，advisor 调 get/set 时没有兜底，这一轮会报错。这两条不由我们再包一层去抹平——
+    # 那是自研，判据见 docs/agents/alignment.md。
+    #
+    # 过期同理交给它自己：框架的 DefaultSemanticCache 不实现 TTL（`ttl` 字段是死代码），
+    # 唯一的失效方式是"系统提示词里的日期变了 → contextHash 变了 → 查不到旧行"。
+    # 物理行会一直留，靠 Redis 的 maxmemory-policy 淘汰，不要给这个实例配持久化。
+    redis-uri: ${CLAW4J_CACHE_REDIS_URI:redis://127.0.0.1:6379}
     # 向量模型的两项配置**不在这里**（P10 搬去了 claw4j.model.embedding）：
     # 知识库要用同一个模型，而这里的 enabled 是成本开关。放在这里 = 关掉缓存就连带关掉知识库。
 

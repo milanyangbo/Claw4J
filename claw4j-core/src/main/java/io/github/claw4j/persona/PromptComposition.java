@@ -8,7 +8,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * 把一份人设拼成这次请求要用的系统提示词：正文 + 口径 + 现在的时间。
+ * 把一份人设拼成这次请求要用的系统提示词：正文 + 口径 + 数据范围 + 现在的时间。
  *
  * <p><b>为什么时间要拼进来</b>：在此之前模型手上没有时钟，整份代码里没有任何"今天几号"
  * 进入提示词。后果不是"不知道星期几"这么轻——`上周`、`本月`、`最近三天` 这些词
@@ -21,25 +21,45 @@ import java.util.Objects;
  * 差八小时意味着每天晚上八点之后，"今天"在模型那里已经是明天。
  * 时区写进提示词，模型自己就能看见它算的是哪一口钟。
  *
- * <p><b>精度到分钟，不是到秒</b>：秒级时间会让每一轮的提示词都不同，
- * 而提示词相同是缓存、回放、对比测试都能成立的前提。分钟级已经够回答"今天/上周"。
+ * <p><b>精度只到天</b>（2026-11-09 从"到分钟"改回来）：框架的
+ * {@code SemanticCacheAdvisor} 用 {@code SHA-256(整份系统提示词)} 当缓存上下文键，
+ * 提示词里只要带 {@code HH:mm}，这个键就每分钟变一次，缓存活不过 60 秒。
+ * 而业务问的是"今天 / 上周 / 本月"，到天足够；"现在几点"它本来也不该用来算数。
+ *
+ * <p><b>为什么数据范围要进提示词</b>：同一件事的另一面。那个键只由提示词算出，
+ * 权限不进提示词，同一个人设下的所有人就共用一个键——guest 与 admin 问同一句话会互相命中，
+ * 而两人的答案本来不同。这里放的是权限指纹（`tables + actions` 的哈希），
+ * 不是表清单：清单会变成权限配置的第二份口径，还得跟着注册表同步；指纹只是一个稳定标识，
+ * 模型读不懂也不需要读懂，它的作用是让"权限不同"在缓存键上可见。
  *
  * <p>这个类是纯函数，不读盘、不看时钟：{@code now} 由调用方每轮传进来。
  * 装配期算一次时间是最容易犯的错——进程跑一周，提示词里的"今天"还是启动那天。
  */
 public final class PromptComposition {
 
-    private static final DateTimeFormatter MINUTE = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm");
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("uuuu-MM-dd");
 
     private PromptComposition() {
     }
 
     /**
-     * @param persona  人设（正文就是它的 {@code systemPrompt}）
-     * @param glossary 口径；空表示这个人设没有额外口径
-     * @param now      这一轮的时间，必须带时区
+     * 不带数据范围：没有 {@code Principal} 的调用（子代理、回放、用例）走这里。
+     *
+     * <p>此时提示词里没有权限段，缓存键与"任何身份"都不同——这比复用一个带权限的键安全：
+     * 无身份的一轮不该命中任何人的答案。
      */
     public static String compose(Persona persona, List<GlossarySection> glossary, ZonedDateTime now) {
+        return compose(persona, glossary, now, null);
+    }
+
+    /**
+     * @param persona   人设（正文就是它的 {@code systemPrompt}）
+     * @param glossary  口径；空表示这个人设没有额外口径
+     * @param now       这一轮的时间，必须带时区
+     * @param dataScope 权限指纹；{@code null} 或空白表示不写这一段
+     */
+    public static String compose(Persona persona, List<GlossarySection> glossary, ZonedDateTime now,
+                                 String dataScope) {
         Objects.requireNonNull(persona, "persona");
         Objects.requireNonNull(glossary, "glossary");
         Objects.requireNonNull(now, "now");
@@ -57,6 +77,13 @@ public final class PromptComposition {
             }
         }
 
+        if (dataScope != null && !dataScope.isBlank()) {
+            prompt.append("\n\n## 数据范围\n\n")
+                    .append("本次会话的数据权限标识：").append(dataScope).append('\n')
+                    .append("只能使用工具允许你访问的数据；没有工具能拿到的数据，")
+                    .append("直接说明拿不到，不要凭猜测补。\n");
+        }
+
         prompt.append("\n\n## 现在的时间\n\n")
                 .append("此刻是 ").append(format(now)).append("。\n")
                 .append("涉及“今天 / 昨天 / 上周 / 本月”这类相对时间时按这个算，")
@@ -64,10 +91,10 @@ public final class PromptComposition {
         return prompt.toString();
     }
 
-    /** {@code 2026-11-03 20:28（星期二，Asia/Shanghai）}。单独拿出来是为了用例能直接钉格式。 */
+    /** {@code 2026-11-09（星期一，Asia/Shanghai）}。单独拿出来是为了用例能直接钉格式。 */
     public static String format(ZonedDateTime now) {
         Objects.requireNonNull(now, "now");
         String weekday = now.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.SIMPLIFIED_CHINESE);
-        return now.format(MINUTE) + "（" + weekday + "，" + now.getZone().getId() + "）";
+        return now.format(DAY) + "（" + weekday + "，" + now.getZone().getId() + "）";
     }
 }

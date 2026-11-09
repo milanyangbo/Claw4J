@@ -1,5 +1,8 @@
 package io.github.claw4j.agent.persona;
 
+import io.github.claw4j.agent.PermissionFingerprint;
+import io.github.claw4j.domain.ContextKeys;
+import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.persona.GlossarySection;
 import io.github.claw4j.persona.Persona;
 import io.github.claw4j.persona.PromptComposition;
@@ -33,9 +36,10 @@ import java.util.Objects;
  * {@link PromptComposition} 是纯函数，可以单独钉住——口径不再散落在各份 Skill 与
  * 子 Agent 的正文里。
  *
- * <p><b>顺序放在最前（{@link #ORDER}）</b>：后面的 Advisor 看到的应当是最终提示词。
- * 放在鉴权或缓存之后的话，缓存算 key 时看到的是半份提示词——现在缓存只取最后一条用户消息，
- * 所以没踩上，但那是缓存的实现细节，不该成为这里顺序的依据。
+ * <p><b>顺序必须排在缓存之前（{@link #ORDER}）</b>：框架的语义缓存把
+ * {@code SHA-256(整份系统提示词)} 当上下文键。这条要是在它后面跑，缓存哈希的是一份
+ * 还没拼上数据范围与时间的提示词——权限与时间窗都不进键，隔离与过期判定同时失效。
+ * 所以这里不只是"后面的 Advisor 该看到最终提示词"，是缓存的正确性依赖这个顺序。
  *
  * <p><b>只替换第一条 {@link SystemMessage}</b>，没有就前插：别的 Advisor 也可能往上下文里
  * 放 system（比如记忆压缩的摘要）。整份清掉会让那些内容消失，
@@ -82,7 +86,11 @@ public class AgentContextAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     private ChatClientRequest withContext(ChatClientRequest request) {
-        String composed = PromptComposition.compose(persona, glossary, ZonedDateTime.now(clock));
+        Principal who = principalOf(request);
+        // 没有 Principal 时不写这一段：无身份的一轮不该与任何人的缓存键相同。
+        String dataScope = who == null ? null : PermissionFingerprint.of(who);
+        String composed = PromptComposition.compose(persona, glossary,
+                ZonedDateTime.now(clock), dataScope);
         Prompt prompt = request.prompt();
         List<Message> instructions = prompt.getInstructions();
 
@@ -94,6 +102,17 @@ public class AgentContextAdvisor implements CallAdvisor, StreamAdvisor {
             }
         }
         return request.mutate().prompt(new Prompt(replaced, prompt.getOptions())).build();
+    }
+
+    /**
+     * 调用方把身份放在 {@code ContextKeys.PRINCIPAL} 里（与鉴权、缓存同一处）。
+     *
+     * <p>取不到就是没有：不拿"默认权限"兜底。兜底的代价是匿名调用与某个真实角色
+     * 共用同一个缓存键，而那条路上没有任何东西会报错。
+     */
+    private static Principal principalOf(ChatClientRequest request) {
+        Object value = request.context() == null ? null : request.context().get(ContextKeys.PRINCIPAL);
+        return value instanceof Principal principal ? principal : null;
     }
 
     @Override

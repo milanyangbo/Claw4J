@@ -1,6 +1,5 @@
 package io.github.claw4j.agent.observability;
 
-import io.github.claw4j.agent.ToolCallLog;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.domain.ContextKeys;
@@ -27,9 +26,9 @@ import java.util.Objects;
  * 而"哪个工具被问得多"恰恰是按工具算才有用——它决定下一个该优化谁、哪个该收权限。
  * span 同理：一段 {@code tool.<名字>} 的 duration 只有挂在这里才是一次真实调用的耗时。
  *
- * <p><b>它做四件事，因为这四个事实同源</b>：计数的前提是"这次调用真的发生了"，
- * {@link ToolCallLog} 要记的、审计要落的（{@link ToolCallAudit}，P07）、
- * trace 要画的（{@link SpanTracer}，P14）也都是同一件事。分成几个包装类会多几层对象，
+ * <p><b>它做三件事，因为这三个事实同源</b>：计数的前提是"这次调用真的发生了"，
+ * 审计要落的（{@link ToolCallAudit}，P07）、trace 要画的（{@link SpanTracer}，P14）
+ * 也都是同一件事。分成几个包装类会多几层对象，
  * 还会让"只包了计量那层"的路径悄悄漏掉另外几件——工具清单只收 provider、不收单个 callback，
  * 就是这样漏的。
  *
@@ -38,8 +37,8 @@ import java.util.Objects;
  * Spring AI 的工具循环执行。把"成本控制"与"失控保护"合成一个数，两者就只能由同一个人处理——
  * 它们不该混在一起。
  *
- * <p><b>没有 registry 时照样包</b>：记录"这一轮调过哪些工具"是语义缓存判断副作用的依据，
- * 与"有没有装 actuator"无关。装不装只影响计数报不报得出去。span 也一样：
+ * <p><b>没有 registry 时照样包</b>：计数与 audit 与"有没有装 actuator"无关，
+ * 装不装只影响计数报不报得出去。span 也一样：
  * {@link SpanTracer#NONE} 是零开销的空实现，埋点代码只有一种写法。
  *
  * <p><b>这里看不到 {@code denied}</b>：鉴权拒绝发生在 Advisor 那一层，工具根本没被执行，
@@ -121,7 +120,6 @@ public class MeteredToolCallback implements ToolCallback {
      */
     @Override
     public String call(String toolInput) {
-        ToolCallLog.record(toolName);
         try (SpanTracer.SpanScope span = openSpan()) {
             try {
                 String result = delegate.call(toolInput);
@@ -155,7 +153,6 @@ public class MeteredToolCallback implements ToolCallback {
     @Override
     public String call(String toolInput, ToolContext toolContext) {
         String runId = runIdOf(toolContext);
-        ToolCallLog.record(toolName);
         try (SpanTracer.SpanScope span = openSpan()) {
             // 开始那一条先写，结束那一条在两条出口各写一次：只有结束的话，
             // "这个工具跑了多久"和"两个并发调用谁先开始"都只能靠时间戳猜。

@@ -15,11 +15,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 拼装的四条判据：正文、口径、时间、以及"时间每轮都在变"。
+ * 拼装的几条判据：正文、口径、时间、数据范围，以及"同一天里时间不变"。
  *
- * <p>最后一条单独盯，是因为它是最容易犯而且最难发现的错：装配期算一次时间，
- * 跑一周之后提示词里还是启动那天，而所有"看起来对"的用例都会通过——
- * 因为它们都在同一个瞬间比对。
+ * <p>最后一条单独盯，是因为它同时是两件事的前提：时间必须是每轮算的（不能装配期固化），
+ * 而粒度只能是天（分钟级会让以提示词为键的语义缓存每分钟失效一次）。
  */
 class PromptCompositionTest {
 
@@ -36,14 +35,15 @@ class PromptCompositionTest {
         String prompt = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3);
 
         assertTrue(prompt.startsWith("你是销售助手。"), prompt);
-        assertTrue(prompt.contains("2026-11-03 20:28"), prompt);
+        assertTrue(prompt.contains("2026-11-03"), prompt);
         assertFalse(prompt.contains("部门口径"), "没配口径时不该出现这一节：" + prompt);
+        assertFalse(prompt.contains("数据范围"), "没有身份时不该出现这一节：" + prompt);
     }
 
     @Test
-    @DisplayName("时间是『到分钟 + 星期 + 时区』：少了时区，晚上八点之后『今天』就已经差一天")
+    @DisplayName("时间是『到天 + 星期 + 时区』：少了时区，晚上八点之后『今天』就已经差一天")
     void timeCarriesZoneAndWeekday() {
-        assertEquals("2026-11-03 20:28（星期二，Asia/Shanghai）", PromptComposition.format(NOV_3));
+        assertEquals("2026-11-03（星期二，Asia/Shanghai）", PromptComposition.format(NOV_3));
     }
 
     @Test
@@ -51,19 +51,44 @@ class PromptCompositionTest {
     void zoneComesFromTheGivenInstant() {
         ZonedDateTime utc = NOV_3.withZoneSameInstant(ZoneId.of("UTC"));
 
-        assertEquals("2026-11-03 12:28（星期二，UTC）", PromptComposition.format(utc));
+        assertEquals("2026-11-03（星期二，UTC）", PromptComposition.format(utc));
         assertTrue(PromptComposition.compose(persona("x"), List.of(), utc).contains("UTC"));
     }
 
     @Test
-    @DisplayName("两轮不同时刻拼出来的提示词不同：时间必须是每轮算的，不能装配期固化")
-    void timeIsRecomputedPerTurn() {
+    @DisplayName("同一天里换一轮，提示词不变：这是缓存能活过一分钟的前提")
+    void sameDayKeepsThePromptStable() {
         String first = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3);
         String later = PromptComposition.compose(persona("你是销售助手。"), List.of(),
-                NOV_3.plusMinutes(1));
+                NOV_3.plusMinutes(30));
 
-        assertNotEquals(first, later);
-        assertTrue(later.contains("2026-11-03 20:29"), later);
+        assertEquals(first, later,
+                "提示词带分钟的话，框架算出的 contextHash 每分钟变一次，缓存活不过 60 秒");
+    }
+
+    @Test
+    @DisplayName("跨天必须变：时间仍然是每轮算的，不是装配期固化")
+    void nextDayChangesThePrompt() {
+        String first = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3);
+        String tomorrow = PromptComposition.compose(persona("你是销售助手。"), List.of(),
+                NOV_3.plusDays(1));
+
+        assertNotEquals(first, tomorrow);
+        assertTrue(tomorrow.contains("2026-11-04"), tomorrow);
+    }
+
+    @Test
+    @DisplayName("有身份才有数据范围：它是缓存区分权限的唯一入口")
+    void dataScopeAppearsOnlyWhenGiven() {
+        String anonymous = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3, null);
+        String admin = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3, "fingerprint-a");
+        String guest = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3, "fingerprint-b");
+
+        assertFalse(anonymous.contains("数据范围"), anonymous);
+        assertTrue(admin.contains("数据范围"), admin);
+        assertTrue(admin.contains("fingerprint-a"), admin);
+        assertNotEquals(admin, guest,
+                "权限不同 → 提示词不同 → contextHash 不同 → 缓存不互相命中");
     }
 
     @Test

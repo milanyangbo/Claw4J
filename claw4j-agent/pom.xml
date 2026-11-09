@@ -53,6 +53,20 @@
             <artifactId>spring-ai-client-chat</artifactId>
         </dependency>
         <!--
+          语义缓存（M3-05）：用框架的实现，不再自己写存储。
+          `spring-ai-redis-semantic-cache` 提供 `SemanticCacheAdvisor` 与 `DefaultSemanticCache`，
+          缓存落 Redis Stack（RediSearch + RedisJSON）。它把 jedis 与 `spring-ai-redis-store`
+          一起带进来，两个都是运行时真的要用——不要 exclude。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-redis-semantic-cache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-redis-store</artifactId>
+        </dependency>
+        <!--
           工具检索（M3-06）：工具多到塞不进提示词时，让模型先找工具再调。
           刻意不用 starter：`spring-ai-starter-tool-search-advisor` 的自动配置会往
           ChatClient 里塞它自己的工具循环，跟我们按预算建的那个并存——两个循环里
