@@ -1,7 +1,7 @@
 package io.github.claw4j.agent.goal;
 
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.ToolPermission;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -25,8 +25,8 @@ import java.util.Objects;
  * <b>没有</b> {@code objective} 参数、也没有 {@code paused}——那两个分别属于
  * {@code /goal edit} 与 {@code /goal pause}，是人的按钮。
  *
- * <p><b>会话键从工具上下文来，模型没有参数可改</b>：键是 {@link ChatMemory#CONVERSATION_ID}，
- * 值由 {@code ChatClientAgentPort} 算好（含段）。模型手上没有"给别的会话定目标"的入参，
+ * <p><b>会话键从工具上下文来，模型没有参数可改</b>：键是 {@link ContextKeys#CONVERSATION}
+ * （会话节点，**不含段**），值由 {@code ChatClientAgentPort} 算好。模型手上没有"给别的会话定目标"的入参，
  * 于是那条路径不存在，而不是"存在但被拒绝"。这也正是目标必须挂会话的原因：
  * 挂 run 的话，同一句话换个 runId 就看不见自己的目标了。
  */
@@ -165,13 +165,19 @@ public final class GoalTools implements ToolCallbackProvider {
         String handle(Map<String, Object> args, String sessionKey) {
             GoalStatus status = modelStatus(required(args, "status"));
             String note = text(args, "note");
-            return goals.setStatus(sessionKey, status, note)
+            // 先读一次拿 goalId：变更请求必须指向"我看到的那一版目标"。
+            // 读与写之间被换过目标时，SQL 里 goal_id 对不上，返回 0 行——
+            // 这正是它文档里"旧按钮不能改到替换后的目标"那条。
+            SessionGoal current = goals.of(sessionKey).orElse(null);
+            if (current == null) {
+                return NO_GOAL;
+            }
+            if (current.status() == GoalStatus.COMPLETE) {
+                return "这个目标已经是达成状态了，没有再改。要开始别的事得先 /goal clear。";
+            }
+            return goals.setStatus(sessionKey, current.id(), status, note)
                     .map(changed -> "目标已标成" + changed.status().label() + "。\n" + render(changed))
-                    .orElseGet(() -> goals.of(sessionKey)
-                            .map(existing -> existing.status() == GoalStatus.COMPLETE
-                                    ? "这个目标已经是达成状态了，没有再改。要开始别的事得先 /goal clear。"
-                                    : "目标没写进去（库连不上，或者迁移没跑过）。")
-                            .orElse(NO_GOAL));
+                    .orElse("目标已经换了（或者没写进去），这一次没有改。重新 get_goal 看一眼再决定。");
         }
     }
 
@@ -276,11 +282,19 @@ public final class GoalTools implements ToolCallbackProvider {
         abstract String handle(Map<String, Object> args, String sessionKey);
     }
 
+    /**
+     * 目标挂在会话节点上（键不含段），所以读的是 {@link ContextKeys#CONVERSATION}，
+     * 不是框架记忆用的 {@code CONVERSATION_ID}（那个含段）。
+     *
+     * <p>两者不是同一个字符串：{@code /new} 之后目标被清掉、记忆换到新段。
+     * 拿错键的表现是"每个新段都读不到目标"——看起来像"目标丢了"，
+     * 而实际上它挂在节点上、只是被查到了另一个键上。
+     */
     private static String sessionKeyOf(ToolContext toolContext) {
         if (toolContext == null) {
             return null;
         }
-        Object value = toolContext.getContext().get(ChatMemory.CONVERSATION_ID);
+        Object value = toolContext.getContext().get(ContextKeys.CONVERSATION);
         return value instanceof String sessionKey && !sessionKey.isBlank() ? sessionKey : null;
     }
 

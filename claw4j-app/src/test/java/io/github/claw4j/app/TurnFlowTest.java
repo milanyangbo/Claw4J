@@ -12,6 +12,8 @@ import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
+import io.github.claw4j.agent.session.JdbcSessionEntryStore;
+import io.github.claw4j.agent.session.SessionEntryStore;
 import io.github.claw4j.agent.session.SessionMaintenance;
 import io.github.claw4j.agent.session.SessionMaintenanceProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
@@ -61,6 +63,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -115,6 +118,7 @@ class TurnFlowTest {
         Principal principal = Principal.readOnly("u-1");
         SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         String sessionId = SessionKeys.sessionIdOf(principal, null, "chat-goal");
+        entry(sessionId, SessionKeys.ownerOf(principal), "-", "chat-goal");
         goals.start(sessionId, "把三张表的口径对齐", 100L);
 
         List<String> prompts = new ArrayList<>();
@@ -156,20 +160,24 @@ class TurnFlowTest {
         SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         String capped = "claw4j:user:u-1@fp-1:-:capped";
         String paused = "claw4j:user:u-1@fp-1:-:paused";
+        entry(capped, "u-1@fp-1", "-", "capped");
+        entry(paused, "u-1@fp-1", "-", "paused");
         goals.start(capped, "把三张表的口径对齐", 100L);
-        goals.addTokens(capped, 138L);
+        UUID cappedId = goals.of(capped).orElseThrow().id();
+        goals.account(capped, 138L);
         goals.start(paused, "等 CI 变绿", 100L);
-        goals.addTokens(paused, 40L);
-        goals.setStatus(paused, GoalStatus.PAUSED, "等 CI");
+        UUID pausedId = goals.of(paused).orElseThrow().id();
+        goals.account(paused, 40L);
+        goals.setStatus(paused, pausedId, GoalStatus.PAUSED, "等 CI");
 
-        var resumed = goals.resume(capped, "再看看").orElseThrow();
+        var resumed = goals.resume(capped, cappedId, "再看看").orElseThrow();
 
         assertThat(resumed.status()).isEqualTo(GoalStatus.ACTIVE);
         assertThat(resumed.tokensUsed()).as("新窗口：用量从 0 起算").isZero();
         assertThat(resumed.objective()).isEqualTo("把三张表的口径对齐");
         assertThat(resumed.tokenBudget()).as("预算本身不变").isEqualTo(100L);
 
-        var back = goals.resume(paused, "继续").orElseThrow();
+        var back = goals.resume(paused, pausedId, "继续").orElseThrow();
         assertThat(back.tokensUsed())
                 .as("暂停一下不该白拿一份额度：只有限额那一个状态才清零")
                 .isEqualTo(40L);
@@ -192,25 +200,27 @@ class TurnFlowTest {
     void aCompletedGoalCanBeResumedButNotChangedInPlace() {
         SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         String key = "claw4j:user:u-1@fp-1:-:done";
+        entry(key, "u-1@fp-1", "-", "done");
         goals.start(key, "把三张表的口径对齐", 100L);
-        goals.addTokens(key, 40L);
-        goals.setStatus(key, GoalStatus.COMPLETE, "推上去并验证过");
+        UUID goalId = goals.of(key).orElseThrow().id();
+        goals.account(key, 40L);
+        goals.setStatus(key, goalId, GoalStatus.COMPLETE, "推上去并验证过");
 
-        assertThat(goals.edit(key, "换个说法"))
+        assertThat(goals.edit(key, goalId, "换个说法"))
                 .as("达成之后直接改写会把一件收了尾的事改回进行中的样子")
                 .isEmpty();
-        assertThat(goals.setStatus(key, GoalStatus.PAUSED, "等等"))
+        assertThat(goals.setStatus(key, goalId, GoalStatus.PAUSED, "等等"))
                 .as("同上：pause 也要先 resume")
                 .isEmpty();
 
-        var resumed = goals.resume(key, null).orElseThrow();
+        var resumed = goals.resume(key, goalId, null).orElseThrow();
 
         assertThat(resumed.status()).isEqualTo(GoalStatus.ACTIVE);
         assertThat(resumed.objective()).as("恢复同一个目标，不是新建一件").isEqualTo("把三张表的口径对齐");
         assertThat(resumed.tokensUsed())
                 .as("不是限额那一路，所以不开新窗口：额度接着算")
                 .isEqualTo(40L);
-        assertThat(goals.edit(key, "换个说法")).as("resume 回来之后就能改了").isPresent();
+        assertThat(goals.edit(key, goalId, "换个说法")).as("resume 回来之后就能改了").isPresent();
     }
 
     // ---------------------------------------------------------------- 送到哪（A05）
@@ -280,7 +290,7 @@ class TurnFlowTest {
                         + "无段形状那条更是连指针行都没有——它们留下来这件事本身就说明判据不是 created_at")
                 .containsExactlyInAnyOrder("B-now",
                         SessionKeys.sessionIdOf(ow, "web", "c-legacy"));
-        assertThat(jdbc.queryForObject("select chat_id from claw4j_session.conversation_pointer",
+        assertThat(jdbc.queryForObject("select chat_id from claw4j_session.session_entry",
                 String.class)).isEqualTo("c-b");
 
         // ---- 上限：桶比 max-entries 多时，驱逐最久没动的（OpenClaw 的 maxEntries）。
@@ -294,9 +304,9 @@ class TurnFlowTest {
                 maintenance("enforce", 2, new SimpleMeterRegistry()).sweep(now);
 
         assertThat(evicted.prunedOverLimit()).as("三个桶留两个，走的是最久没动的那个").isEqualTo(1);
-        assertThat(jdbc.queryForList("select chat_id from claw4j_session.conversation_pointer",
+        assertThat(jdbc.queryForList("select chat_id from claw4j_session.session_entry",
                         String.class))
-                .as("按 segment 的字符串序排会驱逐错人，按 touched_at 才是「最久没动」")
+                .as("按 segment 的字符串序排会驱逐错人，按 last_interaction_at 才是「最久没动」")
                 .containsExactlyInAnyOrder("c-2", "c-3");
     }
 
@@ -315,7 +325,7 @@ class TurnFlowTest {
         assertThat(report.enforced()).isFalse();
         assertThat(report.pruned()).isZero();
         assertThat(sessionsInTable()).as("warn 下一条都不许删").containsExactly("A");
-        assertThat(jdbc.queryForObject("select count(*) from claw4j_session.conversation_pointer",
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_session.session_entry",
                 Integer.class)).isEqualTo(1);
         assertThat(registry.get(SessionMaintenance.PRUNABLE).tag("kind", "segments").gauge().value())
                 .as("数得出来才叫「只报告」：这个值恒为 0 的话，默认档位就是一次静默空转")
@@ -339,12 +349,27 @@ class TurnFlowTest {
                 id + "-e", id, Timestamp.from(lastEventAt));
     }
 
+    /**
+     * 先造那一行 entry：目标挂在它上面，{@code JdbcSessionGoalStore} 只做 update。
+     * 真实路径由每轮入口 upsert，这里直接调 store 的用例需要自己补这一步。
+     */
+    private void entry(String sessionKey, String owner, String channel, String chatId) {
+        Instant at = Instant.parse("2026-11-06T02:00:00Z");
+        new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA).segmentOf(
+                new SessionEntryStore.Key(sessionKey, owner, channel, chatId),
+                new SessionEntryStore.Rotation("seg-1", at, at.minusSeconds(7200),
+                        at.minusSeconds(86_400), false, false));
+    }
+
+    /** 一行 session entry：段与最后交互时刻。目标列留空（这条用例不关心目标）。 */
     private void pointer(String owner, String channel, String chatId, String segment, Instant touchedAt) {
-        jdbc.update("insert into claw4j_session.conversation_pointer"
-                        + " (owner, channel, chat_id, segment, touched_at, day_started)"
-                        + " values (?, ?, ?, ?, ?, ?)",
-                owner, channel, chatId, segment, Timestamp.from(touchedAt),
-                touchedAt.atZone(ZoneId.of("Asia/Shanghai")).toLocalDate());
+        jdbc.update("insert into claw4j_session.session_entry"
+                        + " (session_key, owner, channel, chat_id, segment, session_started_at,"
+                        + "  last_interaction_at, created_at)"
+                        + " values (?, ?, ?, ?, ?, ?, ?, ?)",
+                SessionKeys.conversationKeyOf(owner, channel, chatId), owner, channel, chatId,
+                segment, Timestamp.from(touchedAt), Timestamp.from(touchedAt),
+                Timestamp.from(touchedAt));
     }
 
     private java.util.List<String> sessionsInTable() {
@@ -354,10 +379,8 @@ class TurnFlowTest {
     private void freshSessionTables() {
         jdbc.update("delete from claw4j_session.ai_session_event");
         jdbc.update("delete from claw4j_session.ai_session");
-        jdbc.update("delete from claw4j_session.conversation_pointer");
-        // 目标也要清：{@code start} 是 {@code on conflict do nothing}，
-        // 上一轮留下的那一行会让这一轮的 start 静默失败，于是用例读到的是别人留下的状态。
-        jdbc.update("delete from claw4j_session.conversation_goal");
+        // 段与目标在同一行：删一次就都干净了。
+        jdbc.update("delete from claw4j_session.session_entry");
     }
 
     // ---------------------------------------------------------------- 装配

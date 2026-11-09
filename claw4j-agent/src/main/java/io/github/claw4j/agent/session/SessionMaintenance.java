@@ -71,21 +71,21 @@ public final class SessionMaintenance {
      * 一个刚换段的人可能一条事件都没写（换段那次是纯读），但指针行必须被刷新。
      */
     private static final String STALE_CONVERSATIONS_TEMPLATE =
-            "select owner, channel, chat_id from %1$sconversation_pointer where touched_at < ?";
+            "select owner, channel, chat_id from %1$ssession_entry where last_interaction_at < ?";
 
     private static final String DELETE_STALE_CONVERSATIONS_TEMPLATE =
-            "delete from %1$sconversation_pointer where touched_at < ?";
+            "delete from %1$ssession_entry where last_interaction_at < ?";
 
     /** 超出 {@code max-entries} 的那些桶，最久没动的排在前面。 */
     private static final String OVER_LIMIT_TEMPLATE = """
             select owner, channel, chat_id
-            from %1$sconversation_pointer
-            order by touched_at desc, owner, channel, chat_id
+            from %1$ssession_entry
+            order by last_interaction_at desc, owner, channel, chat_id
             offset ?
             """;
 
     private static final String DELETE_OVER_LIMIT_TEMPLATE = """
-            delete from %1$sconversation_pointer
+            delete from %1$ssession_entry
             where (owner, channel, chat_id) in (""" + OVER_LIMIT_TEMPLATE + ")";
 
     /**

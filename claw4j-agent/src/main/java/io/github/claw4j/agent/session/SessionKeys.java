@@ -110,6 +110,18 @@ public final class SessionKeys {
     }
 
     /**
+     * 会话节点的键：{@code claw4j:user:<owner>:<通道>:<chatId>}，**不含段**（票 06）。
+     *
+     * <p>它与三参 {@link #sessionIdOf(String, String, String)} 是同一个值，单独起个名字是因为
+     * 调用点要回答的问题不同：那边问"这一轮在哪一段"，这里问"哪个会话节点"。
+     * 目标（{@code SessionGoalStore}）与会话状态行（{@code SessionEntryStore}）都按后者定位——
+     * 目标是跨段的一份状态，{@code /new} 时被清掉，而不是"另开一行"。
+     */
+    public static String conversationKeyOf(String owner, String channel, String chatId) {
+        return sessionIdOf(owner, channel, chatId);
+    }
+
+    /**
      * 带段的对话键：{@code claw4j:user:<owner>:<通道>:<chatId>:<段>}（ADR-0026）。
      *
      * <p>段是"这段对话的第几世"。它由 {@link ConversationPointers} 按时间给（跨天或空闲

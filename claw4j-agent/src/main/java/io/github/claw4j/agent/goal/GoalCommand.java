@@ -124,9 +124,7 @@ public sealed interface GoalCommand {
             case Show ignored -> goals.of(sessionKey).map(GoalTools::render)
                     .orElse("这个会话还没有目标。用法：/goal <目标>，或 /goal start <目标>");
             case Invalid invalid -> invalid.reason();
-            case Clear ignored -> goals.clear(sessionKey)
-                    ? "目标已清掉。"
-                    : "这个会话本来就没有目标。";
+            case Clear ignored -> clear(goals, sessionKey);
             case Start start -> start(goals, sessionKey, start.objective());
             case Edit edit -> edit(goals, sessionKey, edit.objective());
             case Pause pause -> setStatus(goals, sessionKey, GoalStatus.PAUSED, pause.note(),
@@ -157,9 +155,27 @@ public sealed interface GoalCommand {
      * 不然用户会对着一个完好的系统反复重试。
      */
     private static String edit(SessionGoalStore goals, String sessionKey, String objective) {
-        return goals.edit(sessionKey, objective)
+        Optional<SessionGoal> current = goals.of(sessionKey);
+        if (current.isEmpty()) {
+            return "这个会话还没有目标。用法：/goal <目标>";
+        }
+        return goals.edit(sessionKey, current.get().id(), objective)
                 .map(changed -> "目标已改写（状态与用量都没动）。\n" + GoalTools.render(changed))
                 .orElseGet(() -> explainMiss(goals, sessionKey));
+    }
+
+    /**
+     * 清掉目标。带 goalId：读与写之间被换过目标时返回 0 行——
+     * 那正是它的 {@code sessions.goal.clear} 要求 {@code goalId} 的理由。
+     */
+    private static String clear(SessionGoalStore goals, String sessionKey) {
+        Optional<SessionGoal> current = goals.of(sessionKey);
+        if (current.isEmpty()) {
+            return "这个会话本来就没有目标。";
+        }
+        return goals.clear(sessionKey, current.get().id())
+                ? "目标已清掉。"
+                : "没能清掉（库连不上，或者目标刚被换过）。";
     }
 
     /**
@@ -186,7 +202,7 @@ public sealed interface GoalCommand {
             // revision 记的是"谁改过它"，空按钮不该留下一道痕迹。
             return "这个目标本来就是活跃的，没动它。\n" + GoalTools.render(current.get());
         }
-        return goals.resume(sessionKey, note)
+        return goals.resume(sessionKey, current.get().id(), note)
                 .map(changed -> switch (was) {
                     case BUDGET_LIMITED -> "目标恢复为活跃，额度开了新窗口（用量从 0 起算）。"
                             + "接下来的轮次会重新把它带进上下文。";
@@ -199,7 +215,11 @@ public sealed interface GoalCommand {
 
     private static String setStatus(SessionGoalStore goals, String sessionKey, GoalStatus status,
                                     String note, String done) {
-        return goals.setStatus(sessionKey, status, note)
+        Optional<SessionGoal> current = goals.of(sessionKey);
+        if (current.isEmpty()) {
+            return "这个会话还没有目标。用法：/goal <目标>";
+        }
+        return goals.setStatus(sessionKey, current.get().id(), status, note)
                 .map(changed -> done)
                 .orElseGet(() -> explainMiss(goals, sessionKey));
     }

@@ -55,6 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -530,7 +531,7 @@ class ChatPipelineTest {
         String key = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-1");
 
         port.reply(message("chat-1", "/goal 让 CI 变绿"));
-        goals.addTokens(key, 1200);
+        goals.account(key, 1200L);
         port.reply(message("chat-1", "/goal complete 推上去并验证过"));
 
         assertThat(port.reply(message("chat-1", "/goal resume")).text())
@@ -616,11 +617,16 @@ class ChatPipelineTest {
 
         private static final Instant NOW = Instant.parse("2026-11-06T02:00:00Z");
 
-        private final Map<String, SessionGoal> rows = new HashMap<>();
+        /** 一行 = entry 的这一段：目标 + 会话累计用量（account 用它算快照差）。 */
+        private record State(SessionGoal goal, long totalTokens) {
+        }
+
+        private final Map<String, State> rows = new HashMap<>();
 
         @Override
         public Optional<SessionGoal> of(String sessionKey) {
-            return Optional.ofNullable(rows.get(sessionKey));
+            State state = rows.get(sessionKey);
+            return state == null ? Optional.empty() : Optional.of(state.goal());
         }
 
         @Override
@@ -628,80 +634,116 @@ class ChatPipelineTest {
             if (rows.containsKey(sessionKey)) {
                 return Optional.empty();
             }
-            return Optional.of(put(new SessionGoal(sessionKey, GoalStatus.ACTIVE, objective, null,
-                    tokenBudget, 0, 1, NOW, NOW)));
-        }
-
-        /** 改写：状态与用量不动；达成之后不能改（与 JDBC 的 {@code status <> 'complete'} 同规则）。 */
-        @Override
-        public Optional<SessionGoal> edit(String sessionKey, String objective) {
-            SessionGoal current = rows.get(sessionKey);
-            if (current == null || current.status() == GoalStatus.COMPLETE) {
-                return Optional.empty();
-            }
-            return Optional.of(put(new SessionGoal(sessionKey, current.status(), objective,
-                    current.note(), current.tokenBudget(), current.tokensUsed(),
-                    current.revision() + 1, current.createdAt(), NOW)));
+            SessionGoal created = new SessionGoal(sessionKey, SessionGoal.SCHEMA_VERSION,
+                    UUID.randomUUID(), objective, GoalStatus.ACTIVE, NOW, NOW,
+                    0, true, 0, tokenBudget, 0, null, null, null, null, null, null);
+            rows.put(sessionKey, new State(created, 0));
+            return Optional.of(created);
         }
 
         @Override
-        public Optional<SessionGoal> setStatus(String sessionKey, GoalStatus status, String note) {
-            SessionGoal current = rows.get(sessionKey);
-            if (current == null || current.status() == GoalStatus.COMPLETE) {
+        public Optional<SessionGoal> edit(String sessionKey, UUID goalId, String objective) {
+            State state = rows.get(sessionKey);
+            if (state == null || !state.goal().id().equals(goalId)
+                    || state.goal().status() == GoalStatus.COMPLETE) {
                 return Optional.empty();
             }
-            return Optional.of(put(new SessionGoal(sessionKey, status, current.objective(), note,
-                    current.tokenBudget(), current.tokensUsed(), current.revision() + 1,
-                    current.createdAt(), NOW)));
+            SessionGoal old = state.goal();
+            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(), objective,
+                    old.status(), old.createdAt(), NOW, old.tokenStart(), old.tokenStartFresh(),
+                    old.tokensUsed(), old.tokenBudget(), old.continuationTurns(), old.note(),
+                    old.pausedAt(), old.blockedAt(), old.completedAt(), old.usageLimitedAt(),
+                    old.budgetLimitedAt()));
+        }
+
+        @Override
+        public Optional<SessionGoal> setStatus(String sessionKey, UUID goalId, GoalStatus status,
+                                               String note) {
+            State state = rows.get(sessionKey);
+            if (state == null || !state.goal().id().equals(goalId)
+                    || state.goal().status() == GoalStatus.COMPLETE) {
+                return Optional.empty();
+            }
+            SessionGoal old = state.goal();
+            Instant paused = status == GoalStatus.PAUSED ? NOW : old.pausedAt();
+            Instant blocked = status == GoalStatus.BLOCKED ? NOW : old.blockedAt();
+            Instant completed = status == GoalStatus.COMPLETE
+                    ? (old.completedAt() == null ? NOW : old.completedAt()) : old.completedAt();
+            Instant usage = status == GoalStatus.USAGE_LIMITED ? NOW : old.usageLimitedAt();
+            Instant budget = status == GoalStatus.BUDGET_LIMITED ? NOW : old.budgetLimitedAt();
+            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
+                    old.objective(), status, old.createdAt(), NOW, old.tokenStart(),
+                    old.tokenStartFresh(), old.tokensUsed(), old.tokenBudget(),
+                    old.continuationTurns(), note, paused, blocked, completed, usage, budget));
+        }
+
+        @Override
+        public Optional<SessionGoal> resume(String sessionKey, UUID goalId, String note) {
+            State state = rows.get(sessionKey);
+            if (state == null || !state.goal().id().equals(goalId)
+                    || state.goal().status() == GoalStatus.ACTIVE) {
+                return Optional.empty();
+            }
+            SessionGoal old = state.goal();
+            boolean newWindow = old.status() == GoalStatus.BUDGET_LIMITED
+                    || old.status() == GoalStatus.USAGE_LIMITED;
+            long start = newWindow ? state.totalTokens() : old.tokenStart();
+            long used = newWindow ? 0 : old.tokensUsed();
+            Instant completed = old.status() == GoalStatus.COMPLETE ? null : old.completedAt();
+            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
+                    old.objective(), GoalStatus.ACTIVE, old.createdAt(), NOW, start,
+                    newWindow || old.tokenStartFresh(), used, old.tokenBudget(),
+                    old.continuationTurns(), note, old.pausedAt(), old.blockedAt(), completed,
+                    newWindow ? null : old.usageLimitedAt(),
+                    newWindow ? null : old.budgetLimitedAt()));
         }
 
         /**
-         * 记账，并在撞上预算时进 {@code budget_limited}——与 {@code JdbcSessionGoalStore}
-         * 的 {@code case when ... then 'budget_limited'} 同一条规则。
-         * 这里重写一遍而不是跳过：主链路那份测试要断言"这一轮之后提示词里没有目标了"。
+         * 对账：用量按快照差重算，不是累加——与 JDBC 那条语句一致。
+         * {@code null} 表示这一轮拿不到用量，此时什么都不改。
          */
         @Override
-        public Optional<SessionGoal> addTokens(String sessionKey, long tokens) {
-            SessionGoal current = rows.get(sessionKey);
-            if (current == null) {
+        public Optional<SessionGoal> account(String sessionKey, Long deltaTokens) {
+            State state = rows.get(sessionKey);
+            if (state == null) {
                 return Optional.empty();
             }
-            long used = current.tokensUsed() + tokens;
-            boolean capped = current.status() != GoalStatus.COMPLETE
-                    && current.status() != GoalStatus.BUDGET_LIMITED
-                    && current.tokenBudget() != null && used >= current.tokenBudget();
-            return Optional.of(put(new SessionGoal(sessionKey,
-                    capped ? GoalStatus.BUDGET_LIMITED : current.status(),
-                    current.objective(), current.note(), current.tokenBudget(), used,
-                    current.revision() + (capped ? 1 : 0), current.createdAt(), NOW)));
-        }
-
-        /**
-         * 恢复：状态回活跃；**只有 {@code budget_limited} 才清零用量**，与 JDBC 那条语句一致。
-         *
-         * <p>已达成的不在这里挡——完成的也能 resume（OpenClaw 的命令表把 {@code completed}
-         * 列在 resume 的作用对象里）。挡它的是 edit / pause / block（见 {@code setStatus}）。
-         */
-        @Override
-        public Optional<SessionGoal> resume(String sessionKey, String note) {
-            SessionGoal current = rows.get(sessionKey);
-            if (current == null || current.status() == GoalStatus.ACTIVE) {
-                return Optional.empty();
+            if (deltaTokens == null) {
+                return Optional.of(state.goal());
             }
-            long used = current.status() == GoalStatus.BUDGET_LIMITED ? 0L : current.tokensUsed();
-            return Optional.of(put(new SessionGoal(sessionKey, GoalStatus.ACTIVE, current.objective(),
-                    note, current.tokenBudget(), used, current.revision() + 1,
-                    current.createdAt(), NOW)));
+            SessionGoal old = state.goal();
+            long total = state.totalTokens() + deltaTokens;
+            long start = old.tokenStartFresh() ? old.tokenStart() : total;
+            long used = old.tokenStartFresh()
+                    ? Math.max(old.tokensUsed(), total - old.tokenStart())
+                    : old.tokensUsed();
+            boolean capped = old.status() != GoalStatus.COMPLETE
+                    && old.status() != GoalStatus.BUDGET_LIMITED
+                    && old.status() != GoalStatus.USAGE_LIMITED
+                    && old.tokenBudget() != null && used >= old.tokenBudget();
+            SessionGoal next = new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
+                    old.objective(), capped ? GoalStatus.BUDGET_LIMITED : old.status(),
+                    old.createdAt(), NOW, start, true, used, old.tokenBudget(),
+                    old.continuationTurns(), old.note(), old.pausedAt(), old.blockedAt(),
+                    old.completedAt(), old.usageLimitedAt(),
+                    capped ? NOW : old.budgetLimitedAt());
+            rows.put(sessionKey, new State(next, total));
+            return Optional.of(next);
         }
 
         @Override
-        public boolean clear(String sessionKey) {
-            return rows.remove(sessionKey) != null;
+        public boolean clear(String sessionKey, UUID goalId) {
+            State state = rows.get(sessionKey);
+            if (state == null || !state.goal().id().equals(goalId)) {
+                return false;
+            }
+            rows.remove(sessionKey);
+            return true;
         }
 
-        private SessionGoal put(SessionGoal goal) {
-            rows.put(goal.sessionKey(), goal);
-            return goal;
+        private Optional<SessionGoal> put(State state, SessionGoal goal) {
+            rows.put(goal.sessionKey(), new State(goal, state.totalTokens()));
+            return Optional.of(goal);
         }
     }
 

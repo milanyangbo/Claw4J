@@ -13,8 +13,9 @@ import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.session.SessionKeys;
 
 import java.time.Instant;
-import io.github.claw4j.agent.session.ConversationPointerStore;
-import io.github.claw4j.agent.session.JdbcConversationPointerStore;
+import java.util.UUID;
+import io.github.claw4j.agent.session.SessionEntryStore;
+import io.github.claw4j.agent.session.JdbcSessionEntryStore;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.ContextKeys;
@@ -83,8 +84,8 @@ class PersistenceSchemaTest {
 
     @BeforeEach
     void freshTables() {
-        jdbc.update("delete from claw4j_session.conversation_goal");
-        jdbc.update("delete from claw4j_session.conversation_pointer");
+        // 段与目标在同一行（票 06）：删一次就都干净了。
+        jdbc.update("delete from claw4j_session.session_entry");
         jdbc.update("delete from claw4j_run.approval_request");
         // 审计也要清：上限那条用例会插十万行，留着会让"30 天只留一条"的断言看到别人的行。
         jdbc.update("delete from claw4j_run.audit_event");
@@ -106,60 +107,240 @@ class PersistenceSchemaTest {
     @Test
     @DisplayName("六态之外写不进去；空白目标、0 预算、同一会话第二行都被库拒绝")
     void goalsAreSessionStateWithAClosedVocabulary() {
-        jdbc.update("insert into claw4j_session.conversation_goal"
-                + " (session_key, status, objective) values ('k-a', 'active', '让 CI 变绿')");
+        insertGoalRow("k-a", "active", "让 CI 变绿", null);
 
-        assertThatThrownBy(() -> jdbc.update("insert into claw4j_session.conversation_goal"
-                + " (session_key, status, objective) values ('k-b', 'running', '错的态')"))
+        assertThatThrownBy(() -> insertGoalRow("k-b", "running", "错的态", null))
                 .as("六态是闭合词表：写成 running 会被库拒绝，而不是存下一个没人认得的状态")
-                .hasMessageContaining("conversation_goal_status_allowed");
-        assertThatThrownBy(() -> jdbc.update("insert into claw4j_session.conversation_goal"
-                + " (session_key, status, objective) values ('k-c', 'active', '   ')"))
+                .hasMessageContaining("session_entry_goal_status_allowed");
+        assertThatThrownBy(() -> insertGoalRow("k-c", "active", "   ", null))
                 .as("空白目标不是空目标，是存了一个空格")
-                .hasMessageContaining("conversation_goal_objective_present");
-        assertThatThrownBy(() -> jdbc.update("insert into claw4j_session.conversation_goal"
-                + " (session_key, status, objective, token_budget)"
-                + " values ('k-d', 'active', 'x', 0)"))
+                .hasMessageContaining("session_entry_goal_all_or_nothing");
+        assertThatThrownBy(() -> insertGoalRow("k-d", "active", "x", 0L))
                 .as("0 预算的意思是「一点额度都不给」，不限额的正确写法是不写这一列")
-                .hasMessageContaining("conversation_goal_budget_positive");
-        assertThatThrownBy(() -> jdbc.update("insert into claw4j_session.conversation_goal"
-                + " (session_key, status, objective) values ('k-a', 'active', '同一个键再来一行')"))
-                .as("主键就是「一个会话一个目标」：不用标志位，因为标志位写得出一行都不是当前")
-                .hasMessageContaining("conversation_goal_pkey");
+                .hasMessageContaining("session_entry_goal_budget_positive");
+        assertThatThrownBy(() -> insertGoalRow("k-a", "active", "同一个键再来一行", null))
+                .as("主键就是「一个会话节点一行」：目标不是另立一张表，也就没有第二行可插")
+                .hasMessageContaining("session_entry_pkey");
     }
 
     @Test
-    @DisplayName("换段就是换行：新段天然没有目标；edit 不动状态与用量；已完成是终态")
-    void aFreshSegmentHasNoGoalAndEditKeepsStatusAndUsage() {
+    @DisplayName("goalId 挡住旧按钮：清掉再建之后，拿旧 id 改不动新目标")
+    void aStaleGoalIdCannotChangeTheReplacement() {
+        Instant now = Instant.parse("2026-11-09T02:00:00Z");
+        String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
+        SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
+        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1"),
+                new SessionEntryStore.Rotation("seg-1", now, now.minusSeconds(7200),
+                        now.minusSeconds(86_400), false, false));
+
         SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
-        String first = SessionKeys.sessionIdOf("u-1@fp-1", "web", "c-1", "seg-1");
-        String second = SessionKeys.sessionIdOf("u-1@fp-1", "web", "c-1", "seg-2");
+        goals.start(key, "把三张表的口径对齐", 100L);
+        UUID old = goals.of(key).orElseThrow().id();
+        assertThat(goals.clear(key, old)).isTrue();
 
-        goals.start(first, "让 CI 变绿", 50_000L);
-        goals.addTokens(first, 1200);
-        goals.edit(first, "让 CI 变绿并更新文档");
+        goals.start(key, "另一件事", null);
+        UUID current = goals.of(key).orElseThrow().id();
+        assertThat(current).isNotEqualTo(old);
 
-        SessionGoal edited = goals.of(first).orElseThrow();
+        assertThat(goals.setStatus(key, old, GoalStatus.COMPLETE, "拿旧 id 按下"))
+                .as("清掉再建之后，旧界面那个按钮带着上一个 id——它改不到新目标")
+                .isEmpty();
+        assertThat(goals.edit(key, old, "改个说法")).isEmpty();
+        assertThat(goals.clear(key, old))
+                .as("同一个理由：删也要认 id，否则旧按钮能把新目标删掉")
+                .isFalse();
+        assertThat(goals.of(key).orElseThrow().objective())
+                .as("目标一个字都没动")
+                .isEqualTo("另一件事");
+    }
+
+    @Test
+    @DisplayName("重复 complete 保留首次完成时间；resume 之后再次达成才记新的")
+    void completingTwiceKeepsTheFirstCompletionTime() {
+        Instant now = Instant.parse("2026-11-09T02:00:00Z");
+        String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
+        SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
+        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1"),
+                new SessionEntryStore.Rotation("seg-1", now, now.minusSeconds(7200),
+                        now.minusSeconds(86_400), false, false));
+
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
+        goals.start(key, "把三张表的口径对齐", null);
+        UUID id = goals.of(key).orElseThrow().id();
+
+        goals.setStatus(key, id, GoalStatus.COMPLETE, "推上去了");
+        Instant first = goals.of(key).orElseThrow().completedAt();
+        assertThat(first).isNotNull();
+
+        assertThat(goals.setStatus(key, id, GoalStatus.COMPLETE, "又按了一次"))
+                .as("它的规则允许再 complete（幂等），只挡 complete → paused / blocked")
+                .isPresent();
+        assertThat(goals.of(key).orElseThrow().completedAt())
+                .as("重复 complete 不覆盖首次完成时间——那一次达成的时刻是历史，不是时间戳")
+                .isEqualTo(first);
+
+        goals.resume(key, id, "还有一件事");
+        assertThat(goals.of(key).orElseThrow().completedAt())
+                .as("resume 把完成时刻清掉：完成属于上一次达成")
+                .isNull();
+        goals.setStatus(key, id, GoalStatus.COMPLETE, "第二次达成");
+        assertThat(goals.of(key).orElseThrow().completedAt())
+                .as("再一次达成记新的时刻")
+                .isNotNull();
+    }
+
+    @Test
+    @DisplayName("跨天边界在读时算：at-hour 4 改成 9 之后，同一条旧行按新边界判过期")
+    void dailyBoundaryIsEvaluatedAtReadTime() {
+        java.time.ZoneId shanghai = java.time.ZoneId.of("Asia/Shanghai");
+        // 段开始于 11-09 05:00（+08），现在 11-09 10:00（+08）。
+        Instant startedAt = Instant.parse("2026-11-08T21:00:00Z");
+        Instant now = Instant.parse("2026-11-09T02:00:00Z");
+        String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
+        SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
+        SessionEntryStore.Key row = new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1");
+
+        entries.segmentOf(row, new SessionEntryStore.Rotation("seg-1", startedAt,
+                startedAt.minusSeconds(1), startedAt.minusSeconds(86_400), true, false));
+
+        // at-hour=4：边界 04:00，段开始 05:00 不早于它 → 不换段。
+        assertThat(entries.segmentOf(row, new SessionEntryStore.Rotation("seg-new", now,
+                startedAt.minusSeconds(1),
+                new SessionResetProperties(null, 4, 120).dailyResetAt(now, shanghai), true, false)))
+                .contains("seg-1");
+
+        // at-hour=9：边界 09:00，段开始 05:00 早于它 → 换段。
+        assertThat(entries.segmentOf(row, new SessionEntryStore.Rotation("seg-new", now,
+                startedAt.minusSeconds(1),
+                new SessionResetProperties(null, 9, 120).dailyResetAt(now, shanghai), true, false)))
+                .as("边界若在写的时候就算好（存 day_started），这一行会带着按 4 点算的那一天，"
+                        + "改配置之后该换的段不换")
+                .contains("seg-new");
+    }
+
+    @Test
+    @DisplayName("token_start_fresh=false：下一次真实用量被采纳成起点，旧用量保持；null 什么都不改")
+    void aStaleTokenStartIsAdoptedOnTheNextRealUsage() {
+        String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
+        insertGoalRow(key, "active", "把三张表的口径对齐", 100L, false, 40L);
+
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
+        assertThat(goals.of(key).orElseThrow().tokenStartFresh()).isFalse();
+
+        goals.account(key, null);
+        assertThat(goals.of(key).orElseThrow().tokensUsed())
+                .as("拿不到用量（null）与「这一轮花了 0」是两件事：前者不能拿来重算")
+                .isEqualTo(40);
+
+        goals.account(key, 5L);
+        SessionGoal adopted = goals.of(key).orElseThrow();
+        assertThat(adopted.tokenStart())
+                .as("下一次真实用量到来时被采纳成起点（它的 shouldAdoptFreshStart）")
+                .isEqualTo(5);
+        assertThat(adopted.tokenStartFresh()).isTrue();
+        assertThat(adopted.tokensUsed())
+                .as("旧用量保持：建目标之前的花费不算给它")
+                .isEqualTo(40);
+
+        goals.account(key, 7L);
+        assertThat(goals.of(key).orElseThrow().tokensUsed())
+                .as("起点定了之后按快照差算：累计 12 - 起点 5 = 7，小于旧值 40，取 40")
+                .isEqualTo(40);
+    }
+
+    /**
+     * 插一行"有目标的 entry"。必填的是会话节点、段与两个时间；目标的 17 个列要么全给，
+     * 要么全不给（{@code session_entry_goal_all_or_nothing}）。
+     */
+    private void insertGoalRow(String key, String status, String objective, Long budget) {
+        insertGoalRow(key, status, objective, budget, true, 0);
+    }
+
+    private void insertGoalRow(String key, String status, String objective, Long budget,
+                               boolean startFresh, long tokensUsed) {
+        jdbc.update("insert into claw4j_session.session_entry"
+                        + " (session_key, owner, channel, chat_id, segment, session_started_at,"
+                        + "  last_interaction_at, created_at, goal_schema_version, goal_id,"
+                        + "  goal_objective, goal_status, goal_token_start, goal_token_start_fresh,"
+                        + "  goal_tokens_used, goal_token_budget, goal_continuation_turns,"
+                        + "  goal_created_at, goal_updated_at)"
+                        + " values (?, 'u-1@fp', 'web', 'c-1', 'seg-1', now(), now(), now(), 1,"
+                        + "  gen_random_uuid(), ?, ?, 0, ?, ?, ?, 0, now(), now())",
+                key, objective, status, startFresh, tokensUsed, budget);
+    }
+
+    @Test
+    @DisplayName("换段就是清空同一行的目标：行还在、段变了、goal 没了；edit 不动状态与用量")
+    void aFreshSegmentClearsTheGoalOnTheSameRow() {
+        Instant now = Instant.parse("2026-11-09T02:00:00Z");
+        String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
+        SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
+        SessionEntryStore.Key row = new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1");
+        entries.segmentOf(row, new SessionEntryStore.Rotation("seg-1", now,
+                now.minusSeconds(7200), now.minusSeconds(86_400), false, false));
+
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
+        goals.start(key, "让 CI 变绿", 50_000L);
+        UUID id = goals.of(key).orElseThrow().id();
+        goals.account(key, 1200L);
+        goals.edit(key, id, "让 CI 变绿并更新文档");
+
+        SessionGoal edited = goals.of(key).orElseThrow();
         assertThat(edited.objective()).isEqualTo("让 CI 变绿并更新文档");
         assertThat(edited.status()).as("改个措辞不该把状态也改了").isEqualTo(GoalStatus.ACTIVE);
         assertThat(edited.tokensUsed())
                 .as("先 clear 再 start 的写法会让用量归零——改个措辞把额度还回去了")
                 .isEqualTo(1200);
         assertThat(edited.tokenBudget()).isEqualTo(50_000L);
-        assertThat(edited.revision()).isEqualTo(2);
+        assertThat(edited.tokenStart())
+                .as("预算窗口从建目标那一刻的会话累计用量起算（它 tokenStart 的语义）")
+                .isZero();
 
-        assertThat(goals.of(second))
-                .as("/new 换段之后这一行读不到：不需要谁去删，新段的键根本不是这一个")
-                .isEmpty();
-        assertThat(goals.of(first)).as("旧段那一行还在（等会话 TTL 一起清）").isPresent();
+        java.time.Instant createdAt = jdbc.queryForObject(
+                "select created_at from claw4j_session.session_entry where session_key = ?",
+                java.sql.Timestamp.class, key).toInstant();
 
-        goals.setStatus(first, GoalStatus.COMPLETE, "推上去了");
-        assertThat(goals.setStatus(first, GoalStatus.ACTIVE, null))
-                .as("已完成是终态：恢复它等于把一件收尾的事重新打开，那不是恢复、是新建")
+        // ---- /new：同一条 update 里换段并清空目标列。
+        entries.segmentOf(row, new SessionEntryStore.Rotation("seg-2", now.plusSeconds(1),
+                now.minusSeconds(7200), now.minusSeconds(86_400), false, true));
+
+        assertThat(goals.of(key))
+                .as("换段即无目标：不是「新段读不到」，而是同一行里的目标被清掉了")
                 .isEmpty();
-        assertThat(goals.start(second, "另一件事", null))
-                .as("新段是干净的，可以有自己的目标")
+        assertThat(jdbc.queryForObject(
+                "select segment from claw4j_session.session_entry where session_key = ?",
+                String.class, key)).isEqualTo("seg-2");
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_session.session_entry where session_key = ?",
+                Long.class, key))
+                .as("行还在——它是会话节点，不是目标；删行等于把这一段的存在也抹掉")
+                .isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "select total_tokens from claw4j_session.session_entry where session_key = ?",
+                Long.class, key))
+                .as("新段开新窗口：累计用量归零，否则新目标的预算从旧段的账起算")
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                "select previous_segment from claw4j_session.session_entry where session_key = ?",
+                String.class, key))
+                .as("上一段留在行上（它的 previousSessionId）：换段之后还答得出「上一段是什么」")
+                .isEqualTo("seg-1");
+        assertThat(jdbc.queryForObject(
+                "select created_at from claw4j_session.session_entry where session_key = ?",
+                java.sql.Timestamp.class, key).toInstant())
+                .as("节点创建时间跨段不变——它记的是「这个人第一次来」，不是「这一段什么时候开始」")
+                .isEqualTo(createdAt);
+
+        assertThat(goals.start(key, "另一件事", null))
+                .as("新段可以有自己的目标")
                 .isPresent();
+        assertThat(goals.setStatus(key, goals.of(key).orElseThrow().id(), GoalStatus.COMPLETE, null))
+                .as("达成是终态")
+                .isPresent();
+        assertThat(goals.setStatus(key, goals.of(key).orElseThrow().id(),
+                GoalStatus.ACTIVE, null))
+                .as("已完成之后不能直接改回 active，要先 resume")
+                .isEmpty();
     }
 
     /**

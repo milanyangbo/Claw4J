@@ -10,7 +10,7 @@ import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.channel.ConversationDelivery;
-import io.github.claw4j.agent.session.ConversationPointers;
+import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.port.AgentPort;
@@ -443,7 +443,7 @@ public class AgentAutoConfiguration {
                                ObjectProvider<SessionCompactor> compactor,
                                ObjectProvider<ConversationDelivery> delivery,
                                ObjectProvider<SpanTracer> tracer,
-                               ObjectProvider<ConversationPointers> pointers,
+                               ObjectProvider<SessionEntries> pointers,
                                ObjectProvider<ToolCallAudit> audit,
                                ObjectProvider<io.github.claw4j.agent.goal.SessionGoalStore> goals,
                                AgentProperties properties) {

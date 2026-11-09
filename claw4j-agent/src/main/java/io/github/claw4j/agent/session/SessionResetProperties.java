@@ -88,17 +88,22 @@ public record SessionResetProperties(String mode, Integer atHour, long idleMinut
     }
 
     /**
-     * 这一刻属于哪一个"逻辑日"。
+     * 最近一个 at-hour 边界，**返回时刻而不是日期**（票 06）。
+     *
+     * <p>原先是 {@code logicalDayOf}（返回 {@code LocalDate}），判定写成 {@code day_started <> today}。
+     * 那样存的是"按当时的 at-hour 算好的结论"，改配置之后旧行不会重算——今天 05:00 开始的段，
+     * {@code at-hour} 从 4 改成 9 之后它判新鲜，而边界已经过去了。存时刻的话，
+     * 边界每次读都重算，改配置立刻生效。
      *
      * <p><b>不是 {@code LocalDate.now()}</b>：那用的是容器时区，而容器里通常是 UTC。
      * 差八小时的后果是东八区凌晨 0~8 点的行为全错，而 CI（跑在 UTC 上）是绿的——
      * 一个只在生产夜间出现的错，白天复现不了。
      *
      * <p><b>也不是"过了零点就换"</b>：{@code at-hour} 是给人留的缓冲。4 点换日的意思
-     * 是"凌晨三点还在聊的那件事，还是昨天那件"。所以先按业务时区取时刻，再减掉
-     * {@code atHour} 小时，取日期——减完之后落在零点之前的，自然算前一天。
+     * 是"凌晨三点还在聊的那件事，还是昨天那件"。
      */
-    public java.time.LocalDate logicalDayOf(Instant now, ZoneId zone) {
-        return now.atZone(zone).minusHours(atHour).toLocalDate();
+    public java.time.Instant dailyResetAt(Instant now, ZoneId zone) {
+        java.time.ZonedDateTime shifted = now.atZone(zone).minusHours(atHour);
+        return shifted.toLocalDate().atStartOfDay(zone).plusHours(atHour).toInstant();
     }
 }

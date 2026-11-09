@@ -54,6 +54,19 @@ public final class ContextKeys {
     /** 通道内的会话地址。飞书是 {@code chat_id}，HTTP 是请求头里那个。 */
     public static final String CHAT_REF = "claw4j.chatRef";
 
+    /**
+     * 这一段对话的会话键，**不含段**（票 06）。目标与指针都按它定位。
+     *
+     * <p>{@link org.springframework.ai.chat.memory.ChatMemory#CONVERSATION_ID} 里放的是含段的
+     * sessionId（框架的记忆按段隔离），而目标的状态挂在会话节点上、跨段只有一份。
+     * 两者不是同一个字符串，所以不能用同一个键。
+     *
+     * <p><b>为什么不从 sessionId 解析回来</b>：{@code chatId} 里可以有冒号
+     * （定时任务就是 {@code cron:<taskId>:<时刻>}），按分隔符切会在那种 id 上切错；
+     * 而切错的后果是"目标挂到了另一个会话节点上"——不报错，只是读到空。
+     */
+    public static final String CONVERSATION = "claw4j.conversation";
+
     private ContextKeys() {
     }
 }

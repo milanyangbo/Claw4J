@@ -258,7 +258,7 @@ class BuildContractTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：1..7 全跑到，六个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：1..8 全跑到，六个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -267,7 +267,7 @@ class BuildContractTest {
         // 谁先跑都会把迁移做完，盯着 migrationsExecuted 会变成一条看执行顺序的用例。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -285,6 +285,14 @@ class BuildContractTest {
                 .containsExactly("business", "claw4j_cache", "claw4j_channel", "claw4j_rag",
                         "claw4j_run", "claw4j_session");
 
+        // 会话 schema 里只剩三张表（票 06）：目标与指针并成了 session_entry。
+        // 这条断言盯的是"合并真的发生了"，而不是"新表建出来了"——
+        // 两张旧表还在的话，`/new` 那条路又会退回到"段换了、目标还挂着"。
+        assertThat(jdbc.queryForList(
+                "select table_name from information_schema.tables"
+                        + " where table_schema = 'claw4j_session' order by table_name", String.class))
+                .containsExactly("ai_session", "ai_session_event", "session_entry");
+
         // V1 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
         assertThat(jdbc.queryForObject("select count(*) from business.sales_order", Integer.class))
                 .isPositive();
@@ -296,7 +304,7 @@ class BuildContractTest {
         var flyway = flyway();
         flyway.migrate();
 
-        // 7 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
+        // 8 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
         assertThat(flyway.migrate().migrationsExecuted)
                 .as("第二次调用不该再执行任何迁移")
                 .isZero();

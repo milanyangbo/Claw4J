@@ -8,11 +8,12 @@ import io.github.claw4j.agent.model.EmbeddingProperties;
 import io.github.claw4j.agent.rag.KnowledgeBase;
 import io.github.claw4j.agent.rag.PgVectorKnowledgeBase;
 import io.github.claw4j.agent.rag.RagProperties;
-import io.github.claw4j.agent.session.ConversationPointerStore;
+import io.github.claw4j.agent.session.SessionEntryStore;
 import io.github.claw4j.agent.session.CrossSessionEvents;
-import io.github.claw4j.agent.session.JdbcConversationPointerStore;
+import io.github.claw4j.agent.session.JdbcSessionEntryStore;
 import io.github.claw4j.agent.session.JdbcCrossSessionEvents;
 import io.github.claw4j.agent.session.SessionSchema;
+import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.inbound.ClaimedInbound;
 import io.github.claw4j.domain.inbound.EnqueueOutcome;
 import io.github.claw4j.domain.inbound.QueuedInbound;
@@ -32,7 +33,6 @@ import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -577,25 +577,47 @@ class SearchSqlTest {
         jdbc.execute("drop schema if exists claw4j_alt cascade");
         jdbc.execute("create schema claw4j_alt");
         jdbc.execute("""
-                create table claw4j_alt.conversation_pointer (
+                create table claw4j_alt.session_entry (
+                    session_key varchar(512) not null primary key,
                     owner varchar(255) not null,
                     channel varchar(64) not null,
                     chat_id varchar(255) not null,
                     segment varchar(64) not null,
-                    touched_at timestamp not null,
-                    day_started date not null,
-                    primary key (owner, channel, chat_id))
+                    session_started_at timestamptz not null,
+                    last_interaction_at timestamptz not null,
+                    created_at timestamptz not null,
+                    previous_segment varchar(64),
+                    total_tokens bigint not null default 0,
+                    goal_schema_version smallint,
+                    goal_id uuid,
+                    goal_objective text,
+                    goal_status varchar(24),
+                    goal_token_start bigint,
+                    goal_token_start_fresh boolean,
+                    goal_tokens_used bigint,
+                    goal_token_budget bigint,
+                    goal_continuation_turns integer,
+                    goal_last_status_note text,
+                    goal_paused_at timestamptz,
+                    goal_blocked_at timestamptz,
+                    goal_completed_at timestamptz,
+                    goal_usage_limited_at timestamptz,
+                    goal_budget_limited_at timestamptz,
+                    goal_created_at timestamptz,
+                    goal_updated_at timestamptz)
                 """);
 
         Instant now = Instant.parse("2026-11-08T10:00:00Z");
-        Optional<String> segment = new JdbcConversationPointerStore(jdbc, "claw4j_alt")
-                .segmentOf(new ConversationPointerStore.Key("u-1@fp", "web", "c-1"),
-                        new ConversationPointerStore.Rotation("seg-1", now, now.minusSeconds(7200),
-                                LocalDate.of(2026, 11, 8), true, false));
+        Optional<String> segment = new JdbcSessionEntryStore(jdbc, "claw4j_alt")
+                .segmentOf(new SessionEntryStore.Key(
+                                SessionKeys.conversationKeyOf("u-1@fp", "web", "c-1"),
+                                "u-1@fp", "web", "c-1"),
+                        new SessionEntryStore.Rotation("seg-1", now, now.minusSeconds(7200),
+                                now.minusSeconds(86_400), true, false));
 
         assertThat(segment).contains("seg-1");
         assertThat(jdbc.queryForObject(
-                "select count(*) from claw4j_alt.conversation_pointer", Long.class))
+                "select count(*) from claw4j_alt.session_entry", Long.class))
                 .as("写死 claw4j_session 时这一行会落到那张表里：insert 不报错、返回值照常，"
                         + "只有这里能看出配的 schema 没生效")
                 .isEqualTo(1L);

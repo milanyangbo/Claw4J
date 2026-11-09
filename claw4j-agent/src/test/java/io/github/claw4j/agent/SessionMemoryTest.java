@@ -1,9 +1,9 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.session.ConversationPointerStore;
-import io.github.claw4j.agent.session.ConversationPointers;
+import io.github.claw4j.agent.session.SessionEntryStore;
+import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.FaultTolerantSessionService;
-import io.github.claw4j.agent.session.JdbcConversationPointerStore;
+import io.github.claw4j.agent.session.JdbcSessionEntryStore;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.SessionKeys;
@@ -51,7 +51,6 @@ import org.springframework.transaction.CannotCreateTransactionException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -410,10 +409,11 @@ class SessionMemoryTest {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         doReturn("seg-1").when(jdbc)
                 .queryForObject(anyString(), eq(String.class), any(Object[].class));
-        assertThat(new JdbcConversationPointerStore(jdbc, SessionSchema.DEFAULT_SCHEMA).segmentOf(
-                new ConversationPointerStore.Key("u-1@fp", "web", "c-1"),
-                new ConversationPointerStore.Rotation("fresh", first, first.minusSeconds(7200),
-                        LocalDate.of(2026, 11, 5), true, false)))
+        assertThat(new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA).segmentOf(
+                new SessionEntryStore.Key(SessionKeys.conversationKeyOf("u-1@fp", "web", "c-1"),
+                        "u-1@fp", "web", "c-1"),
+                new SessionEntryStore.Rotation("fresh", first, first.minusSeconds(7200),
+                        first.minusSeconds(86_400), true, false)))
                 .contains("seg-1");
         verify(jdbc, times(1)).queryForObject(anyString(), eq(String.class), any(Object[].class));
         verifyNoMoreInteractions(jdbc);
@@ -421,7 +421,7 @@ class SessionMemoryTest {
         // ---- 指针挂了不拦话：退回加段之前的形状，并计数。
         // 抛出去会把每一句话都打成 500，而根因只是少了一张表——两件事的代价差得太远。
         SimpleMeterRegistry metrics = new SimpleMeterRegistry();
-        ConversationPointers broken = new ConversationPointers(
+        SessionEntries broken = new SessionEntries(
                 (key, rotation) -> {
                     throw new IllegalStateException("表还没迁");
                 },
@@ -429,7 +429,7 @@ class SessionMemoryTest {
         assertThat(broken.segmentOf("u-1@fp", "web", "c-1"))
                 .as("降级之后所有对话退到同一个永不过期的 id，也就是回到改造之前的行为")
                 .isEmpty();
-        assertThat(metrics.get(ConversationPointers.FAILURE_METRIC).counter().count())
+        assertThat(metrics.get(SessionEntries.FAILURE_METRIC).counter().count())
                 .as("这个计数不为 0 就说明段当前没生效；少记一笔可以，不让它变成静默")
                 .isEqualTo(1.0);
 
@@ -482,20 +482,20 @@ class SessionMemoryTest {
                 .isFalse();
     }
 
-    private static ConversationPointers pointersAt(MemoryPointers store, Instant now, ZoneId zone) {
-        return new ConversationPointers(store, SessionResetProperties.defaults(), zone,
+    private static SessionEntries pointersAt(MemoryPointers store, Instant now, ZoneId zone) {
+        return new SessionEntries(store, SessionResetProperties.defaults(), zone,
                 Clock.fixed(now, zone), null);
     }
 
     /**
-     * 指针的内存实现：语义与 {@code JdbcConversationPointerStore} 的两条 SQL 对齐——
-     * 过期就换段、没过期就沿用并刷新 touched_at。
+     * 状态行的内存实现：语义与 {@code JdbcSessionEntryStore} 的两条 SQL 对齐——
+     * 过期就换段、没过期就沿用并刷新 {@code lastInteractionAt}；跨天比的是**时刻**。
      *
      * <p>它不替代 SQL 那条用例，只让"时间怎么驱动段"能单独验：那三段的输入是时刻，
      * 不是数据库。反过来说，<b>它红了不代表生产也红</b>——两边是同一套语义的两个实现，
-     * 所以真正的 SQL 仍然由 {@code RunSchemaSqlTest} 在真 Postgres 上验。
+     * 真正的 SQL 仍然由真 Postgres 上的用例验。
      */
-    private static final class MemoryPointers implements ConversationPointerStore {
+    private static final class MemoryPointers implements SessionEntryStore {
 
         private final Map<Key, Row> rows = new LinkedHashMap<>();
 
@@ -504,16 +504,16 @@ class SessionMemoryTest {
             Row old = rows.get(key);
             boolean stale = old == null
                     || rotation.forced()
-                    || old.touched().isBefore(rotation.idleBefore())
-                    || (rotation.dailyGate() && !old.day().equals(rotation.today()));
+                    || old.lastInteraction().isBefore(rotation.idleBefore())
+                    || (rotation.dailyGate() && old.startedAt().isBefore(rotation.dailyResetAt()));
             Row next = stale
-                    ? new Row(rotation.freshSegment(), rotation.now(), rotation.today())
-                    : new Row(old.segment(), rotation.now(), old.day());
+                    ? new Row(rotation.freshSegment(), rotation.now(), rotation.now())
+                    : new Row(old.segment(), rotation.now(), old.startedAt());
             rows.put(key, next);
             return Optional.of(next.segment());
         }
 
-        private record Row(String segment, Instant touched, LocalDate day) {
+        private record Row(String segment, Instant lastInteraction, Instant startedAt) {
         }
     }
 
@@ -717,7 +717,7 @@ class SessionMemoryTest {
     }
 
     private static ChatClientAgentPort port(ChatModel model, SessionService sessions,
-                                            ConversationLane lane, ConversationPointers pointers) {
+                                            ConversationLane lane, SessionEntries pointers) {
         ChatClient chat = ChatPipelineTest.clientBuilder(model)
                 .defaultAdvisors(SessionMemoryAdvisor.builder(sessions)
                         .order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)

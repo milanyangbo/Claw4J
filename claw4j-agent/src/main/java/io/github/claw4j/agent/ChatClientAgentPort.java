@@ -7,7 +7,7 @@ import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.TaskLauncher;
-import io.github.claw4j.agent.session.ConversationPointers;
+import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
@@ -152,7 +152,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * <p><b>它<b>不</b>属于 run 那一组</b>：一轮的编号活一轮，段跨多轮，寿命不同，
      * 所以开关也不同——关掉那一层持久化时，段照常工作。
      */
-    private final ConversationPointers pointers;
+    private final SessionEntries pointers;
 
     /**
      * 一段对话的串行化（ADR-0026 决定二）。可以为 null——没有它时两条并发消息各跑各的，
@@ -199,13 +199,13 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer,
-                               ConversationPointers pointers) {
+                               SessionEntries pointers) {
         this(chatClient, compactor, delivery, tracer, pointers, null);
     }
 
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer,
-                               ConversationPointers pointers, ConversationLane lane) {
+                               SessionEntries pointers, ConversationLane lane) {
         this(chatClient, compactor, delivery, tracer, pointers, lane, null);
     }
 
@@ -215,7 +215,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer,
-                               ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit) {
+                               SessionEntries pointers, ConversationLane lane, ToolCallAudit audit) {
         this(chatClient, compactor, delivery, tracer, pointers, lane, audit, null);
     }
 
@@ -226,7 +226,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer,
-                               ConversationPointers pointers, ConversationLane lane, ToolCallAudit audit,
+                               SessionEntries pointers, ConversationLane lane, ToolCallAudit audit,
                                SessionGoalStore goals) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.compactor = compactor;
@@ -287,6 +287,17 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * 一个字段担两件事时，改哪一件都会把另一件弄坏：把 chatId 换成 {@code cron:<taskId>}，
      * 审批卡片就会推进一个不存在的会话，而这一轮看起来一切正常。
      */
+    /**
+     * 这一轮属于哪个会话节点（不含段）。目标与状态行都按它定位。
+     *
+     * <p><b>不复用 sessionId 去解析</b>：{@code chatId} 里可以有冒号（定时任务就是
+     * {@code cron:<taskId>:<时刻>}），按分隔符切会在那种 id 上切错——而切错的表现是
+     * "目标挂到了另一个节点上"，不报错，只是读到空。
+     */
+    private static String conversationKeyOf(InboundMessage message, String owner) {
+        return SessionKeys.conversationKeyOf(owner, message.channel(), conversationOf(message));
+    }
+
     private static String conversationOf(InboundMessage message) {
         String explicit = message.conversationId();
         return explicit == null || explicit.isBlank() ? message.chatId() : explicit;
@@ -381,6 +392,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // 群聊与私聊必须是两段——同一份权限下，听众可以完全不同（ADR-0025）。
         // 段由指针给（ADR-0026）：跨天、空闲、或者用户发了 /new 就换一个。
         String sessionId = sessionIdOf(message, owner, parsed.reset());
+        // 目标挂在会话节点上（不含段），与含段的 sessionId 不是同一个字符串。
+        String conversationKey = conversationKeyOf(message, owner);
         // /goal 这一族与 /new 同层：认出来就当场办、回一句话，不进模型也不开 run
         // （OpenClaw：纯命令消息绕过队列和模型）。放在 sessionId 之后，是因为它改的
         // 就是这一段会话上的东西——/new /goal ... 这种组合因此落在新段上。
@@ -412,12 +425,13 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                 // 含收尾那一次审计 INSERT（几十毫秒）。span 上不写账本行号：
                 // 与审计的关联键只有 claw4j.run.id 一个（见 ATTR_RUN_ID）。
                 try (SpanTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
-                    response = promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
+                    response = promptOf(message, owner, sessionId, conversationKey,
+                            promptText(conversationKey, masked), runId)
                             .call()
                             .chatResponse();
                     text = cappedText(response);
                     log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
-                    closeTurn(auditScope, text,
+                    closeTurn(auditScope, conversationKey, text,
                             pushTargetOf(answeredAt, message), message.notifyPolicy(),
                             tokensOf(response));
                     stampTurn(turn, response);
@@ -468,6 +482,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         }
         String owner = SessionKeys.ownerOf(message.principal());
         String sessionId = sessionIdOf(message, owner, parsed.reset());
+        // 目标挂在会话节点上（不含段），与含段的 sessionId 不是同一个字符串。
+        String conversationKey = conversationKeyOf(message, owner);
         Optional<GoalCommand> goalCommand = GoalCommand.parse(parsed.text());
         if (goalCommand.isPresent()) {
             // 与 /new 那条同形：一帧正文 + 一帧空文本，调用方靠后者收尾。
@@ -488,7 +504,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             StringBuilder answer = new StringBuilder();
             try (SpanTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
-                    promptOf(message, owner, sessionId, promptText(sessionId, masked), runId)
+                    promptOf(message, owner, sessionId, conversationKey,
+                            promptText(conversationKey, masked), runId)
                             .stream()
                             .content()
                             // 每一块都带 runId：调用方可能只收到最后一块，收到中间块的也要能认出同一批
@@ -504,9 +521,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     // 这是能力不在场，不是"这一轮不花钱"（见票 04 的"没做"一节）。
                     // 流式这一路手上没有 ChatResponse（汇总 usage 在最后一帧，未必到得了），
                     // 所以只收尾，不往 span 上补 token / model——写 0 会被读成"没花钱"。
-                    closeTurn(auditScope, answer.toString(),
+                    closeTurn(auditScope, conversationKey, answer.toString(),
                             pushTargetOf(addressOf(message), message), message.notifyPolicy(),
-                            0L);
+                            null);
                 } catch (RuntimeException | Error failure) {
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
                     turn.failed(failure);
@@ -526,8 +543,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * <p><b>只有两段：活跃目标 + 这一句</b>。不拼 recap：上下文一直在会话里
      * （ADR-0027 决定三），模型看到的就是同一段对话的前几轮，不需要我们再抄一遍。
      */
-    private String promptText(String sessionId, String masked) {
-        return activeGoalLine(sessionId) + masked;
+    private String promptText(String conversationKey, String masked) {
+        return activeGoalLine(conversationKey) + masked;
     }
 
     /**
@@ -548,11 +565,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * <p><b>折成一行</b>：目标原文可能有七行，而这里要的是一行上下文。
      * 折行只影响注入，库里存的仍是原文。
      */
-    private String activeGoalLine(String sessionId) {
-        if (goals == null || sessionId == null) {
+    private String activeGoalLine(String conversationKey) {
+        if (goals == null || conversationKey == null) {
             return "";
         }
-        return goals.of(sessionId)
+        return goals.of(conversationKey)
                 .filter(SessionGoal::injected)
                 .map(goal -> "活跃目标：" + oneLine(goal.objective(), GOAL_CHARS)
                         + " — 推进它；没完全达成之前保持活跃；同一个阻塞连续三个轮次都在才标 blocked；"
@@ -591,9 +608,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * {@code audit_event} 的两条事件；要回答"模型看到了什么"，读会话历史。
      * 摘要是"一件事的第几步"那个形状的产物，这里没有那种形状。
      */
-    private void closeTurn(AuditEvent.Scope scope, String answer,
-                           DeliveryTarget pushTo, NotifyPolicy policy, long tokens) {
-        chargeGoal(scope, tokens);
+    private void closeTurn(AuditEvent.Scope scope, String conversationKey, String answer,
+                           DeliveryTarget pushTo, NotifyPolicy policy, Long tokens) {
+        chargeGoal(conversationKey, tokens);
         if (delivery != null && pushTo != null) {
             delivery.announce(pushTo, policy, answer);
         }
@@ -637,11 +654,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * {@code addTokens} 返回空，这一轮照常收尾。少记一笔的代价远小于把用户的话打死；
      * 那种降级由 {@code claw4j.goal.errors} 暴露。
      */
-    private void chargeGoal(AuditEvent.Scope scope, long tokens) {
-        if (goals == null || scope == null || scope.sessionKey() == null) {
+    private void chargeGoal(String conversationKey, Long tokens) {
+        if (goals == null || conversationKey == null) {
             return;
         }
-        goals.addTokens(scope.sessionKey(), tokens)
+        goals.account(conversationKey, tokens)
                 .filter(goal -> goal.status() == GoalStatus.BUDGET_LIMITED)
                 .ifPresent(goal -> log.info("目标撞上 token 预算，进入 budget_limited：session={} used={}/{}",
                         goal.sessionKey(), goal.tokensUsed(), goal.tokenBudget()));
@@ -681,15 +698,19 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /**
-     * 这一轮花掉的 token。拿不到就是 0——不拿估算值冒充真实值
+     * 这一轮花掉的 token。**拿不到是 null，不是 0**——不拿估算值冒充真实值
      * （与 {@code MeteredChatModel} 同一个口径）。
+     *
+     * <p>两者必须分开：0 是"这一轮没花钱"，null 是"这一轮没有数"。目标记账拿 null 时
+     * 不重算用量（{@code JdbcSessionGoalStore#account}），拿 0 会把"没有数"记成"没花费"，
+     * 而预算因此永远差一截，并且没有任何一处报错。
      */
-    private static long tokensOf(ChatResponse response) {
+    private static Long tokensOf(ChatResponse response) {
         if (response == null || response.getMetadata() == null || response.getMetadata().getUsage() == null) {
-            return 0L;
+            return null;
         }
         Integer total = response.getMetadata().getUsage().getTotalTokens();
-        return total == null ? 0L : total.longValue();
+        return total == null ? null : total.longValue();
     }
 
     /**
@@ -718,8 +739,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * @param response 可为 null（流式那一侧拿不到汇总 usage）
      */
     private static void stampTurn(SpanTracer.SpanScope turn, ChatResponse response) {
-        long tokens = tokensOf(response);
-        if (tokens > 0) {
+        Long tokens = tokensOf(response);
+        if (tokens != null && tokens > 0) {
             turn.attribute(ATTR_TOKENS, Long.toString(tokens));
         }
         String model = modelOf(response);
@@ -753,7 +774,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message, String owner, String sessionId,
-                                                      String masked, String runId) {
+                                                      String conversationKey, String masked, String runId) {
         Principal principal = message.principal();
         // 归属键与对话键都由调用方算好再传进来：一轮请求里 run 的 owner、会话 id
         // 都要用，各算一遍的话，口径一改就可能只改到一半，而表现是"会话记得住、run 查不到"。
@@ -787,6 +808,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // 放这里而不是让工具自己按 principal 推：会话键里还有通道与 chatId，工具推不出来，
         // 让它去猜就会退化成"这个人的所有会话"，而那正是私聊内容被带进群聊的那条路。
         toolContext.put(ChatMemory.CONVERSATION_ID, sessionId);
+        // 会话节点键（不含段）也进工具上下文：目标挂在节点上，与记忆的按段隔离是两件事。
+        // 让工具自己去 sessionId 里切段是不行的——chatId 里可以有冒号（cron: 就是）。
+        toolContext.put(ContextKeys.CONVERSATION, conversationKey);
         // 通道与地址也进工具上下文（ADR-0027）：审批要写"这条请求来自哪段对话"，
         // 定时任务要写"结果推回哪里"。地址是这一轮的属性——不该绕一次库，也不该靠另一张表登记。
         if (message.channel() != null && !message.channel().isBlank()) {

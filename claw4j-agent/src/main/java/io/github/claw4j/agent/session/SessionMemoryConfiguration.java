@@ -303,7 +303,8 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
-     * 会话段的指针（ADR-0026）。表在会话 schema 里，但这个 bean 用的是<b>主连接池</b>。
+     * 会话状态行（ADR-0026，票 06 起是 {@code session_entry}）。表在会话 schema 里，
+     * 但这个 bean 用的是<b>主连接池</b>。
      *
      * <p>与会话仓储那一路不同：框架生成的 SQL 不带前缀，所以那边必须另开一个池把
      * {@code currentSchema} 指过去；这里的 SQL 全在我们手里、表名写全限定，
@@ -311,34 +312,36 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * 容器里出现两个，{@code @ConditionalOnSingleCandidate(DataSource.class)} 就不再成立，
      * 一整套 JDBC 自动配置会安静地不装配。
      *
+     * <p><b>这一行也是目标的家</b>：目标的 17 个列与段在同一行，换段时它们一起清空。
+     * 因此目标存储不再单独建表、也没有"换段之后旧目标还在"这种中间态。
+     *
      * <p>全限定名里的 schema 段从 {@link SessionMemoryProperties#schema()} 取，
-     * <b>与框架那一路同源</b>：写死的话改配之后指针留在旧 schema，换段判定与记忆读的不是同一批表。
+     * <b>与框架那一路同源</b>：写死的话改配之后状态行留在旧 schema，换段判定与记忆读的不是同一批表。
      */
     @Bean
-    @ConditionalOnMissingBean(ConversationPointerStore.class)
-    public ConversationPointerStore conversationPointerStore(JdbcTemplate jdbc,
-                                                             SessionMemoryProperties session) {
-        return new JdbcConversationPointerStore(jdbc, session.schema());
+    @ConditionalOnMissingBean(SessionEntryStore.class)
+    public SessionEntryStore sessionEntryStore(JdbcTemplate jdbc, SessionMemoryProperties session) {
+        return new JdbcSessionEntryStore(jdbc, session.schema());
     }
 
     /**
      * 段怎么算：跨天或空闲，谁先到算谁。
      *
-     * <p><b>时钟显式传 {@code systemUTC}</b>：逻辑日是按业务时区算的
-     * （{@link SessionResetProperties#logicalDayOf}），而 {@code Instant} 本身没有时区，
-     * 所以这里用哪个 {@code Clock} 不影响"今天是哪天"——影响它的只有 zone 参数。
+     * <p><b>时钟显式传 {@code systemUTC}</b>：跨天边界是按业务时区算的
+     * （{@link SessionResetProperties#dailyResetAt}），而 {@code Instant} 本身没有时区，
+     * 所以这里用哪个 {@code Clock} 不影响"边界是几点"——影响它的只有 zone 参数。
      * 写死 UTC 是为了让这一点在读代码时是显式的，不是靠"反正 systemDefault 也是对的"。
      *
      * <p>{@code MeterRegistry} 走 {@code ObjectProvider}：装不装 actuator 只影响
-     * 指针失败的计数报不报得出去，不影响该不该换段。
+     * 状态行失败的计数报不报得出去，不影响该不该换段。
      */
     @Bean
-    @ConditionalOnMissingBean(ConversationPointers.class)
-    public ConversationPointers conversationPointers(ConversationPointerStore store,
-                                                     SessionResetProperties reset,
-                                                     AgentProperties agent,
-                                                     ObjectProvider<MeterRegistry> meterRegistry) {
-        return new ConversationPointers(store, reset, agent.zone(), Clock.systemUTC(),
+    @ConditionalOnMissingBean(SessionEntries.class)
+    public SessionEntries sessionEntries(SessionEntryStore store,
+                                         SessionResetProperties reset,
+                                         AgentProperties agent,
+                                         ObjectProvider<MeterRegistry> meterRegistry) {
+        return new SessionEntries(store, reset, agent.zone(), Clock.systemUTC(),
                 meterRegistry.getIfAvailable());
     }
 

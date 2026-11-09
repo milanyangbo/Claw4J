@@ -13,18 +13,24 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * 目标落在会话 schema 的 {@code conversation_goal} 上（ADR-0027 决定三）。
+ * 目标落在 {@code claw4j_session.session_entry} 的 {@code goal_*} 列上（票 06）。
  *
- * <p><b>主键就是"一个会话一个目标"</b>：不另加"当前目标"标志位。有标志位的版本里，
- * "两行都是当前"与"一行都不是"都写得出来，而修它要靠一条没人会写的唯一索引。
+ * <p><b>目标不再是一张独立的表</b>：它的 session entry 是一条记录装着 sessionId 与 goal，
+ * 换段时 goal 跟着那一条一起没了。我们拆过两张表，代价是 {@code /new} 只换了段、
+ * 没清目标，旧段的行永久留在库里，还被 {@code where status='active'} 的部分索引算进
+ * "现在有几个目标在推进"。合并之后，清目标在换段的那条 update 里，没有第二步可以忘。
  *
- * <p><b>每次改动都走一条语句</b>：{@code insert ... on conflict do nothing}、
- * {@code update ... where status <> 'complete'} 各自把条件写在 SQL 里。
- * "先读再判再写"在同会话并发下会同时通过读，然后两边都写——
- * 而目标的 {@code revision} 正是给"谁最后改的"留的痕迹，它不该被两个并发写各加一次。
+ * <p><b>每次改动都走一条语句</b>：条件写在 SQL 里（{@code goal_id = ?}、
+ * {@code goal_status <> 'complete'}）。"先读再判再写"在同会话并发下会同时通过读，
+ * 然后两边都写；而 {@code goal_id} 正是"我改的是我看到的那一版目标"这件事的凭据。
+ *
+ * <p><b>行由 {@code SessionEntryStore} 保证存在</b>：本类只做 update。{@code /goal} 命令
+ * 与模型工具都在一轮对话里执行，那一轮的入口已经 upsert 过这一行；行不在时写方法返回空，
+ * 调用方回"目标没写进去"，而不会去 insert 一行缺 segment 的残行。
  *
  * <p><b>库不可用时降级为空</b>：目标读不到的表现是"这一轮没有目标"，而不是整轮 500。
  * 代价要说清——降级期间模型看不到目标，于是"接着推进"会退化成普通一轮；
@@ -38,6 +44,17 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
     private static final Logger log = LoggerFactory.getLogger(JdbcSessionGoalStore.class);
 
     /**
+     * 目标那一段列。顺序与 {@code SessionGoal} 的字段一致，select / returning 共用。
+     */
+    private static final String GOAL_COLUMNS = "goal_schema_version, goal_id, goal_objective,"
+            + " goal_status, goal_token_start, goal_token_start_fresh, goal_tokens_used,"
+            + " goal_token_budget, goal_continuation_turns, goal_last_status_note,"
+            + " goal_paused_at, goal_blocked_at, goal_completed_at, goal_usage_limited_at,"
+            + " goal_budget_limited_at, goal_created_at, goal_updated_at";
+
+    private static final String RETURNING = " returning session_key, " + GOAL_COLUMNS;
+
+    /**
      * SQL 模板里的 {@code %1$s} 是 schema 前缀，构造时由 {@link SessionSchema#qualifier} 展开。
      *
      * <p><b>为什么不留字面量 {@code claw4j_session}</b>：{@code claw4j.session.schema} 是可配的，
@@ -45,93 +62,168 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * 写死的话改配之后这里每条语句都会报 {@code BadSqlGrammarException}，
      * 而那个异常被 {@link #guard} 降级成"这一轮没有目标"——表现是目标功能无声消失。
      */
-    private static final String COLUMNS_TEMPLATE = "select session_key, status, objective, status_note,"
-            + " token_budget, tokens_used, revision, created_at, updated_at"
-            + " from %1$sconversation_goal";
-
-    private static final String RETURNING = " returning session_key, status, objective, status_note,"
-            + " token_budget, tokens_used, revision, created_at, updated_at";
+    private static final String SELECT_TEMPLATE = "select session_key, " + GOAL_COLUMNS
+            + " from %1$ssession_entry where session_key = ? and goal_id is not null";
 
     /**
-     * 新建。{@code on conflict do nothing} 而不是 {@code do update}：
-     * "已经有一个目标了"在这里是一个<b>正常结果</b>（返回空，调用方去说那句话），
-     * 不是一次覆盖。
-     */
-    private static final String START_TEMPLATE = "insert into %1$sconversation_goal"
-            + " (session_key, status, objective, token_budget) values (?, 'active', ?, ?)"
-            + " on conflict (session_key) do nothing" + RETURNING;
-
-    /**
-     * 改写：只动 objective 与 revision。状态与用量一个字都不碰。
+     * 新建。{@code goal_id is null} 是"还没有目标"的唯一判据。
      *
-     * <p>{@code status <> 'complete'} 是照 OpenAI 的排错表：{@code goal is already complete}
+     * <p>{@code goal_token_start = total_tokens}：预算窗口从建目标那一刻的会话累计用量算起
+     * （它的 {@code tokenStart}）。{@code goal_token_start_fresh = true}——这个数我们一直记着，
+     * 不存在"还没有新鲜快照"；只有迁移回填的历史行是 false。
+     *
+     * <p>不静默覆盖：已经有一个目标时 0 行，调用方去说"已经有目标了"。
+     */
+    private static final String START_TEMPLATE = "update %1$ssession_entry set"
+            + " goal_schema_version = 1,"
+            + " goal_id = gen_random_uuid(),"
+            + " goal_objective = ?,"
+            + " goal_status = 'active',"
+            + " goal_token_start = total_tokens,"
+            + " goal_token_start_fresh = true,"
+            + " goal_tokens_used = 0,"
+            + " goal_token_budget = ?,"
+            + " goal_continuation_turns = 0,"
+            + " goal_last_status_note = null,"
+            + " goal_paused_at = null, goal_blocked_at = null, goal_completed_at = null,"
+            + " goal_usage_limited_at = null, goal_budget_limited_at = null,"
+            + " goal_created_at = now(), goal_updated_at = now()"
+            + " where session_key = ? and goal_id is null" + RETURNING;
+
+    /**
+     * 改写：只动 objective 与 updated_at。状态、用量、五个时刻一个字都不碰。
+     *
+     * <p>{@code goal_status <> 'complete'} 是照它的排错表：{@code goal is already complete}
      * 的意思是"目标必须先被显式 resume 才能编辑、暂停或阻塞"。
-     * 少了这一句，一次误触就能把一件已经收了尾的事改回"还在做的样子"，
-     * 而它的用量与完成时间都留在原处——那种行看起来正常，对不上账。
      */
-    private static final String EDIT_TEMPLATE = "update %1$sconversation_goal"
-            + " set objective = ?, revision = revision + 1, updated_at = now()"
-            + " where session_key = ? and status <> 'complete'" + RETURNING;
+    private static final String EDIT_TEMPLATE = "update %1$ssession_entry set"
+            + " goal_objective = ?, goal_updated_at = now()"
+            + " where session_key = ? and goal_id = ? and goal_status <> 'complete'" + RETURNING;
 
     /**
-     * 改状态。{@code status <> 'complete'} 写在 SQL 里：达成之后不能直接 pause / block，
-     * 要先 resume（原文的排错表：{@code goal is already complete}）。
+     * 改状态。五个时刻分开写：
+     *
+     * <ul>
+     *   <li>{@code paused} / {@code blocked} / {@code usage_limited} / {@code budget_limited}
+     *       记"这一次进入该状态的时刻"（再次进入要覆盖，因为那是新一次）；
+     *   <li>{@code complete} 用 {@code coalesce(goal_completed_at, now())}——
+     *       <b>重复 complete 保留首次完成时间</b>，这是 {@code goals-transitions.ts:129} 的规则。
+     * </ul>
+     *
+     * <p>{@code goal_status <> 'complete'} 写在 SQL 里：达成之后不能直接 pause / block，
+     * 要先 resume（原文的排错表）。resume 那条没有这个条件——完成的也能恢复。
      */
-    private static final String SET_STATUS_TEMPLATE = "update %1$sconversation_goal"
-            + " set status = ?, status_note = ?, revision = revision + 1, updated_at = now()"
-            + " where session_key = ? and status <> 'complete'" + RETURNING;
+    private static final String SET_STATUS_TEMPLATE = "update %1$ssession_entry set"
+            + " goal_status = ?,"
+            + " goal_last_status_note = ?,"
+            + " goal_paused_at = case when ? = 'paused' then now() else goal_paused_at end,"
+            + " goal_blocked_at = case when ? = 'blocked' then now() else goal_blocked_at end,"
+            + " goal_completed_at = case when ? = 'complete'"
+            + "   then coalesce(goal_completed_at, now()) else goal_completed_at end,"
+            + " goal_usage_limited_at = case when ? = 'usage_limited'"
+            + "   then now() else goal_usage_limited_at end,"
+            + " goal_budget_limited_at = case when ? = 'budget_limited'"
+            + "   then now() else goal_budget_limited_at end,"
+            + " goal_updated_at = now()"
+            + " where session_key = ? and goal_id = ?"
+            // 达成的可以再 complete（幂等、保留首次时间），但不能直接 pause / block：
+            // 它的规则只挡"complete → 别的非 active 状态"（goals-transitions.ts:108-114）。
+            + " and (goal_status <> 'complete' or goal_status = ?)" + RETURNING;
 
     /**
-     * 恢复：状态回 active；**只有 {@code budget_limited} 才把用量清零**（OpenClaw：resume 开新窗口）。
+     * 恢复：状态回 active。
      *
-     * <p>{@code status = 'budget_limited'} 判的是更新之前的那一行：PostgreSQL 保证同一条
-     * update 里所有 set 表达式读的都是同一份旧快照，所以这一句与 {@code status = 'active'}
-     * 不会互相看到对方刚写进去的值。
+     * <p><b>只有受限状态才开新窗口</b>（{@code budget_limited} / {@code usage_limited}）：
+     * 起点改成当前会话累计、用量清零、两个受限时刻清掉。暂停一下就能白拿一份额度是错的，
+     * 而 {@code budget_limited} 恢复之后再拿旧起点算，第一轮立刻又停在同一个地方。
      *
-     * <p><b>没有 {@code status <> 'complete'} 那一句</b>：完成的也能 resume。
-     * 原文的状态表把 {@code complete} 写成"保持达成，直到你显式地用 {@code /goal resume}
-     * 再次推进同一个目标"；命令表里也写着 resume "恢复已暂停、已阻塞、受限或<b>已完成</b>的目标"。
-     * 别把另一句读成"不能恢复"：那句"终止状态"讲的是
-     * <b>不能直接 edit / pause / block</b>（见 {@link #edit} 与 {@link #setStatus}）。
+     * <p><b>从 complete 恢复时清掉 {@code completed_at}</b>：完成属于"上一次达成"，
+     * 再次达成要记新的时刻（它的 {@code goals-transitions.ts:131-134} 就是这个行为）。
+     * 内容、创建时间、用量都不动。
+     *
+     * <p>{@code goal_status <> 'active'}：本来就活跃的没有可恢复的，返回 0 行。
+     * 完成的也能恢复，所以这里<b>没有</b> {@code <> 'complete'}。
      */
-    private static final String RESUME_TEMPLATE = "update %1$sconversation_goal"
-            + " set tokens_used = case when status = 'budget_limited' then 0 else tokens_used end,"
-            + " status = 'active', status_note = ?, revision = revision + 1, updated_at = now()"
-            + " where session_key = ? and status <> 'active'" + RETURNING;
+    private static final String RESUME_TEMPLATE = "update %1$ssession_entry set"
+            + " goal_status = 'active',"
+            + " goal_token_start = case when goal_status in ('budget_limited', 'usage_limited')"
+            + "   then total_tokens else goal_token_start end,"
+            + " goal_token_start_fresh = case when goal_status in ('budget_limited', 'usage_limited')"
+            + "   then true else goal_token_start_fresh end,"
+            + " goal_tokens_used = case when goal_status in ('budget_limited', 'usage_limited')"
+            + "   then 0 else goal_tokens_used end,"
+            + " goal_budget_limited_at = case when goal_status in ('budget_limited', 'usage_limited')"
+            + "   then null else goal_budget_limited_at end,"
+            + " goal_usage_limited_at = case when goal_status in ('budget_limited', 'usage_limited')"
+            + "   then null else goal_usage_limited_at end,"
+            + " goal_completed_at = case when goal_status = 'complete' then null else goal_completed_at end,"
+            + " goal_last_status_note = ?,"
+            + " goal_updated_at = now()"
+            + " where session_key = ? and goal_id = ? and goal_status <> 'active'" + RETURNING;
 
     /**
-     * 记账，并在撞上预算的同一条语句里进 {@code budget_limited}。
+     * 对账：把这一轮的用量加进会话累计，再按快照差重算目标用量（它的
+     * {@code accountSessionGoalUsage}）。
      *
-     * <p>{@code token_budget is not null and tokens_used + ? >= token_budget} 里的
-     * {@code tokens_used} 是<b>更新之前</b>的值，所以这一句回答的是"加完这一笔有没有到"。
-     * 拆成"先加再读再改状态"会有两步之间的窗口：并发的两条消息各自看到没超，
-     * 结果超了却没进受限状态。
+     * <p>三个 {@code case} 表达的是同一件事的三面：
+     * <ol>
+     *   <li>{@code goal_token_start_fresh} 为假 → 这一轮把起点采纳成"当前累计 + 这一轮"，
+     *       旧用量保持（建目标那一刻还没有新鲜快照，之前的花费不算给它）；
+     *   <li>为真 → {@code tokens_used = max(旧值, 累计 - 起点)}，漏记一轮下一轮补回来；
+     *   <li>重算完达到预算 → 状态变 {@code budget_limited} 并记时刻。
+     * </ol>
+     *
+     * <p>三个 {@code case} 都基于<b>更新之前</b>的行（PostgreSQL 保证同一 update 的所有
+     * set 表达式读同一份旧快照），所以它们不会互相看到刚写进去的值；也正因为如此，
+     * 每一处都要自己算一遍"加完这一笔之后的用量"——重复的是表达式，不是状态。
+     *
+     * <p>{@code goal_status not in ('complete', 'budget_limited', 'usage_limited')}：
+     * 已经收尾或已经受限的目标只记账不改状态——把它改成"额度用完"等于把一件事重新打开。
      */
-    private static final String ADD_TOKENS_TEMPLATE = "update %1$sconversation_goal"
-            + " set tokens_used = tokens_used + ?,"
-            + " status = case when status not in ('complete', 'budget_limited')"
-            + "               and token_budget is not null and tokens_used + ? >= token_budget"
-            + "          then 'budget_limited' else status end,"
-            + " revision = revision + case when status not in ('complete', 'budget_limited')"
-            + "               and token_budget is not null and tokens_used + ? >= token_budget"
-            + "          then 1 else 0 end,"
-            + " updated_at = now()"
-            + " where session_key = ?" + RETURNING;
+    private static final String ACCOUNT_TEMPLATE = "update %1$ssession_entry set"
+            + " total_tokens = total_tokens + ?,"
+            + " goal_token_start = case when goal_token_start_fresh then goal_token_start"
+            + "   else total_tokens + ? end,"
+            + " goal_token_start_fresh = true,"
+            + " goal_tokens_used = case when goal_token_start_fresh"
+            + "   then greatest(goal_tokens_used, total_tokens + ? - goal_token_start)"
+            + "   else goal_tokens_used end,"
+            + " goal_status = case when goal_status not in ('complete', 'budget_limited', 'usage_limited')"
+            + "   and goal_token_budget is not null"
+            + "   and (case when goal_token_start_fresh"
+            + "             then greatest(goal_tokens_used, total_tokens + ? - goal_token_start)"
+            + "             else goal_tokens_used end) >= goal_token_budget"
+            + "   then 'budget_limited' else goal_status end,"
+            + " goal_budget_limited_at = case when goal_status not in ('complete', 'budget_limited', 'usage_limited')"
+            + "   and goal_token_budget is not null"
+            + "   and (case when goal_token_start_fresh"
+            + "             then greatest(goal_tokens_used, total_tokens + ? - goal_token_start)"
+            + "             else goal_tokens_used end) >= goal_token_budget"
+            + "   then now() else goal_budget_limited_at end,"
+            + " goal_updated_at = now()"
+            + " where session_key = ? and goal_id is not null" + RETURNING;
 
-    private static final String CLEAR_TEMPLATE = "delete from %1$sconversation_goal"
-            + " where session_key = ?";
+    /** 清空目标的 17 个列。行留着——它是会话节点，不是目标。 */
+    private static final String CLEAR_TEMPLATE = "update %1$ssession_entry set"
+            + " goal_schema_version = null, goal_id = null, goal_objective = null, goal_status = null,"
+            + " goal_token_start = null, goal_token_start_fresh = null, goal_tokens_used = null,"
+            + " goal_token_budget = null, goal_continuation_turns = null, goal_last_status_note = null,"
+            + " goal_paused_at = null, goal_blocked_at = null, goal_completed_at = null,"
+            + " goal_usage_limited_at = null, goal_budget_limited_at = null,"
+            + " goal_created_at = null, goal_updated_at = null"
+            + " where session_key = ? and goal_id = ?";
 
     private final JdbcTemplate jdbc;
 
     private final MeterRegistry registry;
 
     /** 七条语句的 schema 前缀已在构造时展开：{@code claw4j.session.schema} 改了它们跟着改。 */
-    private final String columns;
+    private final String select;
     private final String start;
     private final String edit;
     private final String setStatus;
     private final String resume;
-    private final String addTokens;
+    private final String account;
     private final String clear;
 
     /** 只在"从坏到好"与"从好到坏"的边沿打日志，不在每条失败上重复。 */
@@ -146,54 +238,63 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
         this.jdbc = jdbc;
         this.registry = registry;
         String qualifier = SessionSchema.qualifier(schema);
-        this.columns = COLUMNS_TEMPLATE.formatted(qualifier);
+        this.select = SELECT_TEMPLATE.formatted(qualifier);
         this.start = START_TEMPLATE.formatted(qualifier);
         this.edit = EDIT_TEMPLATE.formatted(qualifier);
         this.setStatus = SET_STATUS_TEMPLATE.formatted(qualifier);
         this.resume = RESUME_TEMPLATE.formatted(qualifier);
-        this.addTokens = ADD_TOKENS_TEMPLATE.formatted(qualifier);
+        this.account = ACCOUNT_TEMPLATE.formatted(qualifier);
         this.clear = CLEAR_TEMPLATE.formatted(qualifier);
     }
 
     @Override
     public Optional<SessionGoal> of(String sessionKey) {
-        return guard("读一个会话的目标", () -> jdbc.query(columns + " where session_key = ?",
-                ROW, sessionKey).stream().findFirst().orElse(null));
+        return guard("读一个会话的目标", () -> jdbc.query(select, ROW, sessionKey)
+                .stream().findFirst().orElse(null));
     }
 
     @Override
     public Optional<SessionGoal> start(String sessionKey, String objective, Long tokenBudget) {
         return guard("新建一个目标", () -> jdbc.query(start, ROW,
-                sessionKey, objective, tokenBudget).stream().findFirst().orElse(null));
+                objective, tokenBudget, sessionKey).stream().findFirst().orElse(null));
     }
 
     @Override
-    public Optional<SessionGoal> edit(String sessionKey, String objective) {
+    public Optional<SessionGoal> edit(String sessionKey, UUID goalId, String objective) {
         return guard("改写一个目标", () -> jdbc.query(edit, ROW,
-                objective, sessionKey).stream().findFirst().orElse(null));
+                objective, sessionKey, goalId).stream().findFirst().orElse(null));
     }
 
     @Override
-    public Optional<SessionGoal> setStatus(String sessionKey, GoalStatus status, String note) {
+    public Optional<SessionGoal> setStatus(String sessionKey, UUID goalId, GoalStatus status,
+                                           String note) {
+        String column = status.column();
         return guard("改一个目标的状态", () -> jdbc.query(setStatus, ROW,
-                status.column(), note, sessionKey).stream().findFirst().orElse(null));
+                column, note, column, column, column, column, column,
+                sessionKey, goalId, column).stream().findFirst().orElse(null));
     }
 
     @Override
-    public Optional<SessionGoal> resume(String sessionKey, String note) {
+    public Optional<SessionGoal> resume(String sessionKey, UUID goalId, String note) {
         return guard("恢复一个目标", () -> jdbc.query(resume, ROW,
-                note, sessionKey).stream().findFirst().orElse(null));
+                note, sessionKey, goalId).stream().findFirst().orElse(null));
     }
 
     @Override
-    public Optional<SessionGoal> addTokens(String sessionKey, long tokens) {
-        return guard("给一个目标记用量", () -> jdbc.query(addTokens, ROW,
-                tokens, tokens, tokens, sessionKey).stream().findFirst().orElse(null));
+    public Optional<SessionGoal> account(String sessionKey, Long deltaTokens) {
+        if (deltaTokens == null) {
+            // 拿不到用量：不重算。0 与 null 是两件事——0 是"这一轮没花钱"，
+            // 传 0 进来会让"没有数"伪装成"没有花费"，而预算因此永远差一截。
+            return of(sessionKey);
+        }
+        return guard("给一个目标记用量", () -> jdbc.query(account, ROW,
+                deltaTokens, deltaTokens, deltaTokens, deltaTokens, deltaTokens,
+                sessionKey).stream().findFirst().orElse(null));
     }
 
     @Override
-    public boolean clear(String sessionKey) {
-        return guard("删掉一个目标", () -> jdbc.update(clear, sessionKey)).orElse(0) > 0;
+    public boolean clear(String sessionKey, UUID goalId) {
+        return guard("删掉一个目标", () -> jdbc.update(clear, sessionKey, goalId)).orElse(0) > 0;
     }
 
     private <T> Optional<T> guard(String what, Supplier<T> work) {
@@ -224,14 +325,23 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
     private static SessionGoal map(ResultSet rs, int rowNum) throws SQLException {
         return new SessionGoal(
                 rs.getString("session_key"),
-                GoalStatus.fromColumn(rs.getString("status")),
-                rs.getString("objective"),
-                rs.getString("status_note"),
-                rs.getObject("token_budget", Long.class),
-                rs.getLong("tokens_used"),
-                rs.getInt("revision"),
-                instant(rs, "created_at"),
-                instant(rs, "updated_at"));
+                rs.getInt("goal_schema_version"),
+                rs.getObject("goal_id", UUID.class),
+                rs.getString("goal_objective"),
+                GoalStatus.fromColumn(rs.getString("goal_status")),
+                instant(rs, "goal_created_at"),
+                instant(rs, "goal_updated_at"),
+                rs.getLong("goal_token_start"),
+                rs.getBoolean("goal_token_start_fresh"),
+                rs.getLong("goal_tokens_used"),
+                rs.getObject("goal_token_budget", Long.class),
+                rs.getInt("goal_continuation_turns"),
+                rs.getString("goal_last_status_note"),
+                instant(rs, "goal_paused_at"),
+                instant(rs, "goal_blocked_at"),
+                instant(rs, "goal_completed_at"),
+                instant(rs, "goal_usage_limited_at"),
+                instant(rs, "goal_budget_limited_at"));
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {
