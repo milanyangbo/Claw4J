@@ -99,11 +99,12 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | --- | --- | --- | --- |
 | `V1` `V2` | `claw4j-example-sales` | 业务表与种子（`business`） | 示例插件自己的工具 |
 | `V3` | `claw4j-agent` | 会话四张表（`claw4j_session`） | `agent.session` / `agent.goal` |
-| `V4` | `claw4j-agent` | 语义缓存（`claw4j_cache`） | `agent.cache` |
+| `V4` | `claw4j-agent` | 语义缓存（`claw4j_cache`）——**已被 `V9` 删掉** | 曾经是 `agent.cache` |
 | `V5` | `claw4j-agent` | 知识库两张表（`claw4j_rag`） | `agent.rag` |
 | `V6` | `claw4j-agent` | 审批 / 定时任务 / 审计（`claw4j_run`） | `agent.approval` / `agent.schedule` / `agent.audit` |
 | `V7` | `claw4j-agent` | 入站队列（`claw4j_channel`） | `channel.kernel` / `agent.inbound` |
 | `V8` | `claw4j-agent` | 会话状态并成一张表（把 `conversation_pointer` 与 `conversation_goal` 回填进 `session_entry` 后删掉） | `agent.session` / `agent.goal` |
+| `V9` | `claw4j-agent` | 删 `claw4j_cache` schema：语义缓存改落 Redis Stack，表不再需要 | 无（`agent.cache` 已改用 `DefaultSemanticCache`） |
 
 **这五份是基线，不是历史。**（`V8` 之后是新的一轮，不是基线的一部分。） 2026-11-09 把原来 `claw4j-agent` 侧的 25 个迁移（V3..V27）合并成了这五份：
 其中大半在反复改同一批表，而 `agent_run` / `agent_step` / `agent_run_delivery` 三张表最后整体删掉了。

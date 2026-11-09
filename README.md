@@ -46,7 +46,8 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 
 ./mvnw -q -DskipTests package
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar --spring.profiles.active=local
-# local 会按 compose.yaml 拉起 Postgres(pgvector)，退出时回收；compose.yaml 在仓库根目录，所以要在根目录启动
+# local 会按 compose.yaml 拉起 Postgres(pgvector) 与 Redis Stack（语义缓存），退出时回收；
+# compose.yaml 在仓库根目录，所以要在根目录启动
 ```
 
 起来就问（`X-Claw4j-User` 必填，`X-Claw4j-Role` 缺省是 `read-only`）：
@@ -58,7 +59,9 @@ curl -s -X POST http://localhost:8080/api/chat \
 # {"chatId":"http:ethan","text":"堆内存上限 8192 MB（8 GB），当前已用 73 MB；线程数 42。"}
 ```
 
-- 国内拉不到官方镜像：`CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16`。
+- 国内拉不到官方镜像：`CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16`、
+  `CLAW4J_REDIS_IMAGE=docker.m.daocloud.io/redis/redis-stack-server:latest`。
+- Redis 必须是 **Stack**（带 RediSearch）：普通 `redis` 镜像建不出向量索引，语义缓存启动就失败。
 - 没有 key 应用**起不来**，不降级：留 mock 兜底只会得到"跑着回声模型却以为在跑真模型"。
 - 健康检查在另一个端口：`curl -s localhost:9090/actuator/health`。
 
@@ -373,6 +376,8 @@ public class TelegramChannelAutoConfiguration {
 | `CLAW4J_RAG_DIRECTORY` | 否 | 文档目录，启动后同步一次，按文件内容哈希跳过没变的 |
 | `CLAW4J_OBSERVABILITY_ENABLED` / `OTLP_ENDPOINT` | 否 | trace 导出，**两个都要**：只开开关不配端点时一条都不导，启动日志会点名缺哪一项（不回落 `localhost:4318`，否则表现成"连不上"而不是"没配"）。指标仍走 actuator，trace 只走 OTLP |
 | `CLAW4J_POSTGRES_IMAGE` | 否 | 换 Postgres 镜像源，与 compose 共用 |
+| `CLAW4J_REDIS_IMAGE` | 否 | 换 Redis Stack 镜像源，与 compose 共用 |
+| `CLAW4J_CACHE_REDIS_URI` | 否 | 语义缓存的 Redis 地址，默认 `redis://127.0.0.1:6379` |
 
 `claw4j.*` 的每个键都有明确的拥有者，`application.yml` 里逐项写了默认值与"动它之前要知道什么"。
 最常改的几个：`claw4j.channel.http.roles`、`claw4j.guard.sensitive-words`、`claw4j.cache.*`、`claw4j.rag.*`、

@@ -499,5 +499,5 @@ channel / tool_name / call_fingerprint / approval_id / redaction / schema_versio
 
 1. `hit toolSearchTool` 涨没涨：没涨是工具循环没装上；涨了但目标工具没涨，是**检索没找到**（那句话没带关键词）；
 2. `hit <工具> denied` 涨了就是鉴权拒的（日志里有带动作名或表名的 WARN）；
-3. 语义缓存：命中时**工具不会被调用**，`hit` 不涨也不代表坏了——换角色、换说法，或加 `--claw4j.cache.enabled=false`；
+3. 语义缓存：命中时**工具与模型都不会被调用**（框架的命中不再打标记、也不报 `hit` 指标，判据是日志里没有这一轮模型调用）——换角色、换说法，或加 `--claw4j.cache.enabled=false` 对比；
 4. 最后才看模型措辞。
