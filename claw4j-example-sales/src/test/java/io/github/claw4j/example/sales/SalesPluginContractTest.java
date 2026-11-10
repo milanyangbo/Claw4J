@@ -17,11 +17,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 这个插件声明的核心区间，必须接纳它自己编译时对着的那个核心（P16）。
  *
- * <p>为什么这条要在这里、而不是只在启动期校验：启动期那一次拦的是"部署时才发现"，
- * 而这一条拦的是"提交时就发现"。核心升了 minor 却没人回头改
- * {@code META-INF/claw4j-plugin.properties}，构建当场红——那时候改还只要一分钟。
+ * <p>放在这里而不只靠启动期校验：启动期拦的是部署时才发现，这一条拦的是提交时就发现。
+ * 核心升了 minor 而没人回头改 {@code META-INF/claw4j-plugin.properties}，构建当场红。
  *
- * <p>这不是把同一件事测两遍：启动期那份跑在别人的部署上，这一份跑在仓库里。
+ * <p>不是把同一件事测两遍：启动期那份跑在别人的部署上，这一份跑在仓库里。
  */
 class SalesPluginContractTest {
 

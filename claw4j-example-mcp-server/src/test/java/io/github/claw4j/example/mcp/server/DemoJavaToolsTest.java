@@ -12,10 +12,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 工具本体：不经过协议，直接调。
  *
- * <p>为什么要它——`JavaMcpServerProcessTest` 把 server 起在**另一个进程**里，那边跑得再对，
- * 覆盖率也记不到本进程（jacoco 只看得见自己的 JVM）。于是两个工具的实际行为没有任何
- * 单元级的断言，而覆盖率闸会诚实地把它判红（0%）。
- * 这个类补的是那一半：工具自己算得对；协议那一半由进程级用例负责。
+ * <p>补的是覆盖率那一半：{@code JavaMcpServerProcessTest} 把 server 起在另一个进程里，
+ * 那边跑得再对，jacoco 也只看得见自己的 JVM，记不到本进程。于是工具的实际行为在这里有单元级
+ * 断言，协议那一半由进程级用例负责。
  */
 class DemoJavaToolsTest {
 

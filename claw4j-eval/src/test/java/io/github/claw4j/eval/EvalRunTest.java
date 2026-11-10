@@ -38,27 +38,26 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 执行器：读用例 → 调真模型 → 交给判分 → 写报告。
+ * 执行器：读用例、调真模型、交给判分、写报告。
  *
- * <p><b>它整份带 {@code @Tag("eval")}，默认被 surefire 排除</b>。理由不是"太慢"，
- * 是它<b>不属于回归基线</b>：五十条真模型调用（每条 1~6 次往返）是另一个量级，
- * 而且要联网、要花钱、结果会随模型版本漂。ADR-0019 的原话是"与装配用例分开跑、分开看"。
+ * <p>整份带 {@code @Tag("eval")}，默认被 surefire 排除。它不属于回归基线：五十条真模型调用
+ * 每条 1 到 6 次往返，要联网、要花钱、结果随模型版本漂。ADR-0019 要求它与装配用例分开跑、
+ * 分开看。
  *
- * <p><b>但它不是"没人管"</b>：用例集本身由 {@link EvalCaseSetTest} 在回归里守着，
- * 判分口径由 {@code EvalScorerTest} 守着。这一份只负责"把两者接起来"，
- * 所以它是胶水——胶水漏了看得见（报告没有、id 对不上），判分错了看不见。
+ * <p>它不是没人管：用例集由 {@link EvalCaseSetTest} 在回归里守着，判分口径由
+ * {@code EvalScorerTest} 守着。这一份只负责把两者接起来，胶水漏了看得见，报告没有或 id
+ * 对不上；判分错了看不见。
  *
- * <p><b>放在 {@code src/test} 而不是主代码</b>：它天然要真模型、真库、真容器，
- * 进不了回归；放在测试里，它就不会在 jacoco 上留覆盖率债（主代码那三个类都能被回归覆盖）。
+ * <p>放在 {@code src/test} 而不是主代码：它天然要真模型、真库、真容器，进不了回归；放在测试里
+ * 也不在 jacoco 上留覆盖率债，主代码那三个类都能被回归覆盖。
  *
- * <p><b>启动类要显式写，而且不能用 app 的那个</b>：本模块不依赖 {@code claw4j-app}
- * （它的主构件被 repackage 成可执行 jar，类在 BOOT-INF 里，别的模块拿不到）。
- * 所以这里自带一个最小的 {@link EvalApplication}：{@code @SpringBootConfiguration}
- * + {@code @EnableAutoConfiguration}，与 {@code Claw4jApplication} 等价的部分只有这两样——
- * 各模块的装配全在自动配置里，不靠组件扫描。
+ * <p>启动类要显式写，而且不能用 app 的那个：本模块不依赖 {@code claw4j-app}，它的主构件被
+ * repackage 成可执行 jar，类在 BOOT-INF 里，别的模块拿不到。所以这里自带一个最小的
+ * {@link EvalApplication}，与 {@code Claw4jApplication} 等价的只有声明配置与打开自动配置
+ * 两样，各模块的装配全在自动配置里，不靠组件扫描。
  *
- * <p>怎么跑：{@code ./scripts/eval.sh}（全跑）、{@code ./scripts/eval.sh sales authz}（按类）、
- * {@code ./scripts/eval.sh --case sales-weekly-east}（单条）。
+ * <p>怎么跑：{@code ./scripts/eval.sh} 全跑，{@code ./scripts/eval.sh sales authz} 按类，
+ * {@code ./scripts/eval.sh --case sales-weekly-east} 单条。
  */
 @SpringBootTest(classes = EvalRunTest.EvalApplication.class,
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -66,10 +65,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EvalRunTest {
 
     /**
-     * 评测用的启动配置。**只有两件事**：声明这是一个 Boot 配置、把自动配置打开。
+     * 评测用的启动配置：声明这是一个 Boot 配置，把自动配置打开，只有这两件事。
      *
-     * <p>不扫 {@code io.github.claw4j.app} 包：那里只有启动类与插件版本闸，
-     * 而闸不属于评测要看的东西（它证明的是"插件声明与核心版本匹配"，有它自己的用例）。
+     * <p>不扫 {@code io.github.claw4j.app} 包：那里只有启动类与插件版本闸，而闸不属于评测
+     * 要看的东西，它证明的是插件声明与核心版本匹配，有它自己的用例。
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
@@ -85,8 +84,8 @@ class EvalRunTest {
     /**
      * 容器要在 Spring 建上下文之前起好：{@link DynamicPropertySource} 要读它的端口。
      *
-     * <p>不用 {@code @Testcontainers}：那会在报告里多一行"跳过了容器管理"，
-     * 而我们本来就只跑一个类，静态块更直白。
+     * <p>不用 {@code @Testcontainers}：那会在报告里多一行跳过了容器管理，而这里本来就只跑
+     * 一个类，静态块更直白。
      */
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
@@ -100,15 +99,14 @@ class EvalRunTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         // 业务数据必须与回归同源：mustMention 里的 128400 来自 V2__business_seed.sql，
-        // 库里的种子换一份，用例就从写下那天是红的。
+        // 库里的种子换一份，用例从写下那天起就是红的。
         registry.add("spring.flyway.enabled", () -> "true");
-        // 知识库默认关（它要一份目录）。评测要测它，所以在这里打开并指向仓库里那份文档。
+        // 知识库默认关，它要一份目录。评测要测它，所以在这里打开并指向仓库里那份文档。
         registry.add("claw4j.rag.enabled", () -> "true");
         registry.add("claw4j.rag.directory", KNOWLEDGE_DIR::toString);
-        // 语义缓存要关掉。它的上下文键是"权限指纹 + 问题里的时间词与数字"，**不含区域词**，
-        // 所以"上周华东"与"上周华南"在它看来是同一个问题——后一条会直接拿到前一条的答案，
-        // 工具一次都不调，判出来是"轨迹没命中"。那不是模型变笨，是评测自己在读缓存。
-        // 缓存本身有它自己的用例，不在这一份里判。
+        // 语义缓存要关掉：上下文键是权限指纹加问题里的时间词与数字，不含区域词，
+        // 所以「上周华东」与「上周华南」在它看来是同一个问题，后一条直接拿到前一条的答案、
+        // 工具一次都不调，判出来是轨迹没命中。缓存本身有它自己的用例，不在这一份里判。
         registry.add("claw4j.cache.enabled", () -> "false");
     }
 
@@ -124,7 +122,7 @@ class EvalRunTest {
 
     private final ObjectMapper json = new ObjectMapper();
 
-    /** 一跑一行的结果。{@code answer} 留在里面是为了报告：假红一眼能看出来。 */
+    /** 一跑一行的结果。{@code answer} 留着是为了报告：假红一眼能看出来。 */
     private record CaseResult(EvalCase testCase, String runId, String answer, EvalVerdict verdict,
                               long millis) {
     }
@@ -132,9 +130,9 @@ class EvalRunTest {
     /**
      * 跑选中的用例、写报告、打印摘要、断言全过。
      *
-     * <p>断言"全过"而不是"跑完了"：一个只满足于"跑完"的量具会在第一次变差时保持沉默。
-     * 它红了说明这版比用例集写下的那一版差——那是要看一眼再决定改代码还是改用例的信号，
-     * 而"看一眼"正是这张票要争取的东西。
+     * <p>断言全过而不是跑完了：一个只满足于跑完的量具会在第一次变差时保持沉默。
+     * 它红了说明这版比用例集写下的那一版差，这时的动作是看一眼再决定改代码还是改用例，
+     * 而看一眼正是这张票要争取的东西。
      */
     @Test
     @DisplayName("一条用例从提问跑到判定，报告里三个判定都有值")
@@ -165,18 +163,15 @@ class EvalRunTest {
     /**
      * 跑一条：先把 setup 说完，再问 question，然后读回 run 与它的 step。
      *
-     * <p><b>runId 为 null 是硬错误，不是"跳过"</b>：判分靠它读回轨迹，为空说明 run 存储
-     * 没接上（A01 的接线断了）。那种情况下"判出来的是空的"会被读成"模型没调工具"，
-     * 于是有人去改工具描述——离真正的原因隔了十万八千里。
+     * <p>runId 为 null 是硬错误，不是跳过：判分靠它读回轨迹，为空说明 run 存储没接上。
+     * 那种情况下判出来的空轨迹会被读成模型没调工具，于是有人去改工具描述，离真正的原因很远。
      */
     private CaseResult run(EvalCase testCase, Principal rosterEntry) {
         assertThat(rosterEntry).as("用例 %s 引用了不存在身份 %s", testCase.id(), testCase.principal()).isNotNull();
-        // **每条用例一个新 userId**，这不只是"换个 chatId 那么轻的事"：
-        // 会话 id 是 `userId@权限指纹`，**刻意不含 chatId**（SessionKeys 的类注释：chatId 是通道侧
-        // 寻址键，换通道就会变，编进主键会让"换通道"等于"换会话"）。
-        // 所以同一个 userId 跑五十条用例＝五十条共享一段会话历史：从第二条起，模型会直接从
-        // 上下文里念出上一条的数字，工具一次都不调，判出来是"轨迹没命中"。
-        // 第一次跑全量时 51 条只过了 10 条，就是这个原因——那不是模型变笨，是评测自己串了味。
+        // 每条用例一个新 userId。会话 id 是 userId@权限指纹，刻意不含 chatId：chatId 是通道侧
+        // 寻址键，换通道就会变，编进主键会让换通道等于换会话（见 SessionKeys 的类注释）。
+        // 所以同一个 userId 跑五十条用例就是五十条共享一段历史：从第二条起模型直接从上下文
+        // 念出上一条的数字，工具一次都不调，判出来是轨迹没命中。
         Principal principal = new Principal("eval-" + testCase.id(), rosterEntry.role(),
                 rosterEntry.accessibleTables(), rosterEntry.allowedActions());
         String chatId = "eval-" + testCase.id();
@@ -201,8 +196,7 @@ class EvalRunTest {
     /**
      * 这一轮的工具调用轨迹：读审计里每一次 {@code tool.action.finished}。
      *
-     * <p>一次调用一行——审计本来就是"一行 = 一次动作"（ADR-0027）。
-     * 汇总行分不出"调了两次同一个工具"。
+     * <p>一次调用一行，审计本来就是一行一个动作（ADR-0027）；汇总行分不出调了两次同一个工具。
      */
     private List<EvalScorer.Trace> traceOf(String runId) {
         return jdbc.query(
@@ -240,8 +234,8 @@ class EvalRunTest {
     // ------------------------------------------------------------------ 报告
 
     /**
-     * 一次运行一份 JSON。**能比较，才叫报告**：没有 {@code caseSetDigest} 的两份报告，
-     * 分数不同时说不清是"代码变了"还是"用例变了"——而那正是这张票要回答的问题。
+     * 一次运行一份 JSON。能比较才叫报告：没有 {@code caseSetDigest} 的两份报告，
+     * 分数不同时说不清是代码变了还是用例变了。
      */
     private Path writeReport(List<CaseResult> results) {
         Map<String, Object> report = new LinkedHashMap<>();
@@ -298,8 +292,8 @@ class EvalRunTest {
         row.put("traceHit", result.verdict().traceHit());
         row.put("authzHeld", result.verdict().authzHeld());
         row.put("failures", result.verdict().failures());
-        // 回答原文（截断）进报告：判分是字符串包含，模型换个写法就假红。
-        // 报告里没有原文的话，"红了"只能靠重跑一次去猜；有了它，一眼就能看出是不是判分的问题。
+        // 回答原文截断后进报告：判分是字符串包含，模型换个写法就假红，有原文才能一眼分辨
+        // 是答错了还是判分的问题。没有原文时，红了只能靠重跑一次去猜。
         row.put("answer", clip(result.answer()));
         // runId 留着：报告里的每一条都能回库查那一轮的审计事件，判分有争议时唯一的裁决入口。
         row.put("runId", result.runId());
@@ -319,11 +313,10 @@ class EvalRunTest {
     }
 
     /**
-     * 用例集内容的哈希：文件名 + 内容，按文件名排序。
+     * 用例集内容的哈希：文件名加内容，按文件名排序。
      *
-     * <p>不哈希"解析后的对象"：那样调整一下缩进、改一句 note 都算"用例变了"，
-     * 而 note 不参与判分——哈希该跟着判分口径走。同理也不该漏掉 note：
-     * 一条 note 改掉了，人得知道"这次比的是什么"。
+     * <p>不哈希解析后的对象：那样调整缩进也算用例变了。也不跳过 note，虽然它不参与判分，
+     * 但它改了人得知道这次比的是什么。
      */
     private static String caseSetDigest() {
         MessageDigest digest;

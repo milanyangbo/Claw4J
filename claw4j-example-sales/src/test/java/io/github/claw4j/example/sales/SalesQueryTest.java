@@ -25,9 +25,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 业务数据查询：从工具入口进去，过 SQL 守卫，落到只读事务里的真库，再把行映射回文本。
  *
- * <p>真库是必须的：守卫是字符串校验，只读约束是数据库给的，两者之间的缺口
- * （可写 CTE、驱动把 readOnly 翻成 BEGIN READ ONLY）只有真 PostgreSQL 能证。
- * 迁移与种子来自 {@code classpath:db/migration}，断言里的 128400 是种子算出来的。
+ * <p>必须真库：守卫是字符串校验，只读约束由数据库给出，两者之间的空档（可写 CTE、驱动把
+ * readOnly 翻译成 {@code BEGIN READ ONLY}）只有真 PostgreSQL 能证。迁移与种子来自
+ * {@code classpath:db/migration}，断言里的 128400 是种子算出来的。
  */
 @Testcontainers
 class SalesQueryTest {

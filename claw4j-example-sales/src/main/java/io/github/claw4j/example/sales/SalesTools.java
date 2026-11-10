@@ -10,28 +10,18 @@ import java.util.Objects;
 /**
  * 销售域查询工具，能力三层里的第一层（Java {@code @Tool}，ADR-0003）。
  *
- * <p><b>这是 Text-to-SQL 的入口</b>：模型把自然语言问题变成一条 SQL 交进来，
- * 这里只读执行、把行还回去，由模型自己组织成回答。
- * 工具不替模型决定查什么——那正是 Text-to-SQL 的含义所在。
+ * <p>这是 Text-to-SQL 的入口：模型把自然语言问题变成一条 SQL 交进来，这里只读执行、把行还
+ * 回去，由模型自己组织成回答。工具不替模型决定查什么，那正是 Text-to-SQL 的含义。
  *
- * <p>三个刻意的设计：
+ * <p>三处刻意的取舍。schema 写进工具描述（见 {@code DESCRIPTION} 的 SCHEMA 段）：固定 schema
+ * 是 ADR-0008 必测项的另一半，模型不知道表名列名就只能在错误里瞎猜，自纠错永远收敛不了。
+ * 描述里连区域代码的取值都给了，因为写 {@code where region_code = '华东'} 不报错、只返回 0 行，
+ * 而这是自纠错唯一无法自己发现的错误。失败返回原因而不是抛异常，抛异常会让框架把错误包成
+ * 模型看不懂的话。类本身不认识数据库，执行走 {@link ReadOnlySqlExecutor}，于是循环行为能在
+ * 没有 Docker 的地方测完整。
  *
- * <ul>
- *   <li><b>schema 写进工具描述里</b>（见 {@code DESCRIPTION} 里的 SCHEMA 段）。
- *       固定 schema 是 ADR-0008 必测项"Text-to-SQL 自纠错链路用固定 schema 跑通"的
- *       另一半：模型不知道表名列名，就只能在错误里瞎猜，自纠错永远收敛不了。
- *       描述里连区域代码的取值（{@code east} / {@code south} / {@code north}）都给了，
- *       因为写 {@code where region_code = '华东'} 不会报错、只会返回 0 行，
- *       而"返回 0 行"是自纠错唯一无法自己发现的错误。
- *   <li><b>失败返回原因而不是抛异常</b>。抛异常会让框架把错误包成模型看不懂的话；
- *       返回带原因的字符串，模型才有东西可改。这是自纠错链路能成立的前提。
- *   <li><b>这个类不认识数据库</b>。执行走 {@link ReadOnlySqlExecutor} 这个接缝，
- *       于是循环行为（自纠错、调用上限）能在没有 Docker 的地方被测完整。
- * </ul>
- *
- * <p>它也不认识 Agent 与通道：只认参数、只给返回值。一旦工具里出现"查一下当前用户是谁"
- * 或者"回一条消息"，它就长进 Agent 里了，从此只能在 Agent 的上下文里测
- * （见能力模块的边界闸）。
+ * <p>它也不认识 Agent 与通道：只认参数、只给返回值。工具里一旦出现查一下当前用户是谁、
+ * 或者回一条消息，它就长进 Agent 里了，从此只能在 Agent 的上下文里测。
  */
 public class SalesTools {
 
@@ -68,6 +58,11 @@ public class SalesTools {
 
     private final ReadOnlySqlExecutor executor;
 
+    /**
+     * 绑定执行接缝。
+     *
+     * @param executor 只读执行器，不能为 null
+     */
     public SalesTools(ReadOnlySqlExecutor executor) {
         this.executor = Objects.requireNonNull(executor, "executor");
     }
@@ -75,9 +70,11 @@ public class SalesTools {
     /**
      * 执行一条只读 SQL，把结果行交回给模型。
      *
-     * <p><b>为什么参数是整条 SQL 而不是"区域 + 时间窗"两个字段</b>：这是 Text-to-SQL，
-     * 翻译工作归模型。把参数收成两个字段，模型就退化成填空机，
-     * "上周华东区成交额"之外的问法（按产品、按客户、环比）全都答不了。
+     * <p>参数是整条 SQL 而不是区域加时间窗两个字段：翻译工作归模型，把参数收成两个字段，
+     * 模型就退化成填空机，按产品、按客户、环比这些问法全都答不了。
+     *
+     * @param sql 模型生成的单条 SELECT 语句
+     * @return 竖线分隔的结果行，被拒或失败时是带原因的提示
      */
     @Tool(description = DESCRIPTION)
     public String querySales(
@@ -96,10 +93,9 @@ public class SalesTools {
     }
 
     /**
-     * 数据库为什么拒绝。取 root cause 而不是最外层异常的消息：
-     * Spring 会把 PostgreSQL 的原话包进好几层 {@code BadSqlGrammarException}，
-     * 最外层那句只有"prepared statement 执行失败"，模型拿到它等于没拿到任何信息——
-     * 真正有用的是最里面那句"column x does not exist"。
+     * 数据库为什么拒绝。取 root cause 而不是最外层异常的消息：Spring 会把 PostgreSQL 的原话
+     * 包进好几层 {@code BadSqlGrammarException}，最外层只有一句执行失败，模型拿到它等于没拿到
+     * 信息，真正有用的是最里面那句 column x does not exist。
      */
     private static String describe(DataAccessException failure) {
         Throwable root = failure.getRootCause() == null ? failure : failure.getRootCause();
@@ -108,8 +104,8 @@ public class SalesTools {
     }
 
     /**
-     * 行怎么变成模型能读的东西。刻意用竖线分隔而不是 Markdown 表格：
-     * 表格在提示词里占的 token 是纯文本的三倍以上，而模型读这两种格式没有差别。
+     * 行怎么变成模型能读的东西。用竖线分隔而不是 Markdown 表格：表格在提示词里占的 token 是
+     * 纯文本的三倍以上，而模型读这两种格式没有差别。
      */
     private String render(QueryResult result) {
         if (result.rowCount() == 0) {

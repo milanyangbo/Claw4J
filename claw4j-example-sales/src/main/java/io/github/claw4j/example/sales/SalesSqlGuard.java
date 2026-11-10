@@ -6,21 +6,19 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 只读约束的第一道：把模型生成的 SQL 挡在"能改写数据库"之外。
+ * 只读约束的第一道：把模型生成的 SQL 挡在能改写数据库之外。
  *
- * <p>这是<b>纯字符串校验</b>，不含任何数据库连接，所以它能在没有 Docker 的地方跑，
- * 也能被单测逐条钉住。它的定位是"快速失败并给出模型看得懂的拒绝理由"，
- * 不是"唯一的防线"——见 {@link JdbcReadOnlySqlExecutor} 的第二道。
+ * <p>纯字符串校验，不连数据库，所以能在没有 Docker 的地方跑，也能被单测逐条钉住。
+ * 它的定位是快速失败并给出模型看得懂的拒绝理由，不是唯一的防线，见
+ * {@link JdbcReadOnlySqlExecutor} 的第二道。
  *
- * <p>为什么字符串校验本身不够、必须有第二道：PostgreSQL 有可写 CTE，
- * {@code with x as (insert into ... returning *) select * from x} 是<b>一条</b>语句，
- * 而且以 {@code with} 开头。任何"首关键字是 select/with 就放行"的规则都会放过它。
- * 同理，注释里夹分号（{@code select 1 -- ; drop table t}）在字符串层面看是多语句，
- * 在数据库层面却是单语句——所以校验前要先去掉注释与字符串字面量，
- * 否则会把合法语句误拒（误拒的方向是拒绝，比误放行安全，但会让模型莫名其妙被拒）。
+ * <p>字符串校验本身不够：PostgreSQL 有可写 CTE，
+ * {@code with x as (insert into ... returning *) select * from x} 是一条语句且以 {@code with}
+ * 开头，任何首关键字是 select/with 就放行的规则都会放过它。反过来，注释里夹分号
+ * （{@code select 1 -- ; drop table t}）在字符串层面看是多语句、在数据库层面却是单语句，
+ * 所以校验前要先去掉注释与字符串字面量，否则会误拒合法语句。
  *
- * <p>结论写在这里是因为它决定了这个类的形状：<b>只做校验、不做保证</b>。
- * 保证由数据库的只读事务给出。
+ * <p>只做校验、不做保证：保证由数据库的只读事务给出。
  */
 public final class SalesSqlGuard {
 
@@ -57,8 +55,9 @@ public final class SalesSqlGuard {
     /**
      * 判定这条语句能不能以只读方式执行。
      *
-     * @return 拒绝理由；为空表示通过。返回理由而不是抛异常，是因为拒绝是<b>正常流程</b>——
-     *         模型写出越权 SQL 是预期内的高频事件，理由要原样回给模型让它自纠错。
+     * @param sql 模型给出的原始语句
+     * @return 拒绝理由；为空表示通过。返回理由而不是抛异常，是因为拒绝属于正常流程，
+     *     模型写出越权 SQL 是预期内的高频事件，理由要原样回给模型让它自纠错
      */
     public static Optional<String> rejectionOf(String sql) {
         if (sql == null || sql.isBlank()) {
@@ -96,20 +95,23 @@ public final class SalesSqlGuard {
     /**
      * 给语句套一层行上限。
      *
-     * <p><b>为什么是包一层子查询，而不是在末尾拼 {@code limit}</b>：模型自带的
-     * {@code order by ... limit 10} 后面再拼一个 limit 就是语法错误，
-     * 而包一层对里面写了什么没有要求（PG 允许子查询里带 CTE 与 order by）。
-     * 拼字符串改别人的 SQL 是这类功能最常见的翻车点。
+     * <p>包一层子查询而不是在末尾拼 {@code limit}：模型自带的 {@code order by ... limit 10}
+     * 后面再拼一个 limit 就是语法错误，而包一层对里面写了什么没有要求，PG 允许子查询里带 CTE
+     * 与 order by。
      *
-     * <p>多取一行是为了能区分"刚好 N 行"与"被截断了"——只取 N 行的话，
-     * 这两种情况返回的行数一样，模型会以为那就是全部。
+     * <p>多取一行是为了区分刚好 N 行与被截断：只取 N 行的话，这两种情况返回的行数一样，
+     * 模型会以为那就是全部。
+     *
+     * @param sql 模型给出的原始语句
+     * @param maxRows 外层子查询的 limit，调用方通常传上限加一以便判断截断
+     * @return 套了上限的语句，里面可以是任意单条查询
      */
     public static String withRowLimit(String sql, int maxRows) {
         String body = stripTrailingSemicolon(sql == null ? "" : sql.trim());
-        // 换行不是排版，是必须的：模型很常写以行注释结尾的语句（`-- 只看华东`），
+        // 换行不是排版，是必须的：模型常写以行注释结尾的语句（「-- 只看华东」），
         // 紧跟着拼 `)` 会把 `as claw4j_limited limit N` 整段吞进注释里，
-        // 合法查询于是变成语法错误，而模型拿到的是一条与被问的问题无关的报错——
-        // 自纠错的前提是"工具把数据库的原话交回来"，这里交回来的原话是错的。
+        // 合法查询于是变成语法错误，而模型拿到的是一条与被问的问题无关的报错。
+        // 自纠错的前提是工具把数据库的原话交回来，这里交回来的原话得是对的。
         // 补一个换行既不改语义，也不需要认识 SQL 方言；剥注释会改掉模型写的文本条件，所以不剥。
         return "select * from (" + body + "\n) as claw4j_limited limit " + maxRows;
     }

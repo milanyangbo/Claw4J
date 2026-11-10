@@ -29,19 +29,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 用例集自洽：**评测集本身进回归**，不调模型、不连库、不烧钱。
+ * 用例集自洽：评测集本身进回归，不调模型、不连库。
  *
- * <p>为什么这一份必须存在：评测集不进 {@code verify.sh}（一百条真模型调用是另一个量级），
- * 而一个不进回归的资产退化成"没人跑的死文件"只是时间问题——ADR-0011 记的那个 P0
- * （26 条数据库测试从未执行却被当成绿）就是这个形状。
+ * <p>评测集不进 {@code verify.sh}，一百条真模型调用是另一个量级；而一个不进回归的资产会
+ * 退化成没人跑的死文件，ADR-0011 记的那个 P0 就是这个形状：26 条数据库测试从未执行，
+ * 却被当成绿。
  *
- * <p>它把两件事分开：<b>用例写坏了</b>在这里红（便宜、立刻），<b>评测没跑</b>是这张票
- * 承认的局限（写在票面的代价一节，不让它以后变成"意外"）。所以这里只读文件，
- * 断言的是"用例集自洽"，不是"模型答得好"。
+ * <p>分工是：用例写坏了在这里红，便宜且立刻；评测没跑是这张票承认的局限，写在票面的代价一节。
+ * 所以这里只读文件，断言的是用例集自洽，不是模型答得好。
  *
- * <p>最值钱的一条是工具名：{@code querySales} 改成 {@code query_sales} 之后，
- * 这里当场红并点名是哪些用例引用了它——而不是等评测跑完发现"全都没命中"，
- * 然后有人去改提示词。
+ * <p>最值钱的一条是工具名：{@code querySales} 改成 {@code query_sales} 之后，这里当场红并
+ * 点名引用了它的用例，而不是等评测跑完发现全都没命中，再有人去改提示词。
  */
 class EvalCaseSetTest {
 
@@ -56,8 +54,7 @@ class EvalCaseSetTest {
     /**
      * 事实来源：业务种子与知识库文档。
      *
-     * <p>用它挡"用例按一个不存在的数写的"。这条很便宜，而它挡的那类错最贵——
-     * 从写下的那天起就是红的，看起来却像"模型答错了"。
+     * <p>挡住按一个不存在的数写的用例。这类错从写下那天起就是红的，看起来却像模型答错了。
      */
     private static final List<String> FACT_SOURCES = List.of(
             "claw4j-example-sales/src/main/resources/db/migration/V1__business_schema.sql",
@@ -126,9 +123,8 @@ class EvalCaseSetTest {
                 if (sources.contains(anchor.toLowerCase())) {
                     continue;
                 }
-                // 合计类锚（185900 = 128400 + 26000 + 31500）不在任何一份来源里，这是正常的。
-                // 留一条明路而不是删掉这条校验：note 里要写明它由哪些数字加起来，
-                // 而那些数字必须都能在来源里找到。凭空写一个数仍然会红。
+                // 合计类锚（185900 = 128400 + 26000 + 31500）不在任何一份来源里，属正常。
+                // note 要写明它由哪些数加出来，那些数必须都能在来源里找到；凭空写一个数仍然会红。
                 assertThat(testCase.note())
                         .as("用例 %s 的锚 %s 既不在事实来源里，note 里也没写推导", testCase.id(), anchor)
                         .isNotNull()
@@ -197,7 +193,7 @@ class EvalCaseSetTest {
     // ------------------------------------------------------------------ 读取与定位（EvalRunTest 也调这两个）
 
     /**
-     * 仓库根：从工作目录往上找"同时有 eval/cases 与 pom.xml"的那一级。
+     * 仓库根：从工作目录往上找同时有 {@code eval/cases} 与 {@code pom.xml} 的那一级。
      *
      * <p>不写死 {@code ../}：surefire 的工作目录是模块目录，但有人在 IDE 里从根跑，
      * 两者差一级。找标记比猜路径可靠。
@@ -225,7 +221,7 @@ class EvalCaseSetTest {
         return List.copyOf(all);
     }
 
-    /** 四档身份。执行器直接拿它造 Principal——评测不经过通道，所以这里就是"通道那一层"。 */
+    /** 四档身份。执行器直接拿它造 Principal，评测不经过通道，所以这里就是通道那一层。 */
     static Map<String, Principal> principals() {
         Map<String, Object> raw = readMap(repositoryRoot().resolve("eval/cases/principals.yaml"));
         Map<String, Principal> roster = new LinkedHashMap<>();
@@ -336,21 +332,14 @@ class EvalCaseSetTest {
     }
 
     /**
-     * 当前的工具清单：扫 classpath 上带 {@code @Tool} 方法的类，取注解里的名字（没写就取方法名）。
+     * 当前的工具清单：扫 classpath 上带 {@code @Tool} 方法的类，取注解里的名字，没写取方法名。
      *
-     * <p>为什么不用容器里的 {@code ToolCatalog}：那要起应用、连库、连模型，而这条校验的
-     * 全部价值在于"便宜到每天都跑"。代码里的 {@code @Tool} 是真的来源——容器里那份清单
-     * 也是从它组出来的，档位与 allow/deny 只是过滤。
+     * <p>不起容器：{@code ToolCatalog} 要连库、连模型，而这条校验的价值在于便宜到每天能跑。
+     * 边界是只覆盖注解式工具，定时任务、计划、会话回忆这几个手工构造 {@code ToolDefinition} 的
+     * 扫不到；报错里带着当前清单，一眼能看出是扫描边界的问题。
      *
-     * <p><b>它只覆盖注解式工具，这是一个已知边界</b>：几个工具（定时任务、计划、会话回忆）
-     * 是手工构造 {@code ToolDefinition} 的，没有 {@code @Tool} 注解，扫不到。
-     * 现在用例里只引用 {@code querySales}，它在覆盖范围内（知识库曾经的 {@code searchDocs}
-     * 在 2026-11-09 改由 {@code RetrievalAugmentationAdvisor} 自动检索，工具已删除）；
-     * 以后要给手工构造的那几个写用例，得先把它们加进这份清单（或者改用具名常量登记），
-     * 否则这里会报"工具不存在"——报错里带着当前清单，一眼能看出是扫描边界的问题。
-     *
-     * <p>加载类时<b>不初始化</b>（{@code Class.forName(name, false, loader)}）：
-     * 这只是一次反射读注解，不该顺带跑别人的静态初始化块。
+     * <p>加载类时不初始化（{@code Class.forName(name, false, loader)}）：反射读注解不该顺带跑
+     * 别人的静态初始化块。
      */
     private static Set<String> toolNames() {
         Set<String> names = new TreeSet<>();
@@ -373,8 +362,8 @@ class EvalCaseSetTest {
                 type = Class.forName(className, false, loader);
             }
             catch (ClassNotFoundException | LinkageError | RuntimeException ignored) {
-                // 扫到编译产物里回不去的类（被删的源文件、可选依赖缺失）时跳过：
-                // 它们是别人的类，不该让"用例集自洽"这条校验连带红。
+                // 扫到编译产物里回不去的类时跳过，比如被删的源文件、可选依赖缺失：
+                // 它们是别人的类，不该让用例集自洽这条校验连带红。
                 continue;
             }
             for (Method method : type.getDeclaredMethods()) {

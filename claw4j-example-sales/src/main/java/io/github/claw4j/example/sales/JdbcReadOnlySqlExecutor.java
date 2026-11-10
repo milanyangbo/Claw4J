@@ -13,25 +13,21 @@ import java.util.Objects;
 /**
  * 只读约束的第二道：把查询关进一个数据库层面的只读事务里执行。
  *
- * <p><b>为什么还要第二道</b>：{@link SalesSqlGuard} 是字符串校验，而 PostgreSQL 有可写 CTE
- * （{@code with x as (insert ... returning *) select * from x} 是一条语句、且以 with 开头）。
- * 字符串校验能从常见的写操作里拦下绝大多数，但"拦下绝大多数"不是保证。
- * 这一道是<b>数据库自己拒绝</b>：校验漏了，写操作在这里照样失败，而不是真的落库。
+ * <p>第一道 {@link SalesSqlGuard} 是字符串校验，而 PostgreSQL 有可写 CTE，
+ * {@code with x as (insert ... returning *) select * from x} 是一条语句、且以 with 开头。
+ * 字符串校验能拦下绝大多数写操作，但不是保证。这一道由数据库自己拒绝：校验漏了，
+ * 写操作在这里照样失败，而不是真的落库。
  *
- * <p><b>为什么是只读事务而不是配一个只读数据库用户</b>：
- * 配只读用户要引入第二套连接凭据（迁移用 owner、运行用 reader），
- * 而这套凭据在 Testcontainers 里还得现场造一遍角色与授权，
- * 复杂度换来的保护和"事务本身是只读的"完全等价。
- * 真要上生产，只读用户仍然该配——那是纵深防御的第三层，与这一层不冲突。
+ * <p>用只读事务而不是配一个只读数据库用户：后者要引入第二套连接凭据（迁移用 owner、
+ * 运行用 reader），在 Testcontainers 里还得现场造角色与授权，换来的保护与事务只读等价。
+ * 上生产时只读用户仍该配，那是第三层。
  *
- * <p><b>只读是怎么生效的</b>：{@code TransactionTemplate.setReadOnly(true)} 由 Spring 翻译成
- * {@code Connection.setReadOnly(true)}，PostgreSQL 驱动再把它翻译成事务级只读标记。
- * 这里<b>没有</b>额外发一条 {@code set transaction read only}——试过，
- * 变异检验显示去掉那条语句测试照样绿（驱动已经做了），留着就是一段测不出作用的代码。
+ * <p>只读的走向是 {@code TransactionTemplate.setReadOnly(true)} →
+ * {@code Connection.setReadOnly(true)} → 驱动的事务级只读标记。这里没有再发一条
+ * {@code set transaction read only}：驱动已经做了，那条语句去掉了测试照样绿。
  *
- * <p>顺带设了 {@code statement_timeout}：模型写出来的 SQL 可能是没写 join 条件的笛卡尔积，
- * 它语法合法、语义荒谬，跑得完但会拖住整个连接池。超时让它自己撞墙，
- * 而不是靠人工发现"库怎么慢了"。
+ * <p>顺带设 {@code statement_timeout}：模型写出来的 SQL 可能是没写 join 条件的笛卡尔积，
+ * 语法合法、跑得完但会拖住整个连接池，超时让它自己撞墙。
  */
 public class JdbcReadOnlySqlExecutor implements ReadOnlySqlExecutor {
 
@@ -46,10 +42,24 @@ public class JdbcReadOnlySqlExecutor implements ReadOnlySqlExecutor {
 
     private final Duration statementTimeout;
 
+    /**
+     * 用 {@link SalesSqlGuard#MAX_ROWS} 与 5 秒超时。
+     *
+     * @param jdbc 查询用的客户端，连接来自同一个池
+     * @param transactionManager 事务管理器，只读标记挂在它开的事务上
+     */
     public JdbcReadOnlySqlExecutor(JdbcClient jdbc, PlatformTransactionManager transactionManager) {
         this(jdbc, transactionManager, SalesSqlGuard.MAX_ROWS, DEFAULT_STATEMENT_TIMEOUT);
     }
 
+    /**
+     * 指定行数上限与语句超时。
+     *
+     * @param jdbc 查询用的客户端，连接来自同一个池
+     * @param transactionManager 事务管理器，只读标记挂在它开的事务上
+     * @param maxRows 返回给模型的最大行数；内部多取一行用来判断截断
+     * @param statementTimeout 单条语句的超时
+     */
     public JdbcReadOnlySqlExecutor(JdbcClient jdbc, PlatformTransactionManager transactionManager,
                                    int maxRows, Duration statementTimeout) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
@@ -86,9 +96,8 @@ public class JdbcReadOnlySqlExecutor implements ReadOnlySqlExecutor {
     }
 
     /**
-     * 多取一行用来判断是否被截断：只取 {@code maxRows} 行的话，
-     * "刚好这么多行"和"被截断了"返回的行数相同，模型会以为那就是全部——
-     * 于是它对着前 50 行报出一个"合计"，而那个数没有单位也没有前提。
+     * 多取一行用来判断是否被截断：只取 {@code maxRows} 行的话，刚好这么多行与被截断返回的行数
+     * 相同，模型会以为那就是全部，于是对着前 50 行报出一个没有前提的合计。
      */
     private QueryResult fetch(String limitedSql) {
         ResultSetExtractor<QueryResult> extractor = resultSet -> {

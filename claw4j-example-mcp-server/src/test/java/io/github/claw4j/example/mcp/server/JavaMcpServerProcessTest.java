@@ -18,14 +18,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /**
- * Java 版 MCP server 的验收：**它必须是另一个进程**，并且走的是真协议。
+ * Java 版 MCP server 的验收：它必须是另一个进程，并且走真协议。
  *
- * <p>为什么非要真进程：把 server 起在同一个 JVM 里（进程内管道）验的是"我的代码能不能被调用"，
- * 验不了三件真正会出事的东西——子进程的 classpath 能不能加载到类、stdout 有没有被日志污染、
- * 客户端关掉之后子进程会不会变成孤儿。这三件在进程内一个都看不见。
+ * <p>非要真进程，是因为进程内管道验的是代码能不能被调用，验不了三件真会出事的东西：子进程的
+ * classpath 能不能加载到类、stdout 有没有被日志污染、客户端关掉之后子进程会不会变成孤儿。
+ * 这三件在进程内一个都看不见。
  *
- * <p>为什么它属于回归基线（不进 {@code real-cli} 组）：这里只依赖 JDK 自己。
- * 没有 Python、没有 Docker、没有外部 CLI——"要装点什么才能跑"的测试最后都会变成没人跑。
+ * <p>它属于回归基线而不进 {@code real-cli} 组：这里只依赖 JDK 自己，没有 Python、没有 Docker、
+ * 没有外部 CLI。要装点什么才能跑的测试最后都会变成没人跑。
  */
 class JavaMcpServerProcessTest {
 

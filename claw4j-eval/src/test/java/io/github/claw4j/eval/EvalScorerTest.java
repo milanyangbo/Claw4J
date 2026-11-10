@@ -9,16 +9,13 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 判分口径：三个布尔各自守一条规则，每一条都能靠"把它该守的那行改坏"而变红。
+ * 判分口径：三个布尔各守一条规则，每一条都能靠改坏它守的那行而变红。
  *
- * <p>为什么这个文件这么重要：本模块的其他部分坏了都看得见（跑不起来、报告没生成），
- * 只有判分器坏了是<b>全绿</b>——而它一绿，整条 M8 就建立在一个假的数上。
- * ADR-0019 的原话是"改一句工具描述，报告里的分数能看到变化"，
- * 这句话成立的前提全在这十几条里。
+ * <p>本模块其他部分坏了都看得见，跑不起来或报告没生成；只有判分器坏了是全绿的。
+ * ADR-0019 说「改一句工具描述，报告里的分数能看到变化」，这句话成立的前提全在这个文件里。
  *
- * <p>每条用真的 {@link EvalScorer.Trace} 而不是替身：判分读的就是审计那几列
- * （工具名 / 成没成 / 摘要），替身会把"读错了字段"这类错误挡住——
- * 而读错字段的表现正是一条都不命中。
+ * <p>每条用真的 {@link EvalScorer.Trace} 而不是替身：判分读的就是审计那几列，
+ * 工具名、成没成、摘要。替身会把读错字段挡住，而读错字段的表现正是一条都不命中。
  */
 class EvalScorerTest {
 
@@ -74,8 +71,7 @@ class EvalScorerTest {
     @Test
     @DisplayName("千分位不算答错：128,400.00 与 128400 是同一个数")
     void aGroupedNumberStillHits() {
-        // 真实运行里模型答的就是这个形状。直接 contains 会把正确答案判成"没答出来"，
-        // 而假红的下场是有人去把用例的锚改宽——那之后这条用例就白写了。
+        // 真实运行里模型答的就是这个形状。直接 contains 会把正确答案判成没答出来。
         EvalCase testCase = caseOf(List.of("128400"), List.of(), List.of("querySales"), false);
 
         EvalVerdict verdict = EvalScorer.judge(testCase,
@@ -90,10 +86,10 @@ class EvalScorerTest {
         EvalCase expect = caseOf(List.of("128400"), List.of(), List.of("querySales"), false);
         EvalCase forbid = caseOf(List.of(), List.of("128400"), List.of("querySales"), false);
 
-        // 该出现而没出现：差两个数量级的答案不该被认成"答对了"。
+        // 该出现而没出现：差两个数量级的答案不该被认成答对了。
         assertThat(EvalScorer.judge(expect, "上周华东区成交额：12,840,000 元。", List.of(tool("querySales")))
                 .answerHit()).isFalse();
-        // 不许出现而没出现：同一个串也不该被认成"漏数了"。
+        // 不许出现而没出现：同一个串也不该被认成漏数了。
         assertThat(EvalScorer.judge(forbid, "上周华东区成交额：12,840,000 元。", List.of(tool("querySales")))
                 .answerHit()).isTrue();
     }

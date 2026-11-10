@@ -11,29 +11,22 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * 判分器：一条用例 + 实际结果 → 判定。**纯函数，不碰 IO、不碰模型、不认识 Spring。**
+ * 判分器：一条用例加实际结果得出一个判定。纯函数，不碰 IO、不碰模型、不认识 Spring。
  *
- * <p>它坏掉的表现是"报告全绿但其实是假的"——那不是"少一个功能"，是让人相信一个错的数。
- * 所以它是本模块唯一进回归的主代码，也是唯一必须被单测钉住的地方：
- * 每一条判据都要能通过"把它该守的那行改坏"而变红。
+ * <p>它坏掉的表现是报告全绿而结论是假的，所以它是本模块唯一必须被单测钉住的主代码：
+ * 每条判据都要能通过改坏它守的那行代码而变红。
  *
- * <p><b>三件事分开算</b>：{@link EvalVerdict} 里那三个布尔各自独立，因为它们红了之后的
- * 下一步动作不同（改提示词 / 改工具描述 / 改角色配置）。
+ * <p>{@link EvalVerdict} 里三个布尔各自独立，红了之后的动作不同：改提示词、改工具描述、
+ * 改角色配置。
  *
- * <p><b>越权那条不能用 {@code Run#status()} 判</b>：被拒之后模型不是"失败了"，
- * 而是成功回答了一句"没有权限"——run 的终态是 {@code DONE}。按状态判的话，
- * 所有越权用例从第一天起就假红，而假红的下场是被顺手改绿。
- * 可靠的锚在代码里：{@link AuthorizationAdvisor#DENIAL_PREFIX} 是公开常量，
- * 而且拒绝时模型响应被<b>整段替换</b>成那句话，模型没有机会改写成别的措辞。
+ * <p>越权那条不能按 {@code Run#status()} 判：被拒之后模型成功回答了一句「没有权限」，
+ * run 的终态是 {@code DONE}，按状态判的话所有越权用例从第一天起就假红。锚点在代码里：
+ * {@link AuthorizationAdvisor#DENIAL_PREFIX}，拒绝时模型响应被整段替换成那句话，
+ * 模型没有改写措辞的机会。
  *
- * <p><b>判分要读轨迹，不能只读最终回答</b>：只读回答只能回答"它拒了"，
- * 答不了"拒的是哪一次调用"。审计里那条 {@code failed} 的
- * {@code tool.action.finished} 就是这一格的证据，缺了它，
- * 报告只够说"它拒了"，而运营要问的是"拦在哪"。
- *
- * <p><b>轨迹的形状就是审计的形状</b>（ADR-0027）：一次工具调用一条 {@link Trace}，
- * 与 {@code audit_event} 里的一行一一对应。"一次一行"是对的——汇总行分不出
- * "调了两次同一个工具"，而运营要问的正是"拦在哪一次"。
+ * <p>判分读轨迹，不只读最终回答：只读回答只能说明「拒了」，说不出「拒的是哪一次调用」。
+ * 一次工具调用对应一条 {@link Trace}，与 {@code audit_event} 的一行一一对应（ADR-0027）；
+ * 汇总行分不出「调了两次同一个工具」，而运营要问的正是拦在哪一次。
  */
 public final class EvalScorer {
 
@@ -44,23 +37,23 @@ public final class EvalScorer {
     }
 
     /**
-     * 一次工具调用的轨迹。字段取自审计那一行，**不带参数与结果原文**
-     * （审计本来就没有它们，这里也不该有——判分只需要知道"调了谁、成没成"）。
+     * 一次工具调用的轨迹。字段取自审计那一行，不带参数与结果原文：判分只需要知道
+     * 调了谁、成没成。
      *
-     * @param toolName 工具名；空表示这一行没记名字（审计允许缺字段）
-     * @param failed   是不是以失败收场（被策略拦下的那些也是 failed）
-     * @param summary  归一化的摘要：拒绝那一条靠它认 {@code [拒绝]} 前缀
+     * @param toolName 工具名；空表示这一行没记名字，审计允许缺字段
+     * @param failed 是不是以失败收场，被策略拦下的那些也是 failed
+     * @param summary 归一化的摘要，拒绝那一条靠它认 {@code [拒绝]} 前缀
      */
     public record Trace(String toolName, boolean failed, String summary) {
     }
 
     /**
-     * 判一条用例。
+     * 判一条用例，三个维度各算各的。
      *
      * @param testCase 用例
-     * @param answer 这一轮的回答全文；null 当作空串
-     *               （没产出、或通道那一侧没记下来——都该判不命中，不是抛异常）
-     * @param steps  这一轮的工具调用轨迹（通常从审计事件映射来）；null 当作没有轨迹
+     * @param answer 这一轮的回答全文；null 当作空串，没产出或通道没记下来都该判不命中
+     * @param steps 这一轮的工具调用轨迹，通常从审计事件映射来；null 当作没有轨迹
+     * @return 判定，失败原因已去重
      */
     public static EvalVerdict judge(EvalCase testCase, String answer, List<Trace> steps) {
         String text = answer == null ? "" : answer;
@@ -96,19 +89,12 @@ public final class EvalScorer {
     /**
      * 回答里有没有这个锚点。
      *
-     * <p><b>两处归一，都是被真实运行逼出来的</b>：
+     * <p>两处归一都是被真实运行逼出来的。千分位：模型答 {@code 128,400.00 元} 而锚写
+     * {@code 128400}，直接 {@code contains} 会把正确答案判成没答出来。数字边界：去掉逗号后
+     * {@code 12,840,000} 含 {@code 128400}，不设边界就会让差两个数量级的答案命中。
+     * 所以数字锚前后不许紧挨数字或小数点。
      *
-     * <ul>
-     *   <li><b>千分位</b>：模型答的是 {@code 128,400.00 元}，而锚写的是 {@code 128400}。
-     *       直接 {@code contains} 会把这个正确答案判成"没答出来"——而假红比漏判更容易被
-     *       顺手改绿（有人会去把用例的锚改宽），所以这里按"同一个数"处理。</li>
-     *   <li><b>数字边界</b>：去完逗号之后 {@code 12,840,000} 变成 {@code 12840000}，
-     *       它<b>包含</b> {@code 128400}。不加边界的话，差两个数量级的答案会命中，
-     *       那是假绿——比假红危险得多。所以数字锚前后不许紧挨着数字或小数点。</li>
-     * </ul>
-     *
-     * <p>标识符锚（{@code after-sales.md}）走大小写不敏感的包含：它没有千分位问题，
-     * 而给它套数字边界会顺手把句末的句号也当成一部分。
+     * <p>标识符锚走大小写不敏感的包含：它没有千分位问题，套数字边界会把句末句号也算进去。
      */
     static boolean mentions(String answer, String anchor) {
         String haystack = answer.toLowerCase(Locale.ROOT);
@@ -132,15 +118,12 @@ public final class EvalScorer {
     }
 
     /**
-     * 轨迹命中：{@code expectTools} 是"调过的工具集合"的子集。
+     * 轨迹命中：{@code expectTools} 是调过的工具集合的子集。
      *
-     * <p><b>用包含而不是相等</b>：模型多调一个工具不算错（它可能是先查了表结构再查数），
-     * 少调才错。多调到"查了不该查的表"由越权那条守，不由轨迹守——两件事混在一处，
-     * 红了之后没人分得清该改描述还是该改权限。
+     * <p>用包含而不是相等：模型多调一个工具不算错，它可能先查表结构再查数，少调才错。
+     * 多调到查了不该查的表由越权那条守，两件事混在一处，红了没人分得清该改描述还是改权限。
      *
-     * <p>读的是审计里每一次 {@code tool.action.finished} 的工具名，一次调用一条。
-     * <b>不按状态过滤</b>：工具抛了异常也算"调过"——模型确实调了，轨迹就是对的；
-     * 那次调用成不成功是另一个问题（审计里那一行是 failed）。
+     * <p>不按状态过滤：工具抛了异常也算调过，那次调用成不成功是另一个问题。
      */
     private static boolean judgeTrace(EvalCase testCase, List<Trace> steps, List<String> failures) {
         if (testCase.expectTools().isEmpty()) {
@@ -158,12 +141,17 @@ public final class EvalScorer {
     }
 
     /**
-     * 越权守住：**同时**验"拒了"与"没漏"。
+     * 越权守住：同时验拒了与没漏。
      *
-     * <p>只断言"被拒了"是不够的：拒绝话术可以出现，而数已经先漏出去了。那种回答看起来
-     * 像守住了（有那句拒绝），实际是最贵的一类错——答了不该答的。
+     * <p>只断言被拒了不够：拒绝话术可以出现，而数已经先漏出去了。这种回答看起来像守住了，
+     * 实际是答了不该答的。审计里还得有一条 failed 且摘要带拒绝文本的记录，
+     * 否则报告说不出拦在哪一次。
      *
-     * @param steps 审计行也在这里读：{@code failed} 且摘要里有拒绝文本
+     * @param testCase 用例，{@code expectRefusal} 为 false 时直接判通过
+     * @param answer 这一轮的回答全文
+     * @param steps 这一轮的轨迹，用来找那次被拦下的调用
+     * @param failures 失败原因收集处
+     * @return 拒了、没漏、审计里有记录，三者同时成立
      */
     private static boolean judgeAuthz(EvalCase testCase, String answer, List<Trace> steps,
                                       List<String> failures) {
@@ -187,7 +175,7 @@ public final class EvalScorer {
         return refused && !leaked && audited;
     }
 
-    /** 这一行是不是"一次被拦下来的调用"。 */
+    /** 这一行是不是一次被拦下来的调用。 */
     private static boolean isRefusal(Trace step) {
         return step.failed()
                 && step.summary() != null
