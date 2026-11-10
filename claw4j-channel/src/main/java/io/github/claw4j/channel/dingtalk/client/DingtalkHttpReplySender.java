@@ -22,28 +22,27 @@ import java.util.Objects;
 /**
  * 用钉钉的 {@code /v1.0/robot/oToMessages/batchSend} 把一段文本私聊发给某个成员。
  *
- * <p>手写 HTTP 而不是引一个 SDK：这条通道一共两个接口，一个是换 token、一个是发消息，
- * 两者都是"一个 POST 一个 JSON"（ADR-0009 的结论，前两个通道一样）。
+ * <p>手写 HTTP 而不引 SDK：这条通道一共两个接口，一个是换 token、一个是发消息，
+ * 两者都是一个 POST 一个 JSON。
  *
- * <p><b>三处与直觉不同，写错了都是"看起来发了"：</b>
+ * <p>三处与直觉不同，写错了都表现为"看起来发了"：
  *
  * <ol>
- *   <li><b>{@code msgParam} 是字符串，不是对象</b>。它的值是
- *       {@code "{\"content\":\"...\"}"} 这样一段<b>序列化后的 JSON 文本</b>。
- *       按直觉写成嵌套对象 {@code {"content":"..."}} 会被钉钉判成参数非法——
- *       而错误码里那句 {@code invalidParameter} 不会告诉你是哪一层。</li>
- *   <li><b>成功响应里没有 {@code errcode}</b>。与企业微信不同，钉钉新版接口成功时返回
+ *   <li>{@code msgParam} 的值是字符串，不是对象。它的内容是
+ *       {@code "{\"content\":\"...\"}"} 这样一段序列化后的 JSON 文本。按直觉写成嵌套对象
+ *       {@code {"content":"..."}} 会被判参数非法，而错误码 {@code invalidParameter}
+ *       不会告诉你是哪一层。</li>
+ *   <li>成功响应里没有 {@code errcode}。与企业微信不同，成功时返回
  *       {@code {"processQueryKey":"..."}}，失败时返回 {@code {"code":"...","message":"..."}}
  *       且 HTTP 状态非 200。所以判据是"有没有 {@code code}"，不是"errcode 是不是 0"。</li>
- *   <li><b>不做"token 被判过期就重试一次"</b>。企业微信那段逻辑在这里是<b>死代码</b>：
- *       钉钉的有效期内重复获取会返回同一张并自动续期，不存在"另一个实例先换掉了"。
- *       把那段抄过来，代价是让人以为重试这件事已经处理过了。真正会发生的是
- *       <b>限流</b>（{@code send.too.fast} / {@code send.byToken.tooFast} /
- *       {@code flowControlledStaffIdList}），这里对它记 WARN 再抛。</li>
+ *   <li>不做"token 被判过期就重试一次"。企业微信那段逻辑在这里是死代码：钉钉的有效期内
+ *       重复获取会返回同一张并自动续期，不存在"另一个实例先换掉了"。抄过来只会让人以为
+ *       重试这件事已经处理过了。真正会发生的是限流（{@code send.too.fast} /
+ *       {@code send.byToken.tooFast} / {@code flowControlledStaffIdList}），这里对它记 WARN 再抛。</li>
  * </ol>
  *
  * <p>失败一律抛 {@link IllegalStateException}：调度层要能在日志里记下"这一条没发出去"。
- * 吞掉的表现是对话里没有回答、日志里也没有痕迹——与"根本没跑"一模一样。
+ * 吞掉的表现是对话里没有回答、日志里也没有痕迹，与"根本没跑"一模一样。
  */
 class DingtalkHttpReplySender implements DingtalkReplySender {
 
@@ -55,7 +54,7 @@ class DingtalkHttpReplySender implements DingtalkReplySender {
     /** 换 token 的余量。7200 秒的凭据卡在最后一秒换，等于每次都换。 */
     private static final Duration TOKEN_SAFETY = Duration.ofMinutes(5);
 
-    /** 文档里的有效期。读不到 {@code expireIn} 时用它，不是猜——它就是钉钉的固定值。 */
+    /** 读不到 {@code expireIn} 时用它。7200 是钉钉文档里的有效期，运行期不核对。 */
     private static final int DEFAULT_EXPIRE_IN_SECONDS = 7200;
 
     /** 访问令牌的 header 名。写成 {@code Authorization: Bearer} 会被判未授权。 */
@@ -152,9 +151,13 @@ class DingtalkHttpReplySender implements DingtalkReplySender {
         return value;
     }
 
-    /** @return 钉钉返回的 code／message；{@code code} 为空表示成功 */
+    /**
+     * 发一次机器人单聊消息。
+     *
+     * @return 钉钉返回的 code 与 message；{@code code} 为空表示成功
+     */
     private Result post(String accessToken, String userId, String text) {
-        // msgParam 必须是**字符串**。见类注释第 1 条：写成嵌套对象会被判参数非法。
+        // msgParam 必须是字符串，见类注释第 1 条：写成嵌套对象会被判参数非法。
         String msgParam = writeJson(Map.of("content", text));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("robotCode", robotCode);

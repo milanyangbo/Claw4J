@@ -14,21 +14,19 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 企业微信回调的两个入口（后台"接收消息"里填的就是这个地址）：URL 验证与消息接收。
+ * 企业微信回调的两个入口：URL 验证与消息接收，后台「接收消息」里填的就是这个地址。
  *
- * <p><b>一定要回 200 与空串。</b>企业微信在五秒内拿不到响应就重推，重推的还是同一条；
- * 而我们在回调里只做"验签 → 解密 → 交给入站编排"，编排的第一步就是提交到线程池，
- * 所以这里返回时模型还没开始跑。空串在协议里的意思是<b>"收到了，不回复"</b>——
- * 被动回复要做，就得在五秒内现加密一段 XML，而答案可能十几秒后才算得出来，
- * 那条路走不通（{@code kind}/{@code ack} 的取舍见 {@code channel.wecom.client} 的包注释）。
+ * <p>一定要回 200 与空串。企业微信五秒内拿不到响应就重推，重推的还是同一条；而回调里只做
+ * 验签、解密、交给入站编排，编排第一步就是提交到线程池，返回时模型还没开始跑。空串在协议里
+ * 的意思是「收到了，不回复」：被动回复要在五秒内现加密一段 XML，而答案可能十几秒后才算得出来，
+ * 那条路走不通。
  *
- * <p><b>这里绝不抛异常。</b>抛出去是 500，企业微信会当成"没收到"继续重推，
- * 而重推的往往是一条同样处理不了的消息：失败 → 重推 → 再失败能跑好几轮，
- * 日志里刷满同一个堆栈。签名错、解密失败、报文坏了，都记下来然后回空串——
- * 这几件事重试不会变好（ADR-0009 的既有约定，飞书那份同一条）。
+ * <p>这里绝不抛异常。抛出去是 500，企业微信当成没收到继续重推，而重推的往往是同一条处理不了的
+ * 消息，日志里刷满同一个堆栈。签名错、解密失败、报文坏了都记下来然后回空串，
+ * 这几件事重试不会变好（ADR-0009 的既有约定）。
  *
  * <p>三种报文三种去处，混成两种就会出错（见 {@link WecomMessageTranslator}）：
- * 文本交给编排、事件通知静默、图片语音这类回一句"打成文字"。
+ * 文本交给编排、事件通知静默、图片语音这类回一句「打成文字」。
  */
 @RestController
 public class WecomCallbackController {
@@ -39,18 +37,18 @@ public class WecomCallbackController {
     public static final String PATH = "/api/wecom/callback";
 
     /**
-     * 回调的应答：空串。协议里的意思是"收到了，不回复"。
+     * 回调的应答：空串，协议里的意思是「收到了，不回复」。
      *
-     * <p>返回 {@code "success"} 之类也行，但空串是最不容易被误读的一个——
-     * 写成一句人话，早晚有人以为它会显示给用户。
+     * <p>返回 {@code "success"} 之类也行，但空串最不容易被误读——写成一句人话，
+     * 早晚有人以为它会显示给用户。
      */
     static final String ACK = "";
 
     /**
      * 处理不了的消息回什么。
      *
-     * <p>与飞书那句同一个理由：不点具体原因（图片／语音／位置都走这条路），
-     * 说错原因比只说"处理不了"更糟——用户会照着错的原因去改自己的操作。
+     * <p>与飞书那句同一个理由：不点具体原因（图片、语音、位置都走这条路），
+     * 说错原因比只说处理不了更糟——用户会照着错的原因去改自己的操作。
      */
     static final String CANNOT_HANDLE_REPLY =
             "这条消息我没法处理：把问题直接打成文字发给我就行（例如「上周华东区成交额多少」）。";
@@ -73,10 +71,16 @@ public class WecomCallbackController {
     }
 
     /**
-     * URL 验证：把解密后的 {@code echostr} 原样回给平台，后台才会显示"验证通过"。
+     * URL 验证：把解密后的 {@code echostr} 原样回给平台，后台才会显示验证通过。
      *
-     * <p>注意回的是<b>明文</b>，不是解密前那一串。回错了的表现是后台保存配置时提示验证失败，
-     * 而这里只会留下一行"签名不对"——平台从不明说它是拿明文比对的。
+     * <p>回的是<b>明文</b>，不是解密前那一串。回错了的表现是后台保存配置时提示验证失败，
+     * 而这里只留下一行签名不对——平台从不明说它是拿明文比对的。
+     *
+     * @param signature 平台带来的 {@code msg_signature}，允许缺失（缺失即验签失败）
+     * @param timestamp 平台带来的时间戳
+     * @param nonce 平台带来的随机串
+     * @param echostr 加密后的验证串
+     * @return 解密后的 {@code echostr}；验签或解密失败时返回空串
      */
     @GetMapping(PATH)
     public String verify(@RequestParam(value = "msg_signature", required = false) String signature,
@@ -97,6 +101,12 @@ public class WecomCallbackController {
 
     /**
      * 接收消息。返回即 ACK：认人、异步执行、回推全在 {@link InboundDispatcher} 里。
+     *
+     * @param signature 平台带来的 {@code msg_signature}，覆盖的是密文
+     * @param timestamp 平台带来的时间戳
+     * @param nonce 平台带来的随机串
+     * @param body 回调报文，形如只含 {@code Encrypt} 的 XML
+     * @return 恒为空串
      */
     @PostMapping(PATH)
     public String receive(@RequestParam(value = "msg_signature", required = false) String signature,
@@ -136,7 +146,7 @@ public class WecomCallbackController {
         return encrypted;
     }
 
-    /** 翻不出来的消息也要回一句：对话里的沉默分不清"没收到"和"不会"。 */
+    /** 翻不出来的消息也要回一句：对话里的沉默分不清「没收到」和「不会」。 */
     private void replyCannotHandle(String userId) {
         if (userId == null || userId.isBlank()) {
             log.warn("处理不了的企业微信消息里连发送者都没有，只能记日志");

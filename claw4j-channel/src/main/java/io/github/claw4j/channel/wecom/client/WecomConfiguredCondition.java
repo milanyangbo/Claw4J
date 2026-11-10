@@ -5,15 +5,14 @@ import org.springframework.context.annotation.ConditionContext;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 
 /**
- * "五样都齐了才装配"这个条件。
+ * 五样配置都齐了才装配的条件。
  *
  * <p>与 {@code FeishuConfiguredCondition} 同一个理由：{@code @ConditionalOnProperty}
- * 表达不了"这个属性不是空串"，而 {@code corp-id: ${WECOM_CORP_ID:}} 在没配环境变量时
- * 恰好是"存在且为空"——条件会成立，然后拿空凭据去换 token，把"没配"报成"凭据错"。
+ * 表达不了「不是空串」，而 {@code corp-id: ${WECOM_CORP_ID:}} 在没配环境变量时恰好是
+ * 「存在且为空」，条件成立后拿空凭据去换 token，把「没配」报成「凭据错」。
  *
- * <p>{@code agent-id} 多一道数字判断：它绑不上时 Spring 直接把 0 填进来，
- * 而 0 是个"看着有值"的缺省——不拦的话错误会延后到第一次发消息，
- * 变成一句看不懂的 {@code 40056}（应用不存在）。
+ * <p>{@code agent-id} 多一道数字判断：它绑不上时 Spring 直接把 0 填进来，而 0 是个
+ * 「看着有值」的缺省。不拦的话错误会延后到第一次发消息，变成一句看不懂的 {@code 40056}（应用不存在）。
  */
 class WecomConfiguredCondition implements Condition {
 

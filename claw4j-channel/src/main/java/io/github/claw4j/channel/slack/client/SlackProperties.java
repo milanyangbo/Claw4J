@@ -28,20 +28,18 @@ import java.util.TreeSet;
  *       <td>收得到提问，发不出答案（{@code not_authed} / {@code invalid_auth}）</td></tr>
  * </table>
  *
- * <p><b>与钉钉的一个好消息</b>：Slack 的 bot token 是长期有效的，<b>不需要换 token</b>，
- * 所以钉钉那边"缓存 token、提前 5 分钟换"的一整段在这里不存在。少一套状态，少一个出错的地方。
- *
- * <p><b>两把凭据不是同一个东西</b>，这是与钉钉最容易被搞混的一处：钉钉的 {@code client-secret}
- * 同时管换 token 与验签；Slack 这边 {@code signing-secret} 只能验签、{@code bot-token} 只能发消息，
+ * <p>两把凭据不是同一个东西：{@code signing-secret} 只能验签、{@code bot-token} 只能发消息，
  * 两个都要，各管一头。搞混的表现是"回调一直被拒"或者"回调正常但答案发不出去"。
  *
- * <p><b>这里只登记"谁是谁"，不写"角色能看什么"</b>：授权表只有一份，在
- * {@code claw4j.channel.http.roles}。与另外三个通道逐条同构。填的是 Slack 的 user id（{@code U} 开头），
- * 不是用户名（{@code @ethan} 那种会变，而且能重名）。
+ * <p>bot token 长期有效，不需要换 token，所以其他通道那套"缓存 token、提前 5 分钟换"的
+ * 状态在这里不存在。少一套状态，少一个出错的地方。
  *
- * <p><b>凭据写法与另外三个通道一致</b>（环境变量占位，不是 P08 的 {@code secret:} 句柄）。
- * 理由见 P12 的实现记录：解析句柄的 {@code SpringSecretResolver} 在 {@code claw4j-capability}，
- * 而 channel 不依赖它（{@code ChannelBoundaryTest} 钉着这条边）。
+ * <p>这里只登记"谁是谁"，"角色能看什么"只有一份，在 {@code claw4j.channel.http.roles}。
+ * 填的是 Slack 的 user id（{@code U} 开头），不是用户名：显示名会变，而且能重名。
+ *
+ * <p>凭据是环境变量占位，不是 P08 的 {@code secret:} 句柄：解析句柄的
+ * {@code SpringSecretResolver} 在 {@code claw4j-capability}，而 channel 不依赖它
+ * （{@code ChannelBoundaryTest} 钉着这条边）。
  */
 @ConfigurationProperties(prefix = "claw4j.channel.slack")
 public class SlackProperties {
@@ -54,7 +52,7 @@ public class SlackProperties {
     /**
      * App 的 Signing Secret，来自 {@code SLACK_SIGNING_SECRET}。
      *
-     * <p>它<b>只</b>用来验签。与钉钉的 {@code client-secret} 不同，它换不来 token，
+     * <p>它只用来验签。与钉钉的 {@code client-secret} 不同，它换不来 token，
      * 也发不了消息——那两件事归 {@link #botToken}。
      */
     private String signingSecret = "";
@@ -62,7 +60,7 @@ public class SlackProperties {
     /**
      * Bot User OAuth Token，来自 {@code SLACK_BOT_TOKEN}，{@code xoxb-} 开头。
      *
-     * <p>长期有效，不用刷新（这一点与钉钉相反）。它是<b>密钥</b>：写进日志等于把工作区的发言权交出去，
+     * <p>长期有效，不用刷新（这一点与钉钉相反）。它是密钥：写进日志等于把工作区的发言权交出去，
      * 所以下面几个打日志的地方都只打前缀。
      */
     private String botToken = "";
@@ -76,10 +74,9 @@ public class SlackProperties {
     /**
      * 同一个频道两条消息之间的最小间隔。
      *
-     * <p>文档写的是"generally allow an app to post <b>1 message per second</b> to a specific channel"，
-     * 所以默认 1 秒。它不是"配大了更好"：一条长答案会被切成几段连着发，
-     * 而 {@code InboundDispatcher} 遇到异常会停止后续段落——撞上限流的表现是用户收到半截答案。
-     * 测试里设成 0 是为了不把用例拖慢，生产不要动它。
+     * <p>Slack 对一个频道的建议上限是每秒 1 条，所以默认 1 秒。它不是"配大了更好"：
+     * 一条长答案会被切成几段连着发，而 {@code InboundDispatcher} 遇到异常会停止后续段落，
+     * 撞上限流的表现是用户收到半截答案。测试里设成 0 是为了不把用例拖慢，生产不要动它。
      */
     private Duration minInterval = Duration.ofSeconds(1);
 

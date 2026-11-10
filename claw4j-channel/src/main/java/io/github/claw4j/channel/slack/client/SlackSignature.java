@@ -9,26 +9,26 @@ import java.time.Duration;
 import java.util.HexFormat;
 
 /**
- * Slack 的请求签名校验。<b>这是这个通道唯一的密码学动作，也是唯一的门。</b>
+ * Slack 的请求签名校验，这个通道唯一的密码学动作，也是唯一的门。
  *
- * <p>算法（官方文档 {@code docs.slack.dev/authentication/verifying-requests-from-slack}）：
+ * <p>算法（{@code docs.slack.dev/authentication/verifying-requests-from-slack}）：
  *
  * <pre>
  *   basestring = "v0:" + timestamp + ":" + rawBody
  *   signature  = "v0=" + hex( HmacSHA256( key = signingSecret, data = basestring ) )
  * </pre>
  *
- * <p>与钉钉那套的三点不同，都写在这里，因为改这个类的人一定会问：
+ * <p>与钉钉那套的三点不同：
  *
  * <ol>
- *   <li><b>签名覆盖整个报文</b>，不只是时间戳。钉钉那边签名只护了 {@code timestamp + secret}，
- *       报文被改过也验得过（窗口内可以重放）；这里报文本身进了 HMAC，改一个字就验不过。
- *       代价是<b>必须拿到原始字符串</b>：JSON 反序列化再序列化一遍，字段顺序与转义都会变，
- *       结果是"签名永远对不上"，而症状看起来像密钥配错。所以控制器收的是 {@code String body}。</li>
- *   <li><b>时间戳是秒</b>（10 位），窗口 <b>5 分钟</b>。钉钉是毫秒、窗口 1 小时。
- *       照抄钉钉的除法会得到 1970 年，于是所有回调都被判过期——一个不报错的全拒。</li>
- *   <li><b>前缀有两个</b>：basestring 里是 {@code v0:}，签名里是 {@code v0=}。
- *       少一个冒号或多一个等号，算出来都是一串永远对不上的十六进制。</li>
+ *   <li>签名覆盖整个报文，不只是时间戳。钉钉那边签名只护 {@code timestamp + secret}，
+ *       报文被改过也验得过；这里报文本身进了 HMAC，改一个字就验不过。代价是必须拿到原始字符串：
+ *       JSON 反序列化再序列化一遍，字段顺序与转义都会变，结果是签名永远对不上，
+ *       而症状看起来像密钥配错，所以控制器收的是 {@code String body}。</li>
+ *   <li>时间戳是秒（10 位），窗口 5 分钟。钉钉是毫秒、窗口 1 小时。照抄钉钉的除法会得到 1970 年，
+ *       于是所有回调都被判过期——一个不报错的全拒。</li>
+ *   <li>前缀有两个：basestring 里是 {@code v0:}，签名里是 {@code v0=}。少一个冒号或多一个等号，
+ *       算出来都是一串永远对不上的十六进制。</li>
  * </ol>
  *
  * <p>窗口是这条防线的全部：签名本身不会过期，被截获的 {@code (timestamp, signature)} 对
@@ -58,10 +58,12 @@ public final class SlackSignature {
     }
 
     /**
+     * 校验签名与时间戳窗口，两项都过才算通过。
+     *
      * @param timestamp header 里的 {@code X-Slack-Request-Timestamp}（秒）
      * @param signature header 里的 {@code X-Slack-Signature}（{@code v0=...}）
-     * @param body      <b>原始</b>请求体，未反序列化的字符串
-     * @return {@code true} 表示签名对得上<b>且</b>时间戳在 5 分钟窗口内
+     * @param body 原始请求体，未反序列化的字符串
+     * @return {@code true} 表示签名对得上，且时间戳在 5 分钟窗口内
      */
     public boolean verify(String timestamp, String signature, String body) {
         if (isBlank(timestamp) || isBlank(signature) || body == null) {
@@ -77,7 +79,11 @@ public final class SlackSignature {
         return MessageDigest.isEqual(expected, signature.strip().getBytes(StandardCharsets.UTF_8));
     }
 
-    /** @return {@code v0=} 加小写十六进制——签名头就是这个形状，多一个字符都对不上 */
+    /**
+     * 算一遍签名。
+     *
+     * @return {@code v0=} 加小写十六进制——签名头就是这个形状，多一个字符都对不上
+     */
     private String signatureOf(String timestamp, String body) {
         try {
             Mac mac = Mac.getInstance(ALGORITHM);

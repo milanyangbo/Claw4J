@@ -53,16 +53,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 飞书通道的装配条件：什么情况下它在容器里，什么情况下它连一个 bean 都不留。
  *
- * <p>这一份测的不是"翻译 SDK 对象"（那要真凭据，靠起一次应用手验），而是**装配**：
- * 没配飞书的人、没打 SDK 的包、把通道关掉的人，都不该因为这个新通道而起不来。
- * 这三件事在真链路上完全看不出来——只跑 HTTP 的部署照样能启动，直到某次升级把它拖垮。
+ * <p>这一份测的不是翻译 SDK 对象（那要真凭据，靠起一次应用手验），而是装配：没配飞书的人、
+ * 没打 SDK 的包、把通道关掉的人，都不该因为这个新通道而起不来。这三件事在真链路上完全看不出来，
+ * 只跑 HTTP 的部署照样能启动，直到某次升级把它拖垮。
  *
- * <p>唯一的正例（凭据齐全 → 真连上）不写在这里：它会在跑测试时去连飞书，
+ * <p>唯一的正例（凭据齐全就真连上）不写在这里：它会在跑测试时去连飞书，
  * 让回归依赖网络与一个真实应用的状态。
  *
- * <p>最后一条用例（主动投递）严格说不属于"装配条件"，但它就在这里——理由写在它自己的注释里：
- * channel 模块的测试文件有<b>名额上限</b>（10 个），而只有一条用例的文件腾出来的正好是
- * 下一个通道要用的槽位。
+ * <p>最后一条用例（主动投递）严格说不属于装配条件，之所以在这里：channel 模块的测试文件有
+ * 名额上限（10 个），把只有一条用例的文件并进来，腾出的正好是下一个通道要用的槽位。
  */
 @ExtendWith(OutputCaptureExtension.class)
 class FeishuChannelWiringTest {
@@ -197,14 +196,9 @@ class FeishuChannelWiringTest {
     /**
      * 主动投递（A05）：一个 chat_id 加一段文本，交给本来就在的回推。
      *
-     * <p>原来它单独一个文件（{@code FeishuOutboundDeliveryTest}），只有这一条——
-     * 而 channel 模块的测试文件是<b>有名额上限</b>的（10 个，脚本卡着），
-     * 钉钉通道那条要新建文件，槽位只能从"只有一条用例的文件"里腾。
-     * 放这里而不是删掉：投递实现本来就是这个装配的一个产物，
-     * 而它值得一条用例的地方在于两件事不能被改错——通道名必须与
-     * {@code agent_run_delivery.channel} 那一列同口径（错了的表现是"登记了地址，
-     * 但永远没有实现能送"），地址必须原样交给回推（错了会推到一个拼出来的地址上，
-     * 而那种错在日志里看着像"发成功了"）。
+     * <p>值得一条用例的是两件事。通道名必须与 {@code agent_run_delivery.channel} 那一列同口径，
+     * 错了的表现是登记了地址、却永远没有实现能送；地址必须原样交给回推，错了会推到一个
+     * 拼出来的地址上，而那种错在日志里看着像发成功了。
      */
     @Test
     @DisplayName("主动投递：通道名与库里那一列同口径，地址原样交给回推")
@@ -305,6 +299,11 @@ class FeishuChannelWiringTest {
                 .as("吞掉它的现场最难查：平台以为我们收下了，库里没有这条，日志里只有一句处理失败")
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("库连不上");
+        assertThat(channel.state())
+                .as("同一个回调里顺手把这条连接丢掉：落库（monitor.admit）失败时先关 socket 再抛"
+                        + "（extensions/feishu/src/feishu-ingress.ts:457），"
+                        + "而不是越过一条没落库的消息继续用")
+                .isEqualTo(FeishuConnectionState.DISCONNECTED);
     }
 
     @Test
@@ -372,8 +371,8 @@ class FeishuChannelWiringTest {
     /**
      * 落不了库的 store：只有 {@code enqueue} 会炸。
      *
-     * <p>它模拟的是"库挂了"这一件事，而这条路径的判据只有一个：**异常要冒到通道那一层**——
-     * 通道把它吞了，就等于什么都没发生（平台以为收下了，库里没有）。
+     * <p>它模拟库挂了这一件事，判据只有一个：异常要冒到通道那一层。通道把它吞了，
+     * 就等于什么都没发生——平台以为收下了，库里没有这条。
      */
     private static final class BrokenStore implements InboundStore {
 

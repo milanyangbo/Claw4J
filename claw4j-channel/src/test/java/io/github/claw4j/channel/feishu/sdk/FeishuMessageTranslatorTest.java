@@ -19,14 +19,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 飞书事件 → {@link FeishuInboundEvent} 这一段翻译。
+ * 飞书事件到 {@link FeishuInboundEvent} 这一段翻译。
  *
- * <p>为什么要单独测：它是这一层**唯一有实质内容**的工作，而错法全都不报错——
- * 取错 sender 字段会让所有人认成同一个人（或全都认不出），漏了摘 {@code @_user_1}
- * 会让模型看到一串无意义 token，翻不出来时抛异常会让平台一直重推同一条消息。
+ * <p>单独测它，因为这是这一层唯一有实质内容的工作，而错法全都不报错：取错 sender 字段会让
+ * 所有人认成同一个人或者全都认不出，漏摘 {@code @_user_1} 会让模型看到一串无意义 token，
+ * 翻不出来时抛异常会让平台一直重推同一条消息。
  *
- * <p>这些用例**不需要凭据、不需要网络**：事件对象是 SDK 的 POJO，直接 new 出来就行。
- * 之前的默认构建里这个类覆盖率为 0，而那些行是通道里最容易写错的部分。
+ * <p>用例不需要凭据、不需要网络：事件对象是 SDK 的 POJO，直接 new 出来就行，
+ * 而这些行是通道里最容易写错的部分。
  */
 class FeishuMessageTranslatorTest {
 

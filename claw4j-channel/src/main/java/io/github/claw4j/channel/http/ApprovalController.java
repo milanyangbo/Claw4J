@@ -22,20 +22,18 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.Instant;
 
 /**
- * 审批的 HTTP 入口（P03）：读一条待批请求、以及替它下结论。
+ * 审批的 HTTP 入口（P03）：读一条待批请求，以及替它下结论。
  *
- * <p><b>与飞书卡片走的是同一条服务端逻辑</b>：两者都只做"认出谁在点"，
- * 然后把这件事交给 {@link ApprovalDecider#decide}。资格判定（名单、不能批自己的）
- * 在那边做一次——写在两个入口上的话，第二个入口必然漏，而漏掉的表现是
- * "同一个按钮换个通道就能自己批自己"。
+ * <p>与飞书卡片走同一条服务端逻辑：两者都只负责认出谁在点，然后把事情交给
+ * {@link ApprovalDecider#decide}。资格判定（名单、不能批自己）只在那边做一次；
+ * 写在两个入口上，第二个必然漏，而漏掉的表现是同一个按钮换个通道就能自己批自己。
  *
- * <p><b>为什么这个接口必须存在，不能"飞书就够了"</b>：定时任务、CI、值班脚本都可能需要批一步，
- * 而它们不在飞书里；反过来只跑 HTTP 的部署也不该因为"没配飞书"就没有审批。
- * 卡片是"让人顺手点一下"，接口是"让系统能批"。
+ * <p>接口必须存在，不能只靠卡片：定时任务、CI、值班脚本都可能需要批一步，而它们不在飞书里；
+ * 反过来，只跑 HTTP 的部署也不该因为没配飞书就没有审批。卡片是让人顺手点一下，接口是让系统能批。
  *
- * <p><b>状态码就是结论</b>：结论本身在 body 里（{@code verdict} + {@code detail}），
- * HTTP 状态码只回答"这次请求该怎么处置"——404 编号错了、403 你没资格、
- * 409 这个按钮已经不作数（过期或被别人点过）。全用 200 会逼调用方解析文案。
+ * <p>状态码回答的是这次请求该怎么处置，结论本身在 body 里（{@code verdict} 与 {@code detail}）：
+ * 404 编号错了、403 没资格、409 这个按钮已经不作数（过期或被别人点过）。全用 200 会逼调用方
+ * 解析文案。
  */
 @RestController
 @RequestMapping("/api/approvals")
@@ -54,10 +52,14 @@ public class ApprovalController {
     }
 
     /**
-     * 读一条请求现在的样子：卡片渲染、以及"我刚才批的生效了吗"。
+     * 读一条请求现在的样子，供卡片渲染与「我刚才批的生效了吗」这类确认。
      *
-     * @return 200 + 这条请求；404 表示没有（编号错了、或者这个部署没装审批）；
-     *         没有装配审批时也回 404——那是能力不在场，不是这个通道坏了
+     * <p>没有装配审批时也回 404：那是能力不在场，不是这个通道坏了。
+     *
+     * @param id 审批编号
+     * @param user 请求头里的用户标识，允许缺失
+     * @param role 请求头里的角色名，允许缺失
+     * @return 200 加这条请求；编号不存在时 404
      */
     @GetMapping(path = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<ApprovalView> view(@PathVariable("id") String id,
@@ -77,11 +79,17 @@ public class ApprovalController {
     }
 
     /**
-     * 下结论。
+     * 替一条请求下结论。
      *
-     * <p>请求体里只有两件事：批还是拒、以及理由（拒绝时回灌给模型）。
-     * <b>没有"谁"</b>：点按钮的人由通道认出来（HTTP 是请求头，飞书是卡片事件的 operator），
+     * <p>请求体里只有两件事：批还是拒、以及理由（拒绝时回灌给模型）。没有「谁」：
+     * 点按钮的人由通道认出来（HTTP 是请求头，飞书是卡片事件的 operator），
      * 让调用方自己报身份的话，自批那一条就只是一句口头约定。
+     *
+     * @param id 审批编号
+     * @param request 决定与理由
+     * @param user 请求头里的用户标识，允许缺失
+     * @param role 请求头里的角色名，允许缺失
+     * @return 状态码由 {@link #statusOf} 决定，body 是状态名与一句话
      */
     @PostMapping(path = "/{id}", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
@@ -104,7 +112,7 @@ public class ApprovalController {
                         result.detail()));
     }
 
-    /** 结论 → HTTP 状态码。这个映射只在这一处，卡片那一侧用的是同一张表（toast 文案）。 */
+    /** 结论到 HTTP 状态码的映射。只在这一处，卡片那一侧用的是同一张表的 toast 文案。 */
     static HttpStatus statusOf(ApprovalVerdict verdict) {
         return switch (verdict) {
             case GRANTED, DENIED -> HttpStatus.OK;
@@ -121,23 +129,28 @@ public class ApprovalController {
     }
 
     /**
+     * 一次决定的请求体。
+     *
      * @param approved true 批准，false 拒绝
-     * @param reason   拒绝的理由。批准时可以不给
+     * @param reason 拒绝的理由，批准时可以不给
      */
     public record DecisionRequest(boolean approved, String reason) {
     }
 
     /**
-     * @param verdict 小写档位名（{@code granted / denied / expired / not_found / …}），
-     *                与库里 {@code approval_request.status} 不是一回事：那个只有三种
-     * @param detail  给人看的一句话
+     * 一次决定的结果。
+     *
+     * @param verdict 小写档位名（{@code granted}、{@code denied}、{@code expired}、
+     *                {@code not_found} 等），与库里 {@code approval_request.status} 不是一回事：
+     *                那个只有三种
+     * @param detail 给人看的一句话
      */
     public record DecisionResponse(String verdict, String detail) {
     }
 
     /**
-     * 一条请求的样子。字段与 {@link ApprovalDecider.Pending} 一一对应，
-     * 除了 <b>{@code argsDigest} 不在里面</b>——指纹是给机器比的，人要看 {@code argsSummary}。
+     * 一条请求对外露出的样子。字段与 {@link ApprovalDecider.Pending} 一一对应，
+     * 只少 {@code argsDigest}：指纹是给机器比的，人要看 {@code argsSummary}。
      */
     public record ApprovalView(String id, String runId, String owner, String toolName,
                                String argsSummary, String status, boolean expired, Instant expiresAt) {
@@ -148,6 +161,11 @@ public class ApprovalController {
         }
     }
 
+    /**
+     * 认人失败时的响应体。
+     *
+     * @param error 拒绝原因
+     */
     public record ErrorResponse(String error) {
     }
 }

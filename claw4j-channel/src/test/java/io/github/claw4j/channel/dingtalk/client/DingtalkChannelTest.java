@@ -43,13 +43,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 发送那一侧（换 token、复用、{@code msgParam} 的形状、限流与错误码）、
  * 装配那一侧（配置不齐就一个 bean 都不留）。
  *
- * <p><b>签名是照着协议另写一份</b>（见 {@link #signOf}）：用生产的 {@code DingtalkSignature}
- * 去签、再用它去验，两边一起错也照样绿。这段 HMAC 只有五行，但它恰好是"门在不在"的唯一判据，
- * 值得写两遍。
+ * <p>签名照着协议另写一份（见 {@link #signOf}）：用生产的 {@code DingtalkSignature} 去签、
+ * 再用它去验，两边一起错也照样绿。这段 HMAC 只有五行，但它恰好是"门在不在"的唯一判据。
  *
- * <p>一个外部依赖都不需要：不连钉钉、不连数据库，{@code 收} 那侧用真 {@link InboundDispatcher}
- * 加一个直接执行的 executor（同步跑完，断言不用等），{@code 发} 那侧用 JDK 自带的
- * {@link HttpServer} 假扮钉钉的两个接口。
+ * <p>不用外部依赖：{@code 收} 那侧用真 {@link InboundDispatcher} 加一个直接执行的 executor
+ * （同步跑完，断言不用等），{@code 发} 那侧用 JDK 自带的 {@link HttpServer} 假扮钉钉的两个接口。
  */
 @ExtendWith(OutputCaptureExtension.class)
 class DingtalkChannelTest {
@@ -265,8 +263,8 @@ class DingtalkChannelTest {
                 .contains("\"robotCode\":\"" + ROBOT_CODE + "\"")
                 .contains("\"userIds\":[\"" + USER + "\"]")
                 .contains("\"msgKey\":\"sampleText\"")
-                // msgParam 的值是一段**被序列化的 JSON 文本**，所以引号是转义的。
-                // 写成嵌套对象的话这里会是 "msgParam":{"content":...}——钉钉判参数非法。
+                // msgParam 的值是一段被序列化的 JSON 文本，所以引号是转义的。
+                // 写成嵌套对象的话这里会是 "msgParam":{"content":...}，钉钉判参数非法。
                 .contains("\"msgParam\":\"{\\\"content\\\":\\\"第一条\\\"}\"");
         assertThat(tokenHeaders).as("写成 Authorization: Bearer 会被判未授权")
                 .containsExactly("token-1", "token-1");
@@ -411,8 +409,8 @@ class DingtalkChannelTest {
      * 用 JDK 自带的 HTTP 服务器假扮钉钉：{@code accessToken} 记次数、{@code batchSend} 记请求体
      * 与令牌 header。
      *
-     * <p>不用 MockWebServer 之类的库：这里要验的是"换一次令牌、复用、msgParam 的形状"
-     * 这三条关于<b>请求长什么样</b>的事，一个四十行的假服务比一个新依赖更容易看清。
+     * <p>不用 MockWebServer 之类的库：这里要验的是"换一次令牌、复用、msgParam 的形状"这三条
+     * 关于请求长什么样的事，一个四十行的假服务比一个新依赖更容易看清。
      */
     private final class FakeDingtalk {
 

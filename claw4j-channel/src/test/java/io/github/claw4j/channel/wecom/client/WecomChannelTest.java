@@ -42,14 +42,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 企业微信通道：回调那一侧（验签、解密、三种报文三种去处、重推去重、认不出人）、
  * 发送那一侧（换 token、复用、被拒后重试一次）、装配那一侧（配置不齐就一个 bean 都不留）。
  *
- * <p><b>为什么要自己写一份加密</b>：这一份里的 {@code encrypt} 与 {@code signatureOf}
- * 是照着协议描述<b>另写一遍</b>的，不是调用生产代码。用生产的加密去验生产的解密，
- * 两边一起错也照样绿——那正是这类代码最可能的坏法（排序漏了、长度字段用了小端、
- * receiveid 少读了几个字节，全都"自洽"）。两份独立实现才谈得上互相校验。
+ * <p>这里的 {@code encrypt} 与 {@code signatureOf} 是照着协议描述另写一遍的，不调用生产代码。
+ * 用生产的加密去验生产的解密，两边一起错也照样绿，而那正是这类代码最可能的坏法：排序漏了、
+ * 长度字段用了小端、receiveid 少读几个字节，全都自洽。两份独立实现才谈得上互相校验。
  *
- * <p>它一个外部依赖都不需要：不连企业微信、不连数据库，{@code 收} 那侧用真 {@link InboundDispatcher}
- * 加一个直接执行的 executor（同步跑完，断言不用等），{@code 发} 那侧用 JDK 自带的
- * {@link HttpServer} 假扮企业微信的两个接口。
+ * <p>用例一个外部依赖都不需要：不连企业微信、不连数据库。收的那侧用真 {@link InboundDispatcher}
+ * 加一个直接执行的 executor（同步跑完，断言不用等），发的那侧用 JDK 自带的 {@link HttpServer}
+ * 假扮企业微信的两个接口。
  */
 class WecomChannelTest {
 
@@ -440,8 +439,8 @@ class WecomChannelTest {
     /**
      * 用 JDK 自带的 HTTP 服务器假扮企业微信：{@code gettoken} 记次数、{@code message/send} 记请求体。
      *
-     * <p>不用 MockWebServer 之类的库：这里要验的是"换一次 token、复用、失败重试一次"这三条
-     * 关于<b>调用顺序</b>的事，一个三十行的假服务比一个新依赖更容易看清。
+     * <p>不引 MockWebServer 之类的库：这里要验的是「换一次 token、复用、失败重试一次」这三条
+     * 关于调用顺序的事，一个三十行的假服务比一个新依赖更容易看清。
      */
     private final class FakeWecom {
 

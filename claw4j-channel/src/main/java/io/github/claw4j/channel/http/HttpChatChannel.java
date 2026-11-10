@@ -64,30 +64,19 @@ public class HttpChatChannel implements ChatChannel {
     /**
      * 流式问答：提交到业务线程池，立刻返回。
      *
-     * <p>返回的 future 有两个用途：正常结束时调用方收尾连接；
-     * 出错时 future 异常完成，调用方据此报错而不是让异常消失在线程池里——
-     * 这是"静默失败"最容易发生的地方，一次工具调用抛异常如果不接住，
-     * 客户端只会看到 SSE 连接挂起直到超时。
+     * <p>返回的 future 有两个用途：正常结束时调用方收尾连接；出错时异常完成，调用方据此报错，
+     * 而不是让异常消失在线程池里——那样客户端只会看到 SSE 连接挂到超时。
      *
-     * <p><b>取消语义</b>：{@code CompletableFuture.cancel(true)} 的
-     * {@code mayInterruptIfRunning} 在 JDK 里不生效（文档原话：此值无效果），
-     * 所以中断由这里自己送——记录执行线程，future 一旦被取消就打断它，
-     * 让 {@code AgentPort.stream} 里阻塞的模型调用立刻结束。
-     * 客户端都断开了还把整条流烧完，是白烧 token 加钉死线程。
+     * <p>取消要自己送中断：{@code CompletableFuture.cancel(true)} 的
+     * {@code mayInterruptIfRunning} 在 JDK 里不生效，所以这里记下执行线程，future 一旦被取消
+     * 就打断它，让 {@code AgentPort.stream} 里阻塞的模型调用立刻结束。因此不能用
+     * {@code runAsync(..., streamExecutor)} 代替：它同样不送中断，而且把任务包进内部的
+     * {@code AsyncRun}，拿不到跑它的线程。客户端都断开了还把整条流烧完，是白烧 token 加钉死线程。
      *
-     * <p>因此不能用 {@code CompletableFuture.runAsync(..., streamExecutor)} 一行代替：
-     * 它返回的是普通 {@code CompletableFuture}，取消时同样不送中断，而且把任务包进内部的
-     * {@code AsyncRun}，拿不到跑它的线程，连自己补都补不上。
-     * （顺带一提：池满时 {@code runAsync} 是<b>同步</b>抛 {@code RejectedExecutionException}
-     * 的，这一点和这里等价，不是选它的理由。）
-     *
-     * <p><b>打断池线程为什么是安全的</b>（自己送中断必须回答的问题）：
-     * 前提是这个线程此刻一定还在跑我们的任务，由 future 的一次性状态保证——
-     * 任务正常结束后 future 已是 completed，{@code cancel()} 返回 false 且<b>不触发</b>
-     * {@code whenComplete} 回调，所以不会出现"线程已归还给池、之后才被打断、污染下一个任务"。
-     * 只有一个窄窗口：取消与完成几乎同时发生，中断位可能带进下一次 {@code getTask()}；
-     * 但 {@code workQueue.take()} 会立刻抛 {@code InterruptedException} 并顺带清掉标志位，
-     * 不会污染后续任务。
+     * <p>打断池线程之所以安全，靠的是 future 的一次性状态：任务正常结束后 future 已 completed，
+     * {@code cancel()} 返回 false 且不触发 {@code whenComplete}，不会出现线程已归还、之后才被打断
+     * 的情况。唯一的窄窗口是取消与完成几乎同时发生，中断位可能带进下一次 {@code getTask()}，
+     * 但 {@code workQueue.take()} 会立刻抛 {@code InterruptedException} 并清掉标志位。
      */
     public CompletableFuture<Void> stream(InboundMessage message, Consumer<OutboundMessage> onChunk) {
         Objects.requireNonNull(message, "message");

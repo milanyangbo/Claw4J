@@ -10,16 +10,15 @@ import java.util.TreeSet;
 import java.util.function.Function;
 
 /**
- * Slack {@code user id} → {@link Principal}：把"谁是谁"（本通道的登记表）与
- * "角色能看什么"（四个通道共用的那张授权表）拼起来。
+ * Slack {@code user id} 到 {@link Principal} 的映射：把"谁是谁"（本通道的登记表）与
+ * "角色能看什么"（各通道共用的授权表，{@code claw4j.channel.http.roles}）拼起来。
  *
- * <p>与前三份逐条同构，包括那句<b>角色名对不上就启动失败</b>：Slack 里登记了一个共享表里
- * 没有的角色，若只是"查不到授权就当没权限"，表现是那群人每次提问都收到"没有权限"，
- * 而配置看起来完全正常。
+ * <p>角色名对不上就启动失败。若只是"查不到授权就当没权限"，表现是那群人每次提问都收到
+ * "没有权限"，而配置看起来完全正常。
  *
- * <p><b>键是 {@code U} 开头的 user id，不是 {@code @名字}</b>：显示名会改、能重名，
- * 而这里要判的是"这个人能看哪些表"——认错人就是把别人的数据给他看。
- * user id 可以从 Slack 里点开成员资料取，也可以从那条"未登记"的 WARN 日志里抄（带着 {@code sender=U...}）。
+ * <p>键是 {@code U} 开头的 user id，不是 {@code @名字}：显示名会改、能重名，而这里判的是
+ * "这个人能看哪些表"，认错人就是把别人的数据给他看。user id 可以从成员资料里取，
+ * 也可以从那条"未登记"的 WARN 日志里抄（带着 {@code sender=U...}）。
  */
 public final class SlackPrincipalResolver implements Function<String, Optional<Principal>> {
 

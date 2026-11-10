@@ -4,10 +4,10 @@ import com.lark.oapi.event.EventDispatcher;
 import com.lark.oapi.ws.Client;
 
 /**
- * 生产实现：包住 {@code new Client.Builder(appId, secret)}。这个包里唯一碰 SDK 连接对象的地方。
+ * 生产实现：包住 {@code new Client.Builder(appId, secret)}，这个包里唯一碰 SDK 连接对象的地方。
  *
  * <p>两个参数都不在这里判：凭据齐全与否由装配条件管（不齐时整块不装配），
- * 连不上由 {@link FeishuLongConnectionChannel} 分类并决定重试。这里只做"造一个"。
+ * 连不上由 {@link FeishuLongConnectionChannel} 分类并决定重试。这里只做「造一个」。
  */
 public final class LarkFeishuConnectionFactory implements FeishuConnectionFactory {
 
@@ -28,7 +28,7 @@ public final class LarkFeishuConnectionFactory implements FeishuConnectionFactor
 
     /**
      * 一对一转发。{@code close()} 会把 SDK 的 {@code userClosed} 置真，于是它自己不再重连——
-     * 我们靠这一点保证"同一时刻只有我们这一条连接"，不会出现 SDK 与我们的重连各建一条。
+     * 靠这一点保证同一时刻只有本类这一条连接，不会出现 SDK 与本类的重连各建一条。
      */
     private record LarkConnection(Client client) implements FeishuConnection {
 

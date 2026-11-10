@@ -14,23 +14,21 @@ import java.util.Objects;
 /**
  * 钉钉机器人回调的唯一入口（开发者后台"消息接收地址"里填的就是它）。
  *
- * <p><b>与企业微信那个端点最明显的不同：签名在 header 里。</b>
- * {@code timestamp} 与 {@code sign} 是 HTTP header，报文是<b>明文 JSON</b>；
- * 企业微信那次是 query 里的 {@code msg_signature} 加一个加密 XML。
- * 所以这里没有"先取密文再验签"的顺序问题——先验签，签过了才解析报文。
+ * <p>签名在 header 里：{@code timestamp} 与 {@code sign} 是两个 HTTP header，报文是明文 JSON
+ * （企业微信那边是 query 里的 {@code msg_signature} 加加密 XML）。所以这里没有"先取密文再验签"
+ * 的顺序问题——先验签，签过了才解析报文。
  *
- * <p><b>失败一律回 200，绝不抛。</b>抛出去是 5xx，钉钉会当成"没收到"继续重推，
- * 而重推的往往是一条同样处理不了的消息：失败 → 重推 → 再失败能跑好几轮，
- * 日志里刷满同一个堆栈。签名错、时间戳过期、报文坏了，都记下来然后回空串——
- * 这几件事重试不会变好（ADR-0009 的既有约定，前两个通道同一条）。
+ * <p>失败一律回 200，不抛。抛出去是 5xx，钉钉当成"没收到"继续重推，而重推的往往是一条
+ * 同样处理不了的消息：失败、重推、再失败能跑好几轮，日志里刷满同一个堆栈。
+ * 签名错、时间戳过期、报文坏了都记日志后回空串，这几件事重试不会变好（ADR-0009:62）。
  *
- * <p><b>也别返回 5xx 来表达"我拒绝了"</b>：那条语义在协议里是"你没收到，再发一次"。
+ * <p>也别用 5xx 表达拒绝：那条语义在协议里是"你没收到，再发一次"。
  * 拒绝是"收到了，不处理"，两者在成本上差好几轮重复投递。
  *
  * <p>四种报文四种去处（见 {@link DingtalkMessageTranslator}）：单聊文本交给编排、
  * 群聊回一句"私聊我"、非文本回一句"打成文字"、没有身份只记日志。
- * 前两类回话是**在回调线程上直接发**的：它们只有一句话，不涉及模型，
- * 而延迟回的话用户那边已经不知道自己在等什么了。
+ * 前两类回话在回调线程上直接发：它们只有一句话，不涉及模型，拖到异步回的话
+ * 用户那边已经不知道自己在等什么了。
  */
 @RestController
 public class DingtalkCallbackController {
@@ -61,7 +59,7 @@ public class DingtalkCallbackController {
     /**
      * 群聊里回什么。
      *
-     * <p>第一版只在单聊作答（P12 的裁剪）。<b>必须回一句</b>：静默地把群里的提问
+     * <p>第一版只在单聊作答（P12 的裁剪）。必须回一句：静默地把群里的提问
      * 当成没发生，群里的人只会觉得机器人坏了——而实际上它好好的，只是不作答。
      *
      * <p>理由写进文案里，因为这条裁剪用户看得见、也一定会被问"为什么"：
@@ -89,10 +87,14 @@ public class DingtalkCallbackController {
     }
 
     /**
-     * 接收消息。返回即 ACK：认人、异步执行、回推全在 {@link InboundDispatcher} 里。
+     * 接收一条钉钉回调。
+     *
+     * <p>返回即 ACK：认人、异步执行、回推全在 {@link InboundDispatcher} 里。
      *
      * @param timestamp header 里的毫秒时间戳，验签用；与当前相差超过 1 小时即判非法
-     * @param sign      header 里的签名（Base64）
+     * @param sign header 里的签名（Base64）
+     * @param body 原始报文，未反序列化
+     * @return 空串，表示收到了
      */
     @PostMapping(PATH)
     public String receive(@RequestHeader(value = "timestamp", required = false) String timestamp,

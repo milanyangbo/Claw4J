@@ -8,38 +8,38 @@ import java.time.Instant;
 import java.util.regex.Pattern;
 
 /**
- * 把 Slack 的事件报文压成内核要的那五个字段——或者明确地说"这条不该回答、或答不了"。
+ * 把 Slack 的事件报文压成内核要的五个字段，或者明确地说"这条不该回答、或答不了"。
  *
- * <p>四种结果，对应四种处理，<b>少一种就会出错</b>：
+ * <p>四种结果，对应四种处理，少一种就会出错：
  *
  * <ul>
  *   <li>{@link Kind#TEXT}：一句话，交给入站编排。</li>
- *   <li>{@link Kind#HANDSHAKE}：配置请求地址时的那次握手，回 {@code challenge} 原文。它不是业务事件，
- *       但<b>是能不能把这个通道配起来的唯一一道关</b>。</li>
- *   <li>{@link Kind#EMPTY_QUESTION}：只 @ 了应用、没写问题。回一句"问点什么"，
- *       <b>不进模型</b>——空提问进模型会得到一段对着空气编的回答。</li>
+ *   <li>{@link Kind#HANDSHAKE}：配置请求地址时的那次握手，回 {@code challenge} 原文。
+ *       它不是业务事件，但是这个通道能不能配起来的唯一一道关。</li>
+ *   <li>{@link Kind#EMPTY_QUESTION}：只 @ 了应用、没写问题。回一句"问点什么"，不进模型——
+ *       空提问进模型会得到一段对着空气编的回答。</li>
  *   <li>{@link Kind#IGNORED}：其余一切。带一条人能读懂的理由，因为这一类最多、也最容易被误判。</li>
  * </ul>
  *
- * <p><b>判定顺序是有讲究的，而且这个顺序是本类最重要的一处</b>：
+ * <p>判定顺序是这个类最要紧的一处：
  *
  * <ol>
- *   <li>先看 {@code bot_id} 与 {@code subtype}，<b>在一切业务判断之前</b>。Slack 会把应用自己
- *       发出去的消息也推回来——不先挡这一层，一次提问就变成一问一答、答又问、问又答，
- *       不报错、只在账单上体现。前四个通道都没有这个问题。</li>
+ *   <li>先看 {@code bot_id} 与 {@code subtype}，在一切业务判断之前。Slack 会把应用自己发出去的
+ *       消息也推回来，不先挡这一层，一次提问就变成一问一答、答又问、问又答，不报错、
+ *       只在账单上体现。</li>
  *   <li>再问有没有 {@code user}：没有身份的消息连"没有权限"都发不出去。</li>
- *   <li>然后才是"这是哪一类提问"。</li>
+ *   <li>最后才判"这是哪一类提问"。</li>
  * </ol>
  *
- * <p><b>为什么只挡 {@code bot_id} 不够</b>：{@code message_changed}（用户编辑了消息）、
- * {@code channel_join}（某某加入频道）这些<b>不是机器人发的</b>，没有 {@code bot_id} 但有 {@code subtype}。
- * 前者连顶层 {@code text} 都没有（原文在 {@code event.message.text}，多嵌一层），
- * 照 {@code event.text} 取会拿到空串；后者的 {@code text} 是"某某加入了频道"这种句子——
- * 它会真的被当成提问送进模型。两条一起挡才是闭合的。
+ * <p>只挡 {@code bot_id} 不够：{@code message_changed}（用户编辑了消息）、{@code channel_join}
+ * （成员加入频道）不是机器人发的，没有 {@code bot_id} 但有 {@code subtype}。前者连顶层
+ * {@code text} 都没有（原文在 {@code event.message.text}，多嵌一层），照 {@code event.text}
+ * 取会拿到空串；后者的 {@code text} 是"某某加入了频道"这种句子，会被当成提问送进模型。
+ * 两条一起挡才是闭合的。
  *
- * <p>{@code event.type} 的不对称也要写清：订阅项叫 {@code app_mention} 与 {@code message.im}，
- * 但载荷里前者是 {@code app_mention}、后者是 {@code message}（配 {@code channel_type: "im"}）。
- * 按订阅名判断的话单聊永远匹配不到，而表现是"群里 @ 有反应、私聊没反应"，也不报错。
+ * <p>订阅项叫 {@code app_mention} 与 {@code message.im}，但载荷里前者是 {@code app_mention}、
+ * 后者是 {@code message}（配 {@code channel_type: "im"}）。按订阅名判断的话单聊永远匹配不到，
+ * 表现是"群里 @ 有反应、私聊没反应"，也不报错。
  */
 class SlackMessageTranslator {
 
@@ -52,10 +52,12 @@ class SlackMessageTranslator {
     }
 
     /**
-     * @param kind      该往哪儿走
+     * 解析结果：去向，加随路数据（{@code challenge} / {@code reason} / {@code event} 三者按去向取其一）。
+     *
+     * @param kind 该往哪儿走
      * @param challenge 只有 {@link Kind#HANDSHAKE} 时非空
-     * @param reason    只有 {@link Kind#IGNORED} 时非空，直接进日志
-     * @param event     只有 {@link Kind#TEXT} 与 {@link Kind#EMPTY_QUESTION} 时非空
+     * @param reason 只有 {@link Kind#IGNORED} 时非空，直接进日志
+     * @param event 只有 {@link Kind#TEXT} 与 {@link Kind#EMPTY_QUESTION} 时非空
      */
     record Parsed(Kind kind, String challenge, String reason, SlackInboundEvent event) {
     }
@@ -70,7 +72,7 @@ class SlackMessageTranslator {
 
     private static final String MESSAGE = "message";
 
-    /** 私聊。文档原话：判断私聊要看 {@code event.channel_type} 是不是 {@code im}。 */
+    /** 私聊的判据：{@code event.channel_type} 是 {@code im}。 */
     private static final String DIRECT_MESSAGE = "im";
 
     /** Slack 的 mention 有两种写法：{@code <@U123>} 与 {@code <@U123|显示名>}。两种都要剥。 */
@@ -125,7 +127,7 @@ class SlackMessageTranslator {
                 + text(event, "channel_type") + "），不是给我的提问");
     }
 
-    /** 一句话的两种结局：有内容就交给编排，剥完是空就回一句"问点什么"。 */
+    /** 把一条已确认是人发的消息包成事件；剥完 mention 后为空就是空提问。 */
     private Parsed question(JsonNode root, JsonNode event, String userId, String threadTs) {
         String channel = text(event, "channel");
         if (channel.isBlank()) {

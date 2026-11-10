@@ -28,20 +28,21 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * 飞书长连接通道：SDK 主动外连（不需要公网 IP、域名、内网穿透），把收到的事件交给入站调度。
  *
- * <p>本类只做三件事：建连、把回调转给 {@link InboundDispatcher}、关连接。"什么时候 ACK、
- * 失败了说什么、长回答怎么切"全在调度层——那是唯一能被默认构建测到的部分，逻辑不该往这里搬。
+ * <p>本类只做三件事：建连、把回调转给 {@link InboundDispatcher}、关连接。什么时候 ACK、
+ * 失败了说什么、长回答怎么切，全在调度层——那是唯一能被默认构建测到的部分，逻辑不往这里搬。
  *
- * <p>三个刻意的选择：
+ * <p>三个取舍：
  * <ul>
- *   <li><b>连不上的两类分开处理</b>（票 02，照 OpenClaw 的做法）。凭据错、应用未开通长连接
- *       这类"换个时间点还是错"的，<b>启动失败</b>；网络、握手超时、对端不可用这类"等一会儿会好"的，
- *       <b>不抛</b>——状态置 {@link FeishuConnectionState#DISCONNECTED}，后台按
- *       30 秒起、每次翻倍、封顶 10 分钟退避重连。一次对端抖动不该让整个应用起不来
- *       （那在 K8s 上是 CrashLoopBackOff，连 HTTP 通道也一起不可用）。</li>
- *   <li><b>重连是"关掉旧的、开一条新的"</b>，不是让 SDK 救活失败的那条。SDK 的
- *       {@code autoReconnect} 只在已经连上之后断开时有用，而且它的退避与状态都不归我们管。</li>
- *   <li><b>回调里绝不抛。</b>事件线程抛异常会触发平台重推，而重推的往往是同一条处理不了的消息，
- *       于是"失败 → 重推 → 再失败"能跑好几轮。异常收在这里记下来，比交给平台循环更可控。</li>
+ *   <li>连不上的两类分开处理（票 02，分法见 {@code docs/channels/slack/transports.md:71}）。
+ *       凭据错、应用未开通长连接这类换个时间点还是错的，启动失败；网络、握手超时、对端不可用
+ *       这类等一会儿会好的不抛，状态置 {@link FeishuConnectionState#DISCONNECTED}，
+ *       后台按 30 秒起、每次翻倍、封顶 10 分钟退避重连。一次对端抖动不该让整个应用起不来，
+ *       那在 K8s 上是 CrashLoopBackOff，连 HTTP 通道也一起不可用。</li>
+ *   <li>重连是关掉旧的、开一条新的，不让 SDK 救活失败的那条。SDK 的 {@code autoReconnect}
+ *       只在已经连上之后断开时有用，退避与状态也不归调用方管。</li>
+ *   <li>回调里默认不抛。事件线程抛异常会触发平台重推，而重推的往往是同一条处理不了的消息，
+ *       失败、重推、再失败能跑好几轮——翻译不了的那一类就吞掉。落库失败是唯一的例外：
+ *       这一条还没被收下，重推才有机会补上，所以照旧往上抛，同时关掉这条连接强制重建。</li>
  * </ul>
  */
 public class FeishuLongConnectionChannel implements ChatChannel {
@@ -51,8 +52,9 @@ public class FeishuLongConnectionChannel implements ChatChannel {
     /**
      * 第一次重连等 30 秒，之后每次翻倍，封顶 10 分钟。
      *
-     * <p>数字照 OpenClaw（`docs/channels/slack/transports.md` 与 `docs/tools/mcp.md:61` 是同一组），
-     * 便于两边日志对着看。翻倍而不是固定：抖一下三十秒内就回来，对端真挂了也不必每分钟去撞一次。
+     * <p>数字与 OpenClaw 的 MCP 客户端同一组（{@code docs/tools/mcp.md:61}：30 seconds,
+     * doubling up to 10 minutes），便于两边日志对着看。翻倍而不是固定：抖一下三十秒内就回来，
+     * 对端真挂了也不必每分钟去撞一次。
      */
     static final Duration INITIAL_BACKOFF = Duration.ofSeconds(30);
 
@@ -61,9 +63,9 @@ public class FeishuLongConnectionChannel implements ChatChannel {
     /**
      * 翻不出来的消息回什么。
      *
-     * <p>刻意不点具体原因：翻不出来的情形有三种（图片/富文本、只有 @ 没有正文、事件里缺发送者），
-     * 而这一层只知道"翻不出来"。写死一个原因会在另外两种情形上说错话——说错原因比只说"处理不了"更糟，
-     * 用户会照着错的原因去改自己的操作。
+     * <p>刻意不点具体原因：翻不出来有三种情形（图片或富文本、只有 @ 没有正文、事件里缺发送者），
+     * 而这一层只知道翻不出来。写死一个原因会在另外两种情形上说错话，
+     * 用户会照着错的原因去改自己的操作，比只说处理不了更糟。
      */
     static final String CANNOT_HANDLE_REPLY =
             "这条消息我没法处理：把问题直接打成文字发给我就行（例如「上周华东区成交额多少」）。";
@@ -77,9 +79,8 @@ public class FeishuLongConnectionChannel implements ChatChannel {
     private final FeishuReplySender replySender;
 
     /**
-     * 卡片按钮的处理（P03）。可以为 null——没有装配审批的部署里没人会发卡片，
-     * 此时不注册卡片回调。留一个"注册了但没东西可判"的回调，表现是每次点击都回一句
-     * "没装审批"，那比没有按钮更让人困惑。
+     * 卡片按钮的处理（P03）。可以为 null：没有装配审批的部署里没人会发卡片，此时不注册卡片回调。
+     * 留一个「注册了但没东西可判」的回调，表现是每次点击都回一句没装审批，比没有按钮更让人困惑。
      */
     private final FeishuApprovalActions approvals;
 
@@ -93,6 +94,9 @@ public class FeishuLongConnectionChannel implements ChatChannel {
 
     /** 当前那条连接；{@code stop()} 之后清空，所以它是可重复调用的。 */
     private volatile FeishuConnection connection;
+
+    /** 建连时用的回调注册表。落库失败要主动重建连接，那时得拿它再建一条。 */
+    private volatile EventDispatcher events;
 
     public FeishuLongConnectionChannel(FeishuChannelProperties properties,
                                        InboundDispatcher dispatcher,
@@ -125,7 +129,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         return "feishu";
     }
 
-    /** 这条通道现在能不能收到消息。今天没有健康端点，状态的第一落点就是它和日志。 */
+    /** 这条通道现在能不能收到消息。目前没有健康端点，状态的第一落点就是它和日志。 */
     public FeishuConnectionState state() {
         return state.get();
     }
@@ -137,6 +141,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
             return;
         }
         EventDispatcher events = eventDispatcher();
+        this.events = events;
         try {
             connect(events);
             state.set(FeishuConnectionState.CONNECTED);
@@ -168,6 +173,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         // 没人管的连接。shutdownNow 可重复调用，所以 stop() 也就可以重复调用。
         state.set(FeishuConnectionState.STOPPED);
         scheduler.shutdownNow();
+        this.events = null;
         FeishuConnection closing = this.connection;
         this.connection = null;
         if (closing != null) {
@@ -179,9 +185,9 @@ public class FeishuLongConnectionChannel implements ChatChannel {
     /**
      * 建一条连接，成功才替换掉当前那条。
      *
-     * <p>失败时**必须关掉这一次开出来的连接**：SDK 的 {@code close()} 会把 {@code userClosed}
-     * 置真，它自己的自动重连随之停下。不关就会有一条 SDK 在后台悄悄重连的连接，
-     * 与我们的重连叠在一起——同一条消息被两条连接各收一次。
+     * <p>失败时必须关掉这一次开出来的连接：SDK 的 {@code close()} 会把 {@code userClosed} 置真，
+     * 它自己的自动重连随之停下。不关就会留一条 SDK 在后台悄悄重连的连接，与本类的重连叠在一起，
+     * 同一条消息被两条连接各收一次。
      */
     private void connect(EventDispatcher events) throws Exception {
         FeishuConnection opening = connectionFactory.open(events);
@@ -205,6 +211,25 @@ public class FeishuLongConnectionChannel implements ChatChannel {
             return;
         }
         scheduler.schedule(() -> reconnect(events, attempt), delay.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 丢掉当前连接，排一次重连。
+     *
+     * <p>不就地重试一次：一条刚证明收不下事件的连接，下一次多半也收不下；重建要重新走握手与鉴权，
+     * 那段代码与启动时的失败处理是同一处（{@link #scheduleReconnect}），不必写第二份。
+     */
+    private void dropAndReconnect() {
+        FeishuConnection closing = this.connection;
+        this.connection = null;
+        if (closing != null) {
+            closeQuietly(closing);
+        }
+        state.set(FeishuConnectionState.DISCONNECTED);
+        EventDispatcher current = this.events;
+        if (current != null) {
+            scheduleReconnect(current, 1, INITIAL_BACKOFF);
+        }
     }
 
     private void reconnect(EventDispatcher events, int attempt) {
@@ -236,7 +261,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
 
     /**
      * 第 {@code attempt} 次重连之前等多久：30 秒起，每次翻倍，封顶 10 分钟。
-     * 上限必须真的封住——不封的话第 11 次就是 8.5 小时，那已经不像"还在重连"了。
+     * 上限必须真的封住，不封的话第 11 次就是 8.5 小时，那已经不像还在重连了。
      */
     static Duration backoff(int attempt) {
         Duration delay = INITIAL_BACKOFF;
@@ -272,19 +297,20 @@ public class FeishuLongConnectionChannel implements ChatChannel {
     }
 
     /**
-     * 事件回调。这里返回就等于 ACK——调度层的 {@code accept} 只做落库与提交，不等模型。
+     * 事件回调。返回就等于 ACK：调度层的 {@code accept} 只做落库与提交，不等模型。
      *
-     * <p><b>两条失败路径刻意不同</b>（票 04，照 OpenClaw 的 `docs/channels/feishu/setup.md:45`）：
+     * <p>两条失败路径刻意不同（票 04）：
      *
      * <ul>
-     *   <li><b>翻译不了</b>（图片、只有 @ 没有正文、正文不是 JSON）：吞掉并回一句人话。
-     *       抛出去平台会重推同一条，而重推的还是翻译不了——一次"失败 → 重推 → 再失败"能跑好几轮。</li>
-     *   <li><b>落不了库：往上抛。</b>平台会因此重推，而我们没有越过一条没落库的消息
-     *       （OpenClaw 的做法是关掉那条 socket，"instead of continuing past an uncommitted turn"）。
-     *       吞掉它的现场最难查：平台以为我们收下了，库里没有这条，日志里只有一句"处理失败"。</li>
+     *   <li>翻译不了（图片、只有 @ 没有正文、正文不是 JSON）：吞掉并回一句人话。
+     *       抛出去平台会重推同一条，而重推的还是翻译不了，失败、重推、再失败能跑好几轮。</li>
+     *   <li>落不了库：往上抛，平台会因此重推，也就没有越过一条没落库的消息。OpenClaw 在同样
+     *       情况下关掉那条 socket 并强制重建（{@code docs/channels/feishu/setup.md:45}：
+     *       instead of continuing past an uncommitted turn）。吞掉它的现场最难查：
+     *       平台以为收下了，库里没有这条，日志里只有一句处理失败。</li>
      * </ul>
      *
-     * <p>包内可见是为了让用例直接打这两个分支——它们都不需要真凭据。
+     * <p>包内可见是为了让用例直接打这两个分支，它们都不需要真凭据。
      */
     void onMessage(P2MessageReceiveV1 event) {
         Optional<FeishuInboundEvent> inbound;
@@ -299,16 +325,25 @@ public class FeishuLongConnectionChannel implements ChatChannel {
             replyCannotHandle(event);
             return;
         }
-        // 落库失败不在这里接：让它一路抛到平台那一侧，于是这条会被重推
-        dispatcher.accept(inbound.get());
+        try {
+            dispatcher.accept(inbound.get());
+        }
+        catch (RuntimeException failure) {
+            // 落库失败：这一条不能算收下。往上抛让平台重推，同时关掉这条连接强制重建
+            // （OpenClaw 同处做法：close socket + fresh authenticated connection，
+            // 而不是越过一条没落库的消息继续往下走）。
+            log.error("飞书事件落不了库，关掉当前连接强制重建（appId={}）",
+                    mask(properties.getAppId()), failure);
+            dropAndReconnect();
+            throw failure;
+        }
     }
 
     /**
-     * 卡片按钮的回调（P03）：返回的这个对象就是"就地换卡片 + 一句提示"。
+     * 卡片按钮的回调（P03）：返回的对象就是「就地换卡片加一句提示」。
      *
-     * <p><b>不抛</b>，同 {@link #onMessage} 的理由：抛出去平台会重推同一个点不动的按钮。
-     * 但这里多一层考虑——点击是人在等回音（toast 会转圈），所以失败也要回一句，
-     * 而不是安静地什么都不做。
+     * <p>不抛，理由同 {@link #onMessage}：抛出去平台会重推同一个点不动的按钮。
+     * 但这里多一层考虑——点击是人在等回音（toast 会转圈），失败也要回一句，不能安静地什么都不做。
      */
     private P2CardActionTriggerResponse onCardAction(P2CardActionTrigger event) {
         try {
@@ -321,7 +356,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         }
     }
 
-    /** 卡片事件 → 三个值：谁点的、哪一条、批还是拒。别的都不进来，判定不需要它们。 */
+    /** 卡片事件到三个值：谁点的、哪一条、批还是拒。别的都不进来，判定不需要它们。 */
     private static FeishuApprovalActions.Click clickOf(P2CardActionTrigger event) {
         P2CardActionTriggerData data = event == null ? null : event.getEvent();
         String openId = data == null || data.getOperator() == null ? null : data.getOperator().getOpenId();
@@ -339,7 +374,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
     }
 
     /**
-     * 结果 → 飞书的响应体。{@code type=raw} 表示"这一整张卡片换成我给的结构"，
+     * 结果转成飞书的响应体。{@code type=raw} 表示这一整张卡片换成给定的结构，
      * 于是同一条消息就地变了，群里不会出现第二条自相矛盾的卡片。
      */
     private static P2CardActionTriggerResponse responseOf(FeishuApprovalActions.Outcome outcome) {
@@ -357,7 +392,7 @@ public class FeishuLongConnectionChannel implements ChatChannel {
         return response;
     }
 
-    /** 翻不出来的消息也要回一句：群里的沉默分不清"没收到"和"不会"。 */
+    /** 翻不出来的消息也要回一句：群里的沉默分不清「没收到」和「不会」。 */
     private void replyCannotHandle(P2MessageReceiveV1 event) {
         String chatId = chatIdOf(event);
         if (chatId == null) {

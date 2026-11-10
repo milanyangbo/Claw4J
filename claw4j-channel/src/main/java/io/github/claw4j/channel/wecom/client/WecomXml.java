@@ -15,19 +15,19 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 企业微信的报文是 XML，这里只做一件极小的事：<b>把根节点下面那一层子元素读成一张表</b>。
+ * 企业微信的报文是 XML，这里只做一件极小的事：把根节点下面那一层子元素读成一张表。
  *
- * <p>不做 XSD 校验、不做嵌套、不建对象树。报文就两种、字段都是平的
- * （外层 {@code ToUserName / Encrypt / AgentID}，内层 {@code FromUserName / MsgType / Content / MsgId …}），
- * 多出来的结构只会让人以为这里在做一个通用的 XML 绑定层。
+ * <p>不做 XSD 校验、不做嵌套、不建对象树。报文就两种、字段都是平的（外层
+ * {@code ToUserName}、{@code Encrypt}、{@code AgentID}，内层 {@code FromUserName}、
+ * {@code MsgType}、{@code Content}、{@code MsgId} 等），多出来的结构只会让人以为
+ * 这里在做一个通用的 XML 绑定层。
  *
- * <p><b>XXE 必须在这里就关掉</b>：这是一个<b>匿名可访问</b>的 HTTP 端点，而 JDK 的
- * {@link DocumentBuilderFactory} 默认允许外部实体——不关的话，一个带 {@code <!DOCTYPE>}
- * 的请求就能让服务端去读本机文件、或者去连一台内网主机，然后把内容带回响应里。
- * 五条设置对着五种攻击面，少一条都留着口子（{@code disallow-doctype-decl} 一条就够，
- * 其余四条是纵深：万一哪天有人把它删了，其它几条还挡着实体展开）。
+ * <p>XXE 必须在这里就关掉：入站端点匿名可访问，而 JDK 的 {@link DocumentBuilderFactory}
+ * 默认允许外部实体。不关的话，一个带 {@code <!DOCTYPE>} 的请求就能让服务端去读本机文件、
+ * 或者去连一台内网主机，再把内容带回响应里。下面几条设置对着几种攻击面：
+ * {@code disallow-doctype-decl} 一条就够，其余是纵深，万一哪天有人删了它，别的几条还挡着实体展开。
  *
- * <p>不带命名空间、也不解析注释：企业微信的报文没有这些，"支持"它们只会多两条没人走的路径。
+ * <p>不带命名空间、也不解析注释：企业微信的报文没有这些，支持它们只会多两条没人走的路径。
  */
 final class WecomXml {
 
@@ -35,7 +35,10 @@ final class WecomXml {
     }
 
     /**
-     * @return 根元素的直接子元素：标签名 → 文本（{@code CDATA} 已经是文本，不需要额外处理）
+     * 把根元素的直接子元素读成一张表。
+     *
+     * @param xml 解密后的明文报文，也可以是一段只有根节点的 XML
+     * @return 根元素的直接子元素：标签名到文本（{@code CDATA} 已经是文本，不需要额外处理）
      * @throws IllegalStateException 不是合法 XML，或根节点下没有元素
      */
     static Map<String, String> childrenOf(String xml) {

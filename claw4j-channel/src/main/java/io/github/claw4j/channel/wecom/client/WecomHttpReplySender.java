@@ -23,25 +23,24 @@ import java.util.Set;
 /**
  * 用企业微信的 {@code /cgi-bin/message/send} 把一段文本发给某个成员。
  *
- * <p>手写 HTTP 而不是引一个 SDK：这条通道一共两个接口，一个是换 token、
- * 一个是发消息，两者都是 {@code POST/GET 一个 JSON}。为它拖进一个第三方包，
- * 换来的是"这个包什么时候跟进 Spring Boot 4"这类与本事无关的维护问题（ADR-0009 的结论：
+ * <p>手写 HTTP 而不是引一个 SDK：这条通道一共两个接口，一个是换 token、一个是发消息，
+ * 两者都是 {@code POST} 或 {@code GET} 一个 JSON。为它拖进一个第三方包，换来的是
+ * 「这个包什么时候跟进 Spring Boot 4」这类与本事无关的维护问题（ADR-0009 的结论：
  * 企业微信没有官方 Java SDK）。
  *
  * <p>三个必须做对的地方：
  *
  * <ol>
- *   <li><b>token 要缓存</b>。它两小时有效、每天有取用上限。每次发消息都换一张，
- *       单测里看不出来，量一上来就是"偶发发不出去"——因为限流返回的也是 JSON。</li>
- *   <li><b>提前换</b>。按 {@code expires_in} 留五分钟余量：卡在最后一秒换，
- *       正好在"我还没过期"和"平台已经认为过期"之间，报的是 {@code 42001}。</li>
- *   <li><b>token 被判过期时重试一次</b>。多实例部署时另一个实例可能刚好换过 token，
- *       旧的那张立刻失效——这不是错误，换一张重发就对。重试只做一次：
- *       连着两次都说不认，那是凭据错，再试也没用。</li>
+ *   <li>token 要缓存。它两小时有效、每天有取用上限。每次发消息都换一张，单测里看不出来，
+ *       量一上来就是偶发发不出去——因为限流返回的也是 JSON。</li>
+ *   <li>提前换。按 {@code expires_in} 留五分钟余量：卡在最后一秒换，正好落在「本地还没过期」
+ *       与「平台已经认为过期」之间，报的是 {@code 42001}。</li>
+ *   <li>token 被判过期时重试一次。多实例部署时另一个实例可能刚好换过 token，旧的那张立刻失效，
+ *       这不是错误，换一张重发就对。重试只做一次：连着两次都说不认，那是凭据错，再试也没用。</li>
  * </ol>
  *
- * <p>失败一律抛 {@link IllegalStateException}：调度层要能在日志里记下"这一条没发出去"。
- * 吞掉的表现是群里没有回答、日志里也没有痕迹——与"根本没跑"一模一样。
+ * <p>失败一律抛 {@link IllegalStateException}：调度层要能在日志里记下这一条没发出去。
+ * 吞掉的表现是群里没有回答、日志里也没有痕迹，与根本没跑一样。
  */
 class WecomHttpReplySender implements WecomReplySender {
 
@@ -102,8 +101,8 @@ class WecomHttpReplySender implements WecomReplySender {
             log.info("企业微信不认这张 access_token（errcode={}），换一张重发一次：user={}",
                     result.errcode(), userId);
             // 这里必须 renew 而不是 accessToken：手上这张在本地看着还没到期，
-            // 平台已经先一步把它废了（另一个实例刚换过）。沿用本地判断会**重发同一张**，
-            // 于是第二次照样是 42001——用户看到的是"消息没发出去"，日志里却是"重试过了"。
+            // 平台已经先一步把它废了（另一个实例刚换过）。沿用本地判断会重发同一张，
+            // 于是第二次照样是 42001——用户看到的是消息没发出去，日志里却是重试过了。
             result = post(renewToken(), userId, text);
         }
         if (result.errcode() != 0) {

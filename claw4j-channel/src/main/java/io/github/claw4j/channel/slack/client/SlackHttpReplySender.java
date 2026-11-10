@@ -20,35 +20,34 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 用 Slack 的 {@code chat.postMessage} 把一段文本发到某个频道（或某条线程）。
+ * 用 Slack 的 {@code chat.postMessage} 把一段文本发到某个频道或某条线程。
  *
- * <p>手写 HTTP 而不是引一个 SDK：这条通道一共两个接口——收（回调，什么都不要）与发
- * （一个 POST 一个 JSON）。Slack 的 Java SDK 是给 Socket Mode 那类形态用的，
- * 而这一版走 Events API 的 HTTP 回调（理由见票面第一节）。
+ * <p>手写 HTTP 而不引 SDK：这条通道一共两个接口——收（回调，什么都不需要）与发
+ * （一个 POST 一个 JSON）。Slack 的 Java SDK 面向 Socket Mode 那类形态，而这一版走
+ * Events API 的 HTTP 回调。
  *
- * <p><b>四处与直觉不同，写错了都是"看起来发了"：</b>
+ * <p>四处与直觉不同，写错了都表现为"看起来发了"：
  *
  * <ol>
- *   <li><b>HTTP 200 不代表成功</b>。失败时也回 200，只是 body 里 {@code ok} 是 {@code false}。
- *       官方原话："Callers should always check the value of the {@code ok} parameter in the response"。
+ *   <li>失败时也回 HTTP 200，只是 body 里 {@code ok} 为 {@code false}，所以判 {@code ok} 而不判状态码。
  *       照抄钉钉（判有没有 {@code code}）或企微（判 {@code errcode}）都会写出一个永远成功的发送器。</li>
- *   <li><b>同一个频道 1 秒只能发 1 条</b>。一条长答案会被切成几段连着发，
- *       而 {@code InboundDispatcher} 遇到异常会<b>停止后续段落</b>——撞上限流的表现是用户
- *       收到半截答案加一行 ERROR。所以这里主动排队（{@link #minInterval}），而不是等着被 429。</li>
- *   <li><b>令牌走 {@code Authorization: Bearer}</b>，长期有效，不用刷新。
- *       这一点与钉钉相反：那边每 7200 秒换一次，这里换 token 的代码根本不存在。</li>
- *   <li><b>{@code thread_ts} 必须是<b>线程根</b>的 ts</b>，不是某条回复的 ts。
- *       传错的表现是"答案开了一条新线程"，群里看到的还是两条独立消息——不报错。</li>
+ *   <li>同一个频道约每秒只允许 1 条。长答案切成几段连着发时会撞上限流，而
+ *       {@code InboundDispatcher} 遇异常会停止后续段落，用户收到半截答案加一行 ERROR。
+ *       所以这里主动排队（{@link #minInterval}），而不是等着被 429。</li>
+ *   <li>令牌走 {@code Authorization: Bearer}，长期有效，不用刷新。与钉钉相反：
+ *       那边每 7200 秒换一次，这里换 token 的代码根本不存在。</li>
+ *   <li>{@code thread_ts} 必须是线程根的 ts，不是某条回复的 ts。传错的表现是答案开了一条新线程，
+ *       群里看到的还是两条独立消息，不报错。</li>
  * </ol>
  *
  * <p>失败一律抛 {@link IllegalStateException}：调度层要能在日志里记下"这一条没发出去"。
- * 吞掉的表现是对话里没有回答、日志里也没有痕迹——与"根本没跑"一模一样。
+ * 吞掉的表现是对话里没有回答、日志里也没有痕迹，与"根本没跑"一模一样。
  */
 class SlackHttpReplySender implements SlackReplySender {
 
     private static final Logger log = LoggerFactory.getLogger(SlackHttpReplySender.class);
 
-    /** 文档里 {@code chat.postMessage} 的路径。 */
+    /** {@code chat.postMessage} 相对 API base 的路径。 */
     private static final String POST_MESSAGE = "/chat.postMessage";
 
     /** 限流时最多再试一次。两次都撞上说明真的发得太密，硬撑只会让后面几条也排队。 */
@@ -139,7 +138,11 @@ class SlackHttpReplySender implements SlackReplySender {
         }
     }
 
-    /** @return Slack 的 {@code ok} 与 {@code error}；429 时带上 {@code Retry-After} */
+    /**
+     * 发一次 {@code chat.postMessage}。
+     *
+     * @return Slack 的 {@code ok} 与 {@code error}；429 时带上 {@code Retry-After}
+     */
     private Result post(String channel, String threadTs, String text) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("channel", channel);

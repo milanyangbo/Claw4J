@@ -7,17 +7,16 @@ import org.slf4j.LoggerFactory;
 import java.util.Objects;
 
 /**
- * 钉钉通道。它没有连接要维护——入站是 {@link DingtalkCallbackController} 那个端点，
+ * 钉钉通道的声明。它没有连接要维护：入站是 {@link DingtalkCallbackController} 那个端点，
  * 出站是一次 {@code POST}，两者都不需要"先连上"。
  *
- * <p>那为什么还要有它：{@link ChatChannel} 是这个项目里"一个通道存在"的唯一声明，
- * 它的 {@code id()} 与 {@code DingtalkOutboundDelivery#CHANNEL} 同口径。
- * 另外两个通道也是这么做的。少一个 bean 也能跑，但下次有人问"这个部署接了哪些通道"时，
- * 答案就只剩 {@code yml} 里有没有配凭据。
+ * <p>仍然保留它，是因为 {@link ChatChannel} 是"这个部署接了哪些通道"的唯一声明，
+ * {@link #id()} 与 {@code DingtalkOutboundDelivery#CHANNEL} 同口径。少一个 bean 也能跑，
+ * 但下次有人问"接了哪些通道"时，答案就只剩 {@code yml} 里有没有配凭据。
  *
- * <p>{@link #start()} 只记日志，<b>不做"回调地址通不通"的探活</b>：那个地址是公网的，
+ * <p>{@link #start()} 只记日志，不做"回调地址通不通"的探活：那个地址是公网的，
  * 从容器里探自己往往走不到真实链路（反向代理、白名单都会让结论反过来），
- * 而探不通就让启动失败，反而会把"只差后台填一个 URL"变成"服务起不来"。
+ * 而探不通就让启动失败，会把"后台还差填一个 URL"变成"服务起不来"。
  */
 public class DingtalkChannel implements ChatChannel {
 
@@ -26,12 +25,11 @@ public class DingtalkChannel implements ChatChannel {
     /**
      * 认出人之后先推的一句"收到了"。
      *
-     * <p>为什么需要它：回调里回的是空串（不做被动回复），于是从用户发出消息到收到答案的
-     * 十几秒里，对话框没有任何动静——分不清"在算"与"没收到"。钉钉的客户端与企微一样
-     * 没有"正在输入"，所以这一句只能自己发。
+     * <p>回调里回的是空串（不做被动回复），从用户发出消息到收到答案的十几秒里对话框没有任何动静，
+     * 分不清"在算"与"没收到"；钉钉的客户端与企微一样没有"正在输入"，这一句只能自己发。
      *
-     * <p>文案与前两个通道一致：用户关心的是"我的问题有没有人接"，
-     * 而不是系统在做什么；带上"算完就发给你"是说清"还要等，但不用再问一遍"。
+     * <p>用户关心的是"我的问题有没有人接"，不是系统在做什么；"算完就发给你"是说清
+     * "还要等，但不用再问一遍"。
      */
     public static final String RECEIPT_REPLY = "收到，正在查，算完就发给你。";
 

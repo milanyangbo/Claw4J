@@ -9,35 +9,32 @@ import java.time.Duration;
 import java.util.Base64;
 
 /**
- * 钉钉机器人回调的验签。<b>这是这个通道唯一的密码学动作，也是唯一的门。</b>
+ * 钉钉机器人回调的验签，这个通道唯一的密码学动作，也是唯一的门。
  *
- * <p>算法（官方文档 {@code developers.dingtalk.com/document/robots/receive-message} 的示例代码）：
+ * <p>算法（{@code developers.dingtalk.com/document/robots/receive-message} 的示例代码）：
  *
  * <pre>
  *   sign = Base64( HmacSHA256( key = appSecret, data = timestamp + "\n" + appSecret ) )
  * </pre>
  *
- * <p>注意 key 与 data 里都有 appSecret：它不是"用密钥签一段报文"的常规形状，
- * 照常规写成 {@code Hmac(secret, timestamp)} 会算出一串永远对不上的值——
- * 而症状是"所有回调都被拒"，看起来像配置错。
+ * <p>key 与 data 里都有 appSecret：它不是"用密钥签一段报文"的常规形状，照常规写成
+ * {@code Hmac(secret, timestamp)} 会算出一串永远对不上的值，而症状是"所有回调都被拒"，
+ * 看起来像配置错。
  *
- * <p>与企业微信那套的三点不同，都写在这里，因为改这个类的人一定会问：
+ * <p>与企业微信那套的三点不同：
  *
  * <ol>
- *   <li><b>签名在 header 里</b>（{@code sign} 与 {@code timestamp}），不在 query 里。</li>
- *   <li><b>算法是 HMAC-SHA256</b>，不是"排序后拼起来取 SHA-1"。</li>
- *   <li><b>报文本身不加密</b>，所以签名覆盖的不是密文，只是那个时间戳。
- *       这意味着<b>报文内容没有被签名保护</b>——能改报文的人也能用同一个 timestamp 造一条
- *       合法签名吗？不能（他没有 appSecret），但在 1 小时的窗口内，一条被截获的
- *       {@code (timestamp, sign)} 对<b>可以</b>配上任意报文重放。窗口就是这条防线：
- *       文档规定"与当前时间相差 1 小时以上即非法"，所以重放的有效期是 1 小时。
- *       这一点不许含糊，因为它是"为什么必须校验时间戳"的全部理由——
- *       只验签名不验时间戳，等于让签名永不过期。</li>
+ *   <li>签名在 header 里（{@code sign} 与 {@code timestamp}），不在 query 里。</li>
+ *   <li>算法是 HMAC-SHA256，不是"排序后拼起来取 SHA-1"。</li>
+ *   <li>报文本身不加密，签名覆盖的不是密文，只是那个时间戳。所以报文内容没有被签名保护：
+ *       没有 appSecret 的人造不出签名，但在 1 小时的窗口内，一条被截获的
+ *       {@code (timestamp, sign)} 对可以配上任意报文重放。窗口就是这条防线的全部，
+ *       文档规定与当前时间相差 1 小时以上即非法；只验签名不验时间戳，等于让签名永不过期。</li>
  * </ol>
  *
- * <p>时间戳单位：文档写的是<b>毫秒</b>。但这里按<b>位数</b>认（13 位当毫秒、10 位当秒）：
- * 判错的后果是"全部回调被拒"，而位数没有歧义，两种都认的成本是两行代码。
- * 反过来只认毫秒的话，万一对面某天改成秒，症状同样是全拒——那时没人会想到是单位问题。
+ * <p>时间戳单位：文档写的是毫秒，而这里按位数认（10 位及以下当秒，其余当毫秒）。
+ * 判错的后果是全部回调被拒，位数则没有歧义，两种都认的成本是两行代码；
+ * 反过来只认毫秒的话，万一对面某天改成秒，症状同样是全拒，而那时没人会想到是单位问题。
  */
 public final class DingtalkSignature {
 
@@ -46,9 +43,10 @@ public final class DingtalkSignature {
 
     private static final String ALGORITHM = "HmacSHA256";
 
-    /** 13 位的整数按毫秒解释，10 位的按秒解释。见类注释。 */
+    /** 毫秒时间戳的位数。判定实际按位数分界写，见 {@link #withinWindow}。 */
     private static final int MILLIS_DIGITS = 13;
 
+    /** 秒级时间戳的位数上限，超过它按毫秒解释。 */
     private static final int SECONDS_DIGITS = 10;
 
     private final byte[] secret;
@@ -65,9 +63,11 @@ public final class DingtalkSignature {
     }
 
     /**
+     * 校验签名与时间戳窗口，两项都过才算通过。
+     *
      * @param timestamp header 里的 {@code timestamp}，毫秒或秒（见类注释）
-     * @param sign      header 里的 {@code sign}
-     * @return {@code true} 表示签名对得上<b>且</b>时间戳在窗口内
+     * @param sign header 里的 {@code sign}
+     * @return {@code true} 表示签名对得上，且时间戳在窗口内
      */
     public boolean verify(String timestamp, String sign) {
         if (isBlank(timestamp) || isBlank(sign)) {
@@ -83,7 +83,7 @@ public final class DingtalkSignature {
     }
 
     /**
-     * 算一遍签名。包级可见是为了让用例能<b>另写一份</b>实现来互相校验——
+     * 算一遍签名。包级可见是为了让用例能另写一份实现来互相校验——
      * 用生产的 {@code signOf} 去验生产的 {@code verify}，两边一起错也照样绿。
      */
     String signOf(String timestamp) {

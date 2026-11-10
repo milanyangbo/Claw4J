@@ -59,6 +59,12 @@ public class HttpChatController {
 
     /**
      * 同步问答：一句话进、一整段回答出。
+     *
+     * @param request 这一轮说的话与通知策略
+     * @param user 请求头里的用户标识，允许缺失（缺失即 401）
+     * @param role 请求头里的角色名，允许缺失
+     * @param chatId 请求头里的会话标识，允许缺失
+     * @return 这一轮的编号、会话标识与整段回答
      */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public AskResponse ask(@RequestBody AskRequest request,
@@ -66,8 +72,8 @@ public class HttpChatController {
                            @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
                            @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
         OutboundMessage answer = channel.ask(inbound(request, user, role, chatId));
-        // runId 跟着回答一起出去：它是"这一轮"的编号，用来串日志（ADR-0027）。
-        // <b>它不是续跑令牌</b>：拿它回来接不上任何东西——连续性靠会话，不靠这个 id。
+        // runId 跟着回答一起出去：它是这一轮的编号，用来串日志（ADR-0027）。
+        // 它不是续跑令牌：拿它回来接不上任何东西，连续性靠会话，不靠这个 id。
         // 命令类回执没有编号，那是 null。
         return new AskResponse(answer.chatId(), answer.text(), answer.runId());
     }
@@ -75,18 +81,19 @@ public class HttpChatController {
     /**
      * 流式问答：立刻返回一个 {@code SseEmitter}，逐块推 {@code chunk} 事件，最后推 {@code done}。
      *
-     * <p>关键在于不在请求线程上等 Agent——{@code channel.stream} 是异步的，
-     * 所以这里的方法体执行完就把 emitter 交回容器，Tomcat 线程随即释放。
+     * <p>不在请求线程上等 Agent：{@code channel.stream} 是异步的，方法体执行完就把 emitter
+     * 交回容器，Tomcat 线程随即释放。
      *
-     * <p>两件事要配对：
-     * <ul>
-     *   <li><b>结束信号由 finalChunk 驱动</b>：{@code done} 事件在收到 finalChunk 那一块时发出，
-     *       而 SSE 连接本身由 future 收尾。future 只负责异常路径，不再重复发结束事件——
-     *       两套结束信号并存的话，照着 {@code AgentPort} 契约实现的下一个通道必然踩坑。</li>
-     *   <li><b>客户端消失要切断上游</b>：超时或断开时 {@code cancel(true)} 中断模型调用。
-     *       emitter 死了还让 {@code blockLast()} 跑完整条流，是白烧 token 加钉死线程。
-     *       中断能生效的前提写在 {@code AgentPort#stream} 的契约里。</li>
-     * </ul>
+     * <p>两件事要配对。结束信号由 finalChunk 驱动：{@code done} 在收到 finalChunk 那一块时发出，
+     * SSE 连接本身由 future 收尾，future 只负责异常路径；两套结束信号并存的话，
+     * 照着 {@code AgentPort} 契约实现的下一个通道必然踩坑。客户端消失要切断上游：超时或断开时
+     * {@code cancel(true)} 中断模型调用，中断能生效的前提写在 {@code AgentPort#stream} 的契约里。
+     *
+     * @param request 这一轮说的话与通知策略
+     * @param user 请求头里的用户标识，允许缺失（缺失即 401）
+     * @param role 请求头里的角色名，允许缺失
+     * @param chatId 请求头里的会话标识，允许缺失
+     * @return 已挂上超时与取消回调的 emitter
      */
     @PostMapping(path = "/stream", consumes = MediaType.APPLICATION_JSON_VALUE)
     public SseEmitter stream(@RequestBody AskRequest request,
@@ -125,7 +132,10 @@ public class HttpChatController {
     }
 
     /**
-     * 认人失败是"不该进来"，回 401；不给 500，也不在响应里暴露系统里登记了哪些角色。
+     * 认人失败是「不该进来」，回 401；不给 500，也不在响应里暴露系统里登记了哪些角色。
+     *
+     * @param exception 认人被拒的原因
+     * @return 401 与拒绝原因
      */
     @ExceptionHandler(PrincipalRejectedException.class)
     public ResponseEntity<ErrorResponse> onPrincipalRejected(PrincipalRejectedException exception) {
@@ -133,13 +143,24 @@ public class HttpChatController {
                 .body(new ErrorResponse(exception.reason()));
     }
 
+    /**
+     * 请求体不合法，回 400。
+     *
+     * @param exception 不合法之处
+     * @return 400 与原因
+     */
     @ExceptionHandler(InvalidRequestException.class)
     public ResponseEntity<ErrorResponse> onInvalidRequest(InvalidRequestException exception) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ErrorResponse(exception.getMessage()));
     }
 
-    /** 服务过载而不是请求错：流式线程池满时同步拒绝。 */
+    /**
+     * 服务过载而不是请求错，回 503。
+     *
+     * @param exception 过载信号
+     * @return 503 与原因
+     */
     @ExceptionHandler(TooBusyException.class)
     public ResponseEntity<ErrorResponse> onTooBusy(TooBusyException exception) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -166,9 +187,9 @@ public class HttpChatController {
     /**
      * 请求里点名的通知策略。
      *
-     * <p>拼错就 400，不静默退回默认：{@code silent} 与 {@code done_only} 的差别是
-     * "要不要去找人"，静默退回的那个方向是"该说的一次没说"，
-     * 那种错在事后表现为"结果去哪了"，没人会想到是请求里少写一个字母。
+     * <p>拼错就 400，不静默退回默认：{@code silent} 与 {@code done_only} 的差别是要不要去找人，
+     * 静默退回的方向是该说的一次没说，而那种错事后表现为结果去哪了，
+     * 没人会想到是请求里少写一个字母。
      */
     private static NotifyPolicy notifyPolicyOf(AskRequest request) {
         String asked = request == null ? null : request.notifyPolicy();
@@ -196,8 +217,8 @@ public class HttpChatController {
     }
 
     /**
-     * 客户端可能已经断开：那时 send 会抛异常。抛出去会让后续块全部中断、
-     * 连接吊到超时，所以这里吞掉并结束 emitter——连接已经没了，没有更好的处理。
+     * 客户端可能已经断开，那时 send 会抛异常。抛出去会让后续块全部中断、连接吊到超时，
+     * 所以这里吞掉并结束 emitter——连接已经没了，没有更好的处理。
      */
     private static void sendEvent(SseEmitter emitter, String name, String data) {
         try {
@@ -208,14 +229,16 @@ public class HttpChatController {
     }
 
     /**
-     * <p><b>没有 {@code runId}</b>（ADR-0027）：客户端不能"带着上一轮的 id 回来接着做"。
-     * 那种能力要求一件事能跨请求活着，而 OpenClaw 里根本不存在——连续性靠会话键，
-     * 同一段对话自然有上下文。留着这个字段的话，它会静默变成一个没人读的摆设，
-     * 下一个人会以为"带上它就能续"。
+     * 一轮问答的请求体。
      *
-     * @param text         这一轮说的话
-     * @param notifyPolicy 这一轮的通知策略（A05），不写走 {@link NotifyPolicy#DEFAULT}。
-     *                     定时任务那一类"跑完放着"的事传 {@code silent}
+     * <p>没有 {@code runId}（ADR-0027）：客户端不能带着上一轮的 id 回来接着做。那种能力要求
+     * 一件事能跨请求活着，而连续性靠会话：同一段对话自然有上下文（OpenClaw 也按会话聚合，
+     * {@code docs/concepts/session.md:141}）。留着这个字段的话，它会静默变成一个没人读的摆设，
+     * 下一个人会以为带上它就能续。
+     *
+     * @param text 这一轮说的话
+     * @param notifyPolicy 这一轮的通知策略（A05）；不写就走 {@link NotifyPolicy#DEFAULT}，
+     *     定时任务那一类跑完放着的事传 {@code silent}
      */
     public record AskRequest(String text, String notifyPolicy) {
 
@@ -224,10 +247,21 @@ public class HttpChatController {
         }
     }
 
-    /** @param runId 这一轮的编号（ADR-0027）。串日志用，<b>但不能用来续跑</b> */
+    /**
+     * 一轮问答的回答。
+     *
+     * @param chatId 这轮所属的会话标识
+     * @param text 回答的整段文本
+     * @param runId 这一轮的编号（ADR-0027），串日志用，不能用来续跑
+     */
     public record AskResponse(String chatId, String text, String runId) {
     }
 
+    /**
+     * 出错的响应体。
+     *
+     * @param error 错误原因
+     */
     public record ErrorResponse(String error) {
     }
 

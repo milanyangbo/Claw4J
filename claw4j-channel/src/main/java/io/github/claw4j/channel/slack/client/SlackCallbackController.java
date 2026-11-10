@@ -12,30 +12,27 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Objects;
 
 /**
- * Slack 事件回调的唯一入口（App 后台 Event Subscriptions → Request URL 里填的就是它）。
+ * Slack 事件回调的唯一入口（App 后台 Event Subscriptions → Request URL 填的就是它）。
  *
- * <p><b>与前面三个端点最明显的不同：3 秒是硬限，而且超时的代价不只是重推。</b>
- * 钉钉、企微超时只是多推几次；Slack 在 60 分钟内失败率超过 95% 时会把这个应用的
- * <b>整个事件订阅临时禁用</b>，并给应用所有者发邮件。所以这个端点里只做三件很轻的事：
- * 验签（一次 HMAC）、解析（一次 JSON）、把事件交给 {@link InboundDispatcher}（它返回即 ACK）。
+ * <p>3 秒是硬限，超时的代价不只是重推：60 分钟内失败率超过 95% 时，Slack 会临时禁用
+ * 这个应用的事件订阅，并通知应用所有者。所以这里只做三件很轻的事：验签（一次 HMAC）、
+ * 解析（一次 JSON）、把事件交给 {@link InboundDispatcher}（它返回即 ACK）。
  *
- * <p><b>验签必须用原始报文</b>：Slack 的签名覆盖 {@code v0:timestamp:body} 整串。
- * 这就是方法签名里 {@code @RequestBody String body} 的理由——收成一个 DTO 或 {@code Map}
- * 再序列化回去，字段顺序与转义都会变，签名永远对不上，而症状看起来像密钥配错。
+ * <p>验签必须用原始报文：签名覆盖 {@code v0:timestamp:body} 整串，这就是
+ * {@code @RequestBody String body} 的理由。收成 DTO 或 {@code Map} 再序列化回去，
+ * 字段顺序与转义都会变，签名永远对不上，而症状看起来像密钥配错。
  *
- * <p><b>握手（{@code url_verification}）也排在验签之后</b>，没有给它开后门。给它的诱惑很实在：
- * 配置阶段 secret 还没填对时，跳过验签就能"先把地址存下来"。但那扇门在运行期同样开着——
- * 一个不验签就回 challenge 的端点，等于向所有人证明"这个地址是活的"。
- * secret 错时后台显示"URL 验证失败"是正确行为：它说明这个通道根本没配好。
+ * <p>握手（{@code url_verification}）也排在验签之后。跳过验签先存地址在配置阶段很省事，
+ * 但那个口子在运行期同样开着：不验签就回 challenge 的端点，等于向所有人证明这个地址是活的。
+ * secret 错时后台显示"URL 验证失败"是正确行为，说明这个通道没配好。
  *
- * <p><b>失败一律回 200，绝不抛。</b>抛出去是非 2xx，Slack 会算作一次投递失败——重推一条
- * 同样处理不了的报文，还往那条 95% 的线上记一笔。签名错、时间戳过期、报文坏了都记下来然后回空串：
- * 这几件事重试不会变好（ADR-0009 的既有约定，前三个通道同一条）。
+ * <p>失败一律回 200，不抛。抛出去是非 2xx，Slack 记一次投递失败，重推一条同样处理不了的报文，
+ * 还往那条 95% 的线上记一笔（ADR-0009 的既有约定）。签名错、时间戳过期、报文坏了都记日志后回空串：
+ * 这几件事重试不会变好。
  *
- * <p><b>{@code X-Slack-Retry-Num} 只记日志，不用来决定"跳过"。</b>这是这段代码里最反直觉的一处：
- * 看见"这是第 2 次投递"就想 return 的写法很自然，但第一次若是我们自己慢了没处理成，
- * 跳过就等于把唯一一次机会丢了。去重交给 {@link InboundDispatcher} 的 {@code event_id} 表——
- * 它知道"这个事件处理过没有"，而"这是第几次投递"只说明 Slack 没收到应答。
+ * <p>{@code X-Slack-Retry-Num} 只记日志，不用来决定"跳过"。看见第 2 次投递就 return 很自然，
+ * 但第一次若是本地慢了没处理成，跳过就丢了唯一一次机会。去重交给
+ * {@link InboundDispatcher} 的 {@code event_id} 表——"这是第几次投递"只说明 Slack 没收到应答。
  */
 @RestController
 public class SlackCallbackController {
@@ -82,13 +79,16 @@ public class SlackCallbackController {
     }
 
     /**
-     * 接收事件。返回即 ACK：认人、异步执行、回推全在 {@link InboundDispatcher} 里。
+     * 接收一条 Slack 事件。
+     *
+     * <p>返回即 ACK：认人、异步执行、回推全在 {@link InboundDispatcher} 里。
      *
      * @param timestamp header 里的 {@code X-Slack-Request-Timestamp}（秒），验签用；
-     *                  与当前相差超过 5 分钟即判为重放
+     *     与当前相差超过 5 分钟即判为重放
      * @param signatureHeader header 里的 {@code X-Slack-Signature}（{@code v0=...}）
      * @param retryNum header 里的 {@code X-Slack-Retry-Num}，Slack 重投时才有；只记日志
-     * @param body      <b>原始</b>报文，未反序列化——签名覆盖它
+     * @param body 原始报文，未反序列化——签名覆盖它
+     * @return 空串；只有握手会返回 {@code challenge} 原文
      */
     @PostMapping(PATH)
     public String receive(

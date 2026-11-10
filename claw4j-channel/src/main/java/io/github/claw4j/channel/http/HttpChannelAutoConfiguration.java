@@ -30,7 +30,7 @@ public class HttpChannelAutoConfiguration {
 
     /**
      * 流式专用线程池的名字。单独命名是为了不与容器里其它 Executor 撞车，
-     * 也方便在监控里一眼看出"有多少条流式请求在跑"。
+     * 也方便在监控里看出有多少条流式请求在跑。
      */
     public static final String STREAM_EXECUTOR = "claw4jStreamExecutor";
 
@@ -88,14 +88,13 @@ public class HttpChannelAutoConfiguration {
     }
 
     /**
-     * {@code GET/POST /api/approvals/{id}}（P03）：待批请求的读法与批/拒的入口。
+     * {@code /api/approvals} 的读与批/拒入口（P03）。
      *
-     * <p>{@link ApprovalDecider} 同样走 {@code ObjectProvider}：没有装配审批的部署里
-     * 端点仍在、只是全都 404——端点凭空消失比 404 难查：前者的症状是"路由不存在"，
-     * 后者是"这条路暂时没装能力"。
+     * <p>{@link ApprovalDecider} 走 {@code ObjectProvider}：没有装配审批的部署里端点仍在，
+     * 只是全都 404。端点凭空消失比 404 难查，前者的症状是路由不存在，
+     * 后者是这条路暂时没装能力。
      *
-     * <p><b>它与飞书卡片调的是同一个 {@code decide}</b>：这是这张票里"HTTP 可以独立于飞书用"
-     * 那句话的落点——两套入口、一套规矩。
+     * <p>它与飞书卡片调的是同一个 {@code decide}：两套入口、一套规矩。
      */
     @Bean
     @ConditionalOnMissingBean

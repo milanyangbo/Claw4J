@@ -40,10 +40,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 答案落在线程里）、发送那一侧（判 {@code ok} 而不是判状态码、限流重试、同频道排队）、
  * 装配那一侧（凭据不齐就一个 bean 都不留）。
  *
- * <p><b>签名是照着协议另写一份</b>（见 {@link #signOf}）：用生产的 {@code SlackSignature}
- * 去签、再用它去验，两边一起错也照样绿。这段 HMAC 只有五行，但它恰好是"门在不在"的唯一判据。
+ * <p>签名照着协议另写一份（见 {@link #signOf}）：用生产的 {@code SlackSignature} 去签、
+ * 再用它去验，两边一起错也照样绿。这段 HMAC 只有五行，但它恰好是"门在不在"的唯一判据。
  *
- * <p>一个外部依赖都不需要：不连 Slack、不连数据库，{@code 收} 那侧用真 {@link InboundDispatcher}
+ * <p>不用外部依赖：不连 Slack、不连数据库，{@code 收} 那侧用真 {@link InboundDispatcher}
  * 加一个直接执行的 executor（同步跑完，断言不用等），{@code 发} 那侧用 JDK 自带的
  * {@link HttpServer} 假扮 {@code chat.postMessage}。
  */

@@ -14,7 +14,7 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * 钉钉通道的配置：一个企业内部应用的凭据、机器人编码、谁能进来。
+ * 钉钉通道的配置：企业内部应用的凭据、机器人编码、谁能进来。
  *
  * <p>三样东西缺一不可，缺任何一样都算"没配"（{@link #configured()}）：
  *
@@ -24,28 +24,25 @@ import java.util.TreeSet;
  *   <tr><td>{@code client-id}</td><td>开发者后台 → 应用 → 凭证与基础信息 → Client ID（AppKey）</td>
  *       <td>换不到 token，发送全失败</td></tr>
  *   <tr><td>{@code client-secret}</td><td>同一页 → Client Secret（AppSecret）</td>
- *       <td>换不到 token；<b>验签也全失败</b>（回调一律被拒）</td></tr>
+ *       <td>换不到 token；验签也全失败（回调一律被拒）</td></tr>
  *   <tr><td>{@code robot-code}</td><td>机器人配置页 → RobotCode（通常与 Client ID 同值）</td>
  *       <td>token 换得到，消息发不出去</td></tr>
  * </table>
  *
- * <p>三样之外还有一样<b>不在配置里</b>：回调地址。它要在开发者后台手填
- * （机器人 → 消息接收地址），与本文件的配置对不上时表现为"钉钉那边保存不了"或
- * "保存了但一条也没进来"——两种都很安静。地址写在 {@code DingtalkCallbackController#PATH}。
+ * <p>三样之外还有一样不在配置里：回调地址。它要在开发者后台手填
+ * （机器人 → 消息接收地址），与本文件对不上时表现为"钉钉那边保存不了"或
+ * "保存了但一条也没进来"，两种都很安静。地址写在 {@code DingtalkCallbackController#PATH}。
  *
- * <p><b>这里只登记"谁是谁"，不写"角色能看什么"</b>：授权表只有一份，在
- * {@code claw4j.channel.http.roles}。与另外两个通道逐条同构，理由同构——
+ * <p>这里只登记"谁是谁"，"角色能看什么"只有一份，在 {@code claw4j.channel.http.roles}：
  * 一张表写在三个地方，迟早改一处漏两处。
  *
- * <p><b>没有默认角色。</b>认不出就拒绝（ADR-0007）：钉钉进来的 {@code roles.*.users}
- * 填的是企业内 userId（{@code senderStaffId}），没登记的人不该拿到任何一张表。
+ * <p>没有默认角色，认不出就拒绝（ADR-0007）。{@code roles.*.users} 填的是企业内 userId
+ * （{@code senderStaffId}），没登记的人不该拿到任何一张表。
  *
- * <p><b>凭据写法与另外两个通道一致</b>（环境变量占位，不是 P08 的 {@code secret:} 句柄）。
- * 这是一个已知的、被明确记下来的偏差：解析句柄的 {@code SpringSecretResolver} 在
- * {@code claw4j-capability}，而 channel 不依赖它（{@code ChannelBoundaryTest} 那条规则钉着）。
- * 要让通道也用句柄，得先把 {@code SecretResolver} 那个接口下沉到 core——那是另一件事，
- * 不是这一票。所以 {@code application.yml} 顶部那句"凭据一律写句柄"已经改成准确的说法，
- * 而不是留着让下一个人以为它成立。
+ * <p>凭据是环境变量占位，不是 P08 的 {@code secret:} 句柄：解析句柄的
+ * {@code SpringSecretResolver} 在 {@code claw4j-capability}，而 channel 不依赖它
+ * （{@code ChannelBoundaryTest} 钉着这条边）。要让通道也用句柄，得先把
+ * {@code SecretResolver} 接口下沉到 core，那是另一件事。
  */
 @ConfigurationProperties(prefix = "claw4j.channel.dingtalk")
 public class DingtalkProperties {
@@ -130,7 +127,7 @@ public class DingtalkProperties {
         warnIfNobodyIsRegistered();
     }
 
-    /** 凭据齐了、一个人都没登记 → 启动日志里必须有句话。同另外两份。 */
+    /** 凭据齐了、一个人都没登记 → 启动日志里必须有句话。同另外四份。 */
     private void warnIfNobodyIsRegistered() {
         if (!enabled || !configured()) {
             return;

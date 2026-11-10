@@ -17,17 +17,18 @@ import java.util.TreeSet;
 /**
  * 飞书通道的配置：凭据、谁能进来、握手等多久。
  *
- * <p><b>这里只登记"谁是谁"，不写"角色能看什么"</b>：授权表只有一份，在
- * {@code claw4j.channel.http.roles}（由 {@link HttpChannelProperties} 绑定，
- * 它是两个通道共用的那张表）。飞书按角色名去那边取 {@code tables} / {@code actions}，
- * 取不到就在装配时启动失败（{@link FeishuPrincipalResolver}）。
+ * <p>这里只登记「谁是谁」，不写「角色能看什么」。授权表只有一份，在
+ * {@code claw4j.channel.http.roles}（由 {@link HttpChannelProperties} 绑定，两个通道共用），
+ * 飞书按角色名去那边取 {@code tables} 与 {@code actions}，取不到就在装配时启动失败
+ * （{@link FeishuPrincipalResolver}）。
  *
- * <p>为什么不让两个通道各写一份：{@code recall_session} 那一次加动作，同一张 actions 列表
- * 要改两处（提交 3d099ee），漏一处不报错——只是那群人少一个能力。两个通道的差别本来就只在认人：
- * HTTP 从请求头读角色（网关已经认证过），飞书从事件里读 {@code open_id}，所以这里要有一张"谁是谁"的表。
+ * <p>不为每个通道各写一份：同一张 actions 列表要改两处，漏一处不报错，只是那些角色少一个能力。
+ * 两个通道的差别本来只在认人——HTTP 从请求头读角色（网关已经认证过），飞书从事件里读
+ * {@code open_id}，所以这里需要一张「谁是谁」的表。
  *
- * <p><b>没有默认角色。</b>HTTP 有一个 {@code default-role}（为了本机 curl 演示时不用先配角色），
- * 这里刻意没有：飞书进来的是真人，认不出就必须拒绝（ADR-0007）。少一个兜底，少一条"匿名进来还拿到了数"的路。
+ * <p>没有默认角色。HTTP 有一个 {@code default-role}，为的是本机 curl 演示时不必先配角色；
+ * 这里刻意没有：飞书进来的是真人，认不出就必须拒绝（ADR-0007）。少一个兜底，
+ * 少一条匿名进来还能拿到数据的路。
  */
 @ConfigurationProperties(prefix = "claw4j.channel.feishu")
 public class FeishuChannelProperties {
@@ -46,20 +47,20 @@ public class FeishuChannelProperties {
     /**
      * 握手超时：{@code start()} 之后等长连接就绪的上限。
      *
-     * <p>必须有这个上限：SDK 在连不上时会自己重连，若不主动判一次"到底连上没有"，
-     * 应用会带着一个收不到消息的通道"看起来在跑"——那比启动失败难查得多。
+     * <p>SDK 连不上时会自己重连，没有这个上限就判不出到底连上没有，应用会带着一个
+     * 收不到消息的通道看起来在跑，比启动失败难查。
      */
     private Duration readyTimeout = Duration.ofSeconds(15);
 
     /**
-     * 角色 → 登记在这个角色下的人。
+     * 角色到登记在该角色下的人。
      *
-     * <p>默认空：空表的效果是"谁都进不来"，正是要的方向——反过来（默认放行）意味着"忘了配置"等于"全员可见"。
-     * 于是装上飞书通道、凭据也齐了却一个人都没登记时，表现就是所有人拿到"没有权限"；
-     * 这种情况启动时会在日志里说一声（{@link #warnIfNobodyIsRegistered()}）。
+     * <p>默认为空，空表的效果是谁都进不来，正是要的方向：反过来等于忘了配置就是全员可见。
+     * 凭据齐了却一个人都没登记时，所有人的提问都只会拿到「没有权限」，
+     * 启动日志里会说一声（{@link #warnIfNobodyIsRegistered()}）。
      *
-     * <p>键是<b>角色名</b>，必须能在 {@code claw4j.channel.http.roles} 里找到同名角色：
-     * 这里只回答"这个人是谁"，不回答"他能看什么"。
+     * <p>键是角色名，必须能在 {@code claw4j.channel.http.roles} 里找到同名角色：
+     * 这里只回答「这个人是谁」，不回答「他能看什么」。
      */
     private Map<String, RoleGrant> roles = new LinkedHashMap<>();
 
@@ -69,11 +70,14 @@ public class FeishuChannelProperties {
     }
 
     /**
-     * {@code open_id} → 角色名。认不出来返回 {@code Optional#empty()}，绝不回落到某个默认角色。
+     * 把 {@code open_id} 映射成角色名。
      *
      * <p>只到角色名为止：表与动作要拿这个名字去共用的那张授权表里取
-     * （{@link FeishuPrincipalResolver}）。"这个人是谁"与"这个角色能看什么"是两个问题，
+     * （{@link FeishuPrincipalResolver}）。「这个人是谁」与「这个角色能看什么」是两个问题，
      * 答案也不该来自两份配置。
+     *
+     * @param openId 飞书用户的 {@code open_id}
+     * @return 该用户登记的角色名；认不出来时为空，不回落到某个默认角色
      */
     public Optional<String> roleOf(String openId) {
         if (isBlank(openId)) {
@@ -86,10 +90,10 @@ public class FeishuChannelProperties {
     }
 
     /**
-     * 同一个人在两个角色里登记 → 启动失败。
+     * 角色登记的启动校验：同一个人出现在两个角色下即失败。
      *
-     * <p>不选一个"先匹配到的算"，是因为那等于把"他能看什么"变成配置文件的书写顺序：
-     * 改一行无关的配置就可能悄悄换了权限。这种歧义只能在启动时说出来。
+     * <p>不取「先匹配到的算」，那等于把「他能看什么」交给配置文件的书写顺序，
+     * 改一行无关配置就可能换掉权限。这种歧义只能在启动时说清楚。
      */
     @PostConstruct
     void validate() {
@@ -111,11 +115,11 @@ public class FeishuChannelProperties {
     }
 
     /**
-     * 凭据齐了、一个人都没登记 → 启动日志里必须有句话。
+     * 凭据齐了但一个人都没登记时，在启动日志里说一句。
      *
-     * <p>这种状态最难查：通道连得上、事件收得到、日志干净，而每个提问的人拿到的都是"没有权限"——
-     * 与"服务根本没起来"在现象上长得一样。责任不在提问的人，所以不能只在群里回一句就完事，
-     * 启动的时候就得说（同 {@code docs/design/pitfalls.md} 第九条那类"看起来在跑"的坑）。
+     * <p>这种状态最难查：通道连得上、事件收得到、日志干净，而每个提问的人拿到的都是「没有权限」，
+     * 现象上与「服务根本没起来」一样。责任不在提问的人，所以不能只在群里回一句，
+     * 启动时就得说（同 {@code docs/design/pitfalls.md} 第九条那类看起来在跑的坑）。
      */
     private void warnIfNobodyIsRegistered() {
         if (!enabled || !configured()) {

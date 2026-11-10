@@ -8,23 +8,20 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 一张审批卡片长什么样（P03）：工具名、参数摘要、发起人、两个按钮。
+ * 把一条待决审批渲染成飞书卡片 1.0 的对象树（P03）：工具名、参数摘要、发起人、两个按钮。
  *
- * <p><b>为什么是纯函数</b>：卡片的形状是这个通道最容易被改坏、又最难在本地验证的东西——
- * 发出去要真凭据、点一下要真人。把"拼 JSON"从"调接口"里分出来，形状就能被断言钉住；
- * 剩下那点 SDK 调用只是把拼好的结构塞进消息体。
+ * <p>渲染与发送分开：卡片形状最容易被改坏，却最难在本地验证，因为发出去要真凭据、
+ * 点一下要真人。拆开之后形状能用断言钉住，剩下的 SDK 调用只负责把拼好的结构塞进消息体。
  *
- * <p><b>三样东西缺一不可</b>：没有工具名，审批人不知道自己批的是哪一类动作；没有参数摘要，
- * 他不知道自己批的是"这一封邮件"还是"以后每一封邮件"——摘要为空时卡片会写"（没有参数）"
- * 而不是省掉这一行，省掉之后读者会以为这行是漏渲染；没有发起人，他不知道该去找谁
- * 问"你为什么要这么干"。
+ * <p>三个字段缺一不可。没有工具名，审批人不知道批的是哪类动作；没有参数摘要，
+ * 分不清批的是这一封邮件还是以后每一封，所以摘要为空时写「（没有参数）」，
+ * 而不是省掉整行，省掉会被读成渲染漏了；没有发起人，事后不知道找谁。
  *
- * <p><b>过期不是删掉按钮，是换成一句话</b>：卡片留着（那是这次请求的记录），
- * 只是不再有点得动的按钮，并且明确说"重新发起"——点下去必然失败的按钮，
- * 比没有按钮更让人迷惑。
+ * <p>过期不删按钮，改成一句话：卡片留着当这次请求的记录，按钮换文案并提示重新发起。
+ * 留一个点下去必然失败的按钮，比没有按钮更容易让人误判。
  *
- * <p>按钮携带的值只有两件事：哪一条、批还是拒。谁点的由事件里的 operator 决定，
- * <b>不放在按钮里</b>：放在里面等于让卡片自称是谁，而卡片是可以被转发、被截图复制的。
+ * <p>按钮里只放两条信息：哪一条、批还是拒。谁点的取自事件里的 operator，
+ * 不写进按钮——卡片会被转发、被截图复制，让它自称身份不可信。
  */
 public final class FeishuApprovalCard {
 
@@ -34,8 +31,10 @@ public final class FeishuApprovalCard {
     /** 按钮携带的决定：{@link #DECISION_APPROVE} 或 {@link #DECISION_DENY}。 */
     public static final String VALUE_DECISION = "claw4j_decision";
 
+    /** 决定的取值：批准。 */
     public static final String DECISION_APPROVE = "approve";
 
+    /** 决定的取值：拒绝。 */
     public static final String DECISION_DENY = "deny";
 
     /** 库里 {@code approval_request.status} 的三个取值之一：这条还没人定结论。 */
@@ -45,9 +44,12 @@ public final class FeishuApprovalCard {
     }
 
     /**
-     * 卡片结构（飞书卡片 1.0 的对象形态）。
+     * 把一条审批渲染成卡片对象树。
      *
-     * @param card 这条请求现在的样子。{@code status} 与 {@code expired} 决定它还能不能被点
+     * <p>{@code status} 与 {@code expired} 决定卡片颜色、标题、正文，以及带不带按钮。
+     *
+     * @param card 这条请求现在的样子
+     * @return 可以直接作为消息体发出的卡片 1.0 对象树
      */
     public static Map<String, Object> of(ApprovalDecider.Pending card) {
         Map<String, Object> head = new LinkedHashMap<>();
@@ -73,7 +75,7 @@ public final class FeishuApprovalCard {
         return card_;
     }
 
-    /** 还能点：还挂着、也没过期。别的组合一律只展示。 */
+    /** 是否还点得动：状态仍是 pending，并且没过期。别的组合一律只展示。 */
     public static boolean actionable(ApprovalDecider.Pending card) {
         return PENDING.equals(card.status()) && !card.expired();
     }

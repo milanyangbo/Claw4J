@@ -14,25 +14,25 @@ import java.util.Base64;
  * 企业微信回调的两道关：<b>签名</b>（这条回调是不是知道 token 的人发的）与
  * <b>解密</b>（正文到底是什么）。
  *
- * <p>两件事都不难，但每一条细节抄错的表现都只是"回调静默失败"——没有异常，
- * 没有日志，用户那边就是没有回答。所以这里的每一步都写清楚它在防什么：
+ * <p>两件事都不难，但每一条细节抄错的表现都只是回调静默失败——没有异常，没有日志，
+ * 用户那边就是没有回答。所以这里的每一步都写明它在防什么：
  *
  * <ol>
- *   <li><b>签名是 SHA-1，不是 HMAC</b>：把 {@code token / timestamp / nonce / Encrypt}
- *       四个字符串<b>按字典序排</b>再首尾相接，取 SHA-1 十六进制小写。密钥不参与运算，
- *       所以它只证明"发送方知道 token"，不提供保密性。少排一次序、或者把 token
- *       放到末尾，算出来的值永远对不上。</li>
- *   <li><b>密钥从 EncodingAESKey 派生</b>：43 位字符串补一个 {@code =} 之后 Base64 解码，
- *       得到 32 字节 AES-256 密钥。IV 是这 32 字节的<b>前 16 字节</b>——固定 IV 在这里
- *       不是疏漏，协议就是这么定的。</li>
- *   <li><b>明文有固定布局</b>：{@code 随机 16 字节 + 4 字节大端长度 + 正文 + receiveid}。
- *       剥掉 AES 的 PKCS#7 填充之后，最后那段 receiveid 必须等于本企业的 corpid：
- *       <b>不校验它，"别家企业发给这个地址的回调"也能解出一段像模像样的消息</b>——
- *       而那正好是"签名通过、解密成功、内容却是别人家的"这种最难想到的错。</li>
+ *   <li>签名是 SHA-1，不是 HMAC。把 {@code token}、{@code timestamp}、{@code nonce}、
+ *       {@code Encrypt} 四个字符串按字典序排好再首尾相接，取 SHA-1 十六进制小写。
+ *       密钥不参与运算，所以它只证明发送方知道 token，不提供保密性。少排一次序，
+ *       或者把 token 放到末尾，算出来的值永远对不上。</li>
+ *   <li>密钥从 EncodingAESKey 派生：43 位字符串补一个 {@code =} 之后 Base64 解码，
+ *       得到 32 字节 AES-256 密钥。IV 是这 32 字节的前 16 字节——固定 IV 在这里不是疏漏，
+ *       协议就是这么定的。</li>
+ *   <li>明文有固定布局：{@code 随机 16 字节 + 4 字节大端长度 + 正文 + receiveid}。
+ *       剥掉 AES 的 PKCS#7 填充之后，最后那段 receiveid 必须等于本企业的 corpid。
+ *       不校验它，别家企业发给这个地址的回调也能解出一段像模像样的消息，
+ *       而那正好是「签名通过、解密成功、内容却是别人家的」这种最难想到的错。</li>
  * </ol>
  *
- * <p>失败一律抛 {@link IllegalStateException} 并由调用方记 WARN 后回空串：
- * 签名错、密钥错、receiveid 不对，都是<b>重试也不会好</b>的事，不该让平台重推。
+ * <p>失败一律抛 {@link IllegalStateException}，由调用方记 WARN 后回空串：签名错、密钥错、
+ * receiveid 不对，都是重试也不会好的事，不该让平台重推。
  */
 public class WecomCipher {
 
@@ -60,9 +60,12 @@ public class WecomCipher {
     private final IvParameterSpec iv;
 
     /**
-     * @param token         后台"接收消息"里那个 Token，可以随意取，只要两边一致
+     * 建一把签名与解密用的钥匙，构造时就把三样配置校验一遍。
+     *
+     * @param token 后台「接收消息」里那个 Token，可以随意取，只要两边一致
      * @param encodingAesKey 后台同一个页面上的 43 位 EncodingAESKey
-     * @param corpId         本企业 ID，用来校验解密出来的 receiveid
+     * @param corpId 本企业 ID，用来校验解密出来的 receiveid
+     * @throws IllegalStateException 任一配置为空，或密钥长度、Base64 不合法
      */
     public WecomCipher(String token, String encodingAesKey, String corpId) {
         if (token == null || token.isBlank()) {
@@ -83,8 +86,16 @@ public class WecomCipher {
     }
 
     /**
-     * 校验签名。<b>比较用 {@link MessageDigest#isEqual}</b>：字符串 {@code equals}
-     * 一遇到不同的字符就返回，逐字节的时间差能反推出前缀——签名比对的经典写法。
+     * 校验签名。
+     *
+     * <p>比较用 {@link MessageDigest#isEqual}：字符串 {@code equals} 一遇到不同的字符就返回，
+     * 逐字节的时间差能反推出前缀，这是签名比对的经典写法。
+     *
+     * @param signature 平台带来的 {@code msg_signature}
+     * @param timestamp 平台带来的时间戳
+     * @param nonce 平台带来的随机串
+     * @param encrypted 密文，签名覆盖的是它
+     * @return 四个值齐全且签名一致时为 {@code true}
      */
     public boolean verify(String signature, String timestamp, String nonce, String encrypted) {
         if (isBlank(signature) || isBlank(timestamp) || isBlank(nonce) || isBlank(encrypted)) {
@@ -98,10 +109,11 @@ public class WecomCipher {
     /**
      * 解一段 Base64 密文，返回里面的明文正文。
      *
-     * <p>URL 验证的 {@code echostr} 走的是同一条路：它也是"随机数 + 长度 + 正文 + receiveid"，
-     * 只不过正文就是那个要原样回给平台的字符串。所以这里只有一个解密方法。
+     * <p>URL 验证的 {@code echostr} 走的是同一条路：它也是「随机数 + 长度 + 正文 + receiveid」，
+     * 只不过正文就是要原样回给平台的字符串，所以这里只需要一个解密方法。
      *
-     * @return 明文正文（不含随机数、长度与 receiveid）
+     * @param encrypted Base64 编码的密文
+     * @return 明文正文，不含随机数、长度与 receiveid
      * @throws IllegalStateException 密文坏了、密钥不对、receiveid 不是本企业
      */
     public String decrypt(String encrypted) {
@@ -137,7 +149,7 @@ public class WecomCipher {
     }
 
     /**
-     * 四段排序后拼接再 SHA-1。排序是协议的一部分，不是"顺手排一下"：
+     * 四段排序后拼接再取 SHA-1。排序是协议的一部分，不是顺手排一下：
      * 平台那边就是按字典序拼的，这里少排一次，签名永远对不上。
      */
     private String signatureOf(String timestamp, String nonce, String encrypted) {

@@ -28,14 +28,14 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * 控制器的对外形状：SSE 的两个事件发得出去、三个错误各回各的码。
+ * 控制器的对外形状：SSE 的两个事件发得出去，三个错误各回各的码。
  *
- * <p>为什么不放在 {@code HttpChatChannelTest} 里：那边测的是"消息怎么交给 AgentPort"，
- * 这一份测的是"交给浏览器的是什么"。两者错法不同——前者错是拿错身份，后者错是
- * 客户端收到一个 500、或者 SSE 流永远不结束，而服务端日志干干净净。
+ * <p>不并进 {@code HttpChatChannelTest}，因为那边测的是消息怎么交给 AgentPort，这一份测的是
+ * 交给浏览器的是什么。两者错法不同：前者错是拿错身份，后者错是客户端收到 500、
+ * 或者 SSE 流永远不结束，而服务端日志干干净净。
  *
- * <p>这里不断言 SSE 的分帧文本（那要起 servlet 容器）：断言的是"块真的被推给了 emitter"
- * 与"错误处理返回哪个状态码"，这两件事是控制器自己的责任。
+ * <p>这里不断言 SSE 的分帧文本（那要起 servlet 容器），只断言块真的被推给了 emitter、
+ * 以及错误处理返回哪个状态码，这两件事是控制器自己的责任。
  */
 class HttpChatControllerTest {
 
@@ -112,11 +112,10 @@ class HttpChatControllerTest {
     }
 
     /**
-     * 请求体里<b>没有</b> {@code runId}（ADR-0027）。
+     * 请求体里没有 {@code runId}（ADR-0027）。
      *
-     * <p>留着它的话，它会静默变成一个没人读的摆设，而下一个看接口文档的人会以为
-     * "带上它就能接着做"——那条路要求一件事能跨请求活着，而它已经不存在了。
-     * 这条用反射钉住参数名：把 runId 加回去的那一刻它就会红。
+     * <p>留着它，它会静默变成一个没人读的摆设，下一个看接口文档的人会以为带上它就能接着做，
+     * 而那条路要求一件事能跨请求活着。这条用反射钉住参数名：把 runId 加回去的那一刻它就红。
      */
     @Test
     @DisplayName("/api/chat 的请求体只有 text 与 notifyPolicy：没有续跑令牌")

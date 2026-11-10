@@ -31,13 +31,13 @@ import java.util.TreeSet;
  *       <td>解密抛异常，用户永远等不到回答</td></tr>
  * </table>
  *
- * <p><b>这里只登记"谁是谁"，不写"角色能看什么"</b>：授权表只有一份，在
+ * <p>这里只登记「谁是谁」，不写「角色能看什么」：授权表只有一份，在
  * {@code claw4j.channel.http.roles}。与飞书那一份逐条同构，理由也同构（见
- * {@code FeishuChannelProperties} 的 javadoc）：两个通道的差别只在认人，
- * 一张表写在两个地方，迟早改一处漏一处。
+ * {@code FeishuChannelProperties} 的 javadoc）：
+ * 两个通道的差别只在认人，一张表写在两个地方，迟早改一处漏一处。
  *
- * <p><b>没有默认角色。</b>认不出就拒绝（ADR-0007）：企业微信进来的是真人，
- * 而这里的 {@code roles.*.users} 填的是成员 UserID——没登记的人不该拿到任何一张表。
+ * <p>没有默认角色。认不出就拒绝（ADR-0007）：企业微信进来的是真人，而这里的
+ * {@code roles.*.users} 填的是成员 UserID，没登记的人不该拿到任何一张表。
  */
 @ConfigurationProperties(prefix = "claw4j.channel.wecom")
 public class WecomProperties {
@@ -69,11 +69,11 @@ public class WecomProperties {
     private String apiBase = "https://qyapi.weixin.qq.com";
 
     /**
-     * 角色 → 登记在这个角色下的人（成员 UserID）。
+     * 角色到登记在该角色下的人（成员 UserID）。
      *
-     * <p>默认空表＝谁都进不来，正是要的方向。装上通道、凭据也齐了却一个人都没登记时，
-     * 启动日志里会说一声（{@link #warnIfNobodyIsRegistered()}）：那种状态里
-     * 通道完全正常、日志干净，而每个人收到的都是"没有权限"。
+     * <p>默认为空表，效果是谁都进不来，正是要的方向。装上通道、凭据也齐了却一个人都没登记时，
+     * 启动日志里会说一声（{@link #warnIfNobodyIsRegistered()}）：那种状态里通道完全正常、
+     * 日志干净，而每个人收到的都是「没有权限」。
      */
     private Map<String, RoleGrant> roles = new LinkedHashMap<>();
 
@@ -84,10 +84,13 @@ public class WecomProperties {
     }
 
     /**
-     * {@code UserID} → 角色名。认不出来返回 {@code Optional#empty()}，绝不回落到默认角色。
+     * 把成员 UserID 映射成角色名。
      *
      * <p>只到角色名为止：表与动作要拿这个名字去共用的那张授权表里取
      * （{@link WecomPrincipalResolver}）。
+     *
+     * @param userId 成员 UserID
+     * @return 该成员登记的角色名；认不出来时为空，不回落到某个默认角色
      */
     public Optional<String> roleOf(String userId) {
         if (isBlank(userId)) {
@@ -100,9 +103,9 @@ public class WecomProperties {
     }
 
     /**
-     * 同一个人登记在两个角色里 → 启动失败。
+     * 角色登记的启动校验：同一个人出现在两个角色下即失败。
      *
-     * <p>与飞书同一条理由：不选"先匹配到的算"，因为那等于把"他能看什么"变成配置的书写顺序。
+     * <p>与飞书同一条理由：不取「先匹配到的算」，那等于把「他能看什么」交给配置的书写顺序。
      */
     @PostConstruct
     void validate() {
@@ -123,7 +126,7 @@ public class WecomProperties {
         warnIfNobodyIsRegistered();
     }
 
-    /** 凭据齐了、一个人都没登记 → 启动日志里必须有句话。同 {@code FeishuChannelProperties}。 */
+    /** 凭据齐了但一个人都没登记时，在启动日志里说一句。同 {@code FeishuChannelProperties}。 */
     private void warnIfNobodyIsRegistered() {
         if (!enabled || !configured()) {
             return;
@@ -208,7 +211,7 @@ public class WecomProperties {
     /**
      * 一个角色下登记的人。
      *
-     * @param users 成员 UserID。空集合意味着"这个角色暂时没人"
+     * @param users 成员 UserID。空集合意味着这个角色暂时没人
      */
     public record RoleGrant(Set<String> users) {
 

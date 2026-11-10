@@ -11,15 +11,13 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * channel 的依赖方向：只认识 domain 里的端口，不认识 Agent 的实现，也不认识能力。
  *
  * <p>反向依赖不会编译失败：channel 一旦 import 了 Agent 的具体类，换一个 Agent 实现就要改所有通道，
- * 通道的单测也得先起整个 Agent；反过来依赖 capability，则"换个通道"会把工具一起拖进来。
+ * 通道的单测也得先起整个 Agent；反过来依赖 capability，"换个通道"会把工具一起拖进来。
  * 两条都是代码照跑、日志干净、只是边界没了。
  *
- * <p><b>契约与编排已经不在这里</b>：{@code channel.spi} 与 {@code channel.kernel} 在
- * {@code claw4j-core} 模块里（M6 搬出去，ADR-0015 又把 {@code claw4j-domain} 并进了同一个 jar），
- * 它们的边界由那个模块的 {@code CoreBoundaryTest} 用<b>白名单</b>守着——
- * "只许依赖 JDK、slf4j、domain 与自家代码"，比本类这几条更严。
- * 本类只守这个模块里的平台实现（飞书、企业微信、钉钉、HTTP）不反向依赖 Agent 与能力，
- * 以及每个平台的适配层不认识自己的实现子包。
+ * <p>契约与编排不在这里：{@code channel.spi} 与 {@code channel.kernel} 在 {@code claw4j-core}，
+ * 它们的边界由那个模块的 {@code CoreBoundariesTest} 用白名单守着（只许依赖 JDK、slf4j、
+ * domain 与自家代码），比本类这几条更严。本类只守这个模块里的平台实现（飞书、企业微信、
+ * 钉钉、Slack、HTTP）不反向依赖 Agent 与能力，以及每个平台的适配层不认识自己的实现子包。
  */
 @AnalyzeClasses(packages = "io.github.claw4j.channel", importOptions = ImportOption.DoNotIncludeTests.class)
 class ChannelBoundaryTest {
@@ -37,17 +35,17 @@ class ChannelBoundaryTest {
     /**
      * 飞书这一侧的适配层不依赖任何外部实现，SDK 自然也在内。
      *
-     * <p>这个包现在只剩两样东西：{@code FeishuInboundEvent}（把飞书事件压成内核的五个字段）
+     * <p>这个包只有两样东西：{@code FeishuInboundEvent}（把飞书事件压成内核的五个字段）
      * 与 {@code FeishuReplySender}（把一段文本推回去）。编排逻辑在 {@code channel.kernel}，
-     * 它连这个包都不认识——那是"接下一个通道不用解释飞书语义"的保证。
+     * 它连这个包都不认识。
      *
-     * <p>这里刻意<b>不写厂商包名</b>。写具体包名有两种静默失效：名字写错一位，规则永远匹配不到任何类，
-     * 绿的；SDK 哪天换了包名，同一句话又变回空规则。而这类规则失效不会报错，只会让人以为"有东西守着"。
-     * 反过来写成"除了 JDK、日志、自家代码，谁也不许依赖"，就不必跟着谁的包名走。
+     * <p>刻意不写厂商包名。写具体包名有两种静默失效：名字写错一位，规则永远匹配不到任何类，
+     * 测试仍是绿的；SDK 哪天换了包名，同一句话又变回空规则。写成"除了 JDK、日志、自家代码，
+     * 谁也不许依赖"，就不必跟着谁的包名走。
      *
-     * <p>范围写的是 {@code channel.feishu} 而不是 {@code channel.feishu..}：SDK 绑定放在子包
-     * {@code channel.feishu.sdk}，它当然要用 SDK 的类型。子包由下一条规则单独拦，两条合起来才是分界——
-     * 适配层既碰不到 SDK，也拿不到自己那个 sdk 子包里的翻译类。
+     * <p>范围写 {@code channel.feishu} 而不是 {@code channel.feishu..}：SDK 绑定放在子包
+     * {@code channel.feishu.sdk}，它当然要用 SDK 的类型。子包由下一条规则单独拦，
+     * 两条合起来才是分界。
      */
     @ArchTest
     static final ArchRule dispatchLayerDependsOnNothingButItsOwnContracts =
@@ -56,11 +54,10 @@ class ChannelBoundaryTest {
                             "java..", "org.slf4j..", "io.github.claw4j..");
 
     /**
-     * 适配层也不许反过来依赖自己那个 SDK 子包——这条比上一条更容易被绕过。
+     * 适配层也不许反过来依赖自己那个 SDK 子包，这条比上一条更容易被绕过。
      *
      * <p>没人会把 {@code com.lark.oapi} 的 import 写进适配层，但"顺手用一下 sdk 包里的翻译类"很自然：
      * 那样 {@code FeishuInboundEvent} 一编译就得有 SDK 在场，默认构建里那些用例先挂。
-     * 两条规则合起来才是真正的分界：适配层谁都不依赖自己人以外的 SDK 知识。
      */
     @ArchTest
     static final ArchRule dispatchLayerDoesNotReachIntoItsSdkSubpackage =
@@ -71,10 +68,9 @@ class ChannelBoundaryTest {
      * 企业微信这一侧的同一条界：{@code channel.wecom} 里只有三个类型
      * （入站事件的适配、回推的出口、投递实现），它们不许认识 HTTP、XML、加解密。
      *
-     * <p>为什么值得单独写一遍，而不是并进上面那条：这两条规则守的是<b>同一件事</b>
-     * （适配层不依赖实现），但作用在两个包上。写成 {@code resideInAnyPackage} 少两行，
-     * 代价是失败信息里那个类名不再直接指向是哪个通道破了界——而这条规则唯一的价值
-     * 就是"破了界的时候一眼看出破了哪条"。
+     * <p>不并进上面那条：两条规则守的是同一件事（适配层不依赖实现），但作用在两个包上。
+     * 写成 {@code resideInAnyPackage} 少两行，代价是失败信息里那个类名不再直接指向是哪个通道破了界，
+     * 而这条规则唯一的价值就是这个。
      */
     @ArchTest
     static final ArchRule wecomDispatchLayerDependsOnNothingButItsOwnContracts =
@@ -83,11 +79,10 @@ class ChannelBoundaryTest {
                             "java..", "org.slf4j..", "io.github.claw4j..");
 
     /**
-     * 同一条界限的另一半：适配层也不许反过来依赖自己那个实现子包。
+     * 同一条界限的另一半：适配层也不许反过来依赖自己的实现子包。
      *
-     * <p>企业微信没有厂商 SDK，所以子包叫 {@code client} 而不是 {@code sdk}——
-     * 那里面的东西是"怎么跟平台说话"（加解密、XML、换 token），适配层一旦伸手去拿，
-     * 调度层的用例就得多一个 {@code WecomCipher} 才能跑。
+     * <p>企业微信没有厂商 SDK，所以子包叫 {@code client} 而不是 {@code sdk}：那里是
+     * 加解密、XML、换 token。适配层一旦伸手去拿，调度层的用例就得多一个 {@code WecomCipher} 才能跑。
      */
     @ArchTest
     static final ArchRule wecomDispatchLayerDoesNotReachIntoItsClientSubpackage =
@@ -95,16 +90,11 @@ class ChannelBoundaryTest {
                     .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.wecom.client..");
 
     /**
-     * 钉钉这一侧的同一条界，第三次写。
+     * 钉钉这一侧的同一条界。
      *
-     * <p>三条规则长得一样、守的也是同一件事，但<b>不合并成一个 {@code resideInAnyPackage}</b>：
-     * 合并之后失败信息里那个类名不再直接指向是哪个通道破了界，而这条规则唯一的价值
-     * 就是"破了界的时候一眼看出破了哪条"。三个包、两行样板，换这一点是划算的。
-     *
-     * <p>钉钉这条还有一层额外意义：它的适配层里有 {@code DingtalkReplySender}，
-     * 而实现那份要用 HMAC 与 HTTP——一旦适配层伸手去 client 包里拿
-     * {@code DingtalkSignature}，{@code DingtalkInboundEvent} 一编译就得有加密在场，
-     * 那条"五个字段"的接口就再也编不进一个只有 JDK 的地方。
+     * <p>额外一层意义：适配层里有 {@code DingtalkReplySender}，而实现那份要用 HMAC 与 HTTP。
+     * 一旦适配层伸手去 client 包里拿 {@code DingtalkSignature}，{@code DingtalkInboundEvent}
+     * 一编译就得有加密在场，那条"五个字段"的接口就再也编不进一个只有 JDK 的地方。
      */
     @ArchTest
     static final ArchRule dingtalkDispatchLayerDependsOnNothingButItsOwnContracts =
@@ -118,14 +108,12 @@ class ChannelBoundaryTest {
                     .should().dependOnClassesThat().resideInAPackage("io.github.claw4j.channel.dingtalk.client..");
 
     /**
-     * Slack 这一侧的同一条界，第四次写。
+     * Slack 这一侧的同一条界。
      *
-     * <p>这个包的形状与前三份不完全一样：它多了一个 {@code SlackConversation}——
-     * 把"频道 + 线程"压成 {@code conversationId} 的纯字符串规则。那东西留在适配层里是有意的：
-     * 编与解必须成对，而解码那一半在 {@code client} 包里（发送器要用）。
-     * 反过来说，如果把它塞进 {@code client}，适配层就得伸进子包去拿它——这条规则会红。
-     *
-     * <p>同样不合并成 {@code resideInAnyPackage}：四个包、八行样板，换"破了界时一眼看出破了哪条"。
+     * <p>这个包的形状与前三份不完全一样：多了一个 {@code SlackConversation}，把"频道 + 线程"
+     * 压成 {@code conversationId} 的纯字符串规则。它留在适配层是有意的：编码与解码必须成对，
+     * 而解码那一半在 {@code client} 包里（发送器要用）。反过来，如果把它塞进 {@code client}，
+     * 适配层就得伸进子包去拿它，这条规则会红。
      */
     @ArchTest
     static final ArchRule slackDispatchLayerDependsOnNothingButItsOwnContracts =

@@ -21,17 +21,16 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * HTTP 那一侧<b>非聊天</b>端点的对外形状：{@code /api/approvals}（P03）。
+ * HTTP 那一侧非聊天端点的对外形状：{@code /api/approvals}（P03）。
  *
- * <p><b>它问的是同一件事</b>：<b>接口这一侧答得对不对</b>——状态码是不是分得开、
- * 该给的字段在不在、没装配时端点是不是还在。真正属于它自己那半（谁能批）在
- * {@code ApprovalService} 里。
+ * <p>它问的是接口这一侧答得对不对：状态码是不是分得开、该给的字段在不在、没装配时端点
+ * 是不是还在。属于它自己那半的「谁能批」在 {@code ApprovalService} 里。
  *
- * <p><b>没有"按 id 取一轮结果"的端点</b>（ADR-0027）：一轮的编号是句柄，答完即作废，
- * 没有任何东西可以按它取回。要回答"那一轮说了什么"，读通道里的回答与 {@code audit_event}。
+ * <p>没有按 id 取一轮结果的端点（ADR-0027）：一轮的编号是句柄，答完即作废，没有任何东西
+ * 可以按它取回。要回答「那一轮说了什么」，读通道里的回答与 {@code audit_event}。
  *
- * <p>判据两条：<b>没装配时端点仍要在</b>（{@code 404} 而不是端点消失——
- * 后者在客户端看来是"路径写错了"，排查方向完全不同），以及<b>认人失败一律 401</b>。
+ * <p>判据两条：没装配时端点仍要在（404 而不是端点消失，后者在客户端看来是路径写错了，
+ * 排查方向完全不同），以及认人失败一律 401。
  */
 class HttpEndpointsTest {
 

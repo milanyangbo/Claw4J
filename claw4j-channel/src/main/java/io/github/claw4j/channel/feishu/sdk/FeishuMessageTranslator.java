@@ -15,15 +15,15 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
- * 把飞书的事件对象翻成 {@link FeishuInboundEvent}——本层唯一有实质内容的工作。
+ * 把飞书的事件对象翻成 {@link FeishuInboundEvent}，本层唯一有实质内容的工作。
  *
- * <p>为什么值得单独一个类：翻译里全是"飞书那边长什么样"的知识（{@code event_id} 在 header 里、
- * 正文是 JSON 字符串、@ 机器人会留一个 {@code @_user_1} 占位符），这些知识放进通道类里，
- * 通道类会被"怎么读飞书"淹没，而它在结构上只是一段生命周期 + 一个回调。
+ * <p>单独一个类是因为翻译里全是「飞书那边长什么样」的知识：{@code event_id} 在 header 里、
+ * 正文是 JSON 字符串、@ 机器人会留一个 {@code @_user_1} 占位符。这些知识放进通道类，
+ * 通道类就会被「怎么读飞书」淹没，而它在结构上只是一段生命周期加一个回调。
  *
- * <p>翻不出来时返回 {@code Optional#empty()}，让调用方回一句人话。翻不出来的三种情形：
- * 不是文字消息（图片、富文本 post）、只有 @ 没有正文、缺 chat_id 或发送者。
- * 不抛异常是刻意的——事件线程抛出去会让平台重推，而重推的还是一条翻不出来的消息。
+ * <p>翻不出来时返回 {@link Optional#empty()}，由调用方回一句人话。三种情形：不是文字消息
+ * （图片、富文本 post）、只有 @ 没有正文、缺 chat_id 或发送者。不抛异常是刻意的——
+ * 事件线程抛出去会让平台重推，而重推的还是同一条翻不出来的消息。
  */
 class FeishuMessageTranslator {
 

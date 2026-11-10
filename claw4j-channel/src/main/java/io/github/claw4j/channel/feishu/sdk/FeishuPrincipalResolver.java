@@ -10,15 +10,15 @@ import java.util.TreeSet;
 import java.util.function.Function;
 
 /**
- * {@code open_id} → {@link Principal}：把"谁是谁"（本通道的登记表）与"角色能看什么"
- * （两个通道共用的那张授权表）拼起来。
+ * 把 {@code open_id} 映射成 {@link Principal}：把「谁是谁」（本通道的登记表）与
+ * 「角色能看什么」（两个通道共用的那张授权表）拼起来。
  *
- * <p>为什么单独一个类，而不是 {@link FeishuChannelProperties} 上的方法：properties 只绑定
- * 自己那个前缀，看不到 {@code claw4j.channel.http.roles}。把两份塞进一个 properties 对象，
- * 等于让一个前缀去拥有另一个前缀的键——那正是这次要收掉的形状。
+ * <p>单独一个类而不是 {@link FeishuChannelProperties} 上的方法：properties 只绑定自己那个前缀，
+ * 看不到 {@code claw4j.channel.http.roles}。把两份塞进一个 properties 对象，
+ * 等于让一个前缀去拥有另一个前缀的键，那正是要收掉的形状。
  *
- * <p><b>角色名对不上就启动失败。</b>飞书登记了一个共享表里没有的角色，若只是"查不到授权就当没权限"，
- * 表现是那群人每次提问都收到"没有权限"，而配置看起来完全正常。这种错只能在装配期说清楚。
+ * <p>角色名对不上就在构造时失败。飞书登记了共享表里没有的角色，若只是查不到授权就当没权限，
+ * 表现是那群人每次提问都收到「没有权限」，而配置看起来完全正常。这种错只能在装配期说清楚。
  */
 public final class FeishuPrincipalResolver implements Function<String, Optional<Principal>> {
 
@@ -26,6 +26,13 @@ public final class FeishuPrincipalResolver implements Function<String, Optional<
 
     private final Map<String, HttpChannelProperties.RoleGrant> grants;
 
+    /**
+     * 建一份解析器，同时校验飞书侧登记的角色名都能在共享表里找到。
+     *
+     * @param feishu 本通道的登记表
+     * @param authz 两个通道共用的授权表
+     * @throws IllegalStateException 有角色名在共享表里没有同名定义
+     */
     public FeishuPrincipalResolver(FeishuChannelProperties feishu, HttpChannelProperties authz) {
         this.feishu = feishu;
         this.grants = authz.getRoles();
@@ -42,7 +49,7 @@ public final class FeishuPrincipalResolver implements Function<String, Optional<
 
     /**
      * 飞书里出现的每个角色名都必须在共享表里有同名定义。缺一个就启动失败，
-     * 并把那个角色下登记了几个人一起列出来——"哪个角色写错了"比"某个角色不存在"少一次排查。
+     * 并把那个角色下登记了几个人一起列出来，「哪个角色写错了」比「某个角色不存在」少一次排查。
      */
     private void requireEveryRegisteredRoleExists() {
         Set<String> missing = new TreeSet<>();
