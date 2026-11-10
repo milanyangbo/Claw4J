@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
-# 一条命令跑完全部单元测试，并守住三个数：
-#   1. 用例全过          —— 有失败、有错误就红
-#   2. 跳过数必须为 0    —— 绿的但没验，比失败更危险
-#   3. 行覆盖率 ≥ 60%    —— 父 POM 的 JaCoCo check 绑在 verify 上，破线构建直接失败
+# 一条命令跑完全部单元测试，并守住两个数：
+#   1. 所有用例全过      —— 有失败、有错误就红（跳过也算红：绿的但没验，比失败更危险）
+#   2. 行覆盖率 ≥ 60%    —— 父 POM 的 JaCoCo check 绑在 verify 上，破线构建直接失败
+#
+# **不打印用例条数**：条数不是质量信号（一个类里堆 20 个同形状的断言照样绿）。
+# 指标是覆盖率与"有没有红"，条数只活在 surefire 报告里，要看得自己去看。
 #
 # 另外打印每模块的文件数与最大方法数（上限 10 / 20），超了判红。
 #
@@ -37,7 +39,7 @@ if [ "$status" -ne 0 ]; then
 fi
 
 echo
-echo "== 2/3 用例数与跳过数 =="
+echo "== 2/3 单元测试全过（失败 / 错误 / 跳过 都必须为 0）=="
 reports=$(find claw4j-* -path "*/surefire-reports/TEST-*.xml" -type f 2>/dev/null)
 if [ -z "$reports" ]; then
     echo "没有找到任何测试报告：一条用例都没跑，不能算通过。"
@@ -46,15 +48,14 @@ fi
 
 stats=$(printf '%s\n' "$reports" | xargs awk '
     /<testsuite / {
-        if (match($0, /tests="[0-9]+"/))    { t += substr($0, RSTART + 7,  RLENGTH - 8)  }
         if (match($0, /skipped="[0-9]+"/))  { s += substr($0, RSTART + 9,  RLENGTH - 10) }
         if (match($0, /failures="[0-9]+"/)) { f += substr($0, RSTART + 10, RLENGTH - 11) }
         if (match($0, /errors="[0-9]+"/))   { e += substr($0, RSTART + 8,  RLENGTH - 9)  }
     }
-    END { printf "%d %d %d %d\n", t, s, f, e }')
+    END { printf "%d %d %d\n", s, f, e }')
 
-read -r total skipped failures errors <<<"$stats"
-echo "用例 ${total} 条，失败 ${failures}，错误 ${errors}，跳过 ${skipped}"
+read -r skipped failures errors <<<"$stats"
+echo "失败 ${failures}，错误 ${errors}，跳过 ${skipped}"
 
 echo
 echo "== 3/3 三个数 =="
@@ -102,4 +103,4 @@ if [ "$red" -ne 0 ]; then
     exit 1
 fi
 
-echo "全绿：$total 条用例全过，跳过 0，行覆盖率均不低于 ${MIN_COVERAGE}%。"
+echo "全绿：单元测试全过（失败 0、错误 0、跳过 0），行覆盖率均不低于 ${MIN_COVERAGE}%。"
