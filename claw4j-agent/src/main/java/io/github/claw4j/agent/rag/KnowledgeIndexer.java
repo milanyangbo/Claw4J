@@ -27,28 +27,28 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * 把目录里的文档同步进知识库。目录是事实来源：文件改了重建、文件删了块也删。
+ * 把目录里的文档同步进知识库。目录是事实来源：文件改了重建，文件删了块也删。
  *
- * <p><b>为什么以目录为准</b>：知识库没有"编辑"入口（模型不该能往里写，那等于给它一个把
- * 提示注入落库的口子）。既然唯一的写入口是文件，那么"库里有、目录里没有"就是一种残留，
- * 留着它会让检索返回一段已经不存在的文档——出处指过去，人打开文件却找不到那段。
+ * <p>以目录为准，是因为知识库没有"编辑"入口——模型不该能往里写，那等于给它一个把提示注入落库的
+ * 口子。唯一的写入口是文件，那么"库里有、目录里没有"就是残留，留着它会让检索返回一段已经不
+ * 存在的文档：出处指过去，人打开文件却找不到那段。
  *
- * <p><b>按内容哈希跳过</b>：靠 {@code claw4j_rag.source} 那张表（照 OpenClaw 的
+ * <p>按内容哈希跳过，靠 {@code claw4j_rag.source} 这张表（形状照 OpenClaw 的
  * {@code memory_index_sources}）。框架的 {@code VectorStore} 没有"这份文件上次是什么样"的账，
- * 所以这张表是我们必须自己留的一张——没有它，每次启动都要把全部文档重算一遍 embedding。
+ * 没有它每次启动都要把全部文档重算一遍 embedding。
  *
- * <p><b>但哈希不是唯一的判据</b>：切块实现变了，内容没变的文件也得重建。这件事靠
- * {@code claw4j_rag.index_meta} 一行身份（照 OpenClaw 的 {@code memory_index_meta}）——
- * 身份不一致就全量重建，而不是每行挂一个版本号。
+ * <p>但哈希不是唯一判据：切块实现变了，内容没变的文件也得重建。这件事靠
+ * {@code claw4j_rag.index_meta} 里一行身份（形状照 {@code memory_index_meta}，
+ * {@code packages/memory-host-sdk/src/host/memory-schema-base.ts:16}）——身份不一致就全量重建，
+ * 而不是每行挂一个版本号。
  *
- * <p><b>写入全部走框架</b>：切块见 {@link SemanticTextSplitter}（ADR-0028），写块与删块是
- * {@code VectorStore.add} / {@code delete(filter)}。不再有手拼的 insert/delete。
+ * <p>写入全部走框架：切块见 {@link SemanticTextSplitter}（ADR-0028），写块与删块是
+ * {@code VectorStore.add} / {@code delete(filter)}。
  *
- * <p><b>没有事务，靠"哈希最后写"保证可重来</b>：一份文档的顺序是
- * 删旧块 → 加新块 → 更新哈希。中间任何一步失败，哈希仍是旧的，下次同步会重来一遍。
- * 这样做的代价要说清：在"旧块已删、新块还没写完"的窗口里，这份文档检索不到——
- * 而它只发生在启动同步期间，那时没有请求在查。反过来（把 embedding 算在事务里）
- * 会拿着数据库连接等 HTTP，一份长文档就占住连接几十秒。
+ * <p>没有事务，靠"哈希最后写"保证可重来：一份文档的顺序是删旧块、加新块、更新哈希，中间任何
+ * 一步失败哈希仍是旧的，下次同步会重来。代价是"旧块已删、新块还没写完"的窗口里这份文档检索
+ * 不到，而它只发生在启动同步期间，那时没有请求在查。反过来把 embedding 算在事务里，会拿着
+ * 数据库连接等 HTTP，一份长文档就占住连接几十秒。
  */
 public class KnowledgeIndexer {
 
@@ -86,8 +86,8 @@ public class KnowledgeIndexer {
     /**
      * 切块实现的版本。
      *
-     * <p>**改切块算法、词表、阈值、最少句数都要加一**：身份一变，下次启动就全量重建。
-     * 不这样做的话，hash 没变的文件永远不重建，库里会混着两套边界的块且没有任何迹象。
+     * <p>改切块算法、词表、阈值、最少句数都要加一：身份一变，下次启动就全量重建。不这样做的话，
+     * hash 没变的文件永远不重建，库里会混着两套边界的块且没有任何迹象。
      */
     static final int CHUNKING_VERSION = 1;
 
@@ -105,8 +105,8 @@ public class KnowledgeIndexer {
     private final RagProperties properties;
 
     /**
-     * 切块器。**两级**：句子之间按语义断（转折词 + 向量跃迁），块超 token 上限才硬切。
-     * 裁决见 ADR-0028；算法在 `claw4j-core` 的 {@code ChunkPlanner}。
+     * 切块器，两级：句子之间按语义断（转折词 + 向量跃迁），块超 token 上限才硬切。裁决见
+     * ADR-0028，算法在 {@code claw4j-core} 的 {@link io.github.claw4j.chunk.ChunkPlanner}。
      */
     private final TextSplitter splitter;
 
@@ -178,7 +178,7 @@ public class KnowledgeIndexer {
             present.add(path);
             String content = read(file);
             String hash = PermissionFingerprint.sha256(content);
-            // 身份不符时**不看 hash**：切块算法变了，内容没变也要按新边界重建。
+            // 身份不符时不看 hash：切块算法变了，内容没变也要按新边界重建。
             if (!rebuildAll && hash.equals(existingHash(path))) {
                 skipped++;
                 continue;
@@ -208,7 +208,7 @@ public class KnowledgeIndexer {
     private void indexOne(String path, String content, String hash, Path file) {
         List<Document> chunks = chunk(path, content, hash);
         if (chunks.isEmpty()) {
-            // 文件只有空白：把它当作"存在但没有内容"。**不写空块**，也不当失败——
+            // 文件只有空白：当作"存在但没有内容"。不写空块，也不当失败——
             // 一个还没写内容的 placeholder 文件不该让整个进程起不来。
             log.warn("{} 里没有可索引的内容（只有空白），跳过", path);
             return;

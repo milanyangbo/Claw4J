@@ -3,21 +3,19 @@ package io.github.claw4j.agent.audit;
 /**
  * 审计的归一化错误码，闭合词表（ADR-0027 决定二）。
  *
- * <p><b>九个值逐字照 OpenClaw</b>：{@code packages/gateway-protocol/src/schema/audit.ts}
- * 里的 {@code AuditEventErrorCodeSchema}。一半属于运行、一半属于工具，前缀就是归属。
- * 前缀不是为了好看——审计的主要读法是"按 kind + status 过滤"，而一个 {@code agent_run}
- * 的事件配上 {@code tool_failed}，读的人一眼就能看出写错了层。
- * <b>但那是"看得出来"，不是"写不进去"</b>：库里没有 {@code kind × error_code} 的配对约束，
- * 枚举只管值域、管不了这两个字段搭不搭。要真挡住得再加一条 check，目前没有——
- * 别让下一个读这段的人以为它已经被挡住了。
+ * <p>九个值逐字照 OpenClaw 的 {@code AuditEventErrorCodeSchema}
+ * （{@code packages/gateway-protocol/src/schema/audit.ts:27}）。一半属于运行、一半属于工具，前缀就是
+ * 归属。前缀不是为了好看——审计的主要读法是按 {@code kind} 与 {@code status} 过滤，而一个
+ * {@code agent_run} 的事件配上 {@code tool_failed}，读的人一眼就能看出写错了层。但那只是看得出来，
+ * 不是写不进去：库里没有 {@code kind} 与 {@code error_code} 的配对约束，枚举只管值域、管不了这两个
+ * 字段搭不搭。要真挡住得再加一条 check，目前没有。
  *
- * <p><b>为什么是枚举而不是几个 String 常量</b>：闭合词表要真的闭合。常量只在调用方
- * 愿意用常量的前提下成立，而一个从异常类型名拼出来的字符串照样能写进去；换成枚举，
- * "写一个词表外的值"在编译期就不成立——与 {@code AuditEvent} 里"没有地方装参数原文"
- * 是同一个手法：把约束做成类型，而不是写成注释。
+ * <p>为什么是枚举而不是几个 String 常量：闭合词表要真的闭合。常量只在调用方愿意用常量时成立，
+ * 而从异常类型名拼出来的字符串照样能写进去；换成枚举，「写一个词表外的值」在编译期就不成立。这与
+ * {@code AuditEvent} 里「没有地方装参数原文」是同一个手法：把约束做成类型，而不是写成注释。
  *
- * <p><b>不细分到异常类型</b>：{@code ToolExecutionException}、{@code SocketTimeoutException}
- * 这些名字是开放的，而这一列是闭合口径。要查是哪个异常，trace 的 span 上有。
+ * <p>不细分到异常类型：{@code ToolExecutionException}、{@code SocketTimeoutException} 这些名字是
+ * 开放的，而这一列是闭合口径。要查是哪个异常，trace 的 span 上有。
  */
 public enum AuditErrorCode {
 
@@ -45,8 +43,8 @@ public enum AuditErrorCode {
     /**
      * 工具被策略挡住：没权限、或者这个工具的权限根本没登记。
      *
-     * <p>这种调用<b>没有开始</b>，只有一条 {@code finished / blocked}——
-     * 两条都写的话，"想调但没调成"会被算成"调过"。
+     * <p>这种调用没有开始，只有一条 {@code finished / blocked}——两条都写的话，「想调但没调成」会被
+     * 算成「调过」。
      */
     TOOL_BLOCKED("tool_blocked"),
 
@@ -59,7 +57,11 @@ public enum AuditErrorCode {
         this.column = column;
     }
 
-    /** 落库的写法，与 {@code V6__run.sql} 的 check 约束逐字对应。 */
+    /**
+     * 落库的写法，与 {@code V6__run.sql} 的 check 约束逐字对应。
+     *
+     * @return 错误码，如 {@code tool_blocked}
+     */
     public String column() {
         return column;
     }

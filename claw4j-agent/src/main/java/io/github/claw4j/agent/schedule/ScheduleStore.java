@@ -20,24 +20,21 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * 定时任务的落点（P04）：建、认领、推进、记失败、停用。
+ * 定时任务的持久化：建、认领、推进、记失败、停用（P04）。
  *
- * <p><b>为什么只有一个具体类，不预先开接口</b>：定时任务的表与它的读写方式是同一件事，
- * 而"另一种实现"（内存版、别的库）现在没有需求。预先开一个接口，只会让每个方法
- * 多一处要同步改的签名；等真有第二种实现时再抽，代价是机械的。
+ * <p>只有一个具体类，不预先开接口：表与它的读写方式是同一件事，另一种实现（内存版、别的库）
+ * 现在没有需求。预先开接口只会让每个方法多一处要同步改的签名。
  *
- * <p><b>认领是<b>一条</b>语句</b>：
- * {@code update ... where id in (select ... for update skip locked) returning ...}。
- * 拆成"先 select 再 update"的话，两个实例会在两者之间读到同一批行——而它们各自都会
- * 认为"这条归我了"，于是同一条任务跑两遍。{@code skip locked} 让后来的那个
- * <b>跳过</b>而不是等：等它会让整轮扫描卡在别人的一次模型调用上。
+ * <p>认领是一条语句：{@code update ... where id in (select ... for update skip locked) returning ...}。
+ * 拆成先 select 再 update，两个实例会在两步之间读到同一批行，各自认为这条归自己了，
+ * 于是同一条任务跑两遍。{@code skip locked} 让后来的那个跳过而不是等待：等待会把整轮扫描
+ * 卡在别人的一次模型调用上。
  *
- * <p><b>租约与行锁解决的是两件事</b>：行锁管"同一瞬间"，租约管"认领之后进程没了"。
- * 只有行锁的话，进程崩溃后那条任务会一直躺在"已认领"里——锁随连接消失，
- * 但下一次扫描看到 {@code claimed_until} 还没到，就会一直不肯碰它。
+ * <p>行锁管同一瞬间，租约管认领之后进程没了。只有行锁的话，进程崩溃后那条任务会一直躺在
+ * 「已认领」里，直到 {@code claimed_until} 过期才可能被重新认领。
  *
- * <p><b>推进时间点由调用方算</b>（{@link #settle}）："下一次是什么时候"取决于这一轮
- * 从几点跑完，而那是调度器才知道的事。这里只负责把值写下去，不猜。
+ * <p>推进到哪个时间点由调用方算（{@link #settle}）：下一次是几点取决于这一轮几点跑完，
+ * 那只有调度器知道。这里只负责写值。
  */
 public class ScheduleStore {
 
@@ -46,9 +43,9 @@ public class ScheduleStore {
     /**
      * 认领一批到点的任务。
      *
-     * <p>{@code claimed_until} 用<b>库的时钟</b>算（{@code now() + ...}），不用 JVM 的：
-     * 与 {@code expires_at <= now()} 同一个理由——两个时钟有偏差时，
-     * "我以为还没过期"和库里的判断会各说各的，而那种不一致只能靠翻日志解释。
+     * <p>{@code claimed_until} 用库的时钟算（{@code now() + ...}），不用 JVM 的：
+     * 与 {@code expires_at <= now()} 同一个理由。两个时钟有偏差时，「我以为还没过期」
+     * 和库里的判断会各说各的，而那种不一致只能靠翻日志解释。
      */
     private static final String CLAIM_SQL = """
             update claw4j_run.agent_schedule s
@@ -92,12 +89,11 @@ public class ScheduleStore {
     /**
      * 这一轮没跑成：计数加一、记下原因、照样推进时间点。
      *
-     * <p><b>时间点照样推进</b>：不推进的话下一次扫描（30 秒后）会立刻重试，
-     * 于是一次模型故障会让三次失败在一分半内用光——那会把"连着坏三天"和
-     * "坏了 90 秒"变成同一件事，而它们的处置完全不同。
+     * <p>时间点照样推进：不推进的话下一次扫描（30 秒后）会立刻重试，一次模型故障就能在
+     * 一分半里用光三次机会，于是「连着坏三天」和「坏了 90 秒」变成同一件事。
      *
-     * <p><b>停用与计数是同一条语句</b>：分成两句的话，第二个实例可能在这之间又跑一次，
-     * 于是失败计数跨过阈值两次、发两条通知。
+     * <p>停用与计数写同一条语句：分成两句，第二个实例可能在中间又跑一次，于是失败计数
+     * 跨过阈值两次、发两条通知。
      */
     private static final String FAIL_SQL = """
             update claw4j_run.agent_schedule
@@ -122,9 +118,9 @@ public class ScheduleStore {
     /**
      * 一条到点的任务：认领时读出来的全部内容，够跑一轮，也够解释为什么没跑成。
      *
-     * <p><b>带回来的是身份，不是权限</b>（P05）：{@code userId} + {@code role} 要交给
-     * {@link ScheduleAuthorization} 换一份<b>此刻</b>的权限。P04 这一格放的是整份
-     * Principal 快照，于是收权对定时任务无效——那条缝在"有人拿这份快照直接去跑"时才露出来。
+     * <p>带回来的是身份，不是权限（P05）：{@code userId} 与 {@code role} 交给
+     * {@link ScheduleAuthorization} 换一份此刻的权限。存权限快照的话，收权对定时任务无效，
+     * 而那条缝只有在有人拿这份快照直接去跑时才会露出来。
      *
      * @param requiredTools 建的时候声明的工具名，到点之前按当前权限再核一遍；空表示不碰工具
      */
@@ -137,14 +133,15 @@ public class ScheduleStore {
     /**
      * 新建一条定时任务要的东西。
      *
-     * @param owner     归属键，与 run 的口径一致（{@code SessionKeys.ownerOf}）
-     * @param goal      每次到点要问的那句话
-     * @param cron      6 段 cron，创建时就解析一遍：写错了要当场说，而不是等到明天九点
-     * @param zone      时区；null 表示用部署所在时区
-     * @param channel   结果送回哪个通道；null 表示不推
+     * @param owner 归属键，与 run 的口径一致（{@code SessionKeys.ownerOf}）
+     * @param goal 每次到点要问的那句话
+     * @param cron 6 段 cron，创建时就解析一遍：写错了要当场说，而不是等到明天九点
+     * @param zone 时区；null 表示用部署所在时区
+     * @param notifyPolicy 通知策略；null 按 {@link NotifyPolicy#SILENT} 落库
+     * @param channel 结果推回的通道；null 表示不推
      * @param channelRef 通道内的收件地址
-     * @param principal 任务主人。<b>只取 {@code userId} 与 {@code role} 落库</b>——
-     *                  tables / actions 一律不存，它们要到点那一刻按当时的角色表重算
+     * @param principal 任务主人。只取 {@code userId} 与 {@code role} 落库，
+     *     tables 与 actions 一律不存，它们要到点那一刻按当时的角色表重算
      * @param requiredTools 这条任务会用到的工具名，建的时候已经核过一遍
      */
     public record Request(String owner, String goal, String cron, String zone,
@@ -163,10 +160,12 @@ public class ScheduleStore {
     }
 
     /**
-     * 建一条定时任务，第一次触发时间按 cron 从"现在"往后算。
+     * 建一条定时任务，第一次触发时间按 cron 从此刻往后算。
      *
+     * @param request 任务的主人与内容
+     * @return 落库后回读的那条；写不进库时为空
      * @throws IllegalArgumentException cron 或时区解析不了。调用方（P05 的工具）把这句话
-     *                                  原样告诉模型，而不是自己编一句"创建失败"
+     *     原样告诉模型，而不是自己编一句「创建失败」
      */
     public Optional<Schedule> create(Request request) {
         Objects.requireNonNull(request, "request");
@@ -178,7 +177,7 @@ public class ScheduleStore {
                     request.goal(), request.cron(), request.zone(),
                     (request.notifyPolicy() == null ? NotifyPolicy.SILENT : request.notifyPolicy()).column(),
                     owner.userId(), owner.role(),
-                    // 显式转成 Object：String[] 直接当变参会被当成"一串参数"，而不是一个 text[]
+                    // 显式转成 Object：String[] 直接当变参会被当成一串参数，而不是一个 text[]
                     (Object) toolsOf(request.requiredTools()).toArray(new String[0]),
                     java.sql.Timestamp.from(next));
         } catch (RuntimeException failure) {
@@ -193,11 +192,16 @@ public class ScheduleStore {
     }
 
     /**
-     * 第一次触发的时间点：严格晚于"现在"的那一个。
+     * 算第一次触发的时间点：严格晚于此刻的那一个。
      *
-     * <p><b>正好站在那个点上创建的任务，今天这次不算</b>：`next` 是严格之后，
-     * 所以 9:00:00 建的任务今天不会再跑一次。反过来（取"最近一次"）会让
-     * "现在建、立刻跑"和"明天九点跑"变成同一件事，而用户说的显然是后者。
+     * <p>正好站在那个点上创建的任务，当天这次不算：{@code next} 取的是严格之后，
+     * 所以 9:00:00 建的任务今天不会再跑一次。取「最近一次」会把「现在建、立刻跑」和
+     * 「明天九点跑」变成同一件事，而用户说的显然是后者。
+     *
+     * @param cron 6 段 cron 原文
+     * @param zone 时区；null 表示部署所在时区
+     * @return 第一次触发的时刻
+     * @throws IllegalArgumentException cron 没有下一次，或 cron 与时区解析不了
      */
     public static Instant firstRunAt(String cron, String zone) {
         CronExpression expression = parse(cron);
@@ -209,7 +213,14 @@ public class ScheduleStore {
         return next.toInstant();
     }
 
-    /** 解析 cron 并给出"下一个时间点"；没有下一次时返回空（例如一次性日期已经过去）。 */
+    /**
+     * 算严格晚于 {@code after} 的下一个时间点。
+     *
+     * @param cron 6 段 cron 原文
+     * @param zone 时区；null 表示部署所在时区
+     * @param after 起点
+     * @return 下一个时间点；空表示没有下一次，例如一次性日期已经过去
+     */
     public static Optional<Instant> nextRunAt(String cron, String zone, Instant after) {
         ZonedDateTime next = parse(cron).next(ZonedDateTime.ofInstant(after, zoneOf(zone)));
         return next == null ? Optional.empty() : Optional.of(next.toInstant());
@@ -218,9 +229,12 @@ public class ScheduleStore {
     /**
      * 解析 cron。
      *
-     * <p><b>只认 6 段</b>（秒 分 时 日 月 周）：Spring 的 {@link CronExpression} 不接受 5 段，
-     * 少写一段不会被"猜一个秒"，而是当场报错。这条错误会原样交给模型——
-     * 让它知道该补哪一段，比一句"格式不对"有用。
+     * <p>只认 6 段（秒 分 时 日 月 周）：Spring 的 {@link CronExpression} 不接受 5 段，
+     * 少写一段不会被猜一个秒，而是当场报错。这条错误原样交给模型，比一句「格式不对」有用。
+     *
+     * @param cron cron 原文
+     * @return 解析后的表达式
+     * @throws IllegalArgumentException cron 为空或解析不了
      */
     public static CronExpression parse(String cron) {
         if (cron == null || cron.isBlank()) {
@@ -235,10 +249,14 @@ public class ScheduleStore {
     }
 
     /**
-     * 时区；为空取部署所在时区。
+     * 把时区字符串解析成 {@link ZoneId}，为空取部署所在时区。
      *
-     * <p>包内可见：工具要把算好的时间点按同一个时区写给人看——两处各解析一遍的话，
-     * "下一次 09:00"与"下一次 01:00"这种差八小时的显示错，看起来像 cron 写错了。
+     * <p>包内可见：工具要把算好的时间点按同一个时区写给人看。两处各解析一遍的话，
+     * 「下一次 09:00」与「下一次 01:00」这种差八小时的显示错，看起来像 cron 写错了。
+     *
+     * @param zone 时区名；null 或空表示部署所在时区
+     * @return 时区
+     * @throws IllegalArgumentException 时区认不出来
      */
     static ZoneId zoneOf(String zone) {
         if (zone == null || zone.isBlank()) {
@@ -252,11 +270,15 @@ public class ScheduleStore {
     }
 
     /**
-     * 认领一批到点的任务（多实例安全）。
+     * 认领一批到点的任务，多实例安全。
      *
-     * <p><b>读不到库时抛出，不在这儿吞</b>：吞掉之后调用方再也分不出"这一轮没有到点任务"
-     * 与"这张表根本读不出来"——前者是常态，后者要么该告警、要么该有人去跑迁移。
-     * 喊几次由 {@link ScheduleScanner} 决定（它只喊一次），这里只负责如实报错。
+     * <p>读不到库时抛出，不在这里吞：吞掉之后调用方分不出「这一轮没有到点任务」与
+     * 「这张表根本读不出来」。前者是常态，后者要么该告警，要么该有人去跑迁移。
+     * 喊几次由 {@link ScheduleScanner} 决定，它只喊一次。
+     *
+     * @param max 这一轮最多认领几条
+     * @param lease 认领之后占用多久
+     * @return 本轮认领到的任务
      */
     public List<Due> claim(int max, Duration lease) {
         return jdbc.query(CLAIM_SQL, (row, index) -> due(row),
@@ -275,10 +297,11 @@ public class ScheduleStore {
     /**
      * 这一轮没跑成：记一次，可能顺手停用。
      *
-     * @param nextRunAt   这一次之后的下一个时间点（照样推进，理由见 {@link #FAIL_SQL}）
-     * @param error       给人看的失败原因（截断到列宽）
-     * @param threshold   连续几次就停用
-     * @return 记完之后的样子；写不进去时返回空——那时宁可不通知，也不能假装停用了
+     * @param id 任务编号
+     * @param nextRunAt 这一次之后的下一个时间点，照样推进，理由见 {@link #FAIL_SQL}
+     * @param error 给人看的失败原因，超长会截断到列宽
+     * @param threshold 连续几次就停用
+     * @return 记完之后的样子；写不进去时为空，那时宁可不通知，也不能假装停用了
      */
     public Optional<AfterFailure> fail(String id, Instant nextRunAt, String error, int threshold) {
         String trimmed = error == null || error.isBlank() ? "（没有说明）" : clip(error);
@@ -295,8 +318,13 @@ public class ScheduleStore {
     }
 
     /**
-     * 直接停用（cron 坏了、没有下一次了）。这类问题不会因为再试三次而变好，
-     * 所以不走失败计数——攒三次只是让它晚三天才停。
+     * 直接停用，记下原因。
+     *
+     * <p>用于 cron 坏了、没有下一次这类问题：它们不会因为再试三次而变好，走失败计数只是
+     * 让停用晚三天发生。
+     *
+     * @param id 任务编号
+     * @param reason 停用原因，写进 {@code disabled_reason}
      */
     public void disable(String id, String reason) {
         try {
@@ -306,7 +334,12 @@ public class ScheduleStore {
         }
     }
 
-    /** 回读一条任务。没有、或者读不到库，都是空。 */
+    /**
+     * 回读一条任务。
+     *
+     * @param id 任务编号
+     * @return 任务；没有这条记录或读不到库时为空
+     */
     public Optional<Schedule> find(String id) {
         try {
             return jdbc.query(SELECT_SQL + " where id = ?", scheduleMapper(), id).stream().findFirst();
@@ -316,7 +349,12 @@ public class ScheduleStore {
         }
     }
 
-    /** 这个人建过的定时任务，最近的在前。P05 的"列出我的任务"用它。 */
+    /**
+     * 这个人建过的定时任务，最近建的在前。
+     *
+     * @param owner 归属键，与 run 的口径一致
+     * @return 任务列表；读不到库时为空列表
+     */
     public List<Schedule> listOf(String owner) {
         try {
             return jdbc.query(SELECT_SQL + " where owner = ? order by created_at desc",

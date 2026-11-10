@@ -16,27 +16,27 @@ import java.util.Objects;
 /**
  * 委派这个动作本身，对父 Agent 呈现为一个工具：{@code Task}。
  *
- * <p><b>描述里只有元数据</b>（每个 Subagent 的名字与它管什么），与 Skill 的渐进式披露
- * 同一个形状：父靠这几行决定"该派谁"，至于那个 Subagent 具体怎么做（它定义里的正文），
- * 只在它自己的窗口里出现一次。于是"有十个专职 Agent"的代价是十行描述，
- * 不是十份流程说明——这条由 {@code SubagentDelegationTest} 里"描述不含正文"盯着。
+ * <p>描述里只有元数据（每个 Subagent 的名字与它管什么），与 Skill 的渐进式披露同一个形状：
+ * 父靠这几行决定该派谁，至于那个 Subagent 具体怎么做（它定义里的正文），只在它自己的窗口里
+ * 出现一次。于是「有十个专职 Agent」的代价是十行描述，不是十份流程说明。
  *
- * <p><b>它要过鉴权，而且不授予任何业务表</b>：能不能委派由 Principal 决定
- * （ADR-0007），登记的动作是 {@link #ACTION}，业务表一张都没有。
- * 表清单为空不是"没有约束"，而是明确声明"委派这个动作本身不碰库"——
- * 真正碰库的是子 Agent 要调的那个工具，那一步在子链上照样过鉴权、照样看表。
+ * <p>它要过鉴权，而且不授予任何业务表：能不能委派由 Principal 决定（ADR-0007），登记的
+ * 动作是 {@link #ACTION}，业务表一张都没有。表清单为空不是「没有约束」，而是明确声明委派
+ * 这个动作本身不碰库；真正碰库的是子 Agent 要调的那个工具，那一步在子链上照样过鉴权、
+ * 照样看表。
  *
- * <p><b>没带身份的委派一律拒绝</b>：身份来自入站请求（{@code ChatClientAgentPort}
- * 把它放进 {@link ToolContext}），工具回调拿到什么就是什么，不猜、不兜底。
- * 拿不到时返回的是一句明确的"没有权限"，而不是照常派出去——
- * 委派一旦脱离身份，子链上的鉴权就成了摆设。
+ * <p>没带身份的委派一律拒绝：身份来自入站请求（{@code ChatClientAgentPort} 把它放进
+ * {@link ToolContext}），工具回调拿到什么就是什么，不猜、不兜底。拿不到时返回一句明确的
+ * 「没有权限」，而不是照常派出去——委派一旦脱离身份，子链上的鉴权就成了摆设。
  */
 public final class SubagentDelegation implements ToolCallback {
 
     /**
-     * 工具名与 Claude Code 的那个保持一致：{@code Task}。
-     * "把一件事交给一个专职的谁去做"在两边的形状是一样的，
-     * 于是 Subagent 定义文件的格式（front matter 里的 tools / disallowedTools）也能共用。
+     * 工具名定为 {@code Task}。
+     *
+     * <p>「把一件事交给一个专职的谁去做」在父 Agent 眼里就是一个工具，而不是每个 Subagent
+     * 各占一个位置；定义文件 front matter 里的 {@code tools} 与 {@code disallowedTools}
+     * 沿用同一套命名。
      */
     public static final String TOOL_NAME = "Task";
 
@@ -116,7 +116,7 @@ public final class SubagentDelegation implements ToolCallback {
                 .orElse(null);
         if (chosen == null) {
             // 把可用清单列出来：模型下一个动作就是改名字再派一次，
-            // 而"它到底叫 what"这种事不该靠模型回忆。
+            // 而它到底叫什么不该靠模型回忆。
             return "没有名为 " + name + " 的 Subagent。可用的是：\n"
                     + String.join("\n", registrations());
         }
@@ -165,7 +165,7 @@ public final class SubagentDelegation implements ToolCallback {
         }
     }
 
-    /** 身份只从工具上下文里取；没有就是没有，不 fallback 到"匿名放行"。 */
+    /** 身份只从工具上下文里取；取不到就是取不到，不 fallback 到匿名放行。 */
     private static Principal principalOf(ToolContext toolContext) {
         if (toolContext == null || toolContext.getContext() == null) {
             return null;

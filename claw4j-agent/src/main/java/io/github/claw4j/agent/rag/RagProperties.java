@@ -7,26 +7,23 @@ import java.time.Duration;
 /**
  * 知识库的几项配置。
  *
- * <p><b>字段全部用包装类型</b>：配置绑定对缺失的键只能传 null，原始类型会被填成 0 ——
- * 而这里的 0 都是坏值（topK 0 = 永远检索不到东西，块长 0 = 切不出块）。与
- * {@code CacheProperties} 同一个理由，同一个坑不踩第二次。
+ * <p>字段全部用包装类型：配置绑定对缺失的键只能传 null，原始类型会被填成 0，而这里的 0 都是坏值
+ * （topK 0 永远检索不到东西，块长 0 切不出块）。与 {@code CacheProperties} 同一个理由。
  *
- * <p><b>没有 {@code enabled} 字段</b>：总开关由 {@code RagAutoConfiguration} 类上的
- * {@code @ConditionalOnProperty} 读 {@code claw4j.rag.enabled} 判定。同一个键在 record 里
- * 再存一份就是"两处判断同一个开关"，表现是"配了关但还在检索"（pitfalls 第十条）。
+ * <p>没有 {@code enabled} 字段：总开关由 {@code RagAutoConfiguration} 类上的
+ * {@code @ConditionalOnProperty} 读 {@code claw4j.rag.enabled} 判定。同一个键在 record 里再存
+ * 一份就是"两处判断同一个开关"，表现是"配了关但还在检索"（pitfalls 第十条）。
  *
- * <p><b>默认关</b>（{@code matchIfMissing = false}）：知识库要一份文档目录与一次 embedding
- * 调用才能建起来，而绝大多数部署没有这两样。这与 {@code claw4j.skills.directory} 那几个键
- * 同一条约定——不配就是没有这一层，不是"配了一个空目录"。
+ * <p>默认关（{@code matchIfMissing = false}）：知识库要一份文档目录与一次 embedding 调用才能建
+ * 起来，绝大多数部署没有这两样。这与 {@code claw4j.skills.directory} 那几个键同一条约定。
  *
- * <p><b>开着知识库就是"带知识库的助手"</b>：检索由 {@code RetrievalAugmentationAdvisor}
- * 在每轮请求里自动完成，不是模型自己决定调不调。所以下面两个开关是成本旋钮，不是能力开关。
+ * <p>开着知识库就是"带知识库的助手"：检索由 {@code RetrievalAugmentationAdvisor} 在每轮请求里
+ * 自动完成，不是模型自己决定调不调。所以下面两个开关是成本旋钮，不是能力开关。
  *
- * @param directory     文档目录。**开着却没配它等于启动失败**，不是"空知识库"
+ * @param directory     文档目录。开着却没配它等于启动失败，不是"空知识库"
  * @param topK          一次检索最终取回多少段
  * @param minSimilarity 相似度下限，只作用于向量那一路
- * @param chunkSize     一块最多多少 **token**（不是字符）。切块交给框架的
- *                      {@code TokenTextSplitter}，它按 token 算
+ * @param chunkSize     一块最多多少 token（不是字符）。切块见 {@link SemanticTextSplitter}
  * @param hybrid        混合检索（向量 + 全文两路）。关掉只剩向量
  * @param rerank        重排。关掉只影响顺序，不影响召回
  */
@@ -37,23 +34,22 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
     public static final int DEFAULT_TOP_K = 5;
 
     /**
-     * 相似度下限，默认 <b>0.5</b>。
+     * 相似度下限，默认 0.5。
      *
-     * <p><b>必须说清楚：这个数没有实测支撑</b>，与缓存的 0.93 不是一回事。0.93 是对着两组
-     * 问句量出来的（见 {@code CacheProperties#DEFAULT_SIMILARITY_THRESHOLD} 那张表）；
-     * 这里没有"文档块与问题的相似度"的实测集，所以 0.5 只是一个保守的出发点。
+     * <p>这个数没有实测支撑，与缓存的 0.93 不是一回事。0.93 是对着两组问句量出来的（见
+     * {@code CacheProperties#DEFAULT_SIMILARITY_THRESHOLD} 那张表）；这里没有"文档块与问题的
+     * 相似度"的实测集，0.5 只是一个保守的出发点。
      *
-     * <p>它只干一件粗活：把"几乎肯定不相关"的块挡掉。分数是余弦相似度，调它之前先攒一批
-     * 真实问题，否则就是把一个猜测换成另一个猜测。
+     * <p>它只干一件粗活：把"几乎肯定不相关"的块挡掉。分数是余弦，调它之前先攒一批真实问题，
+     * 否则就是把一个猜测换成另一个猜测。
      */
     public static final double DEFAULT_MIN_SIMILARITY = 0.5;
 
     /**
-     * 一块最多多少 token，默认 800（也就是框架 {@code TokenTextSplitter} 的默认值）。
+     * 一块最多多少 token，默认 800。
      *
-     * <p><b>为什么单位从字符变成 token</b>：这个值原先写的是"800 字符"，因为切块器是我们自己
-     * 写的。换成框架的切块器之后单位变成 token，同一个数字意味着块大了约一半——所以这里
-     * 刻意跟框架的默认值对齐，不去传一个"看起来没变"的 800。
+     * <p>单位是 token 而不是字符：同一个数字在字符口径下意味着块小一半。切块见
+     * {@link SemanticTextSplitter}。
      */
     public static final int DEFAULT_CHUNK_SIZE = 800;
 
@@ -68,9 +64,9 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
         /**
          * 每路 15 条。
          *
-         * <p>比最终 topK（5）大是必须的：融合与重排都只能从候选里挑，候选只要 5 条的话
-         * "两路都命中"这件事根本发生不了——名次永远是各路自己的前 5。
-         * 15 是"足够让排名有区分度"与"不把整库倒出来"之间的取值。
+         * <p>比最终 topK（5）大是必须的：融合与重排都只能从候选里挑，候选只有 5 条的话，
+         * "两路都命中"这件事根本发生不了，名次永远是各路自己的前 5。15 是"足够让排名有区分度"
+         * 与"不把整库倒出来"之间的取值。
          */
         public static final int DEFAULT_CANDIDATES_PER_ROUTE = 15;
 
@@ -86,13 +82,13 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
     }
 
     /**
-     * 重排。**这是唯一一处直接调供应商 HTTP 的能力**：框架没有 rerank 类型
-     * （2.0.2 全仓 0 命中），见 {@code docs/design/knowledge-retrieval.md} 第六节。
+     * 重排。这是唯一一处直接调供应商 HTTP 的能力：框架没有 rerank 类型，见
+     * {@code docs/design/knowledge-retrieval.md} 第六节。
      *
      * @param enabled    默认开。关掉只损失排序质量，不损失召回
      * @param candidates 送进重排的条数；小于 topK 时按 topK 用（截断之前不能比最终条数还少）
-     * @param baseUrl    端点前缀。**是 {@code compatible-api} 不是 {@code compatible-mode}**，
-     *                   与 chat/embedding 那两个不是同一个前缀，所以单独配一个而不是拼
+     * @param baseUrl    端点前缀。是 {@code compatible-api} 不是 {@code compatible-mode}，
+     *                   与 chat / embedding 那两个不是同一个前缀，所以单独配一个而不是拼
      * @param model      rerank 模型名
      * @param timeout    超时。超时按"候选原样返回"处理，不抛
      */
@@ -105,7 +101,7 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
          * 默认模型。
          *
          * <p>用 {@code qwen3-rerank} 而不是 {@code gte-rerank-v2}：后者将于 2026-05-30 下线，
-         * 而前者单请求支持 500 条文档（我们最多送 10 条）。
+         * 而前者单请求支持 500 条文档（这里最多送 10 条）。
          */
         public static final String DEFAULT_MODEL = "qwen3-rerank";
 
@@ -133,7 +129,7 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
             return new Rerank(null, null, null, null, null);
         }
 
-        /** 端点拼接只该有一处：`baseUrl + "/reranks"` 写两次就会有一次是双斜杠。 */
+        /** 端点拼接只该有一处：{@code baseUrl + "/reranks"} 写两次就会有一次是双斜杠。 */
         public String rerankUrl() {
             return baseUrl + "/reranks";
         }
@@ -166,6 +162,7 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
         return Math.max(topK, rerank.candidates());
     }
 
+    /** 全部走默认值，但 {@code directory} 为空——这时 {@code hasDirectory()} 为 false。 */
     public static RagProperties defaults() {
         return new RagProperties(null, null, null, null, null, null);
     }

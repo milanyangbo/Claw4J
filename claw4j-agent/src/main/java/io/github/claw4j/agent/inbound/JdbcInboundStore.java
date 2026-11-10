@@ -31,16 +31,16 @@ import java.util.UUID;
  * <p>表结构与四条判断（复合主键、tombstone、没有序号、孤儿回收不涨 attempts）在迁移文件里写着，
  * 这里只负责把它们翻译成 SQL。三件事值得单独说：
  *
- * <p><b>入队靠 {@code on conflict do nothing} 再一次回读</b>：并发重推时只有一条能插进去，
- * 另一条看到的必须是"已经有了"以及**它是哪一种重复**——先查后插做不到这件事（两条都可能查到
- * "没有"），而 {@code insert ... returning} 在冲突时什么都不返回，于是回读是必要的第二句。
+ * <p>入队靠 {@code on conflict do nothing} 再一次回读：并发重推时只有一条能插进去，另一条看到的
+ * 必须是"已经有了"以及它是哪一种重复。先查后插做不到（两条都可能查到"没有"），而
+ * {@code insert ... returning} 在冲突时什么都不返回，回读因此是必要的第二句。
  *
- * <p><b>认领是"挑一条 + 条件更新"两步</b>：先按 {@code (received_at, event_id)} 挑最早的一条
- * （跳过正在跑的车道），再 {@code update … where status = 'pending'}。两个执行者同时挑中同一条时，
- * 只有一条更新得到行，另一条回来重挑。没有用 {@code for update skip locked}：那会把"挑"和"锁"
- * 绑成一次往返，但语义一样，而条件更新在读写分离的库上也能用。
+ * <p>认领是"挑一条 + 条件更新"两步：先按 {@code (received_at, event_id)} 挑最早的一条（跳过正在
+ * 跑的车道），再 {@code update ... where status = 'pending'}。两个执行者同时挑中同一条时，只有一条
+ * 更新得到行，另一条回来重挑。不用 {@code for update skip locked}：那会把"挑"和"锁"绑成一次往返，
+ * 语义一样，而条件更新在读写分离的库上也能用。
  *
- * <p><b>结算必须带令牌</b>：{@code where claim_token = ?} 挡住"我认领的那条已经被回收并重新认领"——
+ * <p>结算必须带令牌：{@code where claim_token = ?} 挡住"我认领的那条已经被回收并重新认领"——
  * 不带令牌的话，晚回来的那一次会把别人的结论盖掉，而日志里看起来一切正常。
  */
 public class JdbcInboundStore implements InboundStore {
@@ -90,7 +90,7 @@ public class JdbcInboundStore implements InboundStore {
             """;
 
     /**
-     * 回收超时的认领。<b>不动 attempts</b>：丢了一个认领人不算一次投递失败。
+     * 回收超时的认领。不动 attempts：丢了一个认领人不算一次投递失败。
      * 另外把 {@code claimed_at} 为空的坏行也收掉——它已经不可能被谁正常结算了。
      */
     private static final String RECOVER = """
@@ -139,6 +139,9 @@ public class JdbcInboundStore implements InboundStore {
      */
     private final ObjectMapper mapper = new ObjectMapper();
 
+    /**
+     * @param jdbc JDBC 句柄
+     */
     public JdbcInboundStore(JdbcTemplate jdbc) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
     }
@@ -146,8 +149,8 @@ public class JdbcInboundStore implements InboundStore {
     /**
      * 启动时说一句"入站事件现在落库了"。
      *
-     * <p>不说的话，运维会把"库慢"和"模型慢"混起来——改造之前入站是纯内存的，
-     * 库挂了照样能跑，而之后库挂了入站全停。这条日志是那个代价的落点。
+     * <p>不说的话，运维会把"库慢"和"模型慢"混起来：改造之前入站是纯内存的，库挂了照样能跑，
+     * 之后库挂了入站全停。这条日志是那个代价的落点。
      */
     @PostConstruct
     void announce() {
@@ -155,6 +158,13 @@ public class JdbcInboundStore implements InboundStore {
                 + "代价是每次入站多一次写入，库不可用时入站会停）");
     }
 
+    /**
+     * 入队；重复投递时回报"它是哪一种重复"。
+     *
+     * @param event   入站事件
+     * @param laneKey 车道键，同一车道串行
+     * @return 入队结果，重复时是四种 DUPLICATE_* 之一
+     */
     @Override
     public EnqueueOutcome enqueue(QueuedInbound event, String laneKey) {
         int inserted = jdbc.update(INSERT, event.queueName(), event.eventId(), laneKey,
@@ -180,6 +190,14 @@ public class JdbcInboundStore implements InboundStore {
         };
     }
 
+    /**
+     * 认领最早的一条待处理事件，跳过正在跑的车道。
+     *
+     * @param queueName    队列名
+     * @param blockedLanes 正在跑的车道，这些车道的事件本轮不挑
+     * @param claimOwner   认领人，写进 {@code claim_owner} 供排障
+     * @return 认领到的事件与令牌；没有可挑的时为 {@link Optional#empty()}
+     */
     @Override
     public Optional<ClaimedInbound> claimNext(String queueName, Set<String> blockedLanes, String claimOwner) {
         String candidate = candidateSql(blockedLanes);

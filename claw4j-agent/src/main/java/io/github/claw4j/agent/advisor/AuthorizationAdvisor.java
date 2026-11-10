@@ -37,61 +37,53 @@ import java.util.Set;
  * 鉴权 Advisor：一次工具调用能不能发生由 Principal 决定，不由模型决定（ADR-0007）。
  *
  * <p>摆位是这个 Advisor 的全部要点。工具循环（{@code ToolSearchToolCallingAdvisor}，它继承
- * {@code ToolCallingAdvisor}）把"再问一次模型"实现成
- * "自己递归调用链上后续的 Advisor"，所以排在它**之后**的 Advisor 会在
- * <b>每一次工具迭代</b>上都被走一遍；排在它之前的只在整通对话里走一次。
- * 链是按 order 升序排的，于是"在循环内部"= order 大于 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER}。
+ * {@code ToolCallingAdvisor}）把「再问一次模型」实现成「自己递归调用链上后续的 Advisor」，所以排在
+ * 它之后的 Advisor 会在每一次工具迭代上都被走一遍，排在它之前的只在整通对话里走一次。链按 order
+ * 升序排，于是「在循环内部」等价于 order 大于 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER}。
  *
- * <p>判定发生在模型返回之后、工具执行之前：这一轮模型说"我要调 querySales"，
- * 本 Advisor 先看 Principal 有没有这个权限，没有就把这一轮换成一个明确的拒绝，
- * 并且**不把工具调用请求往下传**——工具循环因此看不到工具调用，
- * 工具一次都不会被执行。注意这与"让工具跑完再过滤结果"有本质区别：
- * 后者在执行那一刻越权已经发生了。
+ * <p>判定发生在模型返回之后、工具执行之前：模型说「我要调 querySales」，本 Advisor 先看 Principal
+ * 有没有这个权限，没有就把这一轮换成明确的拒绝，并且不把工具调用请求往下传——工具循环因此看不到它，
+ * 工具一次都不会被执行。这与「让工具跑完再过滤结果」有本质区别：后者在执行那一刻越权已经发生了。
  *
- * <p>为什么不直接用 {@code BaseAdvisor} 的默认流式实现：它只在
- * {@code AdvisorUtils.onFinishReason()} 命中的那一块上调 {@code after()}，
- * 而真实模型把工具调用分成很多块发（名字在第一块、参数是后面几块），
- * 带 finish reason 的收尾块里通常**已经没有工具调用**了。所以在流式上只能逐块看，
- * 看到越权就当场掐断上游并把这一轮换成拒绝。
+ * <p>不用 {@code BaseAdvisor} 的默认流式实现：它只在 {@code AdvisorUtils.onFinishReason()} 命中的
+ * 那一块上调 {@code after()}，而真实模型把工具调用分成很多块发（名字在第一块、参数在后面几块），
+ * 带 finish reason 的收尾块里通常已经没有工具调用。所以流式只能逐块看，看到越权就当场掐断上游。
  *
- * <p><b>同一处还有第二道门：审批</b>（P01、P02）。鉴权通过之后，权限上标了
- * {@link io.github.claw4j.domain.principal.Approval#REQUIRED} 的动作要再问一句
- * {@link ApprovalGate}：没有一条同人、同工具、<b>同参数</b>的批准就换成一句"要先审批"。
- * <b>这一轮到此结束，没有东西在原地等</b>：不挂起执行、不留一条"等待中"的运行；
- * 批准或拒绝之后由 {@code ApprovalService} 在那段对话里补一句话，让模型接着做——
- * 这就是 OpenClaw 的 internal followup（原文与理由见那个类）。
- * 两道门在这里同一个位置、同一个机制（都不把工具调用往下传），因为它们的约束是同一条——
- * 判定必须在<b>工具执行之前</b>发生；分成两处实现的话，早晚有一处漏掉流式路径。
- * 但两句话术不合并：一个要改角色配置，一个要找人点按钮。
+ * <p>同一处还有第二道门：审批（P01、P02）。鉴权通过之后，标了
+ * {@link io.github.claw4j.domain.principal.Approval#REQUIRED} 的动作要再问一句 {@link ApprovalGate}：
+ * 没有一条同人、同工具、同参数的批准就换成一句「要先审批」。这一轮到此结束，没有东西在原地等；批准或
+ * 拒绝之后由 {@code ApprovalService} 在那段对话里补一句话，让模型接着做——那就是 OpenClaw 的
+ * internal followup。两道门共用同一个位置与机制（都不把工具调用往下传），因为约束是同一条：判定必须
+ * 在工具执行之前发生；分成两处实现，早晚有一处漏掉流式路径。两句话术不合并：一个要改角色配置，
+ * 一个要找人点按钮。
  *
- * <p><b>为什么审批要等参数收全才判</b>：指纹是"工具名 + 规范化参数"，
- * 而流式下工具调用的参数是分片到达的（第一片通常只有名字）。拿半截参数算出来的指纹
- * 每收到一片就变一次，用它去问账本等于永远问不到那条批准。所以流式路径上按调用 id
- * 累积参数，直到它能解析成一个完整的 JSON 对象才判——那一刻一定经过某一帧，
- * 所以不会漏判。授权那一道仍然在名字出现的第一帧就判，它不需要参数。
+ * <p>审批要等参数收全才判：指纹是「工具名 + 规范化参数」，而流式下参数是分片到达的（第一片通常只有
+ * 名字）。拿半截参数算出的指纹每收一片就变一次，等于永远问不到那条批准。所以流式按调用 id 累积参数，
+ * 直到它能解析成完整的 JSON 对象才判，那一刻一定经过某一帧，不会漏判。授权那一道仍在名字出现的第一帧
+ * 就判，它不需要参数。
  *
- * <p><b>它也是审计的那半个接缝</b>（P07）：被拒与等审批都在这里落一行（{@link ToolCallAudit}）——
- * 这两件事的判断只发生在这里，工具根本没被执行，{@code MeteredToolCallback} 看不到它们。
- * 放行的那一半不在这里落库：兑现批准只是"允许执行"，真正跑没跑要等工具回调说了算。
+ * <p>它也是审计的那半个接缝（P07）：被拒与等审批都在这里落一行（{@link ToolCallAudit}）——这两件事只
+ * 在这里判断，工具根本没被执行，{@code MeteredToolCallback} 看不到。放行的那一半不在这里落库：兑现
+ * 批准只代表「允许执行」，真正跑没跑要等工具回调说了算。
  */
 public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
 
     /**
      * Principal 在 Advisor 上下文里的键。由 {@code ChatClientAgentPort} 放入，本 Advisor 取出。
      *
-     * <p>取值来自 domain 的 {@link ContextKeys#PRINCIPAL}：工具回调里读的是同一个键
-     * （委派与脚本执行都发生在工具内部，那里没有 Advisor 上下文），两边各写一份常量的话，
-     * 漂移的表现是"工具侧读到 null、一律按没身份拒绝"。
+     * <p>取值来自 domain 的 {@link ContextKeys#PRINCIPAL}：工具回调里读的是同一个键（委派与脚本执行
+     * 都发生在工具内部，那里没有 Advisor 上下文）。两边各写一份常量的话，漂移的表现是「工具侧读到
+     * null、一律按没身份拒绝」。
      */
     public static final String PRINCIPAL_CONTEXT_KEY = ContextKeys.PRINCIPAL;
 
-    /** 拒绝话术的统一前缀。测试靠它区分"明确的拒绝"与"查出来是空的"。 */
+    /** 拒绝话术的统一前缀。测试靠它区分「明确的拒绝」与「查出来是空的」。 */
     public static final String DENIAL_PREFIX = "没有权限";
 
     /**
-     * 拦在审批上的那句话的前缀。**与 {@link #DENIAL_PREFIX} 分开**：这两件事的下一步动作不同——
-     * "没有权限"要找管理员改角色配置，"等你批"要找审批人点一下。合成一句话，
-     * 收到它的人只会去问同一件事，而能解决它的人一直没被找到。
+     * 拦在审批上的那句话的前缀，与 {@link #DENIAL_PREFIX} 分开：这两件事的下一步动作不同——
+     * 「没有权限」要找管理员改角色配置，「等你批」要找审批人点一下。合成一句话，收到它的人只会去问
+     * 同一件事，而能解决它的人一直没被找到。
      */
     public static final String APPROVAL_PREFIX = "这个动作要先审批";
 
@@ -103,8 +95,8 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 参数摘要的字符上限。
      *
-     * <p>存摘要而不是原文（ADR-0016）：第三方 MCP 的参数里可能是凭据。而完全没有摘要的话，
-     * 审批人就是在一个看不见内容的按钮上盖章——那比不留摘要更糟。
+     * <p>存摘要而不是原文（ADR-0016）：第三方 MCP 的参数里可能是凭据。而完全没有摘要的话，审批人就是
+     * 在一个看不见内容的按钮上盖章，那比不留摘要更糟。
      */
     private static final int ARGS_SUMMARY_CHARS = 240;
 
@@ -118,48 +110,77 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     private final List<ToolPermissionRegistry> registries;
 
     /**
-     * 审批门（P01、P02）：鉴权通过之后，标了 {@code REQUIRED} 的动作要在这里问一句、
-     * 没有就登记一条并把这件事实停在这一步。
+     * 审批门（P01、P02）：鉴权通过之后，标了 {@code REQUIRED} 的动作要在这里问一句，没有就登记一条并
+     * 把这件事实停在这一步。
      *
-     * <p>默认 {@link ApprovalGate#denyAll()}——没有审批设施时一律"没有批准"，
-     * 于是标了要审批的动作会被拦，而不是悄悄退化成普通动作。
+     * <p>默认 {@link ApprovalGate#denyAll()}：没有审批设施时一律「没有批准」，于是标了要审批的动作会
+     * 被拦，而不是悄悄退化成普通动作。
      */
     private final ApprovalGate gate;
 
     /**
-     * 审计（P07）：被拒与等审批都落一行，兑现过的批准也在这里登记一下，
-     * 让执行那一下能把"这次调用是哪次批准的"写进去。
+     * 审计（P07）：被拒与等审批都落一行，兑现过的批准也在这里登记一下，让执行那一下能把「这次调用是
+     * 哪次批准的」写进去。
      *
-     * <p>可以为 null（没装配 run 存储的部署）：审计缺席不影响判定——
-     * 拒还是拒，等还是等，只是没人在事后查得到。
+     * <p>可以为 null（没装配 run 存储的部署）：审计缺席不影响判定——拒还是拒，等还是等，只是没人在
+     * 事后查得到。
      */
     private final ToolCallAudit audit;
 
     /**
-     * 拒绝次数往哪记。默认 {@link Metrics#globalRegistry}：没装 actuator 的调用方
-     * （只把 {@code claw4j-agent} 当库使）也能拿到计数，装了则由容器注入真正的 registry。
-     * 不用 {@code null} 表示"不记"——那会让下面每个用法点都多一个判空分支。
+     * 拒绝次数往哪记。默认 {@link Metrics#globalRegistry}：没装 actuator 的调用方（只把
+     * {@code claw4j-agent} 当库使）也能拿到计数，装了则由容器注入真正的 registry。不用 {@code null}
+     * 表示「不记」——那会让下面每个用法点都多一个判空分支。
      */
     private final MeterRegistry registry;
 
+    /**
+     * 只做鉴权、没有审批设施、指标记到全局注册表。
+     *
+     * @param registries 各来源的工具权限登记表，必填
+     */
     public AuthorizationAdvisor(List<ToolPermissionRegistry> registries) {
         this(registries, ApprovalGate.denyAll(), Metrics.globalRegistry);
     }
 
+    /**
+     * 只做鉴权。
+     *
+     * @param registries 各来源的工具权限登记表，必填
+     * @param registry 指标注册表，为 null 时用全局注册表
+     */
     public AuthorizationAdvisor(List<ToolPermissionRegistry> registries, MeterRegistry registry) {
         this(registries, ApprovalGate.denyAll(), registry);
     }
 
+    /**
+     * 鉴权加审批，指标记到全局注册表。
+     *
+     * @param registries 各来源的工具权限登记表，必填
+     * @param gate 审批门，必填
+     */
     public AuthorizationAdvisor(List<ToolPermissionRegistry> registries, ApprovalGate gate) {
         this(registries, gate, Metrics.globalRegistry);
     }
 
+    /**
+     * 鉴权加审批。
+     *
+     * @param registries 各来源的工具权限登记表，必填
+     * @param gate 审批门，必填
+     * @param registry 指标注册表，为 null 时用全局注册表
+     */
     public AuthorizationAdvisor(List<ToolPermissionRegistry> registries, ApprovalGate gate,
                                 MeterRegistry registry) {
         this(registries, gate, registry, null);
     }
 
     /**
+     * 完整装配。
+     *
+     * @param registries 各来源的工具权限登记表，必填
+     * @param gate 审批门，必填
+     * @param registry 指标注册表，为 null 时用全局注册表
      * @param audit 审计落点（P07）。null 表示没装配 run 存储：判定照常，只是事后查不到这一次
      */
     public AuthorizationAdvisor(List<ToolPermissionRegistry> registries, ApprovalGate gate,
@@ -191,12 +212,15 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 流式路径：逐块看，看到越权的工具调用就发一条拒绝并掐断上游。
      *
-     * <p>不能攒到最后再判断：攒起来的话，越权那一轮的内容已经吐出去了，
-     * 而工具循环拿的是聚合后的响应，它照样会去执行工具。
+     * <p>不能攒到最后再判断：攒起来的话，越权那一轮的内容已经吐出去了，而工具循环拿的是聚合后的响应，
+     * 它照样会去执行工具。
      *
-     * <p><b>每次订阅一套自己的状态</b>（{@code Flux.defer}）：参数累积与"已判定"两个集合
-     * 是这次订阅的进度。放在外层的话，第二次订阅会带着第一次的结论跑——
-     * 表现是第二次从头到尾一次都不判，全部放行。
+     * <p>每次订阅一套自己的状态（{@code Flux.defer}）：参数累积与「已判定」两个集合是这次订阅的进度。
+     * 放在外层的话，第二次订阅会带着第一次的结论跑——表现是第二次从头到尾一次都不判，全部放行。
+     *
+     * @param request 这一轮请求
+     * @param chain Advisor 链
+     * @return 每一帧响应；被拦下时是一帧拒绝且流随即结束
      */
     @Override
     public Flux<ChatClientResponse> adviseStream(ChatClientRequest request, StreamAdvisorChain chain) {
@@ -233,21 +257,20 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     /**
-     * 一条拦下来的调用，带上是被哪个工具触发的——指标要按工具分，
-     * 光有"拒绝了几次"查不到该改哪条权限。
+     * 一条拦下来的调用，带上是被哪个工具触发的——指标要按工具分，光有「拒绝了几次」查不到该改哪条
+     * 权限。
      *
-     * @param outcome    记在 {@code claw4j.tool.calls} 上的那一档：越权（{@code denied}）
-     *                   与等审批（{@code needs_approval}）是两条完全不同的处置线索
-     * @param args       模型给的参数原文（流式下可能是收了一半的）。审计只拿它算指纹与摘要，
-     *                   不落库
-     * @param approvalId 等审批那一条的编号；越权时为 null。审计要它才答得出"这次调用是哪次批准的"
+     * @param outcome 记在 {@code claw4j.tool.calls} 上的那一档：越权（{@code denied}）与等审批
+     *     （{@code needs_approval}）是两条完全不同的处置线索
+     * @param args 模型给的参数原文（流式下可能是收了一半的）。审计只拿它算指纹与摘要，不落库
+     * @param approvalId 等审批那一条的编号；越权时为 null。审计要它才答得出「这次调用是哪次批准的」
      */
     private record Denial(String tool, String text, String outcome, String args, String approvalId) {
     }
 
     /**
-     * 模型这一轮提出的一次调用。<b>id 用于流式下的参数累积</b>：同一个调用会分好几帧到达，
-     * 每帧只带一小段参数，靠 id 才认得出它们说的是同一件事。
+     * 模型这一轮提出的一次调用。{@code id} 用于流式下的参数累积：同一个调用会分好几帧到达，每帧只带
+     * 一小段参数，靠 {@code id} 才认得出它们说的是同一件事。
      */
     private record Called(String id, String name, String arguments) {
     }
@@ -255,13 +278,16 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 两道门依次过。
      *
-     * <p><b>先全部过鉴权，再过审批</b>，而不是对每个调用"先鉴权再审批"：
-     * 一场轮次里只要有一个越权，整轮就该以越权结束——那句话说的是"你得先改配置"，
-     * 比同时抛出"顺便还有一件事在等你批"清楚得多。混着报会让人以为批了就能过。
+     * <p>先全部过鉴权，再过审批，而不是对每个调用「先鉴权再审批」：一场轮次里只要有一个越权，整轮就该
+     * 以越权结束——那句话说的是「你得先改配置」，比同时抛出「顺便还有一件事在等你批」清楚得多。混着
+     * 报会让人以为批了就能过。
      *
+     * @param context 这一轮的 Advisor 上下文
+     * @param calls 模型这一轮要调的调用
      * @param partialArgs 流式下的参数累积（按调用 id）。同步路径传一个空 map，用不上
-     * @param settled     流式下已经判过的调用 id。同一帧里参数再长一点不该重判——
-     *                    重判会重复兑现批准，而批准是一次性的
+     * @param settled 流式下已经判过的调用 id。同一帧里参数再长一点不该重判——重判会重复兑现批准，
+     *     而批准是一次性的
+     * @return 拦下来的那一条；都通过时为 empty
      */
     private Optional<Denial> denialFor(Map<String, Object> context, List<Called> calls,
                                        Map<String, String> partialArgs, Set<String> settled) {
@@ -310,12 +336,18 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 第二道门：这一次具体要干的这件事，有没有人点头。
      *
-     * <p>顺序不能反（先问"能不能干"再问"有没有人批"）：反过来的话，一个本来没权限的动作
-     * 会以"等审批"的形式出现——等多久也不会通过。
+     * <p>顺序不能反（先问「能不能干」再问「有没有人批」）：反过来的话，一个本来没权限的动作会以
+     * 「等审批」的形式出现，而等多久也不会通过。
      *
-     * <p><b>参数收不全就不判</b>：返回空（当作"还没到该判的时候"），等下一块。
-     * 拿半截参数算指纹的后果不是漏判，而是每块都算出一个新指纹、每次都不命中，
-     * 于是同一件事被登记成好几条待批请求。
+     * <p>参数收不全就不判，返回空，等下一块。拿半截参数算指纹的后果不是漏判，而是每块都算出一个新
+     * 指纹、每次都不命中，于是同一件事被登记成好几条待批请求。
+     *
+     * @param context 这一轮的 Advisor 上下文
+     * @param principal 发起人
+     * @param call 模型要调的这一次
+     * @param partialArgs 流式下的参数累积
+     * @param settled 已经判过的调用 id
+     * @return 拦下来时是「要先审批」那一条；不需要审批或已批准时为 empty
      */
     private Optional<Denial> approvalDenial(Map<String, Object> context, Principal principal,
                                             Called call, Map<String, String> partialArgs,
@@ -359,12 +391,14 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 一条拦下来的调用落两笔账：指标（今晚要不要改配置）与审计（三个月后谁批的）。
      *
-     * <p><b>为什么要分开记</b>：指标是"现在"的数，滚动窗口一过就没了；审计是"事后"的行，
-     * 要留 90 天。同一次拒绝在这两处各留一份不是重复——把审计做成从指标里读，
-     * 等于把"查三个月前的一次越权"交给一个已经被清过好几轮的计数器。
+     * <p>为什么要分开记：指标是「现在」的数，滚动窗口一过就没了；审计是「事后」的行，要按保留期留
+     * 30 天（{@code AuditLedger#RETENTION}）。同一次拒绝在这两处各留一份不是重复——把审计做成从指标
+     * 里读，等于把「查一个月前的一次越权」交给一个已经被清过好几轮的计数器。
      *
-     * <p>审计写不进去不影响这一轮的判定（{@code ToolCallAudit} 自己消化降级）：
-     * 拦还是要拦的。
+     * <p>审计写不进去不影响这一轮的判定（{@code ToolCallAudit} 自己消化降级）：拦还是要拦的。
+     *
+     * @param denial 拦下来的那一条
+     * @param context 这一轮的 Advisor 上下文
      */
     private void onDenial(Denial denial, Map<String, Object> context) {
         countOutcome(denial);
@@ -397,12 +431,14 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 拦下来的调用计数。
      *
-     * <p>这条指标是"谁能干什么"的运行时证据：yml 里写着 read-only 读不到 sales_order，
-     * 那只是声明；这个数才说明真的有人试过并且被拦下来了。工具侧的
-     * {@code MeteredToolCallback} 看不到被拒的调用——工具根本没被执行——所以只能在这里记。
+     * <p>这条指标是「谁能干什么」的运行时证据：yml 里写着 read-only 读不到 {@code sales_order}，
+     * 那只是声明；这个数才说明真的有人试过并且被拦下来了。工具侧的 {@code MeteredToolCallback}
+     * 看不到被拒的调用——工具根本没被执行——所以只能在这里记。
      *
-     * <p>等审批也记在这里、但 outcome 不同：越权要改配置，等批要找人点按钮，
-     * 混在一个数里，运维看到"今天拒了 40 次"分不出该做哪件事。
+     * <p>等审批也记在这里，但 outcome 不同：越权要改配置，等批要找人点按钮，混在一个数里，运维看到
+     * 「今天拒了 40 次」分不出该做哪件事。
+     *
+     * @param denial 拦下来的那一条
      */
     private void countOutcome(Denial denial) {
         Counter.builder("claw4j.tool.calls")
@@ -414,8 +450,13 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     /**
-     * 拒绝话术要**说清是哪一条不满足**：动作还是表。
-     * 只说"没有权限"的话，运营同学没法判断是该给动作还是该给表，最后往往直接给个 "*" 了事。
+     * 拒绝话术要说清是哪一条不满足：动作还是表。只说「没有权限」的话，运营没法判断该给动作还是该给表，
+     * 最后往往直接给个 {@code *} 了事。
+     *
+     * @param principal 发起人
+     * @param toolName 工具名
+     * @param required 该工具要求的权限
+     * @return 回给模型与用户的拒绝文本
      */
     private static String denialText(Principal principal, String toolName, ToolPermission required) {
         if (!principal.canPerform(required.action())) {
@@ -434,21 +475,22 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 等审批那句话。
      *
-     * <p>四件事都要说清：<b>哪个工具</b>、<b>它凭什么被拦</b>（不是没权限，是没人批）、
-     * <b>审批编号是多少</b>、<b>这一轮该干什么</b>。
-     * 第三件是 P02 加的：用户拿着编号才能去问"批了吗"，而没有编号时他能做的
-     * 只有再发一遍同一句话——那既不会变成批准，又会把真正的进展挤掉。
+     * <p>四件事都要说清：哪个工具、它凭什么被拦（不是没权限，是没人批）、审批编号是多少、这一轮该干
+     * 什么。第三件是用户拿去问「批了吗」的唯一凭据，没有编号时他能做的只有再发一遍同一句话，而那既不
+     * 会变成批准，又会把真正的进展挤掉。
      *
-     * <p>最后一句是写给模型的：工具调用是同步的，模型看不到"批了没有"，
-     * 不说这一句它下一轮会把同一个请求原样再发一遍。
+     * <p>最后一句是写给模型的：工具调用是同步的，模型看不到「批了没有」，不说这一句它下一轮会把同一个
+     * 请求原样再发一遍。
      *
-     * <p><b>这里不承诺有效期</b>：多久作废是配置（{@code claw4j.approval.ttl}），
-     * 而这个组件读不到它。写死"十分钟"的话，改了配置的说法就跟卡片上剩下的时间对不上——
-     * 那种偏差只会在"我以为还有五分钟"的时候才被发现。有效期由卡片按库里的
+     * <p>这里不承诺有效期：多久作废是配置（{@code claw4j.approval.ttl}），而这个组件读不到它。写死
+     * 「十分钟」的话，改了配置的说法就跟卡片上剩下的时间对不上。有效期由卡片按库里的
      * {@code expires_at} 显示，那里是唯一的来源。
      *
+     * @param required 该工具要求的权限
+     * @param toolName 工具名
      * @param approvalId 审批编号，null 表示这一轮连请求都没登记上（没装审批设施、或库写不进去）。
-     *                   那种情况下话术要如实说"没人能批"，而不是让用户去找一个不存在的编号
+     *     那种情况下话术要如实说「没人能批」，而不是让用户去找一个不存在的编号
+     * @return 回给模型与用户的那句话
      */
     private static String approvalText(ToolPermission required, String toolName, String approvalId) {
         StringBuilder text = new StringBuilder(APPROVAL_PREFIX)
@@ -482,15 +524,15 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     /**
-     * 这一轮落在哪件事上。为 null 表示不在一个 run 里（子 Agent 那一层，A10）——
-     * 那时审批照常拦，只是没有"停在哪儿"这回事。
-     */
-    /**
-     * 这条请求从哪段对话来（ADR-0027）。批准之后就在这段对话里开新一轮，
-     * 而不用拿 runId 去唤醒一件"挂着的事"。
+     * 这条请求从哪段对话来（ADR-0027）。批准之后就在这段对话里开新一轮，而不用拿 {@code runId} 去
+     * 唤醒一件「挂着的事」。
      *
-     * <p>拿不到会话键时返回 null：子 Agent 那一层可能还没有会话（A10）。
-     * 那时结论照样落得下来，只是没有"接着做"这回事——{@code ApprovalService} 会如实说出来。
+     * <p>拿不到会话键时返回 null：子 Agent 那一层可能还没有会话（A10）。那时结论照样落得下来，只是
+     * 没有「接着做」这回事——{@code ApprovalService} 会如实说出来。
+     *
+     * @param context 这一轮的 Advisor 上下文
+     * @param principal 发起人
+     * @return 来处；没有会话键时为 null
      */
     private static ApprovalLedger.Origin originOf(Map<String, Object> context, Principal principal) {
         Object session = context == null ? null : context.get(ChatMemory.CONVERSATION_ID);
@@ -506,6 +548,13 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
         return value instanceof String text && !text.isBlank() ? text : null;
     }
 
+    /**
+     * 这一轮落在哪件事上。为 null 表示不在一个 run 里（子 Agent 那一层，A10）——那时审批照常拦，
+     * 只是没有「停在哪儿」这回事。
+     *
+     * @param context 这一轮的 Advisor 上下文
+     * @return 这一轮的编号；取不到时为 null
+     */
     private static String runIdOf(Map<String, Object> context) {
         Object value = context == null ? null : context.get(ContextKeys.RUN_ID);
         return value instanceof String runId && !runId.isBlank() ? runId : null;
@@ -514,8 +563,11 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     /**
      * 给人看的参数摘要：脱敏之后截断。
      *
-     * <p>脱敏在截断之前：反过来的话，一个手机号被截成两半，两半都不再匹配号码规则，
-     * 于是掩码失效、前半截原样进库。
+     * <p>脱敏在截断之前：反过来的话，一个手机号被截成两半，两半都不再匹配号码规则，于是掩码失效、
+     * 前半截原样进库。
+     *
+     * @param argsJson 工具参数原文
+     * @return 摘要
      */
     private static String summaryOf(String argsJson) {
         String masked = PiiRedactor.mask(argsJson);
@@ -524,11 +576,14 @@ public class AuthorizationAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     /**
-     * 这一轮模型要调的调用。<b>id 与参数都要带回来</b>：授权只看名字，
-     * 审批要按 id 累积分片参数、按参数算指纹。
+     * 这一轮模型要调的调用。{@code id} 与参数都要带回来：授权只看名字，审批要按 {@code id} 累积分片
+     * 参数、按参数算指纹。
      *
-     * <p>名字为空的分块（流式下参数是一点一点送的）直接跳过——
-     * 那种分块没法判定，能判定的第一块一定带着名字。
+     * <p>名字为空的分块（流式下参数是一点一点送的）直接跳过——那种分块没法判定，能判定的第一块一定
+     * 带着名字。
+     *
+     * @param chatResponse 模型的这一帧响应，可为 null
+     * @return 这一帧里的工具调用
      */
     private static List<Called> requestedCalls(ChatResponse chatResponse) {
         if (chatResponse == null || chatResponse.getResults() == null) {

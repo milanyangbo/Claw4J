@@ -16,23 +16,23 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 整套代码里**唯一**碰 {@code io.opentelemetry} 的类（P14）。
+ * 整套代码里唯一碰 {@code io.opentelemetry} 的类（P14）。
  *
- * <p>业务侧只认 {@link SpanTracer}，所以换后端时改的是这一个文件；而"换版本"的风险也被
- * 收在这里——{@code opentelemetry-sdk} 的版本是显式写的 1.35.0，与 Boot BOM 里的 1.62.0
- * 并存，理由见票面第一节（离线仓库里只有 1.35.0 这一条链是齐的）。
+ * <p>业务侧只认 {@link SpanTracer}，所以换后端时改的是这一个文件；换版本的风险也收在这里——
+ * {@code opentelemetry-sdk} 的版本显式写成 1.35.0（{@code pom.xml:53}），与 Boot BOM 带进来的
+ * 1.62.0 并存，理由见根 pom 的那段注释（{@code pom.xml:74}）：离线仓库里只有 1.35.0 这条链是齐的。
  *
- * <p><b>为什么是 HTTP 而不是 gRPC</b>：{@code exporter-otlp} 的 jar 里两个 exporter 都在，
- * 但运行时依赖只带 {@code exporter-sender-okhttp}——gRPC 那个编译得过、启动时找不到 sender。
- * 这是"本地跑得起来、换台机器就炸"的那类错，所以这里写死 HTTP。
+ * <p>用 HTTP 而不是 gRPC：{@code exporter-otlp} 的 jar 里两个 exporter 都在，但运行时依赖只带
+ * {@code exporter-sender-okhttp}（{@code claw4j-agent/pom.xml:187}）——gRPC 那个编译得过、启动时
+ * 找不到 sender。这是「本地跑得起来、换台机器就炸」的那类错，所以这里写死 HTTP。
  *
- * <p><b>采样用 {@code ParentBased(TraceIdRatioBased)}</b>：裸的 ratio 在有父 span 的情况下
- * 仍可能把子 span 丢掉，表现是"trace 里有 run、没有 tool"——而这种缺口看起来像
- * 工具根本没被调，运维会去查业务。ParentBased 保证"父采了，子一定采"。
+ * <p>采样用 {@code ParentBased(TraceIdRatioBased)}：裸的 ratio 在有父 span 的情况下仍可能把子 span
+ * 丢掉，表现是 trace 里有 run、没有 tool，而这种缺口看起来像工具根本没被调。ParentBased 保证父采了
+ * 子一定采。
  *
- * <p><b>关闭前必须 flush</b>：Batch 队列里最后几条在进程退出时直接消失，而丢的恰好是
- * "出事前的那几秒"——那正是有人去翻 trace 的时刻。{@link #close()} 先
- * {@code forceFlush} 再 {@code close}，并且等它完成（最多 {@link #FLUSH_TIMEOUT_SECONDS} 秒）。
+ * <p>关闭前必须 flush：batch 队列里最后几条会在进程退出时直接消失，而丢的恰好是出事前的那几秒——
+ * 那正是有人去翻 trace 的时刻。{@link #close()} 先 {@code forceFlush} 再 {@code close}，并且等它
+ * 完成（最多 {@link #FLUSH_TIMEOUT_SECONDS} 秒）。
  */
 public final class OtelSpanTracer implements SpanTracer, AutoCloseable {
 
@@ -50,7 +50,11 @@ public final class OtelSpanTracer implements SpanTracer, AutoCloseable {
     /** 生命周期归自己管的那一份 provider。为 null 表示是外面给了一个（测试与宿主容器用）。 */
     private final SdkTracerProvider owned;
 
-    /** 用宿主给的 provider：生命周期也归宿主，{@link #close()} 不碰它。 */
+    /**
+     * 用宿主给的 provider：生命周期也归宿主，{@link #close()} 不碰它。
+     *
+     * @param provider 宿主造的 provider
+     */
     public OtelSpanTracer(SdkTracerProvider provider) {
         this(provider.get(INSTRUMENTATION), null);
     }
@@ -63,8 +67,11 @@ public final class OtelSpanTracer implements SpanTracer, AutoCloseable {
     /**
      * 按配置造一套：resource、采样、batch、OTLP HTTP 导出。
      *
-     * <p>只该在 {@link ObservabilityProperties#exporting()} 为真时调用——端点为空的组合
-     * 由装配那一层挡掉，这里不为它造一个指向 localhost 的 exporter。
+     * <p>只该在 {@link ObservabilityProperties#exporting()} 为真时调用——端点为空的组合由装配那一层
+     * 挡掉，这里不为它造一个指向默认入口的 exporter。
+     *
+     * @param properties 观测配置
+     * @return 自己持有 provider 生命周期的 tracer
      */
     public static OtelSpanTracer start(ObservabilityProperties properties) {
         SdkTracerProvider provider = providerOf(properties);
@@ -72,8 +79,11 @@ public final class OtelSpanTracer implements SpanTracer, AutoCloseable {
     }
 
     /**
-     * 造 provider。单独提出来是给装配用的：provider 是一个 bean（容器里能查到它存不存在），
-     * tracer 是另一个——两者分开，"没开观测"这件事才有一句可断言的话。
+     * 造 provider。单独提出来是给装配用的：provider 是一个 bean（容器里能查到它存不存在），tracer 是
+     * 另一个——两者分开，「没开观测」这件事才有一句可断言的话。
+     *
+     * @param properties 观测配置
+     * @return 配好 resource、采样、batch 与 exporter 的 provider
      */
     public static SdkTracerProvider providerOf(ObservabilityProperties properties) {
         OtlpHttpSpanExporter exporter = OtlpHttpSpanExporter.builder()

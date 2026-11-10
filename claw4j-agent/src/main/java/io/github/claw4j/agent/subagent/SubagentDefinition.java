@@ -14,25 +14,27 @@ import java.util.Set;
 /**
  * 一份 Subagent 定义：它是谁、什么时候该找它、以及它能碰哪些工具。
  *
- * <p>定义来自一个 markdown 文件（{@code agents/<name>.md}），front matter 是配置，
- * 正文是它做事时用的系统提示词——<b>正文不进父上下文</b>，与 Skill 的渐进式披露同一个形状：
- * 父 Agent 在工具描述里只看到名字与描述（{@link SubagentDelegation} 的描述就是这么拼的），
- * 正文只在子 Agent 那个独立窗口里出现一次。
+ * <p>定义来自一个 markdown 文件（{@code agents/<name>.md}），front matter 是配置，正文是它
+ * 做事时用的系统提示词。正文不进父上下文，与 Skill 的渐进式披露同一个形状：父 Agent 在工具
+ * 描述里只看到名字与描述，正文只在子 Agent 那个独立窗口里出现一次。
  *
- * <p><b>{@code tools} 是白名单，不是"顺便都能用"</b>（票面：委派不等于把全部能力交出去）。
- * 它是这一层唯一的安全边界：子 Agent 那个窗口里出现什么工具，
- * 由这份静态定义决定，不由模型决定，也不由父 Agent 决定。
- * 白名单里点名了、容器里却没有的工具按<b>失败</b>处理——
- * "定义了却没装上"如果静默略过，症状是"它为什么不用那个工具"，
- * 而真正的原因是名字写错或那一层没启用。
+ * <p>{@code tools} 是白名单，不是顺便都能用（票面：委派不等于把全部能力交出去）。它是这一层
+ * 唯一的安全边界：子 Agent 那个窗口里出现什么工具，由这份静态定义决定，不由模型决定，也不由
+ * 父 Agent 决定。白名单里点名了、容器里却没有的工具按失败处理——静默略过的症状是「它为什么
+ * 不用那个工具」，而真正的原因是名字写错或那一层没启用。
  *
- * <p>白名单与 {@code disallowedTools} 同时点名同一个工具按<b>定义错误</b>处理：
- * 两条规则打架时，谁生效取决于实现里过滤的先后顺序，
- * 而"这个子 Agent 到底能不能用那个工具"不该是一个要读代码才知道的答案。
+ * <p>白名单与 {@code disallowedTools} 同时点名同一个工具按定义错误处理：两条规则打架时，
+ * 谁生效取决于实现里过滤的先后顺序，而「这个子 Agent 到底能不能用那个工具」不该是要读代码
+ * 才知道的答案。
  *
- * <p><b>"没写"与"写了但解析不出"是两件事</b>：只有前者是"继承全部工具"；
- * 后者是配置错误，按定义错误失败。这条区分是必要的——一个空名单如果被当成许可，
- * 后果是权限变宽，而现象是"它怎么忽然能发邮件了"，要查很久。
+ * <p>「没写」与「写了但解析不出」是两件事：只有前者是继承全部工具，后者是配置错误，按定义
+ * 错误失败。一个空名单如果被当成许可，后果是权限变宽，而现象是「它怎么忽然能发邮件了」。
+ *
+ * @param name 定义文件里点名用的名字，也是子窗口会话桶的键
+ * @param description 给模型看的一行说明，父 Agent 只靠它决定要不要派
+ * @param systemPrompt 正文，子 Agent 的系统提示词
+ * @param tools 工具白名单；空表示继承全部
+ * @param disallowedTools 工具黑名单，在白名单或继承结果之上再减一层
  */
 public record SubagentDefinition(String name,
                                  String description,
@@ -80,7 +82,16 @@ public record SubagentDefinition(String name,
         disallowedTools = List.copyOf(disallowedTools);
     }
 
-    /** 从一个 markdown 文件读出定义。文件读不出来或 front matter 缺字段都是配置错误，一律失败。 */
+    /**
+     * 从一个 markdown 文件读出定义。
+     *
+     * <p>文件读不出来、front matter 缺字段、名字冲突、正文为空，都是配置错误，一律在启动时
+     * 失败而不是留到第一次委派。
+     *
+     * @param file 定义文件
+     * @return 解析出来的定义
+     * @throws IllegalStateException 文件读不出来或 front matter 不完整
+     */
     public static SubagentDefinition parse(Path file) {
         Objects.requireNonNull(file, "file");
         String markdown;
@@ -103,16 +114,18 @@ public record SubagentDefinition(String name,
     /**
      * 按这份定义在可用工具里挑出子 Agent 能用的那些。
      *
-     * <p>三个失败点都是<b>拒绝执行</b>而不是"少给几个"：白名单点名了但没有、
-     * 挑完之后一个都不剩。后者尤其要拦——一个没有工具的 Subagent 只能靠猜来回答，
-     * 那正是委派最不该变成的东西（把幻觉搬进一个看起来更正式的流程里）。
+     * <p>失败点都是拒绝执行而不是少给几个：白名单点名了但没有，或挑完之后一个都不剩。
+     * 后者尤其要拦——一个没有工具的 Subagent 只能靠猜来回答，那正是委派最不该变成的东西
+     * （把幻觉搬进一个看起来更正式的流程里）。
      *
-     * <p><b>委派工具自己在两条路上都被减掉</b>，这是"委派不嵌套"（GLOSSARY）落在代码里的位置：
-     * 白名单那条路由构造方法挡着（点名了它按定义错误失败），
-     * 而"继承全部"这条路走的是{@code 可用工具}这一整份，里面就有委派工具自己——
-     * 只靠黑名单挡的话，一份没有写 {@code disallowedTools} 的定义就能再派一层，
-     * 于是上下文隔离与 3/6 预算变成一串说不清的递归。
-     * 两条路都减，是为了让"子 Agent 能不能再派一个"的答案不依赖这份定义写了什么。
+     * <p>委派工具自己在两条路上都被减掉，这是「委派不嵌套」（见 GLOSSARY）落在代码里的位置：
+     * 白名单那条路由构造方法挡着，而继承全部这条路拿到的是可用工具那一整份，里面就有委派工具
+     * 自己。只靠黑名单挡的话，一份没写 {@code disallowedTools} 的定义就能再派一层。两条路都减，
+     * 是为了让「子 Agent 能不能再派一个」的答案不依赖这份定义写了什么。
+     *
+     * @param available 当前容器里的全部工具
+     * @return 子 Agent 这一趟能用的工具，至少一项
+     * @throws IllegalStateException 白名单点名了不存在的工具，或过滤之后一个都不剩
      */
     public List<ToolCallback> selectTools(List<ToolCallback> available) {
         Objects.requireNonNull(available, "available");
@@ -134,8 +147,11 @@ public record SubagentDefinition(String name,
     }
 
     /**
-     * 给模型看的一行元数据。刻意只有名字与描述：
-     * 正文（做事的方式）要等它被派上用场才在它自己的窗口里出现。
+     * 给模型看的一行元数据。
+     *
+     * <p>刻意只有名字与描述：正文（做事的方式）要等它被派上用场，才在它自己的窗口里出现。
+     *
+     * @return 一行 {@code - 名字: 描述}
      */
     public String registration() {
         return "- " + name + ": " + description;
@@ -162,10 +178,16 @@ public record SubagentDefinition(String name,
     /**
      * 读一节的工具名。两种写法都收：{@code a, b} 与逐行的 {@code - a}。
      *
-     * <p><b>没写这一节</b>返回空名单，含义是"继承全部"（合法路径，由 {@link #selectTools} 减掉委派工具）。
-     * <b>写了但一个名字都解析不出</b>是配置错误，当场失败——这是这一层的判据：
-     * 一个空结果不能被下游当成许可。症状上两者的差别很大：前者是设计如此，
-     * 后者会让一个只该看一条 SQL 的复核员拿到发邮件与跑脚本的权限，而且不报错。
+     * <p>没写这一节返回空名单，含义是继承全部（合法路径，由 {@link #selectTools} 减掉委派
+     * 工具）。写了但一个名字都解析不出是配置错误，当场失败：一个空结果不能被下游当成许可。
+     * 两者的症状差别很大——前者是设计如此，后者会让一个只该看一条 SQL 的复核员拿到发邮件与
+     * 跑脚本的权限，而且不报错。
+     *
+     * @param frontMatter 定义文件的 front matter
+     * @param key 节名，{@code tools} 或 {@code disallowedTools}
+     * @param file 定义文件，只用于报错
+     * @return 工具名；这一节没写时为空
+     * @throws IllegalStateException 写了这一节但解析不出任何名字
      */
     private static List<String> names(FrontMatter frontMatter, String key, Path file) {
         if (!frontMatter.has(key)) {

@@ -3,38 +3,40 @@ package io.github.claw4j.agent;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * 工具检索唯一的一个数：一次检索最多返回几个候选。
+ * 工具检索的候选数上限。
  *
- * <p><b>没有"要不要开检索"的配置项，也没有"工具少于几个就全塞"的阈值</b>：
- * 前者会让"检索在某个环境里被关掉"变成没人知道的事；后者会让模型看到的行为随工具数量改变
- * ——同一句问话在工具涨到第 21 个的版本里换了规则，而这件事没有任何一处能看出来。
- * 循环只有一种，见 {@link ToolSearch#toolLoop}。
+ * <p>只有这一个数。没有「要不要开检索」的开关，也没有「工具少于几个就全塞」的阈值：
+ * 前者会让检索在某个环境里被悄悄关掉，后者会让同一句问话在工具数量跨过阈值时换一套规则，
+ * 而这两件事都没有地方能看出来。循环只有一种，见 {@link ToolSearch#toolLoop}。
  *
- * @param maxResults 一次检索最多返回几个候选工具（框架约定 1–10，默认取 5）
+ * @param maxResults 一次检索最多返回几个候选工具（框架约定 1–10，默认 5）
  */
 @ConfigurationProperties("claw4j.tool-search")
 public record ToolSearchProperties(int maxResults) {
 
     /**
-     * 一次检索返回几个候选。5 的理由：模型一次只会挑一两个来调，
-     * 返回十个等于把省下来的 token 又还回去一部分。
+     * 一次检索返回几个候选。
+     *
+     * <p>取 5：模型一次只挑一两个来调，返回十个等于把省下来的 token 又还回去一部分。
      */
     public static final int DEFAULT_MAX_RESULTS = 5;
 
-    /** 框架自己在工具描述里写的是 1–10，超出这个范围由它兜底，这里提前夹住。 */
+    /** 框架在工具描述里写的是 1–10（Spring AI {@code ToolSearchTool}:50），这里提前夹住。 */
     private static final int FRAMEWORK_MAX_RESULTS_CAP = 10;
 
     /**
-     * 字段用原始类型，而不像 M3-06 当初那样用 {@code Integer}：那时要靠 null 把"没配"与
-     * "0（永远检索）"分开，现在 0 不是一个有意义的取值——它和"没配"落到同一个默认值上。
-     * 少一层包装，就少一处"两件事其实是一件事"的解释。
+     * 用原始类型而不是 {@code Integer}：0 与「没配」落到同一个默认值，不需要靠 null 区分。
      */
     public ToolSearchProperties {
         maxResults = maxResults <= 0
                 ? DEFAULT_MAX_RESULTS : Math.min(maxResults, FRAMEWORK_MAX_RESULTS_CAP);
     }
 
-    /** 全部走默认值。配置绑定在键缺失时传的就是 0，两条路落到同一处。 */
+    /**
+     * 全部走默认值。配置绑定在键缺失时传的也是 0，两条路落到同一处。
+     *
+     * @return 默认配置
+     */
     public static ToolSearchProperties defaults() {
         return new ToolSearchProperties(0);
     }

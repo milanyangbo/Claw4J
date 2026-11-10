@@ -52,15 +52,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 知识库这一层：**目录怎么进库**、**两路怎么融合**、**重排失败时结果还在不在**。
+ * 知识库这一层：目录怎么进库、两路怎么融合、重排失败时结果还在不在。
  *
- * <p><b>这里是替身，不是真库</b>：真库那几条（表结构、编号命中、通配符真跑）在
- * {@code claw4j-app} 的 {@code SearchSqlTest}。分开的理由是这里要构造"向量那一路抛异常"
- * 这类真库上做不到的场景。
+ * <p>这里是替身，不是真库：真库那几条（表结构、编号命中、通配符真跑）在 {@code claw4j-app} 的
+ * {@code SearchSqlTest}。分开是因为这里要构造「向量那一路抛异常」这类真库上做不到的场景。
  *
- * <p><b>2026-11-09 之后被测对象变了</b>：曾经测的是自有的 {@code KnowledgeBase} 与
- * {@code searchDocs} 工具；现在检索由 {@code RetrievalAugmentationAdvisor} 在每轮请求里
- * 自动完成，工具已删除。所以这里测的是三个"实现官方接口"的类 + 装配条件。
+ * <p>检索由 {@code RetrievalAugmentationAdvisor} 在每轮请求里自动完成，所以被测的是几个实现
+ * 框架接口的类（检索、融合、后处理），加上装配条件。
  */
 class KnowledgeRetrievalTest {
 
@@ -138,7 +136,8 @@ class KnowledgeRetrievalTest {
                 .hasMessageContaining("没有可索引");
     }
 
-    // ---- 融合：加权 0.7 / 0.3，与 OpenClaw 同权重 ----
+    // ---- 融合：加权 0.7 / 0.3，与 OpenClaw 的 vectorWeight / textWeight 同值
+    //      （src/agents/memory-search.ts:165-166）----
 
     @Test
     @DisplayName("两路都命中加分、同一路重复不加分、只有全文命中的封顶 0.3")
@@ -375,7 +374,7 @@ class KnowledgeRetrievalTest {
                 .as("融合分必须写进 score，否则下游按 0.0 把它甩到末尾")
                 .isNotNull());
 
-        // advisor 里紧接着跑的就是这个官方 joiner，它按 score 倒序。
+        // advisor 里紧接着跑的就是这个 joiner，它按 score 倒序。
         List<Document> joined = new ConcatenationDocumentJoiner()
                 .join(Map.of(query("退货"), List.of(fused)));
 

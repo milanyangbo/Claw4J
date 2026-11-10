@@ -5,27 +5,26 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.time.Duration;
 
 /**
- * trace 导出的配置（P14）：一个 OTLP HTTP 端点，加四个关于"怎么导"的旋钮。
+ * trace 导出的配置（P14）：一个 OTLP HTTP 端点，加四个关于怎么导的旋钮。
  *
- * <p><b>默认全关</b>：{@link #enabled} 的默认值是 false。观测的成本不只是几条 span，
- * 而是一个 netty/okhttp 连接池、一个 batch 线程、以及一条可能的跨网络出站——
- * 这三样都该由部署的人明确说"我要"。默认打开还会让"没配端点"变成本地的一堆重试。
+ * <p>默认全关：{@link #enabled} 的默认值是 false。观测的成本不只是几条 span，而是一个连接池、一个
+ * batch 线程、以及一条可能的跨网络出站——这三样都该由部署的人明确说「我要」。默认打开还会让「没配
+ * 端点」变成本地的一堆重试。
  *
- * <p><b>{@code enabled=true} 但端点为空的处理写在这里而不是留给装配去猜</b>：
- * {@link #exporting()} 是唯一的判据，装配只看它。空端点下 OTLP exporter 会回落到
- * {@code http://localhost:4318}，于是"开了但没配"表现为"每 5 秒一条连接被拒的日志"，
- * 而运维会去查网络——真正缺的那一项没人说。这种"以为开了"是最坏的姿势，所以
- * {@link #exporting()} 为 false 时装配会退回 {@link SpanTracer#NONE} 并打一条点名缺项的话。
+ * <p>{@code enabled=true} 但端点为空的处理写在这里，不留给装配去猜：{@link #exporting()} 是唯一
+ * 的判据，装配只看它。空端点下 exporter 会去连一个默认入口，于是「开了但没配」表现为持续的连接失败
+ * 日志，而运维会去查网络，真正缺的那一项没人说。这种「以为开了」是最坏的姿势，所以
+ * {@link #exporting()} 为 false 时装配退回 {@link SpanTracer#NONE} 并打一条点名缺项的话。
  *
  * <p>键名见 {@code application.yml} 的 {@code claw4j.observability} 段。
  *
- * @param enabled      总开关。关着时不建 provider、不建 exporter、不建线程
- * @param endpoint     OTLP HTTP 的 base，例如 {@code http://localhost:4318}。
- *                     带了 {@code /v1/traces} 也认（不会拼成两遍）
- * @param serviceName  resource 上的 {@code service.name}。后端按它分组，默认 {@code claw4j}
- * @param sampleRatio  采样比例，0..1。用 ParentBased(TraceIdRatioBased) 而不是裸 ratio，
- *                     否则子 span 可能被单独丢掉（见装配类里那段注释）
- * @param timeout      单次导出的超时。默认 10 秒：collector 不在同机时留出一次重试的余量
+ * @param enabled 总开关。关着时不建 provider、不建 exporter、不建线程
+ * @param endpoint OTLP HTTP 的 base，例如 {@code http://localhost:4318}。带了 {@code /v1/traces}
+ *     也认（不会拼成两遍）
+ * @param serviceName resource 上的 {@code service.name}。后端按它分组，默认 {@code claw4j}
+ * @param sampleRatio 采样比例，0..1。用 ParentBased(TraceIdRatioBased) 而不是裸 ratio，否则子 span
+ *     可能被单独丢掉（见装配类里那段注释）
+ * @param timeout 单次导出的超时。默认 10 秒：collector 不在同机时留出一次重试的余量
  * @param maxQueueSize batch 队列上限。满了会丢，丢的时候 OTel 自己打日志
  */
 @ConfigurationProperties("claw4j.observability")
@@ -52,10 +51,10 @@ public record ObservabilityProperties(Boolean enabled,
     private static final String TRACES_PATH = "/v1/traces";
 
     /**
-     * 补齐缺省值，并把"配了个空串"与"没配"归一。
+     * 补齐缺省值，并把「配了个空串」与「没配」归一。
      *
-     * <p>这一层不做校验抛错：配置写错（比如 ratio 写成 1.5）在启动时炸，比在第一次导出时
-     * 静默按 0 采要清楚得多——但 ratio 夹到 [0,1] 就够了，它是连续量、越界的意图很明确。
+     * <p>这一层不做校验抛错：配置写错（比如 ratio 写成 1.5）在启动时炸，比在第一次导出时静默按 0 采
+     * 要清楚得多。但 ratio 夹到 [0,1] 就够了，它是连续量，越界的意图很明确。
      */
     public ObservabilityProperties {
         enabled = Boolean.TRUE.equals(enabled);
@@ -70,22 +69,30 @@ public record ObservabilityProperties(Boolean enabled,
                 ? DEFAULT_MAX_QUEUE_SIZE : maxQueueSize;
     }
 
-    /** 一个都不配时的取值：关。 */
+    /**
+     * 一个都不配时的取值：关。
+     *
+     * @return 全默认配置
+     */
     public static ObservabilityProperties defaults() {
         return new ObservabilityProperties(false, null, null, null, null, null);
     }
 
     /**
-     * 真的会往外导吗。**装配只看这一个判据**：开着却配不出端点的那些组合，
-     * 在这里就归到"不导"，而不是让 exporter 回落到 localhost 之后每 5 秒报一次连接被拒。
+     * 真的会往外导吗。装配只看这一个判据：开着却配不出端点的组合在这里归到「不导」，
+     * 而不是让 exporter 去连一个默认入口之后反复报连接失败。
+     *
+     * @return 开关打开且端点非空时为真
      */
     public boolean exporting() {
         return enabled && !endpoint.isEmpty();
     }
 
     /**
-     * 完整的上报地址。用户配 base（{@code http://host:4318}）是最常见的写法，
-     * 直接配完整路径的人也不少——两种都认，避免拼成 {@code /v1/traces/v1/traces}。
+     * 完整的上报地址。用户配 base（{@code http://host:4318}）是最常见的写法，直接配完整路径的人也不
+     * 少——两种都认，避免拼成 {@code /v1/traces/v1/traces}。
+     *
+     * @return 带 {@code /v1/traces} 的地址；端点为空时是空串
      */
     public String tracesEndpoint() {
         if (endpoint.isEmpty()) {

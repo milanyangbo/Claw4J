@@ -494,12 +494,12 @@ class SessionMemoryTest {
     }
 
     /**
-     * 状态行的内存实现：语义与 {@code JdbcSessionEntryStore} 的两条 SQL 对齐——
-     * 过期就换段、没过期就沿用并刷新 {@code lastInteractionAt}；跨天比的是**时刻**。
+     * 状态行的内存实现：语义与 {@code JdbcSessionEntryStore} 的两条 SQL 对齐——过期就换段、
+     * 没过期就沿用并刷新 {@code lastInteractionAt}；跨天比的是时刻。
      *
-     * <p>它不替代 SQL 那条用例，只让"时间怎么驱动段"能单独验：那三段的输入是时刻，
-     * 不是数据库。反过来说，<b>它红了不代表生产也红</b>——两边是同一套语义的两个实现，
-     * 真正的 SQL 仍然由真 Postgres 上的用例验。
+     * <p>它不替代 SQL 那条用例，只让「时间怎么驱动段」能单独验：那三段的输入是时刻，不是数据库。
+     * 反过来说，<b>它红了不代表生产也红</b>：两边是同一套语义的两个实现，真正的 SQL 仍然由真
+     * Postgres 上的用例验。
      */
     private static final class MemoryPointers implements SessionEntryStore {
 
@@ -655,11 +655,15 @@ class SessionMemoryTest {
                 .hasMessageContaining("max-entries");
 
         assertThat(SessionMaintenanceProperties.defaults().mode())
-                .as("默认必须是 warn：删数据不可逆，而 OpenClaw 的默认也是只报告")
-                .isEqualTo(SessionMaintenanceProperties.MODE_WARN);
-        assertThat(new SessionMaintenanceProperties("enfroce", null, null).mode())
-                .as("拼错落回 warn，不是落回 enforce——错的方向必须朝「少删」那边倒")
-                .isEqualTo(SessionMaintenanceProperties.MODE_WARN);
+                .as("默认必须是 enforce：与 OpenClaw 同值，到期就删")
+                .isEqualTo(SessionMaintenanceProperties.MODE_ENFORCE);
+        assertThat(SessionMaintenanceProperties.defaults().maxEntries())
+                .as("默认 5000，与 OpenClaw 的 maxEntries 同值")
+                .isEqualTo(SessionMaintenanceProperties.DEFAULT_MAX_ENTRIES);
+        assertThatThrownBy(() -> new SessionMaintenanceProperties("enfroce", null, null))
+                .as("拼错不能落回任何一档：落回 warn 是一条都不删，落回 enforce 是拼错反而删数据")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("mode");
         assertThat(new SessionMaintenanceProperties("ENFORCE", null, null).enforces()).isTrue();
     }
 

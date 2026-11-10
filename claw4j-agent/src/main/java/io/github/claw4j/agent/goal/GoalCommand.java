@@ -6,26 +6,25 @@ import java.util.Optional;
 /**
  * 消息里的 {@code /goal} 命令族（ADR-0027 决定三）。
  *
- * <p><b>为什么与 {@code /new} 一样是消息</b>：OpenClaw 的 {@code /goal} 就写在消息里，
- * 并且明确"纯命令消息会立即处理（绕过队列和模型）"。落在这一层的好处与 {@code /new} 同源：
- * 三条通道自动都有，不用给每个通道注册斜杠命令；命令本身不进提示词、不占一次模型调用。
+ * <p>与 {@code /new} 一样做成消息，而不是通道侧注册的命令：OpenClaw 的 {@code /goal} 也是消息
+ * 里的一行（{@code docs/tools/goal.md:91}）。落在这一层的好处是三条通道自动都有，不用给每个
+ * 通道注册斜杠命令；命令本身不进提示词、不占一次模型调用。
  *
- * <p><b>动作词表照原文</b>：{@code status} / {@code start} / {@code set} / {@code create} /
- * {@code edit} / {@code pause} / {@code resume} / {@code complete} / {@code done} /
- * {@code block} / {@code blocked} / {@code clear}。其中 {@code set} 与 {@code create}
- * 是 {@code start} 的别名，{@code done} 与 {@code blocked} 各是 {@code complete} 与
- * {@code block} 的别名——别名不是我们发明的，是它的命令表里就有的。
+ * <p>动作词表照原文：{@code status}、{@code start}、{@code set}、{@code create}、
+ * {@code edit}、{@code pause}、{@code resume}、{@code complete}、{@code done}、
+ * {@code block}、{@code blocked}、{@code clear}。其中 {@code set} 与 {@code create} 是
+ * {@code start} 的别名，{@code done} 与 {@code blocked} 各是 {@code complete} 与
+ * {@code block} 的别名，别名在 OpenClaw 的命令表里就有，不是这里造的。
  *
- * <p><b>其余任何词都是新目标</b>：OpenClaw 的原话是"{@code /goal} 后面任何不是已知操作词的
- * 文本都会被视为新目标"。所以 {@code /goal 让 CI 变绿} 建目标，而 {@code /goal start 让 CI 变绿}
- * 与它等价。
+ * <p>其余任何词都是新目标：原文是「{@code /goal} 后面任何不是已知操作词的文本都会被视为
+ * 新目标」。所以 {@code /goal 让 CI 变绿} 建目标，{@code /goal start 让 CI 变绿} 与它等价。
  *
- * <p><b>{@code start} 与 {@code edit} 保留原文</b>：换行、缩进、连续空格都不动，只裁首尾。
- * 一句话的目标与七行的清单都该原样进去——把换行折成空格会让一份清单变成一段读不懂的散文。
+ * <p>{@code start} 与 {@code edit} 保留原文：换行、缩进、连续空格都不动，只裁首尾。一句话的
+ * 目标与七行的清单都该原样进去，把换行折成空格会让一份清单变成一段读不懂的散文。
  *
- * <p><b>解析与执行放在一起</b>：认出来了但没有目标、认出来了但参数不对、根本没认出来，
- * 这三种情况对用户说的是三句不同的话。拆成两个类型的话，那些话会分散在两处，
- * 而"这句提示到底谁负责"正是最容易长歪的地方。
+ * <p>解析与执行放在一起：认出来了但没有目标、认出来了但参数不对、根本没认出来，这三种情况
+ * 对用户说的是三句不同的话。拆成两个类型的话，那些话会分散在两处，而「这句提示到底谁负责」
+ * 正是最容易长歪的地方。
  */
 public sealed interface GoalCommand {
 
@@ -71,7 +70,8 @@ public sealed interface GoalCommand {
     /**
      * 拆一条消息。
      *
-     * @return 空表示这条消息不是 {@code /goal} 命令——它该原样进模型
+     * @param text 消息原文，可能为 null
+     * @return 命令；空表示这条消息不是 {@code /goal} 命令，它该原样进模型
      */
     static Optional<GoalCommand> parse(String text) {
         String stripped = (text == null ? "" : text).strip();
@@ -112,9 +112,11 @@ public sealed interface GoalCommand {
     /**
      * 执行一条命令，回一句话。
      *
-     * @param goals     目标存储；为 null 表示这个部署没装（与"没有目标"是两件事）
-     * @param sessionKey 当前这一段对话的键（含段）。{@code /new} 之后它是新段的键，
-     *                   于是"换段即无目标"不需要额外 delete
+     * @param command 解析出来的命令
+     * @param goals 目标存储；为 null 表示这个部署没装，与「没有目标」是两件事
+     * @param sessionKey 会话节点的键，不含段（{@code conversationKey}）。目标挂在 entry 上，
+     *     传含段的 sessionId 会找不到行——那不是「新段没有目标」，是查错了键
+     * @return 回给用户的那句话
      */
     static String execute(GoalCommand command, SessionGoalStore goals, String sessionKey) {
         if (goals == null || sessionKey == null) {
@@ -149,10 +151,14 @@ public sealed interface GoalCommand {
     /**
      * 改写目标内容。
      *
-     * <p><b>达成之后不能改</b>：{@link SessionGoalStore#edit} 的语句里带 {@code status <> 'complete'}，
-     * 照原文的排错表——"目标必须先被显式 resume 才能编辑、暂停或阻塞"。
-     * 所以失败时要分辨"没有目标"、"已经达成"与"写不进去"三种，
-     * 不然用户会对着一个完好的系统反复重试。
+     * <p>达成之后不能改：{@link SessionGoalStore#edit} 的语句里带 {@code status <> 'complete'}，
+     * 照原文的排错表，意思是「目标必须先被显式 resume 才能编辑、暂停或阻塞」。所以失败时要
+     * 分辨「没有目标」「已经达成」与「写不进去」三种，不然用户会对着一个完好的系统反复重试。
+     *
+     * @param goals 目标存储
+     * @param sessionKey 这一轮的 sessionId
+     * @param objective 新的目标原文
+     * @return 回给用户的那句话
      */
     private static String edit(SessionGoalStore goals, String sessionKey, String objective) {
         Optional<SessionGoal> current = goals.of(sessionKey);
@@ -165,8 +171,14 @@ public sealed interface GoalCommand {
     }
 
     /**
-     * 清掉目标。带 goalId：读与写之间被换过目标时返回 0 行——
-     * 那正是它的 {@code sessions.goal.clear} 要求 {@code goalId} 的理由。
+     * 清掉目标。
+     *
+     * <p>带 goalId：读与写之间被换过目标时返回 0 行，那正是 OpenClaw 的
+     * {@code sessions.goal.clear} 要求 {@code goalId} 的理由。
+     *
+     * @param goals 目标存储
+     * @param sessionKey 这一轮的 sessionId
+     * @return 回给用户的那句话
      */
     private static String clear(SessionGoalStore goals, String sessionKey) {
         Optional<SessionGoal> current = goals.of(sessionKey);
@@ -179,17 +191,22 @@ public sealed interface GoalCommand {
     }
 
     /**
-     * 恢复。
+     * 恢复一个目标。
      *
-     * <p><b>完成的也能恢复</b>：原文的命令表写着 resume"恢复已暂停、已阻塞、受限或<b>已完成</b>
-     * 的目标"，状态那一节也写着 {@code complete}"保持达成，直到你显式地用 {@code /goal resume}
-     * 再次推进同一个目标"。恢复了之后目标内容、创建时间都不动，用量继续累计
-     * ——那正合"同一个目标再推一次"，而不是新建一件。
+     * <p>完成的也能恢复：原文的命令表写着 resume「恢复已暂停、已阻塞、受限或已完成的目标」，
+     * 状态那一节也写着 {@code complete}「保持达成，直到你显式地用 {@code /goal resume}
+     * 再次推进同一个目标」。恢复之后目标内容、创建时间都不动，用量继续累计，那正合
+     * 「同一个目标再推一次」，而不是新建一件。
      *
-     * <p><b>从 {@code budget_limited} 恢复会开新窗口</b>：用量清零、预算不变
-     * （"Resuming starts a new budget window at the current fresh token count"）。
-     * 清零这件事在 {@link SessionGoalStore#resume} 的那一条 SQL 里，因为只有它能原子地
-     * 回答"更新之前是不是 budget_limited"。
+     * <p>从 {@code budget_limited} 恢复会开新窗口：用量清零、预算不变（原文
+     * 「Resuming starts a new budget window at the current fresh token count」）。清零这件事
+     * 在 {@link SessionGoalStore#resume} 的那一条 SQL 里，因为只有它能原子地回答
+     * 「更新之前是不是 budget_limited」。
+     *
+     * @param goals 目标存储
+     * @param sessionKey 这一轮的 sessionId
+     * @param note 恢复时附带的说明，可以为 null
+     * @return 回给用户的那句话
      */
     private static String resume(SessionGoalStore goals, String sessionKey, String note) {
         Optional<SessionGoal> current = goals.of(sessionKey);
@@ -198,8 +215,7 @@ public sealed interface GoalCommand {
         }
         GoalStatus was = current.get().status();
         if (was == GoalStatus.ACTIVE) {
-            // 已经是活跃的，没有可恢复的。不跟着改一格 revision：
-            // revision 记的是"谁改过它"，空按钮不该留下一道痕迹。
+            // 已经是活跃的，没有可恢复的：直接回话，不写库。
             return "这个目标本来就是活跃的，没动它。\n" + GoalTools.render(current.get());
         }
         return goals.resume(sessionKey, current.get().id(), note)
@@ -227,9 +243,13 @@ public sealed interface GoalCommand {
     /**
      * 一次写没生效，说清楚是哪一种。
      *
-     * <p><b>不能一律说"库连不上"</b>：三种原因里两种是用户该知道的
-     * （没有目标、已经达成），一种是运维该知道的。混成一句话的代价是
-     * 用户对着一个完好的系统反复重试——而它其实只需要一句 {@code /goal resume}。
+     * <p>不能一律说「库连不上」：三种原因里两种是用户该知道的（没有目标、已经达成），
+     * 一种是运维该知道的。混成一句话的代价是用户对着一个完好的系统反复重试，而它其实只需要
+     * 一句 {@code /goal resume}。
+     *
+     * @param goals 目标存储
+     * @param sessionKey 这一轮的 sessionId
+     * @return 回给用户的那句话
      */
     private static String explainMiss(SessionGoalStore goals, String sessionKey) {
         return goals.of(sessionKey)

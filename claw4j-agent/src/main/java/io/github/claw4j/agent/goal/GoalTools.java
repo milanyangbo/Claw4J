@@ -15,20 +15,20 @@ import java.util.Objects;
 /**
  * 模型侧的三个目标工具（ADR-0027 决定三，照 OpenClaw 的 goal 工具）。
  *
- * <p><b>三个而不是一个带 {@code action} 参数的</b>：动作名进的是角色的授权表，
- * 而"能不能看目标"与"能不能把它标记成达成"是两种授权。合成一个的话，
- * 给了一个就等于给了另一个——与定时任务那三个工具同一个理由。
+ * <p>三个而不是一个带 {@code action} 参数的：动作名进的是角色的授权表，而「能不能看目标」
+ * 与「能不能把它标记成达成」是两种授权。合成一个的话，给了一个就等于给了另一个，与定时任务
+ * 那三个工具同一个理由。
  *
- * <p><b>模型能改的只有两种状态</b>：{@code complete} 与 {@code blocked}。OpenClaw 的原话是
- * "模型不能在不作说明的情况下暂停、恢复、清除或替换目标。这些操作仍然是
- * 操作员/会话通过 {@code /goal} 和重置命令执行的控制"。所以 {@code update_goal}
- * <b>没有</b> {@code objective} 参数、也没有 {@code paused}——那两个分别属于
+ * <p>模型能改的只有两种状态：{@code complete} 与 {@code blocked}。OpenClaw 的原话是
+ * 「模型不能在不作说明的情况下暂停、恢复、清除或替换目标。这些操作仍然是操作员或会话通过
+ * {@code /goal} 和重置命令执行的控制」（{@code docs/tools/goal.md:181}）。所以
+ * {@code update_goal} 既没有 {@code objective} 参数，也没有 {@code paused}：那两个分别属于
  * {@code /goal edit} 与 {@code /goal pause}，是人的按钮。
  *
- * <p><b>会话键从工具上下文来，模型没有参数可改</b>：键是 {@link ContextKeys#CONVERSATION}
- * （会话节点，**不含段**），值由 {@code ChatClientAgentPort} 算好。模型手上没有"给别的会话定目标"的入参，
- * 于是那条路径不存在，而不是"存在但被拒绝"。这也正是目标必须挂会话的原因：
- * 挂 run 的话，同一句话换个 runId 就看不见自己的目标了。
+ * <p>会话键从工具上下文来，模型没有参数可改：键是 {@link ContextKeys#CONVERSATION}
+ * （会话节点，不含段），值由 {@code ChatClientAgentPort} 算好。模型手上没有「给别的会话定目标」
+ * 的入参，于是那条路径不存在，而不是存在但被拒绝。这也正是目标必须挂会话的原因：挂 run 的话，
+ * 同一句话换个 runId 就看不见自己的目标了。
  */
 public final class GoalTools implements ToolCallbackProvider {
 
@@ -64,8 +64,10 @@ public final class GoalTools implements ToolCallbackProvider {
     /**
      * 三个工具各自的权限登记。
      *
-     * <p>一张业务表都不碰：它们改的是"这一段对话在往哪儿走"，不是业务数据。
-     * 真正的越权风险在这一轮调用的业务工具上，那一步由鉴权 Advisor 按表权限判。
+     * <p>一张业务表都不碰：它们改的是这一段对话在往哪儿走，不是业务数据。真正的越权风险
+     * 在这一轮调用的业务工具上，那一步由鉴权 Advisor 按表权限判。
+     *
+     * @return 工具名到权限登记的映射
      */
     public static Map<String, ToolPermission> permissions() {
         return Map.of(GET, ToolPermission.of(GET),
@@ -182,11 +184,15 @@ public final class GoalTools implements ToolCallbackProvider {
     }
 
     /**
-     * 模型只能标这两个状态。
+     * 把模型给的词映射成状态，并确认模型有权设置它。
      *
-     * <p><b>判据只有一处</b>：{@link GoalStatus#modelSettable()}。这里先把词映射成枚举，
-     * 再用那个方法判"能不能设"。写成这样一个 switch 白名单也行，但那样同一条规则
-     * （"只有 complete 与 blocked"）就有两份，改一处忘一处就漂。
+     * <p>判据只有一处：{@link GoalStatus#modelSettable()}。这里先把词映射成枚举，再用那个方法判
+     * 能不能设。写成 switch 白名单也行，但那样「只有 complete 与 blocked」这条规则就有两份，
+     * 改一处忘一处就漂。
+     *
+     * @param raw 模型给的原始词
+     * @return 可设置的状态
+     * @throws IllegalArgumentException 词不认识，或该状态不归模型改
      */
     private static GoalStatus modelStatus(String raw) {
         GoalStatus status;
@@ -205,7 +211,14 @@ public final class GoalTools implements ToolCallbackProvider {
         return status;
     }
 
-    /** 摘要：形状照 OpenClaw 的 {@code /goal} 输出（状态 / 目标 / 已用 / 预算 / 命令）。 */
+    /**
+     * 把目标渲染成一段给人看的摘要。
+     *
+     * <p>形状照 OpenClaw 的 {@code /goal} 输出：状态、目标、已用、预算、可用命令。
+     *
+     * @param goal 要渲染的目标
+     * @return 多行摘要
+     */
     static String render(SessionGoal goal) {
         StringBuilder text = new StringBuilder("目标状态：").append(goal.status().label()).append('\n')
                 .append("目标：").append(goal.objective()).append('\n')
@@ -226,7 +239,14 @@ public final class GoalTools implements ToolCallbackProvider {
         return text.append("、/goal complete、/goal clear").toString();
     }
 
-    /** {@code 1200} → {@code 1.2k}。摘要只求一眼看出量级，不报精确值。 */
+    /**
+     * 把 token 数写成一眼能看出量级的样子，例如 {@code 1200} 写成 {@code 1.2k}。
+     *
+     * <p>摘要不报精确值：读的人要看的是「还剩多少」，不是个位。
+     *
+     * @param value token 数
+     * @return {@code 950} 或 {@code 1.2k} 这样的短写法
+     */
     static String tokens(long value) {
         if (value < 1000) {
             return Long.toString(value);
@@ -283,12 +303,15 @@ public final class GoalTools implements ToolCallbackProvider {
     }
 
     /**
-     * 目标挂在会话节点上（键不含段），所以读的是 {@link ContextKeys#CONVERSATION}，
-     * 不是框架记忆用的 {@code CONVERSATION_ID}（那个含段）。
+     * 从工具上下文取会话节点的键。
      *
-     * <p>两者不是同一个字符串：{@code /new} 之后目标被清掉、记忆换到新段。
-     * 拿错键的表现是"每个新段都读不到目标"——看起来像"目标丢了"，
-     * 而实际上它挂在节点上、只是被查到了另一个键上。
+     * <p>目标挂在会话节点上（键不含段），所以读的是 {@link ContextKeys#CONVERSATION}，
+     * 不是框架记忆用的 {@code CONVERSATION_ID}（那个含段）。两者不是同一个字符串：
+     * {@code /new} 之后目标被清掉、记忆换到新段。拿错键的表现是每个新段都读不到目标，
+     * 看起来像目标丢了，实际上它挂在节点上，只是被查到了另一个键上。
+     *
+     * @param toolContext 工具上下文，可能为 null
+     * @return 会话节点的键；取不到时返回 null
      */
     private static String sessionKeyOf(ToolContext toolContext) {
         if (toolContext == null) {
@@ -327,7 +350,13 @@ public final class GoalTools implements ToolCallbackProvider {
         return value;
     }
 
-    /** @return null 表示不限额 */
+    /**
+     * 读可选的正数预算。
+     *
+     * @param args 工具参数
+     * @return 预算；null 表示不限额
+     * @throws IllegalArgumentException 传了非整数或非正数
+     */
     private static Long budget(Map<String, Object> args) {
         Object value = args.get("token_budget");
         if (value == null) {

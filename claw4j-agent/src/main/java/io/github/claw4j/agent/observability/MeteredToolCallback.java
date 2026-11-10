@@ -17,33 +17,29 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 给一个工具加计量与一段 span：被调了几次、成没成、花了多久（P14 起还进 trace）；
- * 顺带记下"这一轮调用过它"。
+ * 给一个工具加计量、一段 span 与两条审计事件：被调了几次、成没成、花了多久（P07 / P14）。
  *
- * <p><b>为什么在 {@code ToolCallback} 上，而不是在 {@code ToolCallingManager} 上</b>：
- * 一次 {@code executeToolCalls} 可能执行零个、一个或多个工具调用（模型一次要三个是常事），
- * 计在 manager 上数的是"轮次"，不是"工具调用"。
- * 而"哪个工具被问得多"恰恰是按工具算才有用——它决定下一个该优化谁、哪个该收权限。
- * span 同理：一段 {@code tool.<名字>} 的 duration 只有挂在这里才是一次真实调用的耗时。
+ * <p>包在 {@code ToolCallback} 上，不包在 {@code ToolCallingManager} 上：一次
+ * {@code executeToolCalls} 可能执行零个、一个或多个工具调用（模型一次要三个是常事），计在 manager
+ * 上数的是「轮次」而不是「工具调用」。而「哪个工具被问得多」正是按工具算才有用，它决定下一个该优化
+ * 谁、哪个该收权限。span 同理：一段 {@code tool.<名字>} 的 duration 只有挂在这里才是一次真实调用的
+ * 耗时。
  *
- * <p><b>它做三件事，因为这三个事实同源</b>：计数的前提是"这次调用真的发生了"，
- * 审计要落的（{@link ToolCallAudit}，P07）、trace 要画的（{@link SpanTracer}，P14）
- * 也都是同一件事。分成几个包装类会多几层对象，
- * 还会让"只包了计量那层"的路径悄悄漏掉另外几件——工具清单只收 provider、不收单个 callback，
- * 就是这样漏的。
+ * <p>三件事放在一个类里，因为事实同源：计数的前提是「这次调用真的发生了」，审计要落的
+ * （{@link ToolCallAudit}，P07）与 trace 要画的（{@link SpanTracer}，P14）也是同一件事。分成几个
+ * 包装类会多几层对象，还会让「只包了计量那层」的路径悄悄漏掉另外几件——工具清单只收 provider、不收
+ * 单个 callback，就是这样漏的。
  *
- * <p><b>扣额度不在这里</b>（ADR-0027 决定五）：额度是目标的 token budget，
- * 按"轮"记账（{@code ChatClientAgentPort#closeTurn}）；而"这一轮绕了太多次"的止损由
- * Spring AI 的工具循环执行。把"成本控制"与"失控保护"合成一个数，两者就只能由同一个人处理——
- * 它们不该混在一起。
+ * <p>扣额度不在这里（ADR-0027 决定五）：额度是目标的 token budget，按轮记账
+ * （{@code ChatClientAgentPort#closeTurn}），而「这一轮绕了太多次」的止损由 Spring AI 的工具循环
+ * 执行。把成本控制与失控保护合成一个数，两者就只能由同一个人处理。
  *
- * <p><b>没有 registry 时照样包</b>：计数与 audit 与"有没有装 actuator"无关，
- * 装不装只影响计数报不报得出去。span 也一样：
+ * <p>没有 registry 时照样包：计数与审计都与有没有装 actuator 无关，装不装只影响指标报不报得出去。
  * {@link SpanTracer#NONE} 是零开销的空实现，埋点代码只有一种写法。
  *
- * <p><b>这里看不到 {@code denied}</b>：鉴权拒绝发生在 Advisor 那一层，工具根本没被执行，
- * 所以走不到这个 {@code call} 里。那个计数只能在鉴权 Advisor 上报（见
- * {@code AuthorizationAdvisor}）。两处各报一半，是因为各自是唯一知道真相的地方。
+ * <p>这里看不到 {@code denied}：鉴权拒绝发生在 Advisor 那一层，工具根本没被执行，走不到这个
+ * {@code call} 里。那个计数只能在鉴权 Advisor 上报（见 {@code AuthorizationAdvisor}）——两处各报
+ * 一半，因为各自是唯一知道真相的地方。
  *
  * <p>两个 {@code call} 重载都覆写：带 {@code ToolContext} 的那个在 Spring AI 里是 default 方法，
  * 但它未必转调单参那个（不同实现不一样）。只包一个的话，走另一个重载的调用就漏计了。
@@ -66,26 +62,34 @@ public class MeteredToolCallback implements ToolCallback {
     private final MeterRegistry registry;
 
     /**
-     * 审计（P07）。可以为 null——没有 run 存储时就没有可写的落点。
+     * 审计（P07）。可以为 null：没有 run 存储时就没有可写的落点。
      *
-     * <p><b>为什么审计写在工具回调上</b>：这里是"这次调用真的发生了"唯一的落点。
-     * 鉴权 Advisor 那一侧只知道"允许执行"，而"允许"与"发生"之间还隔着一次真实的调用
-     * （它可能抛异常、也可能根本没被调起来）。
+     * <p>审计写在工具回调上，是因为这里是「这次调用真的发生了」唯一的落点。鉴权 Advisor 那一侧只
+     * 知道「允许执行」，而允许与发生之间还隔着一次真实的调用（它可能抛异常、也可能根本没被调起来）。
      */
     private final ToolCallAudit audit;
 
     /**
-     * trace（P14）。默认是空实现——没开观测时埋点照样走同一条代码路径，
-     * 只是 {@code open} 返回的是一段什么都不做的 scope。
+     * trace（P14）。默认是空实现：没开观测时埋点照样走同一条代码路径，只是 {@code open} 返回的是一段
+     * 什么都不做的 scope。
      */
     private final SpanTracer tracer;
 
-    /** @param registry 为 null 表示调用方没装 actuator：照常记录调用，只是没有指标可报 */
+    /**
+     * 只加计量的包装。
+     *
+     * @param delegate 被包装的工具，必填
+     * @param registry 指标注册表；为 null 表示调用方没装 actuator，照常记录调用，只是没有指标可报
+     */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry) {
         this(delegate, registry, null, SpanTracer.NONE);
     }
 
     /**
+     * 加上审计的包装。
+     *
+     * @param delegate 被包装的工具，必填
+     * @param registry 指标注册表，可为 null
      * @param audit 为 null 表示没装配审计：计量照常，只是这一次调用不会留下一行审计
      */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry, ToolCallAudit audit) {
@@ -93,6 +97,11 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /**
+     * 完整包装。
+     *
+     * @param delegate 被包装的工具，必填
+     * @param registry 指标注册表，可为 null
+     * @param audit 审计接缝，可为 null
      * @param tracer 为 null 时按空实现处理：埋点不该因为少一个参数就把调用打断
      */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry,
@@ -115,8 +124,11 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /**
-     * 单参重载：这一层拿不到 runId，于是不会有审计行、也就没有 seq 可写。
-     * span 照开——它记的是"这个工具被调了多久"，与有没有 run 无关。
+     * 单参重载：这一层拿不到 {@code runId}，于是不会有审计行。span 照开——它记的是这个工具被调了多久，
+     * 与有没有 run 无关。
+     *
+     * @param toolInput 模型给出的工具参数
+     * @return 工具的返回内容
      */
     @Override
     public String call(String toolInput) {
@@ -138,24 +150,27 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /**
-     * 带上下文的那一个重载：runId 与审计的 scope 只在它这里拿得到。
+     * 带上下文的那一个重载：{@code runId} 与审计的 scope 只在它这里拿得到。
      *
-     * <p>这一层不再有"额度不够就不执行"的分支（ADR-0027 决定五）：
-     * 成本上限在目标的 token 预算上，按轮记账；这一轮绕了太多次由工具循环在上限处截断。
-     * 工具回调只回答"这次调用发生了什么"。
+     * <p>这一层没有「额度不够就不执行」的分支（ADR-0027 决定五）：成本上限在目标的 token 预算上，
+     * 按轮记账；这一轮绕了太多次由工具循环在上限处截断。工具回调只回答「这次调用发生了什么」。
      *
-     * <p><b>span 上不挂审计行号</b>：审计与 trace 是两条独立的管道，共同的那个键是
-     * {@code claw4j.run.id}——拿它去库里查，一次运行的每条事件都在。挂一个"第几行"
-     * 既不比 runId 多回答什么，又把两条本可以各自演进的管道钉在一起。
-     * OpenClaw 也是这个分法：它的 span 属性只有 outcome / channel / provider / model / agent，
+     * <p>span 上不挂审计行号：审计与 trace 是两条独立的管道，共同的键是 {@code claw4j.run.id}——拿它
+     * 去库里查，一次运行的每条事件都在。挂一个「第几行」既不比它多回答什么，又把两条本可以各自演进的
+     * 管道钉在一起。OpenClaw 也是这个分法：run span 的属性只有 outcome / channel / provider / model
+     * 与 agent，出错时多一个 errorCategory（{@code docs/gateway/opentelemetry/spans-and-events.md:37}），
      * 账本序号留在账本里，给排序、翻页与上限淘汰用。
+     *
+     * @param toolInput 模型给出的工具参数
+     * @param toolContext 工具上下文，{@code runId} 与身份从这里取
+     * @return 工具的返回内容
      */
     @Override
     public String call(String toolInput, ToolContext toolContext) {
         String runId = runIdOf(toolContext);
         try (SpanTracer.SpanScope span = openSpan()) {
             // 开始那一条先写，结束那一条在两条出口各写一次：只有结束的话，
-            // "这个工具跑了多久"和"两个并发调用谁先开始"都只能靠时间戳猜。
+            // 「这个工具跑了多久」和「两个并发调用谁先开始」都只能靠时间戳猜。
             AuditEvent.Scope scope = scopeOf(toolContext);
             toolStarted(scope, toolInput);
             try {
@@ -166,7 +181,7 @@ public class MeteredToolCallback implements ToolCallback {
                 return result;
             }
             catch (RuntimeException failure) {
-                // 抛异常也是一次"发生过的调用"：审计里它是 executed + failed，
+                // 抛异常也是一次「发生过的调用」：审计里它是 finished + failed，
                 // 与被拒绝（根本没执行）是两件事——修法与改配置完全不同。
                 toolFinished(scope, toolInput, failure.getClass().getSimpleName());
                 span.attribute(ATTR_OUTCOME, "error");
@@ -178,20 +193,36 @@ public class MeteredToolCallback implements ToolCallback {
         }
     }
 
-    /** 一行 {@code tool.<工具名>} 的 span。属性在开始时就把工具名写死，后面只补结果。 */
+    /**
+     * 一行 {@code tool.<工具名>} 的 span。属性在开始时就把工具名写死，后面只补结果。
+     *
+     * @return 这段调用的 span
+     */
     private SpanTracer.SpanScope openSpan() {
         Map<String, String> attributes = new LinkedHashMap<>();
         attributes.put(ATTR_TOOL, toolName);
         return tracer.open("tool." + toolName, attributes);
     }
 
-    /** 写两条审计事件。写不写得上与这次调用无关——审计缺一行不该把工具打成失败。 */
+    /**
+     * 写开始那条审计事件。写不写得上与这次调用无关——审计缺一行不该把工具打成失败。
+     *
+     * @param scope 审计作用域
+     * @param toolInput 工具参数原文，只用来算指纹
+     */
     private void toolStarted(AuditEvent.Scope scope, String toolInput) {
         if (audit != null) {
             audit.toolStarted(scope, toolName, toolInput);
         }
     }
 
+    /**
+     * 写结束那条审计事件。
+     *
+     * @param scope 审计作用域
+     * @param toolInput 工具参数原文，只用来算指纹
+     * @param failure 异常类型名；null 表示正常返回
+     */
     private void toolFinished(AuditEvent.Scope scope, String toolInput, String failure) {
         if (audit != null) {
             audit.toolFinished(scope, toolName, toolInput, failure);
@@ -201,12 +232,15 @@ public class MeteredToolCallback implements ToolCallback {
     /**
      * 这一条事件的身份与位置。
      *
-     * <p>身份从工具上下文里取：入口把 principal 与 runId 一起放进去了，而这里拿不到 Advisor 的上下文。
-     * 取不到 principal 时照样写（那一格没人）；**取不到 runId 时这一行落不下去**——
+     * <p>身份从工具上下文里取：入口把 principal 与 {@code runId} 一起放进去了，而这里拿不到 Advisor
+     * 的上下文。取不到 principal 时照样写（那一格没人）；取不到 {@code runId} 时这一行落不下去——
      * 没有轮次的事件不属于任何一次运行，与 OpenClaw 的必填同口径。
      *
-     * <p>通道留空：工具上下文里没有它，而为了填这一格去加一个 key，会让"审计"与"投递"
-     * 两条本来无关的线互相拉扯。按 runId / sessionKey 关联已经够查。
+     * <p>通道留空：工具上下文里没有它，而为了填这一格去加一个 key，会让审计与投递两条本来无关的线互相
+     * 拉扯。按 {@code runId} 与 {@code sessionKey} 关联已经够查。
+     *
+     * @param toolContext 工具上下文，可为 null
+     * @return 事件作用域
      */
     private static AuditEvent.Scope scopeOf(ToolContext toolContext) {
         if (toolContext == null) {

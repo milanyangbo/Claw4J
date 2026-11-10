@@ -18,24 +18,27 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 把多个 {@link ChatModel} 排成一队：主模型先上，失败退到下一个。
  *
- * <p>为什么自己写而不是用现成的：Spring AI 2.x 没有"多模型主备"这个抽象，
- * 它的路由是按用途分流（不同 ChatClient 挂不同模型），没有"这家挂了换那家"。
- * 而"主供应商限流或宕机时还能答"恰恰是企业场景最需要的一件事。
+ * <p>自己写而不用现成的：Spring AI 2.x 没有多模型主备这个抽象，它的路由是按用途分流
+ * （不同 ChatClient 挂不同模型），没有"这家挂了换那家"。
  *
- * <p><b>降级条件：只换"换一家可能好"的失败</b>（判断在 {@link ModelFailures}，只此一处）。
- * 限流、5xx、连接失败、超时 → 退到下一家；401 / 403 / 400 / 422 与本地构造错误 → 直接报出。
- * 不做 {@code catch (RuntimeException)} 一刀切：那会让 key 失效时撞完所有供应商、
- * 再把几个异常捆在一起抛——一次确定的错误被拖成 N 次网络往返，而用户看不出是哪一家的问题。
+ * <p>降级条件只认"换一家可能好"的失败（判断在 {@link ModelFailures}，只此一处）：限流、5xx、
+ * 连接失败、超时退到下一家；401 / 403 / 400 / 422 与本地构造错误直接报出。不做
+ * {@code catch (RuntimeException)} 一刀切：那会让 key 失效时撞完所有供应商再捆成一堆抛出来，
+ * 一次确定的错误被拖成 N 次网络往返。
  *
- * <p>流式有额外一条规矩：**只在一个字节都还没吐出去时才降级**。
- * 一旦有块流给了客户端，再转投备用模型就会把同一条回答发两遍（前半截主 + 全文备），
- * 这种重复在 IM 里比直接报错更难看。所以流式的降级窗口只有"首个块之前"。
+ * <p>流式有额外一条规矩：只在一个字节都还没吐出去时才降级。一旦有块流给了客户端，再转投备用
+ * 模型就会把同一条回答发两遍（前半截主 + 全文备），这种重复在 IM 里比直接报错更难看。
  */
 public class RoutingChatModel implements ChatModel {
 
     private static final Logger log = LoggerFactory.getLogger(RoutingChatModel.class);
 
-    /** 一个候选：名字用于日志与错误信息，模型是真正干活的那个。 */
+    /**
+     * 一个候选。
+     *
+     * @param name  供应商名，用于日志与错误信息
+     * @param model 真正干活的那个模型
+     */
     public record Route(String name, ChatModel model) {
 
         public Route {
@@ -46,6 +49,9 @@ public class RoutingChatModel implements ChatModel {
 
     private final List<Route> routes;
 
+    /**
+     * @param routes 候选，第一个是主；不能为空
+     */
     public RoutingChatModel(List<Route> routes) {
         Objects.requireNonNull(routes, "routes");
         if (routes.isEmpty()) {
@@ -106,11 +112,12 @@ public class RoutingChatModel implements ChatModel {
     }
 
     /**
-     * 默认参数取主模型的：调用方拿它来填没指定的选项，
-     * 用主模型的口径比自己造一份更符合"主备"的语义。
+     * 默认参数取主模型的：调用方拿它来填没指定的选项，用主模型的口径比自己造一份更符合主备语义。
      *
-     * <p>覆写 {@code getOptions()} 而不是已废弃的 {@code getDefaultOptions()} ——
-     * 后者默认就是转调前者，两边都写没必要，还会多一条编译警告。
+     * <p>覆写 {@code getOptions()} 而不是已废弃的 {@code getDefaultOptions()}——后者默认转调前者，
+     * 两边都写没必要，还会多一条编译警告。
+     *
+     * @return 主模型的默认选项
      */
     @Override
     public ChatOptions getOptions() {
@@ -120,15 +127,18 @@ public class RoutingChatModel implements ChatModel {
     /**
      * 把 Prompt 上的参数换成"这一家认识的类型"。
      *
-     * <p>为什么必须换：{@code ChatOptions} 的每家实现互不兼容，而厂商的 ChatModel
-     * 是直接把 {@code prompt.getOptions()} 强转成自己那一型的。于是主模型是通义、
-     * 备是 DeepSeek 时，降级会把 {@code OpenAiChatOptions} 递给 DeepSeek，
-     * 当场 {@code ClassCastException} —— 降级这条救命路径反而必崩。
-     * （这个 bug 是靠假端点跑真实链路才暴露的，单元测试里两家都是假模型，谁也转不崩。）
+     * <p>必须换：{@code ChatOptions} 的每家实现互不兼容，而厂商的 ChatModel 直接把
+     * {@code prompt.getOptions()} 强转成自己那一型。主是通义、备是 DeepSeek 时，降级会把
+     * {@code OpenAiChatOptions} 递给 DeepSeek，当场 {@code ClassCastException}——降级这条
+     * 救命路径反而必崩。
      *
-     * <p>换法：以这一家的默认参数为底，把调用方显式给的**厂商无关**参数
-     * （温度、topP、maxTokens 等）搬过去，model 一律用这一家的 ——
-     * 把主模型的 model 名带给备模型，等于让 DeepSeek 去跑 qwen-plus，必错。
+     * <p>换法：以这一家的默认参数为底，把调用方显式给的厂商无关参数（温度、topP、maxTokens 等）
+     * 搬过去，model 一律用这一家的——把主模型的 model 名带给备模型，等于让 DeepSeek 去跑
+     * qwen-plus。
+     *
+     * @param prompt 调用方给的 Prompt
+     * @param route  这一次要用的候选
+     * @return 选项类型与该候选匹配的 Prompt
      */
     private static Prompt optionsFor(Prompt prompt, Route route) {
         ChatOptions own = route.model().getOptions();
@@ -155,13 +165,14 @@ public class RoutingChatModel implements ChatModel {
     /**
      * 工具回调与工具上下文必须跟着一起搬。
      *
-     * <p>上面那段只搬"厂商无关"的标量，工具不在其中 —— 而工具恰恰是这一条链路的全部意义。
-     * 漏掉它的表现不是报错，是<b>降级后模型看不到工具</b>：真实联调时把主的 base-url
-     * 指到没人听的端口，备模型（通义）接住请求后答的是"我无法直接访问数据库"，
-     * 然后反过来跟用户核对口径。它没崩、没报异常，只是再也查不到数——
-     * 主备降级这条救命路径因此只剩下"还能说话"，而不再是"还能干活"。
+     * <p>上面只搬了厂商无关的标量，工具不在其中，而工具恰恰是这条链路的全部意义。漏掉它的表现不是
+     * 报错，是降级后模型看不到工具：实测把主的 base-url 指到没人听的端口，备模型接住请求后答
+     * "我无法直接访问数据库"，然后反过来跟用户核对口径。它没崩、没报异常，只是再也查不到数。
      *
      * <p>只在两边都支持工具时才搬：不支持工具的那一家本来也用不上。
+     *
+     * @param builder  这一家的选项 Builder
+     * @param incoming 调用方给的选项
      */
     private static void copyTools(ChatOptions.Builder<?> builder, ChatOptions incoming) {
         if (!(builder instanceof ToolCallingChatOptions.Builder<?> target)

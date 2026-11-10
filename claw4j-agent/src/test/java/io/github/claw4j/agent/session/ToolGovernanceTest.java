@@ -45,24 +45,22 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 工具这一层的两端：**进来时这个身份能不能用**，以及**出去之后系统记下了什么**。
+ * 工具这一层的两端：进来时这个身份能不能用，以及出去之后系统记下了什么。
  *
- * <p><b>为什么这两半在一个文件里</b>：它们问的是同一个问题的两面——"一次工具调用由谁决定、
- * 又给下一次追问留下了什么"。召回那一半的边界是"别把别人的话带回来"（
- * {@link #anotherUserSeesNothing}、{@link #downgradedUserLosesItsOwnHistory}），
- * 审计那一半的边界是"别把业务数据抄成第二份"（
- * {@link #theSummaryIsTruncatedAndTheRawArgumentsNeverLand}）。
- * 而 {@code claw4j-agent} 的测试文件位已经用满 10 个，合成一处与两边都不冲突。
- * 放在 {@code session} 包里是不得已：{@link RecallSessionTool#MAX_RESULT_CHARS} 是包内可见的，
- * 挪到别的包就只能把它改成 public——那是为了测试放宽生产代码。
+ * <p>两半问的是同一个问题的两面：一次工具调用由谁决定，又给下一次追问留下了什么。召回那一半
+ * 的边界是别把别人的话带回来，审计那一半的边界是别把业务数据抄成第二份
+ * （见 {@link #theRawArgumentsNeverLand}）。
  *
- * <p><b>审计那一半为什么用假存储而不是真库</b>：这一层要验的是"该写什么"——谁的值取自哪里、
- * 摘要怎么截、指纹什么时候为空、审批编号怎么连上。库那一侧（列宽、唯一索引、视图）
- * 由 {@code RunSchemaSqlTest} 在真 Postgres 上验，两者差一层，不重复。
+ * <p>放在 {@code session} 包里是因为 {@link RecallSessionTool#MAX_RESULT_CHARS} 是包内可见的，
+ * 挪到别的包就只能为了测试把它改成 public。
  *
- * <p><b>假存储只实现 {@code append}</b>：其余方法一律抛。审计只该追加一行，
- * 不读不写别的——真有一天它开始调 {@code stepsOf} 或 {@code finish}，那一条会立刻红，
- * 而不是等到某个库慢的下午才被人发现。
+ * <p>审计那一半用假存储而不是真库：这一层验的是该写什么——谁的值取自哪里、摘要怎么截、指纹
+ * 什么时候为空、审批编号怎么连上。库那一侧（列宽、唯一索引、视图）由 {@code RunSchemaSqlTest}
+ * 在真 Postgres 上验，两者差一层，不重复。
+ *
+ * <p>假存储只实现 {@code append}：其余方法一律抛。审计只该追加一行，不读不写别的——真有一天
+ * 它开始调 {@code stepsOf} 或 {@code finish}，那一条会立刻红，而不是等到某个库慢的下午才被
+ * 人发现。
  */
 class ToolGovernanceTest {
 
@@ -114,8 +112,8 @@ class ToolGovernanceTest {
     /**
      * 参数原文与摘要都不进事件。
      *
-     * <p>把摘要当"给人看的一格"加回来，这条会红——而它正是"审计变成业务数据第二份副本"的入口。
-     * OpenClaw 的原话是 never stores prompts, messages, tool arguments, tool results。
+     * <p>把摘要当「给人看的一格」加回来，这条会红——而它正是审计变成业务数据第二份副本的入口。
+     * 判据只有一条：审计记的是动作，不是内容。
      */
     @Test
     @DisplayName("参数原文与摘要都不进事件：审计不成为业务数据的第二份副本")
@@ -268,7 +266,7 @@ class ToolGovernanceTest {
     private static final String CURRENT_SESSION = SessionKeys.sessionIdOf(
             Principal.readOnly("u-1"), "web", "chat-a", "1762300000000-abcd");
 
-    /** 同一个人的**另外两段**对话：网页上的另一个 chat，以及一个项目群。 */
+    /** 同一个人的另外两段对话：网页上的另一个 chat，以及一个项目群。 */
     private static final String PRIVATE_ELSEWHERE = sessionOf("u-1", "web", "chat-b");
 
     private static final String GROUP_ELSEWHERE = sessionOf("u-1", "feishu", "oc_group");
@@ -483,12 +481,11 @@ class ToolGovernanceTest {
     // ---------------------------------------------------------------- 会话目标（ADR-0027）
 
     /**
-     * 目标挂在会话上、一个会话一个。这两条放在这个文件里，是因为它们与上面那一半问的是
-     * 同一个问题：**模型手上能改的东西到底有多大**。召回那一半是"别把别人的话带回来"，
-     * 目标这一半是"别悄悄改掉这一段对话的走向"。
+     * 目标挂在会话上、一个会话一个。这两条与上面那一半问的是同一个问题：模型手上能改的东西
+     * 到底有多大。召回那一半是别把别人的话带回来，目标这一半是别悄悄改掉这一段对话的走向。
      *
-     * <p>用内存替身而不是真库：这里验的是规则（谁被拒、改完之后哪几格不动），
-     * 库那一侧（六态约束、主键唯一）由 {@code RunSchemaSqlTest} 在真 Postgres 上验。
+     * <p>用内存替身而不是真库：这里验的是规则（谁被拒、改完之后哪几格不动），库那一侧
+     * （六态约束、主键唯一）由 {@code RunSchemaSqlTest} 在真 Postgres 上验。
      */
     @Test
     @DisplayName("一个会话一个目标：再建一次失败且原文不变；edit 动目标不动状态与用量")
@@ -817,9 +814,9 @@ class ToolGovernanceTest {
         /**
          * 跨会话那一路的替身：全部会话的事件放在一起再按框架的 filter 过一遍。
          *
-         * <p>不按 {@code userId} 分组——那正是 {@code findEventsByUserId} 做的事，
-         * 而本票要证明的是"跨用户也查得到"。照它分组的话，"交叉可见"这条用例
-         * 会因为替身先按用户筛过而绿，红不了真的回退。
+         * <p>不按 {@code userId} 分组——那正是 {@code findEventsByUserId} 做的事，而这条用例要
+         * 证明的是跨用户也查得到。照它分组的话，交叉可见那条会因为替身先按用户筛过而绿，
+         * 红不了真的回退。
          */
         List<SessionEvent> allEvents(EventFilter filter) {
             return filter.apply(events.values().stream().flatMap(List::stream).toList());

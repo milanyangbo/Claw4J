@@ -14,25 +14,20 @@ import java.util.concurrent.ThreadLocalRandom;
  * 一段对话现在叫什么、最后一次交互是什么时候（ADR-0026 决定一，票 06 起落在
  * {@code session_entry} 上）。
  *
- * <p><b>它解决的是"会话没有结束"这件事</b>。在此之前会话 id 永远不变：
- * 记忆因此永不换段、预算只能自己按空闲猜、TTL 只能整行删掉。用户想开一段新对话，
- * 唯一的手段是清空浏览器——而 web 端的 {@code chatId} 缺省就等于 {@code userId}，
- * 所以他连"开一段新对话"这个动作都没有。
+ * <p>它解决的是"会话没有结束"这件事：在此之前会话 id 永远不变，记忆因此永不换段、预算只能
+ * 按空闲猜、TTL 只能整行删掉。用户想开一段新对话，唯一的手段是清空浏览器；而 web 端的
+ * {@code chatId} 缺省等于 {@code userId}，他连这个动作都没有。
  *
- * <p><b>换段 = 换对话，不是删数据</b>：旧段留在 {@code ai_session} 里只读（04 才决定留多久），
- * 新段有一条干净的上下文与一份新的预算。目标则<b>跟着 entry 一起清掉</b>——
- * 它是"我们对这一段对话的承诺"，不是历史；旧段的记忆还在，但那件事已经不用再推。
+ * <p>换段等于换对话，不是删数据：旧段留在 {@code ai_session} 里只读，新段有干净的上下文与
+ * 一份新的预算。目标跟着 entry 一起清掉——它是这一段对话的承诺，不是历史，
+ * 旧段的记忆还在，但那件事已经不用再推。
  *
- * <p><b>指针读不到时不拦这一轮</b>：库没迁、连不上、语句报错——退回加段之前的形状
- * （{@code SessionKeys} 的老口径），打一条 WARN，记一个计数。段回答的是"这段对话叫什么"，
- * 不是"能不能回答"。这与 {@code FaultTolerantSessionService} 是同一个判断：
- * 记忆是附加信息，不是可用性依赖。反过来（抛出去）会把每一句话都打成 500，
- * 而根因是"少了一张表"——那两件事的代价差得太远。
+ * <p>指针读不到时不拦这一轮：库没迁、连不上、语句报错，都退回加段之前的形状
+ * （{@link SessionKeys} 的老口径），打一条 WARN，记一个计数。段回答的是"这段对话叫什么"，
+ * 不是"能不能回答"，与 {@link FaultTolerantSessionService} 同一个判断。
  *
- * <p><b>降级之后会发生什么，要说清</b>：所有对话退到同一个永不过期的 id，
- * 也就是<b>回到改造之前的行为</b>——不是更糟，只是这个改造没生效。计数
- * {@code claw4j.session.pointer.failures} 就是"它到底生效了没有"的唯一信号，
- * 别让它变成静默。
+ * <p>降级之后所有对话退到同一个永不过期的 id，也就是回到改造之前的行为，不是更糟。
+ * {@code claw4j.session.pointer.failures} 是"它到底生效了没有"的唯一信号。
  */
 public final class SessionEntries {
 
@@ -43,7 +38,7 @@ public final class SessionEntries {
 
     /**
      * 存储。可为 null——没有数据库时没有"段"这回事，那是能力不在场，不是配置错误，
-     * 所以不造一个假实现去假装它存在（与 {@code ChatClientAgentPort} 对 run 存储的判断一致）。
+     * 所以不造一个假实现去假装它存在。
      */
     private final SessionEntryStore store;
 
@@ -71,6 +66,9 @@ public final class SessionEntries {
     /**
      * 这段对话现在的段。
      *
+     * @param owner   归属键，来自 {@link SessionKeys#ownerOf}
+     * @param channel 通道，可以为 null
+     * @param chatId  通道里的地址，可以为 null
      * @return 段；空串表示"不加段"——要么 {@code mode: none}，要么读不到。
      *         调用方把它原样交给 {@link SessionKeys#sessionIdOf(String, String, String, String)}，
      *         空串就是改造之前的形状
@@ -82,14 +80,15 @@ public final class SessionEntries {
     /**
      * 把这一段结束掉，回新段的名字（用户发了 {@code /new} 或 {@code /reset}）。
      *
-     * <p><b>为什么要单独一个方法，而不是给 {@link #segmentOf} 加个 boolean</b>：
-     * "现在这段叫什么"与"把这段结束掉"是两个动词，而 {@code segmentOf} 在测试里有六处
-     * 直接调用——加参数等于六处白改，且改的时候每一处都得想一遍"我要的是哪个"。
+     * <p>单独一个方法，不给 {@link #segmentOf} 加 boolean："现在这段叫什么"与"把这段结束掉"
+     * 是两个动词，加参数的话每个调用点都得重新想一遍"我要的是哪个"。
      *
-     * <p><b>{@code mode: none} 时它什么也不做</b>（返回空串）。那一档的语义就是"永不结束"，
-     * 而 {@code /new} 是"现在就结束"——两条规则直接冲突时，配置赢：说了永不结束，
-     * 就不能靠一条消息把它结束掉，否则 {@code none} 只是"默认不换"的别名。
+     * <p>{@code mode: none} 时什么也不做，返回空串。那一档的语义是"永不结束"，而 {@code /new}
+     * 是"现在就结束"——两条规则冲突时配置赢，否则 {@code none} 只是"默认不换"的别名。
      *
+     * @param owner   归属键，来自 {@link SessionKeys#ownerOf}
+     * @param channel 通道，可以为 null
+     * @param chatId  通道里的地址，可以为 null
      * @return 新段；空串表示"没换"（{@code none} 档、没有库、或读不到）
      */
     public String rotate(String owner, String channel, String chatId) {
@@ -127,10 +126,9 @@ public final class SessionEntries {
     /**
      * 新段的名字：{@code <epochMilli>-<4 位十六进制>}。
      *
-     * <p>时间前缀不是为了唯一性（随机四位才是），是为了两件事：清理时能按段排序，
-     * 排查时能一眼看出"这段对话是什么时候开始的"。UUID 也能唯一，但它在库里
-     * 什么信息都不给——而这张表存在的意义就是让人看得懂。真实的开始时刻另存一列
-     * （{@code session_started_at}），判定不解析这个字符串。
+     * <p>时间前缀不是为了唯一性（随机四位才是），是为了两件事：清理时能按段排序，排查时能一眼
+     * 看出这段对话什么时候开始。真实的开始时刻另存一列（{@code session_started_at}），
+     * 判定不解析这个字符串。
      */
     private static String freshSegment(Instant now) {
         return now.toEpochMilli() + "-" + String.format("%04x",

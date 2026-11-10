@@ -46,7 +46,7 @@
 | "一条批准只对应一次执行"不再有唯一索引 | 这条保证由审批表的状态迁移给：`pending → allowed/denied/expired` 只可能发生一次，并发下第二个请求拿不到 `pending` 那一行 | 审批行的 `status` 是真相；审计里 `approval_id` 只出现在一条 `tool.action.finished` 上（同一次执行的两条事件共享它） | 票 05、V24 |
 | 审批过期之后不重画卡片 | 过期在判定时生效：`decide` 拒绝过期请求，卡片渲染时也不带按钮——但**没有任何任务回头去改那张已经发出去的卡** | 点一下就拿到"这条审批已经过期了，让提请求的人重新发起"，不会变成"点了没反应"；`approval_request` 上的 `status`（清扫会把它落成 `expired`）与 `expires_at` 是真相，卡片只是它的一个快照 | spec 的 Comments、`ApprovalService#decide` |
 | `recall_session` 默认能跨用户召回（`visibility=all`） | 照它的默认值（`tools.sessions.visibility` 原文 Default: `all`）。四档都在，但 `tree` 暂等同 `self`（子 Agent 会话不落库）、`agent` 暂等同 `all`（只有一个 agent 命名空间），于是今天真正新增的只有"跨用户"这一档 | 启动日志里打出生效范围；`application.yml` 与 README 写明**多用户、角色不同的部署必须配 `self`**。它自带的检查（多 agent 且解析成 `all` 时报 finding）在这里永远不触发，所以改用这两处兜底。`read-only` 是"能问数据"的身份，不是"能看别人对话"的身份——要撤销就配 `self`，或把 `recall_session` 从角色表里去掉 | 票 05 |
-| `visibility` 写错时启动失败（它静默回落成 `all`） | 它的 `resolveSessionToolsVisibility`（`src/plugin-sdk/session-visibility.ts:132-138`）对非法值 `return "all"`；我们抛 `IllegalArgumentException` 并点名键名与四个合法值 | 方向是更严不是更松：写错变成最宽授权是 fail-open，而"写错了"与"写的是 all"在日志上一模一样。代价要认：手滑一个拼写会让服务起不来，而不是悄悄开到最宽——这与 `session.maintenance.mode` 拼错回落 `warn` 的选择相反，因为那个有"更保守的一侧"可落，`visibility` 的四个值没有 | 票 05、`SessionVisibility#of` |
+| `visibility` 写错时启动失败（它静默回落成 `all`） | 它的 `resolveSessionToolsVisibility`（`src/plugin-sdk/session-visibility.ts:132-138`）对非法值 `return "all"`；我们抛 `IllegalArgumentException` 并点名键名与四个合法值 | 方向是更严不是更松：写错变成最宽授权是 fail-open，而"写错了"与"写的是 all"在日志上一模一样。代价要认：手滑一个拼写会让服务起不来，而不是悄悄开到最宽——`session.maintenance.mode` 当初拼错回落 `warn`（2026-11-10 也改成了启动失败：落回 `warn` 是一条都不删、落回 `enforce` 是拼错反而删数据，两边都不比启动失败更清楚） | 票 05、`SessionVisibility#of` |
 
 "会话记忆会把旧答案带进新问题"那行本身就是例子：先例记在第一次决定的那张票里，
 第二处照着做却没补记，评审时就显得像违规。记账要跟着**用的地方**走。

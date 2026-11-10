@@ -13,33 +13,24 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 两路融合：**加权求和**，矢量分 0.7 + 全文分 0.3。
+ * 把向量与全文两路命中按 0.7 / 0.3 加权合并成一个列表。
  *
- * <p><b>权重是与 OpenClaw 对齐的固定值</b>（{@code src/agents/memory-search.ts:165}：
- * {@code hybrid: { vectorWeight: 0.7, textWeight: 0.3 }}），**不做成配置**——它那边的
- * {@code memory.search.query.hybrid.vectorWeight} 已经在死键清单里（配置项被撤了）。
- * 多一个旋钮，只会让"结果为什么变了"多一个可能的答案。
+ * <p>权重是固定值，与 OpenClaw 的 {@code hybrid.vectorWeight} / {@code textWeight} 一致
+ * （{@code src/agents/memory-search.ts:165-166}）。不做成配置：多一个旋钮，"结果为什么变了"
+ * 就多一个可能的答案。
  *
- * <p><b>两路的分怎么变成可比的</b>：向量那一路给的是余弦（0~1）；全文那一路给的是**命中次数**
- * （整数，越大越相关）。融合前先把全文分归一：{@code share = hits / 本次查询的最大 hits}，
- * 也就是 OpenClaw 的 {@code createKeywordScoreScale} 里"按这一问的最强命中来度量"那一步。
+ * <p>全文那路的分是命中次数，先按本次查询的最大值归一（{@code hits / maxHits}）再乘 0.3，
+ * 两路才都在 0~1。归一对应 OpenClaw 的 {@code createKeywordScoreScale}
+ * （{@code extensions/memory-core/src/memory/hybrid.ts:66}）里"按本次最强命中度量"这一步；
+ * 它还叠了 {@code score / (1 - score)} 的反饱和与向量上限缩放，本仓库都没有——那一步是为 BM25
+ * 的饱和曲线准备的，而这里的全文分是计数，本来线性。
  *
- * <p><b>没有照搬它的 {@code relevance = score / (1 - score)} 反饱和</b>：那一步是为了把 BM25
- * 的饱和曲线还原成线性，而我们的分是计数，本来就是线性的，套上去只会把分布压扁。
- * 归一之后两路都在 0~1，权重才真的是权重。
+ * <p>融合分写回 {@link Document#getScore()}：下游的 {@code ConcatenationDocumentJoiner} 按这个分
+ * 排序，不写回去会被重排。OpenClaw 的 {@code mergeHybridResults}（同文件 {@code :81}）也是把
+ * 融合分赋给结果的 score。
  *
- * <p><b>融合分写回 {@link Document#getScore()}</b>：advisor 里紧接着跑的官方
- * {@code ConcatenationDocumentJoiner} 是 {@code sorted(comparingDouble(Document::getScore).reversed())}
- * （null 按 0.0），不写回去它会把我们排好的顺序重排掉。OpenClaw 的 {@code mergeHybridResults}
- * 也是把融合分赋给结果的 {@code score}。
- *
- * <p><b>已知代价（写在这里，不藏）</b>：只有全文命中的块最多拿 0.3 分，因此**排序上会输给
- * 余弦高于 0.43 的向量命中**（0.7 × 0.43 ≈ 0.3）。这是 0.7/0.3 这个配比的直接后果：
- * 它的用途是"编号类查询别被向量挤掉召回"，不是"让字面命中排到最前"。召回不受影响——
- * 那一路的块照样在候选里，只是名次靠后；真要它靠前，改的是权重，不是这里。
- *
- * <p>同类里只做三件事：按 id 合并两路、同一路内去重、加权后写回 {@code score}。
- * **不截断**（截断只有一处，在 {@link TopKDocumentPostProcessor}）。
+ * <p>不截断：截断只发生在 {@link TopKDocumentPostProcessor}。代价是只被全文命中的块最多 0.3 分，
+ * 排序上会输给余弦高于 0.43 的向量命中，但仍在候选里，只是名次靠后。
  */
 public final class WeightedScoreJoiner implements DocumentJoiner {
 
@@ -50,13 +41,14 @@ public final class WeightedScoreJoiner implements DocumentJoiner {
     static final double TEXT_WEIGHT = 0.3;
 
     /**
-     * 两路融合。**顺序是契约**：第 0 路向量（分是余弦），第 1 路全文（分是命中次数）。
+     * 按 {@code vectorHits}、{@code keywordHits} 的顺序融合两路命中。
      *
-     * <p>用显式的两参数版本而不是靠 {@code Map} 猜路别：{@link DocumentJoiner#join} 的签名里
-     * 没有"哪一路是什么"的信息，猜错一次就是静默地把余弦当命中次数用。
+     * <p>参数顺序就是路别。{@link DocumentJoiner#join} 的 {@code Map} 签名不带路别信息，
+     * 传反了会把余弦当命中次数用，而且不报错。
      *
-     * @param vectorHits  向量那一路的命中，分是余弦相似度
-     * @param keywordHits 全文那一路的命中，分是命中次数（{@link KeywordDocumentRetriever} 写的）
+     * @param vectorHits  向量命中，分是余弦（0~1）
+     * @param keywordHits 全文命中，分是命中次数（{@link KeywordDocumentRetriever} 写的）
+     * @return 融合后的列表，按融合分降序，同分时按出处定序
      */
     public List<Document> join(List<Document> vectorHits, List<Document> keywordHits) {
         double maxHits = 0;
@@ -66,7 +58,7 @@ public final class WeightedScoreJoiner implements DocumentJoiner {
         Map<String, Double> fused = new LinkedHashMap<>();
         Map<String, Document> byId = new LinkedHashMap<>();
 
-        // 向量先走：同一块两路都命中时，保留向量那一条（它的 score 是余弦，重排与排障都用得上）。
+        // 向量先走：两路都命中时保留向量那一条，它的 score 是余弦，排障时用得上。
         // 每一路内部先去重：同一块在一路里出现两次就给两次权重，等于把这一路的分量偷偷加倍。
         Set<String> seenInVector = new LinkedHashSet<>();
         for (Document hit : vectorHits) {
@@ -89,8 +81,8 @@ public final class WeightedScoreJoiner implements DocumentJoiner {
         }
 
         List<String> ordered = new ArrayList<>(byId.keySet());
-        // 同分时按出处（路径、段号）定序：分数相等是常态（只有全文命中的块常常同为一个命中数），
-        // 不定序就会退化成 HashMap 的迭代顺序，每次启动的顺序都不一样。OpenClaw 也是这个兜底。
+        // 同分时按出处（路径、段号）定序：只有全文命中的块常常同为一个命中数，不定序就会退化成
+        // 迭代顺序，每次启动的排列都不一样。
         ordered.sort(Comparator
                 .comparingDouble((String id) -> fused.getOrDefault(id, 0.0)).reversed()
                 .thenComparing(id -> pathOf(byId.get(id)))
@@ -98,23 +90,23 @@ public final class WeightedScoreJoiner implements DocumentJoiner {
 
         List<Document> merged = new ArrayList<>(ordered.size());
         for (String id : ordered) {
-            // mutate() 带上 id / text / metadata，只换 score：下游按 score 排序，融合分才是它的顺序。
+            // 只换 score，id 与 metadata 保持原样：下游按 score 排序。
             merged.add(byId.get(id).mutate().score(fused.getOrDefault(id, 0.0)).build());
         }
         return List.copyOf(merged);
     }
 
     /**
-     * 官方签名。一路或两路时走 {@link #join(List, List)}（第 0 路向量、第 1 路全文）；
-     * 更多路时没有路别信息，只做"按 id 去重 + 保序"，不猜着加权。
+     * 接口签名。一路或两路时转给 {@link #join(List, List)}（第 0 路向量、第 1 路全文）；
+     * 更多路时没有路别信息，只做按 id 去重并保序，不猜着加权。
      *
-     * <p>我们自己的调用点用两参数版本；这个实现是为了让类真的是一个 {@code DocumentJoiner}
-     * ——接口实现方就该在官方签名下也有确定行为，哪怕退化。
+     * <p>不要把它插进 advisor 的 {@code documentJoiner} 槽位：那里收到的是 retriever 已经融合过
+     * 一次的列表，再当成向量那一路加权就等于把分又乘一次 0.7。advisor 那边用的是
+     * {@link org.springframework.ai.rag.retrieval.join.ConcatenationDocumentJoiner}
+     * （融合分已在 {@code score} 里，它只负责按 score 排）。
      *
-     * <p><b>不要把它插进 advisor 的 {@code documentJoiner} 槽位</b>：那里收到的是 retriever
-     * 已经融合过一次的列表，再当成"向量那一路"加权就等于把分又乘了一次 0.7。
-     * advisor 那边用的是官方的 {@link org.springframework.ai.rag.retrieval.join.ConcatenationDocumentJoiner}
-     * （融合分已经在 {@code score} 里，它只负责按 score 排）。
+     * @param documentsForQuery 每个查询对应的各路文档
+     * @return 去重保序后的列表
      */
     @Override
     public List<Document> join(Map<Query, List<List<Document>>> documentsForQuery) {

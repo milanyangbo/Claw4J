@@ -19,22 +19,21 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * 给一条模型路由加计量：调了几次、花了多少 token、用了多久。
  *
- * <p><b>为什么在 {@code ChatModel} 这一层，而不是在 {@code AgentPort} 上</b>：
- * 一轮对话里工具循环每转一圈就调一次模型，一次提问可能是 3~6 次调用。
- * 只在最外层记一次，看到的是"一次提问"，而账单按"一次调用"结。成本恰恰在中间那几轮。
+ * <p>包在 {@code ChatModel} 这一层而不是 {@code AgentPort} 上：一轮对话里工具循环每转一圈就调一次
+ * 模型，一次提问可能是 3~6 次调用。只在最外层记一次，看到的是「一次提问」，而账单按「一次调用」结，
+ * 成本恰恰在中间那几轮。
  *
- * <p><b>为什么包在每条 route 上，而不是包住整个 {@code RoutingChatModel}</b>：
- * {@code route} 这个标签要能回答"这次是主模型答的，还是降级之后答的"。
- * 包在外面只知道"这次请求成功了"；要分清就得在 {@code RoutingChatModel} 里再埋一个计数器，
- * 那是第二处状态，而这里一个标签就够了——降级次数 = 另一条 route 的调用数。
+ * <p>包在每条 route 上，而不是包住整个 {@code RoutingChatModel}：{@code route} 这个标签要能回答
+ * 「这次是主模型答的，还是降级之后答的」。包在外面只知道「这次请求成功了」；要分清就得在
+ * {@code RoutingChatModel} 里再埋一个计数器，那是第二处状态，而这里一个标签就够了——降级次数等于
+ * 另一条 route 的调用数。
  *
- * <p><b>流式为什么只认最后一帧</b>：多数供应商只在末帧带 usage，前面的帧里是空。
- * 逐帧累加的结果是把总量记成 0（每帧都没有），或者重复累加同一个总数。
- * 这里只在 {@code doOnComplete} 时看一次最后一帧。
+ * <p>流式只认最后一帧：多数供应商只在末帧带 usage，前面的帧里是空。逐帧累加的结果是把总量记成 0
+ * （每帧都没有），或者重复累加同一个总数。这里只在 {@code doOnComplete} 时看一次最后一帧。
  *
- * <p><b>拿不到 usage 就不记 token</b>：假模型、部分兼容实现、某些流式响应都不给 usage。
- * 这时候记 0 与记一个估算值都是在说假话——前者让人以为不花钱，后者让成本口径不可信。
- * {@code calls} 与 {@code duration} 照记，它们是真实发生过的。
+ * <p>拿不到 usage 就不记 token：假模型、部分兼容实现、某些流式响应都不给 usage。这时候记 0 与记一个
+ * 估算值都是在说假话——前者让人以为不花钱，后者让成本口径不可信。{@code calls} 与 {@code duration}
+ * 照记，它们是真实发生过的。
  */
 public class MeteredChatModel implements ChatModel {
 
@@ -49,6 +48,13 @@ public class MeteredChatModel implements ChatModel {
     private final String route;
     private final MeterRegistry registry;
 
+    /**
+     * 包住一条 route 的模型调用。
+     *
+     * @param delegate 真正调用的模型，必填
+     * @param route 路由名，作为指标标签
+     * @param registry 指标注册表，必填
+     */
     public MeteredChatModel(ChatModel delegate, String route, MeterRegistry registry) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.route = Objects.requireNonNull(route, "route");

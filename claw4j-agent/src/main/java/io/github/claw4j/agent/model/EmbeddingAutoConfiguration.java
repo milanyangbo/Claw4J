@@ -22,17 +22,16 @@ import org.springframework.context.annotation.Conditional;
 import org.springframework.core.env.Environment;
 
 /**
- * 向量模型：**一个部署只有一份**，缓存的与知识库的消费者共用。
+ * 向量模型：一个部署只有一份，缓存的与知识库的消费者共用。
  *
- * <p><b>它为什么独立于缓存</b>（P10）：不带 {@code claw4j.cache.enabled} 这个条件。
- * 语义缓存是省钱开关、知识库是功能，两件事的变更节奏完全不同——绑在一起的话，
- * 关掉缓存会连带让知识库起不来。
- * 条件只剩"配了通义 key"，两个消费者各自用，谁也不绑谁。
+ * <p>独立于缓存（P10）：不带 {@code claw4j.cache.enabled} 这个条件。语义缓存是省钱开关、
+ * 知识库是功能，两者的变更节奏不同——绑在一起的话，关掉缓存会连带让知识库起不来。
+ * 条件只剩"配了通义 key"，两个消费者各用各的。
  *
- * <p><b>为什么只有通义这一家</b>：DeepSeek 没有 embedding 接口。所以向量能力跟着
- * {@code claw4j.model.qwen.*} 那套凭据走，不新增一组配置、也不新增一把钥匙。
+ * <p>只有通义这一家：DeepSeek 没有 embedding 接口，所以向量能力跟着
+ * {@code claw4j.model.qwen.*} 那套凭据走，不新增配置、也不新增一把钥匙。
  *
- * <p><b>为什么用 {@code OpenAiEmbeddingModel}</b>：通义提供的是 OpenAI 兼容端点
+ * <p>用 {@code OpenAiEmbeddingModel}：通义提供的是 OpenAI 兼容端点
  * （{@code /compatible-mode/v1}），与 {@code qwenChatModel} 同一个接缝。
  */
 @AutoConfiguration
@@ -46,11 +45,16 @@ public class EmbeddingAutoConfiguration {
     /**
      * 向量模型。
      *
-     * <p>{@code metadataMode} 必须显式给：Builder 上它没有默认值，不给就是 NPE，
-     * 而那个 NPE 出现在第一次 {@code embed} 调用时，看起来像"通义挂了"。
+     * <p>{@code metadataMode} 必须显式给：Builder 上它没有默认值，不给就是 NPE，而那个 NPE
+     * 出现在第一次 {@code embed} 调用时，看起来像"通义挂了"。
      *
-     * <p>重试关掉：缓存那边算不出向量就退化成"没命中"，知识库那边索引失败会在启动时
-     * 明确报错——两处都不需要在这里重试三轮，那只是拖慢一次提问。
+     * <p>重试关掉：缓存那边算不出向量就退化成"没命中"，知识库那边索引失败会在启动时明确报错
+     * ——两处都不需要在这里重试三轮，那只是拖慢一次提问。
+     *
+     * @param model       模型配置，取通义的凭据、端点与超时
+     * @param embedding   向量模型名与维度
+     * @param environment 用来解析密钥占位符
+     * @return 走 OpenAI 兼容端点的向量模型
      */
     @Bean
     @ConditionalOnMissingBean(EmbeddingModel.class)

@@ -11,20 +11,17 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * "这条任务现在还跑得起来吗"——建的时候问一次，每次到点之前再问一次（P05）。
+ * 判断一条定时任务此刻还跑不跑得起来：建的时候问一次，每次到点之前再问一次（P05）。
  *
- * <p><b>为什么是一个单独的类，而不是两个调用点各写一遍</b>：这是<b>同一个问题</b>
- * 在两个时刻的样子。分开写的话，两处早晚不一致——最常见的不一致是建的时候查了权限、
- * 到点的时候只查身份，于是"权限被收回但任务照跑"这条缝只在第二次问的时候存在，
- * 而那时已经没人看着了。
+ * <p>两个调用点问的是同一个问题。分开写的话两边迟早不一致，最常见的是建的时候查权限、
+ * 到点只查身份，于是权限被收回之后任务照跑，而那时已经没人看着。
  *
- * <p><b>到点为什么必须重算而不是用快照</b>：定时任务的价值在于它比一次对话活得久，
- * 而权限会比任务先变。用快照跑的意思是"他被收权之后，那条任务还带着旧权限跑"——
- * 收权这件事对唯一的无人值守入口失效。
+ * <p>到点重算而不是复用建时的快照：定时任务比一次对话活得久，权限又比任务变得快。
+ * 用快照等于让收权对唯一的无人值守入口失效。
  *
- * <p><b>两种拒绝的含义完全不同，话要说清</b>：身份没了是"这个角色已经不在授权表里"，
- * 要找人把角色加回来；工具没了是"这个角色还能干活，但干不了这一件"，要改那一行配置。
- * 合成一句"没有权限"的话，收到它的人只会去问同一件事。
+ * <p>两种拒绝的话要分开说。身份没了是角色已不在授权表里，要找人把角色加回来；
+ * 工具没了是角色还能干活、但干不了这一件，要改那一行配置。合成一句「没有权限」，
+ * 收到的人只会重复问同一件事。
  */
 public class ScheduleAuthorization {
 
@@ -39,10 +36,14 @@ public class ScheduleAuthorization {
     }
 
     /**
-     * 这个身份此刻的权限。
+     * 取这个用户在这个角色下此刻的身份。
      *
-     * @return 空 = 角色已经被删掉（或者这个部署根本没有角色表）。两种都不该继续跑：
-     *         猜一个身份去跑，比停在那儿更糟
+     * <p>角色已被删除、这个部署没有角色表、{@code userId} 为空，三种都返回空。
+     * 空的意思是不该继续跑：猜一个身份去跑，比停在那儿更糟。
+     *
+     * @param userId 任务主人的用户 id
+     * @param role 任务主人建任务时的角色
+     * @return 此刻的身份；空表示认不出来
      */
     public Optional<Principal> currentOwner(String userId, String role) {
         if (roles == null || userId == null || userId.isBlank()) {
@@ -52,14 +53,15 @@ public class ScheduleAuthorization {
     }
 
     /**
-     * 按这份身份，这条任务要用的工具还都能用吗。
+     * 按这份身份判断任务声明的工具现在是否都还能用。
      *
-     * <p><b>要审批的工具在这里就被挡下</b>：一条任务每天在自己醒来的时候要求有人点按钮，
-     * 结果是每天挂一条没人看见的待批请求，而不是每天办成一件事。这类工具不属于
-     * "一次授权、多次执行"的场景——那正是这张票的标题。
+     * <p>要审批的工具在这里就被挡下。一条任务每天在自己醒来的时候要求有人点按钮，
+     * 结果是每天挂一条没人看见的待批请求，而不是每天办成一件事：这类工具不属于
+     * 「一次授权、多次执行」。
      *
+     * @param owner 任务主人此刻的身份
      * @param requiredTools 任务自己声明的工具名，可以为空（纯模型回答、不碰工具）
-     * @return 空 = 能跑；否则是给模型（建的时候）或给日志与通知（到点的时候）的一句话
+     * @return 空表示能跑；否则是一句拒绝理由，建的时候交给模型，到点的时候写进日志与通知
      */
     public Optional<String> refusalFor(Principal owner, List<String> requiredTools) {
         Objects.requireNonNull(owner, "owner");
@@ -81,8 +83,8 @@ public class ScheduleAuthorization {
     }
 
     /**
-     * 拒绝话术与鉴权 Advisor 共用同一个前缀：同一件事（角色不允许）在两处被拒，
-     * 措辞不该有两种——模型看到两种说法，会以为是两条不同的规矩。
+     * 拒绝话术与 {@link AuthorizationAdvisor} 共用同一个前缀：同一件事在两处被拒，
+     * 措辞不该有两种，否则模型会当成两条不同的规矩。
      */
     private static String denialOf(Principal owner, String toolName, ToolPermission required) {
         if (!owner.canPerform(required.action())) {
@@ -97,7 +99,7 @@ public class ScheduleAuthorization {
                 + " 不允许访问表 " + String.join("、", forbidden) + "（工具 " + toolName + "）";
     }
 
-    /** 与 Advisor 同一条查法：挨个登记表问，谁有就用谁的。查不到按"没登记"处理。 */
+    /** 与 Advisor 同一条查法：挨个登记表问，命中即用；都查不到按未登记处理。 */
     private Optional<ToolPermission> permissionFor(String toolName) {
         for (ToolPermissionRegistry registry : registries) {
             Optional<ToolPermission> permission = registry.permissionFor(toolName);

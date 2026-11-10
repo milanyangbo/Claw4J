@@ -19,16 +19,16 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 出站之前的 PII 脱敏（ADR-0007）。与鉴权是两件事：鉴权管"能不能查"，这里管"查到了能不能原样说出去"。
+ * 出站之前的 PII 脱敏（ADR-0007）。与鉴权是两件事：鉴权管「能不能查」，这里管「查到了能不能原样说
+ * 出去」。
  *
- * <p>order 排在工具调用循环**外面**（小于 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER}），
- * 于是整通对话只在出站前做一次。放进去也不是不行，但那会连**工具结果**和模型中间轮次的
- * 话一起打码：模型要靠原始值判断"这个号码是哪一单的"，打掉了它就没得判了。
- * 脱敏是给人看的最后一道工序，不是给模型看的。
+ * <p>order 排在工具调用循环外面（小于 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER}），于是
+ * 整通对话只在出站前做一次。放进去也不是不行，但那会连工具结果和模型中间轮次的话一起打码：模型要靠
+ * 原始值判断「这个号码是哪一单的」，打掉了它就没得判。脱敏是给人看的最后一道工序，不是给模型看的。
  *
- * <p>流式路径不能逐块各自脱敏：分块边界会正好落在一个手机号中间，两块都匹配不上，
- * 原始号码整个漏出去，而且漏不漏取决于模型那批吐了多少字——这种偶发漏是最难查的。
- * 这里的做法是**扣住可能属于号码的尾巴**，等下一块来了再一起判，收尾时把剩下的全部吐出。
+ * <p>流式路径不能逐块各自脱敏：分块边界会正好落在一个手机号中间，两块都匹配不上，原始号码整个漏出去，
+ * 而且漏不漏取决于模型那批吐了多少字，这种偶发漏最难查。这里的做法是扣住可能属于号码的尾巴，等下一块
+ * 来了再一起判，收尾时把剩下的全部吐出。
  */
 public class PiiRedactionAdvisor implements CallAdvisor, StreamAdvisor {
 
@@ -38,10 +38,10 @@ public class PiiRedactionAdvisor implements CallAdvisor, StreamAdvisor {
      * 工具循环之外、整通对话只跑一次。比 {@code ToolSearchToolCallingAdvisor.DEFAULT_ORDER} 小，
      * 也就是排在它前面（链按 order 升序）。
      *
-     * <p><b>这个值的下限由会话记忆定</b>：链的 after 按 order 降序跑，order 越大越先收尾。
-     * 脱敏必须比 {@link io.github.claw4j.agent.session.SessionMemoryConfiguration#ADVISOR_ORDER}
-     * <b>先</b>收尾，记忆写进库里的才是掩码后的文本，而不是原始号码。
-     * 否则"出站脱敏了"是真的，会话表里躺着的仍是明文——那才是更持久的一份泄露。
+     * <p>这个值的下限由会话记忆定：链的 after 按 order 降序跑，order 越大越先收尾。脱敏必须比
+     * {@link io.github.claw4j.agent.session.SessionMemoryConfiguration#ADVISOR_ORDER} 先收尾，记忆写进
+     * 库里的才是掩码后的文本，而不是原始号码。否则「出站脱敏了」是真的，会话表里躺着的仍是明文——
+     * 那才是更持久的一份泄露。
      */
     public static final int ORDER = Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER;
 

@@ -26,14 +26,13 @@ import java.util.Map;
 /**
  * 把装好的真实模型排成主备，对外只暴露一个 {@code ChatModel}。
  *
- * <p>单独成一个自动配置类是为了顺序：它必须在 {@link ModelConfiguration} 之后
- * （才知道装了几家，才能排主备）。没有 mock 兜底了（ADR-0011）：
- * 一家都没装上时 {@link ModelConfiguration} 自己就会 fail fast，轮不到这里兜。
+ * <p>单独成一个自动配置类是为了顺序：它必须在 {@link ModelConfiguration} 之后，才知道装了几家。
+ * 没有 mock 兜底（ADR-0011）：一家都没装上时 {@link ModelConfiguration} 自己就 fail fast，
+ * 轮不到这里兜。
  *
- * <p>为什么路由做在 ChatModel 层而不是 ADR-0006 里设想的"具名 ChatClient.Builder"：
- * Advisor 链、工具调用这些只有一份，挂在 ChatClient 上；分流的实体若是 ChatClient，
- * 就等于把 Advisor 链复制两份，鉴权与脱敏会各配一次、各错一次。
- * 真正需要"换一家"的时刻是模型调用失败那一刻，那正好是 ChatModel 的职责。
+ * <p>路由做在 ChatModel 层而不是"具名 ChatClient.Builder"：Advisor 链、工具调用只有一份，
+ * 挂在 ChatClient 上；分流的实体若是 ChatClient，等于把 Advisor 链复制两份，鉴权与脱敏会各配
+ * 一次、各错一次。真正需要"换一家"的时刻是模型调用失败那一刻，那正好是 ChatModel 的职责。
  */
 @AutoConfiguration(after = ModelConfiguration.class)
 public class RoutingModelConfiguration {
@@ -43,8 +42,13 @@ public class RoutingModelConfiguration {
     public static final String ROUTING_BEAN = "routingChatModel";
 
     /**
-     * 业务侧（ChatClient、AgentPort）按类型注入 {@code ChatModel}，
-     * 容器里现在同时有各家模型和这个路由，必须用 @Primary 指定谁是被注入的那个。
+     * 业务侧（ChatClient、AgentPort）按类型注入 {@code ChatModel}，容器里同时有各家模型和这个路由，
+     * 必须用 {@code @Primary} 指定谁是被注入的那个。
+     *
+     * @param properties    模型配置，取 {@code claw4j.model.primary}
+     * @param context       用来按名字取已注册的模型 bean
+     * @param meterRegistry 可选，有才给每条 route 包一层计量
+     * @return 主备路由模型
      */
     @Bean(ROUTING_BEAN)
     @Primary
@@ -92,6 +96,11 @@ public class RoutingModelConfiguration {
     /**
      * 有 registry 才包。没有 registry 表示调用方没装 actuator——包一层也没地方导出，
      * 只是多一层调用，原样返回。
+     *
+     * @param model    被包的模型
+     * @param route    路由名，作为计量标签
+     * @param registry 可能为 null
+     * @return 包了计量的模型，或原模型
      */
     private static ChatModel metered(ChatModel model, String route, MeterRegistry registry) {
         return registry == null ? model : new MeteredChatModel(model, route, registry);

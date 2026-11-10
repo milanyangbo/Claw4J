@@ -8,18 +8,17 @@ import java.time.Duration;
 /**
  * 模型供应商的凭据、开关与路由顺序。
  *
- * <p><b>凭据是句柄，不是值</b>（P08）：yaml 里写 {@code api-key: secret:deepseek_api_key}，
- * 真值在发请求那一刻才由 {@code SecretResolver} 从部署环境换出来。于是这个类、
- * 它的 toString、它的日志，从头到尾都拿不到 key —— 它们只知道"这次用的是哪把钥匙"。
- * 不写成 {@code ${DEEPSEEK_API_KEY:}}：Spring 在绑定期就解成真值，字段活到进程结束，
- * 任何能读到配置的组件都能随手取走（ADR-0006 的取向不变，变的是真值活多久）。
+ * <p>凭据是句柄，不是值（P08）：yaml 里写 {@code api-key: secret:deepseek_api_key}，真值在发请求
+ * 那一刻才由 {@code SecretResolver} 从部署环境换出来。于是这个类、它的 toString、它的日志，
+ * 从头到尾都拿不到 key，只知道"这次用的是哪把钥匙"。不写成
+ * {@code ${DEEPSEEK_API_KEY:}}：Spring 在绑定期就解成真值，字段活到进程结束，任何能读到配置的
+ * 组件都能随手取走。
  *
- * <p><b>没有"要不要 mock"的开关</b>：ADR-0011 取消了 mock 兜底，一个 key 都没有就启动失败，
- * 于是那个三态字段没有存在的理由——留着它就是一处"配了也不生效"的入口。
+ * <p>没有"要不要 mock"的开关：ADR-0011 取消了 mock 兜底，一个 key 都没有就启动失败，
+ * 那个三态字段只会多一处"配了也不生效"的入口。
  *
- * <p>{@code primary} 决定 {@code RoutingChatModel} 里谁先上：主模型调用失败才退到备。
- * 它是"主备降级"而不是"按用途分流"——按用途分流（摘要、子 Agent 走便宜模型）是 M2 的事，
- * 现在只有一条链，先把"主挂了还能答"这件事做实。
+ * <p>{@code primary} 决定 {@code RoutingChatModel} 里谁先上：主模型调用失败才退到备。这是主备
+ * 降级，不是按用途分流（摘要、子 Agent 走便宜模型）——后者还没做。
  */
 @ConfigurationProperties(prefix = "claw4j.model")
 public class ModelProperties {
@@ -30,8 +29,8 @@ public class ModelProperties {
     public static final String QWEN = "qwen";
 
     /**
-     * 主模型供应商。配了不存在的名字时启动失败并列出可选值 —— 静默忽略会让
-     * "我以为在用千问、其实还在用 DeepSeek" 这种事查半天。
+     * 主模型供应商。配了不存在的名字时启动失败并列出可选值——静默忽略会让"以为在用千问、
+     * 其实还在用 DeepSeek"这种事查半天。
      */
     private String primary = DEEPSEEK;
 
@@ -85,10 +84,9 @@ public class ModelProperties {
         private Duration readTimeout = Duration.ofSeconds(60);
 
         /**
-         * 采样温度。默认 {@code 0.0}：这是个查数、调工具的 Agent，
-         * 不是写诗的——同一个问题两次问出两个不同的数是故障，不是个性。
-         * 而且温度是测试可复现的前提：ADR-0011 让测试连真实模型之后，
-         * 非零温度等于给每一条断言都掺一份随机。想让它发散时按环境变量调。
+         * 采样温度。默认 {@code 0.0}：这是个查数、调工具的 Agent，不是写诗的——同一个问题两次问出
+         * 两个不同的数是故障。温度也是测试可复现的前提：连真实模型之后，非零温度等于给每条断言
+         * 掺一份随机。要它发散时按环境变量调。
          */
         private Double temperature = 0.0;
 
@@ -101,17 +99,21 @@ public class ModelProperties {
         /**
          * 这一家用的凭据句柄。空（{@code isAbsent()}）表示这一家没配。
          *
-         * <p><b>不提供 {@code String} 形态的 getter</b>：一旦有 {@code getApiKey()} 返回字符串，
-         * 下一个人就会拿它去拼 header，那把钥匙就又有了第二个出口。要真值只有一个入口——
-         * {@code apiKey().render(resolver)}，而它只该出现在装配类的出口。
+         * <p>不提供 {@code String} 形态的 getter：一旦有 {@code getApiKey()} 返回字符串，
+         * 下一个人就会拿它去拼 header，那把钥匙就有了第二个出口。要真值只有一个入口——
+         * {@code apiKey().render(resolver)}，它只该出现在装配类的出口。
+         *
+         * @return 凭据句柄，可能是 absent
          */
         public SecretValue apiKey() {
             return apiKey;
         }
 
         /**
-         * 绑定时校验形状，不等出口：一个写成明文的 key 在这里就失败，并点名是哪一个配置项。
+         * 绑定时校验形状，不等出口：写成明文的 key 在这里就失败，并点名是哪一个配置项。
          * 校验失败的消息不回显原值（它多半就是真 key），只说要什么形状。
+         *
+         * @param apiKey 配置里写的句柄
          */
         public void setApiKey(String apiKey) {
             this.apiKey = SecretValue.parse(apiKey, "claw4j.model." + name() + ".api-key", false);

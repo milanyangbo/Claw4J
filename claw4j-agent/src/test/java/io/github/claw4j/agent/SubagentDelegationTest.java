@@ -51,11 +51,11 @@ class SubagentDelegationTest {
     Path directory;
 
     /**
-     * P09 的父子一致性：子 Agent 的工具集来自与父**同一个**收集方法、同一份档位策略。
+     * P09 的父子一致性：子 Agent 的工具集来自与父同一个收集方法、同一份档位策略。
      *
-     * <p>这一条盯的是一种很具体的失效：如果子那一侧用了"不过滤"的默认值，
-     * 一个 {@code messaging} 部署只要让模型派个活，就能让子 Agent 把 {@code run_script} 拿到手——
-     * 父那边挡得再严也没用。它不报错、日志上看不出来，只表现为"说好了不许跑脚本，结果跑了"。
+     * <p>这一条盯的是一种很具体的失效：如果子那一侧用了不过滤的默认值，一个 {@code messaging}
+     * 部署只要让模型派个活，就能让子 Agent 把 {@code run_script} 拿到手，父那边挡得再严也没用。
+     * 它不报错、日志上看不出来，只表现为「说好了不许跑脚本，结果跑了」。
      */
     @Test
     @DisplayName("子 Agent 拿到的也是筛过的清单：messaging 部署里它没有 run_script（P09）")
@@ -313,7 +313,7 @@ class SubagentDelegationTest {
         beans.registerSingleton("lookup", new RecordingTool("lookup", "128400"));
         SubagentAutoConfiguration configuration = new SubagentAutoConfiguration();
         // 两个工具的档位都要先登记（P09）：装配期会问清单里每一个工具属于哪一档，
-        // 容器里少一条就是启动失败。这里用默认的全档，所以"有哪些工具"与之前一致。
+        // 容器里少一条就是启动失败。这里用默认的全档，清单内容只取决于注册了哪些工具。
         beans.registerSingleton("lookupTier", ToolTierRegistry.sameFor(List.of("lookup"), ToolTier.MESSAGING));
         beans.registerSingleton("taskTier", configuration.subagentTierRegistry());
 

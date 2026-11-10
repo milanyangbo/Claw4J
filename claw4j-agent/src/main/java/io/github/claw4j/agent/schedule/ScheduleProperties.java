@@ -5,38 +5,33 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.time.Duration;
 
 /**
- * 定时调度的四个数（P04）：多久扫一次、一次最多几条、连着坏几次就停、占一条占多久。
+ * 定时调度的五个数：多久扫一次、一次最多几条、连着坏几次就停、占一条占多久、跑完的会话留多久（P04）。
  *
- * <p><b>为什么扫描间隔放在这里，而 {@code @Scheduled} 又读原文</b>：调度注解在容器启动时
- * 就要拿到值，那时属性绑定不一定已经完成。所以两边读同一个键（占位符原文 + 本对象），
- * 不会出现"配了 5 分钟但实际还是 30 秒"。代价是这个字段"我们不读、别人读"，
- * 于是它不能静默归一——{@code PT0S} 在这里被改成 30 秒，调度器那边照样拿到 0，
- * 而 {@code fixedDelay=0} 是"上一轮结束立刻下一轮"：一个热循环在打库。
- * 与 {@code CacheProperties#cleanupInterval} 同一个判据，宁可起不来。
+ * <p>{@code scanInterval} 与 {@code @Scheduled} 的占位符读同一个键：调度注解在容器启动时
+ * 就要拿值，那时属性绑定不一定已经完成。所以这个字段本对象不读、只在别处读，也就不能静默归一
+ * ——{@code PT0S} 在这里被改成 30 秒，调度器那边照样拿到 0，而 {@code fixedDelay=0} 是
+ * 上一轮结束立刻下一轮，一个热循环在打库。判据与 {@code CacheProperties#cleanupInterval} 相同。
  *
- * <p><b>其余三个越界都判红，不落回默认值</b>：它们各自都能把功能悄悄变成另一件事——
- * {@code maxPerScan=0} 是"谁都不跑"，{@code failureThreshold=0} 是"第一次失败就停用"
- * （那样一条网络抖一下就没了），{@code lease<=0} 是"没有租约"（认领后崩溃的那条永远没人再跑）。
- * 这三种都不会报错，只会在某天被问"它怎么不跑了"。
+ * <p>另外四个数越界都直接抛，不落回默认值：它们各自能把功能悄悄变成另一件事。
+ * {@code maxPerScan=0} 是「谁都不跑」，{@code failureThreshold=0} 是「第一次失败就停用」，
+ * {@code lease<=0} 是「没有租约」，{@code sessionRetention=0} 是「跑完立刻删记录」。
+ * 四种都不报错，只会在某天被问「它怎么不跑了」或「为什么查不到上次的结果」。
  *
- * <p><b>为什么失败阈值是 3</b>：一次失败多半是模型抽风或网络抖，两次是可疑，
- * 三次还能连着坏就是配置或权限出了问题。阈值再高，用户会在"它还在试"和"它已经死了"
- * 之间干等好几天；再低，一次抖动就停掉一个每天都在用的任务。
+ * <p>失败阈值取 3：一次失败多半是模型抽风或网络抖动，两次可疑，三次连着坏基本是配置或权限问题。
+ * 再高，用户会在「它还在试」和「它已经死了」之间干等几天；再低，一次抖动就停掉一个每天在用的任务。
  *
- * <p><b>总开关不在这里</b>：{@code claw4j.schedule.enabled} 的读者是那个 {@code @Bean} 上的
- * {@code @ConditionalOnProperty}，本对象不是它的主人。在这里再声明一次，就是一个
- * "人人都以为自己读了"的键——哪天两边不一致，谁也不知道该以哪个为准。
+ * <p>总开关不在这里：{@code claw4j.schedule.enabled} 的读者是那个 {@code @Bean} 上的
+ * {@code @ConditionalOnProperty}。在这里再声明一次，就是一个人人以为自己读了的键。
  *
- * @param scanInterval     扫描间隔，默认 30 秒。它只由 {@code @Scheduled} 读取
- * @param maxPerScan       一次扫描最多认领几条，默认 5 条
+ * @param scanInterval 扫描间隔，默认 30 秒。它只由 {@code @Scheduled} 读取
+ * @param maxPerScan 一次扫描最多认领几条，默认 5 条
  * @param failureThreshold 连续失败几次自动停用，默认 3 次
- * @param lease            一条被认领之后占多久，默认 5 分钟
- * @param sessionRetention 一次定时运行留下的那段会话留多久，默认 24 小时。
- *                         <b>它与"人的对话留 30 天"是两条口径</b>（OpenClaw 的
- *                         {@code cron.sessionRetention}，默认也是 24h）：定时任务每次运行
- *                         都是一个新段（03），一天跑一次就是一天一段，按 30 天留会让
- *                         {@code ai_session} 里全是没人看的 cron 段。留 24 小时是为了
- *                         "这一次跑出了什么"还能查，查完就该走
+ * @param lease 一条被认领之后占多久，默认 5 分钟
+ * @param sessionRetention 一次定时运行留下的会话留多久，默认 24 小时。它与「人的对话留 30 天」
+ *     是两条口径（OpenClaw 的 {@code cron.sessionRetention}，默认也是 24h，
+ *     {@code docs/cli/cron.md:402}）：定时任务每次运行都是新的一段，一天跑一次就是一天一段，
+ *     按 30 天留会让 {@code ai_session} 里全是没人看的 cron 段。留 24 小时是为了
+ *     「这一次跑出了什么」还能查，查完就该走
  */
 @ConfigurationProperties("claw4j.schedule")
 public record ScheduleProperties(Duration scanInterval,
@@ -52,13 +47,14 @@ public record ScheduleProperties(Duration scanInterval,
     public static final int DEFAULT_FAILURE_THRESHOLD = 3;
 
     /**
-     * 默认 5 分钟。它要长于一次 run 的常见耗时（否则另一个实例会把还在跑的那条抢走），
-     * 又要短到"进程崩了之后不必等一小时"。一轮跑不完本来就会撞预算上限停下来，
-     * 所以这里不需要照顾特别长的那种。
+     * 租约默认 5 分钟。
+     *
+     * <p>要长于一次 run 的常见耗时，否则另一个实例会把还在跑的那条抢走；又要短到进程崩了
+     * 之后不必等一小时。一轮跑不完本来就会撞预算上限停下来，所以不必照顾特别长的那种。
      */
     public static final Duration DEFAULT_LEASE = Duration.ofMinutes(5);
 
-    /** 定时运行的会话留存，默认 24 小时。与 OpenClaw 的 {@code cron.sessionRetention} 同值。 */
+    /** 定时运行的会话留存，默认 24 小时，与 OpenClaw 的 {@code cron.sessionRetention} 同值。 */
     public static final Duration DEFAULT_SESSION_RETENTION = Duration.ofHours(24);
 
     public ScheduleProperties {

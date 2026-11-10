@@ -16,33 +16,28 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * 旧会话怎么清（ADR-0026 的收尾）。判据照 OpenClaw 的 {@code session.maintenance}。
  *
- * <p><b>为什么不是"到点就删行"</b>：框架那条 {@code expires_at} 在<b>建行</b>时
- * 写死 {@code now + ttl}，之后不随活动刷新。于是"每天都在用的一段对话"与"三天前用过一次"
- * 在库里长得一样，一起被删——用户看到的是"第 30 天记忆突然全空，没有任何提示"。
- * 01 的段让活跃对话永远落在新行上，把这个症状<b>盖住</b>了，但判据本身没修：
- * 只要有人把 {@code idle-minutes} 调成 30 天、或者用 {@code mode: none}，误删立刻回来。
+ * <p>不用"到点就删行"：框架的 {@code expires_at} 在建行时写死 {@code now + ttl}，之后不随活动
+ * 刷新，于是"每天都在用"与"三天前用过一次"在库里长得一样，一起被删。判据是这一段的最后一次
+ * 动静：{@code coalesce(max(事件时间), 建行时间)}——事件时间保证刚说过话的段不被删，
+ * 建行时间兜住"段刚建、事件还没落库"的窄窗口。这对应 OpenClaw 的 {@code pruneAfter} 判
+ * {@code lastInteractionAt}。
  *
- * <p><b>现在的判据是"这一段的最后一次动静"</b>：{@code coalesce(max(事件时间), 建行时间)}。
- * 事件时间保证"刚说过话的段不会被删"，建行时间兜住"段刚建、事件还没落库"那个窄窗口。
- * 这对应 OpenClaw 的 {@code pruneAfter} 判 {@code lastInteractionAt}。
- *
- * <p><b>四条语句各管一件事</b>：
+ * <p>四条语句各管一件事：
  * <ul>
- *   <li>段级：{@code prune-after} 内没动静的段（它同时覆盖"整段对话没人要了"）；</li>
- *   <li>桶级：{@code prune-after} 没动的指针行——段删了它也该走，否则这张表只长不消；</li>
- *   <li>上限：指针行超过 {@code max-entries} 时驱逐最久没动的（OpenClaw 的 {@code maxEntries}）；</li>
+ *   <li>段级：{@code prune-after} 内没动静的段（同时覆盖"整段对话没人要了"）；
+ *   <li>桶级：{@code prune-after} 没动的指针行——段删了它也该走，否则这张表只长不消；
+ *   <li>上限：指针行超过 {@code max-entries} 时驱逐最久没动的，对应 OpenClaw 的 {@code maxEntries}；
  *   <li>cron：定时运行留下的段按 {@code claw4j.schedule.session-retention}（默认 24h）单独留，
- *       它的口径与"人的对话"不同——一天一段，按 30 天留会让整张表都是没人看的 cron 段。</li>
+ *       它一天一段，按段级口径留会让整张表都是没人看的 cron 段。
  * </ul>
  *
- * <p><b>{@code warn} 下不删，所以必须"报得出来"</b>：默认档位是 {@code warn}（与 OpenClaw 一致），
- * 它唯一的产出就是"本来会删多少"。不进日志与指标的话，这个默认档位就是一次静默空转——
- * {@link SessionCleanup} 的注释早就写过这是清理任务最典型的失败姿势。
+ * <p>默认 {@code warn} 只算不删，比 OpenClaw 的 {@code enforce} 保守
+ * （{@code docs/gateway/config-agents/sessions.md:129}）。它唯一的产出是"本来会删多少"，
+ * 所以必须进日志与指标，否则这个默认档位就是一次静默空转。
  *
- * <p><b>库不可用时不抛</b>：这里是后台任务，抛出去只会让 {@code @Scheduled} 每小时刷一次全栈，
- * 而"清理没跑成"与"没有东西可清"在结果上都是 0 行。所以 WARN 一次、计数、返回空报告——
- * 与 {@code FaultTolerantSessionService} 同一个判断。区别是本类直接写 SQL、
- * 中间没有那一层降级，所以降级要自己接。
+ * <p>库不可用时不抛：后台任务抛出去只会让 {@code @Scheduled} 每小时刷一次全栈，
+ * 而"清理没跑成"与"没有东西可清"都是 0 行。WARN 一次、计数、返回空报告——本类直接写 SQL，
+ * 中间没有降级层，所以降级要自己接。
  */
 public final class SessionMaintenance {
 
@@ -64,11 +59,8 @@ public final class SessionMaintenance {
     /**
      * 一段时间没动静的指针行。
      *
-     * <p>它把 cron 的段排除在外（{@code not like '%:cron:%'}）：那一类有自己的一条短留存，
-     * 两边都数一遍会让报告里的数字互相吃掉，也让"这次删了几条"答不清楚。
-     *
-     * <p>与桶级那条分开，是因为它们的依据不同：段看"最后一次事件"，桶看"最后一次访问"。
-     * 一个刚换段的人可能一条事件都没写（换段那次是纯读），但指针行必须被刷新。
+     * <p>与桶级那条分开，因为依据不同：段看"最后一次事件"，桶看"最后一次访问"。一个刚换段的
+     * 人可能一条事件都没写（换段那次是纯读），但指针行必须被刷新。
      */
     private static final String STALE_CONVERSATIONS_TEMPLATE =
             "select owner, channel, chat_id from %1$ssession_entry where last_interaction_at < ?";
@@ -91,10 +83,9 @@ public final class SessionMaintenance {
     /**
      * 定时运行留下的段。
      *
-     * <p>{@code like '%:cron:%'} 靠的是 03 定的形状（{@code conversationId = cron:<taskId>:<时刻>}），
-     * 而段的形状里<b>不含冒号</b>，所以它不会误伤普通对话的段。唯一的例外是一个
-     * {@code chatId} 恰好含 {@code :cron:} 的自定义通道——那是保留字，写在
-     * {@code SessionKeys} 的注释里。
+     * <p>{@code like '%:cron:%'} 靠的是 {@code conversationId = cron:<taskId>:<时刻>} 这个形状，
+     * 而段本身是 {@code <epochMilli>-<4 位十六进制>}、不含冒号，所以不会误伤普通对话的段。
+     * 例外是一个 {@code chatId} 恰好含 {@code :cron:} 的自定义通道。
      */
     private static final String STALE_CRON_SEGMENTS_TEMPLATE = """
             select a.id
@@ -142,10 +133,14 @@ public final class SessionMaintenance {
     private boolean warned;
 
     /**
-     * @param schema 会话表所在的 schema。本类在主连接池上跑（{@code search_path} 里没有会话 schema），
-     *               只能写全限定名，所以"落在哪个 schema"必须由这个参数决定，不能由字面量决定。
-     *               <b>与框架那一路同源</b>：两边都读 {@code claw4j.session.schema}，
-     *               否则改配之后框架往新 schema 写、这里清旧的，看起来全绿而一行都没清对
+     * @param jdbc       JDBC 句柄，走主连接池
+     * @param properties 清理判据与档位
+     * @param schedule   定时运行的会话留存，读的是 {@code claw4j.schedule.session-retention}
+     * @param registry   Micrometer 注册表，不能为 null
+     * @param schema     会话表所在的 schema。本类在主连接池上跑（{@code search_path} 里没有会话
+     *                   schema），只能写全限定名，所以落哪个 schema 必须由这个参数决定。
+     *                   与框架那一路同源，两边都读 {@code claw4j.session.schema}，
+     *                   否则改配之后框架往新 schema 写、这里清旧的，看起来全绿而一行都没清对
      */
     public SessionMaintenance(JdbcTemplate jdbc, SessionMaintenanceProperties properties,
                               ScheduleProperties schedule, MeterRegistry registry, String schema) {
@@ -171,7 +166,7 @@ public final class SessionMaintenance {
     }
 
     /**
-     * 跑一次。
+     * 跑一次清理。
      *
      * @param now 当前时刻。测试把 cutoff 推到未来就能验"过 30 天之后会怎样"而不用真等
      * @return 这一次的账。库不可用时是 {@link Report#NONE}

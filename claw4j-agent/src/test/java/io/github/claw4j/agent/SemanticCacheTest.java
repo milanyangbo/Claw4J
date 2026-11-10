@@ -53,18 +53,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 /**
- * 语义缓存：同一个问题第二遍不打模型，以及**哪些情况必须不命中**。
+ * 语义缓存：同一个问题第二遍不打模型，以及哪些情况必须不命中。
  *
- * <p>这里跑的是**框架的** {@link SemanticCacheAdvisor} 与 {@link AgentContextAdvisor}
- * （2026-11-09 起不再有自写 advisor）。存储用一个内存替身，因为它实现的是同一个
- * {@link SemanticCache} 接口，判定口径只有"上下文哈希相同 + 相似度过阈值"两条——
- * 官方的 `DefaultSemanticCache` 也只有这两条。真 Redis 那一路不在单测里跑（要 Redis Stack），
- * 由 `docs/capability-tests.md` 的人工链路兜。
+ * <p>这里跑的是框架的 {@link SemanticCacheAdvisor} 与 {@link AgentContextAdvisor}。存储用一个
+ * 内存替身，它实现同一个 {@link SemanticCache} 接口，判定只有两条：上下文哈希相同、相似度过
+ * 阈值。真 Redis 那一路不在单测里跑（要 Redis Stack），由 {@code docs/capability-tests.md:523}
+ * 的人工链路兜。
  *
- * <p>向量由一个按文本返回预设值的假模型给（见 {@link FakeEmbedding}），
- * 相似度是**实测值的复刻**：0.9372 是同义改写，0.8968 是"华东/华南"。
- * 用真模型跑这几条要花钱、要联网，还会随模型版本漂移；
- * 而这里要验的是"分数怎么用"，不是"分数算得准不准"。
+ * <p>向量由按文本返回预设值的假模型给（见 {@link FakeEmbedding}），相似度是实测值的复刻：
+ * 0.9372 是同义改写，0.8968 是「华东 / 华南」。用真模型跑这几条要花钱、要联网，还会随模型
+ * 版本漂移；而这里要验的是分数怎么用，不是分数算得准不准。
  */
 class SemanticCacheTest {
 
@@ -183,9 +181,8 @@ class SemanticCacheTest {
     // ---------------------------------------------------------------- 人设与提示词
 
     /**
-     * 这几条放在这个文件里而不是单开一个：{@code claw4j-agent} 的测试文件数已到上限（10），
-     * 而它们与缓存测的是同一件事——**请求进入模型之前被改成了什么**。
-     * 缓存键就是那一步拼出来的系统提示词的哈希。
+     * 人设与提示词这一组与缓存测的是同一件事：请求进入模型之前被改成了什么。缓存键就是那一步
+     * 拼出来的系统提示词的哈希，所以拼装一错，命中的就是错的那一份。
      */
     @Test
     @DisplayName("每轮拼的系统提示词：人设 + 口径 + 时间，缺一样都不完整")
@@ -338,7 +335,7 @@ class SemanticCacheTest {
 
         private static final Map<String, float[]> VECTORS = Map.of(
                 EAST_LAST_WEEK, unit(1.0),
-                // 实测 0.9372：同义改写。低于票面原定的 0.95，高于本次的 0.93
+                // 实测 0.9372：同义改写，高于 0.93 的默认阈值
                 EAST_LAST_WEEK_REWORDED, unit(0.9372),
                 // 实测 0.8968：换区域。意思不同，分数也不该过阈值
                 SOUTH_LAST_WEEK, unit(0.8968));

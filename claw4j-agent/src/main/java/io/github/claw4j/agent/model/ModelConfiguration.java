@@ -30,19 +30,17 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /**
- * 真实模型装配：每家供应商各有自己的 bean，装不装由这家有没有 key 决定。
+ * 真实模型装配：每家供应商一个 bean，装不装由这家有没有 key 决定。
  *
- * <p>为什么自己构造而不吃 Spring AI 的自动配置：DeepSeek 的自动配置条件是
- * {@code spring.ai.model.chat=deepseek} 且 matchIfMissing=true，跟 key 无关。
- * 于是 classpath 里一旦有这个 starter，缺 key 时它照样激活并在构造时抛
- * "API key must be set"——应用根本起不来。
+ * <p>自己构造而不吃 Spring AI 的自动配置：DeepSeek 的自动配置条件是
+ * {@code spring.ai.model.chat=deepseek} 且 matchIfMissing=true，与 key 无关。classpath 里一旦有
+ * 这个 starter，缺 key 时它照样激活，并在构造时抛 "API key must be set"，应用根本起不来。
  *
- * <p>本模块因此只依赖纯模型包 {@code spring-ai-deepseek} / {@code spring-ai-openai}（不带 starter），
- * 自动配置压根不在 classpath 上，用不着去关。每家装不装由对应的 Condition
- * 按 key 有无决定；一家都没装上时，装配方法自己抛异常让启动失败并说清去哪配（ADR-0011）。
- * 于是"一个 key 都没有就只能启动失败"与"拿到 key 不用改代码"同时成立，且不需要 Maven profile 重新构建。
+ * <p>本模块因此只依赖纯模型包 {@code spring-ai-deepseek} / {@code spring-ai-openai}（不带
+ * starter），自动配置不在 classpath 上，用不着去关。每家装不装由对应的 Condition 按 key 有无
+ * 决定；一家都没装上时，装配方法自己抛异常让启动失败并说清去哪配（ADR-0011）。
  *
- * <p>这些 bean 不该被业务直接使用 —— 业务拿到的 {@code ChatModel} 是
+ * <p>这些 bean 不该被业务直接使用：业务拿到的 {@code ChatModel} 是
  * {@link RoutingModelConfiguration} 里那个带主备降级的 {@code routingChatModel}。
  */
 @AutoConfiguration
@@ -56,6 +54,18 @@ public class ModelConfiguration {
 
     public static final String QWEN_BEAN = "qwenChatModel";
 
+    /**
+     * DeepSeek 的模型 bean（主）。只在 {@code claw4j.model.deepseek.api-key} 有值时装。
+     *
+     * <p>超时是必须项：不设的话，同步调用会在 Tomcat 请求线程上无限等。两个路径语义不同——
+     * 同步（RestClient）要 connect + read 两者，一次调用就该有始有终；流式（WebClient）只设
+     * connect，read 超时会掐断长回答，整体上限交给 HTTP 通道的 streamTimeout 与取消传播。
+     * 用 JDK 自带的 HttpClient，不为此引 reactor-netty。
+     *
+     * @param properties  模型配置，取 DeepSeek 那一段
+     * @param environment 用来解析密钥句柄
+     * @return DeepSeek 的同步与流式聊天模型
+     */
     @Bean(DEEPSEEK_BEAN)
     @Conditional(DeepSeekModelCondition.class)
     public ChatModel deepSeekChatModel(ModelProperties properties, Environment environment) {
@@ -63,12 +73,6 @@ public class ModelConfiguration {
         SecretResolver secrets = SpringSecretResolver.of(environment);
         requireConfigured(config, secrets);
 
-        // 超时是必须项：不设的话，同步调用会在 Tomcat 请求线程上无限等。
-        // 两个路径语义不同：
-        //  - 同步（RestClient）：connect + read 都要——一次调用就该有始有终；
-        //  - 流式（WebClient）：只设 connect。read 超时会掐断长回答，
-        //    整体上限交给 HTTP 通道的 streamTimeout + 取消传播（客户端断开即中断模型调用）。
-        // 用 JDK 自带的 HttpClient，不为此引 reactor-netty。
         java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
                 .connectTimeout(config.getConnectTimeout())
                 .build();
@@ -81,8 +85,8 @@ public class ModelConfiguration {
         DeepSeekApi api = DeepSeekApi.builder()
                 .baseUrl(config.getBaseUrl())
                 // 每建一次请求取一次真值。DeepSeekApi 把 ApiKey 接到 RestClient / WebClient 的
-                // defaultHeaders 上，那个 consumer 是**每次请求**执行的，所以这里给一个 lambda
-                // 就够——真值不会在构造时被取出来存进某个字段，轮换凭据也不必重启进程。
+                // defaultHeaders 上，那个 consumer 每次请求都会执行，所以给一个 lambda 就够——
+                // 真值不会在构造时被取出来存进字段，轮换凭据也不必重启进程。
                 .apiKey(() -> config.apiKey().render(secrets))
                 .restClientBuilder(RestClient.builder().requestFactory(requestFactory))
                 .webClientBuilder(WebClient.builder().clientConnector(webClientConnector))
@@ -99,12 +103,10 @@ public class ModelConfiguration {
                         .model(config.getModel())
                         .temperature(config.getTemperature())
                         .build())
-                // 模型内部只留短重试（10 次 × 100ms，合计约 1 秒），不用默认的
-                // RetryUtils.DEFAULT_RETRY_TEMPLATE（10 次、2s 起、×5 递增、上限 180s）。
-                // 上层 RoutingChatModel 已经在做"换一家"，这里再叠一层指数退避就是乘法：
-                // 真实联调时把主的 base-url 指到没人听的端口，等了 4 分 40 秒还没轮到备，
-                // 用户看到的是一直转圈——降级写出来等于没写。短重试足够扛一次抖，
-                // 真出问题让路由去换供应商，两边职责不重叠。
+                // 模型内部只留短重试（10 次 × 100ms），不用默认的
+                // RetryUtils.DEFAULT_RETRY_TEMPLATE（2s 起、×5 递增、上限 180s）。
+                // 上层 RoutingChatModel 已经在做"换一家"，这里再叠指数退避就是乘法：
+                // 实测把主的 base-url 指到没人听的端口，等 4 分 40 秒还没轮到备。
                 .retryTemplate(RetryUtils.SHORT_RETRY_TEMPLATE)
                 .build();
     }
@@ -113,10 +115,13 @@ public class ModelConfiguration {
      * 通义没有官方适配器，走它自己提供的 OpenAI 兼容端点（{@code /compatible-mode/v1}），
      * 因此这里用 {@code OpenAiChatModel}。
      *
-     * <p>这一侧的超时旋钮比 DeepSeek 少：OpenAI SDK 只给了一个整体 timeout，
-     * connect 与 read 不分家，所以取 readTimeout；连接建立由底层 okhttp 自己的默认超时兜底。
-     * 另外把 SDK 内部的重试关掉 —— 重试与 {@code RoutingChatModel} 的降级叠加会把
-     * "换一家试试"拖成"在这一家上死等三轮"，超时预算也跟着翻倍。
+     * <p>这一侧的超时旋钮比 DeepSeek 少：OpenAI SDK 只给了一个整体 timeout，connect 与 read 不分家，
+     * 所以取 readTimeout，连接建立由底层 okhttp 的默认超时兜底。SDK 内部的重试关掉——重试与
+     * {@code RoutingChatModel} 的降级叠加会把"换一家试试"拖成"在这一家上死等三轮"。
+     *
+     * @param properties  模型配置，取通义那一段
+     * @param environment 用来解析密钥句柄
+     * @return 走 OpenAI 兼容端点的同步与异步聊天模型
      */
     @Bean(QWEN_BEAN)
     @Conditional(QwenModelCondition.class)
@@ -161,11 +166,14 @@ public class ModelConfiguration {
     }
 
     /**
-     * 配置缺一半就启动失败，并且说清去哪配。
-     * 静默拿空端点、空模型名去请求，表现出来的是"调用成功但回答为空"，极难排查。
+     * 配置缺一半就启动失败，并且说清去哪配。静默拿空端点、空模型名去请求，表现出来的是
+     * "调用成功但回答为空"，极难排查。
      *
-     * <p><b>句柄在这里探一次真值</b>（P08）：只问在不在，不取值。一个跑起来之后才在第 200 次
-     * 请求上失败的系统，比起不来的系统更难查——所以缺失发生在启动期，报错只说句柄名。
+     * <p>句柄在这里探一次真值（P08）：只问在不在，不取值。一个跑起来之后才在第 200 次请求上失败
+     * 的系统，比起不来的系统更难查——所以缺失发生在启动期，报错只说句柄名。
+     *
+     * @param config  这一家的配置
+     * @param secrets 密钥解析器
      */
     private static void requireConfigured(ModelProperties.Provider config, SecretResolver secrets) {
         if (config.apiKey().isAbsent()) {
@@ -190,8 +198,15 @@ public class ModelConfiguration {
     }
 
     /**
-     * 用了哪个模型、哪把钥匙必须在日志里看得见，否则"到底有没有连上真实模型""这次用的是哪个句柄"
-     * 只能靠猜。打的是<b>句柄名</b>，不是真值——日志会被转发、会被贴进工单。
+     * 用了哪个模型、哪把钥匙必须在日志里看得见，否则"有没有连上真实模型""这次用的是哪个句柄"
+     * 只能靠猜。打的是句柄名，不是真值——日志会被转发、会被贴进工单。
+     *
+     * @param label        供应商名，写进日志
+     * @param baseUrl      请求端点
+     * @param model        模型名
+     * @param apiKeyHandle 密钥句柄名，不是真值
+     * @param connectTimeout 连接超时
+     * @param readTimeout    读超时
      */
     private static void logModel(String label, String baseUrl, String model, String apiKeyHandle,
                                  java.time.Duration connectTimeout, java.time.Duration readTimeout) {

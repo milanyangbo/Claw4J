@@ -25,22 +25,21 @@ import java.util.function.Function;
 /**
  * 定时任务的三件工具：建一条、看看有哪些、取消掉（P05）。
  *
- * <p><b>为什么是三个工具而不是一个带 {@code action} 参数的</b>：动作名进的是角色的授权表
- * （{@code claw4j.channel.http.roles} 里那一行），而"能不能新建"与"能不能取消"
- * 是两种授权。合成一个的话，给了"能看自己有哪些任务"就等于给了"能取消"。
+ * <p>三个工具而不是一个带 {@code action} 参数的：动作名进的是角色的授权表
+ * （{@code claw4j.channel.http.roles} 里那一行），而「能不能新建」与「能不能取消」
+ * 是两种授权。合成一个的话，给了「能看自己有哪些任务」就等于给了「能取消」。
  *
- * <p><b>建的时候就把话说死</b>：这张票的标题是"一次授权，多次执行"——
- * 那一次授权指的是<b>建这一下</b>。所以三件事在建的时候全部核一遍：cron 解析得了、
- * 要用的工具主人现在都有、这些工具里没有"每次都要人批准"的。核不过就当场拒，
- * 理由原样交给模型——让它换个说法再来，比明天九点才发现跑不了好得多。
+ * <p>建的时候就把话说死：一次授权、多次执行，那次授权指的是建这一下。所以建的时候核三件事
+ * ——cron 解析得了、要用的工具主人现在都有、这些工具里没有每次都要人批准的。核不过当场拒，
+ * 理由原样交给模型，让它换个说法再来，比明天九点才发现跑不了好。
  *
- * <p><b>到点不再问人</b>：任务用主人的身份跑，但权限按那一刻的角色表重算
- * （{@link ScheduleAuthorization}）。要审批的工具因此进不了定时任务：到点没人能点按钮，
+ * <p>到点不再问人：任务用主人的身份跑，但权限按那一刻的角色表重算
+ * （{@link ScheduleAuthorization}）。要审批的工具因此进不了定时任务，到点没人能点按钮，
  * 结果是每天挂一条没人看见的待批请求，而不是每天办成一件事。
  *
- * <p><b>归属只看身份，不看这个工具实例</b>：{@code owner} 由
- * {@link SessionKeys#ownerOf} 算，与 run 同一把键；"我的任务"与"我的 run"因此是同一种东西。
- * 取消也按这把键判——按 id 判的话，猜中别人的编号就能停别人的任务。
+ * <p>归属只看身份，不看这个工具实例：{@code owner} 由 {@link SessionKeys#ownerOf} 算，
+ * 与 run 同一把键，「我的任务」与「我的 run」因此是同一种东西。取消也按这把键判——
+ * 按 id 判的话，猜中别人的编号就能停别人的任务。
  */
 public final class ScheduleTools implements ToolCallbackProvider {
 
@@ -86,9 +85,11 @@ public final class ScheduleTools implements ToolCallbackProvider {
     /**
      * 三个工具各自的权限登记。
      *
-     * <p>三张表都不碰（{@link ToolPermission#tables()} 为空）：它们改的是"以后什么时候做什么"，
-     * 不是业务数据。真正的越权风险在任务跑起来之后，那一步由鉴权 Advisor
-     * 按<b>那时候</b>的工具权限判。
+     * <p>三张表都不碰（{@link ToolPermission#tables()} 为空）：它们改的是「以后什么时候做什么」，
+     * 不是业务数据。真正的越权风险在任务跑起来之后，那一步由鉴权 Advisor 按那时候的
+     * 工具权限判。
+     *
+     * @return 工具名到权限登记的映射
      */
     public static Map<String, ToolPermission> permissions() {
         return Map.of(CREATE, ToolPermission.of(CREATE),
@@ -145,8 +146,8 @@ public final class ScheduleTools implements ToolCallbackProvider {
             List<String> requiredTools = strings(args, "tools");
             NotifyPolicy notify = policy(text(args, "notify"));
 
-            // ① cron 与时区：写错了当场说，并且把"下一次"算出来给它看——
-            // 模型自己不理解 6 段 cron 的日历语义，"明天九点"这种话只有算过才说得准。
+            // ① cron 与时区：写错了当场说，并把算出来的「下一次」给它看。模型不理解 6 段 cron
+            //    的日历语义，「明天九点」这种话只有算过才说得准。
             Instant next;
             try {
                 next = ScheduleStore.firstRunAt(cron, zone);
@@ -167,8 +168,8 @@ public final class ScheduleTools implements ToolCallbackProvider {
                         + "到点那一刻也就没法用你的身份跑。先让这个角色回到授权表里，再建。";
             }
 
-            // ④ 落到哪儿：这件事登记过的第一个会话就是它的出处。没有地址也能建，
-            //    只是结果只能按 run id 取。
+            // ④ 落到哪儿：用这一轮所在的通道与会话作为出址。没有地址也能建，
+            //    只是结果只能按 id 取。
             Optional<DeliveryTarget> address = addressOf(toolContext);
             Optional<Schedule> created = store.create(new ScheduleStore.Request(
                     SessionKeys.ownerOf(principal), goal, cron, zone, notify,
@@ -297,10 +298,10 @@ public final class ScheduleTools implements ToolCallbackProvider {
     // ---- 一条工具调用的公共半截 ----
 
     /**
-     * 定义、身份、参数解析、参数错误变回一句话。
+     * 定义、身份、参数解析，以及把参数错误变回一句话。
      *
-     * <p><b>参数问题不抛出</b>：模型把 cron 写成 5 段这件事，换一个参数就能自救；
-     * 抛出去会变成整个请求 500，而在用户那边只是"助手坏了"。
+     * <p>参数问题不抛出：模型把 cron 写成 5 段，换一个参数就能自救；抛出去会变成整个请求 500，
+     * 而在用户那边只是「助手坏了」。
      */
     private abstract class BaseTool implements ToolCallback {
 
@@ -349,7 +350,7 @@ public final class ScheduleTools implements ToolCallbackProvider {
         return value instanceof Principal principal ? principal : null;
     }
 
-    /** 这一轮的 run。为 null 表示不在一个 run 里——那时任务建得起来，但结果没有可推的地址。 */
+    /** 这一轮 run 的编号，从工具上下文里取；取不到返回 null。 */
     private static String runIdOf(ToolContext toolContext) {
         if (toolContext == null) {
             return null;
@@ -419,8 +420,11 @@ public final class ScheduleTools implements ToolCallbackProvider {
     /**
      * 结果推回哪儿：这一轮从哪个通道、哪个会话来的（ADR-0027）。
      *
-     * <p>地址是这一轮的属性（工具上下文里的 {@code channel} 与 {@code chatRef}），
-     * 不靠另一张表登记。拿不到就是"没地方推"，任务照建，结果只能按 id 取。
+     * <p>地址是这一轮的属性（工具上下文里的 {@code channel} 与 {@code chatRef}），不靠另一张表
+     * 登记。拿不到就是没地方推，任务照建，结果只能按 id 取。
+     *
+     * @param toolContext 工具上下文，可能为 null
+     * @return 推送地址；拿不到通道或会话时为空
      */
     private static Optional<DeliveryTarget> addressOf(ToolContext toolContext) {
         if (toolContext == null) {

@@ -15,19 +15,19 @@ import java.util.Objects;
 /**
  * 语义切块：句子之间判语义，块超 token 上限才硬切。
  *
- * <p><b>这一层只干框架相关的事</b>：算句子组的向量、把块拼回文本、超长交回
- * {@link TokenTextSplitter}。切句、分组、断点、成块都在 {@link ChunkPlanner}（`claw4j-core`，
- * 只碰 JDK）。分开的理由是算法不该知道 Spring AI 存在；它也因此能被单独测。
+ * <p>这一层只干框架相关的事：算句子组的向量、把块拼回文本、超长交回 {@link TokenTextSplitter}。
+ * 切句、分组、断点、成块都在 {@link ChunkPlanner}（{@code claw4j-core}，只碰 JDK）。
+ * 分开的理由是算法不该知道 Spring AI 存在，它也因此能被单独测。
  *
- * <p><b>算法照 LangChain 的 {@code SemanticChunker}</b>，参数用它的默认值
- * （{@code buffer_size=1}、{@code percentile} 95、{@code min_chunk_size} 不合并），
- * 只换中文断句正则、并叠加一条"句首转折词断块"的产品规则。完整裁决见 ADR-0028。
+ * <p>算法照 LangChain 的 {@code SemanticChunker}，参数取它的默认口径（{@code buffer_size=1}、
+ * {@code percentile} 95、{@code min_chunk_size} 不合并），只换中文断句正则，并叠加一条
+ * "句首转折词断块"的产品规则。完整裁决见 ADR-0028。
  *
- * <p><b>为什么 {@code chunk-size} 的硬切留在这里</b>：它按 token 算，要 jtokkit，而 core 不能依赖
- * 任何 tokenizer。所以"超长"是这一层的事，不是算法层的事——字数也**只在这一步**出现。
+ * <p>{@code chunk-size} 的硬切留在这里：它按 token 算，要 jtokkit，而 core 不能依赖任何
+ * tokenizer。所以"超长"是这一层的事，不是算法层的事，字数的判断只在硬切这一步出现。
  *
- * <p><b>降级分两层</b>：embedding 挂了只丢"话题跃迁"这条判据，转折词那条不需要向量，
- * 照常生效。整篇退回纯 token 会把一条还活着的判据一起丢掉，没有理由那样做。
+ * <p>降级分两层：embedding 挂了只丢"话题跃迁"这条判据，转折词那条不需要向量，照常生效。
+ * 整篇退回纯 token 会把一条还活着的判据一起丢掉。
  */
 public class SemanticTextSplitter extends TextSplitter {
 
@@ -41,6 +41,10 @@ public class SemanticTextSplitter extends TextSplitter {
     /** token 上限的兜底。与"切分判据"无关，只在块超限时被调用。 */
     private final TextSplitter tokenSplitter;
 
+    /**
+     * @param embeddings 向量模型，用来算句子组的语义跃迁
+     * @param chunkSize  单块 token 上限，超了才硬切
+     */
     public SemanticTextSplitter(EmbeddingModel embeddings, int chunkSize) {
         this.embeddings = Objects.requireNonNull(embeddings, "embeddings");
         this.tokenSplitter = TokenTextSplitter.builder().withChunkSize(chunkSize).build();
@@ -68,8 +72,11 @@ public class SemanticTextSplitter extends TextSplitter {
     }
 
     /**
-     * 话题跃迁的断点。任何一步不对劲都返回空列表——**只丢这一条判据**，
-     * 不让一次接口抖动变成"这份文档索引失败"。
+     * 话题跃迁的断点。任何一步不对劲都返回空列表：只丢这一条判据，不让一次接口抖动变成
+     * "这份文档索引失败"。
+     *
+     * @param sentences 句子列表
+     * @return 断点位置；向量不可用时是空列表，表示"只按转折词切"
      */
     private List<Integer> semanticBreaks(List<String> sentences) {
         List<String> groups = ChunkPlanner.groups(sentences, ChunkPlanner.BUFFER_SIZE);

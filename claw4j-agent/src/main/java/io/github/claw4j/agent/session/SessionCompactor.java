@@ -12,20 +12,16 @@ import org.springframework.ai.session.compaction.CompactionTrigger;
 import java.util.Objects;
 
 /**
- * 进模型之前把历史收拾一遍：够了就压成摘要，不够就什么也不做。
+ * 进模型之前把历史收拾一遍：够了就压成摘要，不够什么也不做。
  *
- * <p><b>为什么需要这个类，而不是把 trigger 与 strategy 交给 {@code SessionMemoryAdvisor}</b>：
- * 它的 Builder 上确实有 {@code compactionTrigger} / {@code compactionStrategy} 两个参数，
- * 但 0.10.0 的 {@code SessionMemoryAdvisor} 字节码里<b>一次都没调用过
- * {@code SessionService.compact}</b>。配上去之后两个字段只是躺在对象里，
- * 压缩永远不会发生——这是"配了、不报错、也没生效"的那一类，比缺功能更难发现。
+ * <p>压缩由本类驱动，不交给 {@code SessionMemoryAdvisor} 的 {@code compactionTrigger} /
+ * {@code compactionStrategy}。那对参数在 {@code after} 阶段（整轮结束、且这一轮没请求工具调用）
+ * 才触发一次 {@code SessionService.compact}，而本仓库在 {@code ChatClientAgentPort} 拼提示词
+ * 之前压，压完紧接着被读到。代价是压缩时机与框架的调度不同步：两边同时开，一轮里会压两次。
  *
- * <p>所以触发点只能自己找。选在 {@code ChatClientAgentPort} 进模型**之前**：
- * 那里是唯一一个"这一轮马上要拼提示词"的位置，压完紧接着就被读到。
- *
- * <p><b>会话还不存在时要闭嘴</b>：第一轮对话还没有会话，{@code compact} 会抛
+ * <p>会话还不存在时要闭嘴：第一轮对话还没有会话，{@code compact} 会抛
  * {@code IllegalArgumentException}。那不是故障，是时序——用户第一次提问本来就没有历史可压。
- * 把它也记成失败，会让 {@code compaction.failures} 从第一天起就不是 0，从此没人看这个数。
+ * 记成失败会让 {@code compaction.failures} 从第一天起就不是 0，之后没人再看这个数。
  */
 public class SessionCompactor {
 
@@ -51,8 +47,12 @@ public class SessionCompactor {
     }
 
     /**
-     * 压不压由 {@code trigger} 决定，{@code SessionService.compact} 内部会先问它一次，
-     * 不满足就原样返回。所以这里每轮都调是安全的——绝大多数时候它是一次判断加一次查询。
+     * 按配置判断这一轮要不要压，压了就记指标。
+     *
+     * <p>{@code trigger} 决定压不压，{@code SessionService.compact} 内部会先问它一次，不满足就
+     * 原样返回。所以每轮都调是安全的——绝大多数时候它是一次判断加一次查询。
+     *
+     * @param sessionId 当前这一段；空或 null 时直接返回
      */
     public void compactIfNeeded(String sessionId) {
         if (sessionId == null || sessionId.isBlank()) {

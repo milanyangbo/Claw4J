@@ -5,6 +5,7 @@ package io.github.claw4j.agent.model;
  */
 public class DeepSeekModelCondition extends RealChatModelCondition {
 
+    /** 这一家的 key 属性名。 */
     public static final String API_KEY_PROPERTY = "claw4j.model.deepseek.api-key";
 
     @Override

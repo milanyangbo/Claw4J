@@ -20,52 +20,44 @@ import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
- * 委派的执行器：为一次委派开一个<b>独立上下文窗口</b>，跑完只把结论文本交回父 Agent。
+ * 委派的执行器：为一次委派开一个独立上下文窗口，跑完只把结论文本交回父 Agent。
  *
- * <p><b>做深的是上下文隔离，不是"起了第二个 Agent"</b>（ADR-0008）：后者配一个新
- * {@code ChatClient} 就有，前者才有断言可写。隔离落在这三处，每处都可测：
+ * <p>做深的是上下文隔离，不是起了第二个 Agent（ADR-0008）：后者配一个新 {@code ChatClient}
+ * 就有，前者才有断言可写。隔离落在三处，每处都可测：
  * <ul>
- *   <li><b>子窗口是新建的</b>：这里 {@code ChatClient.builder(...)} 每次委派都从头建一个，
- *       不带父的任何一条消息。父那一轮的对话历史对子不存在，子也看不见父问了什么——
- *       它只拿到 {@link #delegate} 的 {@code task} 那一段。
- *   <li><b>回传的只有 {@code content()}</b>：子 Agent 中间调了几次工具、每次拿到什么，
- *       全留在子窗口的消息里，父那边只有"这次委派的结果"这一个字符串。
- *       这是"只回传结论"在代码里的样子，也是子 Agent 委派那份测试里那条断言盯的地方。
- *   <li><b>子链上不挂记忆与脱敏</b>：记忆会把子的中间过程写进会话，等于把刚隔离掉的东西
- *       从另一个门漏回去；脱敏在父链出站前还会做一次，子在中间打码只会让它认不出自己查到的值。
+ *   <li>子窗口是新建的：这里每次委派都从头 build 一个 {@code ChatClient}，不带父的任何一条
+ *       消息，子只拿到 {@link #delegate} 的 {@code task}。
+ *   <li>回传的只有 {@code content()}：子中间调了几次工具、每次拿到什么，全留在子窗口里。
+ *   <li>子链上不挂记忆与脱敏：记忆会把子的中间过程写进会话，等于把刚隔离掉的东西从另一个门
+ *       漏回去；脱敏在父链出站前还会做一次，子在中间打码只会让它认不出自己查到的值。
  * </ul>
  *
- * <p><b>委派不提权</b>：子的工具调用照样过 {@link AuthorizationAdvisor}，
- * 用的就是父那个 {@link Principal}——身份由委派时的入站请求给，不由 Subagent 定义给。
- * 于是"父看不到的表，派个 Subagent 就看得到"这条路从设计上不存在
- * （子 Agent 委派那份测试里 guest 那条盯着它）。
+ * <p>委派不提权：子的工具调用照样过 {@link AuthorizationAdvisor}，用的就是父那个
+ * {@link Principal}——身份由委派时的入站请求给，不由 Subagent 定义给。父看不到的表，
+ * 派个 Subagent 去看这条路从设计上不存在。
  *
- * <p><b>子也吃同一份熔断上限</b>（3 / {@code claw4j.agent.tool-call-limit}，
- * 见 {@link ToolCallBudget}），也走同一个工具循环
- * （{@link ToolSearch#toolLoop}）：委派不能变成绕过预算的口子——否则"一个坏掉的脚本在子里循环"
- * 能一直烧下去，而父那一侧的预算看起来还一点没动。工具循环只有一种这件事也适用于这里：
- * 子那边同样是"先检索、再调用"，白名单里的工具先被索引进 {@link ToolIndex}，
- * 检索得到才拿得到——于是"子只能用它白名单里的工具"这条约束在检索这条路上也成立。
+ * <p>子吃同一份熔断上限（3 次 / {@code claw4j.agent.tool-call-limit}，见
+ * {@link ToolCallBudget}），也走同一个工具循环（{@link ToolSearch#toolLoop}）：委派不能变成
+ * 绕过预算的口子，否则一个坏掉的脚本在子里循环能一直烧下去，而父那一侧的预算看起来还一点
+ * 没动。子那边同样是先检索、再调用，白名单里的工具先被索引进 {@link ToolIndex}，于是白名单
+ * 在检索这条路上也成立。
  *
- * <p><b>子窗口的会话 id 按定义名固定</b>：工具循环按会话 id 分桶存索引，
- * 而它每个请求都会新建一个实例（{@code DefaultChatClient} 每轮都 {@code copy().build()}），
- * LRU 只在实例内生效——真正长期持有的是共享的 {@link ToolIndex}。
- * 每次委派生成一个新 id 会让那个桶按委派次数增长且永不回收；
- * 按定义名固定则桶数等于定义的个数，索引内容也只取决于白名单。
- * 代价是同一个定义的两个并发委派共用一个桶，与"同一个用户同时发两条消息"是同一类情形。
+ * <p>子窗口的会话 id 按定义名固定：工具循环按会话 id 分桶存索引，而它每个请求都会新建实例
+ * （{@code DefaultChatClient} 每轮 {@code copy().build()}），LRU 只在实例内生效，真正长期
+ * 持有的是共享的 {@link ToolIndex}。每次委派生成新 id 会让桶按委派次数增长且永不回收，
+ * 按定义名固定则桶数等于定义的个数。代价是同一份定义的两个并发委派共用一个桶，与同一个用户
+ * 同时发两条消息是同一类情形。
  *
- * <p><b>工具集在这里才取，而且是 {@code Supplier}</b>：装配期取会撞上循环依赖——
- * 本 Runner 是 {@code Task} 工具回调的依赖，而 {@code Task} 自己又是一个
- * {@code ToolCallback} bean，{@code ObjectProvider} 在装配期展开就把自己也卷进去了。
- * 换成 {@code Supplier} 之后，展开发生在委派那一刻，容器早已就绪。
- * 代价要记账：白名单点名了一个没装上的工具时，失败发生在<b>首次委派</b>而不是启动时，
- * 失败姿势仍然是拒绝并点名缺哪个工具（见 {@link SubagentDefinition#selectTools}）。
+ * <p>工具集在这里才取，而且是 {@code Supplier}：装配期取会撞上循环依赖——本 Runner 是
+ * {@code Task} 工具回调的依赖，而 {@code Task} 自己又是一个 {@code ToolCallback} bean，
+ * {@code ObjectProvider} 在装配期展开就把自己也卷了进去。代价是白名单点名了一个没装上的工具
+ * 时，失败发生在首次委派而不是启动时（见 {@link SubagentDefinition#selectTools}）。
  */
 public final class SubagentRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SubagentRunner.class);
 
-    /** 子 Agent 没能给出任何结论时的回传文本：父至少要知道"派出去但没拿到东西"。 */
+    /** 子 Agent 没能给出任何结论时的回传文本：父至少要知道派出去但没拿到东西。 */
     private static final String EMPTY_CONCLUSION = "（这个 Subagent 没有给出结论）";
 
     private final ChatModel model;
@@ -103,7 +95,10 @@ public final class SubagentRunner {
     /**
      * 派一个 Subagent 去做这件事，只把结论带回来。
      *
-     * @param task 交给子 Agent 的完整任务描述。它看不到父的对话，要什么就得在这里写清。
+     * @param definition 派哪一个，决定系统提示词、工具白名单与会话桶
+     * @param task 交给子 Agent 的完整任务描述。它看不到父的对话，要什么就得在这里写清
+     * @param principal 父这一轮的身份，子链上的鉴权与熔断都用它
+     * @return 子的结论；子没有给出任何文本时是一句固定的说明
      */
     public String delegate(SubagentDefinition definition, String task, Principal principal) {
         Objects.requireNonNull(definition, "definition");

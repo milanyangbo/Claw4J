@@ -75,9 +75,9 @@ import static org.mockito.Mockito.when;
  * 读数路径完全相同。抓 mock 的调用参数只能证明"代码执行到了那一行"，
  * 证明不了"那个数是对的"——而这个功能存在的全部意义就是把数算对。
  *
- * <p>定时任务那一组（P04）读的也是计数器，但它还要断言"扫描器做了什么决定"，
- * 所以那里对 {@link ScheduleStore} 用的是替身：**库上的那一半不在这个文件里**
- * （认领只跑一次、重启不丢时间点在 app 的 {@code ScheduleFlowTest} 用真库验）。
+ * <p>定时任务那一组（P04）读的也是计数器，但它还要断言扫描器做了什么决定，所以那里对
+ * {@link ScheduleStore} 用的是替身；库上的那一半不在这个文件里，认领只跑一次、重启不丢时间点
+ * 由 app 的 {@code ScheduleFlowTest} 用真库验。
  */
 class ObservabilityTest {
 
@@ -111,7 +111,7 @@ class ObservabilityTest {
     @Test
     @DisplayName("流式只认最后一帧：每帧都带累计 usage 时，逐帧累加会翻三倍")
     void streamCountsUsageOnceFromTheLastChunk() {
-        // 三帧都带 usage(12,34) —— 这是多数供应商的实际形态：每帧给的是**累计值**。
+        // 三帧都带 usage(12,34) —— 这是多数供应商的实际形态：每帧给的是累计值。
         // 于是"逐帧累加"会记成 36，而真实成本是 12。
         // 前几帧没有 usage 的那种形态反而是无害的：没值就跳过，末帧照样对。
         MeteredChatModel model = new MeteredChatModel(new FixedChatModel(
@@ -212,9 +212,9 @@ class ObservabilityTest {
 
     // ---- trace：一条 run 连到它的每个 step（P14） ----
     //
-    // 这一组用的是**真的** OtelSpanTracer 加 SimpleSpanProcessor（同步导出），不是替身：
-    // 父子关系是 OTel 的 Context 给的，拿替身验"我传了父 id"只能证明代码执行到那一行，
-    // 证明不了层级真的成立。收 span 的 exporter 是几十行的假货——它只把 SpanData 收进列表。
+    // 这一组用的是真的 OtelSpanTracer 加 SimpleSpanProcessor（同步导出），不是替身：
+    // 父子关系是 OTel 的 Context 给的，用替身验「我传了父 id」只能证明代码执行到那一行，
+    // 证明不了层级真的成立。收 span 的 exporter 是几十行的假货，它只把 SpanData 收进列表。
 
     /** 收下来的 span。SimpleSpanProcessor 是同步的：end() 一返回，它就已经在这里了。 */
     private final List<SpanData> spans = new CopyOnWriteArrayList<>();
@@ -343,7 +343,7 @@ class ObservabilityTest {
     }
 
     /**
-     * 一条真会画 span 的链路：门、工具包装、审计全用**同一个** tracer。
+     * 一条真会画 span 的链路：门、工具包装、审计全用同一个 tracer。
      *
      * <p>同一个而不是各造一个：父子靠 Context 接得上，但两套 provider 的 span 会进两条
      * 不同的导出链，断言时得按 provider 分开收——没有理由为省一行把它搞复杂。
@@ -372,10 +372,9 @@ class ObservabilityTest {
 
     // ---- 定时任务到点跑不跑（P04） ----
     //
-    // 这一组为什么长在这里：agent 的测试文件位已经用满 10 个（P02 的记录），而这一组要断言的
-    // 正是"跑了几次、失败几次、停用几次"——它属于这个文件一直在管的那件事（计量）。
-    // **库上的那一半不在这里**：认领只跑一次、重启不丢时间点在 app 的 ScheduleFlowTest 里用真库验。
-    // 这里用的是替身，因此只断言"扫描器做了什么决定"，不假装能证明 SQL 对不对。
+    // 这一组要断言的是「跑了几次、失败几次、停用几次」，它属于这个文件一直在管的那件事：计量。
+    // 库上的那一半不在这里，认领只跑一次、重启不丢时间点由 app 的 ScheduleFlowTest 用真库验；
+    // 这里用替身，因此只断言扫描器做了什么决定，不假装能证明 SQL 对不对。
 
     @Test
     @DisplayName("到点跑成：推进下一次时间点，并且问的是任务主人、带的是静默档")

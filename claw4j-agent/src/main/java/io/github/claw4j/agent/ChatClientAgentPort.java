@@ -46,16 +46,15 @@ import java.util.function.Supplier;
 /**
  * {@link AgentPort} 的默认实现：把入站消息喂给 ChatClient，把回答包成出站消息。
  *
- * <p>这是整个 Agent 对外唯一的门。通道、测试、MCP 入口都走这里，
- * 于是"换编排方式"这件事被收在模块内部，外部不受影响。
+ * <p>这是 Agent 对外唯一的门，通道、测试、MCP 入口都走这里，于是「换编排方式」被收在模块内部，
+ * 外部不受影响。
  *
- * <p>{@link #stream} 会阻塞到流结束才返回。调用方（通道）自己决定在哪个线程调用它——
- * 飞书那种「立刻 ACK 再异步回推」的场景就靠这个：通道收到事件后立刻返回，
- * 把 stream 丢给业务线程池，结果再通过主动推送接口发回去（ADR-0009）。
+ * <p>{@link #stream} 会阻塞到流结束才返回，由调用方决定在哪个线程调用它。飞书那种「立刻 ACK
+ * 再异步回推」就靠这个：通道收到事件后立刻返回，把 stream 丢给业务线程池，结果再通过主动推送
+ * 接口发回去（ADR-0009）。
  *
- * <p>中断契约（见 {@link AgentPort#stream}）靠 {@code blockLast()} 天然满足：
- * 它在等待流时响应中断。客户端断开后通道 {@code cancel(true)}，
- * 这里会立刻以异常结束，而不是把整条模型流烧完。
+ * <p>中断契约（见 {@link AgentPort#stream}）靠 {@code blockLast()} 满足：等待时响应中断，
+ * 客户端断开后通道 {@code cancel(true)}，这里立刻以异常结束，而不是把整条模型流烧完。
  */
 public class ChatClientAgentPort implements AgentPort, TaskLauncher {
 
@@ -71,22 +70,23 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     private static final int RECAP_CHARS = 120;
 
     /**
-     * 注入的"活跃目标"那一行最多几个字。
+     * 注入的「活跃目标」那一行最多几个字。
      *
-     * <p>OpenClaw 会截断过长的目标内容"使该行保持紧凑"。它只是一行提醒，
+     * <p>与 OpenClaw 的 {@code MAX_ACTIVE_GOAL_OBJECTIVE_CHARS} 同值（200，
+     * {@code src/auto-reply/reply/inbound-meta.ts:29}），超出截断并加省略号。它只是一行提醒，
      * 不是目标全文——要看全文走 {@code /goal} 或 {@code get_goal}。
      */
     private static final int GOAL_CHARS = 200;
 
     /**
-     * 根 span 的名字：**一轮的执行体**（P14）。
+     * 根 span 的名字：一轮的执行体（P14）。
      *
-     * <p>不是"一次请求"：五个通道都把 {@code agent.reply} 丢进线程池，请求的 trace 在入池那一刻就断了；
-     * 而模型轮与工具调用都发生在入池之后。根放在这一轮上，trace 的边界才与
-     * "审计里那两条 {@code agent_run} 事件之间"是同一段。
+     * <p>不是「一次请求」：五个通道都把 {@code agent.reply} 丢进线程池，请求的 trace 在入池那一刻
+     * 就断了，而模型轮与工具调用都发生在入池之后。根放在这一轮上，trace 的边界才与审计里那两条
+     * {@code agent_run} 事件之间是同一段。
      *
-     * <p>编号只活一轮（ADR-0027）：{@code runId} 是这一轮的身份，不是能接上的把手——
-     * 下一轮是新的编号，同一段对话靠 {@code sessionKey} 连起来。
+     * <p>编号只活一轮（ADR-0027）：{@code runId} 是这一轮的身份，不是能接上的把手，下一轮是新编号，
+     * 同一段对话靠 {@code sessionKey} 连起来。
      */
     private static final String RUN_SPAN = "run";
 
@@ -94,31 +94,31 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     private static final String TURN_SPAN = "model.turn";
 
     /**
-     * 这一轮是哪一轮。trace 与审计之间**只有这一把键**：拿它去 {@code audit_event.run_id}
-     * 查，这一轮的全部事件都在（OpenClaw 的 span 上同样只带身份，不带账本行号）。
+     * 这一轮是哪一轮。trace 与审计之间只有这一把键：拿它去 {@code audit_event.run_id} 查，
+     * 这一轮的全部事件都在。
      */
     private static final String ATTR_RUN_ID = "claw4j.run.id";
 
     /**
-     * 谁的这件事——**只放权限指纹，不放 userId**。
+     * 谁的这件事——只放权限指纹，不放 {@code userId}。
      *
-     * <p>trace 会进第三方后端，而"哪个员工问了什么"本身是内部信息。指纹能回答
-     * "这两个 span 是同一个人吗"（那正是排查时要问的），却反推不出是谁——
-     * 与审计表里存 userId 的区别正是"审计归自己、trace 可能出去"。
+     * <p>trace 会进第三方后端，而「哪个员工问了什么」本身是内部信息。指纹能回答「这两个 span
+     * 是同一个人吗」（那正是排查时要问的），却反推不出是谁。与审计表里存 userId 的区别正是
+     * 「审计归自己、trace 可能出去」。
      */
     private static final String ATTR_OWNER = "claw4j.owner";
 
-    /** 这一轮花掉的 token。拿不到时**不写**——写 0 会被读成"没花钱"。 */
+    /** 这一轮花掉的 token。拿不到时不写——写 0 会被读成「没花钱」。 */
     private static final String ATTR_TOKENS = "claw4j.tokens";
 
-    /** 这一轮是哪个模型答的。取响应里的 model id，不是我们配的路由名（那一个在这一层看不到）。 */
+    /** 这一轮是哪个模型答的。取响应里的 model id，不是配置里的路由名（路由在这一层看不到）。 */
     private static final String ATTR_MODEL = "gen_ai.response.model";
 
     /**
      * 撞上工具调用上限时回给用户的那一句。
      *
-     * <p>只说"停了"不够：用户会以为是自己那句话有问题。要说清<b>是这个动作被反复调了太多次</b>，
-     * 以及<b>下一步能做什么</b>（把要求说细一点）。
+     * <p>只说「停了」不够：用户会以为是自己那句话有问题。要说清是这个动作被反复调了太多次，
+     * 以及下一步能做什么（把要求说细一点）。
      */
     static final String TOOL_CALL_CAPPED =
             "这一步做了太多次，我先停下。请把要求说得更具体一些（查哪张表、哪段时间），"
@@ -127,40 +127,39 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     private final ChatClient chatClient;
 
     /**
-     * 压缩器。可以为 null——没装配会话存储时就没有"历史"这回事，也就没有可压的。
-     * 这不是配置错误，是能力不在场，所以不在这里造一个空实现去假装它存在。
+     * 压缩器。可以为 null：没装配会话存储就没有「历史」这回事，也就没有可压的。这不是配置错误，
+     * 是能力不在场，所以不造一个空实现去假装它存在。
      */
     private final SessionCompactor compactor;
 
     /**
-     * 结果投递与回收（A05）。可以为 null——与上面两个同一个判断：没有 run 存储
-     * 就没有"送到哪儿"这回事，那是能力不在场，不造一个空实现去假装它存在。
+     * 结果投递与回收（A05）。可以为 null：没有 run 存储就没有「送到哪儿」这回事，那是能力不在场，
+     * 同样不造空实现。
      */
     private final ConversationDelivery delivery;
 
     /**
-     * trace（P14）。默认是空实现：没开观测时这里一次 {@code open} 就是一次内联掉的方法调用，
-     * 埋点代码与开着的时候逐字相同——**"关着"不该是另一条代码路径**，
-     * 否则那条路径平时不跑，等开了观测才第一次执行。
+     * trace（P14）。默认是空实现：没开观测时每次 {@code open} 都是一次会被内联掉的调用，埋点代码
+     * 与开着时逐字相同。关着不该是另一条代码路径，否则那条路径平时不跑，等开了观测才第一次执行。
      */
     private final SpanTracer tracer;
 
     /**
-     * 这段对话现在叫什么（ADR-0026）。可以为 null——没有会话存储就没有"段"这回事，
-     * 于是 {@code sessionId} 退回加段之前的形状。
+     * 这段对话现在叫什么（ADR-0026）。可以为 null：没有会话存储就没有「段」这回事，于是
+     * {@code sessionId} 退回加段之前的形状。
      *
-     * <p><b>它<b>不</b>属于 run 那一组</b>：一轮的编号活一轮，段跨多轮，寿命不同，
-     * 所以开关也不同——关掉那一层持久化时，段照常工作。
+     * <p>它不属于 run 那一组：一轮的编号活一轮，段跨多轮，寿命不同，开关也不同——关掉那层持久化时
+     * 段照常工作。
      */
     private final SessionEntries pointers;
 
     /**
-     * 一段对话的串行化（ADR-0026 决定二）。可以为 null——没有它时两条并发消息各跑各的，
-     * 也就是改造之前的行为。这不是"降级更好"，是让只装配了 ChatClient 的调用方
-     * （例子、测试）不必凭空造一个调度器。
+     * 一段对话的串行化（ADR-0026 决定二）。可以为 null：没有它时两条并发消息各跑各的，也就是串行化
+     * 之前的行为。这不是降级更好，是让只装配了 ChatClient 的调用方（例子、测试）不必凭空造一个
+     * 调度器。
      *
-     * <p><b>它包在最外层</b>，不是包在 {@code promptOf} 里：套在里面时 run 已经开出来了，
-     * 审计里会多出一条并行的事，而"这段对话同时只有一个 run"这句话就不成立了。
+     * <p>它必须包在最外层，不能包在 {@code promptOf} 里：套在里面时 run 已经开出来了，审计里会多出
+     * 一条并行的事，「这段对话同时只有一个 run」就不成立。
      */
     private final ConversationLane lane;
 
@@ -168,41 +167,83 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     private final SessionGoalStore goals;
 
     /**
-     * 审计规则层（ADR-0027）：这一轮开始 / 结束各一条事件。
+     * 审计规则层（ADR-0027）：这一轮开始与结束各一条事件。
      *
-     * <p>为 null 时一行都不写。它不是"可选优化"——没开审计的部署本来就该零写入，
-     * 造一个空实现去假装它在，会让"审计到底有没有生效"这个问题没有答案。
+     * <p>为 null 时一行都不写。它不是可选优化——没开审计的部署本来就该零写入，造一个空实现去假装
+     * 它在，会让「审计到底有没有生效」没有答案。
      */
     private final ToolCallAudit audit;
 
+    /**
+     * 只连 ChatClient 的门：无压缩、无投递、无观测、无审计。
+     *
+     * @param chatClient 对话客户端，必填
+     */
     public ChatClientAgentPort(ChatClient chatClient) {
         this(chatClient, null, null);
     }
 
+    /**
+     * 加上会话压缩的门。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor) {
         this(chatClient, compactor, null);
     }
 
+    /**
+     * 加上结果投递的门。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     * @param delivery 结果投递，可以为 null
+     */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery) {
         this(chatClient, compactor, delivery, SpanTracer.NONE);
     }
 
     /**
-     * @param tracer 为 null 时按空实现处理：装配里它走 {@code ObjectProvider}，
-     *               没开观测的部署拿不到 bean，而"少一个 bean"不该让门都装不上
+     * 加上观测的门。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     * @param delivery 结果投递，可以为 null
+     * @param tracer 为 null 时按空实现处理：装配里它走 {@code ObjectProvider}，没开观测的部署拿不到
+     *     bean，而少一个 bean 不该让门都装不上
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer) {
         this(chatClient, compactor, delivery, tracer, null);
     }
 
+    /**
+     * 加上会话段的门。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     * @param delivery 结果投递，可以为 null
+     * @param tracer 埋点入口，为 null 时用 {@link SpanTracer#NONE}
+     * @param pointers 会话指针，可以为 null
+     */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer,
                                SessionEntries pointers) {
         this(chatClient, compactor, delivery, tracer, pointers, null);
     }
 
+    /**
+     * 加上对话串行化的门。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     * @param delivery 结果投递，可以为 null
+     * @param tracer 埋点入口，为 null 时用 {@link SpanTracer#NONE}
+     * @param pointers 会话指针，可以为 null
+     * @param lane 对话串行化，为 null 时不串行
+     */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer,
                                SessionEntries pointers, ConversationLane lane) {
@@ -210,8 +251,16 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /**
-     * @param audit 审计规则层（ADR-0027）。为 null 表示这个部署没开审计：判定与回答照常，
-     *              只是事后查不到——与预算、投递同一个判断（能力不在场，不是假装它在）
+     * 加上审计的门。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     * @param delivery 结果投递，可以为 null
+     * @param tracer 埋点入口，为 null 时用 {@link SpanTracer#NONE}
+     * @param pointers 会话指针，可以为 null
+     * @param lane 对话串行化，为 null 时不串行
+     * @param audit 审计规则层（ADR-0027）。为 null 表示这个部署没开审计：判定与回答照常，只是事后
+     *     查不到——与预算、投递同一个判断（能力不在场，不是假装它在）
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer,
@@ -220,9 +269,18 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /**
-     * @param goals 会话目标的落点（ADR-0027 决定三）。为 null 表示这个部署没开目标存储：
-     *              于是每回合少注入那一行、{@code /goal} 那族命令回一句"用不了"。
-     *              注意它与"这一段没有目标"是两件事——前者是能力不在场，后者是常态
+     * 完整装配。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     * @param delivery 结果投递，可以为 null
+     * @param tracer 埋点入口，为 null 时用 {@link SpanTracer#NONE}
+     * @param pointers 会话指针，可以为 null
+     * @param lane 对话串行化，为 null 时不串行
+     * @param audit 审计规则层，可以为 null
+     * @param goals 会话目标的落点（ADR-0027 决定三）。为 null 表示这个部署没开目标存储：每回合少
+     *     注入那一行，{@code /goal} 那族命令回一句「用不了」。它与「这一段没有目标」是两件事，
+     *     前者是能力不在场，后者是常态
      */
     public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
                                ConversationDelivery delivery, SpanTracer tracer,
@@ -241,9 +299,13 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 这一轮的对话键：段由指针决定，指针缺席或读不到就是加段之前的形状。
      *
-     * <p>抽出来是因为 {@code reply} 与 {@code stream} 两条路各要算一次，
-     * 而它们必须算出<b>同一个</b> id——一条消息走流式、下一条走非流式是常态，
-     * 两处各写一遍的话，"什么算同一段对话"就有了两个答案。
+     * <p>抽出来是因为 {@code reply} 与 {@code stream} 两条路各要算一次，而它们必须算出同一个 id——
+     * 一条消息走流式、下一条走非流式是常态，两处各写一遍的话，「什么算同一段对话」就有了两个答案。
+     *
+     * @param message 入站消息，可能自带整段会话键
+     * @param owner 归属键
+     * @param reset 是否换段，{@code /new} 时为真
+     * @return 这一轮用的 sessionId
      */
     private String sessionIdOf(InboundMessage message, String owner, boolean reset) {
         // 调用方直接给了整段会话键：用它，不换段也不查指针。
@@ -265,11 +327,14 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 光发了一个 {@code /new}：换段，回一句确认。
      *
-     * <p><b>不开 run、不调模型、不写事件</b>：这一轮除了"新的开始了"没有别的信息，
-     * 一次模型调用不值。而"换段"本身已经发生了——下一句自然落在新段上。
+     * <p>不开 run、不调模型、不写事件：这一轮除了「新的开始了」没有别的信息，一次模型调用不值。
+     * 而换段本身已经发生了，下一句自然落在新段上。
      *
-     * <p>在 lane 里被调用（{@code answer} 与 {@code streamInLane} 都在门内），
-     * 所以它与同一对话的另一条消息不会各换一段。
+     * <p>它在 lane 里被调用（{@code answer} 与 {@code streamInLane} 都在锁内），所以它与同一对话的
+     * 另一条消息不会各换一段。
+     *
+     * @param message 入站消息
+     * @return 固定确认文案
      */
     private String startOver(InboundMessage message) {
         // 走同一个入口，不下第二遍手：换段只有 sessionIdOf 一处实现，
@@ -280,47 +345,49 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /**
-     * 这段对话的身份：调用方给了就用它，没给就按 {@code chatId} 派生（ADR-0026 决定三）。
-     *
-     * <p><b>为什么 chatId 不再兼任</b>：它同时要回答"结果送到哪儿"——审批卡片、续跑结果、
-     * 通知策略的推送全走它。而定时任务要的是"跑在自己的会话里，结果仍送到原来那个地方"。
-     * 一个字段担两件事时，改哪一件都会把另一件弄坏：把 chatId 换成 {@code cron:<taskId>}，
-     * 审批卡片就会推进一个不存在的会话，而这一轮看起来一切正常。
-     */
-    /**
      * 这一轮属于哪个会话节点（不含段）。目标与状态行都按它定位。
      *
-     * <p><b>不复用 sessionId 去解析</b>：{@code chatId} 里可以有冒号（定时任务就是
-     * {@code cron:<taskId>:<时刻>}），按分隔符切会在那种 id 上切错——而切错的表现是
-     * "目标挂到了另一个节点上"，不报错，只是读到空。
+     * <p>不复用 sessionId 去解析：{@code chatId} 里可以有冒号（定时任务就是
+     * {@code cron:<taskId>:<时刻>}），按分隔符切会在那种 id 上切错，而切错的表现是目标挂到了另一个
+     * 节点上，不报错，只是读到空。
      */
     private static String conversationKeyOf(InboundMessage message, String owner) {
         return SessionKeys.conversationKeyOf(owner, message.channel(), conversationOf(message));
     }
 
+    /**
+     * 这段对话的身份：调用方给了 {@code conversationId} 就用它，没给就按 {@code chatId} 派生
+     * （ADR-0026 决定三）。
+     *
+     * <p>为什么 chatId 不再兼任：它同时要回答「结果送到哪儿」——审批卡片、续跑结果、通知策略的推送
+     * 全走它，而定时任务要的是「跑在自己的会话里，结果仍送到原来那个地方」。一个字段担两件事时，
+     * 改哪一件都会把另一件弄坏：把 chatId 换成 {@code cron:<taskId>}，审批卡片就会推进一个不存在的
+     * 会话，而这一轮看起来一切正常。
+     */
     private static String conversationOf(InboundMessage message) {
         String explicit = message.conversationId();
         return explicit == null || explicit.isBlank() ? message.chatId() : explicit;
     }
 
     /**
-     * 出站日志敢打**全文**，是因为脱敏已经在 Advisor 链上做完了。
-     * 反过来：这条日志也是"脱敏发生在出站之前而不是事后替换"的证据——
-     * 哪天有人在链路之外打日志，这里会立刻出现原始值。
+     * 跑一轮，就地返回这一轮的回答。
      *
- * <p><b>这一进一出之间没有"一件事"，只有一轮</b>（ADR-0027）：拿到消息、生成编号、
- * 调模型、把回答交回去。编号不落任何表，答完即作废——连续性靠会话键，不靠它。
- *
- * <p><b>审计的两条事件包住整轮</b>：进门 {@code agent.run.started}、出门
- * {@code agent.run.finished}。少了开始那一条，跑了多久、两条并发的先后都只能靠时间戳猜。
- *
- * <p><b>额度记在目标上</b>（ADR-0027 决定五）：出门把这轮的 token 记到这段会话的目标上，
- * 撞上预算就进 {@code budget_limited}——那是目标的状态，不是这一轮的状态。
- * "这一轮绕了太多次"是另一件事，由工具循环的熔断在上限处截断。
- *
- * <p><b>结果只回到它开始的那段对话</b>（ADR-0027 决定四）：就地回答过的地址不再推，
- * 推一遍就是同一条内容出现两次；定时任务与审批续跑没有人等，才按通知策略推出去。
- */
+     * <p>这一进一出之间没有「一件事」，只有一轮（ADR-0027）：拿到消息、生成编号、调模型、把回答
+     * 交回去。编号不落任何表，答完即作废，连续性靠会话键而不靠它。
+     *
+     * <p>审计的两条事件包住整轮：进门 {@code agent.run.started}，出门
+     * {@code agent.run.finished}。少了开始那一条，跑了多久、两条并发的先后都只能靠时间戳猜。
+     *
+     * <p>额度记在目标上（ADR-0027 决定五）：出门把这轮的 token 记到这段会话的目标上，撞上预算就进
+     * {@code budget_limited}——那是目标的状态，不是这一轮的状态。「这一轮绕了太多次」是另一件事，
+     * 由工具循环的熔断在上限处截断。
+     *
+     * <p>结果只回到它开始的那段对话（ADR-0027 决定四）：就地回答过的地址不再推，推一遍就是同一条
+     * 内容出现两次；定时任务与审批续跑没有人等，才按通知策略推出去。
+     *
+     * @param message 入站消息
+     * @return 出站消息，带这一轮的 {@code runId}
+     */
     @Override
     public OutboundMessage reply(InboundMessage message) {
         Objects.requireNonNull(message, "message");
@@ -331,13 +398,16 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 这一轮在它所在对话的锁里跑（ADR-0026 决定二）。
      *
-     * <p><b>为什么必须串行</b>：会话记忆在 {@code before} 读、在 {@code after} 写。
-     * 两条消息并发时，第二条拼提示词的那一刻第一条的答案还没落库——上下文里有问题、
-     * 没有答案。而它长得像"模型偶尔会忘事"，不会有人想到根因是并发。
+     * <p>为什么必须串行：会话记忆在 {@code before} 读、在 {@code after} 写。两条消息并发时，第二条
+     * 拼提示词的那一刻第一条的答案还没落库，上下文里有问题、没有答案。这种失败看起来像模型偶尔
+     * 忘事，不会有人想到根因是并发。
      *
-     * <p><b>拿不到就回一句话，不抛</b>：已经 ACK 的消息没有任何回音，用户只会以为
-     * 机器人坏了。也不重试、不排队到磁盘——单实例是既定形态（ADR-0009），
-     * 跨进程的队列属于 A12。
+     * <p>拿不到就回一句话，不抛：已经 ACK 的消息没有任何回音，用户只会以为机器人坏了。也不重试、
+     * 不排队到磁盘——单实例是既定形态（ADR-0009），跨进程的队列属于 A12。
+     *
+     * @param message 入站消息
+     * @param work 要跑的这一轮
+     * @return 这一轮的结果；拿不到锁时是一句忙的回复，{@code runId} 为 null
      */
     private Turn inLane(InboundMessage message, Supplier<Turn> work) {
         if (lane == null) {
@@ -356,13 +426,15 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 没有人说话，但有一件事该做了（P04）：到点的定时任务从这里进来。
      *
-     * <p><b>与 {@link #reply} 只差一件事：这一轮有没有"就地回答"的地址</b>。
-     * 有的话（有人正等着回答）那一个地址不再推，否则同一条内容会出现两遍；
-     * 没有的话（定时任务）结果按通知策略送到登记过的每一个地址——
-     * 而 {@link NotifyPolicy#SILENT} 下一条都不推，这是任务主人选的那一档。
+     * <p>与 {@link #reply} 只差一件事：这一轮有没有就地回答的地址。有的话那一个地址不再推，
+     * 否则同一条内容会出现两遍；没有的话结果按通知策略送到登记过的每一个地址，而
+     * {@link NotifyPolicy#SILENT} 下一条都不推，那是任务主人选的那一档。
      *
-     * <p>开 run、鉴权、工具、预算、收尾全走同一条路：定时任务不是第二种执行方式，
-     * 只是"提问的人不在场"的那一种。
+     * <p>开 run、鉴权、工具、预算、收尾全走同一条路：定时任务不是第二种执行方式，只是提问的人
+     * 不在场的那一种。
+     *
+     * @param message 到点的那一次提问
+     * @return 这一轮的回答；模型侧抛异常时为空
      */
     @Override
     public Optional<String> launch(InboundMessage message) {
@@ -377,10 +449,12 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /**
-     * 跑一轮：开 run（或接上一个）→ 看额度 → 调模型 → 收尾。
+     * 跑一轮：开 run、调模型、记账与收尾。
      *
-     * @param answeredAt 这一轮已经就地回答过的地址；null 表示没有人在等结果
-     *                   （定时任务、服务端续跑），于是按策略推给每一个登记过的地址
+     * @param message 入站消息
+     * @param answeredAt 这一轮已经就地回答过的地址；null 表示没有人在等结果（定时任务、服务端续跑），
+     *     于是按策略推给每一个登记过的地址
+     * @return 这一轮的回答；命令类回执没有 {@code runId}
      */
     private Turn answer(InboundMessage message, DeliveryTarget answeredAt) {
         SessionCommand.Parsed parsed = SessionCommand.parse(message.text());
@@ -399,14 +473,15 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // 就是这一段会话上的东西——/new /goal ... 这种组合因此落在新段上。
         Optional<GoalCommand> goalCommand = GoalCommand.parse(parsed.text());
         if (goalCommand.isPresent()) {
-            return new Turn(null, GoalCommand.execute(goalCommand.get(), goals, sessionId));
+            return new Turn(null, GoalCommand.execute(goalCommand.get(), goals, conversationKey));
         }
-        // 送模型的是命令之后的内容：`/new 帮我查华南` 的第一句是"帮我查华南"，
+        // 送模型的是命令之后的内容：/new 帮我查华南 的第一句是「帮我查华南」，
         // 命令本身不该出现在提示词里，也不该成为这一轮的 run 目标。
         String masked = PiiRedactor.mask(parsed.text());
         // 这一轮的编号（ADR-0027）：本地生成，不落任何表。
         // 它只在三处用——审计的两条事件、trace 的一段 span、返回给调用方的回执。
-        // OpenClaw 的 `runId` 也是这个角色：`agent` RPC 返回它，`agent.wait` 可以等它，
+        // OpenClaw 的 runId 也是这个角色：agent RPC 返回它，agent.wait 可以等它
+        // （docs/gateway/protocol/rpc-talk-config-and-agents.md:97），
         // 但没有任何"按 runId 取回一件事"的接口，因为一轮答完它就作废了。
         String runId = UUID.randomUUID().toString();
         // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
@@ -430,6 +505,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                             .call()
                             .chatResponse();
                     text = cappedText(response);
+                    // 日志敢打全文，是因为脱敏已经在 Advisor 链上做完；哪天有人在链路之外打日志，
+                    // 这里会立刻出现原始值。
                     log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
                     closeTurn(auditScope, conversationKey, text,
                             pushTargetOf(answeredAt, message), message.notifyPolicy(),
@@ -488,7 +565,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         if (goalCommand.isPresent()) {
             // 与 /new 那条同形：一帧正文 + 一帧空文本，调用方靠后者收尾。
             onChunk.accept(OutboundMessage.of(message.chatId(),
-                    GoalCommand.execute(goalCommand.get(), goals, sessionId), null));
+                    GoalCommand.execute(goalCommand.get(), goals, conversationKey), null));
             onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
             return;
         }
@@ -516,11 +593,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                             })
                             .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "", runId)))
                             .blockLast();
-                    // 流式的 token 记 0：汇总 usage 只在最后一帧上，而它未必到得了这一层
-                    // （与"不拿估算值冒充真实值"同一个口径）。于是流式这一路不计入目标用量——
-                    // 这是能力不在场，不是"这一轮不花钱"（见票 04 的"没做"一节）。
                     // 流式这一路手上没有 ChatResponse（汇总 usage 在最后一帧，未必到得了），
-                    // 所以只收尾，不往 span 上补 token / model——写 0 会被读成"没花钱"。
+                    // 所以 token 传 null 而不是 0：0 会被读成「这一轮没花钱」，
+                    // 而这是「没有数」。代价是流式的用量不计入目标预算（见票 04 的「没做」一节）。
                     closeTurn(auditScope, conversationKey, answer.toString(),
                             pushTargetOf(addressOf(message), message), message.notifyPolicy(),
                             null);
@@ -540,30 +615,36 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 交给模型的文本。
      *
-     * <p><b>只有两段：活跃目标 + 这一句</b>。不拼 recap：上下文一直在会话里
-     * （ADR-0027 决定三），模型看到的就是同一段对话的前几轮，不需要我们再抄一遍。
+     * <p>只有两段：活跃目标 + 这一句。不拼 recap：上下文一直在会话里（ADR-0027 决定三），模型看到的
+     * 就是同一段对话的前几轮，不需要再抄一遍。
+     *
+     * @param conversationKey 会话节点键，用于找出活跃目标
+     * @param masked 已脱敏的这一句
+     * @return 注入给模型的文本
      */
     private String promptText(String conversationKey, String masked) {
         return activeGoalLine(conversationKey) + masked;
     }
 
     /**
-     * 每回合那一行"活跃目标"（ADR-0027 决定三，照 OpenClaw 的注入形态）。
+     * 每回合那一行「活跃目标」（ADR-0027 决定三，照 OpenClaw 的注入形态）。
      *
-     * <p><b>只有 {@code active} 才注入</b>。OpenClaw 的原话是"已暂停、已阻塞、预算受限、
-     * 用量受限和已完成的目标不会被注入，因此操作员的停止操作会持续生效，直到目标恢复"。
-     * 这一条是"叫停能生效"的唯一保证——注入只判"有没有行"的话，用户按了暂停，
-     * 下一轮模型还在往那个方向推进，而界面上写着"已暂停"。
+     * <p>只有 {@code active} 才注入（{@code src/auto-reply/reply/inbound-meta.ts:37}）。OpenClaw 的
+     * 原话是「已暂停、已阻塞、预算受限、用量受限和已完成的目标不会被注入，因此操作员的停止操作会
+     * 持续生效，直到目标恢复」。这一条是「叫停能生效」的唯一保证——注入只判有没有行的话，用户按了
+     * 暂停，下一轮模型还在往那个方向推进，而界面上写着「已暂停」。
      *
-     * <p><b>四个分句逐句照原文</b>（{@code English: Active goal: <objective> — advance;
-     * keep active until fully achieved; block only after the same blocker on 3 consecutive turns;
-     * after update_goal, provide the requested visible final.}）：推进、达成前保持活跃、
-     * 同一个阻塞连续三轮才标 blocked、{@code update_goal} 之后仍要给最终回答。
-     * 少一句就会长出对应的坏行为——尤其最后一句：模型标完 {@code complete} 就收工，
-     * 用户看到的是一个状态变了、但没有回答的一轮。
+     * <p>四个分句逐句照原文（{@code English: Active goal: <objective> — advance; keep active until
+     * fully achieved; block only after the same blocker on 3 consecutive turns; after update_goal,
+     * provide the requested visible final.}，{@code docs/tools/goal.md:201}）：推进、达成前保持活跃、
+     * 同一个阻塞连续三轮才标 blocked、{@code update_goal} 之后仍要给最终回答。少一句就会长出对应的
+     * 坏行为，尤其最后一句：模型标完 {@code complete} 就收工，用户看到的是一个状态变了、但没有回答
+     * 的一轮。
      *
-     * <p><b>折成一行</b>：目标原文可能有七行，而这里要的是一行上下文。
-     * 折行只影响注入，库里存的仍是原文。
+     * <p>折成一行：目标原文可能有七行，而这里要的是一行上下文。折行只影响注入，库里存的仍是原文。
+     *
+     * @param conversationKey 会话节点键
+     * @return 要注入的那一行；没有活跃目标时是空串
      */
     private String activeGoalLine(String conversationKey) {
         if (goals == null || conversationKey == null) {
@@ -577,35 +658,42 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                 .orElse("");
     }
 
-    /** 把多行折成一行再截断。连续空白压成一个空格，首尾不留。 */
+    /**
+     * 把多行折成一行再截断，连续空白压成一个空格，首尾不留。
+     *
+     * @param value 原文，可为 null
+     * @param max 字符上限
+     * @return 折好的一行
+     */
     private static String oneLine(String value, int max) {
         String flat = value == null ? "" : value.replaceAll("\\s+", " ").strip();
         return flat.length() <= max ? flat : flat.substring(0, max) + "…";
     }
 
     /**
-     * 记下"模型这一轮"，扣掉这一轮花掉的 token 与耗时，然后收尾（A04）。
+     * 记下这一轮花掉的 token，按策略投递，然后写收尾那条审计（A04）。
      *
-     * <p><b>这里只记模型轮，工具调用不归它记</b>：这一层看不到工具循环里调了什么——
-     * 猜一个填上去比留空更糟。工具调用那一项由
-     * {@code MeteredToolCallback} 在调用发生的地方扣额度（A04），并在同一处落一行审计（P07）——
-     * 那里才真的知道"这次调用发生了"。要回答"这一轮调了哪些工具"，读 step 表里的
-     * {@link StepKind#TOOL_CALLS} 行，不要读这里。
+     * <p>这里只记模型轮，工具调用不归它记：这一层看不到工具循环里调了什么，猜一个填上去比留空更糟。
+     * 工具调用那一项由 {@code MeteredToolCallback} 在调用发生的地方扣额度（A04），并在同一处落一行
+     * 审计（P07）。要回答「这一轮调了哪些工具」，读 step 表里的 {@link StepKind#TOOL_CALLS} 行，
+     * 不要读这里。
      *
-     * <p><b>result_summary 是截断的摘要</b>：把它当成全文读是设计错误，
-     * 完整回答在通道里；这里只需要能回答"这一步得到了什么"。
+     * <p>这一轮花掉的 token 记到目标上，不记到会话上（ADR-0027 决定五）：OpenClaw 的额度是 goal
+     * 的属性（{@code create_goal} 的 {@code token_budget}，{@code src/agents/tools/goal-tools.ts:36}），
+     * 用完进 {@code budget_limited}；会话本身没有「额度」这回事。记账与判超在同一条 SQL 里（见
+     * {@code JdbcSessionGoalStore#addTokens}）。用完额度不是「这一轮失败」，它是这件事停下来了——
+     * 状态在目标上，不在一轮上。
      *
-     * <p><b>这一轮花掉的 token 记到目标上，不记到会话上</b>（ADR-0027 决定五）：
-     * OpenClaw 的额度是 goal 的属性（{@code create_goal} 的 {@code token_budget}），
-     * 用完进 {@code budget_limited}；会话本身没有"额度"这回事。
-     * 记账与判超在同一条 SQL 里（见 {@code JdbcSessionGoalStore#addTokens}）。
+     * <p>不写摘要（ADR-0027 决定二）：要回答「这一轮说了什么」，读通道里的回答与
+     * {@code audit_event} 的两条事件；要回答「模型看到了什么」，读会话历史。摘要是「一件事的第几步」
+     * 那个形状的产物，这里没有那种形状。
      *
-     * <p><b>这一轮的状态不由额度决定</b>：用完额度不是"这一轮失败"，
-     * 它是这件事停下来了——状态在目标上，不在一轮上。
-     *
-     * <p><b>不写摘要</b>（ADR-0027 决定二）：要回答"这一轮说了什么"，读通道里的回答与
-     * {@code audit_event} 的两条事件；要回答"模型看到了什么"，读会话历史。
-     * 摘要是"一件事的第几步"那个形状的产物，这里没有那种形状。
+     * @param scope 审计作用域
+     * @param conversationKey 会话节点键，用于记额度
+     * @param answer 这一轮的回答全文
+     * @param pushTo 要推的地址；null 表示不推
+     * @param policy 通知策略
+     * @param tokens 这一轮花掉的 token；拿不到时为 null
      */
     private void closeTurn(AuditEvent.Scope scope, String conversationKey, String answer,
                            DeliveryTarget pushTo, NotifyPolicy policy, Long tokens) {
@@ -616,7 +704,13 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         finishAudit(scope, AuditStatus.SUCCEEDED, null);
     }
 
-    /** 收尾那条审计事件。没开审计时什么都不写——账本序号没有任何人需要。 */
+    /**
+     * 收尾那条审计事件。没开审计时什么都不写——账本序号没有任何人需要。
+     *
+     * @param scope 审计作用域
+     * @param status 这一轮的结局
+     * @param errorCode 失败时的错误码，成功时为 null
+     */
     private void finishAudit(AuditEvent.Scope scope, AuditStatus status, AuditErrorCode errorCode) {
         if (audit != null) {
             audit.runFinished(scope, status, errorCode);
@@ -626,15 +720,24 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 这一轮要不要推、推到哪儿。
      *
-     * <p>同步请求（HTTP、飞书消息）的回答已经从响应里返回了，再推一次就是同一条内容出现两遍——
-     * 那时返回 null。定时任务与审批续跑没有人等结果，于是推到这段对话
-     * （ADR-0027 决定四：结果只回到它开始的地方，不回退到"最近用过的通道"）。
+     * <p>同步请求（HTTP、飞书消息）的回答已经从响应里返回了，再推一次就是同一条内容出现两遍，
+     * 那时返回 null。定时任务与审批续跑没有人等结果，于是推到这段对话（ADR-0027 决定四：结果只回到
+     * 它开始的地方，不回退到「最近用过的通道」）。
+     *
+     * @param answeredAt 已经就地回答过的地址
+     * @param message 入站消息，作为推送地址的来源
+     * @return 要推的地址；不推时为 null
      */
     private static DeliveryTarget pushTargetOf(DeliveryTarget answeredAt, InboundMessage message) {
         return answeredAt == null ? addressOf(message) : null;
     }
 
-    /** 这一轮来自哪段对话。没有通道名时是 null（老调用方与单测）。 */
+    /**
+     * 这一轮来自哪段对话。没有通道名时是 null（老调用方与单测）。
+     *
+     * @param message 入站消息
+     * @return 推送地址；通道名为空时为 null
+     */
     private static DeliveryTarget addressOf(InboundMessage message) {
         String channel = message.channel();
         if (channel == null || channel.isBlank()) {
@@ -646,12 +749,15 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 把这一轮花掉的 token 记到这段会话的目标上。
      *
-     * <p><b>没有目标就不记</b>：额度是目标的属性——没有目标就没有"这件事的预算"这回事。
-     * 记到一个不存在的东西上，等于把成本口径又挪回会话，而那正是本票拆掉的形状。
+     * <p>没有目标就不记：额度是目标的属性，没有目标就没有「这件事的预算」这回事。记到一个不存在的
+     * 东西上，等于把成本口径又挪回会话。
      *
-     * <p><b>记不进去不影响回答</b>：目标存储降级（库连不上、迁移没跑过）时
-     * {@code addTokens} 返回空，这一轮照常收尾。少记一笔的代价远小于把用户的话打死；
-     * 那种降级由 {@code claw4j.goal.errors} 暴露。
+     * <p>记不进去不影响回答：目标存储降级（库连不上、迁移没跑过）时 {@code account} 返回空，
+     * 这一轮照常收尾。少记一笔的代价远小于把用户的话打死，那种降级由 {@code claw4j.goal.errors}
+     * 暴露。
+     *
+     * @param conversationKey 会话节点键
+     * @param tokens 这一轮花掉的 token；null 表示没有数，不重算用量
      */
     private void chargeGoal(String conversationKey, Long tokens) {
         if (goals == null || conversationKey == null) {
@@ -666,18 +772,20 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 撞上工具调用上限时交给用户的那句话。
      *
-     * <p><b>它是止损，不是额度</b>（ADR-0027 决定五）：OpenClaw 用
-     * {@code agents.defaults.timeoutSeconds}（48 小时）兜住跑飞的一轮，我们没有 per-turn 超时，
-     * 所以需要一个更早的止损点。它不改任何持久状态——额度是目标的 token budget，
-     * 而"这一轮绕了太多次"跟"这件事花超了"是两件事：前者要收手，后者要人决定加不加预算。
+     * <p>它是止损，不是额度（ADR-0027 决定五）：OpenClaw 用 {@code agents.defaults.timeoutSeconds}
+     * 给整轮一个期限，这里没有 per-turn 超时，所以需要一个更早的止损点。它不改任何持久状态——额度是
+     * 目标的 token budget，而「这一轮绕了太多次」跟「这件事花超了」是两件事：前者要收手，后者要人决定
+     * 加不加预算。
      *
-     * <p><b>为什么在这里换掉那句话</b>：上限由 Spring AI 的工具循环执行
-     * （{@code ToolCallLimitBehavior.THROW}），它把超限变成一代回答，话是框架的英文原话、
-     * 内容是"limit exceeded"。这里是唯一既知道"这是一次回答"又知道"它撞的是哪条线"的地方，
-     * 换掉比让用户去读一句框架内部的话更合适。
+     * <p>为什么在这里换掉那句话：上限由 Spring AI 的工具循环执行
+     * （{@code ToolCallLimitBehavior.THROW}），它把超限变成一代回答，话是框架的英文原话。这里是唯一
+     * 既知道「这是一次回答」又知道「它撞的是哪条线」的地方，换掉比让用户去读一句框架内部的话合适。
      *
-     * <p>判定看的是 {@code finishReason} 这个公开常量，不是文本匹配：
-     * 拿话术去认"这是不是超限"会在框架改一次措辞之后静默失效。
+     * <p>判定看 {@code finishReason} 这个公开常量，不做文本匹配：拿话术去认「这是不是超限」会在框架
+     * 改一次措辞之后静默失效。
+     *
+     * @param response 模型响应，可为 null
+     * @return 回答文本；撞上限时换成 {@link #TOOL_CALL_CAPPED}
      */
     private static String cappedText(ChatResponse response) {
         String text = textOf(response);
@@ -688,7 +796,12 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         return capped ? TOOL_CALL_CAPPED : text;
     }
 
-    /** 回答文本。没有 generation 时是 null，而不是造一个空串去冒充"模型说了话"。 */
+    /**
+     * 回答文本。没有 generation 时是 null，而不是造一个空串去冒充「模型说了话」。
+     *
+     * @param response 模型响应，可为 null
+     * @return 回答文本；拿不到时为 null
+     */
     private static String textOf(ChatResponse response) {
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
             return null;
@@ -697,12 +810,15 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /**
-     * 这一轮花掉的 token。**拿不到是 null，不是 0**——不拿估算值冒充真实值
-     * （与 {@code MeteredChatModel} 同一个口径）。
+     * 这一轮花掉的 token。拿不到是 null，不是 0——不拿估算值冒充真实值（与
+     * {@code MeteredChatModel} 同一个口径）。
      *
-     * <p>两者必须分开：0 是"这一轮没花钱"，null 是"这一轮没有数"。目标记账拿 null 时
-     * 不重算用量（{@code JdbcSessionGoalStore#account}），拿 0 会把"没有数"记成"没花费"，
-     * 而预算因此永远差一截，并且没有任何一处报错。
+     * <p>两者必须分开：0 是「这一轮没花钱」，null 是「这一轮没有数」。目标记账拿 null 时不重算用量
+     * （{@code JdbcSessionGoalStore#account}），拿 0 会把「没有数」记成「没花费」，而预算因此永远
+     * 差一截，并且没有任何一处报错。
+     *
+     * @param response 模型响应，可为 null
+     * @return 总 token 数；拿不到时为 null
      */
     private static Long tokensOf(ChatResponse response) {
         if (response == null || response.getMetadata() == null || response.getMetadata().getUsage() == null) {
@@ -713,29 +829,13 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /**
-     * 把 Principal 与会话 id 交给 Advisor 链：走 Advisor 的上下文，不走 ThreadLocal。
+     * 把这一轮的结论写到 {@code model.turn} 上（P14）：花掉的 token、哪个模型答的。
      *
-     * <p>上下文会跟着 {@code ChatClientRequest} 走完工具循环的每一轮（工具循环
-     * 每轮都把 {@code context} 原样带下去），也跟着 Reactor 的订阅走；
-     * ThreadLocal 在"流式 + 换线程"的组合下会掉，而掉身份的失败姿势是放行。
+     * <p>两个值都「没有就不写」：token 拿不到时写 0 与「这轮没花钱」分不开，模型名同理。空属性是
+     * 诚实的，补一个看起来合理的默认值才是——后者的代价是某天有人按这个数字判断成本。
      *
-     * <p>会话 id 由 {@link SessionKeys} 从 Principal 派生，不是 {@link InboundMessage#chatId()}：
-     * 后者只是通道侧的寻址键，拿它当会话主键会让"换通道"变成"换会话"。
-     * 这里设的是 Advisor 上下文里的参数，链上没有记忆 Advisor 时它安静地被忽略。
-     *
-     * @param runId 这一轮的 run。<b>两处都要放</b>：工具上下文给工具里的写操作（计划，A03），
-     *              Advisor 上下文给鉴权那一层（审批要挂起 run，P02）——
-     *              只在工具上下文里放的话，Advisor 拦下工具调用时手里没有 runId，
-     *              这一等就只能挂在库里没有落点的位置上
-     */
-    /**
-     * 把这一轮的结论写到 {@code model.turn} 上（P14）：审计行序号、花掉的 token、哪个模型答的。
-     *
-     * <p><b>三个值都"没有就不写"</b>：seq 落不下去（存储降级）时写 0 会让人以为第一行就是它；
-     * token 拿不到时写 0 与"这轮没花钱"分不开；模型名同理。**空属性是诚实的，
-     * 补一个看起来合理的默认值才是**——后者的代价是某天有人按这个数字判断成本。
-     *
-     * @param response 可为 null（流式那一侧拿不到汇总 usage）
+     * @param turn 这一轮的 span
+     * @param response 模型响应，可为 null（流式那一侧拿不到汇总 usage）
      */
     private static void stampTurn(SpanTracer.SpanScope turn, ChatResponse response) {
         Long tokens = tokensOf(response);
@@ -748,7 +848,12 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         }
     }
 
-    /** 响应里报的模型名。不是我们配的路由名——路由在 {@code MeteredChatModel} 那一层，这里看不到。 */
+    /**
+     * 响应里报的模型名。不是配置里的路由名——路由在 {@code MeteredChatModel} 那一层，这里看不到。
+     *
+     * @param response 模型响应，可为 null
+     * @return 模型名；拿不到时为 null
+     */
     private static String modelOf(ChatResponse response) {
         return response == null || response.getMetadata() == null
                 ? null : response.getMetadata().getModel();
@@ -757,9 +862,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 根 span 的属性：哪一轮、谁的（指纹）。
      *
-     * <p><b>为空时不写这一格</b>：写一个空串会让"有编号"与"没有"在图上长得一样。
-     * 属性名仍是 {@code ATTR_RUN_ID}——它指的是 OpenTelemetry 那个 {@code run.id} 约定，
-     * 不是我们那个已经被删掉的实体。
+     * <p>为空时不写这一格：写一个空串会让「有编号」与「没有」在图上长得一样。
+     *
+     * @param runId 这一轮的编号，可为 null
+     * @param principal 这一轮的身份，可为 null
+     * @return 按插入顺序排列的属性表
      */
     private static Map<String, String> runAttributes(String runId, Principal principal) {
         Map<String, String> attributes = new LinkedHashMap<>();
@@ -772,6 +879,29 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         return attributes;
     }
 
+    /**
+     * 拼出这一轮的请求：脱敏后的文本、工具上下文、Advisor 上下文。
+     *
+     * <p>身份与会话 id 走 Advisor 的上下文，不走 ThreadLocal：上下文会跟着
+     * {@code ChatClientRequest} 走完工具循环的每一轮（每轮都把 {@code context} 原样带下去），也跟着
+     * Reactor 的订阅走；ThreadLocal 在「流式 + 换线程」的组合下会掉，而掉身份的失败姿势是放行。
+     *
+     * <p>会话 id 由 {@link SessionKeys} 从 Principal 派生，不是 {@link InboundMessage#chatId()}：
+     * 后者只是通道侧的寻址键，拿它当会话主键会让「换通道」变成「换会话」。链上没有记忆 Advisor 时
+     * 这些参数被安静地忽略。
+     *
+     * <p>{@code runId} 两处都要放：工具上下文给工具里的写操作（计划，A03），Advisor 上下文给鉴权
+     * 那一层（审批要挂起 run，P02）。只在工具上下文里放的话，Advisor 拦下工具调用时手里没有
+     * {@code runId}，这一等就只能挂在库里没有落点的位置上。
+     *
+     * @param message 入站消息
+     * @param owner 归属键
+     * @param sessionId 本轮的会话 id
+     * @param conversationKey 会话节点键（不含段）
+     * @param masked 已脱敏的文本
+     * @param runId 这一轮的编号，可为 null
+     * @return 待执行的请求
+     */
     private ChatClient.ChatClientRequestSpec promptOf(InboundMessage message, String owner, String sessionId,
                                                       String conversationKey, String masked, String runId) {
         Principal principal = message.principal();
@@ -793,7 +923,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         Map<String, Object> toolContext = new HashMap<>();
         // 身份也放进工具上下文：委派（Subagent）发生在工具内部，
         // 那里拿不到 Advisor 上下文，只能从 ToolContext 里取。
-        // 子 Agent 要用**父这个身份**继续鉴权——委派不提权，
+        // 子 Agent 要用父这个身份继续鉴权——委派不提权，
         // 而"子那边拿不到身份"的失败姿势必须是拒绝（见 SubagentDelegation）。
         toolContext.put(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal);
         // 这一轮的编号同理：工具在工具内部，它要知道"我这一轮属于哪一次回答"。

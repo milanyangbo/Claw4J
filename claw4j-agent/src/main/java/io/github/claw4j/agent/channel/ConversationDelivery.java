@@ -13,17 +13,15 @@ import java.util.Objects;
 /**
  * 一轮的结果怎么回到人手里（ADR-0018，ADR-0027 决定四重写）。
  *
- * <p><b>只有一件事：把结果推到"这一轮来自的那段对话"</b>。没有登记表，没有"按 runId
- * 查这个 run 登记过哪些地址"。
+ * <p>只有一件事：把结果推到「这一轮来自的那段对话」。没有登记表，也没有「按 {@code runId} 查这个 run
+ * 登记过哪些地址」。
  *
- * <p><b>不做一对多投递</b>：一条消息只来自一段对话，而那段对话的地址就在消息上
- * （{@code channel + chatId}）。OpenClaw 的原文是 <b>"never falls back to lastChannel"</b>——
- * 结果回到它开始的地方，不回退到"最近用过的通道"。
+ * <p>不做一对多投递：一条消息只来自一段对话，那段对话的地址就在消息上（{@code channel + chatId}）。
+ * 结果回到它开始的地方，不回退到「最近用过的通道」。
  *
- * <p><b>推与存是两件事</b>：推失败只记一条日志（重试策略属于具体平台，见
- * {@link OutboundDelivery}）；结果本身早就交回调用方了（{@code reply} 的返回值、
- * 或流式最后一帧），收不到推送的人照样拿得到。这是"投递"敢失败的前提——
- * 它从来不是结果的唯一副本。
+ * <p>推与存是两件事：推失败只记一条日志（重试策略属于具体平台，见 {@link OutboundDelivery}）；结果本身
+ * 早就交回调用方了（{@code reply} 的返回值，或流式最后一帧），收不到推送的人照样拿得到。这是「投递」
+ * 敢失败的前提——它从来不是结果的唯一副本。
  */
 public class ConversationDelivery {
 
@@ -38,6 +36,12 @@ public class ConversationDelivery {
     /** 为 null 表示没装 actuator：照常投递，只是没有指标可报。 */
     private final MeterRegistry registry;
 
+    /**
+     * 投递与投递的计数。
+     *
+     * @param deliveries 各通道的推送实现，为 null 时按空处理
+     * @param registry 指标注册表，为 null 时不记指标
+     */
     public ConversationDelivery(List<OutboundDelivery> deliveries, MeterRegistry registry) {
         this.deliveries = deliveries == null ? List.of() : List.copyOf(deliveries);
         this.registry = registry;
@@ -46,15 +50,15 @@ public class ConversationDelivery {
     /**
      * 结果出来了，按通知策略送到这段对话（ADR-0027 决定四）。
      *
-     * <p><b>调用方只在"没有人在就地等"的时候调它</b>：同步 HTTP 那一轮的回答已经从请求里
-     * 返回了，再推一次就是同一条内容出现两遍。审批续跑与定时任务没有人等，所以它们推。
+     * <p>调用方只在「没有人在就地等」的时候调它：同步 HTTP 那一轮的回答已经从请求里返回了，再推一次
+     * 就是同一条内容出现两遍。审批续跑与定时任务没有人等，所以它们推。
      *
-     * <p><b>策略在这儿生效</b>：{@link NotifyPolicy#SILENT} 一句都不推——它不等于结果丢了，
-     * 查得到与推不推是两件事。
+     * <p>策略在这里生效：{@link NotifyPolicy#SILENT} 一句都不推，但它不等于结果丢了——查得到与推不推
+     * 是两件事。
      *
      * @param target 送到哪个通道的哪个会话
      * @param policy 这一轮的通知策略
-     * @param text   结果全文。空就不推——"什么都没有"推出去只会让人以为坏了
+     * @param text 结果全文。空就不推——「什么都没有」推出去只会让人以为坏了
      */
     public void announce(DeliveryTarget target, NotifyPolicy policy, String text) {
         if (target == null || text == null || text.isBlank()) {

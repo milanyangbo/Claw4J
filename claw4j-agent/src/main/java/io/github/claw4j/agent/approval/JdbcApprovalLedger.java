@@ -17,13 +17,13 @@ import java.util.UUID;
 /**
  * 审批账本的 JDBC 落点，表在 {@code claw4j_run.approval_request}（V6）。
  *
- * <p><b>读失败按"没有批准"处理</b>，与账本那一层"写不进去就降级"的方向相反。
- * 那边落不进去只少一行审计（对话照常），这边读不出来却要决定"放不放一个还没人批过的动作"——
- * 同一个"降级"在两条路上指向两个方向，所以这里的 catch 里返回的是 {@link Optional#empty()}，
- * 不是"算了放过去"。审批这条链上，出错时收紧才是安全的那一侧。
+ * <p>读失败按「没有批准」处理，与账本那一层「写不进去就降级」的方向相反。那边落不进去只少一行审计
+ * （对话照常），这边读不出来却要决定「放不放一个还没人批过的动作」——同一个降级在两条路上指向两个
+ * 方向，所以这里的 catch 返回 {@link Optional#empty()}，不是「算了放过去」。审批这条链上，出错时
+ * 收紧才是安全的那一侧。
  *
- * <p>库没迁（迁移默认关着）时表不存在，于是每个标了 {@code REQUIRED} 的动作都会被拦——
- * 这是这个决定顺带得到的第二个好处：没有审批设施的环境里，没有人能悄悄绕过审批。
+ * <p>库没迁（迁移默认关着）时表不存在，于是每个标了 {@code REQUIRED} 的动作都会被拦。这是那个决定
+ * 顺带得到的第二个好处：没有审批设施的环境里，没有人能悄悄绕过审批。
  *
  * <p>只记一次 warn：同一次启动之后每次工具调用都会走到这里，逐条打会把日志淹掉。
  */
@@ -32,23 +32,23 @@ public class JdbcApprovalLedger implements ApprovalLedger {
     private static final Logger log = LoggerFactory.getLogger(JdbcApprovalLedger.class);
 
     /**
-     * 兑现一条批准：找到就**当场**标成用掉，再把那一条交回来。
+     * 兑现一条批准：找到就当场标成用掉，再把那一条交回来。
      *
-     * <p><b>一条语句而不是"先查后改"</b>：一次点头只放行一次执行。分成两步时，
-     * 两个并发的同参数调用会同时查到同一条批准，于是同一次点头放行了两次副作用。
-     * {@code for update skip locked} 让第二个请求直接看不到这条（而不是排队等）、
-     * 于是它走"没有批准"那条路，重新发起一次审批——那个结果是对的。
+     * <p>一条语句而不是「先查后改」：一次点头只放行一次执行。分成两步时，两个并发的同参数调用会同时
+     * 查到同一条批准，于是同一次点头放行了两次副作用。{@code for update skip locked} 让第二个请求直接
+     * 看不到这条（而不是排队等），于是它走「没有批准」那条路，重新发起一次审批——那个结果是对的。
      *
-     * <p>有效期在 SQL 里比，不在 Java 里比：{@code now()} 用的是库的时钟，
-     * 与 {@code expires_at} 同一个来源；拿 JVM 时钟去比库里的时间戳，会在两者有偏差的部署里
-     * 让一批批准提前或延后作废，而那种事故没有日志可查。
+     * <p>有效期在 SQL 里比，不在 Java 里比：{@code now()} 用的是库的时钟，与 {@code expires_at} 同一
+     * 个来源；拿 JVM 时钟去比库里的时间戳，会在两者有偏差的部署里让一批批准提前或延后作废，而那种
+     * 事故没有日志可查。
      *
-     * <p>同一个人同一工具同一参数有多条有效批准时取最晚到期的那个：这不改变"有效"这个判定，
+     * <p>同一个人、同一工具、同一参数有多条有效批准时取最晚到期的那个：这不改变「有效」这个判定，
      * 只是让先兑现哪一条是确定的。
      *
-     * <p><b>状态是 {@code allowed} 不是 {@code granted}</b>（2026-11-09 对齐 openclaw 的五态）：
-     * granted 是我们自己起的名字，表上只有 allowed。{@code consumed_by} 与 {@code consumed_at}
-     * 一起写：表上的约束要求这两列同进同退，而"谁用掉的"是事后追责的入口。
+     * <p>状态是 {@code allowed} 不是 {@code granted}：表上只有 allowed，OpenClaw 的五态里也是
+     * allowed（{@code src/state/openclaw-state-db-operator-approval-migration.ts:84}）。
+     * {@code consumed_by} 与 {@code consumed_at} 一起写：表上的约束要求这两列同进同退，而「谁用掉
+     * 的」是事后追责的入口。
      */
     private static final String REDEEM_SQL =
             "update claw4j_run.approval_request set consumed_at = now(), consumed_by = ? where id = ("
@@ -61,8 +61,8 @@ public class JdbcApprovalLedger implements ApprovalLedger {
     /**
      * 登记一条待批请求。
      *
-     * <p>过期点用 {@code now() + 毫秒} 算，不传一个 JVM 算好的绝对时刻：
-     * 那样"十分钟"就变成了"应用时钟的十分钟"，而判定那个方向用的是库的时钟。
+     * <p>过期点用 {@code now() + 毫秒} 算，不传一个 JVM 算好的绝对时刻：那样「十分钟」就变成了「应用
+     * 时钟的十分钟」，而判定那个方向用的是库的时钟。
      */
     private static final String ASK_SQL =
             "insert into claw4j_run.approval_request"
@@ -79,6 +79,12 @@ public class JdbcApprovalLedger implements ApprovalLedger {
 
     private volatile boolean degraded;
 
+    /**
+     * 审批账本。
+     *
+     * @param jdbc 主连接池，必填
+     * @param ttlMillis 一条请求等多久，毫秒
+     */
     public JdbcApprovalLedger(JdbcTemplate jdbc, long ttlMillis) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.ttlMillis = ttlMillis;
