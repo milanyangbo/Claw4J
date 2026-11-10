@@ -18,6 +18,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -40,6 +42,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.stream.Stream;
@@ -277,6 +280,35 @@ class BuildContractTest {
         assertThat(sources.getFirst().getProperty("claw4j.session.group-scope"))
                 .as("群聊按群隔离是默认；写出来是为了让「群为什么不共享」有地方可查")
                 .isEqualTo(SessionScopeProperties.GROUP_PER_GROUP);
+    }
+
+    /**
+     * 两个键真能绑到 {@link SessionScopeProperties} 上。
+     *
+     * <p>上一条只查文本：文本对了但前缀写错（比如写成 {@code claw4j.session.scope}）、
+     * 或分量名与 kebab 名对不上，逐字比对一样是绿的，而运行时两个分量都落默认值——
+     * 默认值恰好就是 {@code main} / {@code per-group}，于是"绑上了"与"没绑上"在日志里
+     * 长得一模一样。这里用一组<b>非默认值</b>绑一遍，绑上了才可能得到非默认结果。
+     *
+     * <p>同一前缀下还塞了 {@code schema} / {@code reset.mode} 两个兄弟键：它们是别的类在管，
+     * 不该被当作这两个分量，也不该把绑定带崩。
+     */
+    @Test
+    @DisplayName("claw4j.session 的两个分量真能绑上：前缀或分量名写错时，逐字比对不会红")
+    void theSessionScopesBindToThePropertiesClass() {
+        SessionScopeProperties bound = new Binder(new MapConfigurationPropertySource(Map.of(
+                "claw4j.session.dm-scope", SessionScopeProperties.DM_PER_CHANNEL_PEER,
+                "claw4j.session.group-scope", SessionScopeProperties.DM_MAIN,
+                "claw4j.session.schema", "claw4j_session",
+                "claw4j.session.reset.mode", "daily-and-idle")))
+                .bind("claw4j.session", SessionScopeProperties.class)
+                .orElseThrow(() -> new AssertionError(
+                        "claw4j.session 绑不上 SessionScopeProperties：前缀或分量名对不上"));
+
+        assertThat(bound.dmScope())
+                .as("拿到默认值就说明没绑上，而这两种情况在运行时看起来一样")
+                .isEqualTo(SessionScopeProperties.DM_PER_CHANNEL_PEER);
+        assertThat(bound.groupScope()).isEqualTo(SessionScopeProperties.DM_MAIN);
     }
 
     // ---------------------------------------------------------------- 迁移合成一套 schema

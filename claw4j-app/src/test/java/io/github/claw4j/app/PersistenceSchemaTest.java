@@ -324,6 +324,15 @@ class PersistenceSchemaTest {
                 "select created_at from claw4j_session.session_nodes where session_key = ?",
                 java.sql.Timestamp.class, key).toInstant();
 
+        assertThat(jdbc.queryForObject(
+                "select (extract(epoch from updated_at) * 1000)::bigint"
+                        + " - (entry_json ->> 'updatedAt')::bigint"
+                        + " from claw4j_session.session_nodes where session_key = ?",
+                Long.class, key))
+                .as("列是 JSON 的投影：目标写一次，两处必须是同一个时刻——"
+                        + "各写各的，索引与真相从第一次记用量起就分叉")
+                .isZero();
+
         // ---- /new：插一行新 window，把 current_session_id 指过去，并清掉 entry_json 里的目标。
         entries.segmentOf(row, new SessionEntryStore.Rotation("seg-2", now.plusSeconds(1),
                 now.minusSeconds(7200), now.minusSeconds(86_400), false, true));
@@ -354,6 +363,13 @@ class PersistenceSchemaTest {
                 .as("上一段记在新段那一行上（它的 previousSessionId）：还答得出「上一段是什么」")
                 .isEqualTo(SessionKeys.sessionIdOf(key, "seg-1"));
         assertThat(jdbc.queryForObject(
+                "select account_id from claw4j_session.session_windows where session_id = ?",
+                String.class, SessionKeys.sessionIdOf(key, "seg-2")))
+                .as("account_id 是「哪台通道账号」，与 channel 是两件事。本仓库没有这一维，"
+                        + "它就该是空的；曾经两个参数都传了 channel，库里每一段都在声称"
+                        + "自己属于一台名叫 web 的账号")
+                .isNull();
+        assertThat(jdbc.queryForObject(
                 "select created_at from claw4j_session.session_nodes where session_key = ?",
                 java.sql.Timestamp.class, key).toInstant())
                 .as("节点创建时间跨段不变——它记的是「这个人第一次来」，不是「这一段什么时候开始」")
@@ -369,6 +385,40 @@ class PersistenceSchemaTest {
                 GoalStatus.ACTIVE, null))
                 .as("已完成之后不能直接改回 active，要先 resume")
                 .isEmpty();
+    }
+
+    /**
+     * 提升列为空的行（{@code entry_valid = -1} 那一档）不该把整段对话打死。
+     *
+     * <p>V8 给那一档的语义就是"行还在、{@code entry_json} 置空、提升列置空"，所以这两个时间
+     * 为空是<b>合法状态</b>，不是脏数据。读成 {@code toInstant()} 的话这里是一次 NPE，
+     * 而它会被上一层兜底吞成"这一段没有段"：这个人的会话从此不再换段，日志只有第一条，
+     * 指标上只是一个不痛不痒的计数。
+     */
+    @Test
+    @DisplayName("段的两个时间为空（entry 被清空过的那一档）：不抛，按陈旧处理并把时间写回去")
+    void aRowWithEmptyTimesIsTreatedAsStaleInsteadOfBlowingUp() {
+        String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
+        jdbc.update("insert into claw4j_session.session_nodes"
+                        + " (session_key, current_session_id, entry_json, session_started_at,"
+                        + "  last_interaction_at, created_at, updated_at, entry_valid)"
+                        + " values (?, ?, '{}'::jsonb, null, null, now(), now(), -1)",
+                key, SessionKeys.sessionIdOf(key, "seg-old"));
+
+        Instant now = Instant.parse("2026-11-10T02:00:00Z");
+        String segment = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA).segmentOf(
+                new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1", true),
+                new SessionEntryStore.Rotation("seg-new", now, now.minusSeconds(7200),
+                        now.minusSeconds(86_400), true, false)).orElseThrow();
+
+        assertThat(segment)
+                .as("空时间按「很久没动」判，于是换一段——那一行就自己好了")
+                .isEqualTo("seg-new");
+        assertThat(jdbc.queryForObject(
+                "select last_interaction_at from claw4j_session.session_nodes where session_key = ?",
+                java.sql.Timestamp.class, key))
+                .as("换段时把时间写回去了，不是每轮重新判一次空")
+                .isNotNull();
     }
 
     /**

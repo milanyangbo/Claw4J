@@ -13,10 +13,12 @@ import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.JdbcSessionEntryStore;
+import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.SessionEntryStore;
 import io.github.claw4j.agent.session.SessionMaintenance;
 import io.github.claw4j.agent.session.SessionMaintenanceProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
@@ -56,6 +58,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -114,9 +117,12 @@ class TurnFlowTest {
     void tokensOfATurnAreChargedToTheGoal() {
         Principal principal = Principal.readOnly("u-1");
         SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
-        String sessionId = SessionKeys.sessionIdOf(principal, null, "chat-goal");
-        entry(sessionId, SessionKeys.ownerOf(principal), "-", "chat-goal");
-        goals.start(sessionId, "把三张表的口径对齐", 100L);
+        // 定位键是**节点键**（不含段，按 peer 分段算，ADR-0029），不是含段的对话键。
+        // 手工建这一行，是为了"先有目标、再跑三轮记账"这个顺序；目标与段落在同一行这件事
+        // 由 aGoalLandsOnTheNodeTheSegmentLivesOn 盯着。
+        String conversationKey = conversationKeyOf(principal, "chat-goal");
+        entry(conversationKey, SessionKeys.ownerOf(principal), "-", "chat-goal");
+        goals.start(conversationKey, "把三张表的口径对齐", 100L);
 
         List<String> prompts = new ArrayList<>();
         ChatClientAgentPort port = goalPort(prompts);
@@ -124,15 +130,15 @@ class TurnFlowTest {
         // 每轮 12 + 34 = 46：两轮 92 还在预算内，第三轮 138 撞线。
         port.reply(new InboundMessage(principal, "chat-goal", "先核对华东"));
         port.reply(new InboundMessage(principal, "chat-goal", "再核对华南"));
-        assertThat(goals.of(sessionId).orElseThrow().status())
+        assertThat(goals.of(conversationKey).orElseThrow().status())
                 .as("还没到 100：目标照旧是活跃的").isEqualTo(GoalStatus.ACTIVE);
-        assertThat(goals.of(sessionId).orElseThrow().tokensUsed()).isEqualTo(92L);
+        assertThat(goals.of(conversationKey).orElseThrow().tokensUsed()).isEqualTo(92L);
 
         port.reply(new InboundMessage(principal, "chat-goal", "最后核对一遍"));
-        assertThat(goals.of(sessionId).orElseThrow().status())
+        assertThat(goals.of(conversationKey).orElseThrow().status())
                 .as("到了 100 就进 budget_limited——不是这一轮失败，是这件事停下来了")
                 .isEqualTo(GoalStatus.BUDGET_LIMITED);
-        assertThat(goals.of(sessionId).orElseThrow().tokensUsed()).isEqualTo(138L);
+        assertThat(goals.of(conversationKey).orElseThrow().tokensUsed()).isEqualTo(138L);
 
         port.reply(new InboundMessage(principal, "chat-goal", "接着说"));
         assertThat(prompts.getLast())
@@ -143,6 +149,38 @@ class TurnFlowTest {
                         + " order by seq desc limit 1", String.class))
                 .as("这一轮本身照常跑完：额度状态在目标上，不在一轮上")
                 .isEqualTo("succeeded");
+    }
+
+    /**
+     * 段与目标是<b>同一个会话节点</b>（ADR-0029）：会话 id 是「节点键 + 段」，目标是节点上的一行。
+     *
+     * <p>这两件事曾经各算一把键——记忆落在 {@code ...:main:<段>}、目标落在
+     * {@code ...:<channel>:<chatId>}。两个节点都不是对方，而表现不是报错：{@code /goal} 回的
+     * 「这个会话还没有目标」本来就是它该回的话之一。所以这条用例不手工造行，让端口自己建节点、
+     * 自己算键，再看目标落在哪一行。
+     */
+    @Test
+    @DisplayName("段与目标挂在同一个会话节点上：/goal start 写的行就是段所在那行")
+    void aGoalLandsOnTheNodeTheSegmentLivesOn() {
+        Principal principal = Principal.readOnly("u-1");
+        SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
+        ChatClientAgentPort port = goalPort(new ArrayList<>(), realPointers());
+
+        // 第一句走真实路径：端口自己建节点、插一行 window、拿到一个段。
+        port.reply(new InboundMessage(principal, "chat-goal", "先打个招呼"));
+        port.reply(new InboundMessage(principal, "chat-goal", "/goal start 把三张表的口径对齐"));
+
+        List<String> keys = jdbc.queryForList(
+                "select session_key from claw4j_session.session_nodes", String.class);
+        assertThat(keys).as("只该有一个节点：段建出来的那一个，目标也写在它上面").hasSize(1);
+        assertThat(goals.of(keys.getFirst()))
+                .as("/goal 写的是段所在的那一行，不是另一把键")
+                .isPresent();
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_session.session_windows where session_key = ?",
+                Long.class, keys.getFirst()))
+                .as("段是真的建出来了：换段插一行 window，不是只在内存里记一个字符串")
+                .isEqualTo(1L);
     }
 
     /**
@@ -405,6 +443,14 @@ class TurnFlowTest {
      * usage 固定 12 + 34，于是"记了多少账"有一个确定的数可判。
      */
     private ChatClientAgentPort goalPort(List<String> prompts) {
+        return goalPort(prompts, null);
+    }
+
+    /**
+     * @param pointers 段解析器。{@code null} 表示这一段没有段：多数目标用例手工造节点行、
+     *     键里不带段，带上真指针会让 sessionId 多出一截，两边对不上
+     */
+    private ChatClientAgentPort goalPort(List<String> prompts, SessionEntries pointers) {
         ChatModel model = new ChatModel() {
 
             @Override
@@ -417,9 +463,23 @@ class TurnFlowTest {
         };
         // 带上真审计：这条用例要读"这一轮照常跑完了"那条事件（ADR-0027）。
         return new ChatClientAgentPort(ChatClient.builder(model).build(), null,
-                null, null, null, null,
+                null, null, pointers, null,
                 new ToolCallAudit(new AuditLedger(jdbc, null)),
                 new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null));
+    }
+
+    /** 真的段解析器：走 V8 那两张表，与生产同一条路。 */
+    private SessionEntries realPointers() {
+        return new SessionEntries(
+                new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA),
+                SessionResetProperties.defaults(), SessionScopeProperties.defaults(),
+                ZoneId.of("UTC"), Clock.systemUTC(), null);
+    }
+
+    /** 这一轮的会话节点键：与 {@code ChatClientAgentPort} 同一个算法（默认 scope）。 */
+    private static String conversationKeyOf(Principal principal, String chatId) {
+        return SessionKeys.conversationKeyOf(SessionKeys.ownerOf(principal), true, null, chatId,
+                SessionScopeProperties.defaults());
     }
 
     private ConversationDelivery delivery(OutboundDelivery... channels) {
