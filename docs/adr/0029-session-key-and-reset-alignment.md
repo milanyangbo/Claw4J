@@ -17,8 +17,8 @@
 | 手动重置 | `/new`、`/reset` 随时可用，是独立于策略的一条（`:279`） | `mode: none` 时 `rotate()` 直接返回空，`/new` 变成空动作 |
 | 重置后 | 换的是"当前这一段"，主会话键不变，旧对话仍在这个键下可查（`docs/concepts/main-session.md:104-108`） | 段拼在键后面，旧段留在库里只读 |
 
-最后一行是两种实现方式，不是偏差：它用 `key`（稳定）+ `sessionId`（会变），我们用 `key` + `段` 拼成一个
-字符串。改它没有收益，不动。
+最后一行原先记作"两种实现方式，不是偏差"。V8 落地之后这句不再成立——见裁决三：
+`session_key` 不含段，段是 `session_windows` 的一行，与它同形。
 
 ## 裁决一：键按 peer 类型分段
 
@@ -36,6 +36,12 @@
 peer 类型来自新加的 `InboundMessage#direct`：Slack 用 `channel_type: im` 判、飞书用 `chat_type` 判、
 HTTP 与内部调用记 `true`。没有这个字段就没法区分，而区分不开的后果是把群里的上下文并进私聊。
 
+**前缀保留 `claw4j:user:`**（用户 2026-11-10 裁决），不改成它的 `agent:<agentId>:`。理由不是怀旧：
+`SessionRecallScope#belongsTo` 用 `sessionId.startsWith(PREFIX + owner + ":")` 做召回的身份校验，
+改前缀要动那条判据，而它是防越权读的边界。它的 `agent:` 段是多 agent 命名空间，我们只有一层。
+
+主会话的键由 `session_key_contract.main_key` 给（默认 `main`），完整形状 `claw4j:user:<owner>:main`。
+
 ## 裁决二：重置默认不自动发生
 
 - `claw4j.session.reset.mode` 默认 `none`：不换段，靠上下文压缩管长度（它同默认）。
@@ -44,13 +50,40 @@ HTTP 与内部调用记 `true`。没有这个字段就没法区分，而区分�
   现在的行为（`SessionResetProperties#rotates` 把 `/new` 一起挡掉了）。
 - 两种都配时谁先到算谁（`daily-and-idle` 保留为第三个取值，不是默认）。
 
+## 裁决三：会话存储照它的分层，消息仍归 Spring AI
+
+V8 把 `session_entry` 那张单表换成它那套分层（`src/state/openclaw-agent-schema.sql`）：
+
+| 表 | 职责 | 与旧 `session_entry` 的对应 |
+| --- | --- | --- |
+| `session_nodes` | 一个 `session_key` 一行，热事实在 `entry_json` | 原表整张 |
+| `session_entry_snapshots` | 按 `(session_key, field)` 的冷值，三档固定 | 新增 |
+| `conversations` | 通道侧的会话身份（channel / account / kind / peer） | 原来 `owner + channel + chat_id` 三列 |
+| `session_windows` | 一世对话，`session_id` 一词一代 | 原来的 `segment` + `previous_segment` + `session_started_at` |
+| `session_conversations` | 段与通道会话的多对多 | 原来靠键里拼 `channel:chatId` |
+| `session_key_contract` | 单行，记 main 会话的键 | 新增 |
+
+三处判断：
+
+1. **消息不搬**。`ai_session` / `ai_session_event` 是 `JdbcChatMemoryRepository` 写死的表名，
+   消息由它持有；`session_windows.session_id` 与 `ai_session.id` 同值，靠这个 id 对齐。
+   所以不建 `transcript_events`——建了就是两份真相，两边都能写，迟早不一致。
+2. **`dmScope: main` 靠 `session_conversations` 落地，不靠拼字符串**。所有私聊共用主会话 =
+   多个 `direct` 会话挂到同一个 `session_id`（`primary` 只有一个，其余 `participant`）。
+   这也是它为什么要那两张表；只拼键的话，"这一段收过哪几条通道"就无处可查。
+3. **goal 从平铺列搬进 `entry_json`**。好处是加会话字段不用改表；代价是
+   `session_entry_active_goal_idx` 那个部分索引没了，改成 `entry_json -> 'goal' ->> 'status'`
+   的表达式索引（**这一条是我们加的，它没有**，因为它从不做全库计数）。
+
+偏差逐条记在 `V8__session_nodes.sql` 的文件头（不建的表、去掉的列、时间列用 `timestamptz`），
+不在本 ADR 重复。
+
 ## 代价
 
-1. **键变了，库里历史对不上新键**：`session_entry`、`ai_session`、`session_entry` 上的目标与用量
-   全部按旧键存。切过去之后这些行变成孤儿（不删、也读不到）。
-   两条路：① 接受孤儿（开发阶段）；② 一次性迁移把旧键 `owner:channel:chatId` 映射到 `owner:main`。
-   **迁移要按 owner 合并多行，必然丢一部分行**（同一个人在不同通道各有一段），所以推荐 ①，
-   把旧数据当只读历史留着，写一个新键开始。
+1. **旧会话记录清除**（用户 2026-11-10 裁决）：键和表都换了，旧行不再有任何读取方。
+   `session_entry` 与 `ai_session` 里的旧会话**直接删掉**，不做迁移——迁移要把同一个人的多个通道行
+   合并成一行，必然丢行，比删干净更糟。删除与 `drop table session_entry` 放在存储切换的同一步，
+   不在 V8 里做（V8 落地时旧代码还在读写它，先删会让门禁全红）。
 2. **私聊共享之后，跨通道串话是默认行为**：网页里问的数字，飞书私聊里模型也看得见。这是它的默认，
    也是它的警告（`session.md:144-148`：多人可及必须开 `per-channel-peer`）。我们沿用它的做法：
    启动日志里打出生效的 `dm-scope`，多用户部署必须显式配 `per-channel-peer`。

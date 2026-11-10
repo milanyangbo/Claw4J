@@ -26,13 +26,18 @@
 --   · 不建 transcript_events / session_transcript_archives / session_transcript_cold_archives：
 --     理由见上，消息归 Spring AI。它那套归档是给"把旧代 transcript 冻成文件"用的，
 --     我们换段是把 ai_session 的行留着只读，没有冻结这个动作。
+--   · session_windows 去掉 transcript_updated_at / row_transcript_json / row_transcript_updated_at /
+--     transcript_observed_at：四个都是"行式 transcript"的兼容层，前提是 transcript 在本库。
 --   · 不建 session_participants / session_members / session_upstream_links：那是"谁参与过"
 --     与"上游会话链接"，本仓库只有一个身份维度，没有多参与者与上游。
---   · 去掉 legacy_acp_migration_json / acp_owned：我们不做 ACP。
+--   · 去掉 legacy_acp_migration_json / acp_owned / session_entry_provenance：不做 ACP，
+--     也没有"entry 是从 ACP 导入的"这条来路要标记。
 --   · 去掉 plugin_owner_id / hook_external_content_source / agent_harness_id：没有插件侧写入，
 --     也没有可切换的 harness。
+--   · session_windows 去掉 parent_session_key / spawned_by：这两个在 session_nodes 上已有，
+--     windows 里那份是"这一代从哪个父起的"。我们的段不跨节点，查一次 nodes 就够。
 --   · 去掉 session_nodes.has_optional_references：它是"这条 entry 引用了可选的冷值"的标记，
---     用来决定要不要去查 snapshots 表。我们的冷值查询按 (session_key, field) 主键走，
+--     用来决定要不要去查 snapshots 表。我们读冷值只按 (session_key, field) 主键取，
 --     没有这个判断也不多一次扫描。
 --   · 时间列用 timestamptz，不用它的 INTEGER 毫秒：SQLite 没有原生时间类型，
 --     那是存储限制不是设计选择。判定（跨天、空闲）在两边算出的结果一样。
@@ -73,15 +78,18 @@ create table claw4j_session.session_nodes (
     -- 没有它就只能每轮去查 snapshots。
     snapshot_revision       integer     not null default 0,
 
-    -- entry_json 是否已通过结构校验：1 已校验，0 待校验，-1 不该存在。
-    -- 它的用途是让"导入的脏行"不必阻塞整库启动，只标记这一行待修。
+    -- entry_json 的状态：1 已校验，0 待校验，-1 逻辑 entry 已被清空。
+    -- -1 不是删除：行还在、段还在，清空动作只把 entry_json 置成 {}、把提升列置空，
+    -- 让"这个节点存在过"与"它现在没有逻辑条目"能同时成立。
+    -- 0 是用来让导入的脏行不阻塞整库启用的：标记这一行待修，而不是让启动失败。
     entry_valid             smallint    not null default 0
         check (entry_valid in (-1, 0, 1)),
 
     -- 节点最后更新时间（跨段不变）。清理与列表排序按它走。
     updated_at              timestamptz not null,
 
-    -- 整段 run 的结果。/new 之后清空——它描述的是"当前段跑完没有"，不是节点属性。
+    -- 收尾状态，与 ended_at 配对写：跑完了是 done，崩了是 failed，被杀是 killed。
+    -- 它是"这一次跑得怎么样"，不是"这个会话还在不在"——后者看 archived_at。
     status                  text check (status is null or status in
         ('running', 'done', 'failed', 'killed', 'timeout')),
 
@@ -159,6 +167,15 @@ create index session_nodes_current_session_idx
 create index session_nodes_entry_valid_idx
     on claw4j_session.session_nodes (session_key)
     where entry_valid != 1;
+
+-- "现在有几个目标在推进"要能走索引：它每轮问一次，全表扫 entry_json 撑不住。
+--
+-- 这条**不是照它建的**：它的 goal 也在 entry_json 里，但没有这个索引，因为它从不做
+-- 全库计数（按 sessionKey 取单条就够）。我们的清理与运维查询要这个数，所以补一条。
+-- 表达式必须与查询写法逐字一致才走得到索引，改 query 时这里要跟着改。
+create index session_nodes_active_goal_idx
+    on claw4j_session.session_nodes ((entry_json -> 'goal' ->> 'status'))
+    where entry_json -> 'goal' ->> 'status' = 'active';
 
 create table claw4j_session.session_entry_snapshots (
     session_key text        not null
