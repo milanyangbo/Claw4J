@@ -19,13 +19,27 @@ import java.util.Objects;
  * @param text           用户说的话
  * @param receivedAt     平台侧收到的时间。顺序由它给（同一毫秒再按 eventId 兜底）——
  *                       不取号、不加行锁，代价是顺序等于到达顺序，而对入站来说那才是对的
+ * @param direct         是不是私聊（ADR-0029）。要落库：处理发生在另一个线程、可能是进程重启
+ *                       之后，那时原始事件已经不在了，只有这一份 JSON 还在。丢了它，重启之后
+ *                       群消息会被当成私聊，上下文并进主会话
  */
 public record QueuedInbound(String queueName,
                             String eventId,
                             String conversationId,
                             String senderId,
                             String text,
-                            Instant receivedAt) {
+                            Instant receivedAt,
+                            boolean direct) {
+
+    /**
+     * 不带 direct 的构造：算私聊。
+     *
+     * <p>给不会收到群消息的通道与单测用。会收到群的通道必须走七参那个。
+     */
+    public QueuedInbound(String queueName, String eventId, String conversationId,
+                         String senderId, String text, Instant receivedAt) {
+        this(queueName, eventId, conversationId, senderId, text, receivedAt, true);
+    }
 
     public QueuedInbound {
         Objects.requireNonNull(queueName, "queueName");

@@ -63,4 +63,21 @@ public interface InboundEvent {
 
     /** 平台侧收到这条消息的时间，用于日志与耗时，不参与去重判定。 */
     Instant receivedAt();
+
+    /**
+     * 这是不是一条私聊（ADR-0029）。
+     *
+     * <p>编排层不解析它，只把它交给 {@code InboundMessage#direct()}，由会话键的分段规则决定
+     * 这条消息落在哪个会话节点上：私聊默认并进一个人的主会话，群聊按群隔离。判错的后果不是
+     * 报错，是把群里的上下文并进私聊，或者让同一个人跨通道接不上。
+     *
+     * <p>默认 {@code true}：没实现这个方法的通道（HTTP、内部调用、测试）没有"群"这个概念。
+     * 会收到群消息的通道必须覆盖它——Slack 看 {@code channel_type: im}，飞书看
+     * {@code chat_type: p2p}。
+     *
+     * @return 私聊为 {@code true}
+     */
+    default boolean direct() {
+        return true;
+    }
 }

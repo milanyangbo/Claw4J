@@ -32,6 +32,11 @@ import java.util.Objects;
  *                   走的就是这条：回到发起请求的那一段对话里开新一轮。不用 runId 是因为连续性
  *                   靠会话而不靠那件事：同一段对话的上下文与 goal 都在，模型看到的自然就是
  *                   "刚才我要调这个工具、现在批准了"
+ * @param direct     是不是私聊（ADR-0029）。决定会话键的 peer 段怎么拼：私聊按
+ *                   {@code claw4j.session.dm-scope}（默认所有私聊共用一个主会话），群聊按
+ *                   {@code group-scope} 按群隔离。判据来自通道——Slack 是
+ *                   {@code channel_type: im}，飞书是 {@code chat_type: p2p}，HTTP 与内部调用
+ *                   没有"群"这个概念，恒为 {@code true}
  */
 public record InboundMessage(Principal principal,
                              String chatId,
@@ -41,7 +46,8 @@ public record InboundMessage(Principal principal,
                              String channel,
                              NotifyPolicy notifyPolicy,
                              String conversationId,
-                             String sessionId) {
+                             String sessionId,
+                             boolean direct) {
 
     public InboundMessage {
         Objects.requireNonNull(principal, "principal");
@@ -66,7 +72,7 @@ public record InboundMessage(Principal principal,
      */
     public InboundMessage(Principal principal, String chatId, String text, Instant receivedAt,
                           String eventId, String channel, NotifyPolicy notifyPolicy) {
-        this(principal, chatId, text, receivedAt, eventId, channel, notifyPolicy, null, null);
+        this(principal, chatId, text, receivedAt, eventId, channel, notifyPolicy, null, null, true);
     }
 
     /**
@@ -81,7 +87,7 @@ public record InboundMessage(Principal principal,
      */
     public InboundMessage(Principal principal, String chatId, String text, Instant receivedAt,
                           String eventId, String channel) {
-        this(principal, chatId, text, receivedAt, eventId, channel, NotifyPolicy.DEFAULT, null, null);
+        this(principal, chatId, text, receivedAt, eventId, channel, NotifyPolicy.DEFAULT, null, null, true);
     }
 
     /**
@@ -94,7 +100,7 @@ public record InboundMessage(Principal principal,
      * @param eventId    通道侧的事件标识
      */
     public InboundMessage(Principal principal, String chatId, String text, Instant receivedAt, String eventId) {
-        this(principal, chatId, text, receivedAt, eventId, null, NotifyPolicy.DEFAULT, null, null);
+        this(principal, chatId, text, receivedAt, eventId, null, NotifyPolicy.DEFAULT, null, null, true);
     }
 
     /**
@@ -105,6 +111,6 @@ public record InboundMessage(Principal principal,
      * @param text      用户说的话
      */
     public InboundMessage(Principal principal, String chatId, String text) {
-        this(principal, chatId, text, Instant.now(), null, null, NotifyPolicy.DEFAULT, null, null);
+        this(principal, chatId, text, Instant.now(), null, null, NotifyPolicy.DEFAULT, null, null, true);
     }
 }

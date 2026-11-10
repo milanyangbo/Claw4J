@@ -1,5 +1,6 @@
 package io.github.claw4j.channel.kernel;
 
+import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.inbound.ClaimRef;
 import io.github.claw4j.domain.inbound.ClaimedInbound;
 import io.github.claw4j.domain.inbound.EnqueueOutcome;
@@ -313,7 +314,7 @@ public class InboundDispatcher {
         EnqueueOutcome outcome;
         try {
             outcome = store.enqueue(new QueuedInbound(queueName, eventId, conversationId,
-                    event.senderId(), event.text(), event.receivedAt()), conversationId);
+                    event.senderId(), event.text(), event.receivedAt(), event.direct()), conversationId);
         }
         catch (RuntimeException failure) {
             log.error("入站事件落不了库（{}）：这条不 ACK，交给平台重推。eventId={} conversationId={}",
@@ -453,7 +454,7 @@ public class InboundDispatcher {
 
         InboundMessage message = new InboundMessage(
                 principal.get(), conversationId, queued.text(), queued.receivedAt(),
-                queued.eventId(), channel);
+                queued.eventId(), channel, NotifyPolicy.DEFAULT, null, null, queued.direct());
         log.info("开始处理：eventId={} user={} conversationId={} 第 {} 次",
                 queued.eventId(), principal.get().userId(), conversationId, claimed.attempts() + 1);
 
