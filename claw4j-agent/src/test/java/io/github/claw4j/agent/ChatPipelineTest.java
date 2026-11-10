@@ -303,12 +303,22 @@ class ChatPipelineTest {
         assertThat(executedSql)
                 .as("模型没有调用 querySales：自然语言没有被翻成工具调用")
                 .isNotEmpty();
-        // 只断言"翻译发生了"：聚合函数与时间窗都从这句中文里来。
+        // 判据只认「翻译发生了」，不认某一种 SQL 写法。
+        //
+        // 「上周」在这个模型上有好几种同样正确的落地：`now() - interval '7 days'`、
+        // `date_trunc('week', current_date) - interval '7 days'`、直接写死两个日期字面量。
+        // 原先只认 interval，模型换一种写法这条就红——而它红的时候代码一行没改。
+        // 现在按语义等价类判：聚合口径 + 任意一种时间窗痕迹，漏掉时间窗仍然会红（那才是真错）。
         // 不断言 sales_order / east 这类业务 schema 的写法——那是借了示例销售工具的描述，
         // 而一个验链路装配的用例，不该由某份业务表的结构决定它红不红。
-        assertThat(executedSql.getFirst().toLowerCase())
-                .as("中文里的‘成交额’没有被翻成聚合、‘上周’没有被翻成时间窗")
-                .contains("sum(", "interval");
+        String sql = executedSql.getFirst().toLowerCase();
+        assertThat(sql)
+                .as("中文里的‘成交额’没有被翻成聚合；实际 SQL：%s", executedSql.getFirst())
+                .containsPattern("sum\\s*\\(");
+        assertThat(sql)
+                .as("中文里的‘上周’没有被翻成时间窗（缺时间条件就是把全表当成了上周）；实际 SQL：%s",
+                        executedSql.getFirst())
+                .containsPattern("interval|date_trunc|current_date|now\\s*\\(|between|'20\\d\\d-");
         assertThat(answer).isNotBlank();
     }
 
