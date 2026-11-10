@@ -259,8 +259,12 @@ create index conversations_updated_idx
 create table claw4j_session.session_windows (
     -- 一"世"对话的 id。等于 ai_session.id——消息在那边，身份在这边。
     session_id              text        primary key,
+    -- 延迟校验：换段那条语句要在同一次往返里既插这一行、又插/更新 session_nodes，
+    -- 而立即校验的外键会在节点还没插进去时就拒绝。语义不变——事务提交时照样校验。
+    -- 这条是我们加的（它的 SQLite 外键是立即的，它靠分语句写避开这个顺序问题）。
     session_key             text        not null
-        references claw4j_session.session_nodes (session_key) on delete cascade,
+        references claw4j_session.session_nodes (session_key) on delete cascade
+        deferrable initially deferred,
 
     -- 上一世的 id。只记一个，不是链——顺着它能走回去，但不需要在库里维护整条链。
     previous_session_id     text,

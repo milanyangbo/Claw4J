@@ -239,7 +239,10 @@ public class ApprovalService implements ApprovalDecider {
                 row.channel(),
                 NotifyPolicy.DONE_ONLY,
                 null,
-                row.sessionKey());
+                row.sessionKey(),
+                // 审批回到发起请求的那一段，会话键由 row.sessionKey() 给定，
+                // direct 不参与计算（ADR-0029）。
+                true);
         try {
             agent.reply(message);
         }

@@ -54,27 +54,43 @@ public final class SessionEntries {
     /** 日志刷屏的闸：同一个进程里只把第一条说清楚，后面的只计数。 */
     private boolean warned;
 
+    private final SessionScopeProperties scopes;
+
     public SessionEntries(SessionEntryStore store, SessionResetProperties reset,
-                          ZoneId zone, Clock clock, MeterRegistry registry) {
+                          SessionScopeProperties scopes, ZoneId zone, Clock clock,
+                          MeterRegistry registry) {
         this.store = store;
         this.reset = reset;
+        this.scopes = scopes;
         this.zone = zone;
         this.clock = clock;
         this.registry = registry;
     }
 
     /**
+     * 生效的两个 scope。
+     *
+     * <p>给 {@code ChatClientAgentPort} 用：它要拼这一轮的会话键，而键的 peer 段是按这两个值算的。
+     * 让它自己持一份的话，配置有两处来源，"改了配置但只有一半生效"这种事迟早发生。
+     *
+     * @return 生效值，构造时已经规整过
+     */
+    public SessionScopeProperties scopes() {
+        return scopes;
+    }
+
+    /**
      * 这段对话现在的段。
      *
      * @param owner   归属键，来自 {@link SessionKeys#ownerOf}
+     * @param direct  是不是私聊，来自 {@code InboundMessage#direct()}；决定节点键拼成什么
      * @param channel 通道，可以为 null
      * @param chatId  通道里的地址，可以为 null
-     * @return 段；空串表示"不加段"——要么 {@code mode: none}，要么读不到。
-     *         调用方把它原样交给 {@link SessionKeys#sessionIdOf(String, String, String, String)}，
-     *         空串就是改造之前的形状
+     * @return 段；空串表示"没有段"——没有库，或者读不到。调用方把它原样交给
+     *         {@link SessionKeys#sessionIdOf(String, String)}，空串就是不加段的形状
      */
-    public String segmentOf(String owner, String channel, String chatId) {
-        return segment(owner, channel, chatId, false);
+    public String segmentOf(String owner, boolean direct, String channel, String chatId) {
+        return segment(owner, direct, channel, chatId, false);
     }
 
     /**
@@ -83,40 +99,46 @@ public final class SessionEntries {
      * <p>单独一个方法，不给 {@link #segmentOf} 加 boolean："现在这段叫什么"与"把这段结束掉"
      * 是两个动词，加参数的话每个调用点都得重新想一遍"我要的是哪个"。
      *
-     * <p>{@code mode: none} 时什么也不做，返回空串。那一档的语义是"永不结束"，而 {@code /new}
-     * 是"现在就结束"——两条规则冲突时配置赢，否则 {@code none} 只是"默认不换"的别名。
+     * <p>{@code reset.mode: none} 时照样换：那一档的语义是"不自动结束"，不是"不许结束"
+     * （ADR-0029）。人的显式动作优先于自动策略。
      *
      * @param owner   归属键，来自 {@link SessionKeys#ownerOf}
+     * @param direct  是不是私聊
      * @param channel 通道，可以为 null
      * @param chatId  通道里的地址，可以为 null
-     * @return 新段；空串表示"没换"（{@code none} 档、没有库、或读不到）
+     * @return 新段；空串表示"没换成"（没有库，或读不到）
      */
-    public String rotate(String owner, String channel, String chatId) {
-        return segment(owner, channel, chatId, true);
+    public String rotate(String owner, boolean direct, String channel, String chatId) {
+        return segment(owner, direct, channel, chatId, true);
     }
 
-    private String segment(String owner, String channel, String chatId, boolean forced) {
-        if (!reset.rotates() || store == null || owner == null || owner.isBlank()) {
+    private String segment(String owner, boolean direct, String channel, String chatId,
+                           boolean forced) {
+        if (store == null || owner == null || owner.isBlank()) {
             return "";
         }
         Instant now = clock.instant();
         String normalizedChannel = SessionKeys.placeholder(channel);
         String normalizedChat = SessionKeys.placeholder(chatId);
-        // 定位键不含段：目标与状态行都挂在这个节点上，段是行里的一列。
-        String conversationKey = SessionKeys.conversationKeyOf(owner, normalizedChannel, normalizedChat);
+        // 定位键不含段：目标与段都挂在这个节点上，当前段是节点的一列（ADR-0029）。
+        String conversationKey = SessionKeys.conversationKeyOf(
+                owner, direct, normalizedChannel, normalizedChat, scopes);
+        // mode: none 时"永不过期"用两个开关一起表达：关掉日历那一半，把空闲线拉到纪元。
+        // 不用"如果是 none 就跳过库访问"：段现在是表里的一行，不查就不知道当前是哪一段。
+        Instant idleBefore = reset.rotates() ? now.minusMillis(reset.idleMillis()) : Instant.EPOCH;
         SessionEntryStore.Rotation rotation = new SessionEntryStore.Rotation(
-                freshSegment(now), now, now.minusMillis(reset.idleMillis()),
+                freshSegment(now), now, idleBefore,
                 reset.dailyResetAt(now, zone), reset.followsDaily(), forced);
         try {
             return store.segmentOf(
                             new SessionEntryStore.Key(conversationKey, owner, normalizedChannel,
-                                    normalizedChat), rotation)
+                                    normalizedChat, direct), rotation)
                     .orElse("");
         } catch (RuntimeException unreadable) {
             count();
             if (!warned) {
                 warned = true;
-                log.warn("会话状态行不可用，这批对话退回加段之前的形状（记忆不会按段隔离，"
+                log.warn("会话状态行不可用，这批对话退回不加段的形状（记忆不会按段隔离，"
                         + "目标也不会因换段清空）；之后同类失败只计数不再打日志：{}", unreadable.toString());
             }
             return "";

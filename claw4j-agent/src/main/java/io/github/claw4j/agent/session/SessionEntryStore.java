@@ -4,15 +4,16 @@ import java.time.Instant;
 import java.util.Optional;
 
 /**
- * 会话节点的状态行（ADR-0026）。
+ * 会话节点与段的状态（ADR-0026、ADR-0029）。
  *
- * <p>只有一个动作：把"这条对话被访问了"落到 {@code session_entry} 上，回一个段。这一行同时
- * 装着 {@code sessionId}（段）、两个时间、累计用量与目标——与它的一条 entry 同形，
- * 所以"换段"与"清目标"是同一条写，不会出现"段换了、目标还在"的中间态。
+ * <p>只有一个动作：把"这条对话被访问了"落下去，回一个段。落的是 V8 的两张表——
+ * {@code session_nodes}（节点，热事实在 {@code entry_json}）与 {@code session_windows}
+ * （段，一词一代）。换段 = 插一行 window + 改 {@code current_session_id}，两件事在同一个
+ * 事务里，不会出现"段换了、window 没插"的中间态。
  *
- * <p>判定放在 SQL 里而不是 Java 里：判定要读旧行（上一段什么时候开始、最后一次交互是什么
- * 时候），读出来再决定写什么就是"读-判-写"三步，两条消息同时进门时各自拿到旧值、各自判成
- * "该换"，同一次轮换被做两次。一条 {@code insert ... on conflict ... returning} 没有那个窗口。
+ * <p>判定要读旧行（上一段什么时候开始、最后一次交互是什么时候），读出来再决定写什么就是
+ * "读-判-写"三步，两条消息同时进门时各自拿到旧值、各自判成"该换"，同一次轮换被做两次。
+ * 实现用 {@code select ... for update} 把那一行锁住，判定在锁内做。
  *
  * <p>实现只有 JDBC 一个，内存实现只出现在测试里：它让"同日相等 / 空闲换段 / 跨天换段"
  * 三件判定能被单独验证——那三件的输入是时间，不是数据库。
@@ -20,14 +21,17 @@ import java.util.Optional;
 public interface SessionEntryStore {
 
     /**
-     * 一行 entry 的定位键。
+     * 一行节点的定位键，外加写 window 需要的几个事实。
      *
      * @param sessionKey 不含段的会话键（{@link SessionKeys#conversationKeyOf}），主键
      * @param owner      归属键（{@code userId@权限指纹}），不是裸 userId
      * @param channel    通道，缺省已由调用方落成 {@code '-'}
      * @param chatId     这段对话在通道里的地址，缺省同上
+     * @param direct     是不是私聊。决定 window 上的 {@code chat_type} 与 {@code session_scope}：
+     *                   私聊且键落到 {@code main} 的是 {@code shared-main}，其余是
+     *                   {@code conversation}，群聊是 {@code group}
      */
-    record Key(String sessionKey, String owner, String channel, String chatId) {
+    record Key(String sessionKey, String owner, String channel, String chatId, boolean direct) {
     }
 
     /**
@@ -55,11 +59,15 @@ public interface SessionEntryStore {
     }
 
     /**
-     * 记一次访问并回段。换段时同一行里的 {@code goal_*} 列被清空、{@code total_tokens} 归零。
+     * 记一次访问并回段。换段时插一行 window、改 {@code current_session_id}，
+     * 并把 {@code entry_json} 里的目标与用量清掉。
+     *
+     * <p>目标是这一段对话的承诺，不是历史：换段之后那件事已经不用再推，而旧段的记忆还在。
+     * 清在同一个事务里，所以"段换了、目标还挂着"这个中间态不存在。
      *
      * @param key      这一行的定位键
      * @param rotation 这一次访问的决定与判据
-     * @return 空表示读不到（表没迁、库连不上）。调用方据此退回加段之前的形状，
+     * @return 空表示读不到（表没迁、库连不上）。调用方据此退回不加段之前的形状，
      *         不把这一轮打死——段是"这段对话叫什么"，不是"能不能回答"
      */
     Optional<String> segmentOf(Key key, Rotation rotation);

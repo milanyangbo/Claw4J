@@ -19,15 +19,18 @@ import java.time.ZoneId;
  *
  * <p>三种模式：
  * <ul>
- *   <li>{@code daily-and-idle}（默认）：跨了逻辑日，或者空闲超过阈值，谁先到算谁；
- *   <li>{@code idle}：只看空闲。适合"一段对话跟一个项目走"但在同一工作日内反复拾起的用法；
- *   <li>{@code none}：永不结束。此时 {@code sessionId} 退回加段之前的形状，而且一次库都不查。
+ *   <li>{@code none}（默认）：不自动结束。靠上下文压缩管长度，与它同默认（ADR-0029）；
+ *   <li>{@code daily-and-idle}：跨了逻辑日，或者空闲超过阈值，谁先到算谁；
+ *   <li>{@code idle}：只看空闲。适合"一段对话跟一个项目走"但在同一工作日内反复拾起的用法。
  * </ul>
  *
- * <p>认不出的值按默认处理：拼错一个词不该让服务起不来，也不该悄悄变成"永不结束"——
- * 那会让段悄悄失效，而失效的表现只是"记忆越来越长"。
+ * <p>三种模式下 {@code /new} 都能用：那一档配的是"不自动结束"，不是"不许结束"。
  *
- * @param mode        见上，缺省 {@link #MODE_DAILY_AND_IDLE}
+ * <p>认不出的值**启动失败**：这一档的两侧是"合并上下文"与"分开上下文"，拼错之后悄悄按某一侧
+ * 跑，现象是"记忆比预期长"或"记忆比预期短"，两种都不会有人去查一个拼写。与
+ * {@code session.maintenance.mode} 同一个处理方式。
+ *
+ * @param mode        见上，缺省 {@link #MODE_NONE}
  * @param atHour      逻辑日的分界点（0~23）。是 {@code Integer} 而不是 {@code int}：配置缺失时
  *                    {@code int} 会拿到 0，而 0 是合法值（每天零点换段），于是"没配"与
  *                    "配了 0 点"无法区分，默认值 4 永远用不上
@@ -42,7 +45,7 @@ public record SessionResetProperties(String mode, Integer atHour, long idleMinut
     /** 只看空闲。 */
     public static final String MODE_IDLE = "idle";
 
-    /** 永不结束：不查库、不加段。 */
+    /** 不自动结束；{@code /new} 仍然有效。默认。 */
     public static final String MODE_NONE = "none";
 
     public static final int DEFAULT_AT_HOUR = 4;
@@ -50,10 +53,12 @@ public record SessionResetProperties(String mode, Integer atHour, long idleMinut
     public static final long DEFAULT_IDLE_MINUTES = 120L;
 
     public SessionResetProperties {
-        // 空与认不出都落到默认：见类注释最后一段，宁可"照常换段"也不要"静默不换"。
-        mode = mode == null || mode.isBlank() ? MODE_DAILY_AND_IDLE : mode.trim();
-        if (!MODE_IDLE.equals(mode) && !MODE_NONE.equals(mode)) {
-            mode = MODE_DAILY_AND_IDLE;
+        // 缺省是"不自动结束"：与 OpenClaw 同默认。显式配了别的值就按它来，认不出就起不来。
+        mode = mode == null || mode.isBlank() ? MODE_NONE : mode.trim();
+        if (!MODE_IDLE.equals(mode) && !MODE_NONE.equals(mode) && !MODE_DAILY_AND_IDLE.equals(mode)) {
+            throw new IllegalArgumentException("claw4j.session.reset.mode 只认 "
+                    + MODE_NONE + " / " + MODE_DAILY_AND_IDLE + " / " + MODE_IDLE
+                    + "，收到的是：" + mode);
         }
         // 越界的钟点同样归到默认：25 点不是一个可以解释的"每天一次"。
         atHour = atHour == null || atHour < 0 || atHour > 23 ? DEFAULT_AT_HOUR : atHour;

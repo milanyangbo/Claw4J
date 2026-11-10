@@ -51,6 +51,14 @@ public final class SessionKeys {
     /** 通道与 chatId 之间的分隔，以及缺 chatId 时的占位。 */
     static final String SESSION_SEPARATOR = ":";
 
+    /**
+     * 主会话占的 peer 段（ADR-0029）。
+     *
+     * <p>{@code dm-scope: main} 时所有私聊都拼这一段，于是"一个人的所有私聊算同一段"
+     * 由键本身表达，而不是靠一张额外的映射表。
+     */
+    public static final String MAIN_PEER = "main";
+
     /** 没有 chatId 的通道（脚本、内部调用）落在这里：同一通道内共享，跨通道不共享。 */
     static final String NO_CHAT = "-";
 
@@ -102,12 +110,40 @@ public final class SessionKeys {
     }
 
     /**
-     * 会话节点的键：{@code claw4j:user:<owner>:<通道>:<chatId>}，不含段（票 06）。
+     * 会话节点键：{@code claw4j:user:<owner>:<peer 段>}，不含段（票 06、ADR-0029）。
      *
-     * <p>与三参 {@link #sessionIdOf(String, String, String)} 同值，单独起名是因为调用点要回答的
-     * 问题不同：那边问"这一轮在哪一段"，这里问"哪个会话节点"。目标（{@code SessionGoalStore}）
-     * 与会话状态行（{@code SessionEntryStore}）都按后者定位——目标是跨段的一份状态，
-     * {@code /new} 时被清掉，而不是"另开一行"。
+     * <p>peer 段由 {@code direct} 与两个 scope 决定：私聊默认落到 {@link #MAIN_PEER}，
+     * 群聊默认按通道 + 群 id。同一个人的私聊与他在群里的发言因此是两个节点——这一条是硬要求，
+     * 不区分的话群里的上下文会并进私聊，那是一处静默的越权读。
+     *
+     * <p>目标是跨段的一份状态（{@code SessionGoalStore}）与会话状态行（{@code SessionEntryStore}）
+     * 都按它定位：{@code /new} 换的是段，不是节点。
+     *
+     * @param owner   归属键，来自 {@link #ownerOf}
+     * @param direct  是不是私聊，来自 {@code InboundMessage#direct()}
+     * @param channel 通道，可以为 null
+     * @param chatId  通道里的地址，可以为 null
+     * @param scopes  两个 scope 的生效值，见 {@link SessionScopeProperties}
+     * @return 不含段的会话节点键
+     */
+    public static String conversationKeyOf(String owner, boolean direct, String channel, String chatId,
+                                           SessionScopeProperties scopes) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(scopes, "scopes");
+        String normalizedChannel = orPlaceholder(channel);
+        String normalizedChat = orPlaceholder(chatId);
+        String peer = direct
+                ? scopes.directPeerOf(normalizedChannel, normalizedChat)
+                : scopes.groupPeerOf(normalizedChannel, normalizedChat);
+        return PREFIX + owner + SESSION_SEPARATOR + peer;
+    }
+
+    /**
+     * 会话节点键的旧形状：{@code claw4j:user:<owner>:<通道>:<chatId>}。
+     *
+     * <p>只给两类地方：召回的身份校验（{@link SessionRecallScope#belongsTo} 用前缀判归属），
+     * 以及审批续跑时拿到的那个已经算好的键。新代码按
+     * {@link #conversationKeyOf(String, boolean, String, String, SessionScopeProperties)} 走。
      *
      * @param owner   归属键，来自 {@link #ownerOf}
      * @param channel 通道，可以为 null
@@ -140,8 +176,26 @@ public final class SessionKeys {
      * @return 对话键
      */
     public static String sessionIdOf(String owner, String channel, String chatId, String segment) {
-        String base = sessionIdOf(owner, channel, chatId);
-        return segment == null || segment.isBlank() ? base : base + SESSION_SEPARATOR + segment;
+        return sessionIdOf(sessionIdOf(owner, channel, chatId), segment);
+    }
+
+    /**
+     * 从会话节点键派生带段的对话键：{@code <节点键>:<段>}。
+     *
+     * <p>段是"这段对话的第几世"，由 {@link SessionEntries} 给；节点键回答"哪条对话"。
+     * 分开传而不是把两个东西再拼一次，是因为节点键可能来自 scope 规则（{@code main}），
+     * 也可能来自库里已有的一行——两种来源拼出来的形状必须一模一样，才能与
+     * {@code ai_session.id} 对上。
+     *
+     * @param conversationKey 不含段的节点键
+     * @param segment         空或 null 表示"不加段"
+     * @return 对话键，也就是 {@code ai_session.id} 与 {@code session_windows.session_id}
+     */
+    public static String sessionIdOf(String conversationKey, String segment) {
+        Objects.requireNonNull(conversationKey, "conversationKey");
+        return segment == null || segment.isBlank()
+                ? conversationKey
+                : conversationKey + SESSION_SEPARATOR + segment;
     }
 
     /**

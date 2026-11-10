@@ -190,7 +190,9 @@ public class ScheduleScanner {
     private static InboundMessage message(ScheduleStore.Due task, Principal owner, Instant now) {
         return new InboundMessage(owner, task.channelRef() == null ? task.id() : task.channelRef(),
                 task.goal(), now, null, task.channel(), task.notifyPolicy(),
-                "cron:" + task.id() + ":" + now.toEpochMilli(), null);
+                "cron:" + task.id() + ":" + now.toEpochMilli(), null,
+                // 定时任务没有"听众"这个概念：它不是群聊，会话键也不按 peer 分段（ADR-0029）。
+                true);
     }
 
     private void fail(ScheduleStore.Due task, Instant nextRunAt, String error) {

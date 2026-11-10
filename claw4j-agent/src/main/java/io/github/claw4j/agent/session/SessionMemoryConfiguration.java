@@ -67,7 +67,8 @@ import java.util.Map;
 @EnableScheduling
 @EnableConfigurationProperties({DataSourceProperties.class, SessionMemoryProperties.class,
         SessionServiceProperties.class, SessionResetProperties.class,
-        SessionMaintenanceProperties.class, SessionVisibilityProperties.class})
+        SessionScopeProperties.class, SessionMaintenanceProperties.class,
+        SessionVisibilityProperties.class})
 public class SessionMemoryConfiguration implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(SessionMemoryConfiguration.class);
@@ -375,6 +376,7 @@ public class SessionMemoryConfiguration implements DisposableBean {
      *
      * @param store         状态行存储
      * @param reset         换段规则
+     * @param scopes        会话键的两个 scope（ADR-0029）
      * @param agent         智能体配置，取业务时区
      * @param meterRegistry 可选，用于失败计数
      * @return 段解析器
@@ -383,9 +385,10 @@ public class SessionMemoryConfiguration implements DisposableBean {
     @ConditionalOnMissingBean(SessionEntries.class)
     public SessionEntries sessionEntries(SessionEntryStore store,
                                          SessionResetProperties reset,
+                                         SessionScopeProperties scopes,
                                          AgentProperties agent,
                                          ObjectProvider<MeterRegistry> meterRegistry) {
-        return new SessionEntries(store, reset, agent.zone(), Clock.systemUTC(),
+        return new SessionEntries(store, reset, scopes, agent.zone(), Clock.systemUTC(),
                 meterRegistry.getIfAvailable());
     }
 

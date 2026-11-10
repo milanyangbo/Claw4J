@@ -19,6 +19,7 @@ import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.session.SessionCommand;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.AgentPort;
@@ -313,15 +314,28 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         if (message.sessionId() != null && !message.sessionId().isBlank()) {
             return message.sessionId();
         }
-        String conversation = conversationOf(message);
+        String peer = conversationOf(message);
+        // 节点键按 peer 类型分段（ADR-0029）：私聊默认并进主会话，群聊按群。这一段算错，
+        // 现象不是报错，而是"群里的上下文并进了私聊"或者"同一个人跨通道接不上"。
+        //
+        // **自带会话身份的那条路不走这个规则**：定时任务每次是 `cron:<taskId>:<触发时刻>`，
+        // 它本来就没有"和谁共用一段"这回事；套上 dmScope: main 会让两次触发落进同一个主会话，
+        // 第二次就看得见第一次的上下文（与它"cron 每次新开"的语义相反）。
+        SessionScopeProperties scopes = pointers == null
+                ? SessionScopeProperties.defaults()
+                : pointers.scopes();
+        String conversationKey = message.conversationId() == null
+                ? SessionKeys.conversationKeyOf(
+                        owner, message.direct(), message.channel(), peer, scopes)
+                : SessionKeys.conversationKeyOf(owner, message.channel(), peer);
         // 调用方自带会话标识的那条路（定时任务）不走指针：它的"段"就是触发时刻本身，
         // 每次运行天然是一个新的。指针只服务"人"这条路——那里才有"上次说到哪儿"。
         String segment = pointers == null || message.conversationId() != null
                 ? ""
                 : reset
-                        ? pointers.rotate(owner, message.channel(), conversation)
-                        : pointers.segmentOf(owner, message.channel(), conversation);
-        return SessionKeys.sessionIdOf(owner, message.channel(), conversation, segment);
+                        ? pointers.rotate(owner, message.direct(), message.channel(), peer)
+                        : pointers.segmentOf(owner, message.direct(), message.channel(), peer);
+        return SessionKeys.sessionIdOf(conversationKey, segment);
     }
 
     /**

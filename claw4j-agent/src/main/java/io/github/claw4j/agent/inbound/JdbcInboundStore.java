@@ -304,6 +304,7 @@ public class JdbcInboundStore implements InboundStore {
         payload.put("senderId", event.senderId());
         payload.put("text", event.text());
         payload.put("receivedAt", event.receivedAt().toEpochMilli());
+        payload.put("direct", event.direct());
         try {
             return mapper.writeValueAsString(payload);
         }
@@ -316,13 +317,16 @@ public class JdbcInboundStore implements InboundStore {
     private QueuedInbound payloadOf(String json, String queueName, String eventId) {
         try {
             Map<String, Object> payload = mapper.readValue(json, Map.class);
+            // 没有 direct 的行是这一列上线之前落的：那时所有事件都按私聊算（ADR-0029）。
+            Object direct = payload.get("direct");
             return new QueuedInbound(
                     queueName,
                     eventId,
                     (String) payload.get("conversationId"),
                     (String) payload.get("senderId"),
                     (String) payload.get("text"),
-                    Instant.ofEpochMilli(((Number) payload.get("receivedAt")).longValue()));
+                    Instant.ofEpochMilli(((Number) payload.get("receivedAt")).longValue()),
+                    direct == null || (Boolean) direct);
         }
         catch (JsonProcessingException failure) {
             throw new IllegalStateException("入站事件反序列化失败（" + queueName + " / " + eventId + "）", failure);

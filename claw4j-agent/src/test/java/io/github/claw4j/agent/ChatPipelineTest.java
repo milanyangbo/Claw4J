@@ -593,7 +593,7 @@ class ChatPipelineTest {
 
         port.reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "接着说",
                 Instant.now(), null, "feishu", NotifyPolicy.DEFAULT, null,
-                "claw4j:u-1@fp-1:feishu:chat-1:seg-fixed"));
+                "claw4j:u-1@fp-1:feishu:chat-1:seg-fixed", true));
 
         assertThat(audit.events)
                 .as("按通道+chatId 派生会得到「无段」的那个键：段一丢，上下文与 goal 都不在这段里")

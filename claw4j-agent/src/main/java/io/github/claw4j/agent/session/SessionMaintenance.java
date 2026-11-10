@@ -57,28 +57,32 @@ public final class SessionMaintenance {
             "delete from %1$sai_session where id in (" + STALE_SEGMENTS_TEMPLATE + ")";
 
     /**
-     * 一段时间没动静的指针行。
+     * 一段时间没动静的节点。
      *
-     * <p>与桶级那条分开，因为依据不同：段看"最后一次事件"，桶看"最后一次访问"。一个刚换段的
-     * 人可能一条事件都没写（换段那次是纯读），但指针行必须被刷新。
+     * <p>与段级那条分开，因为依据不同：段看"最后一次事件"，节点看"最后一次访问"。一个刚换段的
+     * 人可能一条事件都没写（换段那次是纯读），但节点行必须被刷新。
+     *
+     * <p>删节点会级联带走它的 window 与冷值，**但不会带走 {@code ai_session} 的行**——那是框架
+     * 的表，没有指向这边的外键。留下来的段会在下一轮被上面那条按"最后一次事件"扫掉，
+     * 顺序上先段后节点，所以最多留一轮的孤儿。
      */
     private static final String STALE_CONVERSATIONS_TEMPLATE =
-            "select owner, channel, chat_id from %1$ssession_entry where last_interaction_at < ?";
+            "select session_key from %1$ssession_nodes where last_interaction_at < ?";
 
     private static final String DELETE_STALE_CONVERSATIONS_TEMPLATE =
-            "delete from %1$ssession_entry where last_interaction_at < ?";
+            "delete from %1$ssession_nodes where last_interaction_at < ?";
 
-    /** 超出 {@code max-entries} 的那些桶，最久没动的排在前面。 */
+    /** 超出 {@code max-entries} 的那些节点，最久没动的排在前面。 */
     private static final String OVER_LIMIT_TEMPLATE = """
-            select owner, channel, chat_id
-            from %1$ssession_entry
-            order by last_interaction_at desc, owner, channel, chat_id
+            select session_key
+            from %1$ssession_nodes
+            order by last_interaction_at desc, session_key
             offset ?
             """;
 
     private static final String DELETE_OVER_LIMIT_TEMPLATE = """
-            delete from %1$ssession_entry
-            where (owner, channel, chat_id) in (""" + OVER_LIMIT_TEMPLATE + ")";
+            delete from %1$ssession_nodes
+            where session_key in (""" + OVER_LIMIT_TEMPLATE + ")";
 
     /**
      * 定时运行留下的段。

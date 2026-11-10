@@ -15,6 +15,7 @@ import io.github.claw4j.agent.session.SessionMemoryConfiguration;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.session.SessionVisibility;
 import io.github.claw4j.agent.session.SessionVisibilityProperties;
 import io.github.claw4j.domain.port.InboundMessage;
@@ -51,6 +52,8 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.mockito.InOrder;
 import org.springframework.transaction.CannotCreateTransactionException;
 
 import java.time.Clock;
@@ -78,8 +81,10 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -390,39 +395,41 @@ class SessionMemoryTest {
         ZoneId zone = ZoneId.of("Asia/Shanghai");
         MemoryPointers store = new MemoryPointers();
         Instant first = Instant.parse("2026-11-05T02:00:00Z");   // 东八区 11-05 10:00
-        String today = pointersAt(store, first, zone).segmentOf("u-1@fp", "web", "c-1");
+        String today = pointersAt(store, first, zone).segmentOf("u-1@fp", true, "web", "c-1");
         assertThat(pointersAt(store, first.plusSeconds(3600), zone)
-                .segmentOf("u-1@fp", "web", "c-1"))
+                .segmentOf("u-1@fp", true, "web", "c-1"))
                 .as("同一天连着说两句就换段，等于每一句都是新对话：记忆与额度都不累积")
                 .isEqualTo(today);
         assertThat(pointersAt(store, first.plusSeconds(3600 + 121 * 60), zone)
-                .segmentOf("u-1@fp", "web", "c-1"))
+                .segmentOf("u-1@fp", true, "web", "c-1"))
                 .as("空闲超过阈值必须换：不换的话这一段永远不会结束")
                 .isNotEqualTo(today);
 
         // 东八区 03:59 与 04:00 只差一分钟，idle 不可能触发，能触发的只有日历。
         MemoryPointers crossing = new MemoryPointers();
         String beforeBreak = pointersAt(crossing, Instant.parse("2026-11-05T19:59:00Z"), zone)
-                .segmentOf("u-1@fp", "web", "c-1");
+                .segmentOf("u-1@fp", true, "web", "c-1");
         assertThat(pointersAt(crossing, Instant.parse("2026-11-05T20:00:00Z"), zone)
-                .segmentOf("u-1@fp", "web", "c-1"))
+                .segmentOf("u-1@fp", true, "web", "c-1"))
                 .as("04:00 是逻辑日的分界点。用 UTC 的日期来判断的话，东八区凌晨 0~8 点全错，"
                         + "而 CI 跑在 UTC 上是绿的")
                 .isNotEqualTo(beforeBreak);
 
-        // ---- 一次访问只发一条 SQL。写成"先 select 再 insert/update"的话这里是 2~3 条，
-        // 而那个形状的代价不只是往返：两次调用之间的窗口正是并发下同一次轮换被做两遍的地方。
+        // ---- 一次访问先把这一行锁住，再读旧状态。
+        // 合并成一条 select 的话，join 与 select 列表的求值顺序没有保证，会出现"先读到旧值、
+        // 后拿到锁"——那正是并发下同一次轮换被做两遍的窗口。
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        doReturn("seg-1").when(jdbc)
-                .queryForObject(anyString(), eq(String.class), any(Object[].class));
+        doReturn(List.of()).when(jdbc).queryForList(anyString(), any(Object[].class));
+        doReturn(List.of()).when(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
         assertThat(new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA).segmentOf(
                 new SessionEntryStore.Key(SessionKeys.conversationKeyOf("u-1@fp", "web", "c-1"),
-                        "u-1@fp", "web", "c-1"),
+                        "u-1@fp", "web", "c-1", true),
                 new SessionEntryStore.Rotation("fresh", first, first.minusSeconds(7200),
                         first.minusSeconds(86_400), true, false)))
-                .contains("seg-1");
-        verify(jdbc, times(1)).queryForObject(anyString(), eq(String.class), any(Object[].class));
-        verifyNoMoreInteractions(jdbc);
+                .contains("fresh");
+        InOrder locking = inOrder(jdbc);
+        locking.verify(jdbc).queryForList(contains("pg_advisory_xact_lock"), any(Object[].class));
+        locking.verify(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
 
         // ---- 指针挂了不拦话：退回加段之前的形状，并计数。
         // 抛出去会把每一句话都打成 500，而根因只是少了一张表——两件事的代价差得太远。
@@ -431,8 +438,9 @@ class SessionMemoryTest {
                 (key, rotation) -> {
                     throw new IllegalStateException("表还没迁");
                 },
-                SessionResetProperties.defaults(), zone, Clock.fixed(first, zone), metrics);
-        assertThat(broken.segmentOf("u-1@fp", "web", "c-1"))
+                SessionResetProperties.defaults(), SessionScopeProperties.defaults(), zone,
+                Clock.fixed(first, zone), metrics);
+        assertThat(broken.segmentOf("u-1@fp", true, "web", "c-1"))
                 .as("降级之后所有对话退到同一个永不过期的 id，也就是回到改造之前的行为")
                 .isEmpty();
         assertThat(metrics.get(SessionEntries.FAILURE_METRIC).counter().count())
@@ -488,9 +496,14 @@ class SessionMemoryTest {
                 .isFalse();
     }
 
+    /**
+     * 走 {@code daily-and-idle}：这一组用例守的是"跨天或空闲就换"，而默认值现在是
+     * {@code none}（ADR-0029 与它同默认），所以要显式点名。
+     */
     private static SessionEntries pointersAt(MemoryPointers store, Instant now, ZoneId zone) {
-        return new SessionEntries(store, SessionResetProperties.defaults(), zone,
-                Clock.fixed(now, zone), null);
+        return new SessionEntries(store,
+                new SessionResetProperties(SessionResetProperties.MODE_DAILY_AND_IDLE, null, 0L),
+                SessionScopeProperties.defaults(), zone, Clock.fixed(now, zone), null);
     }
 
     /**
