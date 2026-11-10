@@ -48,19 +48,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>入口是 {@link InboundDispatcher#accept}——真正的系统边界（长连接 / webhook）需要真凭据，
  * 而它要做的事只是"把平台事件压成 {@link InboundEvent}"，翻译错了在假事件上没有意义。
- * 所以这里从责任开始的那一层进，断言的是**外部可观察的结果**：发送了什么、调了几次、ACK 何时返回、
+ * 所以这里从责任开始的那一层进，断言的是外部可观察的结果：发送了什么、调了几次、ACK 何时返回、
  * 库里那一条最后是什么状态。
  *
- * <p><b>本用例一个字都不提飞书。</b>它用的 {@link Event} 是一个只有五个字段的 record，
- * 语义上与飞书、Telegram、Slack 无关。这就是"这套编排不属于某一个通道"的可执行版本：
- * 如果哪天有人往 {@code InboundDispatcher} 里加了一个飞书概念，这里会先编译不过。
+ * <p>本用例一个字都不提飞书。它用的 {@link Event} 是一个只有五个字段的 record，语义上与飞书、
+ * Telegram、Slack 无关。这就是"这套编排不属于某一个通道"的可执行版本：如果哪天有人往
+ * {@code InboundDispatcher} 里加了一个飞书概念，这里会先编译不过。
  *
- * <p><b>两条轴分开验</b>：编排本身（回推、失败、回执、分段）与队列的语义（去重、恢复、
- * 串行、令牌）。后者大多直接对着 {@link InboundStore} 断言——那几条是"库里那一行长什么样"，
- * 走一遍 Agent 只会把要验的东西埋在一堆无关日志里。
+ * <p>两条轴分开验：编排本身（回推、失败、回执、分段）与队列的语义（去重、恢复、串行、令牌）。
+ * 后者大多直接对着 {@link InboundStore} 断言——那几条是"库里那一行长什么样"，走一遍 Agent 只会
+ * 把要验的东西埋在一堆无关日志里。
  *
- * <p>这些错了都不会报错：事件照样被"确认"，只是会话里多一条重复回答、少一条失败说明、
- * 或者进程重启之后那条消息永远没人接着跑。平台侧看不出区别，只有重推次数在涨。
+ * <p>这些错了都不会报错：事件照样被"确认"，只是会话里多一条重复回答、少一条失败说明、或者进程
+ * 重启之后那条消息永远没人接着跑。平台侧看不出区别，只有重推次数在涨。
  */
 class InboundDispatchTest {
 
@@ -148,7 +148,7 @@ class InboundDispatchTest {
             dispatcher.accept(event("evt-2", "conv-b", "问题二"));
 
             // 两条都进到 Agent 里且谁也没放行：说明第二条没有被第一条挡住。
-            // 串行是**按会话**的（见串行那条用例），不是全局的——全局串行等于把并发改回 1。
+            // 串行是按会话的（见串行那条用例），不是全局的——全局串行等于把并发改回 1。
             assertTrue(stuck.entered.await(5, SECONDS), "不同会话的事件被串行化了");
 
             stuck.release.countDown();
@@ -675,7 +675,7 @@ class InboundDispatchTest {
     /**
      * 落不了库的 store：只有 {@code enqueue} 会炸，其余没有意义（调用方在入队那一步就该抛出去）。
      *
-     * <p>它模拟的是"库挂了"这一件事，而这条路径的判据只有一个：**异常要冒到通道那一层**。
+     * <p>它模拟的是"库挂了"这一件事，而这条路径的判据只有一个：异常要冒到通道那一层。
      */
     private static final class BrokenStore implements InboundStore {
 

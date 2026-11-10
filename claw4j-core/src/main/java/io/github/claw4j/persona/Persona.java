@@ -14,23 +14,23 @@ import java.util.Set;
 /**
  * 一个人设：这个部署是谁、怎么说话、从哪份口径来、允许多宽的工具。
  *
- * <p>它解决的是"同一份代码两次部署只改配置"里最硬的那一半：在此之前系统提示词是
- * {@code AgentAutoConfiguration} 里的一个 Java 常量，改一个字要重新编译发版，
- * 而"销售助手"与"运维助手"的差别首先就长在那三行里。
+ * <p>它解决的是"同一份代码两次部署只改配置"里最硬的那一半：系统提示词若留在
+ * {@code AgentAutoConfiguration} 里当一个 Java 常量，改一个字就要重新编译发版，而"销售助手"
+ * 与"运维助手"的差别首先就长在那三行里。
  *
- * <p><b>形状与子 Agent 的定义同源</b>（{@code SubagentDefinition}）：一份 markdown，
- * front matter 是配置、正文是它做事时用的系统提示词。这不是为了整齐——两套形状意味着
- * 两套解析与两套失败姿势，而同一份写错的 front matter 在一处报错、在另一处静默的后果，
- * 在这个项目里每次都一样：配置看着生效了，实际没生效。
+ * <p>形状与子 Agent 的定义同源（{@code SubagentDefinition}）：一份 markdown，front matter 是
+ * 配置、正文是它做事时用的系统提示词。这不是为了整齐——两套形状意味着两套解析与两套失败姿势，
+ * 而同一份写错的 front matter 在一处报错、在另一处静默的后果，在这个项目里每次都一样：配置
+ * 看着生效了，实际没生效。
  *
- * <p><b>只覆盖档位，不覆盖 allow / deny</b>：{@code tier} 回答"这个 agent 允许多宽"
- * （销售助手永远不该跑脚本，哪怕部署的全局档位是 full），而 allow / deny 回答
- * "这套部署额外排除什么"——后者是部署级的事实，跟着 agent 走会让"同一个 agent 换个部署
- * 就少了几个工具"，那正是 per-agent 配置最容易变得说不清的地方。
+ * <p>只覆盖档位，不覆盖 allow / deny：{@code tier} 回答"这个 agent 允许多宽"（销售助手永远
+ * 不该跑脚本，哪怕部署的全局档位是 full），而 allow / deny 回答"这套部署额外排除什么"——
+ * 后者是部署级的事实，跟着 agent 走会让"同一个 agent 换个部署就少了几个工具"，那正是 per-agent
+ * 配置最容易变得说不清的地方。
  *
- * <p><b>口径是引用，不是内容</b>：{@code glossary} 里写的是文件路径，不是把口径抄进每一份人设。
- * 抄进去的后果是可预见的：两份 agent 的口径各写一遍，改一处必漏一处，
- * 而漏掉的那处会让两个助手对同一个数字给出两种说法。
+ * <p>口径是引用，不是内容：{@code glossary} 里写的是文件路径，不是把口径抄进每一份人设。
+ * 抄进去的后果可预见：两份 agent 的口径各写一遍，改一处必漏一处，而漏掉的那处会让两个助手对
+ * 同一个数字给出两种说法。
  *
  * @param name         配置里点名它用的名字（{@code claw4j.agent.default}）
  * @param description  一句话说明它是干什么的。选不到 agent 时要靠它列候选，所以不能空
@@ -69,7 +69,13 @@ public record Persona(String name,
         glossary = List.copyOf(glossary);
     }
 
-    /** 从一个 markdown 文件读出人设。文件读不出来、front matter 缺字段都是配置错误，一律失败。 */
+    /**
+     * 从一个 markdown 文件读出人设。文件读不出来、front matter 缺字段都是配置错误，一律失败。
+     *
+     * @param file 人设文件
+     * @return 解析出的人设
+     * @throws IllegalStateException 文件读不出来、缺 name 或 description、tier 写错
+     */
     public static Persona parse(Path file) {
         Objects.requireNonNull(file, "file");
         String markdown;
@@ -129,7 +135,11 @@ public record Persona(String name,
         return value.trim();
     }
 
-    /** 给启动日志与"有哪些 agent"的提示用的一行。 */
+    /**
+     * 给启动日志与"有哪些 agent"的提示用的一行。
+     *
+     * @return {@code - 名字: 说明}
+     */
     public String registration() {
         return "- " + name + ": " + description;
     }

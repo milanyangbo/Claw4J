@@ -14,13 +14,13 @@ import java.util.List;
  * *                     任意版本
  * </pre>
  *
- * <p><b>不支持</b> {@code ^0.1.0}、{@code ~0.1}、{@code ||}、Maven 的 {@code [1.0,2.0)}。
- * 两套语法并存时，"这个区间到底什么意思"要靠人记；而 {@code [0.1.0,0.2.0)} 与
+ * <p>不支持 {@code ^0.1.0}、{@code ~0.1}、{@code ||}、Maven 的 {@code [1.0,2.0)}。两套语法
+ * 并存时，"这个区间到底什么意思"要靠人记；而 {@code [0.1.0,0.2.0)} 与
  * {@code >=0.1.0 <0.2.0} 在 0.x 上等价，多看一行就能读懂的写法更值得留着。
  *
- * <p><b>看不懂的写法一律报错，不是当成"没条件"</b>。{@code =>0.1.0} 这种笔误如果被放过，
- * 这道闸就白装了——而且它不会以"校验失效"的形态出现，只会在某天以一个
- * {@code NoSuchMethodError} 出现，也就是这张票要消灭的那个形态。
+ * <p>看不懂的写法一律报错，不当成"没条件"。{@code =>0.1.0} 这种笔误如果被放过，这道闸就白装
+ * 了，而且它不会以"校验失效"的形态出现，只会在某天以一个 {@code NoSuchMethodError} 出现——
+ * 也就是这张票要消灭的那个形态。
  */
 public final class CoreVersionRange {
 
@@ -39,6 +39,8 @@ public final class CoreVersionRange {
     /**
      * 读一段区间。
      *
+     * @param text 区间写法，见类注释；{@code *} 表示任意版本
+     * @return 解析出的区间
      * @throws IllegalArgumentException 空串、看不懂的比较符、或者某一段读不成版本号
      */
     public static CoreVersionRange parse(String text) {
@@ -76,7 +78,12 @@ public final class CoreVersionRange {
         }
     }
 
-    /** 这个版本落不落在区间里。 */
+    /**
+     * 判断版本是否落在区间内。
+     *
+     * @param version 待判断的版本
+     * @return 所有条件都成立时为 {@code true}
+     */
     public boolean matches(CoreVersion version) {
         for (Bound bound : bounds) {
             if (!bound.admits(version)) {
@@ -111,9 +118,9 @@ public final class CoreVersionRange {
         }
 
         /**
-         * 取开头的运算符。<b>顺序即优先级</b>：枚举按声明顺序遍历，所以 {@code >=}/{@code <=}
-         * 必须排在 {@code >}/{@code <} 前面，否则 "{@code >=0.1.0}" 会被读成 ">{@code =0.1.0}"。
-         * 这里没有按长度排序——两个字符的只有那两个，摆在前头就是这个意思；改动枚举时别调换。
+         * 取开头的运算符。顺序即优先级：枚举按声明顺序遍历，所以 {@code >=}/{@code <=} 必须排
+         * 在 {@code >}/{@code <} 前面，否则 {@code >=0.1.0} 会被读成 {@code >} 加
+         * {@code =0.1.0}。两个字符的只有那两个，摆在前头就是这个意思；改动枚举时别调换。
          */
         static Operator leading(String token) {
             for (Operator operator : values()) {

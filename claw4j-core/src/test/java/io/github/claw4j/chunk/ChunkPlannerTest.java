@@ -13,8 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 语义切块那套纯函数：切句、分组、断点、成块。
  *
- * <p>这里**不带 Spring、不调 embedding**：向量是直接给的 {@code float[]}。这样"断点算得对不对"
- * 与"向量怎么来"是两件可以分开失败的事——后者在 {@code KnowledgeRetrievalTest} 里验。
+ * <p>这里不带 Spring、不调 embedding：向量是直接给的 {@code float[]}。这样"断点算得对不对"与
+ * "向量怎么来"是两件可以分开失败的事——后者在 {@code KnowledgeRetrievalTest} 里验。
  *
  * <p>参数口径与 LangChain 的 {@code SemanticChunker} 对齐（{@code buffer_size=1}、
  * {@code percentile}=95、{@code min_chunk_size} 缺省不合并），所以下面每条用例的名字

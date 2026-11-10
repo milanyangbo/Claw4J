@@ -12,12 +12,12 @@ import java.util.stream.Collectors;
 /**
  * 一份 markdown 的 front matter 与正文。
  *
- * <p><b>为什么自己解析，不用社区那个 {@code MarkdownParser}</b>：它是逐行找 {@code key: value}，
- * 没有冒号的行整行丢掉。于是一份用 YAML 列表写 {@code tools} 的定义，解析结果是"这一节是空的"——
- * 而"空"在本项目里恰好是"继承全部工具"的意思。一个写坏的配置因此变成了权限放大，
- * 而且不报错、不告警，只是那个子 Agent 忽然能发邮件了。
+ * <p>自己解析而不用社区那个 {@code MarkdownParser}，是因为它逐行找 {@code key: value}，
+ * 没有冒号的行整行丢掉。于是一份用 YAML 列表写 {@code tools} 的定义，解析结果是"这一节是空的"
+ * ——而"空"在本项目里恰好是"继承全部工具"的意思。一个写坏的配置因此变成了权限放大，而且不报错、
+ * 不告警，只是那个子 Agent 忽然能发邮件了。
  *
- * <p>这里的判据反过来：<b>解析不出东西就必须说出来</b>，绝不返回一个会被下游当成许可的空结果。
+ * <p>这里的判据反过来：解析不出东西就必须说出来，绝不返回一个会被下游当成许可的空结果。
  * 具体到三条：
  * <ul>
  *   <li>列表项写成 {@code - querySales} 或 {@code querySales, lookup} 都收（示例文件用的是前者）。</li>
@@ -27,11 +27,11 @@ import java.util.stream.Collectors;
  *       静默丢掉它，等于让一个人以为自己的配置生效了。</li>
  * </ul>
  *
- * <p><b>为什么在 core 而不在 agent</b>：现在有两个消费方——{@code SubagentDefinition}
- * （一份 md = 一个子 Agent）与 {@code PersonaCatalog}（一份 md = 这个部署的一个人设）。
- * 两套解析就是两套失败姿势：同一份写错的 front matter，在子 Agent 那边报错、在主 Agent
- * 这边静默，而"静默"在这个项目里每次都是同一个后果——配置看着生效了，实际没生效。
- * 放在 core 是因为它只用 JDK，且 {@code domain} 之外的包不受框架依赖约束。
+ * <p>它放在 core 而不在 agent，是因为有两个消费方：{@code SubagentDefinition}（一份 md =
+ * 一个子 Agent）与 {@code PersonaCatalog}（一份 md = 这个部署的一个人设）。两套解析就是两套
+ * 失败姿势：同一份写错的 front matter，在子 Agent 那边报错、在主 Agent 这边静默，而静默在这个
+ * 项目里每次都是同一个后果——配置看着生效了，实际没生效。它只用 JDK，且 {@code domain} 之外的
+ * 包不受框架依赖约束。
  */
 public final class FrontMatter {
 
@@ -49,9 +49,15 @@ public final class FrontMatter {
     }
 
     /**
-     * @param listKeys 允许用 {@code - 名字} 逐行写的键；其余的键只认同行值，
-     *                 这样"列表写在别的键下面"会当场报错而不是变成一段看起来正常的值
+     * 解析一份 markdown：{@code ---} 之间是配置，之后是正文。
+     *
+     * @param markdown 整份文件内容
      * @param source   只用于报错时指明是哪一份定义
+     * @param listKeys 允许用 {@code - 名字} 逐行写的键；其余的键只认同行值，这样"列表写在别的键
+     *                 下面"会当场报错而不是变成一段看起来正常的值
+     * @return 解析结果；没有 front matter 时键为空、正文是整份文件
+     * @throws IllegalStateException front matter 没有收尾、列表项没有所属的键、键只能写同行却
+     *                               折了行、出现空列表项、或某一行既不是键值也不是列表项
      */
     public static FrontMatter parse(String markdown, Path source, Set<String> listKeys) {
         Objects.requireNonNull(markdown, "markdown");
@@ -135,6 +141,7 @@ public final class FrontMatter {
         return List.copyOf(items.getOrDefault(key, List.of()));
     }
 
+    /** front matter 之后的正文，已去掉首尾空白。 */
     public String body() {
         return body;
     }

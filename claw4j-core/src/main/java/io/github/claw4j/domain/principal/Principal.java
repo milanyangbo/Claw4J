@@ -15,6 +15,7 @@ import java.util.Set;
  */
 public record Principal(String userId, String role, Set<String> accessibleTables, Set<String> allowedActions) {
 
+    /** 通配值，出现在表清单或动作清单里表示"全部"。 */
     public static final String WILDCARD = "*";
 
     public Principal {
@@ -22,6 +23,15 @@ public record Principal(String userId, String role, Set<String> accessibleTables
         allowedActions = Set.copyOf(allowedActions);
     }
 
+    /**
+     * 用四个字段构造一个身份。
+     *
+     * @param userId   通道侧的用户标识
+     * @param role     角色名
+     * @param tables   可访问的表
+     * @param actions  可执行的动作名
+     * @return 身份
+     */
     public static Principal of(String userId, String role, Set<String> tables, Set<String> actions) {
         return new Principal(userId, role, tables, actions);
     }
@@ -36,15 +46,32 @@ public record Principal(String userId, String role, Set<String> accessibleTables
         return new Principal(userId, "read-only", Set.of(WILDCARD), Set.of(ToolPermission.READ));
     }
 
+    /**
+     * 这张表在不在可访问范围内。
+     *
+     * @param table 表名
+     * @return 可读时为 {@code true}
+     */
     public boolean canReadTable(String table) {
         return accessibleTables.contains(WILDCARD) || accessibleTables.contains(table);
     }
 
+    /**
+     * 这个动作名在不在可执行范围内。
+     *
+     * @param action 动作名
+     * @return 可执行时为 {@code true}
+     */
     public boolean canPerform(String action) {
         return allowedActions.contains(WILDCARD) || allowedActions.contains(action);
     }
 
-    /** 一次工具调用所需的权限是否被授予。鉴权 Advisor 的判定入口（ADR-0007）。 */
+    /**
+     * 一次工具调用所需的权限是否被授予。鉴权 Advisor 的判定入口（ADR-0007）。
+     *
+     * @param permission 这次调用要的权限
+     * @return 动作与表都满足时为 {@code true}
+     */
     public boolean canUse(ToolPermission permission) {
         return permission.grantedTo(this);
     }

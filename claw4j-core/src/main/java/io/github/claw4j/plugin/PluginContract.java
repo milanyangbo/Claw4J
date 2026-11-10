@@ -16,14 +16,13 @@ import java.util.TreeMap;
  * requires-core=&gt;=0.1.0 &lt;0.2.0
  * </pre>
  *
- * <p>{@code requires-core} <b>必填</b>：缺了就算违规，不按"任意版本"兜底——一个漏写的键
- * 被读成"什么都要"，等于这道闸在最重要的一行上自动放行。{@code name} 选填，只进报错消息。
+ * <p>{@code requires-core} 必填：缺了就算违规，不按"任意版本"兜底——一个漏写的键被读成
+ * "什么都要"，等于这道闸在最重要的一行上自动放行。{@code name} 选填，只进报错消息。
  * 未知的键忽略，留给后来的版本往前加字段。
  *
- * <p><b>这里只做判断，不做 IO，也不抛</b>：读文件、扫 classpath、让启动停下来是
- * {@code claw4j-app} 那边的事（它要发在启动路径上，而 core 连 Spring 都不依赖）。
- * 判断能一次给全部违规（而不是第一条就抛），
- * 是因为升级核心的人想知道"是不是只有这一个"——修一个重启一次，是另一种折磨。
+ * <p>这里只做判断，不做 IO，也不抛：读文件、扫 classpath、让启动停下来是 {@code claw4j-app}
+ * 那边的事，它要发在启动路径上，而 core 连 Spring 都不依赖。判断一次给全部违规而不是第一条
+ * 就抛，是因为升级核心的人想知道"是不是只有这一个"，修一个重启一次是另一种折磨。
  */
 public final class PluginContract {
 
@@ -57,12 +56,13 @@ public final class PluginContract {
     /**
      * 逐个文件判一遍。
      *
-     * @param core     当前核心版本，<b>用于比较</b>
-     * @param coreText 当前核心版本的原样写法，<b>只用于报错</b>。两个参数不是重复：
+     * @param core     当前核心版本，用于比较
+     * @param coreText 当前核心版本的原样写法，只用于报错。两个参数不是重复：
      *                 {@link CoreVersion} 有意丢掉限定符（{@code 0.1.0-SNAPSHOT} → {@code 0.1.0}），
-     *                 而报错要照抄人能在构件的 pom 里看到的那个版本号——报错把人看到的版本改写掉，
-     *                 运维会先去核对"我到底部署了什么"
-     * @param files    契约文件的来源 → 内容。按来源排一遍序，于是同一批配置每次得到同样的消息顺序
+     *                 而报错要照抄人能在构件的 pom 里看到的那个版本号——报错把人看到的版本改写
+     *                 掉，运维会先去核对"我到底部署了什么"
+     * @param files    契约文件的来源 → 内容。按来源排一遍序，于是同一批配置每次得到同样的消息
+     *                 顺序
      * @return 所有成立的违规；空表示全部匹配
      */
     public static List<Violation> checkAll(CoreVersion core, String coreText, Map<String, Properties> files) {

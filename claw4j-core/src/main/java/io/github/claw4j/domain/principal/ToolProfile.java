@@ -10,18 +10,16 @@ import java.util.stream.Stream;
 /**
  * 一个部署的工具策略：允许到哪一档（{@link ToolTier}）、外加按工具的 allow / deny（P09）。
  *
- * <p>它的产出是**清单**，不是"执行前的拒绝"。切到 {@code messaging} 档之后
- * {@code run_script} 根本不在清单里，检索也检索不到——模型不会先计划再撞墙。
- * 这与"调了才发现被拒"有本质区别：后者白烧一轮上下文，而且模型会以为是自己参数写错了，
- * 换一种写法再试。
+ * <p>它的产出是清单，不是"执行前的拒绝"。切到 {@code messaging} 档之后 {@code run_script}
+ * 根本不在清单里，检索也检索不到，模型不会先计划再撞墙。这与"调了才发现被拒"有本质区别：
+ * 后者白烧一轮上下文，而且模型会以为是自己参数写错了，换一种写法再试。
  *
- * <p><b>allow 只能收窄，不能放宽</b>：它是在档位筛过之后再做白名单。想"用 messaging 档但要一个脚本"
- * 只能调高档位再 deny 别的——否则 allow 就成了绕过档位的口子，而档位正是这个部署的安全默认。
+ * <p>allow 只能收窄，不能放宽：它是在档位筛过之后再做白名单。想"用 messaging 档但要一个脚本"
+ * 只能调高档位再 deny 别的，否则 allow 就成了绕过档位的口子，而档位正是这个部署的安全默认。
  *
- * <p><b>三个失败姿势都是启动失败，且都点名</b>：工具没声明档位、同一工具同时在 allow 与 deny 里、
- * 筛完一个都不剩。前两条是配置错误，第三条是"把安全默认配成了没有能力"——
- * 一个工具都没有的部署里，模型连检索工具都看不见，表现出来是"它什么都不肯做"，
- * 而那与"它不会"很难区分。
+ * <p>三个失败姿势都是启动失败，且都点名：工具没声明档位、同一工具同时在 allow 与 deny 里、
+ * 筛完一个都不剩。前两条是配置错误，第三条是"把安全默认配成了没有能力"——一个工具都没有的
+ * 部署里，模型连检索工具都看不见，表现出来是"它什么都不肯做"，而那与"它不会"很难区分。
  *
  * @param tier  这个部署允许到哪一档
  * @param allow 白名单；空表示不额外收窄
@@ -45,7 +43,13 @@ public record ToolProfile(ToolTier tier, Set<String> allow, Set<String> deny) {
         }
     }
 
-    /** 今天的行为：全部档位、不收窄、不排除。默认值必须是它，否则升级一次就少一批工具。 */
+    /**
+     * 全开：全部档位、不收窄、不排除。
+     *
+     * <p>默认值必须是它，否则升级一次就少一批工具。
+     *
+     * @return 不做任何收窄的策略
+     */
     public static ToolProfile unrestricted() {
         return new ToolProfile(ToolTier.FULL, Set.of(), Set.of());
     }
@@ -147,8 +151,8 @@ public record ToolProfile(ToolTier tier, Set<String> allow, Set<String> deny) {
      * @param byTier   因为档位不够被挡的
      * @param byAllow  因为不在 allow 白名单里被挡的
      * @param byDeny   因为 deny 被排除的
-     * @param unused   配置里写了、但清单里不存在的名字。**不一定错**：部署裁剪掉某个模块时，
-     *                 针对它的 deny 条目自然落空。但拼错也长这样，所以日志要把它列出来
+     * @param unused   配置里写了、但清单里不存在的名字。不一定错：部署裁剪掉某个模块时，针对它
+     *                 的 deny 条目自然落空。但拼错也长这样，所以日志要把它列出来
      */
     public record Selection(List<String> kept, List<String> byTier, List<String> byAllow,
                             List<String> byDeny, List<String> unused) {

@@ -19,18 +19,18 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * 不落库的入站队列：**语义与 JDBC 那份一样，寿命只有进程那么长**。
+ * 不落库的入站队列：语义与 JDBC 那份一致，寿命只有进程那么长。
  *
- * <p>它存在的场合只有一个：{@code claw4j.persistence.enabled=false} 的部署（以及单测）。
- * 那种部署里没有 DataSource，而入站路径不能因此少一条——所以换成内存实现，
- * 行为与改造之前一致（重推窗口靠进程内的表、重启之后没人接着跑）。
+ * <p>它只服务一种部署：{@code claw4j.persistence.enabled=false}，以及单测。那种部署没有
+ * DataSource，而入站路径不能因此少一条，所以换成内存实现：重推窗口靠进程内的表，
+ * 重启之后没人接着跑。
  *
- * <p><b>它与 JDBC 那份共用同一份 {@code accept} 逻辑</b>：端口只有一套方法，
- * 调度层里没有 {@code if (jdbc) … else …}。两套分支迟早会不一致，
- * 而不一致的表现是"带库的部署丢掉了一种消息、不带库的没有"——只在某一种部署里复现。
+ * <p>它与 JDBC 那份共用同一份入队逻辑：端口只有一套方法，调度层里没有
+ * {@code if (jdbc) … else …}。两套分支迟早会不一致，而不一致的表现是"带库的部署丢掉了一种
+ * 消息、不带库的没有"，只在某一种部署里复现。
  *
- * <p>启动时会 WARN 一句"入站事件不落库，重启会丢"（见 {@link InboundDispatcher}）：
- * 这是**能选**的降级，不是默认值，所以它必须说出来。
+ * <p>启动时 WARN 一句"入站事件不落库，重启会丢"（见 {@link InboundDispatcher}）：
+ * 这是能选的降级，不是默认值，所以它必须说出来。
  */
 public final class InMemoryInboundStore implements InboundStore {
 

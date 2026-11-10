@@ -7,26 +7,26 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 一个配置值：它现在是<b>句柄</b>，不是真值（P08）。
+ * 一个配置值：它现在是句柄，不是真值（P08）。
  *
- * <p>三种形态，只有两种写法：
+ * <p>三种形态：句柄、显式常量、没配。写法只有两种：
  *
  * <ul>
- *   <li>{@code secret:<名字>} —— 句柄。出口那一刻换成真值，配置对象从头到尾只有名字。</li>
- *   <li>{@code plain:<文本>} —— 显式常量。<b>只有非凭据位接受它</b>（MCP 的 {@code env} 与
- *       {@code headers} 里偶尔要带 {@code HOME=/tmp/x} 这种非凭据常量）。写成一个前缀而不是
- *       让明文裸着，是为了让"这里确实是一段明文"在配置里看得见——凭据位上它是被拒绝的。</li>
+ *   <li>{@code secret:<名字>}：句柄。出口那一刻换成真值，配置对象从头到尾只有名字。</li>
+ *   <li>{@code plain:<文本>}：显式常量，只有非凭据位接受它（MCP 的 {@code env} 与
+ *       {@code headers} 里偶尔要带 {@code HOME=/tmp/x} 这种非凭据常量）。写成一个前缀而不是让
+ *       明文裸着，是为了让"这里确实是一段明文"在配置里看得见；凭据位上它是被拒绝的。</li>
  * </ul>
  *
- * <p>值里可以出现<b>多个句柄</b>，也可以带前后缀（{@code Bearer secret:deepwiki_token}）：
- * 第三方端点常见的形状就是"固定前缀 + 一把钥匙"，要求整值必须是句柄等于把这类配置逼回明文。
+ * <p>值里可以出现多个句柄，也可以带前后缀（{@code Bearer secret:deepwiki_token}）：第三方端点
+ * 常见的形状就是"固定前缀 + 一把钥匙"，要求整值必须是句柄等于把这类配置逼回明文。
  *
- * <p><b>形状必须可校验，不能靠"看着像"</b>：一个不含 {@code secret:} 的值在凭据位上直接失败，
- * 并点名是哪一行；句柄名限定为小写字母、数字与 {@code . _ -}，因为它是环境变量名的小写写法
- * （{@link SecretResolver#environmentName}）。写错大小写时立刻失败，好过启动之后
- * 表现为"401 但配置看起来是对的"。
+ * <p>形状必须可校验，不能靠"看着像"：一个不含 {@code secret:} 的值在凭据位上直接失败，并点名
+ * 是哪一行；句柄名限定为小写字母、数字与 {@code . _ -}，因为它是环境变量名的小写写法
+ * （{@link SecretResolver#environmentName}）。写错大小写时立刻失败，好过启动之后表现为
+ * "401 但配置看起来是对的"。
  *
- * <p><b>它不持有真值，也不打印真值</b>：{@link #toString()} 给的是原文（句柄或 {@code plain:}），
+ * <p>它不持有真值，也不打印真值：{@link #toString()} 给的是原文（句柄或 {@code plain:}），
  * {@code render} 的结果只该流向出口，永远不该进日志或审计。
  */
 public final class SecretValue {
@@ -83,8 +83,11 @@ public final class SecretValue {
      *
      * @param raw        配置里写的原文
      * @param where      配置项全名，例如 {@code claw4j.model.deepseek.api-key}
-     * @param allowPlain 是否接受 {@code plain:}。<b>凭据位一律 false</b>（模型 key 这种
-     *                   "只能是凭据"的位置，连明文常量都没有存在的理由）
+     * @param allowPlain 是否接受 {@code plain:}。凭据位一律 false（模型 key 这种"只能是凭据"的
+     *                   位置，连明文常量都没有存在的理由）
+     * @return 校验过的值；{@code raw} 为空时是 {@link #absent()}
+     * @throws IllegalArgumentException 凭据位给了明文常量、{@code plain:} 与句柄混用、句柄名不合
+     *                                  法、或值里没有任何句柄
      */
     public static SecretValue parse(String raw, String where, boolean allowPlain) {
         Objects.requireNonNull(where, "where");
@@ -135,6 +138,11 @@ public final class SecretValue {
         return handles;
     }
 
+    /**
+     * 这个值是不是没配。
+     *
+     * @return 没配时为 {@code true}
+     */
     public boolean isAbsent() {
         return absent;
     }
@@ -142,13 +150,14 @@ public final class SecretValue {
     /**
      * 出口：把句柄换成真值。
      *
-     * <p>只在三个地方调：发模型请求（每次取，见 {@code ModelConfiguration}）、
-     * 起 MCP 子进程（{@code ProcessStdioMcpEndpoint#openTransport}）、
-     * 写 MCP 的 http header（每次请求，见 {@code HttpMcpEndpoint}）。
-     * 别处的调用都在把真值往"能活很久的地方"搬。
+     * <p>只在出口调：发模型请求（{@code ModelConfiguration}、{@code EmbeddingAutoConfiguration}、
+     * {@code RagAutoConfiguration}）、起 MCP 子进程（{@code ProcessStdioMcpEndpoint}）、写 MCP
+     * 的 http header（{@code HttpMcpEndpoint}）。别处的调用都在把真值往"能活很久的地方"搬。
      *
-     * @throws MissingSecretException 句柄取不到真值。出口才发现缺失比启动期更糟，
-     *                                所以启动期会先用 {@link #requireResolvable} 探一次
+     * @param resolver 真值来源
+     * @return 换好真值的字符串；没配时是空串
+     * @throws MissingSecretException 句柄取不到真值。出口才发现缺失比启动期更糟，所以启动期会先
+     *                                用 {@link #requireResolvable} 探一次
      */
     public String render(SecretResolver resolver) {
         Objects.requireNonNull(resolver, "resolver");
@@ -171,6 +180,9 @@ public final class SecretValue {
      * 启动期探一次：句柄都在，就什么都不做；缺一个就失败。
      *
      * <p>只问"在不在"，不留值——真值仍然每次出口现取。
+     *
+     * @param resolver 真值来源
+     * @throws MissingSecretException 有一个句柄取不到真值
      */
     public void requireResolvable(SecretResolver resolver) {
         Objects.requireNonNull(resolver, "resolver");

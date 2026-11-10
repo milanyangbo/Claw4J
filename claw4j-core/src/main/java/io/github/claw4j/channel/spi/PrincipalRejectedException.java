@@ -1,13 +1,17 @@
 package io.github.claw4j.channel.spi;
 
 /**
- * 通道认人失败。语义是"这一条请求不该进来"，而不是"处理过程中出错"，
- * 所以控制器把它映射成 401 而不是 500。
+ * 通道认人失败，表示这一条请求不该进来。
+ *
+ * <p>它不是"处理过程中出错"，所以控制器把它映射成 401 而不是 500。
  */
 public class PrincipalRejectedException extends RuntimeException {
 
     private final String reason;
 
+    /**
+     * @param reason 给客户端看的理由，只放"缺什么"
+     */
     public PrincipalRejectedException(String reason) {
         super(reason);
         this.reason = reason;

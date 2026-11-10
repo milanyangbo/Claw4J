@@ -10,29 +10,30 @@ import java.util.regex.Pattern;
 /**
  * 语义切块的纯函数部分：切句、分组、找断点、成块。
  *
- * <p><b>它为什么在 {@code claw4j-core}</b>：算法只吃字符串与向量、只吐下标，不依赖 Spring AI，
- * 也不依赖任何 tokenizer。放在这里意味着它能被单独测、单独拿走用；框架那一层
- * （{@code SemanticTextSplitter}）只负责"算向量"与"超长兜底"。
+ * <p>它放在 {@code claw4j-core} 是因为算法只吃字符串与向量、只吐下标，不依赖 Spring AI，
+ * 也不依赖任何 tokenizer。放在这里意味着能被单独测、单独拿走用；框架那一层
+ * （{@code SemanticTextSplitter}）只负责算向量与超长兜底。
  *
- * <p><b>算法不是我们发明的</b>：照 LangChain 的 {@code SemanticChunker}
- * （{@code langchain_experimental.text_splitter}，算法出自 Greg Kamradt 的 notebook，
- * LlamaIndex 的 {@code SemanticSplitterNodeParser} 同款）。三个参数照它的默认值：
- * {@link #BUFFER_SIZE}（{@code buffer_size=1}）、{@link #BREAKPOINT_PERCENTILE}
- * （{@code percentile} 95）、以及 {@code min_chunk_size} 缺省为 {@code None}——**也就是不合并**。
+ * <p>算法来自 LangChain 的 {@code SemanticChunker}（{@code langchain_experimental.text_splitter}，
+ * 原始出处是 Greg Kamradt 的 notebook，LlamaIndex 的 {@code SemanticSplitterNodeParser} 同款）。
+ * 三个参数照它的默认值：{@link #BUFFER_SIZE}（{@code buffer_size=1}）、
+ * {@link #BREAKPOINT_PERCENTILE}（{@code percentile} 95），以及 {@code min_chunk_size} 缺省为
+ * {@code None}，也就是不合并。
  *
- * <p><b>唯一的适配是切句正则</b>：它默认 {@code (?<=[.?!])\s+} 要求句末标点后面还有空白，
- * 中文没有词间空格，整段切不开。这里换成中文句末标点 + 换行。
+ * <p>与它不同的只有两处。切句正则：它默认 {@code (?<=[.?!])\s+}，要求句末标点后面还有空白，
+ * 中文没有词间空格，整段切不开，这里换成中文句末标点加换行。句首转折词：开源实现没有这条规则，
+ * 它是产品要求，只认句首（句中引用"然而"不触发），词表见 {@link #TRANSITIONS}。
  *
- * <p><b>唯一的叠加规则是句首转折词</b>：开源实现没有这条，它是产品要求；
- * 只认句首（句中引用"然而"不触发），词表见 {@link #TRANSITIONS}。
- *
- * <p>数值口径：距离 = 1 - 余弦相似度；分位数用线性插值（与 numpy 的 {@code percentile} 一致），
- * 断点是"距离 **严格大于** 阈值"。后面这条很关键：整篇距离都一样时，阈值等于距离本身，
- * 于是一个断点都没有——这正是"同主题文档不要硬切"想要的行为。
+ * <p>数值口径：距离 = 1 - 余弦相似度；分位数用线性插值（与 numpy 的 {@code percentile} 一致）；
+ * 断点是距离严格大于阈值。最后这条很关键：整篇距离都一样时阈值等于距离本身，于是一个断点都
+ * 没有——这正是"同主题文档不要硬切"想要的行为。
  */
 public final class ChunkPlanner {
 
-    /** 句子组的窗口：每句与前后各 {@value} 句拼成一组再算向量（LangChain 的 {@code buffer_size}）。 */
+    /**
+     * 句子组的窗口：每句与前后各 {@value} 句拼成一组再算向量（LangChain 的
+     * {@code buffer_size}）。
+     */
     public static final int BUFFER_SIZE = 1;
 
     /** 断点阈值：相邻组距离的百分位（LangChain 的 {@code percentile} 缺省 95）。 */
@@ -42,15 +43,15 @@ public final class ChunkPlanner {
      * 短于这个字符数的片段并回前一句。
      *
      * <p>挡的是"然而。"这种被句号切出来的碎句——它单独成句会让转折词判定与向量都失去意义。
-     * 这不是"按字数切块"：它是**切句**这一步的碎片处理，块边界仍然只看语义。
+     * 这不是按字数切块：它是切句这一步的碎片处理，块边界仍然只看语义。
      */
     private static final int MIN_SENTENCE_CHARS = 8;
 
     /**
      * 句首转折 / 转场词。
      *
-     * <p>按**少切**配：只放明确的转折与转场，不放大批"第一步/第二步"这种次序词。
-     * 已知误判：句首"同时"在"同时满足三个条件"里是并列条件而不是转场——误切的代价是块变碎，
+     * <p>按少切配：只放明确的转折与转场，不放大批"第一步/第二步"这种次序词。
+     * 已知误判：句首"同时"在"同时满足三个条件"里是并列条件而不是转场；误切的代价是块变碎，
      * 比漏切（语义混块）轻。
      */
     private static final List<String> TRANSITIONS = List.of(
@@ -59,7 +60,7 @@ public final class ChunkPlanner {
 
     /**
      * 句末：中文/全角标点，或换行。英文的 {@code .} 不在里面——{@code v2.0}、{@code 3.5%}
-     * 不该被切成三句；英文句子靠换行与 {@code !?} 断开就够我们用了。
+     * 不该被切成三句；英文句子靠换行与 {@code !?} 断开即可。
      */
     private static final Pattern SENTENCE_END = Pattern.compile("(?<=[。！？；…!?;])|\\n+");
 
@@ -72,6 +73,7 @@ public final class ChunkPlanner {
     /**
      * 切句：句末标点或换行断开，去掉空白片段，短于 {@value #MIN_SENTENCE_CHARS} 字的并回前一句。
      *
+     * @param text 待切的全文，可以为 {@code null}
      * @return 句子列表；整篇没有可切内容时返回空列表（调用方据此产出 0 块）
      */
     public static List<String> sentences(String text) {
@@ -97,8 +99,12 @@ public final class ChunkPlanner {
     /**
      * 句子组：第 i 组 = 第 {@code i-buffer} 到 {@code i+buffer} 句拼起来。
      *
-     * <p>为什么要分组：单句向量对噪声敏感（"此外"这种短句几乎不携带主题），拼上邻居再算距离，
-     * 断点才落在"话题真的变了"的位置。组数与句数相同，所以组间距离可以一一对应到"第几句之后断"。
+     * <p>分组的理由：单句向量对噪声敏感（"此外"这种短句几乎不携带主题），拼上邻居再算距离，
+     * 断点才落在话题真的变了的位置。组数与句数相同，所以组间距离可以一一对应到"第几句之后断"。
+     *
+     * @param sentences  {@link #sentences} 的返回值
+     * @param bufferSize 前后各取几句；负数按 0 处理
+     * @return 与 {@code sentences} 等长的组列表
      */
     public static List<String> groups(List<String> sentences, int bufferSize) {
         int buffer = Math.max(0, bufferSize);
@@ -115,8 +121,8 @@ public final class ChunkPlanner {
      * 距离断点：相邻两组余弦距离严格大于"距离的第 P 百分位"处断开。
      *
      * @param groupVectors 每组的向量，顺序与 {@link #groups} 一致
-     * @param percentile   0~100
-     * @return **新块起始句的下标**（升序）；没有断点时返回空列表
+     * @param percentile   0~100，超出范围按端点截断
+     * @return 新块起始句的下标（升序）；没有断点时返回空列表
      */
     public static List<Integer> distanceBreakpoints(List<float[]> groupVectors, double percentile) {
         if (groupVectors == null || groupVectors.size() < 2) {
@@ -137,10 +143,14 @@ public final class ChunkPlanner {
     }
 
     /**
-     * 叠加"句首转折词"断点：第 i 句以转折/转场词开头时，i 就是一个新块的起点。
+     * 叠加"句首转折词"断点：第 i 句以转折 / 转场词开头时，i 就是一个新块的起点。
      *
      * <p>典型调用是 {@code withTransitionBreaks(sentences, distanceBreakpoints(...))}；
      * 向量算不出来时传空列表，规则照常生效。
+     *
+     * @param sentences 句子列表，下标要与 {@code breaks} 同源
+     * @param breaks    已有的断点，可以为 {@code null}
+     * @return 合并后的断点，升序且不含 0
      */
     public static List<Integer> withTransitionBreaks(List<String> sentences, List<Integer> breaks) {
         Set<Integer> merged = new LinkedHashSet<>();
@@ -159,9 +169,13 @@ public final class ChunkPlanner {
     /**
      * 按断点切片，返回每块的句子下标区间 {@code [start, end)}。
      *
-     * <p><b>不做最小块合并</b>：LangChain 的 {@code min_chunk_size} 缺省是 {@code None}，
-     * 也就是不合并。我们照默认——加一个"多短算短"的字符阈值，正好是这一层想去掉的东西。
-     * 代价是连续转折会切出很短的块，那是规则的结果。
+     * <p>不做最小块合并：LangChain 的 {@code min_chunk_size} 缺省是 {@code None}，也就是不合并，
+     * 这里照默认——加一个"多短算短"的字符阈值，正好是这一层想去掉的东西。代价是连续转折会切出
+     * 很短的块，那是规则的结果。
+     *
+     * @param sentences 句子列表
+     * @param breaks    断点，可以为 {@code null}；越界或非递增的项被忽略
+     * @return 首尾相接、覆盖全部句子的区间
      */
     public static List<int[]> blocks(List<String> sentences, List<Integer> breaks) {
         if (sentences.isEmpty()) {
@@ -181,10 +195,13 @@ public final class ChunkPlanner {
     }
 
     /**
-     * 这一句是不是以转折/转场词开头。
+     * 这一句是不是以转折 / 转场词开头。
      *
-     * <p><b>只认句首</b>：句中出现的"然而"（引用、举例、否定句）不算。把转折词当子串匹配，
+     * <p>只认句首：句中出现的"然而"（引用、举例、否定句）不算。把转折词当子串匹配，
      * 会把"政策里提到的『然而』并不存在"这类句子一起切碎。
+     *
+     * @param sentence 一句文本，可以为 {@code null}
+     * @return 去掉列表符号、引号等前置装饰后，以 {@link #TRANSITIONS} 里的词开头时为 {@code true}
      */
     public static boolean startsWithTransition(String sentence) {
         if (sentence == null) {

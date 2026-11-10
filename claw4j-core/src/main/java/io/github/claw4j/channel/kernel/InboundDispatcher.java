@@ -35,44 +35,37 @@ import java.util.function.Function;
 /**
  * 入站编排：一条事件进来之后要发生的全部事情，且都在平台的回调线程之外。
  *
- * <p><b>它与平台无关</b>。进得来的是 {@link InboundEvent}（五个字符串加一个时间戳），
- * 出得去的是 {@link ReplySender}（发一段文本）。飞书、Telegram、Slack 在这两层上
- * 是同一个形状——它们的回调都有几秒的窗口、重推都带一个不变的幂等键、都有单条长度上限、
- * 都有一个能认人的用户标识。
+ * <p>它与平台无关。进来的是 {@link InboundEvent}（五个字符串加一个时间戳），出去的是
+ * {@link ReplySender}（发一段文本）。飞书、Telegram、Slack 在这两层上是同一个形状：几秒的
+ * 回调窗口、带不变幂等键的重推、单条长度上限、能认人的用户标识。
  *
- * <p>存在的理由是一条硬约束：平台<b>几秒内</b>没处理完就重推，而一次 Text-to-SQL 可能十几秒。
- * 所以正确的形状不是"把 Agent 调快"，而是<b>立刻 ACK → 异步编排 → 主动回推</b>。
- *
- * <p><b>顺序固定为：落库 → 返回（ACK）→ 认领 → 执行 → 结算</b>（票 04）。四件事按这个顺序：
+ * <p>存在的理由是一条硬约束：平台几秒内没处理完就重推，而一次 Text-to-SQL 可能十几秒。
+ * 正确的形状不是"把 Agent 调快"，而是立刻 ACK → 异步编排 → 主动回推。顺序固定为
+ * 落库 → 返回（ACK）→ 认领 → 执行 → 结算（票 04）：
  *
  * <ol>
- *   <li><b>落库</b>：{@link InboundStore#enqueue}。重复投递（任何一种 {@code DUPLICATE_*}）
- *       直接返回，不执行、也不发回执。</li>
- *   <li><b>认领</b>：按 {@code (到达时间, eventId)} 取最早的一条，跳过"正在跑的车道"——
- *       同一条会话上同时只有一条在跑，这是"不越过未提交的一轮"在代码里的样子。</li>
- *   <li><b>认人</b>：{@code senderId} → {@link Principal}。认不出就回一句"没有权限"并记 WARN，
- *       然后<b>完成</b>（重试不会让这个人变成已登记）。</li>
- *   <li><b>执行与结算</b>：成功 {@code complete}；失败未到上限 {@code release}（回待处理，
- *       等下一轮扫到），到上限 {@code fail} 并回一句失败说明。</li>
+ *   <li>落库：{@link InboundStore#enqueue}。重复投递直接返回，不执行、不发回执。</li>
+ *   <li>认领：按 {@code (到达时间, eventId)} 取最早一条，跳过正在跑的车道——同一条会话上
+ *       同时只有一条在跑，这是"不越过未提交的一轮"在代码里的样子。</li>
+ *   <li>认人：{@code senderId} → {@link Principal}。认不出就回一句"没有权限"并记 WARN，
+ *       然后完成：重试不会让这个人变成已登记。</li>
+ *   <li>执行与结算：成功 {@code complete}；未到上限 {@code release}（回待处理），到上限
+ *       {@code fail} 并回一句失败说明。</li>
  * </ol>
  *
- * <p><b>为什么不是"内存去重表 + 直接投线程池"</b>（这条是票 04 改掉的那句旧理由）：
- * 平台已经收到我们的 ACK、不会重投，而那条消息只在内存里——进程一退，用户的话就永久消失了，
- * 日志里只留下"已提交到执行线程池"。留一份去重表在内存里解决的是"多实例之间不重复"，
- * 那件事在单实例形态下（ADR-0009 的长连接不支持广播）本来就不成立；
- * **真正会丢消息的是"重启之后没人接着跑"**。所以落库、去重、状态机都在一张表上。
+ * <p>状态机落在一张表上，而不是"内存去重表 + 直接投线程池"：消息只在内存里的话，进程一退
+ * 用户的话就永久消失，而平台已经收到 ACK、不会重投。内存去重表解决的是多实例之间不重复，
+ * 那件事在单实例形态下（ADR-0009 的长连接不支持广播）本来就不成立。
  *
- * <p><b>落不了库就把异常抛出去</b>：这是本类唯一允许抛的地方。与 OpenClaw 一致
- * （它的做法是关掉那条 socket："instead of continuing past an uncommitted turn"）——
- * 抛出去之后通道会让平台重推，而我们没有越过一条没落库的消息。代价写在明处：
- * 今天入站是纯内存的、库挂了照样能跑；之后<b>库挂了入站全停</b>。这是有意选择。
+ * <p>落不了库就把异常抛出去，这是本类唯一允许抛的地方。与 OpenClaw 一致：Feishu WebSocket
+ * 事件落不了库时它关掉那条 socket，"instead of continuing past an uncommitted turn"
+ * （docs/channels/feishu/setup.md:45）。抛出去之后通道会让平台重推，代价是库挂了入站全停。
  *
- * <p><b>至少一次，不是恰好一次</b>：结算（{@code complete}）本身写不进去时，租约到期之后
- * 这条会被再跑一遍，于是会话里可能出现两条一样的回答。这个窗口比"消息永久丢失"小得多，
- * 也是任何"先做事再记账"的系统都有的窗口。
+ * <p>至少一次，不是恰好一次：结算写不进去时，租约到期后这条会再跑一遍，会话里可能出现两条
+ * 一样的回答。这个窗口比消息永久丢失小得多。
  *
- * <p><b>这一层只认 JDK 类型与自己那几个接口</b>，所以它能进默认构建，
- * 用假 store + 假发送 + 可控 executor 断言上面每一条，不需要任何平台的凭据。
+ * <p>这一层只认 JDK 类型与自己那几个接口，用假 store + 假发送 + 可控 executor 就能断言上面
+ * 每一条，不需要任何平台的凭据。
  */
 public class InboundDispatcher {
 
@@ -81,16 +74,17 @@ public class InboundDispatcher {
     /**
      * 一条事件最多跑几次。到了就进死信并回一句失败说明。
      *
-     * <p>**不做成配置项**：先固定一个数并写进日志，等真的有人需要调再说——
-     * 多一个配置键就多一个"这个部署到底跑的是哪套"的来源。
+     * <p>不做成配置项：先固定一个数并写进日志，等真的有人需要调再说。多一个配置键就多一个
+     * "这个部署到底跑的是哪套"的来源。
      */
     static final int MAX_ATTEMPTS = 5;
 
     /**
      * 认领多久没结算算超时。
      *
-     * <p>取 5 分钟，与 OpenClaw 那个 "five-minute per-chat queue limit" 同量级：
-     * 比一次最慢的一轮（几分钟）长，又不至于让一条卡住的消息等到天荒地老。
+     * <p>取 5 分钟，与 OpenClaw 的 five-minute per-chat queue limit 同量级
+     * （docs/channels/feishu/setup.md:47）：比一次最慢的一轮长，又不至于让一条卡住的消息
+     * 等到天荒地老。
      */
     static final Duration LEASE = Duration.ofMinutes(5);
 
@@ -169,6 +163,15 @@ public class InboundDispatcher {
      */
     private volatile ScheduledExecutorService sweeper;
 
+    /**
+     * 建一个不登记收件地址、不发回执、不落库的调度器。
+     *
+     * @param agentPort 回答的来源
+     * @param executor 执行认领与执行任务的线程池
+     * @param principalResolver 平台用户标识到 {@link Principal} 的解析
+     * @param replySender 回推的目标通道
+     * @param platformName 答复里用来称呼平台的名字
+     */
     public InboundDispatcher(AgentPort agentPort,
                              Executor executor,
                              Function<String, Optional<Principal>> principalResolver,
@@ -178,7 +181,14 @@ public class InboundDispatcher {
     }
 
     /**
-     * @param channel 本通道的标识。null 表示"这条消息不登记收件地址"（A05）
+     * 建一个带上通道标识的调度器，不回执、不落库。
+     *
+     * @param agentPort 回答的来源
+     * @param executor 执行认领与执行任务的线程池
+     * @param principalResolver 平台用户标识到 {@link Principal} 的解析
+     * @param replySender 回推的目标通道
+     * @param platformName 答复里用来称呼平台的名字
+     * @param channel 本通道的标识。null 表示这条消息不登记收件地址（A05）
      */
     public InboundDispatcher(AgentPort agentPort,
                              Executor executor,
@@ -190,7 +200,15 @@ public class InboundDispatcher {
     }
 
     /**
-     * @param receipt 认出人之后先推的一句"收到了"（例如企业微信）。null／空白表示不回执——
+     * 建一个带通道标识与回执的调度器，不落库。
+     *
+     * @param agentPort 回答的来源
+     * @param executor 执行认领与执行任务的线程池
+     * @param principalResolver 平台用户标识到 {@link Principal} 的解析
+     * @param replySender 回推的目标通道
+     * @param platformName 答复里用来称呼平台的名字
+     * @param channel 本通道的标识。null 表示这条消息不登记收件地址（A05）
+     * @param receipt 认出人之后先推的一句"收到了"（例如企业微信）。null 或空白表示不回执：
      *                通道自己能被动回复时（飞书）就不需要它，多推一句只是噪音
      */
     public InboundDispatcher(AgentPort agentPort,
@@ -204,9 +222,19 @@ public class InboundDispatcher {
     }
 
     /**
-     * @param store 入站事件的落点。**null 表示不落库**：用内存实现，行为与改造之前一致
-     *              （重启之后没人接着跑），并 WARN 一句。这个默认值只服务"没有 DataSource 的
-     *              部署与单测"，生产的四个通道都从容器里拿真的那一份
+     * 建一个完整配置的调度器。
+     *
+     * @param agentPort 回答的来源
+     * @param executor 执行认领与执行任务的线程池
+     * @param principalResolver 平台用户标识到 {@link Principal} 的解析
+     * @param replySender 回推的目标通道
+     * @param platformName 答复里用来称呼平台的名字
+     * @param channel 本通道的标识。null 表示这条消息不登记收件地址（A05）
+     * @param receipt 认出人之后先推的一句"收到了"（例如企业微信）。null 或空白表示不回执：
+     *                通道自己能被动回复时（飞书）就不需要它，多推一句只是噪音
+     * @param store 入站事件的落点。null 表示不落库：用内存实现（重启之后没人接着跑），
+     *              并 WARN 一句。这个默认值只服务没有 DataSource 的部署与单测，
+     *              生产的四个通道都从容器里拿真的那一份
      */
     public InboundDispatcher(AgentPort agentPort,
                              Executor executor,
@@ -236,8 +264,8 @@ public class InboundDispatcher {
     /**
      * 启动：把重启前没结算的认领收回，然后开始定时扫描。
      *
-     * <p><b>只该被调一次</b>（通道装配里调用）。用 {@link Duration#ZERO} 回收：
-     * 这一刻只有一个进程，所有 {@code claimed} 都是孤儿——它们的主人不在了。
+     * <p>只该被调一次（通道装配里调用），重复调用直接返回。用 {@link Duration#ZERO} 回收：
+     * 这一刻只有一个进程，所有 {@code claimed} 都是孤儿，它们的主人不在了。
      * 不这么做的话，"重启之后那条回答自己补发"要等到第一次定时扫描，
      * 而那时的 cutoff 是"五分钟前"，一条十分钟前的孤儿要再等五分钟才轮到。
      */
@@ -267,10 +295,13 @@ public class InboundDispatcher {
     }
 
     /**
-     * 接一条事件。<b>方法返回就是 ACK</b>：这里不等 Agent。
+     * 收下一条事件并立刻返回：方法返回就是 ACK，这里不等 Agent。
      *
-     * <p><b>落不了库就抛</b>：平台会因此重推，而我们没有越过一条没落库的消息。
-     * 这是本类唯一允许抛的地方——其余失败都在执行那一侧收口（回推一句说明，或放回队列重试）。
+     * <p>落不了库就抛：平台会因此重推，也就没有越过一条没落库的消息。这是本类唯一允许抛的
+     * 地方，其余失败都在执行那一侧收口（回推一句说明，或放回队列重试）。
+     *
+     * @param event 平台上刚收到的那条消息
+     * @throws RuntimeException 入队写入失败时原样抛出，交给平台重推
      */
     public void accept(InboundEvent event) {
         Objects.requireNonNull(event, "event");
@@ -299,8 +330,9 @@ public class InboundDispatcher {
     }
 
     /**
-     * 认领并执行，直到再没有能认领的。**包内可见是为了让用例能推一轮**：
-     * 生产里它只由 {@link #accept} 与定时扫描触发。
+     * 认领并执行，直到再没有能认领的。
+     *
+     * <p>包内可见是为了让用例能推一轮；生产里它只由 {@link #accept} 与定时扫描触发。
      */
     void drain() {
         if (!draining.compareAndSet(false, true)) {
@@ -333,9 +365,9 @@ public class InboundDispatcher {
     /**
      * 定时扫描：把超时的认领收回，再推一轮。
      *
-     * <p>放回去的那些车道也在这里解封——它们是"这一轮失败了、等下一轮再试"，
-     * 而"下一轮"就是这里。**这就是重试的节奏**：30 秒一次，不是立刻重试。
-     * 立刻重试的话，一个必然失败的调用会在几秒里烧掉 5 次额度，而人还在等。
+     * <p>放回去的那些车道也在这里解封，它们是"这一轮失败了、等下一轮再试"，而"下一轮"就是这里。
+     * 重试的节奏因此是 30 秒一次，不是立刻重试：立刻重试的话，一个必然失败的调用会在几秒里
+     * 烧掉 5 次额度，而人还在等。
      */
     void sweep() {
         releasedLanes.clear();
@@ -442,8 +474,8 @@ public class InboundDispatcher {
     /**
      * 一条没跑完：未到上限放回队列，到上限进死信并回一句失败说明。
      *
-     * <p>**中间几次失败不说话**：每一次失败都回一句"没成功，稍后再试"的话，
-     * 一次库抖动会让群里刷出五条同样的道歉。到上限才说，那时它真的不会再试了。
+     * <p>中间几次失败不说话：每次失败都回一句"没成功，稍后再试"的话，一次库抖动会让群里刷出
+     * 五条同样的道歉。到上限才说，那时它真的不会再试了。
      */
     private boolean failed(ClaimedInbound claimed, Throwable error) {
         QueuedInbound queued = claimed.event();
@@ -468,7 +500,7 @@ public class InboundDispatcher {
     }
 
     /**
-     * 结算写不进去只记日志，**不把这一轮翻成失败**：回答已经发出去了，
+     * 结算写不进去只记日志，不把这一轮翻成失败：回答已经发出去了，
      * 把它再跑一遍只会在会话里多一条一样的回答。
      */
     private boolean settleQuietly(BooleanSupplier action, String what,
@@ -508,8 +540,7 @@ public class InboundDispatcher {
     /**
      * 平台没给 eventId 时生成一个。
      *
-     * <p>生成的代价要说清：**这条的去重失效**（重推会拿到一个新 id，于是跑第二遍），
-     * 与改造之前"没有 eventId 就照常处理"是同一个行为。宁可重复回答一次，
+     * <p>生成的代价说清：这条的去重失效，重推会拿到一个新 id，于是跑第二遍。宁可重复回答一次，
      * 也不能因为少一个字段把用户的话丢掉。
      */
     private static String eventIdOf(InboundEvent event) {

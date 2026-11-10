@@ -15,10 +15,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 插件版本契约的判定（P16）：区间怎么读、版本怎么比、哪一侧失败。
  *
- * <p>这一份只验纯计算，不碰 classpath：读文件、扫 jar、让启动停下来在
- * {@code claw4j-app} 的 {@code BuildContractTest} 里。
+ * <p>这一份只验纯计算，不碰 classpath：读文件、扫 jar、让启动停下来在 {@code claw4j-app} 的
+ * {@code BuildContractTest} 里。
  *
- * <p>用 JUnit 的断言而不是 AssertJ —— core 不依赖 AssertJ（它连 Spring 都不依赖）。
+ * <p>用 JUnit 的断言而不是 AssertJ：core 不依赖 AssertJ（它连 Spring 都不依赖）。
  */
 class PluginContractTest {
 
