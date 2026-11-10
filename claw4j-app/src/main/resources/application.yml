@@ -254,8 +254,13 @@ claw4j:
     # schema: claw4j_session
     # 过期会话的清理间隔。写出来是为了让人知道有这个后台任务：不写也成立
     # （@Scheduled 上的默认值同样是 PT1H），但"有一个每小时删东西的任务"不该只活在代码里。
-    # 压缩阈值那几个数走代码默认值，换模型时才需要动（见 SessionMemoryProperties）。
     cleanup-interval: PT1H
+    # 主模型的上下文窗口（token）。**这是模型的元数据，不是会话的偏好**：OpenClaw 把它放在
+    # 模型条目上（models.providers.*.models[].contextWindow，另有 contextTokens 作主动输入上限），
+    # 我们没有模型目录，暂放在这里——有了目录之后这一行要跟着挪过去，键名不变。
+    # 压缩阈值 = 它 × 0.5，比例与保留条数**刻意不做配置项**（OpenClaw 的 compaction 段里也没有
+    # 这两个旋钮：阈值是算出来的、保留量是 token 不是条数）。要知道生效值看启动日志那一行。
+    context-window: 65536
     # 旧会话怎么清（判据照 OpenClaw 的 session.maintenance，ADR-0026）。
     maintenance:
       # warn（默认）：只算不删，把"本来会删多少"打进日志与指标。与 OpenClaw 的默认一致。

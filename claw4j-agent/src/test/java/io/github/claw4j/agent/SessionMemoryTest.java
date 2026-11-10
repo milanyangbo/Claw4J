@@ -11,6 +11,7 @@ import io.github.claw4j.agent.session.SessionMaintenance;
 import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.session.SessionCommand;
 import io.github.claw4j.agent.session.SessionMaintenanceProperties;
+import io.github.claw4j.agent.session.SessionMemoryConfiguration;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
@@ -25,6 +26,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.messages.Message;
@@ -42,7 +44,10 @@ import org.springframework.ai.session.compaction.CompactionTrigger;
 import org.springframework.ai.session.compaction.RecursiveSummarizationCompactionStrategy;
 import org.springframework.ai.session.compaction.TokenCountTrigger;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -58,6 +63,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -555,29 +561,56 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("会话还没建出来时不记失败：第一轮没有历史可压，那不是故障")
-    void missingSessionIsNotAFailure() {
+    @DisplayName("压缩失败的两种口径：没历史不算故障，摘要挂了只留痕、不拖垮这一轮")
+    void compactionFailureAccounting() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
         compactor(new MapSessionService(), registry).compactIfNeeded("http:u-never-asked");
-
         assertThat(registry.find("claw4j.session.compaction.failures").counter())
                 .as("把时序问题记成故障，这个数从第一天起就不是 0，从此没人看它")
                 .isNull();
-    }
 
-    @Test
-    @DisplayName("摘要模型挂了只留痕：压缩失败不能把这一轮回答拖垮")
-    void compactionFailureDoesNotBreakTheTurn() {
         SessionService broken = mock(SessionService.class);
         when(broken.compact(anyString(), any(CompactionTrigger.class), any(CompactionStrategy.class)))
                 .thenThrow(new IllegalStateException("摘要模型 503"));
-        SimpleMeterRegistry registry = new SimpleMeterRegistry();
-
         assertThatCode(() -> compactor(broken, registry).compactIfNeeded("s-1"))
                 .as("压不成是成本问题，不是可用性问题")
                 .doesNotThrowAnyException();
         assertThat(registry.get("claw4j.session.compaction.failures").counter().count()).isEqualTo(1);
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("窗口从配置读，启动那行打的是生效值：换主模型时改没改一眼看得见")
+    void configuredContextWindowIsWhatTheStartupLineSays(CapturedOutput output) {
+        AtomicReference<SessionMemoryProperties> bound = new AtomicReference<>();
+        new ApplicationContextRunner()
+                .withUserConfiguration(MemoryOnly.class)
+                // 故意不给默认值 65536：只有真的从这一层绑上来，阈值才会是 65536
+                .withPropertyValues("claw4j.session.context-window=131072")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    bound.set(context.getBean(SessionMemoryProperties.class));
+                });
+        SessionMemoryProperties properties = bound.get();
+
+        assertThat(properties.compactionThreshold())
+                .as("阈值 = 窗口 × 0.5；仍是 32768 说明键绑错了层级，静默走了默认值")
+                .isEqualTo(65536);
+
+        new SessionMemoryConfiguration().sessionCompactor(mock(SessionService.class), properties,
+                mock(ChatModel.class), new DefaultListableBeanFactory()
+                        .getBeanProvider(MeterRegistry.class));
+
+        assertThat(output.toString())
+                .as("这一行是换模型时唯一看得见窗口的地方，三个数都必须是绑上来的值")
+                .contains("窗口 131072 token", "到 65536 触发", "保留最近 20 条事件");
+    }
+
+    /** 只装会话属性，不装整套会话装配：这条用例问的是"键绑在哪一层"，不是"记忆能不能跑"。 */
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(SessionMemoryProperties.class)
+    static class MemoryOnly {
     }
 
     @Test

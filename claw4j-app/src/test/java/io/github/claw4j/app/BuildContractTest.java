@@ -1,5 +1,6 @@
 package io.github.claw4j.app;
 
+import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.plugin.CoreVersion;
 import io.github.claw4j.plugin.PluginContract;
 import com.tngtech.archunit.base.DescribedPredicate;
@@ -16,9 +17,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -249,6 +252,21 @@ class BuildContractTest {
                 offenders.add(repository.relativize(file) + ":" + (i + 1));
             }
         }
+    }
+
+    @Test
+    @DisplayName("窗口写在 application.yml 的 claw4j.session 下：换主模型的人改这一行，不是去翻代码")
+    void applicationYmlDeclaresTheContextWindow() throws IOException {
+        var sources = new YamlPropertySourceLoader()
+                .load("application.yml", new ClassPathResource("application.yml"));
+
+        assertThat(sources).as("application.yml 得能解析出来").isNotEmpty();
+        // 键的层级也在断言里：写到 claw4j.session 之外就绑不到 SessionMemoryProperties，
+        // 而那种错在运行期只表现为"配置写了、看起来配过了、其实没生效"。
+        assertThat(sources.getFirst().getProperty("claw4j.session.context-window"))
+                .as("这一行是换模型时唯一能被搜到的地方；删掉它不会有别的用例变红，"
+                        + "而窗口会悄悄退回代码默认值")
+                .isEqualTo(SessionMemoryProperties.DEFAULT_CONTEXT_WINDOW);
     }
 
     // ---------------------------------------------------------------- 迁移合成一套 schema

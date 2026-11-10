@@ -167,6 +167,12 @@ public class SessionMemoryConfiguration implements DisposableBean {
                                              ChatModel chatModel,
                                              ObjectProvider<MeterRegistry> meterRegistry) {
         ChatClient summaryClient = ChatClient.builder(chatModel).build();
+        // 三个数是"改了要重启才生效"的，所以放在启动期而不是每轮。它也是"换主模型时改没改
+        // context-window"唯一看得见的地方——我们没有 OpenClaw 那样的模型目录可查
+        // （它靠 `models list` / 协议里的 contextWindows 暴露，见票 05 第二节）。
+        log.info("会话压缩已启用：窗口 {} token、到 {} 触发（{}%）、保留最近 {} 条事件",
+                properties.contextWindow(), properties.compactionThreshold(),
+                Math.round(properties.triggerRatio() * 100), properties.eventsToKeep());
         var trigger = TokenCountTrigger.builder()
                 // 按窗口比例算出来的数：换模型只改 context-window 一个值。
                 .threshold(properties.compactionThreshold())

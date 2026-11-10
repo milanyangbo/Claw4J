@@ -15,10 +15,24 @@ import java.time.Duration;
  * @param poolSize      会话连接池大小。默认是 2：会话读写是"每轮一写一读"的小事务，
  *                      不是业务查询那种可能跑满 5 秒的重活，给多了只是占连接
  * @param contextWindow 上下文窗口的 token 数，压缩阈值按它的比例算。
- *                      换模型要跟着改——但只有一个数要改，而不是把阈值整个重算一遍
+ *                      <b>这是模型的元数据，不是会话的偏好</b>：OpenClaw 把它放在模型条目上
+ *                      （{@code models.providers.*.models[].contextWindow}），我们没有模型目录，
+ *                      暂放在这个命名空间；有了目录之后挪过去，键名不变。换模型要跟着改——
+ *                      但只有一个数要改，而不是把阈值整个重算一遍
  * @param triggerRatio  到窗口的百分之多少就压。默认 0.5：留一半给"压完之后的这一轮"，
- *                      压到 0.9 时下一轮又会超，等于每轮都压一次
- * @param eventsToKeep  压缩时保留最近多少条事件不压。全压掉的话"刚才说的那件事"也会没
+ *                      压到 0.9 时下一轮又会超，等于每轮都压一次。
+ *                      <b>比 OpenClaw 的等效值保守</b>：它按 75% 触发
+ *                      （{@code min(75% 窗口, 窗口 − reserve)}，reserve 上限是窗口的四分之一，
+ *                      见它的 {@code reference/session-management-compaction/compaction.md:52,96}），
+ *                      前提是有 overflow recovery——供应商报 context 溢出就压缩后重试。
+ *                      我们全仓没有这条兜底，所以留一半当安全边际；等那条路有了再谈调高。
+ *                      <b>刻意不做成 yml 里的旋钮</b>：它的 compaction 段里没有比例字段，
+ *                      同 ADR-0028 对 {@code memory.search.chunking} 的口径——旋钮越多，
+ *                      "结果为什么变了"越难回答
+ * @param eventsToKeep  压缩时保留最近多少条事件不压。全压掉的话"刚才说的那件事"也会没。
+ *                      <b>口径与它不同</b>：OpenClaw 的 {@code keepRecentTokens} 是 20000
+ *                      <b>token</b> 的预算，我们是<b>条数</b>——框架的
+ *                      {@code RecursiveSummarizationCompactionStrategy} 只收条数
  * @param cleanupInterval 过期会话的清理间隔。<b>我们不读它，读它的是
  *                      {@code SessionCleanup} 上 {@code @Scheduled} 的占位符原文</b>；
  *                      它出现在这里只为了在绑定期把坏值挡下来——{@code PT0S} 会让
