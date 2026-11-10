@@ -23,13 +23,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * {@code exec} 的边界：它跑得动，但只在三条线里面（票 01）。
  *
- * <p><b>入口是真的那个工具</b>：{@link ShellTools#bash} / {@link ShellTools#bashOutput} /
- * {@link ShellTools#killShell}，不是我们自己包的一层。所以这里验的是"模型调它会发生什么"，
- * 包括 Spring AI 那套输出格式（{@code bash_id}、{@code STDERR:}、{@code Exit code:}）。
+ * <p>入口是真的那个工具（{@link ShellTools#bash} / {@link ShellTools#bashOutput} /
+ * {@link ShellTools#killShell}），不是自己包的一层。所以这里验的是"模型调它会发生什么"，
+ * 包括库的输出格式（{@code bash_id}、{@code STDERR:}、{@code Exit code:}）。
  *
- * <p><b>拒绝与失败分两处断言</b>：拒绝是 {@link ExecViolationException}（从 backend 抛出去，
+ * <p>拒绝与失败分两处断言：拒绝是 {@link ExecViolationException}（从 backend 抛出去，
  * 由 {@code MethodToolCallback} 包成 {@link ToolExecutionException} 交给模型），
- * 失败是工具自己给的文本（超时那句）。两条路的区别在"模型能不能改一下再试"。
+ * 失败是工具自己给的文本（超时那句）。区别在"模型能不能改一下再试"。
  */
 class ExecToolTest {
 

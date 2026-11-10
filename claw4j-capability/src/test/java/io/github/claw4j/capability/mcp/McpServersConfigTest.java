@@ -33,12 +33,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 配置里的 MCP server：一段 YAML 变成什么、配错了在哪一步红。
  *
- * <p>这里<b>不连任何 server</b>，也不起任何进程：断言的是"配置翻译出来的形状"与
- * "配错时的失败"。真连第三方要出网、要装 Node，那是演示（{@code application-local.yml} 里
- * 那段注释着的配置）的活，不是门禁的活——一条每天跑、结果取决于公网状态的用例，红了也说明不了是谁的问题。
+ * <p>这里不连任何 server，也不起任何进程：断言的是"配置翻译出来的形状"与"配错时的失败"。
+ * 真连第三方要出网、要装 Node，那是演示的活（{@code application-local.yml} 里那段注释着的配置），
+ * 不是门禁的活——一条每天跑、结果取决于公网状态的用例，红了也说明不了是谁的问题。
  *
- * <p>P08 之后这里多了一类断言：{@code env} 与 {@code headers} 里写的是句柄，配了真值写法
- * （裸写明文）或句柄取不到真值，都在装配期红，且报错点名到具体那一行。
+ * <p>P08 之后多了一类断言：{@code env} 与 {@code headers} 里写的是句柄，配了真值写法（裸写明文）
+ * 或句柄取不到真值，都在装配期红，且报错点名到具体那一行。
  */
 class McpServersConfigTest {
 

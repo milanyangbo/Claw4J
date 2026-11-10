@@ -11,19 +11,16 @@ import java.util.Map;
 /**
  * MCP server 清单：{@code claw4j.capability.mcp.servers.<名字>} 一段就是一个 server。
  *
- * <p><b>为什么这一层是配置而不是 bean</b>：别人的 server 装在别人的机器上，接进来不该要求
- * 改我们的源码再重新打包。配置化之后"接一个第三方 MCP server"＝在 yml 里写四行。
- * 这与 {@code claw4j.scripts.directory} / {@code claw4j.skills.directory} 同一个取向：
- * 能力来源是运行时才知道的事，不是编译期就知道的事（但"接哪几种"仍然是编译期的事，
- * 见 {@link Transport}）。
+ * <p>这一层做成配置而不是 bean：别人的 server 装在别人的机器上，接进来不该要求改源码再重新
+ * 打包。配置化之后"接一个第三方 MCP server"就是写四行 yml，与 {@code claw4j.scripts.directory}
+ * 同一个取向——能力来源是运行时才知道的事。接哪几种传输仍然是编译期的事，见 {@link Transport}。
  *
- * <p><b>权限默认按 server 声明，可以按工具覆盖</b>：同一个 server 往往导出"只读查询"与
- * "会改东西的动作"两类工具（`list_inbox` 与 `send_email` 是同一个 server 给的两个工具）。
- * 只按 server 声明时，这类 server 只有两个结局——整条声明成只读（写动作也被只读身份调用，
- * 权限放大），或整条声明成写（只读身份连查一下都不行）。所以 {@link Server#tools} 允许
- * 逐个工具覆盖，没点名的仍走 server 那一条（ADR-0003 第二层）。
+ * <p>权限默认按 server 声明，可以按工具覆盖：同一个 server 往往同时导出只读查询与会改东西
+ * 的动作（{@code list_inbox} 与 {@code send_email}）。只按 server 声明时只有两个结局——
+ * 整条声明成只读（写动作也被只读身份调用，权限放大），或整条声明成写（只读身份连查一下都不行）。
+ * 所以 {@link Server#tools} 允许逐个覆盖，没点名的仍走 server 那一条（ADR-0003 第二层）。
  *
- * <p>用 {@code @ConfigurationProperties} 而不是 {@code @Value}：这里是"一串结构化的条目"，
+ * <p>用 {@code @ConfigurationProperties} 而不是 {@code @Value}：这里是一串结构化条目，
  * 不是几个标量。{@code @Value} 表达不了"任意多个 server、每个都有自己的 argv 与环境变量"。
  */
 @ConfigurationProperties("claw4j.capability.mcp")
@@ -89,19 +86,19 @@ public class McpServerProperties {
      * 一个 MCP server 怎么被连上。
      *
      * @param transport 传输方式。写错一个不存在的值在绑定期就失败，不会悄悄退化成 stdio
-     * @param command   stdio：起哪个程序。**argv 数组的第一个元素，不经任何命令解释器**（ADR-0002）
+     * @param command   stdio：起哪个程序。argv 数组的第一个元素，不经任何命令解释器（ADR-0002）
      * @param args      stdio：原样交给它的参数。空项会在起进程之前被拒绝
-     * @param env       stdio：显式给出的环境变量，<b>值是句柄不是真值</b>（{@code secret:<名字>}；
+     * @param env       stdio：显式给出的环境变量，值是句柄不是真值（{@code secret:<名字>}；
      *                  非凭据常量写 {@code plain:<文本>}，裸写会被拒并点名到具体一行）；
      *                  同名键覆盖 {@code inheritEnv} 透传进来的值
-     * @param inheritEnv stdio：从本进程透传哪些变量**名**。默认只给 {@code PATH}——
+     * @param inheritEnv stdio：从本进程透传哪些变量名。默认只给 {@code PATH}——
      *                  不给它连启动器都找不到，给多了应用的模型 key 就漏过去了
      * @param url       http / sse：base URI，例如 {@code https://mcp.example.com}
      * @param endpoint  http / sse：base URI 之后的路径。不填走 SDK 默认（{@code /mcp}、{@code /sse}）
-     * @param headers   http / sse：每次请求都带的头，<b>值是句柄</b>，可以带前后缀
+     * @param headers   http / sse：每次请求都带的头，值是句柄，可以带前后缀
      *                  （{@code Authorization: "Bearer secret:deepwiki_token"}）；
      *                  真值在每次写头那一刻才换出来（P08）
-     * @param permission 这个 server 导出的工具**默认**需要什么权限。默认只读且不碰任何业务表
+     * @param permission 这个 server 导出的工具默认需要什么权限。默认只读且不碰任何业务表
      * @param tools      按工具覆盖 {@code permission}：键是工具名，值是它自己的权限。
      *                   没点名的工具仍走 {@code permission}；点名了一个 server 不导出的工具名
      *                   按配置错误在启动时失败（拼错一个名字而静默沿用兜底，等于让人以为加严了）

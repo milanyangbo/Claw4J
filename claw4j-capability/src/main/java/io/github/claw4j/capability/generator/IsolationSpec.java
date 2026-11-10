@@ -4,25 +4,23 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * ADR-0003 第 ② 类沙箱的规格：给<b>未审核代码</b>用的那一个执行位置。
+ * ADR-0003 第 ② 类沙箱的规格：给未审核代码用的那个执行位置。
  *
- * <p>与第 ① 类（{@code SandboxPolicy}，既有 Script Package 在应用容器内跑）
- * 在代码上刻意是两套东西，不是同一套参数换几个数字：
+ * <p>与第 ① 类（{@code SandboxPolicy}，既有 Script Package 在应用容器内跑）在代码上是两套
+ * 东西，不是同一套参数换几个数字：
  * <ul>
- *   <li>跑的东西不同：① 跑的是人审过的包，② 跑的是模型刚写出来的脚本，
- *       而"还没人看过"是这两者之间唯一重要的区别——它决定了默认姿态是"先别信"。
- *   <li>跑的位置不同：① 是包目录（包自己声明的目录），
- *       ② 是每次自测新建、跑完即删的临时目录，于是脚本写下的任何东西都留不下来，
- *       也够不到暂存区里那份"等着被人审的"脚本与审批标记。
- *   <li>预算不同：① 是 15 秒（默认）/ 30 秒（上限），② 是 5 秒，
- *       因为自测要的是"这段脚本跑得起来吗"，不是"这个能力好不好用"。
+ *   <li>跑的东西不同：① 跑人审过的包，② 跑模型刚写出来的脚本。"还没人看过"是这两者之间
+ *       唯一重要的区别，它决定了默认姿态是先别信。</li>
+ *   <li>跑的位置不同：① 是包目录，② 是每次自测新建、跑完即删的临时目录，于是脚本写下的
+ *       任何东西都留不下来，也够不到暂存区里那份等着被人审的脚本与审批标记。</li>
+ *   <li>预算不同：① 是 15 秒（默认）/ 30 秒（上限），② 是 5 秒——自测要的是"这段脚本
+ *       跑得起来吗"，不是"这个能力好不好用"。</li>
  * </ul>
  *
- * <p><b>{@link Network} 这一项是本形态唯一给不了的，也是规格里唯一必须说清的。</b>
- * 枚举里给它单独立一项，就是为了让"本地形态没有网络隔离"这句话有地方写，
- * 而不是被一个叫 {@code networkIsolated=true} 的布尔量藏起来。
- * 真正的网络隔离要由容器运行时给（那是部署层的事），
- * 在 CI 上起不来的形态不能写进 README 当承诺——03 号票定下的判据在这里同样适用。
+ * <p>{@link Network} 是本形态唯一给不了的，也是规格里唯一必须说清的。枚举里给它单独立一项，
+ * 就是为了让"本地形态没有网络隔离"这句话有地方写，而不是被一个叫
+ * {@code networkIsolated=true} 的布尔量藏起来。真正的网络隔离由容器运行时给（部署层的事），
+ * 在 CI 上起不来的形态不能写进 README 当承诺。
  */
 public final class IsolationSpec {
 
@@ -65,6 +63,15 @@ public final class IsolationSpec {
 
     private final String networkNote;
 
+    /**
+     * 建一份规格。超时超过 {@link #MAX_TIMEOUT_MILLIS} 直接拒，不给"调大一点试试"的机会。
+     *
+     * @param timeoutMillis 墙上时钟上限，必须落在 (0, {@link #MAX_TIMEOUT_MILLIS}]
+     * @param maxOutputChars 进回答的输出上限
+     * @param environment 子进程能看到的全部变量，白名单
+     * @param network 网络这一项有没有被隔离
+     * @param networkNote 网络这一项为什么是这个值，写不清楚会被读成反义
+     */
     public IsolationSpec(long timeoutMillis, int maxOutputChars, Map<String, String> environment,
                          Network network, String networkNote) {
         if (timeoutMillis <= 0 || timeoutMillis > MAX_TIMEOUT_MILLIS) {

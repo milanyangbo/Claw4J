@@ -80,6 +80,7 @@ public class GeneratorAutoConfiguration {
         return new GenerationAudit(file);
     }
 
+    /** UTC 时钟。单独成 bean 是为了测试能替换掉它，审计行的时刻才可断言。 */
     @Bean
     public Clock claw4jClock() {
         return Clock.systemUTC();
@@ -94,9 +95,8 @@ public class GeneratorAutoConfiguration {
     /**
      * 这一层的权限登记表：动作是 {@code draft_script}，表一张都没有。
      *
-     * <p>不用 {@code @ConditionalOnMissingBean}——那是 01 号票修掉、
-     * 又在 MCP 与脚本层各重演一次的形状：多个登记表本来就是设计上允许的，
-     * 而"已经有表就让位"会让这一层静默不登记，于是这个工具一律按未登记被拒。
+     * <p>不用 {@code @ConditionalOnMissingBean}：多个登记表本来就是设计上允许的，而
+     * "已经有表就让位"会让这一层静默不登记，于是这个工具一律按未登记被拒。
      */
     @Bean
     public ToolPermissionRegistry skillGeneratorPermissionRegistry(SkillGenerator generator) {

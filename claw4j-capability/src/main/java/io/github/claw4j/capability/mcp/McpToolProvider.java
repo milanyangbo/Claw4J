@@ -24,36 +24,40 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * MCP 这一层的工具来源：把每个端点导出的工具收成 {@link ToolCallback}，
- * 并且<b>在连不上的时候继续活着</b>（票 03，照 OpenClaw 的 MCP 客户端）。
+ * 并且在连不上的时候继续活着（票 03）。
  *
- * <p><b>它守的是一条分界线：配置错误 vs 连不上。</b>判据是"重试一万次会不会变"：
+ * <p>它守的分界线是配置错误与连不上，判据是「重试一万次会不会变」：
  *
  * <ul>
- *   <li><b>会变的（连不上、握手超时、连接断了）→ 后台退避重试。</b>对端重启 40 秒，
- *       不该换来一次全站不可用——那在 K8s 上是 CrashLoopBackOff，连 HTTP 通道一起下线，
- *       而重试本来由编排层替我们做，代价是整个进程。</li>
- *   <li><b>不会变的（点名了 server 没导出的工具、两个 server 导出同名工具）→ 启动失败。</b>
- *       yml 写错了，重试只会让"我明明配了"变成"过一会儿就好了"，把错误藏起来。</li>
- *   <li><b>连上了但工具为 0 → 可恢复。</b>一个 server 刚起来、工具还没注册完是真实存在的窗口
- *       （{@code npx} 拉完包立刻列工具很常见）。判成永久错误等于把"对方启动慢"变成"我们永远起不来"。</li>
+ *   <li>会变（连不上、握手超时、连接断了、连上了但工具还没注册完）：后台退避重试。
+ *       对端重启 40 秒不该换来一次全站不可用——在 K8s 上是 CrashLoopBackOff，
+ *       连 HTTP 通道一起下线。</li>
+ *   <li>不会变（点名了 server 没导出的工具、两个 server 导出同名工具）：启动失败。
+ *       yml 写错了，重试只会把「配漏了」变成「过一会儿就好了」。</li>
  * </ul>
  *
- * <p><b>这一层是活视图</b>：{@link #getToolCallbacks()} 与 {@link #permissionFor(String)}
- * 都读当下的状态，不是建的时候拍下的快照。恢复发生在后台线程，模型那边下一轮就能看见
- * （清单是每轮解析的，见 {@code ToolCatalog}）。<b>掉线的 server 保留上次成功列出的工具</b>：
- * 从清单里消失会让模型说"我没有这个能力"，而真实情况是"它刚断了一下"，
- * 调用它按普通工具失败处理（{@code tool_failed}）。
+ * <p>这一层是活视图：{@link #getToolCallbacks()} 与 {@link #permissionFor(String)} 读的是
+ * 当下状态，不是建的时候拍下的快照。恢复发生在后台线程，模型下一轮就看得见
+ * （清单每轮解析，见 {@code ToolCatalog}）。掉线的 server 保留上次成功列出的工具：
+ * 从清单里消失会让模型说「我没有这个能力」，而实情是「它刚断了一下」，调用它按普通工具失败处理
+ * （{@code tool_failed}）。
  *
- * <p>退避：30 秒起、每次翻倍、封顶 10 分钟——与飞书通道（票 02）同一组数字，两处日志能对着看。
+ * <p>退避 15 秒起、每次翻倍、封顶 10 分钟，与 OpenClaw 的 MCP 启动退避同一组
+ * （{@code src/agents/mcp-startup-backoff.ts:125} 的 {@code delayMs: 15_000}、
+ * {@code :158} 的 {@code Math.min(delayMs * 2, 600_000)}）。
  * 关不掉的线程会让 JVM 停不下来，所以 {@link #close()} 既关连接也停调度器。
  */
 public final class McpToolProvider implements ToolCallbackProvider, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(McpToolProvider.class);
 
-    /** 第一次重试等 30 秒，之后翻倍，封顶 10 分钟（与 OpenClaw 的 MCP 客户端同一组）。 */
-    static final Duration INITIAL_BACKOFF = Duration.ofSeconds(30);
+    /** 第一次重试等 15 秒，之后每次翻倍，封顶见 {@link #MAX_BACKOFF}。 */
+    static final Duration INITIAL_BACKOFF = Duration.ofSeconds(15);
 
+    /**
+     * 退避上限。10 分钟与 OpenClaw 的 MCP 启动退避上限相同
+     * （{@code src/agents/mcp-startup-backoff.ts:158}）。
+     */
     static final Duration MAX_BACKOFF = Duration.ofMinutes(10);
 
     private final List<Server> servers;
@@ -63,6 +67,7 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     /** 容器关闭之后不再排重试任务。读写都在本对象的锁里。 */
     private boolean closed;
 
+    /** 用真实定时器建一层工具来源；构造期就与每个 server 接触一次。 */
     public McpToolProvider(List<McpConnection> connections) {
         this(connections, newScheduler());
     }
@@ -97,8 +102,10 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     }
 
     /**
-     * 当下这一份工具清单。**只读状态，不发起连接、不握手**：它会在每一轮请求里被调用
-     * （{@code ToolCatalog} 按轮解析），在这里连一次等于把对端的延迟灌进对话。
+     * 当下这一份工具清单。
+     *
+     * <p>只读状态，不发起连接、不握手：它每一轮请求都会被调用（{@code ToolCatalog} 按轮解析），
+     * 在这里连一次等于把对端的延迟灌进对话。
      */
     @Override
     public synchronized ToolCallback[] getToolCallbacks() {
@@ -126,11 +133,11 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     }
 
     /**
-     * 某个工具要什么权限。**活视图**：恢复之后才出现的工具也答得上来。
+     * 某个工具要什么权限。活视图：恢复之后才出现的工具也答得上来。
      *
-     * <p>快照版本的代价很具体：{@code ToolPermissionRegistry} 是装配期拍的，
-     * 恢复后出现的工具在鉴权那一层是"未登记"——判定方向是拒绝，于是能力回来了却调不动，
-     * 现象是模型拿到一个 {@code denied}，而日志里没有任何一处说得出为什么。
+     * <p>快照版本的代价很具体：{@code ToolPermissionRegistry} 是装配期拍的，恢复后出现的工具
+     * 在鉴权那一层是"未登记"，判定方向是拒绝——能力回来了却调不动，现象是模型拿到一个
+     * {@code denied}，而日志里没有一处说得出为什么。
      */
     public synchronized Optional<ToolPermission> permissionFor(String toolName) {
         for (Server server : servers) {
@@ -160,9 +167,9 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     }
 
     /**
-     * 关掉所有连接并停掉重试。是 {@code AutoCloseable} 是为了让 Spring 在容器关闭时替我们调用它：
-     * 每条连接背后有一个 client 与两条传输线程，不给它们一个出口的话，
-     * "重连过一次"的进程会一直攒着旧连接；而活着的定时器会让 JVM 停不下来。
+     * 关掉所有连接并停掉重试。声明 {@code AutoCloseable} 是为了让 Spring 在容器关闭时调用它：
+     * 每条连接背后有一个 client 与两条传输线程，"重连过一次"的进程会一直攒着旧连接；
+     * 而活着的定时器会让 JVM 停不下来。
      */
     @Override
     public synchronized void close() {
@@ -176,9 +183,9 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     /**
      * 与一个 server 接触一次：成功就装上工具，失败就记 DOWN 并排下一次重试。
      *
-     * @param retry   已经排过几次重试；0 表示首次接触（启动期）
-     * @param startup 启动期与运行期的差别只有一处：配置错误在这里是**抛**（启动失败），
-     *                在运行期是停下来报 ERROR——那时应用已经在跑，"起不来"这个失败方式已经不可用了
+     * @param retry 已经排过几次重试；0 表示首次接触（启动期）
+     * @param startup 启动期与运行期只差一处：配置错误在启动期抛出（启动失败），在运行期
+     *     停下来报 ERROR——那时应用已经在跑，起不来这个失败方式已经不可用了
      */
     private void contact(Server server, int retry, boolean startup) {
         List<Tool> listed;
@@ -215,7 +222,7 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     }
 
     /**
-     * 装上这一份工具清单。**两个校验在这里**，它们都是配置错误：
+     * 装上这一份工具清单。两个校验在这里，它们都算配置错误：
      * 点名了 server 没导出的工具、与别的 server 导出同名工具。
      */
     private void install(Server server, List<Tool> tools) {
@@ -250,7 +257,7 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
             server.status = McpServerStatus.UP;
             server.lastError = null;
             server.nextRetryAt = null;
-            // 恢复之后从头开始退避：下一次再断，仍然等 30 秒而不是直接等到 10 分钟。
+            // 恢复之后从头开始退避：下一次再断，仍然等 15 秒而不是直接等到 10 分钟。
             server.attempts = 0;
         }
     }
@@ -268,9 +275,8 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     /**
      * 记 DOWN 并排下一次重试。
      *
-     * <p><b>清单不清空</b>：掉线之前成功列过的那些工具留在原处（见类注释）。
-     * <b>连接要关掉</b>：一条已经死掉的 client 不会自己变好，不关的话下一次重试
-     * 仍然在摇同一棵死树，于是退避会一直空转到封顶。
+     * <p>清单不清空：掉线之前成功列过的工具留在原处（见类注释）。连接要关掉：一条已经死掉的
+     * client 不会自己变好，不关的话下一次重试仍在摇同一棵死树，退避会一直空转到封顶。
      */
     private void unavailable(Server server, String reason) {
         Duration delay;
@@ -313,7 +319,7 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     }
 
     /**
-     * 第 {@code attempt} 次重试之前等多久：30 秒起，每次翻倍，封顶 10 分钟。
+     * 第 {@code attempt} 次重试之前等多久：15 秒起，每次翻倍，封顶 10 分钟。
      * 上限必须真的封住——不封的话第 11 次就是 8.5 小时，那已经不像"还在重连"了。
      */
     static Duration backoff(int attempt) {

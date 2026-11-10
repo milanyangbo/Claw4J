@@ -71,14 +71,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * MCP 接入：连接的生命周期、工具清单怎么进来、参数怎么变成远端那次调用。
  *
- * <p>对端用进程内的 stdio server 顶替（它同时也是演示实现），传输本身是真的管道与真的
- * JSON-RPC 帧。会话丢失用一个只坏一次 {@code sendMessage} 的传输替身造出来——
- * 这是边界之外的故障，不是被测对象自己的判断。
+ * <p>对端用进程内的 stdio server 顶替（它同时也是演示实现），传输本身是真的管道与真的 JSON-RPC 帧。
+ * 会话丢失用一个只坏一次 {@code sendMessage} 的传输替身造出来：这是边界之外的故障，
+ * 不是被测对象自己的判断。
  *
- * <p><b>两个方向都在这个文件里</b>：前半是"接别人的 MCP server"（工具怎么进来），
- * 后半是"自己当 MCP server"（工具怎么出去，P11）。放一起是因为它们共用同一套管道设施，
- * 也是因为门禁规定一个模块最多 10 个测试文件——但更实质的理由是：两个方向的判据都是
- * "客户端视角看到了什么"，只是站在管道不同的那一端。
+ * <p>两个方向都在这个文件里：前半是接别人的 MCP server（工具怎么进来），后半是自己当 MCP server
+ * （工具怎么出去，P11）。放一起是因为两个方向共用同一套管道设施，也是因为门禁规定一个模块最多
+ * 10 个测试文件；更实质的理由是判据相同——都是"客户端视角看到了什么"，只是站在管道的不同一端。
  */
 class McpToolTest {
 
@@ -580,22 +579,19 @@ class McpToolTest {
     }
 
     /**
-     * Java 自实现的 stdio MCP server，**跑在本进程里**：一套管道当 stdin/stdout，
-     * 工具对象由接入方给（{@code @McpTool} 标注的普通对象），Java 侧只见工具协议。
+     * Java 自实现的 stdio MCP server，跑在本进程里：一套管道当 stdin/stdout，工具对象由接入方给
+     * （{@code @McpTool} 标注的普通对象），Java 侧只见工具协议。它只服务这一个文件。
      *
-     * <p>它同时是测试替身与演示实现：不依赖 Docker、不依赖 Python，
-     * 于是"连不上 / 连上了但没工具怎么处理"与"会话丢失重新初始化"这两类必测能进默认构建——
-     * 否则它们会退化成"只在有 Docker 的机器上测过"。
+     * <p>它同时是测试替身与演示实现：不依赖 Docker、不依赖 Python，于是"连不上""连上了但没工具"
+     * "会话丢失重新初始化"这几类必测能进默认构建，不会退化成"只在有 Docker 的机器上测过"。
      *
-     * <p><b>什么不是它保证的</b>：它没有跨 OS 进程。真实部署里 server 是另一个进程
-     * （07 号票要把 {@code gh} 与 {@code himalaya} 包成 MCP server），
-     * 那时换掉的是 {@link McpServerEndpoint#openTransport()} 给出来的传输实现，
-     * 本类之上的连接生命周期代码一行都不用改——这条接缝是本票刻意留下的。
+     * <p>它没有跨 OS 进程。真实部署里 server 是另一个进程（{@code examples/mcp/} 里 {@code gh} 与
+     * {@code himalaya} 各包成一个），那时换掉的是 {@link McpServerEndpoint#openTransport()} 给出的
+     * 传输实现，本类之上的连接生命周期代码一行不改——这条接缝是刻意留下的。
      *
-     * <p>每次 {@link #openTransport()} 都新建一对管道并起一个新 server 会话，
-     * 因此"重新初始化连接"拿到的是一条干净的连接，而不是去摇一棵已经死掉的树。
+     * <p>每次 {@link #openTransport()} 都新建一对管道并起一个新 server 会话，因此"重新初始化连接"
+     * 拿到的是一条干净的连接，而不是去摇一棵已经死掉的树。
      */
-    /** 见 {@link McpToolTest} 的类注释：它只服务这一个文件。 */
     static final class InProcessStdioMcpServer implements AutoCloseable {
 
         /** 管道缓冲给大一点：一帧 JSON 可能带上整个工具结果，1KB 的默认值会频繁阻塞。 */
@@ -670,14 +666,14 @@ class McpToolTest {
         }
 
         /**
-         * MCP stdio 传输的**进程内**形态：两端走与 {@code StdioClientTransport} 完全一样的
-         * 帧格式（行分隔的 JSON-RPC），只是承载它的不是子进程的标准输入输出，而是一对管道。
+         * MCP stdio 传输的进程内形态：两端走与 {@code StdioClientTransport} 完全一样的
+         * 帧格式（行分隔的 JSON-RPC），承载它的不是子进程的标准输入输出，而是一对管道。
          *
-         * <p>为什么要有它：ADR-0008 把"MCP 连接的 fail-fast 探测与会话丢失重连"列为三条必测之一，
-         * 而 SDK 的 {@code StdioClientTransport} 只接受 {@code ServerParameters}——它一定会
+         * <p>需要它的原因：ADR-0008 把「MCP 连接的 fail-fast 探测与会话丢失重连」列为三条必测之一，
+         * 而 SDK 的 {@code StdioClientTransport} 只接受 {@code ServerParameters}，一定会
          * {@code ProcessBuilder.start()} 起一个子进程。子进程路线要拿到一条可靠的 classpath
-         * （surefire 默认给的是 manifest-only 的 booter jar），在 CI 上是脆的。
-         * 于是连接语义（初始化、listTools、会话丢失）在进程内真测，OS 进程那条边界由部署方式承担。
+         * （surefire 默认给的是 manifest-only 的 booter jar），这条路本身就脆。
+         * 因此连接语义（初始化、listTools、会话丢失）在进程内真测，OS 进程那条边界由部署方式承担。
          *
          * <p>实现刻意照抄 {@code StdioClientTransport} 的线程分工：读一个线程、写一个线程，
          * 入站消息走 {@code Sinks.many().unicast()}，出站消息由 {@code sendMessage} 投进 sink。

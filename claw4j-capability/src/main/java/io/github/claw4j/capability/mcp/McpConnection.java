@@ -18,26 +18,20 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 与一个 MCP server 之间的连接，管的是这条连接的<b>生命周期</b>：开、探、丢、重开。
+ * 与一个 MCP server 之间的一条连接：开、探、丢、重开。
  *
- * <p>两件事是它存在的全部理由，都是 ADR-0002 / ADR-0003 点名的：
+ * <p>会话丢失（{@code McpTransportSessionNotFoundException}）的含义是手上这条会话已经不在。
+ * 对它重试只是把同一个失败再做一遍，而且会让之后的每次调用都失败——一次断连变成永久不可用。
+ * 处理方式是关掉旧连接、开一条新的、把这次调用重放一次；只重放一次，重放后仍然丢会话说明
+ * server 真的不在了，交给上层失败。取舍见 docs/adr/0002。
  *
- * <ol>
- *   <li><b>会话丢失要重新初始化，而不是重试死会话。</b>{@code McpTransportSessionNotFoundException}
- *       的含义是"你手上这条会话已经不在了"，对一条不在的会话重试只是把同一个失败重复一遍，
- *       而且会让后续每一次调用都失败——一次断连变成永久不可用。
- *       这里的处理是关掉旧连接、重新开一条、再把这一次调用重放一遍（只重放一次：
- *       重放之后仍然丢会话，那是 server 真的不在了，交给上层去失败）。
- *   <li><b>连接建立时工具清单为空即失败</b>（fail-fast）。这条不在这里判，
- *       在 {@link McpToolProvider} 建出来的时候判——那里才是"这一层的工具到底有哪些"被决定的地方。
- *   <li><b>重开也失败要上报</b>（票 03）：一次调用失败多半只是会话过期，重开一条就好；
- *       重开也失败说明 server 真的不在了，那时叫一声，让上层记 DOWN 并开始退避重试。
- *       不说的话，这个 server 就只剩"每次调用都失败"这一种表现，而它再也不会被重新连上。
- * </ol>
+ * <p>重开也失败时要上报（票 03）：一次调用失败多半只是会话过期，重开一条就好；重开也失败
+ * 说明 server 不在了，上层据此记 DOWN 并开始退避重试。不上报的话，这个 server 只剩
+ * "每次调用都失败"一种表现，而且再也不会被重新连上。
  *
- * <p>为什么不用 Spring AI 自动配置出来的 {@code McpSyncClient}：那些 client 由配置驱动建好之后
- * 就固定了，而"会话丢失重新初始化"必须能<b>再建一个</b>。所以 client 由本类持有，
- * 传输由 {@link McpServerEndpoint} 提供——重新初始化只是再问端点要一条传输。
+ * <p>不用 Spring AI 自动配置出来的 {@code McpSyncClient}：那些 client 由配置驱动建好之后
+ * 就固定了，而重新初始化必须能再建一个。所以 client 由本类持有，传输由
+ * {@link McpServerEndpoint} 提供——重新初始化只是再向端点要一条传输。
  */
 public final class McpConnection implements AutoCloseable {
 
@@ -56,11 +50,10 @@ public final class McpConnection implements AutoCloseable {
     /**
      * 握手（{@code initialize}）的等待上限，与单次请求超时分开。
      *
-     * <p>分开是因为两者量级差一个数量级：一次工具调用通常几百毫秒，
-     * 而 {@code npx} 这类启动器要解析包、可能要访问 registry——本机实测
-     * {@code npx -y @modelcontextprotocol/server-everything} 在缓存已热的情况下
-     * 仍然要 50 秒才走完握手。SDK 的默认值是 20 秒，于是一个完全正常的 server
-     * 会以 {@code Client failed to initialize} 的形式被判成"连不上"。
+     * <p>两者量级差得远：一次工具调用通常几百毫秒，而 {@code npx} 这类启动器要解析包、
+     * 可能要访问 registry——本机实测 {@code npx -y @modelcontextprotocol/server-everything}
+     * 在缓存已热时仍要 50 秒才走完握手。SDK 默认的 20 秒，会让一个正常的 server
+     * 以 {@code Client failed to initialize} 的形式被判成连不上。
      */
     private final Duration initializationTimeout;
 
@@ -71,31 +64,36 @@ public final class McpConnection implements AutoCloseable {
     private McpSyncClient client;
 
     /**
-     * 重开也失败时叫一声（票 03）。为 null 表示没人关心这条连接的生死（单测、例子）。
+     * 重开也失败时的回调（票 03）。为 null 表示没人关心这条连接的生死（单测、例子）。
      *
-     * <p><b>为什么需要它</b>：一次调用失败是"会话丢了"，重开一条就好；<b>重开也失败</b>说明
-     * server 真的不在了。上层（{@link McpToolProvider}）要知道这件事，才能把状态记成 DOWN
-     * 并在后台退避重试——不然它就只是一次普通的工具失败，那个 server 再也不会被重新连上。
+     * <p>上层（{@link McpToolProvider}）靠它把状态记成 DOWN 并在后台退避重试；没有它，
+     * 一次重开失败就只是一次普通的工具失败，那个 server 再也不会被重新连上。
      */
     private volatile Runnable onLost;
 
+    /** 用默认请求超时与默认握手超时建一条连接；真实连接在第一次用到时才建立。 */
     public McpConnection(McpServerEndpoint endpoint) {
         this(endpoint, REQUEST_TIMEOUT);
     }
 
     /**
-     * @param requestTimeout 一次 MCP 请求的等待上限。可注入是为了让"连不上"
-     *                      这类故障在测试里也能早点红——生产用 {@link #REQUEST_TIMEOUT}，
-     *                      测试给 2 秒，于是一条断言不必等满 30 秒才知道连不上。
+     * 建一条连接，只覆盖请求超时。
+     *
+     * @param endpoint MCP server 端点，建连接与重开都向它要传输
+     * @param requestTimeout 一次 MCP 请求的等待上限。可注入是为了让连不上这类故障在测试里
+     *     也能早点红：生产用 {@link #REQUEST_TIMEOUT}，测试给 2 秒
      */
     public McpConnection(McpServerEndpoint endpoint, Duration requestTimeout) {
         this(endpoint, requestTimeout, DEFAULT_INITIALIZATION_TIMEOUT);
     }
 
     /**
-     * @param initializationTimeout 握手超时。给的是 {@code npx} / {@code uvx} 这类启动器的余量：
-     *                              它们要先解析包、可能需要访问 registry，本机实测 50 秒，
-     *                              而 SDK 的默认值 20 秒会把一个正常的 server 判成"连不上"。
+     * 建一条连接，两个超时都显式给出。
+     *
+     * @param endpoint MCP server 端点
+     * @param requestTimeout 一次 MCP 请求的等待上限
+     * @param initializationTimeout 握手超时。要给 {@code npx} / {@code uvx} 这类启动器留余量：
+     *     SDK 默认的 20 秒会把一个正常的 server 判成连不上
      */
     public McpConnection(McpServerEndpoint endpoint, Duration requestTimeout, Duration initializationTimeout) {
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
@@ -103,6 +101,7 @@ public final class McpConnection implements AutoCloseable {
         this.initializationTimeout = Objects.requireNonNull(initializationTimeout, "initializationTimeout");
     }
 
+    /** 配置里的 server 名，取自端点。 */
     public String name() {
         return endpoint.name();
     }
@@ -118,8 +117,10 @@ public final class McpConnection implements AutoCloseable {
     }
 
     /**
-     * 这条连接被初始化了几次。**这是"会话丢失重新初始化"唯一的观测点**：
-     * 重连发生在连接内部，从外部看得见的只有这个计数。
+     * 这条连接被初始化过几次。
+     *
+     * <p>重连发生在连接内部，从外部看得见的只有这个计数，它是"会话丢失后重新初始化"
+     * 唯一的观测点。
      */
     public int initializations() {
         return initializations.get();
@@ -128,11 +129,9 @@ public final class McpConnection implements AutoCloseable {
     /**
      * 这个 server 导出了哪些工具。空清单由 {@link McpToolProvider} 判成启动失败。
      *
-     * <p><b>"没有声明 tools 能力"归一成空清单</b>，而不是让它以 SDK 的
-     * {@code Server does not provide tools capability} 抛出来：
-     * 那是同一件事实（这个 server 一件工具都没有）的两种表示，
-     * 两处各判一次就等于同一种故障有两种报错路径，
-     * 而 fail-fast 的判据只有一条——"清单是空的"。
+     * <p>"没有声明 tools 能力"归一成空清单，而不是让 SDK 的
+     * {@code Server does not provide tools capability} 抛出来：那是同一件事实的两种表示，
+     * 两处各判一次就有两条报错路径，而 fail-fast 的判据只有一条——清单是空的。
      */
     public List<Tool> listTools() {
         McpSyncClient connected = current();
@@ -144,6 +143,15 @@ public final class McpConnection implements AutoCloseable {
         return tools == null ? List.of() : List.copyOf(tools);
     }
 
+    /**
+     * 调一个工具，会话丢失时换一条连接重放一次。
+     *
+     * <p>只重放一次。重放后仍然丢会话说明 server 不在了，这时先通知上层，再把异常抛出。
+     *
+     * @param request 工具名与参数
+     * @return server 的原样返回，包括 {@code isError} 的情形
+     * @throws RuntimeException 非会话丢失的故障原样上抛；重开也失败时抛重开那次的异常
+     */
     public CallToolResult callTool(CallToolRequest request) {
         try {
             return current().callTool(request);
@@ -165,9 +173,9 @@ public final class McpConnection implements AutoCloseable {
     }
 
     /**
-     * 告诉上层"这条连接重新建也建不起来了"。
+     * 告诉上层这条连接重开也建不起来了。
      *
-     * <p>回调里抛异常一律吞掉：它不该把"这次工具调用失败"变成另一种失败。
+     * <p>回调里抛出的异常一律吞掉：它不该把"这次工具调用失败"变成另一种失败。
      */
     private void lost(RuntimeException failure) {
         Runnable listener = onLost;
@@ -226,11 +234,11 @@ public final class McpConnection implements AutoCloseable {
     }
 
     /**
-     * 是不是"会话丢了"。
+     * 是不是会话丢了。
      *
-     * <p>沿 cause 链找一层：这个异常可能被测到的时候已经被 Reactor 或 SDK 包过
-     * （{@code McpSyncClient.callTool} 是在 {@code Mono.block()} 之后抛出来的）。
-     * 只认这一种类型，别的故障原样往上抛——把"超时""协议错误"也当成"重开一次"，
+     * <p>沿 cause 链找一层：异常到达时可能已被 Reactor 或 SDK 包过
+     * （{@code McpSyncClient.callTool} 在 {@code Mono.block()} 之后抛出）。
+     * 只认这一种类型，别的故障原样上抛——把超时、协议错误也当成"重开一次"，
      * 会把一次真故障变成一串无意义的重连。
      */
     private static boolean isLostSession(Throwable failure) {

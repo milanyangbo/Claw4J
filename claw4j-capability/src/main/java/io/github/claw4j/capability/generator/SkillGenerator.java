@@ -26,27 +26,26 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * Skill Generator：模型产出一个新脚本包的五步链路（ADR-0002 修订后的定案）。
+ * Skill Generator：模型产出一个新脚本包的五步链路（ADR-0013）。
  *
  * <pre>
  *   生成 → 静态检查 → 隔离沙箱自测 → 审计留痕 → 人审通过才注册
  * </pre>
  *
- * <p><b>五步的顺序就是安全边界的顺序</b>，不是流水线编排的偏好：
+ * <p>五步的顺序就是安全边界的顺序，不是流水线编排的偏好：
  * <ul>
- *   <li>静态检查在落盘<b>之前</b>——危险代码不该先被写下来再被删掉，
- *       那样磁盘上出现过它，而这件事没人会记录。
- *   <li>自测在沙箱里而不是在暂存区里——跑的是未审核代码，
- *       它不能改自己待审的那份内容（{@link GeneratorSandbox}）。
- *   <li>审计在这三步各自记一条，而不是最后补一条——
- *       最后补的那条只能写"发生了什么"，写不出"被挡下的是谁提交的"。
- *   <li>人审是最后一步，也是唯一没有代码替你做的那一步——
- *       {@code publishApproved()} 只读人写下的签字，没有"自动通过"的分支。
+ *   <li>静态检查在落盘之前——危险代码不该先被写下来再被删掉，那样磁盘上出现过它，
+ *       而这件事没人会记录。</li>
+ *   <li>自测在沙箱里而不是在暂存区里——跑的是未审核代码，它不能改自己待审的那份内容
+ *       （{@link GeneratorSandbox}）。</li>
+ *   <li>审计在前三步各自记一条，而不是最后补一条——最后补的那条只能写"发生了什么"，
+ *       写不出"被挡下的是谁提交的"。</li>
+ *   <li>人审是最后一步，也是唯一没有代码替你做的那一步——{@code publishApproved()} 只读
+ *       人写下的签字，没有"自动通过"的分支。</li>
  * </ul>
  *
- * <p><b>未人审的脚本拿不到被调用的资格</b>，这条落在 {@link ScriptPackageRegistry} 上：
- * 工具清单由它现取，于是"待审"在模型那边就是"根本没有这个工具"。
- * 这不是靠"模型不去调它"维持的——它看不见，也就无从去调。
+ * <p>未人审的脚本拿不到被调用的资格，这条落在 {@link ScriptPackageRegistry} 上：工具清单由它
+ * 现取，于是"待审"在模型那边就是"根本没有这个工具"。它不在清单里，模型看不见也就无从去调。
  */
 public final class SkillGenerator {
 
@@ -56,9 +55,17 @@ public final class SkillGenerator {
     /** 这次提交是谁提的、什么时候提的、脚本摘要是什么。 */
     public static final String PROPOSAL = "proposal.properties";
 
-    /** 一个提交的形状。 */
+    /**
+     * 一次提交：包名、一句描述、脚本正文、入口文件名。
+     *
+     * @param name 包名，会原样发给模型供应商当函数名
+     * @param description 给模型看的规格说明，它靠这句决定什么时候调
+     * @param script 脚本正文，静态检查与自测都针对它
+     * @param entrypoint 包内入口文件名，缺省 {@link ScriptPackage#DEFAULT_ENTRYPOINT}
+     */
     public record Request(String name, String description, String script, String entrypoint) {
 
+        /** 入口用默认的 {@link ScriptPackage#DEFAULT_ENTRYPOINT}。 */
         public Request(String name, String description, String script) {
             this(name, description, script, ScriptPackage.DEFAULT_ENTRYPOINT);
         }
@@ -84,6 +91,7 @@ public final class SkillGenerator {
      */
     public record SelfTestResult(int exitCode, String stdout, String stderr, boolean completed) {
 
+        /** 跑完了且退出码为 0。 */
         public boolean succeeded() {
             return completed && exitCode == 0;
         }
@@ -159,6 +167,17 @@ public final class SkillGenerator {
 
     private final Clock clock;
 
+    /**
+     * 把所有目录接起来。静态检查用默认实现。
+     *
+     * @param stagingDirectory 候选包的暂存区，模型可反复重写
+     * @param reviewDirectory 人写审批标记的地方，脚本执行范围够不到
+     * @param publishedDirectory 上线快照的存放处
+     * @param registry 上线后注册进这里的清单
+     * @param audit 五步的留痕
+     * @param spec 自测的超时、输出上限与环境
+     * @param clock 取时间，测试可替换
+     */
     public SkillGenerator(Path stagingDirectory, Path reviewDirectory, Path publishedDirectory,
                           ScriptPackageRegistry registry, GenerationAudit audit, IsolationSpec spec,
                           Clock clock) {
@@ -166,6 +185,18 @@ public final class SkillGenerator {
                 new ScriptStaticCheck());
     }
 
+    /**
+     * 同上，静态检查也显式给出。
+     *
+     * @param stagingDirectory 候选包的暂存区
+     * @param reviewDirectory 审批标记的目录
+     * @param publishedDirectory 上线快照的存放处
+     * @param registry 上线后注册进这里的清单
+     * @param audit 五步的留痕
+     * @param spec 自测规格
+     * @param clock 取时间
+     * @param staticCheck 静态检查，测试可以塞一个记录型的替身
+     */
     public SkillGenerator(Path stagingDirectory, Path reviewDirectory, Path publishedDirectory,
                           ScriptPackageRegistry registry, GenerationAudit audit, IsolationSpec spec,
                           Clock clock, ScriptStaticCheck staticCheck) {
@@ -225,20 +256,18 @@ public final class SkillGenerator {
     }
 
     /**
-     * 第五步：把<b>已经有人签过字的</b>候选包放进工具清单。
+     * 第五步：把已经有人签过字的候选包放进工具清单。
      *
-     * <p>它只读签字，不做任何"看起来可以放行"的推断：没有标记、写得不合格、
-     * 摘要对不上（脚本在签字之后被改过）——三种情形都是不放行。
+     * <p>它只读签字，不做任何"看起来可以放行"的推断：没有标记、写得不合格、摘要对不上
+     * （脚本在签字之后被改过），三种情形都不放行。
      *
-     * <p><b>上线的是一份快照，不是候选目录本身。</b>候选目录是模型能反复重写的地方
-     * （同名再提一次就整份覆盖），把执行目录直接指向它，等于让"人审的是哪一版"
-     * 由文件系统回答——文件系统答不上来，跑的会是最后一版未审的脚本。
-     * 于是签字生效时把候选目录<b>复制</b>一份到发布目录，清单里的包指向那份副本；
-     * 之后再提新版，动的是暂存区，副本不动，跑的仍然是人审过的那一版。
+     * <p>上线的是一份快照，不是候选目录本身。候选目录是模型能反复重写的地方（同名再提一次
+     * 就整份覆盖），把执行目录直接指向它，等于让"人审的是哪一版"由文件系统回答——文件系统
+     * 答不上来，跑的会是最后一版未审的脚本。所以签字生效时把候选目录复制到发布目录，清单里的
+     * 包指向那份副本；之后再提新版，动的是暂存区，副本不动。
      *
-     * <p>为什么是一个独立的方法而不是塞在 {@link #propose} 里：
-     * 人签字通常发生在提交之后，链路需要一个"再看一眼有没有人签过"的动作，
-     * 而那个动作不该依赖"再生成一次"。
+     * <p>独立成方法而不是塞进 {@link #propose}：人签字通常发生在提交之后，链路需要一个
+     * "再看一眼有没有人签过"的动作，而那个动作不该依赖"再生成一次"。
      *
      * @return 这次真正上线的包名
      */
@@ -293,14 +322,17 @@ public final class SkillGenerator {
         return candidateDirectories();
     }
 
+    /** 暂存区在哪：候选包、以及模型能重写的那份脚本都在这里。 */
     public Path stagingDirectory() {
         return stagingDirectory;
     }
 
+    /** 审批标记在哪：这个目录必须落在脚本执行范围之外。 */
     public Path reviewDirectory() {
         return reviewDirectory;
     }
 
+    /** 上线快照在哪：清单里的包指向这里。 */
     public Path publishedDirectory() {
         return publishedDirectory;
     }

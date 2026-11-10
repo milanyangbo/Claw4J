@@ -10,9 +10,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 运行时状态：读数怎么来、读不到时怎么说、模型拿到的是什么。
  *
- * <p>最贵的一条是"读不到不能写成 0 或 -1 这样的数字"：那会被读成"没有限额"，
- * 而模型随后会照着这个前提解释一次 OOM。cgroup 文件用 Reader 替身喂进去，
- * 因为那两个路径只在 Linux 容器里存在。
+ * <p>重点是"读不到不能写成 0 或 -1 这样的数字"：那会被读成"没有限额"，模型随后会照着这个前提
+ * 解释一次 OOM。cgroup 文件用 Reader 替身喂进去，因为那几个路径只在 Linux 容器里存在。
  */
 class SystemStatusTest {
 

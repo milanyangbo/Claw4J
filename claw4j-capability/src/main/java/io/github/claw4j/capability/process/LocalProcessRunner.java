@@ -11,21 +11,18 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 全仓库唯一起进程的地方。
+ * 脚本层的起进程实现：按 argv 直接执行，不经任何解释器。
  *
- * <p>它为什么必须存在：ADR-0002 判的是"Java 侧不构造一条命令行交给命令解释器"，
- * 而脚本层的接缝收不下这条判据——社区包的执行接缝只收一个 {@code String command}，
- * 起进程时自己加解释器的前缀，于是本项目拼好的那条字符串是被解释的（手写引号是唯一的防线）。
- * 数组形态过不去那条接缝，所以起进程这件事收回到本项目里，做成这一个被点名的类。
+ * <p>它必须存在，是因为 ADR-0002 判的是"Java 侧不构造一条命令行交给解释器"，而社区包的执行接缝
+ * 只收一个 {@code String command}，起进程时自己加解释器前缀——本项目拼好的字符串会被解释。
+ * 数组形态过不去那条接缝，于是起进程收回到本项目，做成这个被点名的类。
  *
- * <p><b>代价写清楚</b>：全仓禁 {@code ProcessBuilder} 的那条规则现在有一个例外，
- * 例外就是这个类的全限定名，写在 {@code ProcessBoundaryTest} 里。
- * 规则从"任何地方都不许"收窄成"除了这一个被点名的类以外都不许"——
- * 收窄而不是删除，是因为删掉之后"Java 侧不起进程"就没有任何机器证据了。
+ * <p>代价写清楚：全仓禁 {@code ProcessBuilder} 的规则现在有两个例外（这里与
+ * {@link ShellCommandRunner}），写在 {@code BuildContractTest} 与 {@code ToolsBoundaryTest} 里。
+ * 收窄而不是删除，是因为删掉之后"Java 侧不起进程"就没有任何机器证据。
  *
- * <p><b>它不做的事</b>：不判工作目录该锁在哪、不判环境该给哪些、不判超时上限。
- * 那些是 {@code SandboxPolicy} 与第 ② 类沙箱的约束，由调用方在把请求交进来之前过一遍。
- * 这里只负责"按给的 argv 起一个进程，到点掐断，把两路输出收回来"。
+ * <p>它不判工作目录该锁在哪、环境该给哪些、超时上限是多少——那些是 {@code SandboxPolicy} 的约束，
+ * 由调用方在把请求交进来之前过一遍。这里只负责"按给的 argv 起一个进程，到点掐断，把两路输出收回来"。
  */
 public final class LocalProcessRunner implements ProcessRunner {
 
@@ -36,15 +33,38 @@ public final class LocalProcessRunner implements ProcessRunner {
 
     private final Map<String, String> environment;
 
+    /**
+     * 用一个固定工作目录与一份完整环境建执行器。
+     *
+     * <p>环境在这里定死而不是每次执行现算：请求里没有环境变量这一项（票 08），
+     * 于是"给了子进程什么"在构造那一刻就看得见。
+     *
+     * @param workingDirectory 子进程的工作目录
+     * @param environment 子进程能看到的全部环境变量
+     */
     public LocalProcessRunner(Path workingDirectory, Map<String, String> environment) {
         this.workingDirectory = Objects.requireNonNull(workingDirectory, "workingDirectory");
         this.environment = Map.copyOf(Objects.requireNonNull(environment, "environment"));
     }
 
+    /**
+     * 子进程的工作目录。
+     *
+     * @return 构造时给定的目录
+     */
     public Path workingDirectory() {
         return workingDirectory;
     }
 
+    /**
+     * 起一个进程，等到结束或超时，收回两路输出。
+     *
+     * <p>起进程之前先检查入口：不是普通文件、没有可执行位、第一行不是 shebang，都在这里失败。
+     *
+     * @param request argv 与超时
+     * @return 执行结果；超时时状态是 {@link ProcessOutcome.Status#TIMED_OUT}
+     * @throws ProcessStartException 入口不合格，或进程起不来
+     */
     @Override
     public ProcessOutcome run(ProcessRequest request) {
         Objects.requireNonNull(request, "request");
@@ -89,12 +109,16 @@ public final class LocalProcessRunner implements ProcessRunner {
     }
 
     /**
-     * 起进程之前先说清楚"为什么起不来"。
+     * 在起进程之前判明入口可执行，并给出说得清的失败原因。
      *
-     * <p>没有可执行位时操作系统给的是 {@code Permission denied}，那句话离
-     * "忘了设可执行位"隔了一层；缺 shebang 时给的是 {@code Exec format error}，
-     * 更看不懂。这两件事在"不再经解释器"之后才变成硬要求——
-     * 交给解释器时没有 shebang 也能跑，因为解释它的人就是解释器。
+     * <p>直接交给操作系统时它给的是 {@code Permission denied} 与 {@code Exec format error}，
+     * 两句都离"忘了设可执行位""缺 shebang"隔了一层。这两件事在不再经解释器之后才成为硬要求：
+     * 交给解释器时没有 shebang 也能跑，因为解释它的就是解释器。
+     *
+     * @param workingDirectory 解析相对入口时用的目录
+     * @param program argv 的第一项
+     * @return 入口的绝对路径
+     * @throws ProcessStartException 不是普通文件、没有可执行位，或第一行不是 shebang
      */
     private static Path requireRunnable(Path workingDirectory, String program) {
         Path path = Path.of(program);

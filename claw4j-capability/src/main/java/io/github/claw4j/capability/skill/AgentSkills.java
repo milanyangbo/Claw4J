@@ -18,18 +18,17 @@ import java.util.List;
  *   <li><b>正文不进描述</b>。它只在模型真的用名字调用了 {@code Skill} 工具之后，
  *       作为那次调用的结果回来一次。
  * </ul>
- * 于是"有二十个 Skill"的代价是二十行描述，不是二十份正文。
- * 这条边界由 {@code SkillCatalogTest} 里"描述不含正文"与"没点到的正文不回来"两条断言各盯一头。
+ * <p>于是"有二十个 Skill"的代价是二十行描述，不是二十份正文。这条边界由
+ * {@code SkillCatalogTest} 的"工具描述里只有元数据"与"按名字调用之后正文才回来一次"两条
+ * 断言各盯一头（{@code SkillCatalogTest.java:82} 与 {@code :93}）。
  *
- * <p><b>为什么不再包一层自己的工具类型</b>：社区包的 {@code SkillsTool.Builder.build()}
- * 直接返回 {@code ToolCallback}，它的工具名、输入 Schema、以及"用名字取正文"的行为
- * 都在那一个类里。再包一层只会多出一个要同步维护的描述字符串，
- * 而"描述里到底有什么"正是这里要盯的东西——多一层就多一个可能偷偷把正文写进去的地方。
+ * <p>不再包一层自己的工具类型：社区包的 {@code SkillsTool.Builder.build()} 直接返回
+ * {@code ToolCallback}，工具名、输入 Schema、以及"用名字取正文"的行为都在那一个类里。
+ * 再包一层只会多出一个要同步维护的描述字符串，而"描述里到底有什么"正是这里要盯的东西。
  *
- * <p><b>Skill 不提供动作，它编排动作</b>（GLOSSARY）：正文是"先用哪个工具、再输出什么"
- * 这种顺序，动作本身仍然由被调到的那个工具提供。所以这一层登记的权限
- * （{@link #permission()}）是"加载一份做法"这个动作，业务表一张都没有——
- * Skill 自己不读库，它让模型去读，而那一步照样过鉴权。
+ * <p>Skill 不提供动作，它编排动作（GLOSSARY）：正文是"先用哪个工具、再输出什么"这种顺序，
+ * 动作本身仍由被调到的那个工具提供。所以这一层登记的权限（{@link #permission()}）是"加载
+ * 一份做法"，业务表一张都没有——Skill 自己不读库，它让模型去读，而那一步照样过鉴权。
  */
 public final class AgentSkills {
 
@@ -56,9 +55,13 @@ public final class AgentSkills {
      * 把一个技能目录变成工具回调。
      *
      * <p>先自己加载一遍（{@link SkillCatalog#load}）再交给 builder，代价是这个目录被读两次。
-     * 换来的两样东西值得这点开销：目录配错时错误信息里点名是哪个目录，而不是
-     * 社区包那句不带上下文的断言；"空目录"与"没配"在这里是两种明确的失败。
-     * 启动期读几份 markdown，不是热路径。
+     * 换来的两样东西值得这点开销：目录配错时错误信息里点名是哪个目录，而不是社区包那句
+     * 不带上下文的断言；"空目录"与"没配"在这里是两种明确的失败。启动期读几份 markdown，
+     * 不是热路径。
+     *
+     * @param directory 技能目录，目录树下每个 {@code SKILL.md} 是一份 Skill
+     * @return 名为 {@link #TOOL_NAME} 的工具回调
+     * @throws IllegalStateException 目录不存在，或里面没有可用的 Skill
      */
     public static ToolCallback callback(Path directory) {
         Path absolute = directory.toAbsolutePath().normalize();
@@ -80,9 +83,11 @@ public final class AgentSkills {
     /**
      * 加载一份 Skill 需要什么权限：{@link #ACTION} 动作，加上零张业务表。
      *
-     * <p>零张表不是"没有约束"，它是一条明确的声明：<b>Skill 这一层不碰库</b>。
-     * 于是表级受限的身份（例如只看得到 region 的 guest）照样能按 Skill 办事，
-     * 它会在 Skill 让它去碰别的表的那一步被挡住，而不是在"选中做法"这步就被挡住。
+     * <p>零张表不是"没有约束"，它是一条明确的声明：Skill 这一层不碰库。于是表级受限的身份
+     * （例如只看得到 region 的 guest）照样能按 Skill 办事，它会在 Skill 让它去碰别的表的那一步
+     * 被挡住，而不是在"选中做法"这步就被挡住。
+     *
+     * @return 登记表里这一条的样子
      */
     public static ToolPermission permission() {
         return ToolPermission.of(ACTION);

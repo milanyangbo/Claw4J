@@ -18,23 +18,21 @@ import java.util.Properties;
 /**
  * 人审那一关：读审批标记，判断一个候选包能不能进工具清单。
  *
- * <p><b>这一步必须是人</b>，代码在这里只做两件事：读出人写下的决定，
- * 以及核对他审的是不是<b>这一版</b>脚本。没有"自动通过"的分支，
- * 也没有"审过一次就一直有效"的分支。
+ * <p>这一步必须是人，代码在这里只做两件事：读出人写下的决定，以及核对他审的是不是这一版
+ * 脚本。没有"自动通过"的分支，也没有"审过一次就一直有效"的分支。
  *
  * <p>标记文件的三个字段各有各的用处：
  * <ul>
- *   <li>{@code status}：只有 {@code approved} 算通过，别的写法（空、{@code yes}、
- *       写错了的 {@code approve}）一律不算——"看着像通过"不算通过。
- *   <li>{@code by}：谁签的，空着不算。一条不知道是谁签的记录，事后回放时答不了"谁放的"。
- *   <li>{@code sha256}：他审的是哪一版。脚本被重新生成后摘要就变了，
- *       旧的那次签字自动作废——否则"审过一次"会变成一张长期通行证。
+ *   <li>{@code status}：只有 {@code approved} 算通过，别的写法（空、{@code yes}、写错了的
+ *       {@code approve}）一律不算——"看着像通过"不算通过。</li>
+ *   <li>{@code by}：谁签的，空着不算。一条不知道是谁签的记录，事后回放时答不了"谁放的"。</li>
+ *   <li>{@code sha256}：他审的是哪一版。脚本被重新生成后摘要就变了，旧的那次签字自动作废，
+ *       否则"审过一次"会变成一张长期通行证。</li>
  * </ul>
  *
- * <p><b>标记文件不在暂存区里</b>，而且自测跑的是临时副本：
- * 把审批标记放在脚本能写到的地方，等于让未审核代码有机会给自己签字。
- * 这条不是 paranoid——沙箱能挡住的是"入口、参数、工作目录"，
- * 挡不住脚本体内去写一个绝对路径，所以只能让那个位置与脚本的执行范围不重叠。
+ * <p>标记文件不在暂存区里，而且自测跑的是临时副本：把审批标记放在脚本能写到的地方，等于让
+ * 未审核代码有机会给自己签字。沙箱锁得住入口、参数与工作目录，锁不住脚本体内去写一个绝对
+ * 路径，所以只能让那个位置与脚本的执行范围不重叠。
  */
 public final class ReviewGate {
 
@@ -65,9 +63,13 @@ public final class ReviewGate {
     /**
      * 读一个包的审批标记；没签、写得不合格都返回空。
      *
-     * <p>写得不合格时返回空而不是抛异常：这一关的语义是"有没有人通过"，
-     * 而"文件写坏了"与"没人签"在下游是同一件事——都不过。
-     * 但坏在哪里要留在审计里，否则人看到的是"我签了却没生效"。
+     * <p>写得不合格时返回空而不是抛异常：这一关的语义是"有没有人通过"，而"文件写坏了"与
+     * "没人签"在下游是同一件事——都不过。
+     *
+     * @param reviewDirectory 审批标记所在目录
+     * @param packageName 包名，决定文件名
+     * @return 合格的签字；文件不在、字段缺项、时刻解析不了都是空
+     * @throws IllegalStateException 文件在但读不出来
      */
     public Optional<Decision> read(Path reviewDirectory, String packageName) {
         Path file = fileOf(reviewDirectory, packageName);
@@ -101,7 +103,13 @@ public final class ReviewGate {
         return Optional.of(new Decision(by, at, sha));
     }
 
-    /** 这次签字对不对得上当前这一版脚本。 */
+    /**
+     * 这次签字对不对得上当前这一版脚本。
+     *
+     * @param decision 读出来的签字，带当时那份脚本的摘要
+     * @param script 当前脚本正文
+     * @return 摘要一致返回 {@code true}
+     */
     public boolean matches(Decision decision, String script) {
         return decision.sha256().equalsIgnoreCase(digest(script));
     }
@@ -127,6 +135,7 @@ public final class ReviewGate {
         return file;
     }
 
+    /** 审批标记的位置：{@code <review-directory>/<package>.properties}。 */
     public static Path fileOf(Path reviewDirectory, String packageName) {
         return reviewDirectory.resolve(packageName + SUFFIX);
     }

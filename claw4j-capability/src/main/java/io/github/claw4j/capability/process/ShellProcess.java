@@ -4,18 +4,18 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
- * 一个跑在后台的 shell：持有进程、持续收流、按需交回**增量**。
+ * 一个跑在后台的 shell：持有进程、持续收流、按需交回增量。
  *
- * <p><b>它为什么在这里而不是在 {@code exec} 包里</b>：它只跟"起进程"这件事有关，与工具形态无关；
- * 而"起进程"在全仓只有两个被点名的类（{@link LocalProcessRunner}、{@link ShellCommandRunner}），
- * 这里不 new 任何进程对象，所以不多出一个入口。
+ * <p>它放在 process 包而不是 {@code exec} 包，是因为它只跟"起进程"有关，与工具形态无关。
+ * 这里不 new 任何进程对象，所以起进程的入口仍然只有两个（{@link LocalProcessRunner}、
+ * {@link ShellCommandRunner}）。
  *
- * <p><b>为什么是增量而不是全量</b>：后台命令的输出可能一直在长，每次问都回全量的话，
- * 一条 {@code tail -f} 五分钟就能把上下文吃光。调用方说"自上次以来新增了什么"，
- * 这句话也正是 Spring AI 的 {@code BashOutput} 要求的语义。
+ * <p>给增量而不是全量：后台命令的输出可能一直在长，每次问都回全量的话，一条 {@code tail -f}
+ * 五分钟就能把上下文吃光。调用方说"自上次以来新增了什么"，这也正是 Spring AI 的
+ * {@code BashOutput} 要求的语义。
  *
- * <p><b>过滤掉的就不再有第二次机会</b>：带过滤问一次，没匹配上的那部分同样被算作"已读"。
- * 这是为了让"增量"这件事永远是单调的——否则过滤之后位置不动，下一次问会把同一批行再筛一遍。
+ * <p>过滤掉的就不再有第二次机会：带过滤问一次，没匹配上的那部分同样算已读。这样"增量"始终单调，
+ * 否则过滤之后位置不动，下一次问会把同一批行再筛一遍。
  */
 public final class ShellProcess {
 
@@ -37,29 +37,45 @@ public final class ShellProcess {
         this.process = Objects.requireNonNull(process, "process");
     }
 
+    /**
+     * 后台 shell 的编号。
+     *
+     * @return 形如 {@code shell_<n>} 的 id
+     */
     public String id() {
         return id;
     }
 
+    /**
+     * 进程还在不在跑。
+     *
+     * @return 还活着返回 {@code true}
+     */
     public boolean isAlive() {
         return process.isAlive();
     }
 
     /**
-     * 只在该进程已经结束时给得出值；还在跑时抛 {@link IllegalThreadStateException}——
+     * 只在该进程已经结束时给得出值，还在跑时抛 {@link IllegalThreadStateException}——
      * 这正是 {@link Process#exitValue()} 的语义，也是 Spring AI 的 {@code BashOutput} 在等的那一种。
+     *
+     * @return 进程的退出码
+     * @throws IllegalThreadStateException 进程还在跑
      */
     public int exitCode() {
         return process.exitValue();
     }
 
+    /** 强制结束这个后台进程。 */
     public void kill() {
         process.destroyForcibly();
     }
 
     /**
+     * 取走自上次调用以来的新增输出，{@code stderr} 接在 {@code stdout} 之后。
+     *
      * @param filter 行过滤（正则）；{@code null} 或空串表示不过滤
-     * @return 自上次调用以来的新增输出；两路合成一份，{@code stderr} 在 {@code stdout} 之后
+     * @return 自上次调用以来的新增输出；带过滤时只留匹配的行
      */
     public synchronized String newOutput(String filter) {
         String fresh = stdout.substring(readStdout) + stderr.substring(readStderr);

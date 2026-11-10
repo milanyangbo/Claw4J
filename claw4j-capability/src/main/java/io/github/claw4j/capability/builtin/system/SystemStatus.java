@@ -4,16 +4,14 @@ import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
- * 一次 system-status 的读数：JVM 自己的指标 + 容器给它的限额。
+ * 一次 system-status 的读数：JVM 自己的指标加容器给它的限额。
  *
- * <p>为什么是 record 而不是直接拼一段字符串：拼好的文本要给模型读，
- * 而"堆上限是多少"这类事实要能被断言。两层分开之后，格式化只发生一次（在
- * {@link #format()}），测试钉的是数字而不是措辞——模型看到的措辞随时可以改，
- * 数字被改错了才是一条真缺陷。
+ * <p>record 而不是直接拼一段字符串：拼好的文本要给模型读，而"堆上限是多少"这类事实要能被断言。
+ * 两层分开之后，格式化只发生一次（在 {@link #format()}），测试钉的是数字而不是措辞——
+ * 措辞随时可以改，数字被改错了才是缺陷。
  *
- * <p>取数的动作以 {@code Supplier} 形式传进来（{@link SystemStatusTools} 负责给），
- * 是为了让这个类型自己不偷偷读系统状态：读过一次的状态在断言里是"当时的数"，
- * 而不是"测试跑到这一行时的数"，两者差一个 GC 就足够让断言不稳定。
+ * <p>取数动作以 {@code Supplier} 形式传进来，是为了让这个类型自己不偷偷读系统状态：读过一次的
+ * 状态在断言里是"当时的数"，而不是"测试跑到这一行时的数"，两者差一个 GC 就足以让断言不稳定。
  */
 public record SystemStatus(long heapUsedBytes,
                            long heapMaxBytes,
@@ -26,7 +24,11 @@ public record SystemStatus(long heapUsedBytes,
         Objects.requireNonNull(containerLimits, "containerLimits");
     }
 
-    /** 采样一次当前进程的状态。 */
+    /**
+     * 采样一次当前进程的状态，读数来自真实的 JVM 与 cgroup 文件。
+     *
+     * @return 这一次采到的读数
+     */
     public static SystemStatus sample() {
         return sample(Runtime.getRuntime(),
                 java.lang.management.ManagementFactory.getThreadMXBean(),
@@ -34,7 +36,15 @@ public record SystemStatus(long heapUsedBytes,
                 ContainerLimits::fromFileSystem);
     }
 
-    /** 采样一次，读数来源由外部给定（测试用）。 */
+    /**
+     * 采样一次，读数来源由外部给定（测试用）。
+     *
+     * @param runtime JVM 运行时，堆与处理器数从这里取
+     * @param threads 线程 MXBean
+     * @param runtimeMxBean 运行时 MXBean，已运行时长从这里取
+     * @param limits 容器限额的取数动作
+     * @return 这一次采到的读数
+     */
     public static SystemStatus sample(Runtime runtime,
                                       java.lang.management.ThreadMXBean threads,
                                       java.lang.management.RuntimeMXBean runtimeMxBean,
@@ -51,7 +61,11 @@ public record SystemStatus(long heapUsedBytes,
                 limits.get());
     }
 
-    /** 给模型看的那一版：一段文本，读不到的项如实写成"未设限/未知"。 */
+    /**
+     * 给模型看的那一版：一段文本，读不到的项如实写成"未设限"或"未知"。
+     *
+     * @return 多行文本，每行一项读数
+     */
     public String format() {
         StringBuilder text = new StringBuilder("运行时状态（采样时刻）\n");
         text.append("堆内存：已用 ").append(human(heapUsedBytes))

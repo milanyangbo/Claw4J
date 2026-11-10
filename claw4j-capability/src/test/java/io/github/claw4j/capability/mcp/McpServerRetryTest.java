@@ -26,23 +26,22 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.groups.Tuple.tuple;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.groups.Tuple.tuple;
 
 /**
- * 一个 MCP server 连不上之后会怎样（票 03，照 OpenClaw 的 MCP 客户端）。
+ * 一个 MCP server 连不上之后会怎样（票 03）。
  *
- * <p>这一层要守的是三件事，分开验：
+ * <p>这一层要守三件事，分开验：
  * <ul>
- *   <li><b>应用照常起</b>：连不上只记 DOWN，不抛。对端重启 40 秒换来的不该是一次全站不可用。</li>
- *   <li><b>恢复之后看得见</b>：清单是活视图，重试成功之后工具就在下一次解析里。</li>
- *   <li><b>掉线不丢上次的清单</b>：从清单里消失会让模型说"我没有这个能力"，
- *       而真实情况是"它刚断了一下"。</li>
+ *   <li>应用照常起：连不上只记 DOWN，不抛。对端重启 40 秒换来的不该是一次全站不可用。</li>
+ *   <li>恢复之后看得见：清单是活视图，重试成功之后工具就在下一次解析里。</li>
+ *   <li>掉线不丢上次的清单：从清单里消失会让模型说「我没有这个能力」，而真实情况是「它刚断了一下」。</li>
  * </ul>
  *
- * <p>定时器换成能记录、能手动驱动的替身：退避序列（30 → 60 → 120）只有把"排了多久"记下来才验得出，
- * 真等 30 秒的用例没人会跑第二遍。对端仍然是进程内那个真 server（{@link McpToolTest} 里那个），
- * 断连用一个只坏一次 {@code sendMessage} 的传输造出来——两头都不是猜的。
+ * <p>定时器换成能记录、能手动驱动的替身：退避序列（15、30、60 秒）只有把「排了多久」记下来才验得出，
+ * 真等 15 秒的用例没人会跑第二遍。对端仍然是进程内那个真 server（{@link McpToolTest} 里那个），
+ * 断连用一个只坏一次 {@code sendMessage} 的传输造出来，两头都不是猜的。
  */
 @ExtendWith(OutputCaptureExtension.class)
 class McpServerRetryTest {
@@ -65,27 +64,27 @@ class McpServerRetryTest {
             assertThat(output)
                     .as("启动清单要一眼看得出谁在等重试")
                     .contains("MCP server 状态：")
-                    .contains("broken → DOWN(30 秒后重试)")
+                    .contains("broken → DOWN(15 秒后重试)")
                     .contains("calc → UP(工具 4 个)");
-            assertThat(output).contains("30 秒后重试第 1 次");
+            assertThat(output).contains("15 秒后重试第 1 次");
         }
     }
 
     @Test
-    @DisplayName("退避 30 秒起、每次翻倍、封顶 10 分钟")
-    void backoffDoublesAndCaps() {
+    @DisplayName("退避 15 秒起、每次翻倍、封顶 10 分钟")
+    void backoffStartsAtFifteenSecondsAndCaps() {
         RecordingScheduler scheduler = new RecordingScheduler();
         try (McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(broken())), scheduler)) {
-            assertThat(scheduler.delaysInMillis()).containsExactly(30_000L);
+            assertThat(scheduler.delaysInMillis()).containsExactly(15_000L);
 
-            // 每次重试都仍然失败，于是每次都会排下一次：30 → 60 → 120 → 240 → 480 → 600（封顶）
+            // 每次重试都仍然失败，于是每次都会排下一次：15 → 30 → 60 → 120 → 240 → 480 → 600（封顶）
             for (int round = 0; round < 6; round++) {
                 assertThat(scheduler.runNext()).as("应该还有下一次重试").isTrue();
             }
 
             assertThat(scheduler.delaysInMillis())
-                    .as("上限必须真的封住：不封的话第 11 次就是 8.5 小时，那已经不像“还在重连”了")
-                    .containsExactly(30_000L, 60_000L, 120_000L, 240_000L, 480_000L, 600_000L, 600_000L);
+                    .as("上限必须真的封住：不封的话第 11 次就是 8.5 小时，那已经不像「还在重连」了")
+                    .containsExactly(15_000L, 30_000L, 60_000L, 120_000L, 240_000L, 480_000L, 600_000L);
             assertThat(provider.status()).singleElement()
                     .satisfies(snapshot -> assertThat(snapshot.attempts()).isEqualTo(7));
         }
@@ -112,7 +111,7 @@ class McpServerRetryTest {
 
                 assertThat(provider.toolNames())
                         .as("恢复之后工具必须回来——连接自己好了但清单还是快照的话，"
-                                + "模型那边只会说“我没有这个能力”")
+                                + "模型那边只会说「我没有这个能力」")
                         .containsExactlyInAnyOrder("add", "echo", "explode", "tick");
                 assertThat(provider.status()).singleElement()
                         .satisfies(snapshot -> assertThat(snapshot.status()).isEqualTo(McpServerStatus.UP));
@@ -139,7 +138,7 @@ class McpServerRetryTest {
             try (McpToolProvider provider = new McpToolProvider(List.of(connection), scheduler)) {
                 assertThat(provider.toolNames()).hasSize(4);
 
-                // 会话丢了、重开也开不起来：这就是"server 真的不在了"，不是"这一次调用手气不好"
+                // 会话丢了、重开也开不起来：这就是「server 真的不在了」，不是「这一次调用手气不好」
                 first.failNext(new McpTransportSessionNotFoundException("gone"));
                 assertThatThrownBy(() -> connection.callTool(
                         CallToolRequest.builder("add").arguments(Map.of("a", 1, "b", 2)).build()))
@@ -152,7 +151,7 @@ class McpServerRetryTest {
                 assertThat(provider.status()).singleElement()
                         .satisfies(snapshot -> assertThat(snapshot.status()).isEqualTo(McpServerStatus.DOWN));
                 assertThat(output).contains("保留上次成功列出的 4 个工具");
-                assertThat(scheduler.delaysInMillis()).as("掉线之后要开始退避重连").containsExactly(30_000L);
+                assertThat(scheduler.delaysInMillis()).as("掉线之后要开始退避重连").containsExactly(15_000L);
             }
         }
     }
@@ -177,14 +176,14 @@ class McpServerRetryTest {
 
                 assertThat(provider.status()).singleElement().satisfies(snapshot -> {
                     assertThat(snapshot.status())
-                            .as("这时候应用已经在跑了，“起不来”这个失败方式已经不可用，只能停下来报错")
+                            .as("这时候应用已经在跑了，「起不来」这个失败方式已经不可用，只能停下来报错")
                             .isEqualTo(McpServerStatus.MISCONFIGURED);
                     assertThat(snapshot.lastError()).contains("send_mail");
                 });
                 assertThat(provider.toolNames()).isEmpty();
                 assertThat(scheduler.delaysInMillis())
                         .as("配置错误重试一万次也不会变：再排任务就是空转")
-                        .containsExactly(30_000L);
+                        .containsExactly(15_000L);
                 assertThat(output).contains("发现配置错误，停止重试").contains("send_mail");
             }
         }
@@ -199,13 +198,13 @@ class McpServerRetryTest {
         provider.close();
 
         assertThat(scheduler.isShutdown())
-                .as("关不掉的线程会让 JVM 停不下来，那比“某个 server 不可用”更坏")
+                .as("关不掉的线程会让 JVM 停不下来，那比「某个 server 不可用」更坏")
                 .isTrue();
-        assertThat(scheduler.delaysInMillis()).containsExactly(30_000L);
+        assertThat(scheduler.delaysInMillis()).containsExactly(15_000L);
         scheduler.runNext();
         assertThat(scheduler.delaysInMillis())
                 .as("关掉之后排着的任务不该再排出新的：那几个任务串起来就能把 JVM 钉住")
-                .containsExactly(30_000L);
+                .containsExactly(15_000L);
         provider.close();
         assertThat(provider.toolNames()).isEmpty();
     }
@@ -224,7 +223,7 @@ class McpServerRetryTest {
     /**
      * 只记录、不真等：{@code schedule} 把延迟与任务都留下，由用例决定什么时候跑。
      *
-     * <p>不真的 {@code schedule} 是关键——真排一个 30 秒的任务，这条用例就得等 30 秒；
+     * <p>不真的 {@code schedule} 是关键——真排一个 15 秒的任务，这条用例就得等 15 秒；
      * 而 {@code isShutdown} 仍然是真的，{@link #closeStopsTheRetryLoop} 那条验的就是它。
      */
     private static final class RecordingScheduler extends ScheduledThreadPoolExecutor {
@@ -264,7 +263,7 @@ class McpServerRetryTest {
     }
 
     /**
-     * 只坏一次 {@code sendMessage} 的传输：造出"会话已经不在了"这个现场。
+     * 只坏一次 {@code sendMessage} 的传输：造出「会话已经不在了」这个现场。
      *
      * <p>故障在边界之外（网络/对端），不是被测对象自己的判断——用真管道就造不出这个现场。
      */

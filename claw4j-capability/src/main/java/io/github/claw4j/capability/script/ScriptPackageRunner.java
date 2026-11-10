@@ -12,32 +12,24 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 脚本包的调用入口：**换沙箱不动这里**（{@link ProcessRunnerFactory}）。
+ * 脚本包的调用入口：按名字找包，参数过沙箱，起子进程，只交回 stdout。
  *
- * <p>它做四件事，顺序就是"进程是怎么起来的"：
- * <ol>
- *   <li>按名字找到包。找不到就把有哪些包一并说出来——模型拼错工具名时，
- *       这句话就是它能改的唯一依据。
- *   <li>把参数变成 argv 里的**一个元素**：先过沙箱路径校验。
- *       参数不再需要加引号（票 08）：加引号要挡的是"参数被解释器当成语法"，
- *       而数组形态没有解释器这一步。
- *   <li>argv = 入口脚本 + 参数，交给执行后端。入口来自包清单，不由模型给。
- *   <li>只把 stdout 交回去。
- * </ol>
+ * <p>执行后端来自 {@link ProcessRunnerFactory}，换沙箱形态不动这个类。按名字找不到包时，
+ * 异常里连现有的包名一起给出：模型拼错工具名时，那是它唯一的修改依据。
  *
- * <p><b>脚本本体不进上下文，只有输出进</b>（GLOSSARY 的 Script Package）。
- * 这条不是靠"没人把脚本读进来"维持的，而是靠这里只有一条返回路径：
- * 调用方拿到的永远是 stdout，拿不到脚本文件的任何一部分。
+ * <p>每个参数在 argv 里各占一个元素，先过 {@link SandboxPolicy#resolveInside}，不做引号转义
+ * （票 08）。转义要挡的是"参数被解释器当成语法"，而数组形态里没有解释器这一环。
+ * 入口脚本来自包清单，不由模型提供。
  *
- * <p><b>这个沙箱给不了什么</b>，说清楚免得被当成承诺：子进程起在应用容器内，
- * 锁得住"入口、参数、工作目录、环境变量、时长"这五样，
- * 锁不住脚本<b>体内</b>自己去读一个绝对路径、自己去连一次网。
- * 那种越界要靠另一台容器（ADR-0003 的第 ② 类沙箱，06 号票）；
- * 在 README 里只会写这里真的挡住了什么。
+ * <p>脚本本体不进上下文，只有输出进（GLOSSARY 的 Script Package）。这条靠结构维持：
+ * 这里只有一条返回路径，调用方拿不到脚本文件的任何一部分。
+ *
+ * <p>子进程起在应用容器内，锁得住入口、参数、工作目录、环境变量与时长这五样，锁不住脚本
+ * 体内自己去读绝对路径或连网。后一种越界要靠另一台容器（ADR-0003 的第 ② 类沙箱）。
  */
 public final class ScriptPackageRunner {
 
-    /** 进上下文的输出上限。一个 {@code cat} 就能把上下文撑爆，而撑爆之后没人看得见答案。 */
+    /** 进上下文的输出上限：一次 {@code cat} 就足以占满上下文，占满之后调用方看不到任何答案。 */
     public static final int MAX_OUTPUT_CHARS = 8_000;
 
     private static final String EMPTY_OUTPUT = "（脚本没有输出）";
@@ -50,17 +42,32 @@ public final class ScriptPackageRunner {
 
     private final ProcessRunnerFactory factory;
 
+    /**
+     * 按包清单建一个执行入口，执行后端用 {@link ProcessRunnerFactory#SANDBOXED}。
+     *
+     * @param packages 启动时从目录读出来的包
+     */
     public ScriptPackageRunner(List<ScriptPackage> packages) {
         this(packages, ProcessRunnerFactory.SANDBOXED);
     }
 
     /**
+     * 按包清单建一个执行入口，执行后端由调用方给定。
+     *
+     * @param packages 启动时从目录读出来的包
      * @param factory 换沙箱的地方；默认 {@link ProcessRunnerFactory#SANDBOXED}
      */
     public ScriptPackageRunner(List<ScriptPackage> packages, ProcessRunnerFactory factory) {
         this(packages, factory, SandboxPolicy.defaults());
     }
 
+    /**
+     * 按包清单建一个执行入口，执行后端与沙箱策略都由调用方给定。
+     *
+     * @param packages 启动时从目录读出来的包
+     * @param factory 换沙箱的地方
+     * @param policy 参数、环境、超时与身份的判据
+     */
     public ScriptPackageRunner(List<ScriptPackage> packages, ProcessRunnerFactory factory, SandboxPolicy policy) {
         Objects.requireNonNull(packages, "packages");
         this.policy = Objects.requireNonNull(policy, "policy");
@@ -71,14 +78,15 @@ public final class ScriptPackageRunner {
     }
 
     /**
-     * 运行时再加一个包：人审通过之后才轮到它（06 号票的第五步）。
+     * 运行时登记一个人审通过的包（06 号票的第五步）。
      *
-     * <p>为什么要能后加：脚本包的清单原本是启动时从目录读出来的，而"生成 → 人审 → 注册"
-     * 发生在应用已经跑起来之后。硬要它出现在清单里只有两条路——重启进程，
-     * 或者让清单可以被追加；前者把"人点了一下通过"变成一次发布，后者只是给清单一个入口。
+     * <p>要能后加，是因为"生成 → 人审 → 注册"发生在应用已经跑起来之后。让新包进清单只有两条路：
+     * 重启进程，或者让清单可追加。前者把"人点了一下通过"变成一次发布，后者只多一个入口。
      *
-     * <p><b>重名仍然直接失败</b>，跟构造时一个口径：两个叫同一个名字的工具会让模型
-     * 分不清该调哪个，这里不去重也不覆盖——覆盖的话"人审通过的是这一版"就说不清了。
+     * <p>重名直接失败，与构造时同一口径：两个同名工具会让模型分不清该调哪个；覆盖则让
+     * "人审通过的是这一版"说不清。
+     *
+     * @param pkg 人审通过的脚本包
      */
     public synchronized void register(ScriptPackage pkg) {
         Objects.requireNonNull(pkg, "pkg");
@@ -89,13 +97,24 @@ public final class ScriptPackageRunner {
         runners.put(pkg.name(), factory.forPackage(pkg));
     }
 
+    /**
+     * 清单里现有的包名，按登记顺序。
+     *
+     * @return 包名的只读快照
+     */
     public synchronized List<String> names() {
         return List.copyOf(packages.keySet());
     }
 
     /**
-     * 跑一个脚本包，返回它写到标准输出上的内容。
+     * 跑一个脚本包，取它写到标准输出上的内容。
      *
+     * <p>非零退出与超时都算失败，不把半截 stdout 当结果交回去：一次失败的工具结果能让模型改
+     * 参数重试，一段看起来正常的半截输出不能。
+     *
+     * @param name 包名
+     * @param arguments 传给脚本的参数；{@code null} 当空列表
+     * @return 截断后的 stdout；没有输出时是一句说明
      * @throws IllegalArgumentException 没有这个包
      * @throws SandboxViolationException 参数越出沙箱，或执行环境被拦下
      * @throws ScriptExecutionException 脚本跑了但没跑出结果
@@ -117,18 +136,18 @@ public final class ScriptPackageRunner {
     }
 
     /**
-     * argv 只有一处组装，且组装的东西是确定的：入口脚本来自包清单，参数全部过了沙箱。
+     * 组装 argv：入口脚本来自包清单，参数全部过沙箱，只有这一处组装。
      *
-     * <p><b>每一个参数都要先过 {@link SandboxPolicy#resolveInside}，不做"像不像路径"的预判。</b>
-     * "看着像路径"是个会漏的判据：包目录里放一个名叫 {@code leak.txt}、指向外面的符号链接，
-     * 模型只要给这个裸文件名就能把外面的文件读出来——它既不含斜杠也不以点开头。
-     * 一律校验的代价是零：普通字符串（一个城市名、一句话）本来就落在包目录内，
-     * 校验一定通过，只是多走一步。
+     * <p>每个参数都先过 {@link SandboxPolicy#resolveInside}，不做"像不像路径"的预判。那个判据会漏：
+     * 包目录里放一个指向外面的符号链接，名为 {@code leak.txt}，模型给这个裸文件名就能读出外部文件，
+     * 而它既不含斜杠也不以点开头。一律校验的代价为零，普通字符串本来就在包目录内。
      *
-     * <p><b>没有一处做引号转义，这也是有意的</b>（票 08）：转义要挡的是
-     * "参数被命令解释器当成语法"，而这里给的是数组，进程收到的就是这个元素本身，
-     * 一个带空格或分号的参数只是"一个带空格或分号的字符串"。
-     * 少了"有人会解释它"这一环，转义就从"必须"变成"无用"。
+     * <p>不做引号转义（票 08）：这里给的是数组，进程收到的就是元素本身，带空格或分号的参数
+     * 只是一个字符串。少了"有人会解释它"这一环，转义从"必须"变成"无用"。
+     *
+     * @param pkg 要执行的包
+     * @param arguments 模型给的参数列表，其中的 {@code null} 项被跳过
+     * @return 交给执行后端的请求
      */
     private ProcessRequest requestOf(ScriptPackage pkg, List<String> arguments) {
         List<String> argv = new ArrayList<>();
@@ -153,9 +172,13 @@ public final class ScriptPackageRunner {
     }
 
     /**
-     * 输出是唯一进上下文的东西，所以它也要有上限。
-     * 截断要<b>说清楚被截断了</b>：悄悄截掉的话，模型拿到的是一段看起来完整的文本，
-     * 于是它基于半截输出给了一个自信的答案。
+     * 截断输出并在后面注明被截断了。
+     *
+     * <p>必须说出来：悄悄截掉的话，模型拿到的是一段看起来完整的文本，于是它基于半截输出
+     * 给出一个自信的答案。
+     *
+     * @param stdout 进程的标准输出
+     * @return 去掉首尾空白、必要时截断的文本
      */
     private static String outputOf(String stdout) {
         if (stdout == null || stdout.isBlank()) {
@@ -168,7 +191,11 @@ public final class ScriptPackageRunner {
         return text.substring(0, MAX_OUTPUT_CHARS) + "\n…（输出超过 " + MAX_OUTPUT_CHARS + " 字符，已截断）";
     }
 
-    /** 给日志与装配断言：这些包各自会在哪个目录里跑。 */
+    /**
+     * 包清单，按登记顺序；给日志与装配断言用。
+     *
+     * @return 包的只读快照
+     */
     public synchronized List<ScriptPackage> packages() {
         return List.copyOf(packages.values());
     }

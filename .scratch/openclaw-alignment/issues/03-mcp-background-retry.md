@@ -207,3 +207,7 @@ name, status(UP / DOWN), lastKnownTools(List<Tool>), attempt(int), nextRetryAt(I
 - 没做：把自己暴露成 MCP server 那一侧（`McpExposure`）仍是装配期采样一次；
   恢复回来的工具不会出现在交出去的 server 里，要重启才生效。它不在本票范围（那是"当 server"，
   不是"接 server"），但**是同一类快照**，将来有人问"为什么外部客户端看不到刚恢复的工具"时从这里查。
+- **2026-11-10 只改一个数**：退避起点 30 秒 → **15 秒**（`mcp-startup-backoff.ts:125` 的
+  `delayMs: 15_000`，封顶 `:158` 的 600 秒不变）。本票的判据不动：连不上、空清单、运行期掉线
+  都可恢复，只有配置错误当场失败。用例 `McpServerRetryTest#backoffStartsAtFifteenSecondsAndCaps`。
+  （中途曾按"启动期连不上就失败"改过一版，与它相反，当天退回。）

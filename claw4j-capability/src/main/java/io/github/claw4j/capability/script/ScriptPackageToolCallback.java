@@ -11,26 +11,24 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 把一个脚本包适配成 {@link ToolCallback}：三层能力对 Agent 呈现为同一件事，
- * 靠的就是这一层适配（ADR-0003）。
+ * 把一个脚本包适配成 {@link ToolCallback}，三层能力对 Agent 呈现为同一件事（ADR-0003）。
  *
- * <p><b>名字与参数 Schema 是唯一契约</b>：模型看到的是包名加一个可选参数，
- * 看不到这是一个脚本、更看不到脚本写了什么。MCP 那一层（{@code McpToolCallback}）
- * 是同一个形状，将来换成"脚本跑在另一台容器里"，Agent 侧一个字都不用改。
+ * <p>名字与参数 Schema 是唯一契约：模型看到的是包名加一个可选参数，看不到这是一个脚本，
+ * 也看不到脚本写了什么。MCP 那一层（{@code McpToolCallback}）是同一个形状，换成"脚本跑在
+ * 另一台容器里"时，Agent 侧不用改。
  *
- * <p>出错一律包成 {@link ToolExecutionException}：工具调用管理器只处理这一种，
- * 抛别的会一路冒泡把整通对话炸掉，而"这个脚本这次没跑出来"应当变成一次失败的工具结果，
- * 让模型有机会换条路。沙箱那条边界同样如此——被拦下来的话也要让模型看见，
- * 它才知道该换个参数而不是继续重试。
+ * <p>出错一律包成 {@link ToolExecutionException}：工具调用管理器只处理这一种，抛别的会一路冒泡
+ * 把整通对话炸掉，而"这次没跑出来"应当变成一次失败的工具结果。沙箱拒绝同样如此——
+ * 模型看见那句拒绝，才知道该换参数而不是继续重试。
  */
 public final class ScriptPackageToolCallback implements ToolCallback {
 
     /**
      * 参数 Schema：只有一个可选的 {@code argument}。
      *
-     * <p>为什么不给"任意多个参数"：参数越多，模型越容易把自由文本塞进命令行，
-     * 而命令行是 ADR-0002 管得最紧的那条边界。一个参数够表达绝大多数脚本包的用法
-     * （一个城市名、一个文件名），不够的那些本来就该写成 Java 工具。
+     * <p>不给"任意多个参数"：参数越多，模型越容易把自由文本塞进命令行，而命令行是 ADR-0002
+     * 管得最紧的那条边界。一个参数够表达绝大多数脚本包的用法（一个城市名、一个文件名），
+     * 不够的那些本来就该写成 Java 工具。
      */
     private static final String INPUT_SCHEMA = """
             {
@@ -62,10 +60,23 @@ public final class ScriptPackageToolCallback implements ToolCallback {
 
     private final ToolDefinition definition;
 
+    /**
+     * 建一个工具回调，执行留痕不接。
+     *
+     * @param pkg 这个回调代表的包
+     * @param runner 执行这个包的入口
+     */
     public ScriptPackageToolCallback(ScriptPackage pkg, ScriptPackageRunner runner) {
         this(pkg, runner, ScriptExecutionListener.NO_OP);
     }
 
+    /**
+     * 建一个工具回调，执行结果交给给定的观察者。
+     *
+     * @param pkg 这个回调代表的包
+     * @param runner 执行这个包的入口
+     * @param listener 执行结果的观察者
+     */
     public ScriptPackageToolCallback(ScriptPackage pkg, ScriptPackageRunner runner,
                                      ScriptExecutionListener listener) {
         this.pkg = Objects.requireNonNull(pkg, "pkg");
@@ -89,10 +100,14 @@ public final class ScriptPackageToolCallback implements ToolCallback {
     }
 
     /**
-     * 三种结局都留一条痕：成功、被沙箱拦下、跑了但没跑出结果。
+     * 三种结局各留一条痕：成功、被沙箱拦下、跑了但没跑出结果。
      *
-     * <p><b>被拦下也要记</b>，而且要在抛出之前记。留痕的意义是"回放时看得到有人试过"，
-     * 只记成功的那种审计回答不了"谁在用它捅边界"——而那正是这类记录唯一会被翻出来的场景。
+     * <p>被拦下也要记，而且要在抛出之前记：留痕的意义是回放时看得到"有人试过"，
+     * 只记成功的那种审计回答不了"谁在用它捅边界"，而那正是这类记录会被翻出来的场景。
+     *
+     * @param toolInput 模型给的 JSON 输入
+     * @param toolContext 工具上下文，身份从这里取
+     * @return 脚本写到标准输出上的内容
      */
     @Override
     public String call(String toolInput, ToolContext toolContext) {

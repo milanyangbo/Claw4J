@@ -25,27 +25,24 @@ import java.util.Optional;
 /**
  * 把工具清单翻译成 MCP 的工具规格（P11）。纯函数：给清单、权限登记表与配置，出一组规格。
  *
- * <p><b>为什么校验全在这里、而不是在装配方法里</b>：这几条都是"配置错了"，而配置的错误
- * 越早失败越好。装配方法只负责连线与日志，判断集中在可以单独测的地方——
- * 门禁那条约 20 条的用例上限逼着这么分，但这个分法本身是对的：一个能对着清单说
- * "这个工具不能交出去"的函数，不需要起一个 server 才能测。
+ * <p>校验全在这里，不在装配方法里：这几条都是配置错误，越早失败越好。装配方法只负责连线与
+ * 日志；判断集中在这里，一个能对着清单说"这个工具不能交出去"的函数，不需要起 server 才能测。
  *
- * <p><b>三道门，位置不同</b>：
+ * <p>三道门，位置不同：
  * <ul>
- *   <li><b>装配期</b>：交出去的名字必须在清单里（不在只 WARN 并跳过，与 P09 的 allow / deny 同语义）、
+ *   <li>装配期：交出去的名字必须在清单里（不在只 WARN 并跳过，与 P09 的 allow / deny 同语义）、
  *       必须有权限登记、不能需要审批、动作必须是 {@code read}。这四条错了就是配置错了，
  *       没有"运行起来再看"的余地。</li>
- *   <li><b>调用期</b>：{@link ToolPermission#grantedTo} 用外部客户端那个身份再判一次。
- *       这一道与 IM 侧鉴权 Advisor 同构——登记表说"这个工具碰哪些表"，身份说"能读哪些表"，
- *       两张一对，对不上就拒，且工具一次都不执行。</li>
- *   <li><b>不在这条路上</b>：审批。外部客户端没有人能点按钮，也没有 run 可以挂起，
- *       所以需要审批的工具在装配期就被拒之门外，而不是"调用时返回等你批"。</li>
+ *   <li>调用期：{@link ToolPermission#grantedTo} 用外部客户端那个身份再判一次。这一道与 IM 侧
+ *       鉴权 Advisor 同构——登记表说"这个工具碰哪些表"，身份说"能读哪些表"，两张一对，
+ *       对不上就拒，且工具一次都不执行。</li>
+ *   <li>不在这条路上：审批。外部客户端没有人能点按钮，也没有 run 可以挂起，所以需要审批的
+ *       工具在装配期就被拒之门外，而不是"调用时返回等你批"。</li>
  * </ul>
  *
- * <p><b>拒绝是一条结果，不是异常</b>：MCP 的调用结果里有个 {@code isError}，用它。
- * 抛异常会让客户端看到一次协议层故障（可能触发重连），而"这个身份读不了这张表"是一件正常的事，
- * 只是这件事的结果。工具本身报错同样变成 {@code isError}，与 IM 侧"远端工具报错变成一次失败的工具结果"
- * 保持一致。
+ * <p>拒绝是一条结果，不是异常：MCP 的调用结果里有 {@code isError}，用它。抛异常会让客户端
+ * 看到一次协议层故障（可能触发重连），而"这个身份读不了这张表"是一件正常的事，只是它的结果。
+ * 工具本身报错同样变成 {@code isError}，与 IM 侧"远端工具报错变成一次失败的工具结果"一致。
  */
 public final class McpExposure {
 
@@ -59,10 +56,12 @@ public final class McpExposure {
     /**
      * 按配置把清单里点名的工具变成 MCP 工具规格。
      *
-     * @param catalog   模型那一侧同一份清单（P09 已筛过、已包过计量）
+     * @param catalog 模型那一侧同一份清单（P09 已筛过、已包过计量）
      * @param registries 各模块声明的权限登记表；同一个工具可能被多处登记，先查到的算
      * @param properties 暴露配置
-     * @throws IllegalStateException 配置里的名字一个都交不出去，或某个名字不能交（见类注释的三道门）
+     * @return 可以直接交给 MCP server 的工具规格，顺序与配置里的名字一致
+     * @throws IllegalStateException 配置里的名字一个都交不出去，或某个名字不能交
+     *     （见类注释的三道门）
      */
     public static List<SyncToolSpecification> specifications(ToolCatalog catalog,
                                                              List<ToolPermissionRegistry> registries,
@@ -146,8 +145,8 @@ public final class McpExposure {
             // 单参重载：外部调用没有 ToolContext，也就没有 runId 与 Principal 可供工具内部读。
             // 这正是"零上下文客户端"的含义，也是为什么需要审批与需要身份的工具在装配期就被挡在外面。
             String answer = callback.call(argumentsOf(request));
-            // 这一行不是审计。审计是 run 级的、落库可查的（P07 / ADR-0023），而外部调用没有 run。
-            // 留这一行是为了出问题时能回答"谁在什么时候调了什么"，不假装它是别的东西。
+            // 这不是审计：审计是 run 级、落库可查的（ADR-0023），而外部调用没有 run。
+            // 留这一行只为出问题时能回答"谁在什么时候调了什么"。
             log.info("MCP 调用 {} -> {} 成功（{} ms）", toolName, principal.userId(), millisSince(started));
             return result(answer, false);
         }

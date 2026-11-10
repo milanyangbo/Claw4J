@@ -26,6 +26,11 @@ public final class SkillGeneratorToolProvider implements ToolCallbackProvider {
 
     private final ToolCallback callback;
 
+    /**
+     * 只包一个工具，没有可配的项。
+     *
+     * @param generator 五步链路的实现
+     */
     public SkillGeneratorToolProvider(SkillGenerator generator) {
         this.callback = new SkillGeneratorToolCallback(Objects.requireNonNull(generator, "generator"));
     }
@@ -47,6 +52,12 @@ public final class SkillGeneratorToolProvider implements ToolCallbackProvider {
                 .toList();
     }
 
+    /**
+     * 一张只登记 {@code propose_script} 的表。
+     *
+     * @param generator 五步链路的实现
+     * @return 可直接交给鉴权 Advisor 的登记表
+     */
     public static ToolPermissionRegistry permissionRegistry(SkillGenerator generator) {
         return ToolPermissionRegistry.of(new SkillGeneratorToolProvider(generator).permissions());
     }

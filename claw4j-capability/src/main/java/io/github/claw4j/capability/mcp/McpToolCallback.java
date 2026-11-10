@@ -20,23 +20,23 @@ import java.util.Objects;
  * 把一个 MCP 工具适配成 Spring AI 的 {@link ToolCallback}：
  * 三层能力对 Agent 呈现为同一件事，靠的就是这一层适配（ADR-0003）。
  *
- * <p><b>名字与参数 Schema 是唯一契约</b>：定义直接由 {@code listTools()} 拿回来的
- * {@link Tool} 生成，Java 侧不认识这个工具是怎么实现的——
- * 这是"Java 侧只见工具协议、不见实现"这句话在代码里的样子。
+ * <p>名字与参数 Schema 是唯一契约：定义直接由 {@code listTools()} 拿回来的 {@link Tool} 生成，
+ * Java 侧不认识这个工具是怎么实现的。
  *
- * <p>调用不持有 client，而是每次都问 {@link McpConnection} 要：
- * 会话丢失之后连接会被换掉，持有旧 client 的回调从此永远失败。
+ * <p>调用不持有 client，每次向 {@link McpConnection} 要：会话丢失之后连接会被换掉，
+ * 持有旧 client 的回调从此永远失败。
  *
- * <p>出错时抛 {@link ToolExecutionException} 与 Spring AI 自己的 MCP 适配保持一致：
- * 工具调用管理器只处理这一种异常，抛别的会一路冒泡把整通对话炸掉，
- * 而"这个外部能力现在不可用"应当变成一次失败的工具结果，让模型有机会换一条路。
+ * <p>出错时抛 {@link ToolExecutionException}：Spring AI 的
+ * {@code DefaultToolExecutionExceptionProcessor} 只认这一种异常，抛别的会一路冒泡
+ * 把整通对话炸掉。而"这个外部能力现在不可用"应当变成一次失败的工具结果，
+ * 让模型有机会换一条路。
  */
 public final class McpToolCallback implements ToolCallback {
 
     /**
      * 参数解析用 MCP 自己那一套 JSON 栈（{@code McpJsonMapper}），不再引一份 Jackson：
-     * 工具参数是从 MCP 的这条链路上进来的，用它的栈解析，两边对同一段文本的看法才一致
-     * （Jackson 2 与 3 共存时最容易出的就是"同一个 JSON 被两套类型系统各读一遍"）。
+     * 参数从 MCP 链路进来，用它的栈解析，两边对同一段文本的看法才一致。Jackson 2 与 3 共存时，
+     * 最容易出的就是同一段 JSON 被两套类型系统各读一遍。
      */
     private static final TypeRef<Map<String, Object>> ARGUMENTS = new TypeRef<>() {
     };
@@ -45,6 +45,12 @@ public final class McpToolCallback implements ToolCallback {
 
     private final ToolDefinition definition;
 
+    /**
+     * 把一个 MCP 工具包成回调。工具定义从 {@code listTools()} 的结果直接生成。
+     *
+     * @param connection 这条工具所属的连接，调用时按名字向它要 client
+     * @param tool server 导出的工具，名字与 inputSchema 原样透给模型
+     */
     public McpToolCallback(McpConnection connection, Tool tool) {
         this.connection = Objects.requireNonNull(connection, "connection");
         Objects.requireNonNull(tool, "tool");

@@ -5,9 +5,8 @@ import java.util.Objects;
 /**
  * 一次进程执行的结果。
  *
- * <p>{@code status} 与 {@code exitCode} 是两个不同的问题，别合并：
- * "跑完了但没成功"（退出码非零）与"没跑完"（超时）要分开，
- * 因为调用方对这两件事的处理不同——前者把 stderr 交给模型让它改脚本，
+ * <p>{@code status} 与 {@code exitCode} 回答两个不同的问题，不合并：跑完了但没成功（退出码非零）
+ * 与没跑完（超时）要分开，因为调用方的处理不同——前者把 stderr 交给模型让它改脚本，
  * 后者说明这个脚本不该在这一层跑。
  *
  * @param status 有没有跑完
@@ -32,11 +31,25 @@ public record ProcessOutcome(Status status, int exitCode, String stdout, String 
         Objects.requireNonNull(stderr, "stderr");
     }
 
+    /**
+     * 进程自己退出了。
+     *
+     * @param exitCode 退出码，可能是非零
+     * @param stdout 标准输出
+     * @param stderr 标准错误
+     * @return 状态为 {@link Status#COMPLETED} 的结果
+     */
     public static ProcessOutcome completed(int exitCode, String stdout, String stderr) {
         return new ProcessOutcome(Status.COMPLETED, exitCode, stdout, stderr);
     }
 
-    /** 超时那一份：退出码没有意义，取 -1。 */
+    /**
+     * 到了上限还没退出，进程已被强制结束。
+     *
+     * @param stdout 掐断前收到的标准输出
+     * @param stderr 掐断前收到的标准错误
+     * @return 状态为 {@link Status#TIMED_OUT} 的结果，退出码取 {@code -1}
+     */
     public static ProcessOutcome timedOut(String stdout, String stderr) {
         return new ProcessOutcome(Status.TIMED_OUT, -1, stdout, stderr);
     }

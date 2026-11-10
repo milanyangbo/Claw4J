@@ -16,28 +16,27 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /**
- * 第 ② 类沙箱：<b>未审核代码</b>的自测位置（ADR-0003）。
+ * 第 ② 类沙箱：未审核代码的自测位置（ADR-0003）。
  *
- * <p>与第 ① 类（{@code SandboxedProcessBackend}）分清的那一条，在代码里是这样落地的：
- * <b>自测跑在一份临时副本里，不跑在候选目录里</b>。
- * 候选目录里放着"等着被人审的"脚本与这次提交的元数据，
- * 而自测跑的是模型刚写出来的东西——让它写进自己待审的那份目录，
- * 等于允许它改自己将要被审的内容（甚至给自己写一个审批标记）。
- * 副本还有一个好处：脚本在自测里写下的任何东西，跑完即删，留不下来。
+ * <p>与第 ① 类（{@code SandboxedProcessBackend}）的分界落在代码上就是一句：自测跑在一份临时
+ * 副本里，不跑在候选目录里。候选目录放着"等着被人审的"脚本与这次提交的元数据，而自测跑的是
+ * 模型刚写出来的东西——让它写进自己待审的那份目录，等于允许它改自己将要被审的内容
+ * （甚至给自己写一个审批标记）。副本还有一个好处：脚本在自测里写下的任何东西，跑完即删。
  *
  * <p>两条约束在这里落地：
  * <ul>
- *   <li><b>位置</b>：临时目录，跑完递归删除。
- *   <li><b>预算</b>：{@link IsolationSpec#timeoutMillis()} 是上限。
+ *   <li>位置：临时目录，跑完递归删除。</li>
+ *   <li>预算：{@link IsolationSpec#timeoutMillis()} 是上限。</li>
  * </ul>
- * 环境那一条不由这里"拒绝注入"来保证：{@link ProcessRequest} 里没有环境变量这一项，
- * 环境只在起进程时被给出一次（{@link LocalProcessRunner}），于是"调用方塞一个
- * 变量进来"在类型上就不存在——结构上的保证比运行时再判一次更靠得住。
  *
- * <p><b>给不了的三样</b>，不拿去当承诺：网络隔离（{@link IsolationSpec.Network#NOT_ISOLATED}）、
- * 内存与 CPU 上限（纯 Java 对子进程没有可移植的限制手段）、
- * 脚本体内自己去读一个绝对路径（进程沙箱锁得住入口与参数，锁不住脚本自己的行为）。
- * 静态检查挡的是"明着写"的那部分，剩下的靠部署层。
+ * <p>环境那一条不由这里"拒绝注入"来保证：{@link ProcessRequest} 里没有环境变量这一项，
+ * 环境只在起进程时被给出一次（{@link LocalProcessRunner}），于是"调用方塞一个变量进来"
+ * 在类型上就不存在。结构上的保证比运行时再判一次更靠得住。
+ *
+ * <p>给不了的三样不拿去当承诺：网络隔离（{@link IsolationSpec.Network#NOT_ISOLATED}）、
+ * 内存与 CPU 上限（纯 Java 对子进程没有可移植的限制手段）、脚本体内自己去读一个绝对路径
+ * （进程沙箱锁得住入口与参数，锁不住脚本自己的行为）。静态检查挡的是"明着写"的那部分，
+ * 剩下的靠部署层。
  */
 public final class GeneratorSandbox implements ProcessRunner {
 
@@ -58,16 +57,20 @@ public final class GeneratorSandbox implements ProcessRunner {
     }
 
     /**
-     * 把候选目录<b>复制</b>到一份临时目录里，在那儿起进程。
+     * 把候选目录复制到一份临时目录里，在那儿起进程。
      *
-     * <p>复制而不是直接把工作目录指过去，理由见类注释：自测跑的是未审核代码，
-     * 它不该有写自己待审目录的机会。代价是一份文件拷贝，
-     * 而脚本包通常只有几千字节。
+     * <p>复制而不是把工作目录指过去，理由见类注释：自测跑的是未审核代码，它不该有写自己待审
+     * 目录的机会。代价是一份文件拷贝，而脚本包通常只有几千字节。
+     *
+     * @param candidateDirectory 候选包目录，只读
+     * @param spec 超时、输出上限与环境
+     * @return 已经准备好副本的沙箱
      */
     public static GeneratorSandbox forCandidate(Path candidateDirectory, IsolationSpec spec) {
         return forCandidate(candidateDirectory, spec, () -> System.getProperty("user.name"));
     }
 
+    /** 测试用：脚本跑在哪个账号下由这里决定，用来验非 root 那条约束。 */
     public static GeneratorSandbox forCandidate(Path candidateDirectory, IsolationSpec spec,
                                                 Supplier<String> accountName) {
         Objects.requireNonNull(candidateDirectory, "candidateDirectory");
@@ -82,6 +85,14 @@ public final class GeneratorSandbox implements ProcessRunner {
         return sandboxDirectory;
     }
 
+    /**
+     * 在沙箱副本里跑一次，跑完删掉副本。
+     *
+     * @param request 要跑的命令与超时；环境来自 {@link IsolationSpec}，不经这里传入
+     * @return 进程结果，输出已按 {@link IsolationSpec#maxOutputChars()} 截断
+     * @throws IllegalStateException 当前账号是 root，或取不到账号名
+     * @throws IllegalArgumentException 请求的超时超过 {@link IsolationSpec#timeoutMillis()}
+     */
     @Override
     public ProcessOutcome run(ProcessRequest request) {
         Objects.requireNonNull(request, "request");

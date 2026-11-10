@@ -24,22 +24,20 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * {@code exec} 这一层的装配（票 01）。
+ * exec 这一层的装配：工具形态来自 Spring AI，沙箱与权限登记由这里给出（票 01）。
  *
- * <p><b>工具本身是 Spring AI 的</b>（{@link ShellTools}：{@code Bash} / {@code BashOutput} /
- * {@code KillShell}），我们只提供两端：一个沙箱后端（{@link SandboxedExecBackend}）和权限登记。
- * 自己写一个 {@code @Tool exec} 也做得到，但那样要重做输出截断、后台句柄、{@code bash_id} 命名
- * 这些与"准不准跑"无关的东西——而它们已经有人做好了。
+ * <p>工具本身是库的（{@link ShellTools}：{@code Bash} / {@code BashOutput} / {@code KillShell}），
+ * 这一层只提供两端：沙箱后端（{@link SandboxedExecBackend}）与权限登记。自己写一个 {@code @Tool exec}
+ * 也做得到，但那要重做输出截断、后台句柄、{@code bash_id} 命名这些与"准不准跑"无关的东西。
  *
- * <p><b>开关只有 {@code mode} 一个</b>：{@code deny} 时一个 bean 都不产出。没有额外的
- * {@code enabled}——两个开关管同一件事，迟早出现"enabled=true 但 mode=deny"要人猜（pitfalls 第十条）。
+ * <p>开关只有 {@code mode} 一个：{@code deny} 时一个 bean 都不产出。没有额外的 {@code enabled}——
+ * 两个开关管同一件事，迟早出现"enabled=true 但 mode=deny"要人猜（pitfalls 第十条）。
  *
- * <p><b>工作区不存在就启动失败并点名</b>，与"目录为空的知识库"同一个取向：一个跑不了命令的
- * {@code exec} 在模型那边的表现是"这个工具老是失败"，而真实原因是部署配错了地方。
+ * <p>工作区不存在就启动失败并点名：一个跑不了命令的 {@code exec} 在模型那边表现为"这个工具老是失败"，
+ * 而真实原因是部署配错了地方。
  *
- * <p><b>权限登记在这里</b>（ADR-0007）：动作 {@code exec_command}，表清单为空（它不碰业务表）。
- * 三个工具名一起登记——{@code BashOutput} 与 {@code KillShell} 只做"读已经跑起来的那个"，
- * 但它们同样能碰到那条命令的产物，所以与 {@code Bash} 同一条动作。
+ * <p>权限登记在这里（ADR-0007）：动作 {@code exec_command}，表清单为空。三个工具名一起登记——
+ * {@code BashOutput} 与 {@code KillShell} 只读已经跑起来的那个命令，但它们同样碰得到它的产物。
  */
 @AutoConfiguration
 @Conditional(ExecAutoConfiguration.NotDenied.class)
@@ -49,15 +47,15 @@ public class ExecAutoConfiguration {
     /**
      * 三个工具名，取自 {@link ShellTools} 的 {@code @Tool(name = …)}。
      *
-     * <p>与 OpenClaw 的对应：{@code Bash} ↔ {@code exec}，
-     * {@code BashOutput} + {@code KillShell} ↔ {@code process}。名字是人家的，改不了——
-     * 改了就得再包一层工具，那正是这一版不想做的事。
+     * <p>与 OpenClaw 的对应：{@code Bash} 对 {@code exec}，{@code BashOutput} 与 {@code KillShell}
+     * 对 {@code process}（{@code docs/tools/exec.md:9}）。名字是库给的，改不了：改了就得再包一层工具。
      */
     public static final List<String> TOOL_NAMES = List.of("Bash", "BashOutput", "KillShell");
 
     /** 动作名。角色配置里写的是它，默认只给 admin。 */
     public static final String ACTION = "exec_command";
 
+    /** 起进程的执行器，工作目录取配置里的 workspace；目录不存在就启动失败。 */
     @Bean
     @ConditionalOnMissingBean
     public ShellCommandRunner shellCommandRunner(ExecProperties properties) {
@@ -69,6 +67,7 @@ public class ExecAutoConfiguration {
         return new ShellCommandRunner(workspace);
     }
 
+    /** 工具对象：库的 {@link ShellTools}，执行后端换成沙箱这一份。 */
     @Bean
     @ConditionalOnMissingBean
     public ShellTools shellTools(ExecProperties properties, ShellCommandRunner shellCommandRunner) {
@@ -77,11 +76,13 @@ public class ExecAutoConfiguration {
                 .build();
     }
 
+    /** 把 {@link ShellTools} 的三个方法暴露成工具。 */
     @Bean
     public ToolCallbackProvider execToolCallbackProvider(ShellTools shellTools) {
         return MethodToolCallbackProvider.builder().toolObjects(shellTools).build();
     }
 
+    /** 权限登记：动作 {@code exec_command}，{@code ask} 档附带"需要人批"。 */
     @Bean
     public ToolPermissionRegistry execPermissionRegistry(ExecProperties properties) {
         ToolPermission permission = properties.mode() == ExecProperties.Mode.ASK

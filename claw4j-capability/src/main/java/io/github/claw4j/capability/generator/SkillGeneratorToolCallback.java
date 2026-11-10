@@ -64,6 +64,11 @@ public final class SkillGeneratorToolCallback implements ToolCallback {
 
     private final ToolDefinition definition;
 
+    /**
+     * 把生成器包成一个工具。工具描述在这里定死，不随每次提交变化。
+     *
+     * @param generator 五步链路的实现，调用时把参数原样交给它
+     */
     public SkillGeneratorToolCallback(SkillGenerator generator) {
         this.generator = Objects.requireNonNull(generator, "generator");
         this.definition = ToolDefinition.builder()

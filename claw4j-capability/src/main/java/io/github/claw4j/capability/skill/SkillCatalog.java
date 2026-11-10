@@ -10,14 +10,14 @@ import java.util.List;
 /**
  * {@code SKILL.md} 的加载：一个目录树里每个 {@code SKILL.md} 是一份 Skill。
  *
- * <p>加载的是<b>三样东西</b>：名字与描述（front matter）、正文、以及它所在的目录
- * （{@code basePath}）。前两样的分工正是这张票要做的那件事——名字与描述用来被选中，
- * 正文要等选中了才用得上。
+ * <p>加载的是三样东西：名字与描述（front matter）、正文、以及它所在的目录
+ * （{@code basePath}）。前两样的分工是这一层的关键——名字与描述用来被选中，正文要等选中了
+ * 才用得上。
  *
- * <p><b>配了目录却读不出来即启动失败</b>（ADR-0008：不等到调用时才暴露配置错误）。
- * 两个方向都要失败：目录不存在，和目录里一个 {@code SKILL.md} 都没有。
- * 后者尤其容易被当成"这一层不存在"而默默略过——那样模型手上没有 Skill 可用，
- * 表现是"它怎么不按流程来"，而配置那行看起来是对的。
+ * <p>配了目录却读不出来即启动失败（ADR-0008：不等到调用时才暴露配置错误）。两个方向都要
+ * 失败：目录不存在，和目录里一个 {@code SKILL.md} 都没有。后者尤其容易被当成"这一层不存在"
+ * 而默默略过——那样模型手上没有 Skill 可用，表现是"它怎么不按流程来"，而配置那行看起来
+ * 是对的。
  */
 public final class SkillCatalog {
 
@@ -27,6 +27,8 @@ public final class SkillCatalog {
     /**
      * 读出目录里所有 Skill。
      *
+     * @param directory 技能目录，按绝对路径解析后再扫
+     * @return 扫到的 Skill，顺序由社区包决定
      * @throws IllegalStateException 目录不存在、不是目录，或里面没有 {@code SKILL.md}
      */
     public static List<Skill> load(Path directory) {

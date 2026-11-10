@@ -26,11 +26,11 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 技能生成器五步：生成 → 静态检查 → 隔离自测 → 审计 → 人审通过才注册。
+ * 技能生成器五步：生成、静态检查、隔离自测、审计、人审通过才注册。
  *
- * <p>最贵的两条都在"顺序"上：危险代码不能先落盘再删（磁盘上出现过它，而没人记录），
- * 自测不能跑在待审目录里（未审核代码不该改自己将要被审的内容）。
- * 走的是模型真正会走的那个入口 {@code propose_script}。
+ * <p>两条约束落在顺序上：危险代码不能先落盘再删（磁盘上出现过它，而没人记录）；自测不能跑在
+ * 待审目录里（未审核代码不该改自己将要被审的内容）。入口是模型真正会走的那个
+ * {@code propose_script}。
  */
 class SkillGeneratorTest {
 

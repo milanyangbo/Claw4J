@@ -4,21 +4,19 @@ import java.util.Optional;
 import java.util.function.Function;
 
 /**
- * 容器给这个进程划的限额：Linux cgroup 里那两个文件。
+ * 容器给这个进程划的限额：Linux cgroup 里那几个文件。
  *
- * <p>为什么值得单独一个类型而不是在工具类里读两行文件：这两个值在容器里与在容器外
- * 是<b>两件不同的事</b>。容器外（macOS 开发机、直接跑 jar）根本没有这两个文件，
- * 于是"读不到"是常态而不是故障；而"读不到却报成 0 或 -1"会被当成"没有限额"，
- * 模型会照着"内存无上限"去解释一次 OOM。所以这里把"读不到"保留成一个可判定的值
- * （{@link #UNKNOWN}），而不是让它在格式化的时候退化成一个数字。
+ * <p>单独一个类型而不是在工具类里读两行文件，是因为这两个值在容器里与容器外是两件不同的事。
+ * 容器外（macOS 开发机、直接跑 jar）没有这些文件，"读不到"是常态而不是故障；而"读不到却报成 0"
+ * 会被当成"没有限额"，模型会照着"内存无上限"解释一次 OOM。所以读不到保留成可判定的
+ * {@link #UNKNOWN}，不在格式化时退化成一个数字。
  *
- * <p>两个版本都认：cgroup v2（{@code /sys/fs/cgroup/memory.max}、{@code cpu.max}）与
- * v1（{@code .../memory/memory.limit_in_bytes}、{@code .../cpu/cpu.cfs_quota_us}）。
- * v1 的 {@code memory.limit_in_bytes} 在没设限时给的是一个巨大的数（约 9.2E18），
- * 那是"没有限"而不是"限了这么多"，这里一并归一成 {@link #UNKNOWN}。
+ * <p>两个版本都认：cgroup v2（{@code memory.max}、{@code cpu.max}）与 v1（{@code memory.limit_in_bytes}、
+ * {@code cpu.cfs_quota_us}）。v1 没设限时给的是一个巨大的数（约 9.2E18），那是"没有限"，
+ * 这里一并归一成 {@link #UNKNOWN}。
  *
- * <p>读文件这件事被抽成 {@link Reader} 而不是直接 {@code Files.readString}：
- * 这两个路径只在 Linux 容器里存在，不抽出来这条逻辑就只能"在容器里测过"。
+ * <p>读文件抽成 {@link Reader} 而不是直接 {@code Files.readString}：这两个路径只在 Linux 容器里存在，
+ * 不抽出来这条逻辑就只能"在容器里测过"。
  */
 public final class ContainerLimits {
 
@@ -45,6 +43,12 @@ public final class ContainerLimits {
     @FunctionalInterface
     public interface Reader {
 
+        /**
+         * 读一个文件。
+         *
+         * @param path 绝对路径
+         * @return 文件内容；不存在、不可读或读失败时为空
+         */
         Optional<String> read(String path);
     }
 
@@ -57,11 +61,21 @@ public final class ContainerLimits {
         this.cpuQuotaCores = cpuQuotaCores;
     }
 
-    /** 真的去读文件系统。生产路径走这个。 */
+    /**
+     * 真的去读文件系统。生产路径走这个。
+     *
+     * @return 读到的限额；容器外两项都是 {@link #UNKNOWN}
+     */
     public static ContainerLimits fromFileSystem() {
         return of(FileSystemReader.INSTANCE);
     }
 
+    /**
+     * 用给定的读法解析限额。
+     *
+     * @param reader 读文件的动作，测试用它喂固定内容
+     * @return 解析出来的限额
+     */
     public static ContainerLimits of(Reader reader) {
         long memory = firstKnown(reader, V2_MEMORY_MAX, V1_MEMORY_LIMIT);
         return new ContainerLimits(memory, cpuCores(reader));
@@ -77,6 +91,11 @@ public final class ContainerLimits {
         return cpuQuotaCores;
     }
 
+    /**
+     * 两项里至少有一项读到了。
+     *
+     * @return 内存或 CPU 有一项不是 {@link #UNKNOWN} 时为 {@code true}
+     */
     public boolean known() {
         return memoryLimitBytes != UNKNOWN || cpuQuotaCores != UNKNOWN;
     }

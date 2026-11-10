@@ -14,53 +14,65 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
- * 把一条 shell 命令交给 {@code /bin/sh -c} 执行——**全仓唯一**允许出现 shell 解释器的地方。
+ * 把一条 shell 命令交给 {@code /bin/sh -c} 执行，全仓唯一允许出现 shell 解释器的类。
  *
- * <p>{@link LocalProcessRunner} 走的是另一条路（argv 直接执行，不经解释器），那条路对脚本包是对的：
- * 参数是数据，不该被当成语法。这里是另一种能力——{@code exec}，模型要的就是 shell 语义
- * （管道、重定向、{@code &&}），照 OpenClaw 的 {@code exec} 做（ADR-0002 修订，票 01）。
- * 两条路的区别不在"哪个更安全"，在**这条字符串是谁给的**：脚本包的 argv 由包清单定死，
- * exec 的命令由模型给。
+ * <p>{@link LocalProcessRunner} 走另一条路（argv 直接执行，不经解释器），那条路对脚本包是对的：
+ * 参数是数据，不该被当成语法。这里服务的是 {@code exec}，模型要的就是 shell 语义（管道、重定向、
+ * {@code &&}）。两条路的区别不在哪个更安全，在这条字符串是谁给的：脚本包的 argv 由包清单定死，
+ * exec 的命令由模型给（ADR-0002 修订，票 01）。
  *
- * <p><b>它只负责执行，不负责判定。</b>白名单、工作目录边界、环境里那三个不能改的键、
- * 非 root、超时上限，全在 {@code SandboxedExecBackend} 里判完才进来。分开放的理由是那些判定要能单独测：
+ * <p>它只负责执行，不负责判定。白名单、工作目录边界、环境里那三个不能改的键、非 root、超时上限，
+ * 全在 {@code SandboxedExecBackend} 里判完才进来。分开的理由是那些判定要能单独测：
  * 混在起进程的代码里，测它们就得真起一个进程。
  *
- * <p><b>两个入口</b>：{@link #run} 同步等到结束（超时即杀），{@link #start} 起一个后台的
- * {@link ShellProcess} 交出去，由调用方按需读增量、自己收尾。两个都要，是因为
- * Spring AI 的 {@code Bash} 工具两个都问——{@code runInBackground} 为真时它走后者。
+ * <p>两个入口：{@link #run} 同步等到结束（超时即杀），{@link #start} 起一个后台的
+ * {@link ShellProcess} 交出去，由调用方按需读增量、自己收尾。两个都要，是因为 Spring AI 的
+ * {@code Bash} 两个都调，{@code runInBackground} 为真时走后者
+ * （{@code spring-ai-agent-utils 0.13.0 ShellTools.java:156}）。
  *
- * <p><b>收流那二十行与 {@link LocalProcessRunner} 各有一份</b>，没有抽公共工具：
- * 抽出来就多一个"谁在起进程"的入口，而这里要守的正是"起进程的入口只有两个、都被点名"。
+ * <p>收流那几行与 {@link LocalProcessRunner} 各有一份，没有抽公共工具：抽出来就多一个
+ * "谁在起进程"的入口，而这里要守的正是"起进程的入口只有两个、都被点名"。
  */
 public final class ShellCommandRunner {
 
-    /** 解释器。只给 {@code sh}，不给 bash（见票 01 的"不要做"）。 */
+    /** 解释器：只给 {@code sh}，不绑定 bash（票 01 不做 bash 专有语法）。 */
     private static final String SHELL = "/bin/sh";
 
-    /** 进程退出之后，最多再等多久收流：孙进程可能还攥着管道。 */
+    /** 进程退出之后，最多再等多久收流：孙进程可能还攥着管道，等一个无限期是不行的。 */
     private static final long DRAIN_MILLIS = 2_000;
 
-    /** 后台 shell 的编号。取时间戳起头，同一个 JVM 里重启不了，也就不必持久化。 */
+    /** 后台 shell 的编号，取时间戳起头；进程重启之后不会重号，所以不必持久化。 */
     private static final AtomicLong BACKGROUND_SEQUENCE = new AtomicLong(System.currentTimeMillis());
 
     private final Path workingDirectory;
 
+    /**
+     * 用命令行的工作目录建执行器；目录边界由调用方判。
+     *
+     * @param workingDirectory 命令的工作目录
+     */
     public ShellCommandRunner(Path workingDirectory) {
         this.workingDirectory = Objects.requireNonNull(workingDirectory, "workingDirectory").toAbsolutePath();
     }
 
+    /**
+     * 命令的工作目录。
+     *
+     * @return 构造时给定的绝对路径
+     */
     public Path workingDirectory() {
         return workingDirectory;
     }
 
     /**
-     * 同步跑完一条命令。
+     * 同步跑完一条命令，输出收进两块缓冲。
      *
      * @param command       整条 shell 命令
      * @param directory     工作目录；调用方已经判过它没出 workspace
      * @param environment   完整的环境（调用方已经合并好继承与覆盖）
      * @param timeoutMillis 墙上时钟上限
+     * @return 执行结果；超时时状态是 {@link ProcessOutcome.Status#TIMED_OUT}
+     * @throws ProcessStartException 命令起不来，或等待时被中断
      */
     public ProcessOutcome run(String command, Path directory, Map<String, String> environment, long timeoutMillis) {
         Process process = startProcess(command, directory, environment);
@@ -91,8 +103,14 @@ public final class ShellCommandRunner {
     }
 
     /**
-     * 起一个后台 shell。**不设超时**：后台那条路的意义就是跑得比一次调用久，
-     * 到点该不该停由调用方决定（Spring AI 的 {@code KillShell} 就是那个决定）。
+     * 起一个后台 shell，不设超时：后台那条路的意义就是跑得比一次调用久，到点该不该停由调用方
+     * 决定（Spring AI 的 {@code KillShell} 就是那个决定）。
+     *
+     * @param command 整条 shell 命令
+     * @param directory 工作目录
+     * @param environment 完整的环境
+     * @return 后台句柄，增量输出按需取
+     * @throws ProcessStartException 命令起不来
      */
     public ShellProcess start(String command, Path directory, Map<String, String> environment) {
         Process process = startProcess(command, directory, environment);

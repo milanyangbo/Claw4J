@@ -16,26 +16,23 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 我们的沙箱，接在 Spring AI 的 {@code ShellTools} 后面。
+ * exec 的沙箱，接在 Spring AI 的 {@code ShellTools} 后面。
  *
- * <p><b>为什么是"实现一个后端"而不是"写一个工具"</b>：通用 shell 的工具形态（{@code Bash} /
- * {@code BashOutput} / {@code KillShell}、参数、提示词、输出截断、后台句柄的管理）Spring AI
- * 已经做好了，而且做得比我们细（30000 字符截断、{@code bash_id} 命名、按实例隔离后台 shell）。
- * 我们要加的只有一件事——**这条命令准不准跑**。{@code ExecBackend} 正好是那个缝：
- * 它的 {@code run(ExecSpec)} 收一条命令，我们的判定就挂在那里。
+ * <p>做成一个后端而不是一个工具：通用 shell 的工具形态（{@code Bash} / {@code BashOutput} /
+ * {@code KillShell}、参数、提示词、30000 字符截断、{@code bash_id} 命名、按实例隔离的后台 shell）
+ * 库已经做好了。这里要加的只有一件事——这条命令准不准跑，而 {@code ExecBackend} 的
+ * {@code run(ExecSpec)} 正好是那个缝。
  *
- * <p><b>判定顺序固定</b>：非 root → 白名单 → 环境 → 起进程。先判便宜的、再判要碰环境的，
- * 任何一步拒绝都不该留下副作用（不起进程、不写文件、不占端口）。
+ * <p>判定顺序固定：非 root → 白名单 → 环境 → 起进程。先判便宜的、再判要碰环境的，
+ * 任何一步拒绝都不起进程、不写文件、不占端口。
  *
- * <p><b>后端替模型定死的东西</b>：工作目录（就是 workspace，{@code workdir} 由模型用
- * {@code cd} 在命令里表达）、环境（继承 + 拒改 {@code PATH}/{@code LD_*}/{@code DYLD_*}）、
- * 超时上限（由 {@code ExecSpec} 自己 clamp，见 {@code DEFAULT/MAX_TIMEOUT_MILLIS}）。
- * 这三样都不在工具参数里，所以模型改不了——这正是把它们放在后端的理由。
+ * <p>后端替模型定死的三样：工作目录（就是 workspace，换目录由模型在命令里 {@code cd} 表达）、
+ * 环境（继承，且拒改 {@code PATH} / {@code LD_*} / {@code DYLD_*}）、超时上限（由
+ * {@code ExecSpec} 自己 clamp，{@code ExecSpec.java:45}）。三样都不在工具参数里，模型改不了。
  *
- * <p><b>拒绝怎么让模型看见</b>：{@link ExecViolationException} 从 {@code run} 里抛出去，
- * {@code ShellTools} 的同步分支不吞异常，{@code MethodToolCallback} 把它包成
- * {@code ToolExecutionException} 交给工具调用管理器——模型收到的是一句人话，
- * 不是一个它读不懂的堆栈。
+ * <p>拒绝让模型看见的方式：{@link ExecViolationException} 从 {@code run} 里抛出去，
+ * {@code ShellTools} 的同步分支不吞异常，工具调用管理器把它包成 {@code ToolExecutionException}，
+ * 模型收到的是一句人话而不是堆栈。
  */
 public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
 
@@ -50,11 +47,21 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     /** 后台 shell 由这里持有：{@code ShellTools} 只管自己的那份 id → handle，回收这件事在 {@link #destroy()}。 */
     private final Map<String, ShellProcess> background = new ConcurrentHashMap<>();
 
+    /**
+     * 用进程自身的环境与账号建后端：生产路径走这个。
+     *
+     * @param properties {@code claw4j.tools.exec} 的配置
+     * @param runner 起进程的执行器
+     */
     public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner) {
         this(properties, runner, System.getenv(), System.getProperty("user.name", ""));
     }
 
     /**
+     * 用给定的环境与账号建后端。
+     *
+     * @param properties  {@code claw4j.tools.exec} 的配置
+     * @param runner      起进程的执行器
      * @param inheritedEnvironment 继承给命令的环境；测试传一份固定值，免得断言依赖跑测试的那台机器
      * @param accountName          当前执行账号；测试传 {@code root} 验那条拒绝
      */
@@ -66,6 +73,16 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         this.accountName = accountName;
     }
 
+    /**
+     * 同步执行一条命令：判定通过才起进程。
+     *
+     * <p>起不来（{@link ProcessStartException}）算一次普通失败，与超时同一档，交给工具层报给模型；
+     * 只有判定不通过才是拒绝。
+     *
+     * @param spec 库给出的命令、超时与本次覆盖的环境
+     * @return 执行结果，翻成库的 {@link ExecResult}
+     * @throws ExecViolationException 身份是 root，或命令没通过白名单
+     */
     @Override
     public ExecResult run(ExecSpec spec) {
         authorize(spec);
@@ -82,6 +99,15 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         }
     }
 
+    /**
+     * 起一个后台 shell 并自己留一份，回收发生在 {@link #destroy()}。
+     *
+     * <p>顺带清掉已经结束的后台 shell：它们不会自己从表里消失，留着只占一个 id。
+     *
+     * @param spec 库给出的命令与本次覆盖的环境
+     * @return 后台句柄，由库转交给 {@code BashOutput} / {@code KillShell}
+     * @throws ExecViolationException 身份是 root，或命令没通过白名单
+     */
     @Override
     public ExecHandle start(ExecSpec spec) {
         authorize(spec);
@@ -92,6 +118,11 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         return new Handle(shell);
     }
 
+    /**
+     * 强制结束所有还活着的后台 shell。
+     *
+     * <p>{@code KillShell} 是模型的礼貌，不能当回收机制：容器关闭时这里必须收干净。
+     */
     @Override
     public void destroy() {
         background.values().forEach(ShellProcess::kill);

@@ -18,23 +18,23 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 接**别人写的** MCP server，两种传输各一条：一条起子进程（npm 上的官方参考实现），
- * 一条连公网端点（DeepWiki）。这组打 {@code real-mcp} tag，默认不跑。
+ * 接别人写的 MCP server，两种传输各一条：一条起子进程（npm 上的
+ * {@code @modelcontextprotocol/server-everything}），一条连公网端点（DeepWiki）。
+ * 这组打 {@code real-mcp} tag，默认不跑。
  *
- * <p>为什么默认不跑：stdio 那条要本机有 Node，第一次 {@code npx} 还要下载包；http 那条要能出网。
+ * <p>默认不跑的理由：stdio 那条要本机有 Node，第一次 {@code npx} 还要下载包；http 那条要能出网。
  * 换台机器就可能红，而那个红说明不了是谁的问题，留在回归基线里只会训练人忽略红灯。本机想跑：
  *
  * <pre>{@code
  * ./mvnw -Preal-cli -pl claw4j-capability test -Dtest=RealThirdPartyMcpTest
  * }</pre>
  *
- * <p>它与 {@code application-local.yml.example} 末尾那段注释着的配置是同一件事的两面：那份配置是给人照着抄的，
- * 这两条用例是"那样一段配置真的能连上"的证据。两边用的是同一套 {@link McpEndpoints} 转换，
- * 差别只在命令与地址写死在这里（读 yml 就变成"测 Spring 的绑定"，那是
- * {@code McpServersConfigTest} 的事）。
+ * <p>它与 {@code application-local.yml.example} 末尾那段注释着的配置是同一件事的两面：那份配置
+ * 给人照着抄，这两条用例是"那样一段配置真的能连上"的证据。两边用同一套 {@link McpEndpoints} 转换，
+ * 差别只在命令与地址写死在这里（读 yml 就变成测 Spring 的绑定，那是 {@code McpServersConfigTest} 的事）。
  *
- * <p>两条都在本机跑通过：stdio 那条调了一次 {@code echo}（走完整的
- * {@code ToolCallback → JSON-RPC 帧 → 子进程 → 原样回来}），http 那条列了工具清单并核对了权限登记。
+ * <p>两条都走真实路径：stdio 那条调一次 {@code echo}（{@code ToolCallback} 到 JSON-RPC 帧、子进程、
+ * 再原样回来），http 那条列工具清单并核对权限登记。
  */
 @Tag("real-mcp")
 class RealThirdPartyMcpTest {

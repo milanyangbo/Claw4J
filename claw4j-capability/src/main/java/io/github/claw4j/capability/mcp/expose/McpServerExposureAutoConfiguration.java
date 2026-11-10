@@ -24,21 +24,19 @@ import java.util.List;
 /**
  * 把自己交出去：{@code claw4j.mcp.server.enabled=true} 时在标准输入输出上起一个 MCP server（P11）。
  *
- * <p><b>为什么不用 {@code spring-ai-starter-mcp-server}</b>，而是自己装配 {@link McpSyncServer}：
- * 那个 starter 带进来的 {@code ToolCallbackConverterAutoConfiguration} 会收集容器里的
- * {@code ToolCallbackProvider} 并原样暴露。仓库里现在有四个这样的 bean（systemStatus / sales /
- * generator / schedule），于是 P09 的档位、{@code MeteredToolCallback} 的包装、权限登记表三件事
- * 会同时被绕过，与我们筛过的那一份同台出现——而它的工具清单看起来完全正常。
+ * <p>不引 {@code spring-ai-starter-mcp-server}，自己装配 {@link McpSyncServer}：那个 starter
+ * 带进来的 {@code ToolCallbackConverterAutoConfiguration} 会收集容器里的
+ * {@code ToolCallbackProvider} 并原样暴露，于是 P09 的档位、{@code MeteredToolCallback} 的包装、
+ * 权限登记表三件事会同时被绕过，与筛过的那一份同台出现，而它的工具清单看起来完全正常。
  * 自己装配只有一处工具来源：{@link ToolCatalog}。
  *
- * <p><b>为什么传输写死在 stdio</b>：本地仓库里 {@code spring-ai-starter-mcp-server-webmvc}
- * 只有 1.1.x，2.0.2 要联网拉，离线构建会红。stdio 的代价是 stdout 是协议通道——
- * 日志、横幅、框架的启动输出一个字节都不能跑上去，见 {@code application-mcp-stdio.yml}
- * 与 {@code logback-mcp-stdio.xml}。这一条不做自动化验证（真要验得起一个子进程、连库、连模型），
- * 如实记在票里。
+ * <p>传输写死在 stdio：本地仓库里 {@code spring-ai-starter-mcp-server-webmvc} 只有 1.1.x，
+ * 2.0.2 要联网拉，离线构建会红。代价是 stdout 成了协议通道——日志、横幅、框架的启动输出
+ * 一个字节都不能跑上去，见 {@code application-mcp-stdio.yml} 与 {@code logback-mcp-stdio.xml}。
+ * 这一条不做自动化验证（真要验得起一个子进程、连库、连模型），记在票里。
  *
- * <p><b>默认关</b>：没配 {@code claw4j.mcp.server.enabled} 时这个类整个不生效，
- * 连 transport bean 都不注册——"加了依赖但没开"与"根本没有这个能力"在容器里应当长得一样。
+ * <p>默认关：没配 {@code claw4j.mcp.server.enabled} 时这个类整个不生效，连 transport bean
+ * 都不注册——"加了依赖但没开"与"根本没有这个能力"在容器里应当长得一样。
  */
 @AutoConfiguration
 @ConditionalOnClass(McpSyncServer.class)
@@ -63,8 +61,12 @@ public class McpServerExposureAutoConfiguration {
     /**
      * server 本身。工具规格来自 {@link McpExposure}，判断都在那里。
      *
-     * @param catalog 模型那一侧的同一份清单。**必填**：没有它就没有可交出去的工具，
-     *                而"拿一份空清单顶上"会让客户端连上一个什么都不会的 server
+     * @param transport 传输，缺省是标准输入输出那一个
+     * @param catalog 模型那一侧的同一份清单，必填：没有它就没有可交出去的工具，
+     *     拿一份空清单顶上会让客户端连上一个什么都不会的 server
+     * @param registries 所有来源的权限登记表，按工具名查它碰哪些表
+     * @param properties 暴露配置：交出去哪几个、外部客户端能读哪些表
+     * @return 已经在跑的 MCP server，关闭时由容器调 {@code closeGracefully}
      */
     @Bean(destroyMethod = "closeGracefully")
     public McpSyncServer mcpSyncServer(McpServerTransportProvider transport,
