@@ -68,6 +68,9 @@ goal 的用例都直接调 `JdbcSessionGoalStore` 并自己拼键，自洽，于
 
 ## 四、未解决（3 条，附不做的理由）
 
+> **2026-11-11 已全部解决**（提交 `1fda0fb`，落法见 ADR-0029「裁决四」）。下表保留当时的判断与
+> 不做的理由——它们记录的是"当时为什么停在这里"，不是现在的状态。
+
 | # | 缺口 | 为什么不在这轮做 |
 | --- | --- | --- |
 | 1 | `ConversationLane` 的 address 仍按 `owner + channel + chatId`，`dm-scope: main` 下同一节点可能被两条 lane 并发写 | 不丢数据（换段有 advisory lock、goal 有 `for update`）；改成节点键会让 main 模式跨通道互相阻塞（`BUSY_REPLY`），属并发语义取舍 |
