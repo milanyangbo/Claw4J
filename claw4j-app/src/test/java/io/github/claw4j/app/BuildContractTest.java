@@ -1,6 +1,7 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.session.SessionMemoryProperties;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.plugin.CoreVersion;
 import io.github.claw4j.plugin.PluginContract;
 import com.tngtech.archunit.base.DescribedPredicate;
@@ -262,6 +263,22 @@ class BuildContractTest {
                 .isEqualTo(SessionMemoryProperties.DEFAULT_CONTEXT_WINDOW);
     }
 
+    @Test
+    @DisplayName("两个 scope 写在 application.yml 的 claw4j.session 下：多人部署要改这里")
+    void applicationYmlDeclaresTheSessionScopes() throws IOException {
+        var sources = new YamlPropertySourceLoader()
+                .load("application.yml", new ClassPathResource("application.yml"));
+
+        assertThat(sources).as("application.yml 得能解析出来").isNotEmpty();
+        assertThat(sources.getFirst().getProperty("claw4j.session.dm-scope"))
+                .as("这一行决定私聊共不共用一段上下文。删掉它默认值仍是 main，"
+                        + "但读配置的人就看不到「多人可及必须改成 per-channel-peer」（ADR-0029）")
+                .isEqualTo(SessionScopeProperties.DM_MAIN);
+        assertThat(sources.getFirst().getProperty("claw4j.session.group-scope"))
+                .as("群聊按群隔离是默认；写出来是为了让「群为什么不共享」有地方可查")
+                .isEqualTo(SessionScopeProperties.GROUP_PER_GROUP);
+    }
+
     // ---------------------------------------------------------------- 迁移合成一套 schema
 
     /** 和 {@code SearchSqlTest} 用同一个镜像：{@code V5} 要 {@code create extension vector}。 */
@@ -269,7 +286,7 @@ class BuildContractTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：七份基线全跑到，五个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：八份基线全跑到，五个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -281,7 +298,7 @@ class BuildContractTest {
         // 编号不复用（与 ADR 编号同一个口径）。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "5", "6", "7", "8");
+                .containsExactly("1", "2", "3", "5", "6", "7", "8", "9");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -298,16 +315,13 @@ class BuildContractTest {
                 .containsExactly("business", "claw4j_channel", "claw4j_rag",
                         "claw4j_run", "claw4j_session");
 
-        // 会话 schema 里是框架的两张、V8 那六张、以及还没走的 session_entry。
-        //
-        // 这条断言盯的是"这一版到底建了什么"：少一张说明迁移没跑到，多一张说明有人绕过
-        // V8 又摊了一张平表。session_entry 在列表里是**故意的**——代码还在按它读写，
-        // 切换完成后由下一版 drop，到那时这一行跟着减一张。
+        // 会话 schema 里是框架的两张加 V8 那六张。V9 把旧的 session_entry 删了，所以这里不再有它：
+        // 它要是回来了，说明有人绕过 V8 又摊了一张平表。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables"
                         + " where table_schema = 'claw4j_session' order by table_name", String.class))
                 .containsExactly("ai_session", "ai_session_event", "conversations",
-                        "session_conversations", "session_entry", "session_entry_snapshots",
+                        "session_conversations", "session_entry_snapshots",
                         "session_key_contract", "session_nodes", "session_windows");
 
         // V1 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。

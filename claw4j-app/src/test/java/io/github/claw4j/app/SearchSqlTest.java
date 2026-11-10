@@ -636,7 +636,7 @@ class SearchSqlTest {
      * 已经修过了。
      *
      * <p>断言必须看落库位置，不能只看返回值：写死时 {@code segmentOf} 照样返回 {@code seg-1}，
-     * 因为它确实写成功了，只是写进了另一张同名表。所以这里查 {@code claw4j_alt.session_entry}
+     * 因为它确实写成功了，只是写进了另一张同名表。所以这里查 {@code claw4j_alt.session_nodes}
      * 的行数，那一行才证明配了哪个 schema 就写哪个。
      */
     @Test
@@ -645,47 +645,40 @@ class SearchSqlTest {
         jdbc.execute("drop schema if exists claw4j_alt cascade");
         jdbc.execute("create schema claw4j_alt");
         jdbc.execute("""
-                create table claw4j_alt.session_entry (
-                    session_key varchar(512) not null primary key,
-                    owner varchar(255) not null,
-                    channel varchar(64) not null,
-                    chat_id varchar(255) not null,
-                    segment varchar(64) not null,
-                    session_started_at timestamptz not null,
-                    last_interaction_at timestamptz not null,
+                create table claw4j_alt.session_nodes (
+                    session_key text not null primary key,
+                    current_session_id text not null,
+                    entry_json jsonb not null,
+                    session_started_at timestamptz,
+                    last_interaction_at timestamptz,
+                    created_at timestamptz,
+                    updated_at timestamptz not null,
+                    entry_valid smallint not null default 0);
+                create table claw4j_alt.session_windows (
+                    session_id text not null primary key,
+                    session_key text not null,
+                    previous_session_id text,
+                    reason text,
+                    session_scope text not null default 'conversation',
                     created_at timestamptz not null,
-                    previous_segment varchar(64),
-                    total_tokens bigint not null default 0,
-                    goal_schema_version smallint,
-                    goal_id uuid,
-                    goal_objective text,
-                    goal_status varchar(24),
-                    goal_token_start bigint,
-                    goal_token_start_fresh boolean,
-                    goal_tokens_used bigint,
-                    goal_token_budget bigint,
-                    goal_continuation_turns integer,
-                    goal_last_status_note text,
-                    goal_paused_at timestamptz,
-                    goal_blocked_at timestamptz,
-                    goal_completed_at timestamptz,
-                    goal_usage_limited_at timestamptz,
-                    goal_budget_limited_at timestamptz,
-                    goal_created_at timestamptz,
-                    goal_updated_at timestamptz)
+                    updated_at timestamptz not null,
+                    started_at timestamptz,
+                    chat_type text,
+                    channel text,
+                    account_id text)
                 """);
 
         Instant now = Instant.parse("2026-11-08T10:00:00Z");
         Optional<String> segment = new JdbcSessionEntryStore(jdbc, "claw4j_alt")
                 .segmentOf(new SessionEntryStore.Key(
                                 SessionKeys.conversationKeyOf("u-1@fp", "web", "c-1"),
-                                "u-1@fp", "web", "c-1"),
+                                "u-1@fp", "web", "c-1", true),
                         new SessionEntryStore.Rotation("seg-1", now, now.minusSeconds(7200),
                                 now.minusSeconds(86_400), true, false));
 
         assertThat(segment).contains("seg-1");
         assertThat(jdbc.queryForObject(
-                "select count(*) from claw4j_alt.session_entry", Long.class))
+                "select count(*) from claw4j_alt.session_nodes", Long.class))
                 .as("写死 claw4j_session 时这一行会落到那张表里：insert 不报错、返回值照常，"
                         + "只有这里能看出配的 schema 没生效")
                 .isEqualTo(1L);

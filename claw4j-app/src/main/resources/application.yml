@@ -246,6 +246,18 @@ claw4j:
 
   # ---- 记忆与一段对话的边界 ----
   session:
+    # 会话键的 peer 段怎么拼（ADR-0029）。两个键分开是因为两者的默认值本来就该不同。
+    #
+    # dm-scope：私聊的边界。
+    #   main（默认）：一个人的所有私聊共用一个主会话。与 OpenClaw 的 session.dmScope 同默认。
+    #   **多人可及的部署必须改成 per-channel-peer**：main 意味着网页里问到的数字，
+    #   飞书私聊里的模型也看得见。
+    #   per-peer：按对端身份分（同一个人跨通道共用）。
+    #   per-channel-peer：按通道 + 对端分，换一条通道就是另一段。
+    #   per-account-channel-peer：本仓库没有 account 这一维，等同 per-channel-peer。
+    dm-scope: main
+    # group-scope：群聊的边界。per-group（默认）按群隔离；main 把群并进主会话。
+    group-scope: per-group
     # 会话表落在哪个 schema。默认 claw4j_session，与业务数据的 business 分开（ADR-0005）。
     # **改它会影响五处**：框架那一路（另开一个连接池把 currentSchema 指过去）、会话指针、
     # 会话目标、清理任务、跨会话召回。后四个是手写全限定名的 SQL，都从这一个键取；
@@ -263,25 +275,26 @@ claw4j:
     context-window: 65536
     # 旧会话怎么清（判据照 OpenClaw 的 session.maintenance，ADR-0026）。
     maintenance:
-      # warn（默认）：只算不删，把"本来会删多少"打进日志与指标。与 OpenClaw 的默认一致。
-      # enforce：真删。**要落实"到期必须删"那条留存承诺，部署时必须显式设成它**——
-      # 默认档位下一条都不会删，而配置看起来是配过的（见 docs/agents/guardrails.md）。
-      mode: warn
+      # enforce（默认）：真删。与 OpenClaw 同默认——它的留存承诺是"到期就删"，
+      # 默认只算不删的话，那条承诺从来没有被执行过（见 docs/agents/guardrails.md）。
+      # warn：只算不删，把"本来会删多少"打进日志与指标。要在本地保住历史时用它。
+      mode: enforce
       # 多久没动算陈旧，不是"建了多久"。OpenClaw 的 pruneAfter 默认也是 30d。
       prune-after: 30d
-      # 指针行数上限（OpenClaw 的 maxEntries，默认 500）。这是单用户形态的数：
-      # 多租户部署要按"人数 × 通道数"调大，否则第 501 个对话地址出现时被驱逐的
-      # 是"最久没动的那个"——与那个人的行为无关，他下次开口就是一段新对话。
-      max-entries: 500
+      # 节点数上限（OpenClaw 的 maxEntries，默认 5000）。这是单用户形态的数：
+      # 多租户部署要按"人数 × 通道数"调大，否则到上限时被驱逐的是"最久没动的那个"——
+      # 与那个人的行为无关，他下次开口就是一段新对话。
+      max-entries: 5000
     # 换段 = 换对话（ADR-0026）。换段之后记忆、预算、召回都从零开始，旧段留在库里只读。
     # 这里是"会话什么时候结束"**唯一**的定义：以前它散在四处（记忆认为永不结束、
     # 预算按 120 分钟自己判、TTL 按 30 天删行、定时任务借用创建者那一份），
     # 四个答案各自都说得通，合起来就是"会话"这个词没有定义。
     reset:
-      # daily-and-idle：跨天或空闲，谁先到算谁（与 OpenClaw 的默认一致）
+      # none（默认）：不自动结束，靠上下文压缩管长度。与 OpenClaw 的 session.reset 同默认（ADR-0029）。
+      # daily-and-idle：跨天或空闲，谁先到算谁
       # idle：只看空闲，适合"一段对话跟一个项目走"
-      # none：永不结束，sessionId 退回加段之前的形状，且一次库都不查
-      mode: daily-and-idle
+      # 三档下 /new 都有效：这一档配的是"不自动结束"，不是"不许结束"。
+      mode: none
       # 逻辑日的分界点。4 点的意思是"凌晨三点还在聊的那件事，还是昨天那件"。
       # 时区取 claw4j.agent.zone，不取容器时区——容器里通常是 UTC，
       # 差八小时会让东八区凌晨 0~8 点的行为全错，而 CI 上（UTC）是绿的。

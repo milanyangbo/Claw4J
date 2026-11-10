@@ -86,8 +86,12 @@ class PersistenceSchemaTest {
 
     @BeforeEach
     void freshTables() {
-        // 段与目标在同一行（票 06）：删一次就都干净了。
-        jdbc.update("delete from claw4j_session.session_entry");
+        // 节点与段分两张表（ADR-0029）：删节点会级联带走 window 与冷值。
+        // 通道身份是另一回事——它不随节点死，所以单独清。
+        jdbc.update("delete from claw4j_session.session_nodes");
+        jdbc.update("delete from claw4j_session.conversations");
+        // 段的消息在框架那两张表里，没有指向节点的外键，得自己清。
+        jdbc.update("delete from claw4j_session.ai_session");
         jdbc.update("delete from claw4j_run.approval_request");
         // 审计也要清：上限那条用例会插十万行，留着会让"30 天只留一条"的断言看到别人的行。
         jdbc.update("delete from claw4j_run.audit_event");
@@ -107,22 +111,29 @@ class PersistenceSchemaTest {
     }
 
     @Test
-    @DisplayName("六态之外写不进去；空白目标、0 预算、同一会话第二行都被库拒绝")
+    @DisplayName("六态之外、空白目标、0 预算由 Java 拒绝；一个会话第二行仍由主键拒绝")
     void goalsAreSessionStateWithAClosedVocabulary() {
         insertGoalRow("k-a", "active", "让 CI 变绿", null);
 
-        assertThatThrownBy(() -> insertGoalRow("k-b", "running", "错的态", null))
-                .as("六态是闭合词表：写成 running 会被库拒绝，而不是存下一个没人认得的状态")
-                .hasMessageContaining("session_entry_goal_status_allowed");
-        assertThatThrownBy(() -> insertGoalRow("k-c", "active", "   ", null))
+        // 目标搬进 entry_json 之后，库上没有 CHECK 了（ADR-0029）：JSON 里写不出
+        // "status in (...)" 还能跟着枚举一起改。所以这三条判据挪到了 Java 侧，断言的对象
+        // 从约束名变成了抛出的那句话——否则"库里不拦了"这件事没人看着。
+        assertThatThrownBy(() -> GoalStatus.fromColumn("running"))
+                .as("六态是闭合词表：写成 running 会被拒绝，而不是变成一个没人认得的状态")
+                .hasMessageContaining("未知的目标状态");
+        assertThatThrownBy(() -> new SessionGoal("k-c", 1, UUID.randomUUID(), "   ",
+                GoalStatus.ACTIVE, Instant.now(), Instant.now(), 0, true, 0, null, 0,
+                null, null, null, null, null, null))
                 .as("空白目标不是空目标，是存了一个空格")
-                .hasMessageContaining("session_entry_goal_all_or_nothing");
-        assertThatThrownBy(() -> insertGoalRow("k-d", "active", "x", 0L))
-                .as("0 预算的意思是「一点额度都不给」，不限额的正确写法是不写这一列")
-                .hasMessageContaining("session_entry_goal_budget_positive");
+                .hasMessageContaining("目标内容不能为空");
+        assertThatThrownBy(() -> new SessionGoal("k-d", 1, UUID.randomUUID(), "x",
+                GoalStatus.ACTIVE, Instant.now(), Instant.now(), 0, true, 0, 0L, 0,
+                null, null, null, null, null, null))
+                .as("0 预算的意思是「一点额度都不给」，不限额的正确写法是不给预算")
+                .hasMessageContaining("预算必须是正数");
         assertThatThrownBy(() -> insertGoalRow("k-a", "active", "同一个键再来一行", null))
-                .as("主键就是「一个会话节点一行」：目标不是另立一张表，也就没有第二行可插")
-                .hasMessageContaining("session_entry_pkey");
+                .as("主键就是「一个会话节点一行」：目标挂在节点上，也就没有第二行可插")
+                .hasMessageContaining("session_nodes_pkey");
     }
 
     @Test
@@ -131,7 +142,7 @@ class PersistenceSchemaTest {
         Instant now = Instant.parse("2026-11-09T02:00:00Z");
         String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
         SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
-        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1"),
+        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1", true),
                 new SessionEntryStore.Rotation("seg-1", now, now.minusSeconds(7200),
                         now.minusSeconds(86_400), false, false));
 
@@ -162,7 +173,7 @@ class PersistenceSchemaTest {
         Instant now = Instant.parse("2026-11-09T02:00:00Z");
         String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
         SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
-        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1"),
+        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1", true),
                 new SessionEntryStore.Rotation("seg-1", now, now.minusSeconds(7200),
                         now.minusSeconds(86_400), false, false));
 
@@ -200,7 +211,7 @@ class PersistenceSchemaTest {
         Instant now = Instant.parse("2026-11-09T02:00:00Z");
         String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
         SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
-        SessionEntryStore.Key row = new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1");
+        SessionEntryStore.Key row = new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1", true);
 
         entries.segmentOf(row, new SessionEntryStore.Rotation("seg-1", startedAt,
                 startedAt.minusSeconds(1), startedAt.minusSeconds(86_400), true, false));
@@ -250,25 +261,36 @@ class PersistenceSchemaTest {
                 .isEqualTo(40);
     }
 
-    /**
-     * 插一行"有目标的 entry"。必填的是会话节点、段与两个时间；目标的 17 个列要么全给，
-     * 要么全不给（{@code session_entry_goal_all_or_nothing}）。
-     */
     private void insertGoalRow(String key, String status, String objective, Long budget) {
         insertGoalRow(key, status, objective, budget, true, 0);
     }
 
+    /**
+     * 插一行带目标的节点。
+     *
+     * <p>目标在 {@code entry_json.goal} 里（ADR-0029），不再摊成十七个列，所以这里用
+     * {@code jsonb_build_object} 拼。列上那几个 CHECK（六态、空白目标、正预算）跟着没了，
+     * 校验挪到 {@code SessionGoal} 的构造器与 {@code GoalStatus.fromColumn} 上。
+     */
     private void insertGoalRow(String key, String status, String objective, Long budget,
                                boolean startFresh, long tokensUsed) {
-        jdbc.update("insert into claw4j_session.session_entry"
-                        + " (session_key, owner, channel, chat_id, segment, session_started_at,"
-                        + "  last_interaction_at, created_at, goal_schema_version, goal_id,"
-                        + "  goal_objective, goal_status, goal_token_start, goal_token_start_fresh,"
-                        + "  goal_tokens_used, goal_token_budget, goal_continuation_turns,"
-                        + "  goal_created_at, goal_updated_at)"
-                        + " values (?, 'u-1@fp', 'web', 'c-1', 'seg-1', now(), now(), now(), 1,"
-                        + "  gen_random_uuid(), ?, ?, 0, ?, ?, ?, 0, now(), now())",
-                key, objective, status, startFresh, tokensUsed, budget);
+        long now = System.currentTimeMillis();
+        jdbc.update("""
+                insert into claw4j_session.session_nodes
+                       (session_key, current_session_id, entry_json, session_started_at,
+                        last_interaction_at, created_at, updated_at, entry_valid)
+                values (?, ?, jsonb_build_object(
+                            'sessionId', ?, 'updatedAt', ?, 'totalTokens', ?,
+                            'goal', jsonb_build_object(
+                                'schemaVersion', 1, 'id', ?, 'objective', ?, 'status', ?,
+                                'createdAt', ?, 'updatedAt', ?, 'tokenStart', 0,
+                                'tokenStartFresh', ?, 'tokensUsed', ?, 'tokenBudget', cast(? as bigint),
+                                'continuationTurns', 0)),
+                        now(), now(), now(), now(), 1)
+                """,
+                key, key + ":seg-1", key + ":seg-1", now, 0L,
+                UUID.randomUUID().toString(), objective, status, now, now,
+                startFresh, tokensUsed, budget);
     }
 
     @Test
@@ -277,7 +299,7 @@ class PersistenceSchemaTest {
         Instant now = Instant.parse("2026-11-09T02:00:00Z");
         String key = SessionKeys.conversationKeyOf("u-1@fp-1", "web", "c-1");
         SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
-        SessionEntryStore.Key row = new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1");
+        SessionEntryStore.Key row = new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-1", true);
         entries.segmentOf(row, new SessionEntryStore.Rotation("seg-1", now,
                 now.minusSeconds(7200), now.minusSeconds(86_400), false, false));
 
@@ -299,36 +321,40 @@ class PersistenceSchemaTest {
                 .isZero();
 
         java.time.Instant createdAt = jdbc.queryForObject(
-                "select created_at from claw4j_session.session_entry where session_key = ?",
+                "select created_at from claw4j_session.session_nodes where session_key = ?",
                 java.sql.Timestamp.class, key).toInstant();
 
-        // ---- /new：同一条 update 里换段并清空目标列。
+        // ---- /new：插一行新 window，把 current_session_id 指过去，并清掉 entry_json 里的目标。
         entries.segmentOf(row, new SessionEntryStore.Rotation("seg-2", now.plusSeconds(1),
                 now.minusSeconds(7200), now.minusSeconds(86_400), false, true));
 
         assertThat(goals.of(key))
-                .as("换段即无目标：不是「新段读不到」，而是同一行里的目标被清掉了")
+                .as("换段即无目标：不是「新段读不到」，而是 entry_json 里的 goal 被整份换掉了")
                 .isEmpty();
         assertThat(jdbc.queryForObject(
-                "select segment from claw4j_session.session_entry where session_key = ?",
-                String.class, key)).isEqualTo("seg-2");
+                "select current_session_id from claw4j_session.session_nodes where session_key = ?",
+                String.class, key))
+                .as("段现在是完整对话键：节点键 + 段，与 ai_session.id 同值")
+                .isEqualTo(SessionKeys.sessionIdOf(key, "seg-2"));
         assertThat(jdbc.queryForObject(
-                "select count(*) from claw4j_session.session_entry where session_key = ?",
+                "select count(*) from claw4j_session.session_nodes where session_key = ?",
                 Long.class, key))
-                .as("行还在——它是会话节点，不是目标；删行等于把这一段的存在也抹掉")
+                .as("节点还在——它是会话的锚点，不是目标；删行等于把这一段的存在也抹掉")
                 .isEqualTo(1L);
         assertThat(jdbc.queryForObject(
-                "select total_tokens from claw4j_session.session_entry where session_key = ?",
+                "select (entry_json ->> 'totalTokens')::bigint"
+                        + " from claw4j_session.session_nodes where session_key = ?",
                 Long.class, key))
                 .as("新段开新窗口：累计用量归零，否则新目标的预算从旧段的账起算")
                 .isZero();
         assertThat(jdbc.queryForObject(
-                "select previous_segment from claw4j_session.session_entry where session_key = ?",
-                String.class, key))
-                .as("上一段留在行上（它的 previousSessionId）：换段之后还答得出「上一段是什么」")
-                .isEqualTo("seg-1");
+                "select previous_session_id from claw4j_session.session_windows"
+                        + " where session_id = ?",
+                String.class, SessionKeys.sessionIdOf(key, "seg-2")))
+                .as("上一段记在新段那一行上（它的 previousSessionId）：还答得出「上一段是什么」")
+                .isEqualTo(SessionKeys.sessionIdOf(key, "seg-1"));
         assertThat(jdbc.queryForObject(
-                "select created_at from claw4j_session.session_entry where session_key = ?",
+                "select created_at from claw4j_session.session_nodes where session_key = ?",
                 java.sql.Timestamp.class, key).toInstant())
                 .as("节点创建时间跨段不变——它记的是「这个人第一次来」，不是「这一段什么时候开始」")
                 .isEqualTo(createdAt);

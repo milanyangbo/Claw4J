@@ -288,8 +288,10 @@ class TurnFlowTest {
                         + "无段形状那条更是连指针行都没有——它们留下来这件事本身就说明判据不是 created_at")
                 .containsExactlyInAnyOrder("B-now",
                         SessionKeys.sessionIdOf(ow, "web", "c-legacy"));
-        assertThat(jdbc.queryForObject("select chat_id from claw4j_session.session_entry",
-                String.class)).isEqualTo("c-b");
+        assertThat(jdbc.queryForObject("select session_key from claw4j_session.session_nodes",
+                String.class))
+                .as("键的最后一段就是 chatId（这一组的键是带 chatId 的旧形状）")
+                .endsWith(":c-b");
 
         // ---- 上限：桶比 max-entries 多时，驱逐最久没动的。
         freshSessionTables();
@@ -302,8 +304,9 @@ class TurnFlowTest {
                 maintenance("enforce", 2, new SimpleMeterRegistry()).sweep(now);
 
         assertThat(evicted.prunedOverLimit()).as("三个桶留两个，走的是最久没动的那个").isEqualTo(1);
-        assertThat(jdbc.queryForList("select chat_id from claw4j_session.session_entry",
-                        String.class))
+        assertThat(jdbc.queryForList("select session_key from claw4j_session.session_nodes",
+                        String.class).stream()
+                        .map(key -> key.substring(key.lastIndexOf(':') + 1)).toList())
                 .as("按 segment 的字符串序排会驱逐错人，按 last_interaction_at 才是「最久没动」")
                 .containsExactlyInAnyOrder("c-2", "c-3");
     }
@@ -323,7 +326,7 @@ class TurnFlowTest {
         assertThat(report.enforced()).isFalse();
         assertThat(report.pruned()).isZero();
         assertThat(sessionsInTable()).as("warn 下一条都不许删").containsExactly("A");
-        assertThat(jdbc.queryForObject("select count(*) from claw4j_session.session_entry",
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_session.session_nodes",
                 Integer.class)).isEqualTo(1);
         assertThat(registry.get(SessionMaintenance.PRUNABLE).tag("kind", "segments").gauge().value())
                 .as("数得出来才叫「只报告」：这个值恒为 0 的话，默认档位就是一次静默空转")
@@ -354,20 +357,29 @@ class TurnFlowTest {
     private void entry(String sessionKey, String owner, String channel, String chatId) {
         Instant at = Instant.parse("2026-11-06T02:00:00Z");
         new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA).segmentOf(
-                new SessionEntryStore.Key(sessionKey, owner, channel, chatId),
+                new SessionEntryStore.Key(sessionKey, owner, channel, chatId, true),
                 new SessionEntryStore.Rotation("seg-1", at, at.minusSeconds(7200),
                         at.minusSeconds(86_400), false, false));
     }
 
-    /** 一行 session entry：段与最后交互时刻。目标列留空（这条用例不关心目标）。 */
+    /**
+     * 一行节点：段、两个时间、空的 entry_json。目标留空（这条用例不关心目标）。
+     *
+     * <p>键用三参 {@code conversationKeyOf}，也就是"带 chatId"的旧形状：这一组用例要造出
+     * **多个桶**来验证"驱逐最久没动的那个"，而默认的 {@code dm-scope: main} 会把它们并成一个。
+     * 键的形状不影响被验证的判据——清理看的是 {@code last_interaction_at}。
+     */
     private void pointer(String owner, String channel, String chatId, String segment, Instant touchedAt) {
-        jdbc.update("insert into claw4j_session.session_entry"
-                        + " (session_key, owner, channel, chat_id, segment, session_started_at,"
-                        + "  last_interaction_at, created_at)"
-                        + " values (?, ?, ?, ?, ?, ?, ?, ?)",
-                SessionKeys.conversationKeyOf(owner, channel, chatId), owner, channel, chatId,
-                segment, Timestamp.from(touchedAt), Timestamp.from(touchedAt),
-                Timestamp.from(touchedAt));
+        String key = SessionKeys.conversationKeyOf(owner, channel, chatId);
+        String sessionId = SessionKeys.sessionIdOf(key, segment);
+        jdbc.update("insert into claw4j_session.session_nodes"
+                        + " (session_key, current_session_id, entry_json, session_started_at,"
+                        + "  last_interaction_at, created_at, updated_at, entry_valid)"
+                        + " values (?, ?, jsonb_build_object('sessionId', ?, 'updatedAt', ?,"
+                        + "  'totalTokens', 0), ?, ?, ?, ?, 1)",
+                key, sessionId, sessionId, touchedAt.toEpochMilli(),
+                Timestamp.from(touchedAt), Timestamp.from(touchedAt),
+                Timestamp.from(touchedAt), Timestamp.from(touchedAt));
     }
 
     private java.util.List<String> sessionsInTable() {
@@ -377,8 +389,9 @@ class TurnFlowTest {
     private void freshSessionTables() {
         jdbc.update("delete from claw4j_session.ai_session_event");
         jdbc.update("delete from claw4j_session.ai_session");
-        // 段与目标在同一行：删一次就都干净了。
-        jdbc.update("delete from claw4j_session.session_entry");
+        // 节点删掉会级联带走 window 与冷值；通道身份不随节点死，单独清。
+        jdbc.update("delete from claw4j_session.session_nodes");
+        jdbc.update("delete from claw4j_session.conversations");
     }
 
     // ---------------------------------------------------------------- 装配
