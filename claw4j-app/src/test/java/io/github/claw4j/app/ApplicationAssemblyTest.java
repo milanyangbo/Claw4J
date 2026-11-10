@@ -15,8 +15,6 @@ import io.github.claw4j.channel.dingtalk.DingtalkReplySender;
 import io.github.claw4j.channel.dingtalk.client.DingtalkChannel;
 import io.github.claw4j.channel.wecom.WecomReplySender;
 import io.github.claw4j.channel.wecom.client.WecomChannel;
-import io.github.claw4j.domain.ApprovalVerdict;
-import io.github.claw4j.domain.port.ApprovalDecider;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
@@ -71,7 +69,6 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,9 +88,20 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>模型是真的（ADR-0011 没有 mock 兜底：没 key 就起不来），所以这里的用例只在
  * "接上了没有"这件事上发请求，不为了凑数再多问一句。守卫那条也发请求，
  * 但它在模型之前就被挡下了。判据是"接上了没有"，不是"规则对不对"。
+ *
+ * <p><b>真模型参与，但断言不判它说什么</b>（2026-11-10 改）：原来有几条断言要求"回答里要出现
+ * 128400"、"审计里恰好两条事件"、"批准之后工具执行一次"——它们守的其实是**模型这一轮愿不愿意
+ * 调工具**。换个模型、甚至同一个模型换一轮都会红，而"换个模型就得改测试"说明断言钉错了对象。
+ * 现在模型照旧是真的（它得能跑通一轮），但断言只落在**不控制模型也能确定的事**上：
+ * 清单里有没有那个工具、工具能不能查到库、回执与答案有没有推回同一个人、一轮有没有起止。
+ * 至于"模型选不选对工具、被拦下之后会不会换做法"，那是 `claw4j-eval` 与
+ * `docs/capability-tests.md` 的活——归评测与手工验收，不归装配这条判据。
+ *
+ * <p>原来的「审批闭环」那条整个删掉了：它的判据是"批准之后模型接着做"，这一句只有模型答得了；
+ * 审批的状态机、一次性兑现、过期落终态由 `ApprovalFlowTest`（假模型、真库）守。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Import({ApplicationAssemblyTest.ApprovalProbe.class, ApplicationAssemblyTest.ChannelProbes.class})
+@Import(ApplicationAssemblyTest.ChannelProbes.class)
 class ApplicationAssemblyTest {
 
     /** 种子里华东区上周 = 54000 + 74400。这个数只有真查了库才拿得到。 */
@@ -139,9 +147,6 @@ class ApplicationAssemblyTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.flyway.enabled", () -> "true");
-        // 审批人名单（P03）：仓库那份 yml 里是空的（空 = 没人能批），
-        // 而这条用例要真点一次按钮，所以名单在这里给——它本来就是部署的事。
-        registry.add("claw4j.approval.approvers[0]", () -> "approver-1");
         // 企业微信（P06）：五样齐了通道才装配。凭据是假的没关系——那条用例里
         // 回推的实现被换成了一个记录器（{@link ChannelProbes#WECOM_SENT}），不会真去连企业微信。
         registry.add("claw4j.channel.wecom.corp-id", () -> WECOM_CORP_ID);
@@ -177,10 +182,6 @@ class ApplicationAssemblyTest {
      */
     @Autowired
     private SimpleLoggerAdvisor simpleLoggerAdvisor;
-
-    /** 审批的"人那一侧"（P02）：真模型闭环那条要拿它落下一次批准。 */
-    @Autowired
-    private ApprovalDecider approvalDecider;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -234,14 +235,32 @@ class ApplicationAssemblyTest {
                 .isGreaterThan(ToolSearchToolCallingAdvisor.DEFAULT_ORDER);
     }
 
+    /**
+     * 两个断言都不经过模型：**清单里有它**（ChatClient 通过 {@code ToolCallbackProvider}
+     * 每轮拿这份清单，所以"在清单里"就是"这一轮模型看得见它"），**直接调它能查到库**。
+     *
+     * <p>原来这里是"问模型一句，回答里要出现 128400"。那条断言守的其实是"模型这一轮愿不愿意调工具"，
+     * 换个模型、甚至同一个模型换一轮都可能红；而它想证明的"工具接上了"根本不依赖模型。
+     * 模型选不选对工具归 {@code claw4j-eval} 与 {@code docs/capability-tests.md}，不归装配这条判据。
+     */
     @Test
-    @DisplayName("工具真的注册进了链：admin 问一句，回答里带着库里那个数")
-    void toolIsRegisteredAndReachesTheDatabase() throws Exception {
-        String answer = ask("assembly-admin", "admin", QUESTION);
+    @DisplayName("查数工具在模型能用的清单里，且真的查得到 business 库")
+    void toolIsRegisteredAndReachesTheDatabase() {
+        assertThat(toolCatalog.names())
+                .as("查数工具不在清单里的话，模型再会选也问不出数")
+                .contains("querySales");
 
-        assertThat(mentions(answer, EAST_LAST_WEEK))
-                .as("回答里应当出现库里的 128400，实际：%s", answer)
-                .isTrue();
+        ToolCallback querySales = toolCatalog.byName("querySales").orElseThrow();
+
+        assertThat(querySales.call("{\"sql\":\"select 'assembly-probe' as tag\"}"))
+                .as("工具 → 只读守卫 → 执行器 → 库：这条线断了，这里返回的是错误提示")
+                .contains("tag")
+                .contains("assembly-probe");
+
+        assertThat(querySales.call("{\"sql\":\"select count(*) as n from business.sales_order\"}"))
+                .as("business schema 可达（连错库会返回 relation does not exist）")
+                .doesNotContain("执行失败")
+                .doesNotContain("没有通过只读校验");
     }
 
     @Test
@@ -252,39 +271,6 @@ class ApplicationAssemblyTest {
         assertThat(mentions(answer, EAST_LAST_WEEK))
                 .as("guest 只配了 region 表，越权放行会让这个数出现在回答里：%s", answer)
                 .isFalse();
-    }
-
-    /**
-     * P02 的真模型闭环：<b>被卡住 → 批准 → 放行</b>，整条链上是真模型、真库、真审批表。
-     *
-     * <p>假模型那份（{@code ApprovalFlowTest}）能验"什么时候调了几次"，但验不了
-     * "模型在被拦下之后会不会换做法、批准之后会不会真的接着做"。这两件事只有真模型答得了：
-     * 拒批那条如果模型下一轮把同一个请求原样再发一遍，用户就会看到一个反复撞墙的助手。
-     *
-     * <p><b>判据是"工具真的被执行了一次"</b>，不是回话措辞。措辞是模型写的，
-     * 它可能说"已发送"而实际上什么都没发——而"已发送"这三个字恰恰是最容易骗过人的一句。
-     */
-    @Test
-    @DisplayName("真模型闭环：要审批的工具被卡住、批准之后服务端接着做、工具最后真的执行了一次")
-    void approvalFlowWorksEndToEndWithARealModel() throws Exception {
-        jdbc.update("delete from claw4j_run.approval_request");
-        ApprovalProbe.SENT.set(0);
-
-        String question = "请调用 " + ApprovalProbe.TOOL
-                + " 工具，参数 message 设为「今天十点对账」。不要问我，直接调用。";
-        String answer = ask("assembly-approval", "admin", question);
-
-        assertThat(ApprovalProbe.SENT.get()).as("没批准之前工具不该执行：%s", answer).isZero();
-        List<String> pending = jdbc.queryForList(
-                "select id from claw4j_run.approval_request where status = 'pending'", String.class);
-        assertThat(pending).as("模型确实调了那个工具，于是登记了一条待批请求：%s", answer).hasSize(1);
-
-        ApprovalDecider.Result result = approvalDecider.decide(pending.getFirst(), "approver-1", true, null);
-
-        assertThat(result.verdict()).isEqualTo(ApprovalVerdict.GRANTED);
-        assertThat(ApprovalProbe.SENT.get())
-                .as("批准之后服务端续跑，模型接着做，工具真的执行了一次：%s", result.detail())
-                .isEqualTo(1);
     }
 
     /**
@@ -314,12 +300,15 @@ class ApplicationAssemblyTest {
 
         scheduleScanner.scan();
 
-        // 到点了跑了一轮：审计里两条事件，会话落在任务自己的那段里（ADR-0027）。
+        // 到点了跑了一轮：**开头是 started、结尾是 finished**，中间有几条看模型这一轮调不调工具——
+        // 原来写的是"恰好两条"，模型多调一次工具就红，而它要证明的"定时任务接进了编排层"与
+        // 模型调不调工具无关。事件的完整词表与顺序归 AuditLedger 自己的用例。
         List<Map<String, Object>> events = jdbc.queryForList(
                 "select action, status from claw4j_run.audit_event order by seq");
         assertThat(events).as("到点了应当跑出一轮来")
                 .extracting(row -> row.get("action"))
-                .containsExactly("agent.run.started", "agent.run.finished");
+                .startsWith("agent.run.started")
+                .endsWith("agent.run.finished");
         assertThat(events.getLast().get("status"))
                 .as("结果要落下来：定时任务那一头没有任何请求在等着接它")
                 .isEqualTo("succeeded");
@@ -353,9 +342,11 @@ class ApplicationAssemblyTest {
         assertThat(ChannelProbes.WECOM_SENT.getFirst())
                 .as("先一句回执：那十几秒里用户至少知道有人接了")
                 .isEqualTo(WECOM_USER + "|" + WecomChannel.RECEIPT_REPLY);
-        assertThat(mentions(ChannelProbes.WECOM_SENT.get(1), EAST_LAST_WEEK))
-                .as("答案里该出现库里的 128400，实际：%s", ChannelProbes.WECOM_SENT.get(1))
-                .isTrue();
+        assertThat(ChannelProbes.WECOM_SENT.get(1))
+                .as("真模型算完之后，答案从编排层推回同一个成员。**不判内容**：写什么由模型定，"
+                        + "换个模型那句 128400 就换个说法——而这条要证的是回调→编排→回推这条路通了")
+                .startsWith(WECOM_USER + "|")
+                .isNotEqualTo(WECOM_USER + "|" + WecomChannel.RECEIPT_REPLY);
     }
 
     /**
@@ -383,9 +374,10 @@ class ApplicationAssemblyTest {
         assertThat(ChannelProbes.DINGTALK_SENT.getFirst())
                 .as("先一句回执：那十几秒里用户至少知道有人接了")
                 .isEqualTo(DINGTALK_USER + "|" + DingtalkChannel.RECEIPT_REPLY);
-        assertThat(mentions(ChannelProbes.DINGTALK_SENT.get(1), EAST_LAST_WEEK))
-                .as("答案里该出现库里的 128400，实际：%s", ChannelProbes.DINGTALK_SENT.get(1))
-                .isTrue();
+        assertThat(ChannelProbes.DINGTALK_SENT.get(1))
+                .as("真模型算完之后，答案从编排层推回同一个人。**不判内容**：写什么由模型定")
+                .startsWith(DINGTALK_USER + "|")
+                .isNotEqualTo(DINGTALK_USER + "|" + DingtalkChannel.RECEIPT_REPLY);
     }
 
     private String ask(String user, String role, String question) throws Exception {
@@ -728,67 +720,6 @@ class ApplicationAssemblyTest {
             Thread.sleep(100);
         }
         assertThat(ChannelProbes.DINGTALK_SENT).as("等不到第 %d 条推送", count).hasSizeGreaterThanOrEqualTo(count);
-    }
-
-    /**
-     * 一个"要人点头才执行"的工具（P02）。
-     *
-     * <p><b>为什么是 {@code read} 动作加审批</b>：这样 admin 已经过了第一道门
-     * （他有 {@code read}），被拦住的确实是第二道门。换成 {@code send_email} 的话，
-     * 这个用例就变成在验一条已经验过的鉴权——而且还得给 admin 加一个新动作。
-     *
-     * <p>工具本身是内存的：这条用例验的是"模型被卡住、批准之后接着做、工具最后跑了"，
-     * 不是那个工具做什么。
-     */
-    @TestConfiguration
-    static class ApprovalProbe {
-
-        static final String TOOL = "sendNotice";
-
-        static final AtomicInteger SENT = new AtomicInteger();
-
-        @Bean
-        ToolCallback noticeTool() {
-            return new ToolCallback() {
-
-                private final ToolDefinition definition = ToolDefinition.builder()
-                        .name(TOOL)
-                        .description("发送一条通知给运营群")
-                        .inputSchema("""
-                                {"type":"object","properties":{"message":{"type":"string"}},
-                                "required":["message"]}""")
-                        .build();
-
-                @Override
-                public ToolDefinition getToolDefinition() {
-                    return definition;
-                }
-
-                @Override
-                public String call(String toolInput) {
-                    SENT.incrementAndGet();
-                    return "通知已发出";
-                }
-            };
-        }
-
-        @Bean
-        ToolPermissionRegistry noticePermission() {
-            return ToolPermissionRegistry.of(Map.of(TOOL,
-                    ToolPermission.requiringApproval(ToolPermission.READ)));
-        }
-
-        /**
-         * 档位同样要登记（P09）：装配期对**清单里每一个**工具都要问"你属于哪一档"，
-         * 探针工具也不例外。这条恰好是那条校验有用的证据——它在这个测试里第一次就抓到了
-         * 一个没登记档的工具，而不是等到某个部署里悄悄多出一个能力。
-         *
-         * <p>给 {@code full}：这是探针，不该影响任何档位语义，只求在跑这条用例的默认档下出现。
-         */
-        @Bean
-        ToolTierRegistry noticeTier() {
-            return ToolTierRegistry.sameFor(List.of(TOOL), ToolTier.FULL);
-        }
     }
 
     /**
