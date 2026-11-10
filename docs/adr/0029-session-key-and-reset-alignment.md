@@ -33,7 +33,10 @@
   - `per-group`（默认）：`<channel>:<chatId>`
   - `main`：并进主会话（它的 `groupScope: main` 就是这个意思，抄下来，默认不用）
 
-peer 类型来自新加的 `InboundMessage#direct`：Slack 用 `channel_type: im` 判、飞书用 `chat_type` 判、
+peer 类型来自新加的 `InboundMessage#direct`，由每个通道自己回答，不靠默认值：Slack 看 `channel_type: im`，
+飞书看 `chat_type: p2p`，钉钉看 `conversationType`（`"1"` 单聊、`"2"` 群聊），企业微信恒为单聊——
+官方接收消息的字段清单（`ToUserName` / `FromUserName` / `CreateTime` / `MsgType` / `MsgId` / `AgentID`）
+里没有会话类型，应用消息就是成员发给应用的一对一消息，群消息走群机器人 webhook，不进这个回调。
 HTTP 与内部调用记 `true`。没有这个字段就没法区分，而区分不开的后果是把群里的上下文并进私聊。
 
 **前缀保留 `claw4j:user:`**（用户 2026-11-10 裁决），不改成它的 `agent:<agentId>:`。理由不是怀旧：

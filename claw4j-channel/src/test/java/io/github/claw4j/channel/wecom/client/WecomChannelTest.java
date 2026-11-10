@@ -134,6 +134,19 @@ class WecomChannelTest {
     }
 
     @Test
+    @DisplayName("文本消息恒为私聊：企业微信自建应用的回调里没有群这一维")
+    void aTextMessageIsAlwaysDirect() {
+        WecomMessageTranslator.Parsed parsed =
+                new WecomMessageTranslator().parse(textXml("msg-d", USER, QUESTION));
+
+        assertThat(parsed.kind()).isEqualTo(WecomMessageTranslator.Kind.TEXT);
+        assertThat(parsed.event().direct())
+                .as("官方接收消息的字段清单里没有会话类型：应用消息就是成员发给应用的一对一消息，"
+                        + "群消息走群机器人 webhook，不进这个回调")
+                .isTrue();
+    }
+
+    @Test
     @DisplayName("先回执再答案：用户在那十几秒里至少知道“有人接了”")
     void theReceiptArrivesBeforeTheAnswer() {
         post(controller(), textXml("msg-2", USER, QUESTION));

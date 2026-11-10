@@ -43,6 +43,22 @@ public interface WecomInboundEvent extends InboundEvent {
     /** 发消息的成员 UserID，与应用消息的 {@code touser} 同口径。 */
     String userId();
 
+    /**
+     * 恒为 {@code true}：企业微信自建应用的回调里没有"群"这一维。
+     *
+     * <p>这不是"没判所以按默认走"。官方接收消息的字段清单是 {@code ToUserName}、
+     * {@code FromUserName}、{@code CreateTime}、{@code MsgType}、{@code MsgId}、{@code AgentID}
+     * （图片/语音等再加媒体字段），其中没有任何会话类型字段——应用消息就是成员发给应用的一对一消息，
+     * 群里的消息走的是群机器人 webhook，不进这个回调。
+     *
+     * <p>不靠 {@link InboundEvent} 的默认值：那行写在别的模块里，改这个通道的人不会去看它。
+     * 将来换成有群的接入方式（群机器人回调、智能机器人），该改的是这个方法。
+     */
+    @Override
+    default boolean direct() {
+        return true;
+    }
+
     @Override
     String text();
 

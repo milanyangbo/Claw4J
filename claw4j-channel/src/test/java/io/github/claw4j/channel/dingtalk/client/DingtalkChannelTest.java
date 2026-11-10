@@ -110,6 +110,19 @@ class DingtalkChannelTest {
     }
 
     @Test
+    @DisplayName("私聊报文解析出 direct=true：它决定这条消息并进主会话，而不是按通道各开一段")
+    void aDirectMessageSaysSo() {
+        DingtalkMessageTranslator.Parsed parsed =
+                new DingtalkMessageTranslator().parse(textBody("msg-d", USER, QUESTION));
+
+        assertThat(parsed.kind()).isEqualTo(DingtalkMessageTranslator.Kind.TEXT);
+        assertThat(parsed.event().direct())
+                .as("conversationType=1 是单聊。这个值不是默认的 true，是从报文算出来的——"
+                        + "将来放开群聊时，群那条必须算出 false，否则群里的上下文会并进这个人的私聊")
+                .isTrue();
+    }
+
+    @Test
     @DisplayName("先回执再答案：用户在那十几秒里至少知道“有人接了”")
     void theReceiptArrivesBeforeTheAnswer() {
         post(controller(), textBody("msg-2", USER, QUESTION));

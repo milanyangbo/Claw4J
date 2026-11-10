@@ -18,6 +18,11 @@ import java.time.Instant;
  *
  * <p>去重按 {@code msgId}，它是重推时应当不变的那个值。钉钉文档没有为它的唯一性给出承诺，
  * 真出现"重推换了 msgId"，去重会失效，同一个问题会被回答两次。
+ *
+ * <p>{@link #direct()} 在这里是<b>抽象方法</b>，不像别的通道那样继承 {@code InboundEvent}
+ * 的默认 {@code true}。理由是钉钉的回调里有权威的 {@code conversationType}：写成默认值的话，
+ * 将来放开群聊时没人会想起回来改它，症状是"群里的上下文并进了这个人的私聊"，而那时候
+ * 代码看起来完全正常。留给实现去回答，加群那条路就必须先过这一关。
  */
 public interface DingtalkInboundEvent extends InboundEvent {
 
@@ -35,6 +40,15 @@ public interface DingtalkInboundEvent extends InboundEvent {
 
     /** 发消息的人的企业内 userId（钉钉回调里叫 {@code senderStaffId}）。 */
     String userId();
+
+    /**
+     * 这条消息来自单聊还是群聊，由 {@code conversationType} 决定（{@code "1"} 单聊、{@code "2"} 群聊）。
+     *
+     * <p>当前只有单聊会走到这里（群消息在回调层就回一句"私聊我"结束了），所以实现恒返回
+     * {@code true}——但那是判定的结果，不是默认值。
+     */
+    @Override
+    boolean direct();
 
     @Override
     String text();

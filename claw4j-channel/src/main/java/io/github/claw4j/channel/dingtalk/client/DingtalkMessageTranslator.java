@@ -59,10 +59,11 @@ class DingtalkMessageTranslator {
         if (!"text".equalsIgnoreCase(text(root, "msgtype"))) {
             return new Parsed(Kind.UNSUPPORTED, userId, eventId, null);
         }
+        String conversationType = text(root, "conversationType").strip();
         // conversationType 在文档里是字符串 "1" / "2"。写成 int 比较会一直不相等，
         // 于是群聊被当成单聊处理——症状是"群里问一句，答案私聊发给了提问的人"，
         // 看起来完全正常，直到有人问"为什么群里没有回答"。
-        if ("2".equals(text(root, "conversationType").strip())) {
+        if ("2".equals(conversationType)) {
             return new Parsed(Kind.GROUP, userId, eventId, null);
         }
         String content = text(root, "text", "content");
@@ -72,7 +73,8 @@ class DingtalkMessageTranslator {
             return new Parsed(Kind.UNSUPPORTED, userId, eventId, null);
         }
         return new Parsed(Kind.TEXT, userId, eventId,
-                new TextEvent(eventId, userId, content, receivedAt(text(root, "createAt"))));
+                new TextEvent(eventId, userId, content, receivedAt(text(root, "createAt")),
+                        !"2".equals(conversationType)));
     }
 
     private JsonNode readTree(String body) {
@@ -132,11 +134,14 @@ class DingtalkMessageTranslator {
     /**
      * 一条文本消息。
      *
-     * <p>写成 record 而不是让调用方拼一个匿名类：它只有四个字段、没有行为，
+     * <p>写成 record 而不是让调用方拼一个匿名类：它只有五个字段、没有行为，
      * 而"少填一个字段"在这件事上的表现是"去重失效"或"回错了人"——都很难查。
+     *
+     * @param direct 单聊为 {@code true}。这个值是从 {@code conversationType} 算出来的，
+     *               不是"反正只有单聊"的默认——见 {@link DingtalkInboundEvent#direct()}
      */
-    private record TextEvent(String eventId, String userId, String text, Instant receivedAt)
-            implements DingtalkInboundEvent {
+    private record TextEvent(String eventId, String userId, String text, Instant receivedAt,
+                             boolean direct) implements DingtalkInboundEvent {
 
         @Override
         public String senderId() {

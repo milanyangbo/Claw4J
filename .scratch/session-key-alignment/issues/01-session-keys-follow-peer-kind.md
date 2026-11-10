@@ -26,8 +26,9 @@
      `per-account-channel-peer`（无 account 维，等同 `per-channel-peer`）
    - 群聊按 `claw4j.session.group-scope`：`per-group`(默认) / `main`
    - main 键由 `session_key_contract.main_key` 给，完整形状 `claw4j:user:<owner>:main`
-3. peer 类型来自 `InboundMessage#direct`：Slack 用 `channel_type: im`，飞书用 `chat_type`，
-   HTTP 与内部调用为 `true`。
+3. peer 类型来自 `InboundMessage#direct`，每个通道自己回答：Slack 用 `channel_type: im`，飞书用 `chat_type`，
+   钉钉用 `conversationType`（`"1"` 单聊、`"2"` 群聊），企业微信恒为单聊（回调字段里没有会话类型，
+   群消息走群机器人 webhook），HTTP 与内部调用为 `true`。
 4. `claw4j.session.reset.mode` 默认 `none`；`daily-and-idle` 保留为第三档，不再是默认。
 5. `/new` 不受 `mode` 限制：`none` 的含义是"不自动换"，不是"不许换"。
 6. 旧会话记录清除：`session_entry` 与 `ai_session` 的旧行删掉，`drop table session_entry`，
@@ -47,6 +48,7 @@
 | `claw4j-agent` `SessionResetProperties` | 默认 `none`；删掉"认不出落回 daily-and-idle"（改成点名合法值） |
 | `claw4j-agent` `SessionMemoryConfiguration` | 装配新的 scope 属性，启动日志打出生效的 `dm-scope`/`group-scope` |
 | `claw4j-channel` Slack / Feishu | 翻译出 `direct`（`channel_type: im`、`chat_type`） |
+| `claw4j-channel` 钉钉 / 企业微信 | 钉钉从 `conversationType` 算出 `direct`（接口里声明为抽象方法，逼实现回答）；企业微信显式声明恒 `true` 并写出处 |
 | `claw4j-agent` 迁移（新版本，V9） | `delete from claw4j_session.ai_session` + `drop table claw4j_session.session_entry`；V8 不动 |
 | 测试 | 见下 |
 
@@ -63,6 +65,7 @@
 | `mode: none` 下 `/new` 仍然换段 | `ToolGovernanceTest#manualResetIgnoresTheAutomaticPolicy`（用第 20 个空位） | 把 `rotate()` 里 `!reset.rotates()` 的短路加回去，只有这一条红 |
 | Slack 的 `channel_type: im` → `direct=true`，`app_mention` → false | `SlackChannelTest` 现有用例加断言 | `direct` 恒 true，只有这一条红 |
 | 飞书 `chat_type: p2p` → true，`group` → false | `FeishuChannelWiringTest` 用空位加一条 | 同上 |
+| 钉钉 `conversationType: "1"` → true；企业微信恒 true | `DingtalkChannelTest#aDirectMessageSaysSo`、`WecomChannelTest#aTextMessageIsAlwaysDirect` | 钉钉那条把 `!"2".equals(...)` 改成常量 `true`，只有它红 |
 | `application.yml` 里两个 scope 键声明且默认值一致 | `BuildContractTest`（现有 yml 断言方法里加两条） | 删 yml 里的键，只有这一条红 |
 | 换段：`current_session_id` 改、`session_windows` 多一行、旧段仍读得到 | `PersistenceSchemaTest#rotationAddsAWindowAndKeepsTheOldOne` | 只改 `current_session_id` 不插 window，只有这一条红 |
 | 私聊共用主会话：两个 `direct` 会话挂在同一个 `session_id`，且只有一个 `primary` | `PersistenceSchemaTest#directConversationsShareOneWindow` | 每条会话建一个 window，只有这一条红 |
