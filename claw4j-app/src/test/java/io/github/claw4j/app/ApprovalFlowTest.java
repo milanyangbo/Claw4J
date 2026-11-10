@@ -60,20 +60,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 挂起-等批-续跑这一整条链（P02），跑在真库上。
+ * 挂起、等批、续跑这一整条链（P02），跑在真库上。
  *
- * <p><b>为什么必须真库</b>：这条链的四个关键判定全在 SQL 里——"同人同工具同参数且未过期
- * 且没被兑现过"是一条 update，"停在这一步"是 run 上的一行状态。
- * 用内存替身的话，这四个条件怎么改都绿，而那正是最容易改错的地方
- * （把 {@code args_digest} 从 where 里删掉，一条用例都不会红）。
+ * <p>必须真库：这条链的四个关键判定全在 SQL 里，同人同工具同参数且未过期且没被兑现过是一条
+ * update，停在这一步是 run 上的一行状态。用内存替身的话，这四个条件怎么改都绿，而那正是最容易
+ * 改错的地方，比如把 {@code args_digest} 从 where 里删掉，一条用例都不会红。
  *
- * <p><b>模型是假的那一段</b>：这里验的是"什么时候调模型、调了几次、手里拿到什么"，
- * 不是模型的判断力。真模型的闭环另有一条（{@code ApplicationAssemblyTest}）。
+ * <p>模型是假的：这里验的是什么时候调模型、调了几次、手里拿到什么，不是模型的判断力。
+ * 真模型的闭环在 {@code ApplicationAssemblyTest}。
  *
- * <p><b>指纹那两条是变异验证的着力点</b>：{@link #aChangedArgumentDoesNotRideOnAnEarlierGrant}
- * 一旦指纹退化成只算工具名就会红；{@link #theApprovalFingerprintIsNotAnIdempotencyKey}
- * 一旦把 runId 或序号混进指纹就会红。这两个改动都"看起来更严格"，
- * 正是它们需要被钉住的原因。
+ * <p>指纹那两条是变异验证的着力点：{@link #aChangedArgumentDoesNotRideOnAnEarlierGrant}
+ * 在指纹退化成只算工具名时红；{@link #theApprovalFingerprintIsNotAnIdempotencyKey}
+ * 在把 runId 或序号混进指纹时红。这两个改动都看起来更严格，所以需要被钉住。
  */
 @Testcontainers
 class ApprovalFlowTest {
@@ -191,12 +189,12 @@ class ApprovalFlowTest {
     }
 
     /**
-     * 验收 4：拒绝不执行，但<b>那段对话要被告知</b>。
+     * 验收 4：拒绝不执行，但那段对话要被告知。
      *
-     * <p>OpenClaw 把两件事分得很清楚：命令是终态（不跑），会话要收到一条 internal followup
-     * （"An async command did not run. Do not run the command again."），
-     * 否则 agent 会一直等着一个不会来的结果。这里钉的就是后者——只断言"没执行"的话，
-     * "模型永远以为还在等"这件事永远不会红。
+     * <p>两件事分开：命令是终态，不跑；会话要收到一条 followup，否则 agent 会一直等着一个
+     * 不会来的结果。行文对着 OpenClaw 的 {@code buildExecDeniedFollowupPrompt}：没有执行、
+     * 不要重试、没有新输出（{@code src/agents/bash-tools.exec-approval-followup.ts:93}）。
+     * 只断言没执行的话，模型永远以为还在等这件事永远不会红。
      */
     @Test
     @DisplayName("拒绝：结论落库、工具没执行，但同一段对话收到「没有执行、不要重试」")
@@ -263,8 +261,9 @@ class ApprovalFlowTest {
         assertThat(finishStatusOf(first.runId()))
                 .as("过期的批准不能补点；而这一轮本来就是 done（它回给用户的是「我需要你批准」）")
                 .isEqualTo("succeeded");
-        // 过期要落终态（2026-11-09 对齐 openclaw 的五态）：只靠 expires_at 比较的话，
-        // 这一行会永远停在 pending，审计里看起来还在等人批——而那个人早就走开了。
+        // 过期要落终态，与 OpenClaw 的审批五态一致（{@code src/gateway/operator-approval-store.types.ts:15}）：
+        // 只靠 expires_at 比较的话，这一行会永远停在 pending，审计里看起来还在等人批，
+        // 而那个人早就走开了。
         Map<String, Object> row = jdbc.queryForMap(
                 "select status, decision, terminal_reason, resolver_kind, resolved_at"
                         + " from claw4j_run.approval_request where id = ?", approvalId);
@@ -369,19 +368,14 @@ class ApprovalFlowTest {
     }
 
     /**
-     * 变异验证的第二条（票里那句"幂等键与指纹混用，两个方向的用例都必须变红"）。
+     * 变异验证的第二条：幂等键与指纹混用，两个方向的用例都必须变红。
      *
-     * <p>两个哈希长得很像、口径完全相反，而 ADR-0017 的幂等键<b>还没落代码</b>——
-     * 所以这里用它的口径当对照物，而不是等它落地：
+     * <p>两个哈希长得像、口径相反，而 ADR-0017 的幂等键还没落代码，所以这里用它的口径当对照物。
+     * 幂等键含 runId 与序号，同一件事里同一个调用重放两次要认得出是同一次；审批指纹不含它们，
+     * 一次点头要覆盖这类操作，否则每件新事都要重批。
      *
-     * <ul>
-     *   <li>幂等键<b>含</b> runId 与序号：同一件事里同一个调用重放两次要认得出是同一次。</li>
-     *   <li>审批指纹<b>不含</b>它们：一次点头要覆盖"这类操作"，否则每件新事都要重批。</li>
-     * </ul>
-     *
-     * <p>第一条断言把"审批指纹不含 runId"钉死——谁把 runId 或序号混进来，它立刻红。
-     * 第二条断言把"幂等键必须随 run 变"钉死——把两者混成一个函数的话，
-     * 同参数换个 run 会被当成"已经做过"，那是漏执行。
+     * <p>第一条断言把审批指纹不含 runId 钉死，第二条把幂等键必须随 run 变钉死。混成一个函数的话，
+     * 同参数换个 run 会被当成已经做过，那是漏执行。
      */
     @Test
     @DisplayName("审批指纹不含 runId 与序号：与幂等键口径相反，混用会双向出事")
@@ -491,14 +485,13 @@ class ApprovalFlowTest {
     // ---------------------------------------------------------------- 审计（P07）
 
     /**
-     * 验收 1（P07）：<b>任一次工具调用都能答出"这次调用是哪次批准的"。</b>
+     * 验收 1（P07）：任一次工具调用都能答出这次调用是哪次批准的。
      *
-     * <p>判据在视图里，不在回话里：执行那一行带着 {@code approval_id}，视图把它接到
-     * 审批表上，于是"谁批的、什么时候、结论是什么"是同一条 select 的三列。
+     * <p>判据在视图里，不在回话里：执行那一行带着 {@code approval_id}，视图把它接到审批表上，
+     * 谁批的、什么时候、结论是什么就是同一条 select 的三列。
      *
-     * <p>同时钉住<b>执行发生在哪一轮</b>：批准之后是同一段对话里的<b>下一轮</b>，
-     * 所以那条 {@code succeeded} 事件挂在新的一行 run 上，而不是被拦的那一轮上。
-     * 分不清这两者的话，"批准之后接着做"会被读成"同一轮又从被拦的地方爬起来"。
+     * <p>同时钉住执行发生在哪一轮：批准之后是同一段对话里的下一轮，那条 {@code succeeded}
+     * 事件挂在新的一行 run 上，不是把被拦的那一轮拉起来。
      */
     @Test
     @DisplayName("批准之后执行的那一次：审计行带着审批编号，视图里查得到谁批的")

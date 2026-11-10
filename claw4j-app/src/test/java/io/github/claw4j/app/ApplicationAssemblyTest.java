@@ -77,28 +77,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 一个完整功能：整机装配。
  *
- * <p>这里只证明一件事——**接上了**：工具注册进了 ChatClient、鉴权 Advisor 挂进了链、
- * 迁移在真库上跑过、只读执行接在工具后面。这四件在模块级永远不会红：那边每个模块手里都有替身，
+ * <p>这里只证明接上了：工具注册进了 ChatClient、鉴权 Advisor 挂进了链、迁移在真库上跑过、
+ * 只读执行接在工具后面。这四件在模块级永远不会红，那边每个模块手里都有替身，
  * Advisor 是测试自己挂的，工具是测试自己塞的。
  *
- * <p>所以这里**不验业务规则**（越权判定、守卫的正则那些在各自功能那份里已经有更深的证明），
- * 也**不验接口契约**——状态码、请求头、SSE 分帧是验收的活（README 里那几条 curl 跑一遍即可），
- * 写进回归只会每天多一个与业务无关的红灯。
+ * <p>所以这里不验业务规则，越权判定与守卫正则由各自功能那份用例证明；也不验接口契约，
+ * 状态码、请求头、SSE 分帧属于验收，写进回归只会多一个与业务无关的红灯。
  *
- * <p>模型是真的（ADR-0011 没有 mock 兜底：没 key 就起不来），所以这里的用例只在
- * "接上了没有"这件事上发请求，不为了凑数再多问一句。守卫那条也发请求，
- * 但它在模型之前就被挡下了。判据是"接上了没有"，不是"规则对不对"。
+ * <p>模型是真的（ADR-0011 没有 mock 兜底，没 key 就起不来），但断言不判它说什么。
+ * 要求回答里出现 128400 这类断言守的其实是模型这一轮愿不愿意调工具，换个模型就会红，
+ * 说明钉错了对象。断言只落在不控制模型也能确定的事上：清单里有没有那个工具、工具能不能
+ * 查到库、回执与答案有没有推回同一个人、一轮有没有起止。模型选不选对工具、被拦下之后会不会
+ * 换做法，归 {@code claw4j-eval} 与 {@code docs/capability-tests.md}。
  *
- * <p><b>真模型参与，但断言不判它说什么</b>（2026-11-10 改）：原来有几条断言要求"回答里要出现
- * 128400"、"审计里恰好两条事件"、"批准之后工具执行一次"——它们守的其实是**模型这一轮愿不愿意
- * 调工具**。换个模型、甚至同一个模型换一轮都会红，而"换个模型就得改测试"说明断言钉错了对象。
- * 现在模型照旧是真的（它得能跑通一轮），但断言只落在**不控制模型也能确定的事**上：
- * 清单里有没有那个工具、工具能不能查到库、回执与答案有没有推回同一个人、一轮有没有起止。
- * 至于"模型选不选对工具、被拦下之后会不会换做法"，那是 `claw4j-eval` 与
- * `docs/capability-tests.md` 的活——归评测与手工验收，不归装配这条判据。
- *
- * <p>原来的「审批闭环」那条整个删掉了：它的判据是"批准之后模型接着做"，这一句只有模型答得了；
- * 审批的状态机、一次性兑现、过期落终态由 `ApprovalFlowTest`（假模型、真库）守。
+ * <p>审批闭环不在这里：它的判据只有模型答得了，而审批的状态机、一次性兑现、过期落终态
+ * 由 {@code ApprovalFlowTest} 用假模型加真库守。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import(ApplicationAssemblyTest.ChannelProbes.class)
@@ -147,8 +140,8 @@ class ApplicationAssemblyTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.flyway.enabled", () -> "true");
-        // 企业微信（P06）：五样齐了通道才装配。凭据是假的没关系——那条用例里
-        // 回推的实现被换成了一个记录器（{@link ChannelProbes#WECOM_SENT}），不会真去连企业微信。
+        // 企业微信（P06）：五样齐了通道才装配。凭据是假的没关系，那条用例里回推的实现
+        // 被换成了记录器（ChannelProbes.WECOM_SENT），不会真去连企业微信。
         registry.add("claw4j.channel.wecom.corp-id", () -> WECOM_CORP_ID);
         registry.add("claw4j.channel.wecom.corp-secret", () -> "assembly-secret");
         registry.add("claw4j.channel.wecom.agent-id", () -> "1000002");
@@ -156,8 +149,8 @@ class ApplicationAssemblyTest {
         registry.add("claw4j.channel.wecom.encoding-aes-key", () -> WECOM_AES_KEY);
         // 认人：企业微信只登记"谁是谁"，角色名去共用的授权表里取
         registry.add("claw4j.channel.wecom.roles.admin.users[0]", () -> WECOM_USER);
-        // 钉钉（P12）：三样齐了通道才装配。同样把回推换成记录器（{@link ChannelProbes#DINGTALK_SENT}），
-        // 不会真去连钉钉——但验签、解析、编排、回推这一整条链是真的。
+        // 钉钉（P12）：三样齐了通道才装配。同样把回推换成记录器（ChannelProbes.DINGTALK_SENT），
+        // 不会真去连钉钉，但验签、解析、编排、回推这一整条链是真的。
         registry.add("claw4j.channel.dingtalk.client-id", () -> DINGTALK_CLIENT_ID);
         registry.add("claw4j.channel.dingtalk.client-secret", () -> DINGTALK_CLIENT_SECRET);
         registry.add("claw4j.channel.dingtalk.robot-code", () -> DINGTALK_ROBOT_CODE);
@@ -236,12 +229,10 @@ class ApplicationAssemblyTest {
     }
 
     /**
-     * 两个断言都不经过模型：**清单里有它**（ChatClient 通过 {@code ToolCallbackProvider}
-     * 每轮拿这份清单，所以"在清单里"就是"这一轮模型看得见它"），**直接调它能查到库**。
+     * 两个断言都不经过模型：清单里有它，ChatClient 通过 {@code ToolCallbackProvider} 每轮拿这份
+     * 清单，在清单里就是这一轮模型看得见它；以及直接调它能查到库。
      *
-     * <p>原来这里是"问模型一句，回答里要出现 128400"。那条断言守的其实是"模型这一轮愿不愿意调工具"，
-     * 换个模型、甚至同一个模型换一轮都可能红；而它想证明的"工具接上了"根本不依赖模型。
-     * 模型选不选对工具归 {@code claw4j-eval} 与 {@code docs/capability-tests.md}，不归装配这条判据。
+     * <p>工具接上了这件事不依赖模型，所以不在这里问模型一句再查回答。
      */
     @Test
     @DisplayName("查数工具在模型能用的清单里，且真的查得到 business 库")
@@ -276,14 +267,12 @@ class ApplicationAssemblyTest {
     /**
      * 真模型闭环（P04）：到点的定时任务自己开一个 run，回答落在 run 上。
      *
-     * <p>这里验的是<b>整机接线</b>，不是调度算法："到点"那条腿真的接到了
-     * {@code ChatClientAgentPort}、真的用任务主人的身份过了鉴权、真的调了模型。
-     * 库里那张表、认领、失败计数、停用在 {@code ScheduleFlowTest} 里用真库验过，
-     * 这里只问一句：接上了没有。
+     * <p>验的是整机接线，不是调度算法：到点那条腿真的接到了 {@code ChatClientAgentPort}、
+     * 真的用任务主人的身份过了鉴权、真的调了模型。库里那张表、认领、失败计数、停用在
+     * {@code ScheduleFlowTest} 里用真库验过。
      *
-     * <p>任务是用 SQL 直接种进库的——建任务的工具在 {@code ScheduleFlowTest} 里验，
-     * 这里假设库里已经有一行到点的任务，剩下的路走得通吗。种进去的是<b>身份</b>
-     * （userId + 角色）而不是当初那份权限：到点按此刻的角色表重算（P05）。
+     * <p>任务是用 SQL 直接种进库的：这里假设库里已经有一行到点的任务，要问的是剩下的路走不走得通。
+     * 种进去的是身份，userId 加角色，而不是当初那份权限，到点按此刻的角色表重算（P05）。
      */
     @Test
     @DisplayName("真模型闭环：到点的定时任务自己开一个 run，回答落在 run 上")
@@ -300,9 +289,9 @@ class ApplicationAssemblyTest {
 
         scheduleScanner.scan();
 
-        // 到点了跑了一轮：**开头是 started、结尾是 finished**，中间有几条看模型这一轮调不调工具——
-        // 原来写的是"恰好两条"，模型多调一次工具就红，而它要证明的"定时任务接进了编排层"与
-        // 模型调不调工具无关。事件的完整词表与顺序归 AuditLedger 自己的用例。
+        // 到点了跑了一轮：开头是 agent.run.started、结尾是 agent.run.finished，中间有几条
+        // 看模型这一轮调不调工具，而这条用例要证的只与起止有关。事件的完整词表与顺序
+        // 归 AuditLedger 自己的用例。
         List<Map<String, Object>> events = jdbc.queryForList(
                 "select action, status from claw4j_run.audit_event order by seq");
         assertThat(events).as("到点了应当跑出一轮来")
@@ -317,13 +306,12 @@ class ApplicationAssemblyTest {
     /**
      * 真模型闭环（P06）：企业微信里问一句，回调进来、真模型算完、结果主动推回同一个成员。
      *
-     * <p>验的是<b>接上了</b>：{@code /api/wecom/callback} 真的挂着、验签与解密对得上、
-     * 解出来的五个字段真的变成了一次提问、答案真的从编排层推回成员手里。
-     * 每一步单拎出来在 {@code WecomChannelTest} 里都有更细的证明（假模型、假企业微信）；
-     * 这里只问整机这一条路走不走得通——那是模块级测不到的，那边每个通道手里都有替身。
+     * <p>验的是接上了：{@code /api/wecom/callback} 真的挂着、验签与解密对得上、解出来的五个
+     * 字段真的变成了一次提问、答案真的从编排层推回成员手里。每一步在 {@code WecomChannelTest}
+     * 里都有更细的证明，这里只问整机这条路走不走得通。
      *
-     * <p>密文与签名是<b>照协议另写一份</b>（见 {@link #wecomEncrypt}）：用生产的加密去验
-     * 生产的解密，两边一起错也照样绿，那正是这类代码最可能的坏法。
+     * <p>密文与签名照协议另写一份（见 {@link #wecomEncrypt}）：用生产的加密去验生产的解密，
+     * 两边一起错也照样绿，那正是这类代码最可能的坏法。
      */
     @Test
     @DisplayName("真模型闭环：企业微信里问一句，回调进来、真模型算完、结果推回同一个成员")
@@ -352,12 +340,11 @@ class ApplicationAssemblyTest {
     /**
      * 真模型闭环（P12）：钉钉里问一句，回调进来、验签过、真模型算完、结果推回同一个人。
      *
-     * <p>与企业微信那条同形，但<b>验的那一道门完全不同</b>：钉钉的报文是明文，
-     * 签名在 header 里、算法是 HMAC-SHA256。所以这里走的是真 HTTP 加真 header 签名——
-     * 少了它，这个端点就是一个"公网上谁都能往里塞话"的入口，而整条链看上去照样正常。
+     * <p>与企业微信那条同形，但验的那道门完全不同：钉钉的报文是明文，签名在 header 里，
+     * 算法是 HMAC-SHA256。少了它，这个端点就是公网上谁都能往里塞话的入口，而整条链看上去照样正常。
      *
-     * <p>签名是<b>照协议另写一份</b>（见 {@link #dingtalkSign}）：用生产的那份去签、
-     * 再用它去验，两边一起错也照样绿。
+     * <p>签名照协议另写一份（见 {@link #dingtalkSign}）：用生产的那份去签再用它去验，
+     * 两边一起错也照样绿。
      */
     @Test
     @DisplayName("真模型闭环：钉钉回调进来（真签名）、真模型算完、结果推回同一个人")
@@ -392,13 +379,12 @@ class ApplicationAssemblyTest {
                 StandardCharsets.UTF_8);
     }
 
-    /** 金额可能被写成 128,400 或 ￥128400：去掉分隔符再比，比的就是那个数。 */
     /**
-     * P09：档位决定的是**清单**，不是"调了被拒"。
+     * P09：档位决定的是清单，不是调了被拒。
      *
-     * <p>直接调清单组装方法而不是起一个完整上下文：这里要问的是"筛完之后剩哪些名字"，
-     * 而完整上下文会把答案混进几十个 bean 里。两条用例合起来就是这个机制的判据——
-     * 一条证明该挡的挡掉了、不该挡的还在，一条证明"没声明档"不是默认放行。
+     * <p>直接调清单组装方法而不是起一个完整上下文：这里要问的是筛完之后剩哪些名字，
+     * 而完整上下文会把答案混进几十个 bean 里。两条用例合起来是这个机制的判据，
+     * 一条证明该挡的挡掉了、不该挡的还在，一条证明没声明档不是默认放行。
      */
     @Test
     @DisplayName("messaging 档：脚本类不在清单里，元工具与查数工具都在（P09）")
@@ -608,6 +594,7 @@ class ApplicationAssemblyTest {
                 .hasMessageContaining("sales");
     }
 
+    /** 金额可能被写成 128,400 或 ￥128400：去掉分隔符再比，比的就是那个数。 */
     private static boolean mentions(String answer, String amount) {
         String normalized = answer.replace(",", "").replace("，", "").replace(" ", "");
         return normalized.contains(amount);
@@ -703,8 +690,8 @@ class ApplicationAssemblyTest {
     /**
      * 钉钉的签名：{@code Base64(HmacSHA256(key=appSecret, data=timestamp + "\n" + appSecret))}。
      *
-     * <p>注意 key 与 data 里都有 appSecret——它不是"用密钥签一段报文"的常规形状，
-     * 照常规写会算出一串永远对不上的值。
+     * <p>key 与 data 里都有 appSecret，不是用密钥签一段报文的常规形状，照常规写会算出一串
+     * 永远对不上的值。
      */
     private static String dingtalkSign(String timestamp) throws Exception {
         Mac mac = Mac.getInstance("HmacSHA256");
@@ -725,16 +712,15 @@ class ApplicationAssemblyTest {
     /**
      * 把两个 IM 通道的回推都换成记录器（P06 / P12）。
      *
-     * <p>它们注册成 {@link WecomReplySender} 与 {@link DingtalkReplySender}，而自动配置那边
-     * 都是 {@code @ConditionalOnMissingBean}，于是这两个替身赢：真实实现会去连企业微信／钉钉，
-     * 而这两条用例要问的是"推回来的那段文字是什么、推给了谁"——不是"接口通不通"。
+     * <p>它们注册成 {@link WecomReplySender} 与 {@link DingtalkReplySender}，自动配置那边是
+     * {@code @ConditionalOnMissingBean}，于是这两个替身赢：真实实现会去连企业微信或钉钉，
+     * 而这两条用例要问的是推回来的那段文字是什么、推给了谁。
      *
-     * <p><b>两份记录器写在同一个配置类里</b>，而不是各占一个：它们做的是同一件事，
-     * 而这份用例所在的文件已经贴着方法数上限（10 文件 / 20 方法，脚本卡着）——
-     * 每多一个探针配置类就少一个能写用例的位置。
+     * <p>两份记录器写在同一个配置类里，因为做的是同一件事，而文件的方法数上限（10 文件 /
+     * 20 方法）由脚本卡着，多一个探针配置类就少一个能写用例的位置。
      *
-     * <p><b>两个列表不共用</b>：共用的表现是"企业微信那条用例偶尔会看到钉钉的推送"，
-     * 而那要看并行与执行顺序——那种红最难查，因为它不是每次都红。
+     * <p>两个列表不共用：共用的表现是企业微信那条用例偶尔会看到钉钉的推送，取决于并行与执行
+     * 顺序，那种红最难查，因为它不是每次都红。
      */
     @TestConfiguration
     static class ChannelProbes {

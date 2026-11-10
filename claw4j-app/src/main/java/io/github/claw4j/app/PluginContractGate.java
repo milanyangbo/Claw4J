@@ -22,17 +22,16 @@ import java.util.Properties;
 /**
  * 启动期的插件版本契约（P16）：核心版本不满足插件声明的区间，就停在这里。
  *
- * <p><b>为什么是 {@link BeanFactoryPostProcessor} 而不是普通 bean</b>：要求是"在插件的 bean 被创建
- * 之前"报出来。普通 bean 做不到——谁能先创建由依赖关系决定，而插件在 {@code @Bean} 方法体里
- * 第一次碰到已被删除的方法时就已经 {@code NoSuchMethodError} 了，"版本不对"那句话永远轮不到。
+ * <p>用 {@link BeanFactoryPostProcessor} 而不是普通 bean，因为要求是在插件的 bean 被创建之前
+ * 报出来。普通 bean 做不到：谁能先创建由依赖关系决定，插件在 {@code @Bean} 方法体里第一次
+ * 碰到已被删除的方法时就已经 {@code NoSuchMethodError}，版本不对那句话永远轮不到。
  * BFPP 跑在单例实例化之前，也早于任何 {@code @Bean} 方法被调用。
  *
- * <p>代价接受得干脆：BFPP 里不能创建 bean，所以这里只读资源、不注入任何东西——
- * {@code beanFactory} 那个参数用不上，也不需要。
+ * <p>代价是 BFPP 里不能创建 bean，所以这里只读资源、不注入任何东西，{@code beanFactory}
+ * 参数用不上。
  *
- * <p><b>三处失败都是硬失败</b>：契约不成立、核心版本读不到、核心版本读不成版本号。
- * "读不到就当已知"是这类闸最常见的死法：它不会报错，只会在某天以一个 {@code NoSuchMethodError}
- * 出现，而那正是这张票要消灭的形态。
+ * <p>三处失败都是硬失败：契约不成立、核心版本读不到、核心版本读不成版本号。读不到就当已知
+ * 是这类闸最常见的死法，它不报错，只在某天以一个 {@code NoSuchMethodError} 出现。
  */
 public final class PluginContractGate implements BeanFactoryPostProcessor {
 
@@ -47,6 +46,7 @@ public final class PluginContractGate implements BeanFactoryPostProcessor {
 
     private final ResourcePatternResolver resolver;
 
+    /** 用默认的资源解析器，从 classpath 读契约文件。 */
     public PluginContractGate() {
         this(new PathMatchingResourcePatternResolver());
     }
@@ -69,7 +69,7 @@ public final class PluginContractGate implements BeanFactoryPostProcessor {
 
     /**
      * 原样读出来，不先解析。报错要照抄构件上的版本号：{@link CoreVersion} 有意丢掉限定符，
-     * 于是 {@code 0.1.0-SNAPSHOT} 会被说成 {@code 0.1.0}，而运维会先去核对"我到底部署了什么"。
+     * {@code 0.1.0-SNAPSHOT} 会被说成 {@code 0.1.0}，而运维会先去核对部署的到底是哪个版本。
      */
     private String coreVersionText() {
         Resource resource = resolver.getResource("classpath:" + CORE_VERSION_RESOURCE);
@@ -118,8 +118,8 @@ public final class PluginContractGate implements BeanFactoryPostProcessor {
     }
 
     /**
-     * 按 UTF-8 读。<b>不是 {@code Properties.load(InputStream)}</b>：那个方法按 ISO-8859-1 解码，
-     * 插件写个中文名就会变成乱码——而乱码只会出现在报错里，偏偏是出事时才看见。
+     * 按 UTF-8 读。不用 {@code Properties.load(InputStream)}：那个方法按 ISO-8859-1 解码，
+     * 插件写个中文名就会变成乱码，而乱码只在报错里出现，出事时才看见。
      */
     private static Properties load(Resource resource) {
         Properties properties = new Properties();

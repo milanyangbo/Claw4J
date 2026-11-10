@@ -67,20 +67,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 到点就跑这一条链（P04、P05），跑在真库上。
  *
- * <p><b>为什么必须真库</b>：这条链上的三件事全在 SQL 里——"同一时刻只有一个人认领到"
- * 是 {@code for update skip locked}、"实例重启不丢时间点"是 {@code next_run_at} 那一列、
- * "连续三次停用"是失败计数与停用写在同一句 update 里。换成内存替身，这三条怎么改都绿，
- * 而它们正是最容易改错的地方（把 {@code skip locked} 删掉，一条用例都不会红）。
+ * <p>必须真库：这条链上的三件事全在 SQL 里，同一时刻只有一个人认领到是 {@code for update
+ * skip locked}，实例重启不丢时间点是 {@code next_run_at} 那一列，连续三次停用是失败计数与
+ * 停用写在同一句 update 里。换成内存替身，这三条怎么改都绿，比如把 {@code skip locked}
+ * 删掉，一条用例都不会红。
  *
- * <p><b>模型是假的那一段</b>：这里验的是"到点有没有开 run、开的是不是任务主人的、
- * 失败几次之后停没停、收权之后停不停"，不是模型的判断力。真模型闭环另有一条
- * （{@code ApplicationAssemblyTest}）。
+ * <p>模型是假的：这里验的是到点有没有开 run、开的是不是任务主人的、失败几次之后停没停、
+ * 收权之后停不停，不是模型的判断力。真模型闭环在 {@code ApplicationAssemblyTest}。
  *
- * <p><b>权限按当前的角色表重算</b>（P05）：{@link #roleTable} 就是那张表，
- * 用例里把它删掉一个角色、或者把某个角色的表权限收窄，等价于运维改了配置。
- * 这一组同时守着"收权对定时任务真的有效"——那是这条链上唯一会持续越权的形状。
+ * <p>权限按当前的角色表重算（P05）：{@link #roleTable} 就是那张表，用例里删掉一个角色、或者
+ * 把某个角色的表权限收窄，等价于运维改了配置。这一组同时守着收权对定时任务真的有效，
+ * 那是这条链上唯一会持续越权的形状。
  *
- * <p>扫描器的**决策分支**（什么情况记失败、什么情况直接停用、通知里说什么）在 agent 的
+ * <p>扫描器的决策分支（什么情况记失败、什么情况直接停用、通知里说什么）在 agent 的
  * {@code ObservabilityTest} 里用替身跑，那里不需要库；这里只管库上的那一半。
  */
 @Testcontainers
@@ -444,10 +443,10 @@ class ScheduleFlowTest {
     // ---- 下面是把各条用例拼起来的零件 ----
 
     /**
-     * 建一条任务，然后把 {@code next_run_at} 拨到"刚刚到点"。
+     * 建一条任务，然后把 {@code next_run_at} 拨到刚刚到点。
      *
-     * <p><b>拨时间而不是等时间</b>：等明天九点的用例没人会跑第二遍。
-     * 而"到点"这件事在库里就是一列，改它比绕开调度器诚实。
+     * <p>拨时间而不是等时间：等明天九点的用例没人会跑第二遍，而到点在库里就是一列，
+     * 改它比绕开调度器省事。
      */
     private String dueTask(String cron, NotifyPolicy policy) {
         String id = createTask(cron, policy);

@@ -70,22 +70,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 一次 run 的周边两件事：**它花了多少**（A04）与**结果送到哪**（A05，ADR-0018），真跑在 Postgres 上。
+ * 一次 run 的周边两件事：它花了多少（A04）与结果送到哪（A05，ADR-0018），真跑在 Postgres 上。
  *
- * <p><b>为什么合成一份</b>：这两件事本来各占一个文件，setup 是同一套（同一个容器、同一份迁移、
- * 同一张 step 表），差别只在断言的是额度还是地址。合成之后空出来的文件位给了
- * {@code TraceExportTest}——而"观测"与"这一件事花了多少、送到哪"本来也是同一层的问题。
- * 断言一条没删，搬运时只把两个 {@code @BeforeEach} 并成一个（三张表一起清）。
+ * <p>合成一份：两件事的 setup 是同一套，同一个容器、同一份迁移、同一张 step 表，差别只在断言
+ * 的是额度还是地址。观测那一块另在 {@code TraceExportTest}。
  *
- * <p><b>为什么用真库</b>：预算的全部意义是"跨请求、跨进程之后仍然记得花了多少"，
- * 投递的全部意义是"地址是从库里读出来的"（换通道接着做时新的地址要一起进来）。
- * 内存版会把这两条判据都变成一句自我声明。换一个 store 实例读，等价于进程重启。
+ * <p>必须真库：预算的全部意义是跨请求、跨进程之后仍然记得花了多少，投递的全部意义是地址是从
+ * 库里读出来的。内存版会把这两条判据都变成一句自我声明，而换一个 store 实例读等价于进程重启。
  *
- * <p><b>判据是库里的数与人收到的内容，不是回执的措辞</b>：与 run 那两张表同一个纪律——
- * "没抛异常"证明不了额度被扣了、也证明不了谁收到了什么。
+ * <p>判据是库里的数与人收到的内容，不是回执的措辞：没抛异常证明不了额度被扣了，
+ * 也证明不了谁收到了什么。
  *
- * <p>推送那一头用假的（{@link OutboundDelivery} 的实现属于各通道，它自己那份测试管它）；
- * 库上的那一半不在这里：工具循环、鉴权、审批在 agent 模块各自的测试里。
+ * <p>推送那一头用假的，{@link OutboundDelivery} 的实现属于各通道，由各通道自己的测试管；
+ * 工具循环、鉴权、审批在 agent 模块各自的测试里。
  */
 @Testcontainers
 class TurnFlowTest {
@@ -149,10 +146,11 @@ class TurnFlowTest {
     }
 
     /**
-     * 恢复的两条规则（OpenClaw：resume 开新窗口，但只对"额度用完"那个状态）。
+     * 恢复的两条规则：resume 开新窗口，但只对额度用完那个状态。与 OpenClaw 的
+     * {@code resetsBudgetWindow} 同口径（{@code src/config/sessions/goals-transitions.ts:115}）。
      *
-     * <p>写在真库上：清零与判超都在一条 SQL 里（`case when status = 'budget_limited'`），
-     * 用内存替身验的是我写的 if，不是那条语句。
+     * <p>写在真库上：清零与判超都在一条 SQL 里，{@code case when status = 'budget_limited'}，
+     * 用内存替身验的是另一份 if。
      */
     @Test
     @DisplayName("/goal resume：额度用完的开新窗口，暂停过的用量照旧")
@@ -184,16 +182,16 @@ class TurnFlowTest {
     }
 
     /**
-     * 达成的目标：能 resume，但 resume 之前不能改（照 OpenClaw 的命令表与排错表）。
+     * 达成的目标：能 resume，但 resume 之前不能改，与 OpenClaw 的状态转换一致
+     * （{@code src/config/sessions/goals-transitions.ts:108}：complete 只允许转成 complete 或 active）。
      *
-     * <p><b>写在真库上，因为要验的是那三条 SQL 的 {@code where}</b>：
-     * {@code RESUME} 只挡 {@code active}、{@code EDIT} 与 {@code SET_STATUS} 挡 {@code complete}。
-     * 用内存替身验的是我写的 if，不是那三条语句——这一条最初就是绿的，
-     * 因为反例改的是 SQL，而那条用例走的是替身。
+     * <p>写在真库上，因为要验的是那三条 SQL 的 {@code where}：{@code RESUME} 只挡 {@code active}，
+     * {@code EDIT} 与 {@code SET_STATUS} 挡 {@code complete}。用内存替身验的是另一份 if，
+     * 而改反例时改的是 SQL。
      *
-     * <p>原文两处：「{@code /goal resume}」恢复"已暂停、已阻塞、受限<b>或已完成</b>的目标"；
-     * 排错表里那句 {@code Goal error: goal is already complete} 说的是"必须先显式 resume
-     * 才能编辑、暂停或阻塞"。我把后一句读成了"不能恢复"，两者正好相反。
+     * <p>原文两处容易读反：{@code /goal resume} 恢复已暂停、已阻塞、受限或已完成的目标；
+     * 排错表里那句 {@code Goal error: goal is already complete} 说的是必须先显式 resume
+     * 才能编辑、暂停或阻塞。
      */
     @Test
     @DisplayName("达成的目标：能 resume 回来，但 resume 之前 edit / pause 都被挡住")
@@ -293,7 +291,7 @@ class TurnFlowTest {
         assertThat(jdbc.queryForObject("select chat_id from claw4j_session.session_entry",
                 String.class)).isEqualTo("c-b");
 
-        // ---- 上限：桶比 max-entries 多时，驱逐最久没动的（OpenClaw 的 maxEntries）。
+        // ---- 上限：桶比 max-entries 多时，驱逐最久没动的。
         freshSessionTables();
         // segment 与时间故意反着排：按字符串序会驱逐 c-3（最新那个），按时间序才是 c-1。
         pointer(ow, "web", "c-1", "zzz-oldest", now.minus(Duration.ofHours(3)));

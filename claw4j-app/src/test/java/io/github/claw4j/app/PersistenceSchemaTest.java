@@ -46,20 +46,19 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * run / step 那两条 SQL 真跑在 Postgres 上（A01）。
+ * 会话目标、审批、审计那几条 SQL 真跑在 Postgres 上（A01）。
  *
- * <p><b>为什么单独一份</b>：主链路那份（{@code ChatPipelineTest}）用的是内存版存储，验的是
- * "什么时候开 run、什么时候收尾"。而这里要验的是<b>库真的会落成那样</b>——
- * 表在 {@code claw4j_run} 这个 schema 下（不是 public）、状态受 check 约束、
- * 同一 run 内 {@code seq} 唯一。这几条错了都不报错：写错 schema 是"插入失败被降级吞掉"，
- * 写错约束是"什么状态都存得进去"，而 run 表存在的理由恰恰是"能答出做到第几步"。
+ * <p>主链路那份（{@code ChatPipelineTest}）用内存版存储，验的是什么时候开 run、什么时候收尾。
+ * 这里验的是库真的会落成那样：表在 {@code claw4j_run}、{@code claw4j_session} 下而不是 public，
+ * 状态受 check 约束，同一 run 内 {@code seq} 唯一。这几条错了都不报错，写错 schema 是插入失败
+ * 被降级吞掉，写错约束是什么状态都存得进去，而审计存在的理由恰恰是能答出做到第几步。
  *
  * <p>迁移也由这里跑：表是 {@code V6} 建的，用 {@link Flyway} 而不是手写 DDL。
  */
 @Testcontainers
 class PersistenceSchemaTest {
 
-    /** 和语义缓存那份用同一个镜像：同一批迁移里的 {@code V4} 要 {@code create extension vector}。 */
+    /** 用 pgvector 镜像：同一批迁移里的 {@code V5__rag.sql} 要 {@code create extension vector}。 */
     @Container
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
@@ -456,15 +455,14 @@ class PersistenceSchemaTest {
     }
 
     /**
-     * 有效批准的口径：**这个人 + 这个工具 + 这一种参数 + 还没过期 + 是批不是拒 + 还没兑现**，
-     * 六条同时成立。
+     * 有效批准的口径：这个人、这个工具、这一种参数、还没过期、批不是拒、还没兑现，六条同时成立。
      *
-     * <p>每一条都单独立了一行，因为它们任意一条写错都只表现成"拦了本该放行的"或者
-     * "放了本该拦的"，两种都不报错。过期那一条尤其容易写成"读出来再在 Java 里比"——
-     * 那样判的是 JVM 的时钟，而 {@code expires_at} 是库的时间。
+     * <p>每一条都单独立了一行，任意一条写错都只表现成拦了本该放行的，或者放了本该拦的，两种
+     * 都不报错。过期那一条尤其容易写成读出来再在 Java 里比，那样判的是 JVM 的时钟，
+     * 而 {@code expires_at} 是库的时间。
      *
-     * <p><b>参数那一条是 P02 的核心</b>：只按工具名批的话，"批了发一封给张三的邮件"
-     * 同时放行了"发给全公司"。指纹变了就是另一次，必须重新批。
+     * <p>参数那一条是 P02 的核心：只按工具名批的话，批了发一封给张三的邮件同时放行了发给全公司。
+     * 指纹变了就是另一次，必须重新批。
      */
     @Test
     @DisplayName("审批按人 + 工具 + 参数命中：过期、别人的、被拒的、已兑现的都不算")
@@ -536,7 +534,7 @@ class PersistenceSchemaTest {
         assertThat(jdbc.queryForList("select event_id from claw4j_run.audit_event", String.class))
                 .as("30 天内不动").containsExactly("e-fresh");
 
-        // ---- 10 万行上限。一条 SQL 插进去，比循环十万次快得多，也比 sleep 诚实。
+        // ---- 10 万行上限。一条 SQL 插进去，比循环十万次快得多。
         jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, run_id)"
@@ -562,11 +560,12 @@ class PersistenceSchemaTest {
     @Test
     @DisplayName("错误码是 OpenClaw 的九项闭合词表：枚举里的值都写得进去，旧词写不进去")
     void theErrorCodeVocabularyIsClosed() {
-        // 词表逐字照 OpenClaw 的 AuditEventErrorCodeSchema。这条断言的理由不是"多一条约束"，
-        // 而是"按 error_code 过滤时词表外的值一个都命中不了，而它的缺席看起来像没发生过"。
+        // 词表逐字照 OpenClaw 的 {@code AuditEventErrorCodeSchema}
+        // （{@code packages/gateway-protocol/src/schema/audit.ts:27}）。这条断言的理由不是多一条
+        // 约束，而是按 error_code 过滤时词表外的值一个都命中不了，而它的缺席看起来像没发生过。
         //
-        // 两头都要验。只验"旧词写不进去"的话，把枚举值改成旧词，这条测试照样是绿的——
-        // 它压根没读枚举；只验"枚举里的都写得进去"的话，约束被删了也照样是绿的。
+        // 两头都要验。只验旧词写不进去的话，把枚举值改成旧词，这条测试照样是绿的，它压根没读枚举；
+        // 只验枚举里的都写得进去的话，约束被删了也照样是绿的。
         for (AuditErrorCode code : AuditErrorCode.values()) {
             boolean runLevel = code.column().startsWith("run_");
             jdbc.update("insert into claw4j_run.audit_event"
@@ -595,9 +594,10 @@ class PersistenceSchemaTest {
     @Test
     @DisplayName("run_id 必填：没有轮次的事件落不下去，账本连 SQL 都不发")
     void anAuditEventWithoutARunIdDoesNotLand() {
-        // OpenClaw 的 AuditEventSchema.runId 是 NonEmptyString。这一条两头都验：
-        // 库拒绝空值；账本在没有编号时直接跳过（否则每一行都撞约束，write_errors 会一直涨，
-        // 把"没有归属"错报成"库坏了"）。
+        // OpenClaw 的 {@code AuditEventSchema.runId} 是 NonEmptyString
+        // （{@code packages/gateway-protocol/src/schema/audit.ts:56}）。这一条两头都验：
+        // 库拒绝空值；账本在没有编号时直接跳过，否则每一行都撞约束，write_errors 会一直涨，
+        // 把没有归属错报成库坏了。
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, run_id)"
                 + " values ('e-with-run', 'agent_run', 'agent.run.started',"

@@ -31,16 +31,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 真模型闭环（P13）：Slack 里 @ 一句，回调进来、验签过、真模型算完、结果推回那条线程。
  *
- * <p>与企微（P06）、钉钉（P12）两条同形，但<b>验的那一道门完全不同</b>：Slack 的签名覆盖
- * <b>整个原始报文</b>（{@code v0:timestamp:body}），而不只是时间戳。所以这里走真 HTTP
- * 加真 header 签名，并且把报文作为一个字符串原样发出去——反序列化再拼回去就验不过。
+ * <p>与企微（P06）、钉钉（P12）两条同形，但验的那道门不同：Slack 的签名覆盖整个原始报文
+ * （{@code v0:timestamp:body}），不只是时间戳。所以这里走真 HTTP 加真 header 签名，
+ * 并且把报文作为一个字符串原样发出去，反序列化再拼回去就验不过。
  *
- * <p>签名是<b>照协议另写一份</b>（见 {@link #slackSign}）：用生产的那份去签、再用它去验，
- * 两边一起错也照样绿。
+ * <p>签名照协议另写一份（见 {@link #slackSign}）：用生产的那份去签再用它去验，两边一起错
+ * 也照样绿。
  *
- * <p><b>为什么单独一个类而不是并进 {@code ApplicationAssemblyTest}</b>：那个类的方法数已经顶格
- * （20 条），而且它的容器装的是企微与钉钉那套配置。这里要验的是"答案落回线程"——
- * 一个只在这个通道存在的形状，配置也只需要 Slack 那两样。
+ * <p>单独一个类而不并进 {@code ApplicationAssemblyTest}：那个类的方法数已经顶格，容器的配置
+ * 也是企微与钉钉那套。这里要验的是答案落回线程，一个只在这个通道存在的形状。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import(SlackFlowTest.Recorder.class)
@@ -72,8 +71,8 @@ class SlackFlowTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.flyway.enabled", () -> "true");
-        // Slack（P13）：两样齐了通道才装配。同样把回推换成记录器（{@link Recorder#SENT}），
-        // 不会真去连 Slack——但验签、解析、编排、回推这一整条链是真的。
+        // Slack（P13）：两样齐了通道才装配。同样把回推换成记录器（Recorder.SENT），
+        // 不会真去连 Slack，但验签、解析、编排、回推这一整条链是真的。
         registry.add("claw4j.channel.slack.signing-secret", () -> SIGNING_SECRET);
         registry.add("claw4j.channel.slack.bot-token", () -> BOT_TOKEN);
         registry.add("claw4j.channel.slack.roles.admin.users[0]", () -> USER);
@@ -121,8 +120,8 @@ class SlackFlowTest {
     /**
      * 发一条 Slack 回调，返回平台的应答文本。
      *
-     * <p>走真 HTTP：{@code @LocalServerPort} 那个端口上挂着真正的控制器。
-     * 签名放在 header 里，时间戳是<b>秒</b>——照抄钉钉的毫秒会让每一条回调都被判成过期。
+     * <p>走真 HTTP：{@code @LocalServerPort} 那个端口上挂着真正的控制器。签名放在 header 里，
+     * 时间戳是秒，照抄钉钉的毫秒会让每一条回调都被判成过期。
      */
     private String slackCallback(String body) throws Exception {
         String timestamp = String.valueOf(System.currentTimeMillis() / 1000);

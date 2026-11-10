@@ -20,21 +20,19 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * trace 真的导出去（P14）：起一个假的 OTLP collector（JDK 自带 {@link HttpServer}），
- * 让它收 {@code /v1/traces}，断言"收到了、内容不是空的、Content-Type 对、该 flush 的都 flush 了"。
+ * trace 真的导出去（P14）：起一个假的 OTLP collector（JDK 自带的 {@link HttpServer}），
+ * 让它收 {@code /v1/traces}，断言收到了、内容不是空的、Content-Type 对、该 flush 的都 flush 了。
  *
- * <p><b>为什么这份放在 app 而不是 agent</b>：agent 的 {@code ObservabilityTest} 验的是
- * 层级、属性、默认不导（内存 exporter，进程内）；这里验的是**真的走一遍 HTTP**：
- * exporter 的地址与路径、Content-Type、关闭前的 flush。两件事分开之后，
- * 前者回答"画得对不对"，后者回答"送得出去吗"。
+ * <p>放在 app 而不是 agent：agent 的 {@code ObservabilityTest} 验的是层级、属性、默认不导，
+ * 用的是进程内的内存 exporter；这里验的是真的走一遍 HTTP，exporter 的地址与路径、Content-Type、
+ * 关闭前的 flush。前者回答画得对不对，后者回答送不送得出去。
  *
- * <p><b>为什么不解析 protobuf</b>：OTLP 的载荷是 protobuf，而本地没有 protobuf 解析器
- * （也不该为一个测试引一个）。span 名在载荷里是原样出现的 UTF-8 字段值，
- * 所以"数某个名字在 body 里出现了几次"就等价于"收到了几个 span"——这个等价关系的前提
- * （名字唯一、不被压缩）写在这里，比引一个解析器诚实。
+ * <p>不解析 protobuf：本地没有解析器，也不该为一个测试引一个。span 名在载荷里是原样出现的
+ * UTF-8 字段值，所以数某个名字在 body 里出现了几次，等价于收到了几个 span，前提是名字唯一
+ * 且不被压缩。
  *
- * <p><b>判据是收端收到了什么，不是"没抛异常"</b>：导出的失败姿势恰恰是不抛——
- * Batch 队列满了丢、collector 不可达时重试到超时，两种都只留一条日志。
+ * <p>判据是收端收到了什么，不是没抛异常：导出的失败姿势恰恰是不抛，Batch 队列满了丢、
+ * collector 不可达时重试到超时，两种都只留一条日志。
  */
 class TraceExportTest {
 

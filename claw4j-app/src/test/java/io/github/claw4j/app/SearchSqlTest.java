@@ -66,19 +66,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * 两个检索能力的 SQL 真跑在 pgvector 上：语义缓存（"这个问题问过没有"）与知识库（"哪段文档相关"）。
+ * 几条只有 Postgres 才成立的 SQL 真跑一遍：知识库检索（向量 + 全文）、入站队列、跨会话召回。
  *
- * <p><b>为什么这两件事写在一份里</b>：它们共用同一个实例、同一个扩展、同一批迁移，差别只在语义。
- * 分开写意味着两份容器启动与两份迁移，而两边验的都是"这段 SQL 真的能跑"。
- * 更重要的是它们必须**看得见彼此**：知识库这一票的一半判据是"文档块不许出现在缓存表里"，
- * 那条断言只有在一份文件里才能一眼看出它指的是哪两张表。
+ * <p>合成一份是因为它们共用同一个实例、同一个扩展、同一批迁移，分开写就是几份容器启动与几份迁移，
+ * 而验的是同一件事：这段 SQL 真的能跑。
  *
- * <p><b>为什么这些必须是真库</b>：{@code ?::vector}、生成列 {@code to_tsvector('simple', …)}、
- * {@code @@ to_tsquery}、{@code on conflict}——全部只在 Postgres 里成立。生成列尤其：
- * 它要求函数 immutable，不满足时**建表就失败**，而那件事没有任何单测能提前告诉你。
- *
- * <p>类名从 {@code SemanticCacheSqlTest} 改成现在这个，是因为它现在管两件事；不改的话，
- * 下一个要查"知识库的 SQL 测过吗"的人会去翻第二个文件，然后发现没有。
+ * <p>必须真库：{@code ?::vector}、生成列 {@code to_tsvector('simple', …)}、{@code @@ to_tsquery}、
+ * {@code on conflict} 全部只在 Postgres 里成立。生成列尤其，它要求函数 immutable，不满足时
+ * 建表就失败，那件事没有任何单测能提前告诉你。
  */
 class SearchSqlTest {
 
@@ -344,12 +339,11 @@ class SearchSqlTest {
     }
 
     /**
-     * 一个按"含不含退货"给向量的假模型。
+     * 一个按含不含退货给向量的假模型。
      *
-     * <p><b>两个方法都要实现</b>：索引时 {@code PgVectorStore.add} 走
-     * {@code call(EmbeddingRequest)}（批量入口），检索时走 {@code embed(String)}
-     * （默认实现会落到 {@code embed(Document)}）。只实现一个的话，另一条路会在运行时报
-     * {@code UnsupportedOperation}——而那条错只在真库跑起来之后才出现。
+     * <p>两个方法都要实现：索引时 {@code PgVectorStore.add} 走 {@code call(EmbeddingRequest)}，
+     * 检索时走 {@code embed(String)}，默认实现会落到 {@code embed(Document)}。只实现一个的话，
+     * 另一条路会在运行时报 {@code UnsupportedOperation}，而那条错只在真库跑起来之后才出现。
      */
     private static EmbeddingModel embeddings() {
         return new EmbeddingModel() {
@@ -372,11 +366,10 @@ class SearchSqlTest {
     }
 
     /**
-     * 假模型按**业务域**给方向：五个域各一个正交方向，其余落到第六个。
+     * 假模型按业务域给方向：五个域各一个正交方向，其余落到第六个。
      *
-     * <p>这样"语义"等于"属于哪个域"——正是混合检索要验证的东西：向量把问题路由到正确的域，
-     * 全文那一路在域内精确到某一份。真 embedding 的语义比这细，但测试要的是**可复现的路由**，
-     * 不是"模型像不像人"。
+     * <p>这样语义等于属于哪个域，正是混合检索要验证的东西：向量把问题路由到正确的域，
+     * 全文那一路在域内精确到某一份。真 embedding 比这细，但测试要的是可复现的路由。
      */
     private static float[] vectorFor(String text) {
         if (text == null) {
@@ -584,8 +577,8 @@ class SearchSqlTest {
                 .contains("evt-real-east", "evt-real-south");
 
         // 命中三条：evt-real-east / evt-real-south / evt-real-east-again。
-        // **page 必须不等于 1**：page=1 时 offset 恰好等于 pageSize，两个参数互换后 SQL
-        // 一字不变，那条断言就永远是绿的（第一版写的就是 page=1，假绿）。
+        // page 必须不等于 1：page=1 时 offset 恰好等于 pageSize，两个参数互换后 SQL 一字不变，
+        // 那条断言就永远是绿的。
         List<SessionEvent> thirdPage = across.find(EventFilter.builder()
                 .keywords(List.of("口径", "成交"))
                 .matchMode(EventFilter.MatchMode.ANY)
@@ -639,12 +632,12 @@ class SearchSqlTest {
     /**
      * 会话指针也读 {@code claw4j.session.schema}，不是只让召回那一条读。
      *
-     * <p><b>这条防的是"修了一半"</b>：票 05 只把跨会话召回改成读配置，指针、目标、清理三处
-     * 仍然写死 {@code claw4j_session}。那比"全都写死"更难发现——看起来已经修过了。
+     * <p>防的是修了一半：只改召回而不改指针、目标、清理，比全都写死更难发现，因为它看起来
+     * 已经修过了。
      *
-     * <p><b>断言必须看落库位置，不能只看返回值</b>：写死时 {@code segmentOf} 照样返回
-     * {@code seg-1}，因为它确实写成功了，只是写进了另一张同名表。所以这里查的是
-     * {@code claw4j_alt.session_entry} 的行数——那一行才证明"配了哪个 schema 就写哪个"。
+     * <p>断言必须看落库位置，不能只看返回值：写死时 {@code segmentOf} 照样返回 {@code seg-1}，
+     * 因为它确实写成功了，只是写进了另一张同名表。所以这里查 {@code claw4j_alt.session_entry}
+     * 的行数，那一行才证明配了哪个 schema 就写哪个。
      */
     @Test
     @DisplayName("会话指针跟着 claw4j.session.schema 走：写死的话它悄悄写进另一张表")

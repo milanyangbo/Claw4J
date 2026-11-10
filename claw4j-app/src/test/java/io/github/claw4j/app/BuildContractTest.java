@@ -48,23 +48,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 四条"构建与装配"的契约：Java 侧不自己拼命令行（ADR-0002）、会话 schema 只在一个地方写死、
- * 跨 jar 的迁移合成一套 schema、以及插件声明的核心区间必须对得上（P16）。
+ * 四条构建与装配的契约：Java 侧不自己拼命令行（ADR-0002）、会话 schema 只在一个地方写死、
+ * 跨 jar 的迁移合成一套 schema、插件声明的核心区间必须对得上（P16）。
  *
- * <p><b>为什么合成一份</b>：它们本来各占一个文件，但问的是同一类问题——<b>那些不会在运行时
- * 报错、只在某天以另一种形态暴露的约定</b>。手写 shell 的代价是"1.x 把宿主机交出去"；
- * 写死会话 schema 的代价是"改一次配置，一半功能继续读旧表"；迁移版本号撞车的代价是
- * "少建一张表，而启动日志完全正常"；插件版本对不上的代价是
- * "某次调用突然 {@code NoSuchMethodError}"，日志里没有一行提到版本。四者都只能靠在构建与
- * 启动期钉住。</p>
+ * <p>合成一份是因为它们问的是同一类问题：那些不会在运行时报错、只在某天以另一种形态暴露的约定。
+ * 手写 shell 的代价是宿主机交出去；写死会话 schema 的代价是改一次配置、一半功能继续读旧表；
+ * 迁移版本号撞车的代价是少建一张表而启动日志完全正常；插件版本对不上的代价是某次调用突然
+ * {@code NoSuchMethodError}，日志里没有一行提到版本。
  *
- * <p>合并的直接原因是硬约束：{@code claw4j-app} 与别处一样卡在 10 个测试文件，
- * P13 要给 Slack 的真模型闭环留一个位置。第三条（P16）进来时用的就是这些空位——
- * 它守的是同一个家族的东西，而 {@code claw4j-capability} 的文件名额已经满了。</p>
+ * <p>合并还有名额上的原因：{@code claw4j-app} 卡在 10 个测试文件，P13 要给 Slack 的真模型闭环
+ * 留一个位置，而 {@code claw4j-capability} 的文件名额已经满了。
  *
- * <p><b>它们只能在 app 模块</b>：别的模块的架构测试只扫得见自己，而前两条都要扫全部模块
- * （前者要扫所有 {@code src/main/java}，后者要扫 classpath 上所有 {@code db/migration}）；
- * 第三条守的装配本身也发生在 app。</p>
+ * <p>只能在 app 模块：别的模块的架构测试只扫得见自己，而前两条都要扫全部模块，一条扫所有
+ * {@code src/main/java}，一条扫 classpath 上所有 {@code db/migration}；第三条守的装配本身
+ * 也发生在 app。
  */
 @Testcontainers
 @AnalyzeClasses(packages = "io.github.claw4j", importOptions = ImportOption.DoNotIncludeTests.class)
@@ -75,9 +72,9 @@ class BuildContractTest {
     /**
      * 全仓仅有的两个被允许起进程的类。
      *
-     * <p>{@code LocalProcessRunner} 收 argv（脚本包走这条）；{@code ShellCommandRunner} 把命令交给
-     * {@code /bin/sh -c}（{@code exec} 走这条，票 01）。区别在**这条命令行是谁给的**：
-     * 包清单给的是 argv，模型给的是命令。加第三个之前先想清楚"超时、目录锁、干净环境"这三句话还成不成立。
+     * <p>{@code LocalProcessRunner} 收 argv，脚本包走这条；{@code ShellCommandRunner} 把命令交给
+     * {@code /bin/sh -c}，{@code exec} 走这条。区别在命令行是谁给的：包清单给的是 argv，
+     * 模型给的是命令。加第三个之前先想清楚超时、目录锁、干净环境这三件事还成不成立。
      */
     private static final String PROCESS_SPAWNER = "io.github.claw4j.capability.process.LocalProcessRunner";
 
@@ -104,13 +101,13 @@ class BuildContractTest {
                             + "，别处不自己拼命令行（ADR-0002）");
 
     /**
-     * 通用 shell 工具（{@code spring-ai-agent-utils} 的 {@code ShellTools}：{@code Bash} /
-     * {@code BashOutput} / {@code KillShell}）**必须带着我们的沙箱后端出生**。
+     * 通用 shell 工具（{@code spring-ai-agent-utils} 的 {@code ShellTools}：{@code Bash}、
+     * {@code BashOutput}、{@code KillShell}）必须带着沙箱后端出生。
      *
-     * <p><b>为什么是"只许在一个地方造它"而不是"不许依赖它"</b>：通用 shell 是正经能力（票 01），
-     * 我们用的就是它。真正要拦的是**裸造**——{@code ShellTools.builder().build()} 不给 backend 时
-     * 默认 {@code LocalExecBackend}，直接拼 {@code /bin/bash -c}，把 env 白名单、非 root、命令白名单
-     * 一次作废。而上面那条 {@code ProcessBuilder} 规则看不见它：类在 jar 里，我们不 new 任何进程对象。
+     * <p>不许依赖它不是目的：通用 shell 是正经能力。要拦的是裸造，{@code ShellTools.builder().build()}
+     * 不给 backend 时默认 {@code LocalExecBackend}，直接拼 {@code /bin/bash -c}，把 env 白名单、
+     * 非 root、命令白名单一次作废。而那条 {@code ProcessBuilder} 规则看不见它：类在 jar 里，
+     * 代码里没有任何进程对象的构造。
      *
      * <p>于是规则收窄成一个点名：装配类亲手造它，造的时候塞的是 {@code SandboxedExecBackend}。
      */
@@ -138,14 +135,12 @@ class BuildContractTest {
                             + "别处造它默认拿到 LocalExecBackend，env 白名单与命令白名单一次作废（票 01）");
 
     /**
-     * 会命令解释器的写法。shell 会把参数里的分号当成第二条命令，
-     * 于是"传一个参数"变成了"执行一段脚本"。注释里也不许出现——扫的是整份文件，
-     * 区分代码与注释要写解析器，那份代价比"注释换个说法"贵得多。
+     * 会命令解释器的写法。shell 会把参数里的分号当成第二条命令，于是传一个参数变成了执行一段脚本。
+     * 注释里也不许出现：扫的是整份文件，区分代码与注释要写解析器，那份代价比注释换个说法贵得多。
      *
-     * <p><b>唯一豁免：{@code ShellCommandRunner}</b>（票 01）。它的全部内容就是"把命令交给
-     * {@code /bin/sh -c}"，而那条命令是模型给的、已经过了白名单与工作区边界。
-     * 豁免的是这一个文件名，不是这批字面量——多一个文件想出现 {@code bash -c} 就得先改这里，
-     * 那一步和"要不要再开一个 shell 入口"是同一个决定。
+     * <p>唯一豁免是 {@code ShellCommandRunner}。它的全部内容就是把命令交给 {@code /bin/sh -c}，
+     * 而那条命令是模型给的、已经过了白名单与工作区边界。豁免的是这一个文件名，不是这批字面量，
+     * 多一个文件想出现 {@code bash -c} 就得先改这里，那一步和要不要再开一个 shell 入口是同一个决定。
      */
     private static final List<String> SHELL_INTERPRETERS =
             List.of("sh -c", "bash -c", "/bin/sh", "/bin/bash", "cmd.exe");
@@ -195,17 +190,15 @@ class BuildContractTest {
     /**
      * 会话 schema 的字面量只许出现在 {@link io.github.claw4j.agent.session.SessionSchema} 里。
      *
-     * <p><b>为什么要有这条</b>：{@code claw4j.session.schema} 是可配的，而跑在主连接池上的
-     * 手写 SQL（会话指针、会话目标、清理任务、跨会话召回）不能靠连接的 {@code search_path}，
-     * 只能写全限定表名。每写死一处，改配之后就是"框架往新 schema 写、这一处读旧的"。
-     * 症状不是报错，是功能悄悄失效：指针永远换不出来、目标读不到、一行都没清出去。
+     * <p>{@code claw4j.session.schema} 是可配的，而跑在主连接池上的手写 SQL（会话指针、会话目标、
+     * 清理任务、跨会话召回）不能靠连接的 {@code search_path}，只能写全限定表名。每写死一处，
+     * 改配之后就是框架往新 schema 写、这一处读旧的，而症状不是报错，是指针永远换不出来、
+     * 目标读不到、一行都没清出去。
      *
-     * <p><b>它来自哪次事故</b>：票 05 只把跨会话召回那一处改成读配置，
-     * 另外三处（共 17 个表名）仍然写死。同一份代码里两种行为并存比"全都写死"更难发现，
+     * <p>规则覆盖全部四处，而不只是最近被修的那一处：同一份代码里两种行为并存比全都写死更难发现，
      * 因为它看起来已经修过了。
      *
-     * <p>只查 {@code src/main/java}：测试里写全限定名是正常的（真库要建表、要 truncate）。
-     * 注释行不查——那里写的是"读起来像什么"，不参与执行；为了它写一个词法解析器不值。
+     * <p>只查 {@code src/main/java}，测试里写全限定名是正常的；注释行不查，它不参与执行。
      */
     @Test
     @DisplayName("会话 schema 的字面量只许留在 SessionSchema：手写 SQL 一律从配置取")
@@ -281,23 +274,21 @@ class BuildContractTest {
         var flyway = flyway();
         flyway.migrate();
 
-        // 断言"跑完之后历史里有什么"，而不是"这一次执行了几条"——同一份容器被两条用例共用，
-        // 谁先跑都会把迁移做完，盯着 migrationsExecuted 会变成一条看执行顺序的用例。
+        // 断言跑完之后历史里有什么，而不是这一次执行了几条：同一份容器被两条用例共用，
+        // 谁先跑都会把迁移做完。
         //
-        // **没有 4**：V4 原来是语义缓存，那个能力改落 Redis 之后整张表连同 schema 一起删了，
-        // 编号不复用（与 ADR 编号同一个口径）——它下面那个位置放的是已经不存在的东西。
+        // 没有 4：V4 原来是语义缓存，那个能力改落 Redis 之后整张表连同 schema 一起删了，
+        // 编号不复用（与 ADR 编号同一个口径）。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
                 .containsExactly("1", "2", "3", "5", "6", "7");
 
         var jdbc = new JdbcTemplate(dataSource());
 
-        // 五个 schema 各自的归属：business 是示例插件的，其余是 agent 的
-        // （会话 claw4j_session、调度/审批/审计在 claw4j_run、知识库在 claw4j_rag、
-        // 入站队列在 claw4j_channel）。**缓存不在其中**：语义缓存 2026-11-09 改落 Redis Stack，
-        // 那张表在基线里已经不存在（整个 claw4j_cache schema 都没了）；它一旦重新出现，
-        // 就是有人又把缓存往库里写了。
-        // 入站队列单独一个是因为它跟着**通道**走（V7）：它是"平台把消息交给了我们"这件事的账，
+        // 五个 schema 各自的归属：business 是示例插件的，其余是 agent 的（会话 claw4j_session、
+        // 调度/审批/审计在 claw4j_run、知识库在 claw4j_rag、入站队列在 claw4j_channel）。
+        // 缓存不在其中：它一旦重新出现在这里，就是有人又把缓存往库里写了。
+        // 入站队列单独一个是因为它跟着通道走（V7）：它是平台把消息交给宿主这件事的账，
         // 与一次 agent 运行没有父子关系。
         assertThat(jdbc.queryForList(
                 "select schema_name from information_schema.schemata"
@@ -309,7 +300,7 @@ class BuildContractTest {
 
         // 会话 schema 里只剩三张表（票 06）：目标与指针并成了 session_entry。
         // 这条断言盯的是"合并真的发生了"，而不是"新表建出来了"——
-        // 两张旧表还在的话，`/new` 那条路又会退回到"段换了、目标还挂着"。
+        // 两张旧表还在的话，/new 那条路又会退回到「段换了、目标还挂着」。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables"
                         + " where table_schema = 'claw4j_session' order by table_name", String.class))
@@ -337,8 +328,8 @@ class BuildContractTest {
     }
 
     /**
-     * 不给 locations：走 Spring Boot 的默认值 `classpath:db/migration`，
-     * 也就是"所有 jar 里同名目录的并集"——这正是要验的那条路径。
+     * 不给 locations：走 Spring Boot 的默认值 {@code classpath:db/migration}，也就是所有 jar 里
+     * 同名目录的并集，这正是要验的那条路径。
      */
     private static DriverManagerDataSource dataSource() {
         return new DriverManagerDataSource(
@@ -350,9 +341,9 @@ class BuildContractTest {
     /**
      * 现场造 classpath 的根。每条用例一个目录，JUnit 跑完就删。
      *
-     * <p>造 jar 而不是只造目录，是这组判据的重点：**插件在另一个 jar 里**。
-     * 目录形态在开发期就能跑通，jar 形态失败的方式不一样——扫不到资源是静默空结果，
-     * 于是"什么都没发生"看起来和"全部通过"一模一样。
+     * <p>造 jar 而不是只造目录，是这组判据的重点：插件在另一个 jar 里。目录形态在开发期就能
+     * 跑通，jar 形态失败的方式不一样，扫不到资源是静默空结果，什么都没发生看起来和全部通过
+     * 一模一样。
      */
     @TempDir
     Path temp;
