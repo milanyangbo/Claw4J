@@ -117,25 +117,27 @@ class SlackMessageTranslator {
         String eventType = text(event, "type");
         if (APP_MENTION.equals(eventType)) {
             // 频道里 @ 应用：答案挂回这条消息下面的线程，不然频道会被回执与答案刷满
-            return question(root, event, userId, text(event, "ts"));
+            // 频道里的发言不是私聊：会话键按群隔离，不并进这个人的主会话（ADR-0029）
+            return question(root, event, userId, text(event, "ts"), false);
         }
         if (MESSAGE.equals(eventType) && DIRECT_MESSAGE.equals(text(event, "channel_type"))) {
             // 私聊：发顶层。这里刻意不看 thread_ts——私聊里跟帖是少数，挂在原消息下反而绕
-            return question(root, event, userId, "");
+            return question(root, event, userId, "", true);
         }
         return ignored("事件类型是 " + eventType + "（channel_type="
                 + text(event, "channel_type") + "），不是给我的提问");
     }
 
     /** 把一条已确认是人发的消息包成事件；剥完 mention 后为空就是空提问。 */
-    private Parsed question(JsonNode root, JsonNode event, String userId, String threadTs) {
+    private Parsed question(JsonNode root, JsonNode event, String userId, String threadTs,
+                            boolean direct) {
         String channel = text(event, "channel");
         if (channel.isBlank()) {
             return ignored("事件里没有 channel：知道谁问的，但不知道回哪儿");
         }
         String question = stripMentions(text(event, "text"));
         TextEvent inbound = new TextEvent(text(root, "event_id"), userId, question, channel, threadTs,
-                receivedAt(text(root, "event_time")));
+                receivedAt(text(root, "event_time")), direct);
         return question.isBlank()
                 ? new Parsed(Kind.EMPTY_QUESTION, "", "", inbound)
                 : new Parsed(Kind.TEXT, "", "", inbound);
@@ -209,11 +211,16 @@ class SlackMessageTranslator {
     /**
      * 一条文本消息。
      *
-     * <p>写成 record 而不是让调用方拼一个匿名类：它只有六个字段、没有行为，
+     * <p>写成 record 而不是让调用方拼一个匿名类：它只有七个字段、没有行为，
      * 而"少填一个字段"在这件事上的表现是"去重失效"或"答案发到了别人的线程里"——都很难查。
+     *
+     * <p>{@code direct} 在这里就地实现 {@link InboundEvent#direct()}：频道里的 {@code app_mention}
+     * 是 {@code false}，私聊的 {@code message} 是 {@code true}。判错的表现不是报错，
+     * 而是频道里的上下文并进了这个人的私聊（ADR-0029）。
      */
     private record TextEvent(String eventId, String userId, String text, String channel,
-                             String threadTs, Instant receivedAt) implements SlackInboundEvent {
+                             String threadTs, Instant receivedAt,
+                             boolean direct) implements SlackInboundEvent {
 
         @Override
         public String senderId() {

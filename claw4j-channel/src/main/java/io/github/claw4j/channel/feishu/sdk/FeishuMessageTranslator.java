@@ -37,6 +37,9 @@ class FeishuMessageTranslator {
 
     private static final String TEXT_MESSAGE = "text";
 
+    /** 飞书的单聊类型。群是 {@code group}，认不出的按群处理（ADR-0029）。 */
+    private static final String DIRECT_CHAT_TYPE = "p2p";
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     Optional<FeishuInboundEvent> translate(P2MessageReceiveV1 event) {
@@ -61,7 +64,21 @@ class FeishuMessageTranslator {
             return Optional.empty();
         }
         return Optional.of(new InboundEvent(eventIdOf(event), message.getChatId(), openId, text,
-                receivedAtOf(message)));
+                receivedAtOf(message), isDirect(message.getChatType())));
+    }
+
+    /**
+     * 这条消息是不是私聊（ADR-0029）。
+     *
+     * <p>飞书把会话类型放在 {@code chat_type}：{@code p2p} 是单聊，{@code group} 是群。
+     * 认不出的一律按群处理——群方向的错误只是"少共享一段上下文"，而私聊方向的错误是
+     * "群里的内容并进了这个人的私聊"，那是越权。
+     *
+     * @param chatType 平台给的会话类型
+     * @return 只有明确是 {@code p2p} 时为 {@code true}
+     */
+    private static boolean isDirect(String chatType) {
+        return DIRECT_CHAT_TYPE.equalsIgnoreCase(chatType == null ? "" : chatType.strip());
     }
 
     /** 正文是 JSON 字符串，形如 {@code {"text":"..."}}。解析失败按"没有正文"处理，不猜。 */
@@ -115,6 +132,7 @@ class FeishuMessageTranslator {
                                 String chatId,
                                 String senderId,
                                 String text,
-                                Instant receivedAt) implements FeishuInboundEvent {
+                                Instant receivedAt,
+                                boolean direct) implements FeishuInboundEvent {
     }
 }
