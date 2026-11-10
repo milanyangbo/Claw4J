@@ -269,7 +269,7 @@ class BuildContractTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：六份基线全跑到，五个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：七份基线全跑到，五个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -281,7 +281,7 @@ class BuildContractTest {
         // 编号不复用（与 ADR 编号同一个口径）。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "5", "6", "7");
+                .containsExactly("1", "2", "3", "5", "6", "7", "8");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -298,13 +298,17 @@ class BuildContractTest {
                 .containsExactly("business", "claw4j_channel", "claw4j_rag",
                         "claw4j_run", "claw4j_session");
 
-        // 会话 schema 里只剩三张表（票 06）：目标与指针并成了 session_entry。
-        // 这条断言盯的是"合并真的发生了"，而不是"新表建出来了"——
-        // 两张旧表还在的话，/new 那条路又会退回到「段换了、目标还挂着」。
+        // 会话 schema 里是框架的两张、V8 那六张、以及还没走的 session_entry。
+        //
+        // 这条断言盯的是"这一版到底建了什么"：少一张说明迁移没跑到，多一张说明有人绕过
+        // V8 又摊了一张平表。session_entry 在列表里是**故意的**——代码还在按它读写，
+        // 切换完成后由下一版 drop，到那时这一行跟着减一张。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables"
                         + " where table_schema = 'claw4j_session' order by table_name", String.class))
-                .containsExactly("ai_session", "ai_session_event", "session_entry");
+                .containsExactly("ai_session", "ai_session_event", "conversations",
+                        "session_conversations", "session_entry", "session_entry_snapshots",
+                        "session_key_contract", "session_nodes", "session_windows");
 
         // V1 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
         assertThat(jdbc.queryForObject("select count(*) from business.sales_order", Integer.class))
@@ -317,7 +321,7 @@ class BuildContractTest {
         var flyway = flyway();
         flyway.migrate();
 
-        // 6 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
+        // 7 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
         assertThat(flyway.migrate().migrationsExecuted)
                 .as("第二次调用不该再执行任何迁移")
                 .isZero();
