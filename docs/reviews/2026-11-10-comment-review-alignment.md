@@ -15,7 +15,7 @@
 ## 机器校验
 
 - `git diff` 里的非注释改动行：**0**。
-- `test-compile` 通过；`./scripts/verify.sh` 结果见提交说明。
+- `test-compile` 通过；`./scripts/verify.sh` 全绿：失败 0、错误 0、跳过 0，八个模块行覆盖率 69.8%~93.8%。
 - Javadoc 内残留 Markdown 标记 2 处：一处是脱敏手机号 `138****`（保留），另一处已改。
 - **两个子 agent 越界改到了代码，已修**：`AuditProperties` 的 `private boolean enabled = true;` 被删掉，
   `WeightedScoreJoiner` 的 `join(Map)` 签名被复制成两份。原因是注释块紧贴代码，Edit 的 `old_string`
@@ -91,3 +91,34 @@
 
 - 不改任何代码、不改 `docs/adr` 与票面。上面每一条要落地，都得单独开票。
 - 不把文档里读不懂的表述改成人话——按约定，ADR 与票是给 AI 读的，保持原样。
+
+## 七、用户裁决与落地（2026-11-10 追加）
+
+看完上面那份清单，用户逐条给了裁决。**这一节之后的代码已经改了**，不再是"只记录"。
+
+| 决定 | 落法 | 用例 |
+| --- | --- | --- |
+| `/goal` 跟 OpenClaw 对齐，要改代码就改 | `ChatClientAgentPort` 两处调用点改成传 `conversationKey`（原来传含段 `sessionId`，而 store 按会话节点键查） | **缺口**：见下 |
+| 压缩保留 | `SessionCompactor` 不动，只确认进模型前会压 | 原有用例 |
+| 连不上的 MCP server | **照 OpenClaw**：连不上、空清单、运行期掉线都记 DOWN + 后台退避，只有配置错误启动失败（我中途按"启动期直接报错"改过一版，与它相反，已退回） | `McpServerRetryTest#unreachableServerDoesNotStopTheApplication`、`McpServersConfigTest#unreachableServerKeepsTheApplicationUp` |
+| `maintenance.mode` / `maxEntries` 按 OpenClaw | 默认 `enforce`、`maxEntries` 5000；拼错的值从"落回 warn"改成启动失败（落回任何一档都是错的：warn 是一条都不删，enforce 是拼错反而删数据） | `SessionMemoryTest#maintenanceBoundsAreRejected` |
+| MCP 退避 30 秒 → 15 秒 | `INITIAL_BACKOFF = 15s`，封顶 600 秒不变（`mcp-startup-backoff.ts:125`、`:158`） | `#backoffStartsAtFifteenSecondsAndCaps` |
+| 飞书落库失败按 OpenClaw 关 socket 重建 | 回调捕获落库异常 → 关掉当前连接、状态置 `DISCONNECTED`、排一次重连，然后把异常照旧抛给平台（这一条不能算收下） | `FeishuChannelWiringTest#aPersistFailureReachesThePlatform` 补了状态断言 |
+
+**缺口，写在这里不藏**：`/goal` 这处修复没有装配级用例。想用 `/new` 造出"sessionId 带段"的现场，
+在 `ChatPipelineTest` 那个假存储环境里换不了段——两个键恰好相同，断言永远为真；我把这条空断言
+撤掉了，没有留在门禁里冒充证据。真正的验证要等一条带指针存储的用例，或者人工跑一次
+`/new` 之后 `/goal` 再看模型那一侧的提示词。**这一条按"未验证"记，不勾在已完成里。**
+
+**用户没有裁决、按现状保留的一处**（上面第二、五节已逐条列过，这里是结论）：
+
+- 审计保留期（30 天 / 10 万行）与 OpenClaw 已经一致，`AuthorizationAdvisor` 里原来那句 90 天是注释写错，已改。
+
+**按 OpenClaw 实现、进行中的一处**：
+
+- `SessionKeys` 的分段粒度。OpenClaw 的 `session.dmScope` 默认 `main`：**所有私聊共用一个主会话**；
+  群聊不受它影响，按群隔离（`docs/concepts/session.md:158-171`）。我们现在是 `per-channel-peer`
+  （通道 + 地址）。要改的是 `SessionKeys` 的形状，代价是**现有会话键全部变化，库里历史变成孤儿**。
+  卡在一处机制上：域模型里没有"私聊 / 群聊"这个字段，而 `main` 只作用于私聊——不分辨的话，
+  同一个人在群里的上下文会并进他的私聊。通道侧其实有这个信息（Slack 的 `channel_type: im`、
+  飞书的 `chat_type`），要不要把 `direct` 加进 `InboundMessage`，定了就改。
