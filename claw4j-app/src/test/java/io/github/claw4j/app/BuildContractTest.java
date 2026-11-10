@@ -330,7 +330,7 @@ class BuildContractTest {
         // 编号不复用（与 ADR 编号同一个口径）。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "5", "6", "7", "8", "9");
+                .containsExactly("1", "2", "3", "5", "6", "7", "8", "9", "10");
 
         var jdbc = new JdbcTemplate(dataSource());
 

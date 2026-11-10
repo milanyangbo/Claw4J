@@ -12,6 +12,7 @@ import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
 import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -291,6 +292,61 @@ class PersistenceSchemaTest {
                 key, key + ":seg-1", key + ":seg-1", now, 0L,
                 UUID.randomUUID().toString(), objective, status, now, now,
                 startFresh, tokensUsed, budget);
+    }
+
+    @Test
+    @DisplayName("通道会话登记成幂等的一行：这一段的主对话是 primary，另一条通道挂成 participant")
+    void aConversationIsCataloguedOnceAndBoundToTheSegment() {
+        Instant now = Instant.parse("2026-11-09T02:00:00Z");
+        // dm-scope 默认 main：两条通道的私聊落到同一个节点，这正是"多个会话共用一段"的场合。
+        String key = SessionKeys.conversationKeyOf(
+                "u-1@fp-1", true, "feishu", "c-feishu", SessionScopeProperties.defaults());
+        SessionEntryStore entries = new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA);
+
+        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "feishu", "c-feishu", true),
+                new SessionEntryStore.Rotation("seg-1", now, now.minusSeconds(7200),
+                        now.minusSeconds(86_400), false, false));
+        // 同一个人的网页私聊：节点相同、段没到期，所以落在 seg-1 上，挂成 participant。
+        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "web", "c-web", true),
+                new SessionEntryStore.Rotation("seg-2", now.plusSeconds(5), now.minusSeconds(7200),
+                        now.minusSeconds(86_400), false, false));
+
+        String feishuRef = SessionKeys.conversationRefOf("feishu", "direct", "c-feishu");
+        assertThat(jdbc.queryForList(
+                "select conversation_id from claw4j_session.conversations order by conversation_id",
+                String.class))
+                .as("两条通道各一行，id 由通道身份派生——不是随机 uuid，所以登记是幂等的")
+                .containsExactlyInAnyOrder(
+                        feishuRef,
+                        SessionKeys.conversationRefOf("web", "direct", "c-web"));
+
+        assertThat(jdbc.queryForList(
+                "select conversation_id || ':' || role from claw4j_session.session_conversations"
+                        + " order by role", String.class))
+                .as("先建段的飞书是这一段的主对话，后到的网页是 participant——"
+                        + "一个段只有一个 primary，这正是「所有私聊共用主会话」的落法")
+                .containsExactlyInAnyOrder(feishuRef + ":primary",
+                        SessionKeys.conversationRefOf("web", "direct", "c-web") + ":participant");
+
+        assertThat(jdbc.queryForObject(
+                "select primary_conversation_id from claw4j_session.session_windows"
+                        + " where session_id = ?", String.class, key + ":seg-1"))
+                .as("window 上这一列是权威判据（OpenClaw 的 currentSessionKey 认它），"
+                        + "而不是只看 role 那一列")
+                .isEqualTo(feishuRef);
+
+        // ---- 同一对 (段, 会话) 再来一次：一行都不该多出来。
+        entries.segmentOf(new SessionEntryStore.Key(key, "u-1@fp-1", "feishu", "c-feishu", true),
+                new SessionEntryStore.Rotation("seg-9", now.plusSeconds(9), now.minusSeconds(7200),
+                        now.minusSeconds(86_400), false, false));
+
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_session.conversations",
+                Long.class)).as("重复登记只刷新，不新增").isEqualTo(2L);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_session.session_conversations", Long.class))
+                .as("主键是 (段, 会话, role)：同一对换个 role 再插会多出一行，"
+                        + "而 currentSessionKey 只认其中一行")
+                .isEqualTo(2L);
     }
 
     @Test

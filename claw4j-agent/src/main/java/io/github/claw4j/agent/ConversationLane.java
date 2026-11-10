@@ -4,6 +4,7 @@ import io.github.claw4j.agent.session.SessionKeys;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
@@ -17,12 +18,22 @@ import java.util.function.Supplier;
  * 模型要么重查、要么反问。这种失败看起来像模型偶尔忘事，不会有人追到并发上。
  *
  * <p>OpenClaw 把同类约束写成 session lock：only one run should mutate a given session at a time
- * （{@code docs/concepts/parallel-specialist-lanes.md:21}）。这里只取串行化，不取它的
- * collect/steer 语义——合并之后算谁的问题要另答，不是串行化的前提。
+ * （{@code docs/concepts/parallel-specialist-lanes.md:21}），串行化的最小单位是
+ * <b>physical session</b>——"The session controller selects one turn at a time"（{@code docs/concepts/queue.md}）。
+ * 这里只取串行化，不取它的 collect/steer 语义——合并之后算谁的问题要另答，不是串行化的前提。
  *
- * <p>锁键是对话地址，不是 sessionId。段会轮换（ADR-0026 决定一），拿 sessionId 当键会在轮换
- * 那一刻换成另一把锁，串行化正好在最需要它的时候失效。段在锁内计算，这也是「两条消息同时
- * 跨过 4:00 只轮换一次」的来源。
+ * <p>锁键因此是<b>会话节点键</b>（{@link SessionKeys#conversationKeyOf}），不是对话地址、
+ * 也不是 sessionId：
+ * <ul>
+ *   <li>不是 sessionId：段会轮换（ADR-0026 决定一），拿它当键会在轮换那一刻换成另一把锁，
+ *       串行化正好在最需要它的时候失效。段在锁内计算，这也是「两条消息同时跨过 4:00
+ *       只轮换一次」的来源。</li>
+ *   <li>不是「通道 + chatId」：{@code dm-scope: main} 下同一个人的飞书与网页私聊<b>是同一段
+ *       会话</b>，按地址分锁等于让它们各跑各的——两条 run 同时往同一份记忆里写。
+ *       改之前这里正是这个形状，与它的 physical session 口径不一致。</li>
+ * </ul>
+ * 代价：{@code main} 档下跨通道会互相阻塞，一路在跑时另一路拿到 {@link #BUSY_REPLY}。
+ * 这是"同一段会话串行"的必然结果，不是缺陷；不想要就配 {@code per-channel-peer}。
  *
  * <p>用完即删，删的条件是引用计数归零，计数与删除同在 {@code compute} 的原子段里。改成 unlock
  * 后看 {@code hasQueuedThreads} 更省事，但两个线程之间有一瞬间都以为自己是唯一的。不回收则表
@@ -53,22 +64,18 @@ public final class ConversationLane {
     }
 
     /**
-     * 拼出一条对话的地址：{@code addr:<owner>|<通道>|<chatId>}。
+     * 锁键：由会话节点键加前缀得到。
      *
-     * <p>用 {@code owner} 而不是裸 {@code userId}：同一份对话在不同权限下是两段会话（ADR-0007），
-     * 串行化跟着同一个粒度，才不会把降权后的追问和降权前那一轮锁在一起。分隔符取 {@code |}
-     * 而不是 {@code :}：{@code chatId} 里带冒号是常事（飞书的 {@code oc_xxx} 不带，自定义通道
-     * 可能带），带竖线几乎不可能。
+     * <p>前缀 {@code addr:} 只为了让日志里的锁键一眼看出是锁而不是会话。键本身来自
+     * {@link SessionKeys#conversationKeyOf}，这里<b>不重新拼</b>——上一条缺陷就是"同一个键两处
+     * 拼法"，两处一错位，锁保护的和写的就不是同一段会话，而且不报错。
      *
-     * @param owner 身份对应的 owner，来自 {@code SessionKeys.ownerOf}
-     * @param channel 通道名
-     * @param chatId 通道内的会话 id
+     * @param sessionKey 不含段的会话节点键
      * @return 可直接当锁键用的地址
      */
-    public static String addressOf(String owner, String channel, String chatId) {
-        return "addr:" + owner
-                + "|" + SessionKeys.placeholder(channel)
-                + "|" + SessionKeys.placeholder(chatId);
+    public static String addressOf(String sessionKey) {
+        Objects.requireNonNull(sessionKey, "sessionKey");
+        return "addr:" + sessionKey;
     }
 
     /**

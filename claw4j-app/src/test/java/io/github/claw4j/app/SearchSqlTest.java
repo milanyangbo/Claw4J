@@ -665,7 +665,24 @@ class SearchSqlTest {
                     started_at timestamptz,
                     chat_type text,
                     channel text,
-                    account_id text)
+                    account_id text,
+                    primary_conversation_id text);
+                create table claw4j_alt.conversations (
+                    conversation_id text not null primary key,
+                    channel text not null,
+                    account_id text not null,
+                    kind text not null,
+                    peer_id text not null,
+                    delivery_target text not null,
+                    created_at timestamptz not null,
+                    updated_at timestamptz not null);
+                create table claw4j_alt.session_conversations (
+                    session_id text not null,
+                    conversation_id text not null,
+                    role text not null default 'primary',
+                    first_seen_at timestamptz not null,
+                    last_seen_at timestamptz not null,
+                    primary key (session_id, conversation_id, role))
                 """);
 
         Instant now = Instant.parse("2026-11-08T10:00:00Z");

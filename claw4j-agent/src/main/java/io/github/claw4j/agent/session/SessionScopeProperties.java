@@ -61,6 +61,12 @@ public record SessionScopeProperties(String dmScope, String groupScope) {
      * @return 要拼进会话键的那一段
      */
     public String directPeerOf(String channel, String chatId) {
+        // 定时任务不是「谁的私聊」，不参与 dmScope（见 SessionKeys#CRON_PREFIX）。
+        // 落到的这一段与 per-channel-peer 同形，于是节点键恰好等于它会话键去掉末尾那个
+        // 触发时刻——同一个任务的所有触发共用一行「当前状态」，而不是每次新建一行。
+        if (SessionKeys.isSelfAddressed(chatId)) {
+            return channel + ":" + chatId;
+        }
         return switch (dmScope) {
             case DM_PER_PEER -> chatId;
             case DM_PER_CHANNEL_PEER, DM_PER_ACCOUNT_CHANNEL_PEER -> channel + ":" + chatId;

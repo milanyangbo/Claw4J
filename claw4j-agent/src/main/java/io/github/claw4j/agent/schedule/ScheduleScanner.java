@@ -197,11 +197,13 @@ public class ScheduleScanner {
      */
     private static InboundMessage message(ScheduleStore.Due task, Principal owner, Instant now) {
         String chatId = task.channelRef() == null ? task.id() : task.channelRef();
-        String conversationId = "cron:" + task.id() + ":" + now.toEpochMilli();
-        // 形状与人对自己的对话算出来的那条同构（owner + 通道 + 地址），只是地址换成 cron 那个：
-        // 维护任务按 `%:cron:%` 认它，能不能认出来只取决于这个形状。
+        // 对话身份：只到任务，不带触发时刻。它要跨触发稳定——目标是跨触发的一份状态，
+        // 锁也该是同一把；带上时刻等于每次触发都换一个节点、换一把锁。
+        String conversationId = SessionKeys.CRON_PREFIX + task.id();
+        // 会话键：身份 + 本次触发时刻。每次运行天然是一个新段。
         String sessionId = SessionKeys.sessionIdOf(
-                SessionKeys.ownerOf(owner), task.channel(), conversationId);
+                SessionKeys.sessionIdOf(SessionKeys.ownerOf(owner), task.channel(), conversationId),
+                Long.toString(now.toEpochMilli()));
         return new InboundMessage(owner, chatId, task.goal(), now, null, task.channel(),
                 task.notifyPolicy(), conversationId, sessionId,
                 // 定时任务没有"听众"这个概念：它不是群聊，会话键也不按 peer 分段（ADR-0029）。

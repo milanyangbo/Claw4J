@@ -46,8 +46,58 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
     private static final String INSERT_WINDOW = """
             insert into {{schema}}session_windows
                    (session_id, session_key, previous_session_id, reason, session_scope,
-                    created_at, updated_at, started_at, chat_type, channel, account_id)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, updated_at, started_at, chat_type, channel, account_id,
+                    primary_conversation_id)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """;
+
+    /**
+     * 登记一条通道会话（幂等）。
+     *
+     * <p>id 由通道身份派生（{@link SessionKeys#conversationRefOf}），所以这里不需要"先查有没有"：
+     * 同一条会话算出来的 id 每次都一样，重复登记只是刷新 {@code delivery_target} 与时间。
+     * 形状照 OpenClaw 的 {@code registerConversationAddresses}——它把这件事叫"cataloguing
+     * routable addresses ... without creating sessions"（{@code src/config/sessions/conversation-registry.ts}）。
+     */
+    private static final String UPSERT_CONVERSATION = """
+            insert into {{schema}}conversations
+                   (conversation_id, channel, account_id, kind, peer_id, delivery_target,
+                    created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict (conversation_id) do update
+               set delivery_target = excluded.delivery_target,
+                   updated_at = excluded.updated_at
+            """;
+
+    /**
+     * 这条会话已经挂在这一段上了：只刷新 {@code last_seen_at}。
+     *
+     * <p>为什么"先刷新再插"而不是一条 {@code insert ... on conflict}：主键是
+     * {@code (session_id, conversation_id, role)}，同一对 (段, 会话) 换个 role 会被当成新行——
+     * 于是"先在飞书建的段、又在网页说了一句"会让同一条会话在这一段里有两行
+     * （primary 与 participant），而 {@code currentSessionKey} 那边只认其中一行。
+     * 一行一对才是这张表的意思。
+     */
+    private static final String TOUCH_BINDING = """
+            update {{schema}}session_conversations set last_seen_at = ?
+             where session_id = ? and conversation_id = ?
+            """;
+
+    /**
+     * 把这条会话挂到这一段上：这一段还没有 primary 就它当，否则是 participant。
+     *
+     * <p>判定写在语句里而不是先查一次：两条消息同时进门时，"都查到没有 primary"会让第二句插
+     * 一个 primary 撞上唯一索引。整条语句在咨询锁内执行（锁键就是这个节点），所以这里的
+     * {@code exists} 与插入之间没有窗口。
+     */
+    private static final String BIND_CONVERSATION = """
+            insert into {{schema}}session_conversations
+                   (session_id, conversation_id, role, first_seen_at, last_seen_at)
+            select ?, ?, case when exists (
+                       select 1 from {{schema}}session_conversations
+                        where session_id = ? and role = 'primary')
+                   then 'participant' else 'primary' end, ?, ?
+            on conflict do nothing
             """;
 
     /**
@@ -103,6 +153,9 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
     private final String lock;
     private final String read;
     private final String insertWindow;
+    private final String upsertConversation;
+    private final String touchBinding;
+    private final String bindConversation;
     private final String insertNode;
     private final String updateNodeRotated;
     private final String updateNodeTouched;
@@ -123,6 +176,9 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
         this.lock = LOCK;
         this.read = READ.replace("{{schema}}", qualifier);
         this.insertWindow = INSERT_WINDOW.replace("{{schema}}", qualifier);
+        this.upsertConversation = UPSERT_CONVERSATION.replace("{{schema}}", qualifier);
+        this.touchBinding = TOUCH_BINDING.replace("{{schema}}", qualifier);
+        this.bindConversation = BIND_CONVERSATION.replace("{{schema}}", qualifier);
         this.insertNode = INSERT_NODE.replace("{{schema}}", qualifier);
         this.updateNodeRotated = UPDATE_NODE_ROTATED.replace("{{schema}}", qualifier);
         this.updateNodeTouched = UPDATE_NODE_TOUCHED.replace("{{schema}}", qualifier);
@@ -141,14 +197,24 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
     public Optional<String> segmentOf(Key key, Rotation rotation) {
         String fresh = rotation.freshSegment();
         String sessionId = SessionKeys.sessionIdOf(key.sessionKey(), fresh);
+        String conversationRef = SessionKeys.conversationRefOf(
+                key.channel(), key.direct() ? "direct" : "group", key.chatId());
         String[] answer = new String[1];
         inTransaction(() -> {
             lock(key);
             Previous before = read(key);
             boolean rotate = before == null || rotation.forced() || expired(before, rotation);
+            // 先登记通道会话：window 的 primary_conversation_id 外键指着它。
+            jdbc.update(upsertConversation, conversationRef, SessionKeys.placeholder(key.channel()),
+                    SessionKeys.DEFAULT_ACCOUNT, key.direct() ? "direct" : "group",
+                    SessionKeys.placeholder(key.chatId()), SessionKeys.placeholder(key.chatId()),
+                    millis(rotation.now()), millis(rotation.now()));
             if (rotate) {
-                insertWindow(key, before, sessionId, rotateReason(before, rotation), rotation);
+                insertWindow(key, before, sessionId, rotateReason(before, rotation), rotation,
+                        conversationRef);
             }
+            // 这一轮实际落在那一段上：换段是新的，不换段是旧的。
+            String current = before == null || rotate ? sessionId : before.sessionId();
             if (before == null) {
                 insertNode(key, sessionId, rotation);
                 answer[0] = fresh;
@@ -163,8 +229,27 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
                 // 而下一轮它会拿一个库里不存在的段去查记忆与目标。
                 answer[0] = segmentOf(before.sessionId(), key.sessionKey());
             }
+            bind(key, current, conversationRef, rotation);
         });
         return Optional.ofNullable(answer[0]);
+    }
+
+    /**
+     * 把这条通道会话挂到这一段上。
+     *
+     * <p>它与换段无关：不换段时也要走，因为 {@code last_seen_at} 是"这条会话现在落在哪一段"
+     * 的判据（OpenClaw 的 {@code currentSessionKey} 就按它取最大的一条）。
+     *
+     * @param key 这一行的定位键
+     * @param sessionId 这一轮实际的那一段
+     * @param conversationRef 通道会话 id
+     * @param rotation 这一次访问的时刻
+     */
+    private void bind(Key key, String sessionId, String conversationRef, Rotation rotation) {
+        Timestamp now = millis(rotation.now());
+        if (jdbc.update(touchBinding, now, sessionId, conversationRef) == 0) {
+            jdbc.update(bindConversation, sessionId, conversationRef, sessionId, now, now);
+        }
     }
 
     /**
@@ -275,14 +360,17 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
      * 于是库里每一段都声称自己属于一台名叫 {@code feishu} 的账号。
      */
     private void insertWindow(Key key, Previous before, String sessionId, String reason,
-                              Rotation rotation) {
+                              Rotation rotation, String conversationRef) {
         Timestamp now = millis(rotation.now());
         jdbc.update(insertWindow,
                 sessionId, key.sessionKey(), before == null ? null : before.sessionId(),
                 reason, scopeOf(key),
                 now, now, now,
                 key.direct() ? "direct" : "group",
-                key.channel(), null);
+                key.channel(), null,
+                // 这一段由这条对话开启，它就是 primary。判据与 OpenClaw 的 currentSessionKey
+                // 一致：一组 association 里，只有 role=primary 且这一列指向它的才有效。
+                conversationRef);
     }
 
     private void insertNode(Key key, String sessionId, Rotation rotation) {

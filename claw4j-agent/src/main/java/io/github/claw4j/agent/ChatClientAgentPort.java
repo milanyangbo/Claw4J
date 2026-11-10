@@ -424,8 +424,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         if (lane == null) {
             return work.get();
         }
-        String address = ConversationLane.addressOf(SessionKeys.ownerOf(message.principal()),
-                message.channel(), conversationOf(message));
+        String address = ConversationLane.addressOf(
+                conversationKeyOf(message, SessionKeys.ownerOf(message.principal())));
         try {
             return lane.run(address, work);
         } catch (LaneBusyException busy) {
@@ -543,8 +543,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             streamInLane(message, onChunk);
             return;
         }
-        String address = ConversationLane.addressOf(SessionKeys.ownerOf(message.principal()),
-                message.channel(), conversationOf(message));
+        String address = ConversationLane.addressOf(
+                conversationKeyOf(message, SessionKeys.ownerOf(message.principal())));
         try {
             lane.run(address, () -> {
                 streamInLane(message, onChunk);

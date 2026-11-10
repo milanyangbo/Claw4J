@@ -3,6 +3,10 @@ package io.github.claw4j.agent.session;
 import io.github.claw4j.agent.PermissionFingerprint;
 import io.github.claw4j.domain.principal.Principal;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Objects;
 
 /**
@@ -65,6 +69,26 @@ public final class SessionKeys {
 
     /** 没有 chatId 的通道（脚本、内部调用）落在这里：同一通道内共享，跨通道不共享。 */
     static final String NO_CHAT = "-";
+
+    /**
+     * 自带会话身份的地址前缀：定时任务。
+     *
+     * <p>它存在的原因是 {@code dmScope} 只该管「谁的私聊」——人跟人在哪儿说话。定时任务不是
+     * 谁的私聊，把它并进 {@code main} 会让两次触发落进同一个主会话，还会把任务的目标挂到
+     * 用户的主会话节点上。OpenClaw 也是按键形认这一类（{@code resolveEventSessionKey}，
+     * {@code src/routing/session-key.ts}），不由"哪个字段为空"推断。
+     */
+    public static final String CRON_PREFIX = "cron:";
+
+    /**
+     * 这个地址是不是自带会话身份（定时任务）的那一类。
+     *
+     * @param addr 通道里的地址，可以为 null
+     * @return 是则真，{@code dmScope} 不作用于它
+     */
+    public static boolean isSelfAddressed(String addr) {
+        return addr != null && addr.startsWith(CRON_PREFIX);
+    }
 
     private SessionKeys() {
     }
@@ -226,6 +250,69 @@ public final class SessionKeys {
      */
     public static String sessionIdOf(Principal principal, String channel, String chatId) {
         return sessionIdOf(ownerOf(principal), channel, chatId);
+    }
+
+    /**
+     * 通道会话的 id：{@code conv_<sha256 前 32 位>}（ADR-0029）。
+     *
+     * <p>由 (通道, 账号, 类型, 对端, 父会话, 线程) 派生，不是随机 uuid：同一条通道会话在任何时候
+     * 算出来的都是同一个 id，于是登记它是一条幂等的 upsert，不需要"先查有没有"。形状照 OpenClaw 的
+     * {@code buildConversationRef}（{@code src/routing/conversation-ref.ts}）——
+     * {@code conv_} + {@code sha256(JSON.stringify([...]))} 的前 32 位。
+     *
+     * <p>本仓库没有 account 与 thread 这两维，恒用 {@code "default"} 与空串，与它
+     * {@code accountId ?? "default"} 的口径一致：位置留着，将来加维度时 id 才不用重算。
+     *
+     * @param channel 通道名，可以为 null（落占位）
+     * @param kind    三档之一：{@code direct} / {@code group} / {@code channel}
+     * @param peerId  对端：私聊是用户，群聊是群
+     * @return 这条通道会话的 id
+     */
+    public static String conversationRefOf(String channel, String kind, String peerId) {
+        String canonical = "[" + jsonString(orPlaceholder(channel))
+                + "," + jsonString(DEFAULT_ACCOUNT)
+                + "," + jsonString(kind)
+                + "," + jsonString(orPlaceholder(peerId))
+                + ",\"\",\"\"]";
+        return "conv_" + sha256Hex(canonical).substring(0, 32);
+    }
+
+    /** 没有 account 维时的固定值，与它 {@code accountId ?? "default"} 同口径。 */
+    static final String DEFAULT_ACCOUNT = "default";
+
+    /** 一个 JSON 字符串字面量。手工拼为了让哈希输入的字节与它 {@code JSON.stringify} 完全一致。 */
+    private static String jsonString(String value) {
+        StringBuilder out = new StringBuilder(value.length() + 2).append('"');
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    }
+                    else {
+                        out.append(c);
+                    }
+                }
+            }
+        }
+        return out.append('"').toString();
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        }
+        catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 不在 JRE 里，会话 id 无法派生", impossible);
+        }
     }
 
     private static String orPlaceholder(String part) {

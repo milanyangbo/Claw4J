@@ -67,8 +67,9 @@
 | 飞书 `chat_type: p2p` → true，`group` → false | `FeishuChannelWiringTest` 用空位加一条 | 同上 |
 | 钉钉 `conversationType: "1"` → true；企业微信恒 true | `DingtalkChannelTest#aDirectMessageSaysSo`、`WecomChannelTest#aTextMessageIsAlwaysDirect` | 钉钉那条把 `!"2".equals(...)` 改成常量 `true`，只有它红 |
 | `application.yml` 里两个 scope 键声明且默认值一致 | `BuildContractTest`（现有 yml 断言方法里加两条） | 删 yml 里的键，只有这一条红 |
-| 换段：`current_session_id` 改、`session_windows` 多一行、旧段仍读得到 | `PersistenceSchemaTest#rotationAddsAWindowAndKeepsTheOldOne` | 只改 `current_session_id` 不插 window，只有这一条红 |
-| 私聊共用主会话：两个 `direct` 会话挂在同一个 `session_id`，且只有一个 `primary` | `PersistenceSchemaTest#directConversationsShareOneWindow` | 每条会话建一个 window，只有这一条红 |
+| 换段：`current_session_id` 改、`session_windows` 多一行、旧段仍读得到 | `PersistenceSchemaTest#aFreshSegmentClearsTheGoalOnTheSameRow` | 只改 `current_session_id` 不插 window，只有这一条红 |
+| 私聊共用主会话：两个 `direct` 会话挂在同一个 `session_id`，且只有一个 `primary` | `PersistenceSchemaTest#aConversationIsCataloguedOnceAndBoundToTheSegment` | 每条会话建一个 window，只有这一条红 |
+| 跨通道的两条私聊共用一把锁（`dm-scope: main` 下它们本来就是同一段） | `SessionMemoryTest#messagesFromDifferentChannelsShareOneLane` | 锁键改回 `owner + 通道 + chatId`，只有这一条红 |
 
 ## 门禁
 

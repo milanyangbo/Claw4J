@@ -81,6 +81,37 @@ V8 把 `session_entry` 那张单表换成它那套分层（`src/state/openclaw-a
 偏差逐条记在 `V8__session_nodes.sql` 的文件头（不建的表、去掉的列、时间列用 `timestamptz`），
 不在本 ADR 重复。
 
+## 裁决四：串行化的单位是会话，通道会话要真的登记，旧审批单作废
+
+这三条是 V8 建完之后的三处空缺，落法与它对齐：
+
+1. **锁键是会话节点键**（`ConversationLane.addressOf` 只加前缀，不再自己拼）。
+   它的口径是 physical session——"The session controller selects one turn at a time"
+   （`docs/concepts/queue.md`）、"only one run should mutate a given session at a time"
+   （`docs/concepts/parallel-specialist-lanes.md:21`）。此前锁键是 `owner + 通道 + chatId`，
+   `dm-scope: main` 下同一个人的飞书与网页是同一段会话却拿两把锁，两条 run 同时往同一份记忆里写。
+   **代价**：`main` 档下跨通道互相阻塞，一路在跑时另一路拿到 `BUSY_REPLY`。这是"同一段会话串行"
+   的必然结果；不想要就配 `per-channel-peer`。
+   定时任务不参与 `dmScope`：它是"自带会话身份的地址"（`cron:` 前缀），并进 `main` 会让两次触发
+   落进同一个主会话、还会把任务目标挂到用户的主会话节点上。它按键形识别这一类
+   （`resolveEventSessionKey`，`src/routing/session-key.ts`），不看"哪个字段为空"。
+
+2. **`conversations` / `session_conversations` 由访问路径写入**（`JdbcSessionEntryStore`）。
+   此前这两张表只建了没写，`dm-scope: main` 那套"多个会话共用一段"只有表没有数据。
+   三处照它：`conversation_id` 由通道身份派生（`conv_` + sha256 前 32 位，
+   `buildConversationRef`，`src/routing/conversation-ref.ts`），所以登记是幂等 upsert；
+   一个段只有一个 `primary`，其余是 `participant`；**权威判据是
+   `session_windows.primary_conversation_id`**，不是只看 `role` 那一列
+   （它的 `currentSessionKey` 就是这么读的）。同一对 `(段, 会话)` 只留一行。
+
+3. **V10 作废 pending 审批单，不做数据迁移**。旧键的行在 V9 已经清掉，而挂着审批的
+   `session_key` 指向那些段：留着它们的结果是"批准了，但没法接着做"。作废（`cancelled` +
+   `run-aborted`）让人重新提一次，比留一堆点了没有结果的按钮好。终态不复用 `expired`——
+   V6 的 CHECK 把它锁死成 `timeout`，而这里没人等到超时。已决的行（allowed / denied / expired）
+   不动：它们是审计事实。
+   不在续跑前再查一次"那一段还在不在"：那个判据要读 `ai_session`，会把审批耦到某种会话存储上
+   （内存 session 下永远判"不在"），而 V10 已经覆盖了唯一的产生路径。
+
 ## 代价
 
 1. **旧会话记录清除**（用户 2026-11-10 裁决）：键和表都换了，旧行不再有任何读取方。

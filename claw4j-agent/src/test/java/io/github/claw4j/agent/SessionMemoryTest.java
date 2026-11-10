@@ -18,6 +18,7 @@ import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.session.SessionVisibility;
 import io.github.claw4j.agent.session.SessionVisibilityProperties;
+import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
@@ -243,6 +244,16 @@ class SessionMemoryTest {
             assertThat(second.get(5, TimeUnit.SECONDS).text())
                     .as("等不到就抛 500 或干脆沉默，用户只会以为机器人坏了")
                     .isEqualTo(ConversationLane.BUSY_REPLY);
+
+            // 同一个人的**另一条通道**：默认 dm-scope 是 main，这两个地址本来就是同一段会话。
+            // 串行化的单位是会话（OpenClaw 的 physical session），不是「通道 + chatId」——
+            // 按地址分锁的话这一句会另起一轮，两条 run 同时往同一份记忆里写。
+            Future<OutboundMessage> crossChannel =
+                    pool.submit(() -> port.reply(channelMessage("web", "chat-b")));
+            assertThat(crossChannel.get(5, TimeUnit.SECONDS).text())
+                    .as("cross-channel：同一个节点应当是同一把锁")
+                    .isEqualTo(ConversationLane.BUSY_REPLY);
+
             assertThat(model.prompts())
                     .as("第二条在第一条说完之前就调了模型：它拼提示词时 128400 还没落库，"
                             + "而这个失败长得像「模型偶尔会忘事」")
@@ -778,6 +789,12 @@ class SessionMemoryTest {
 
     private static InboundMessage message(String chatId, String text) {
         return new InboundMessage(Principal.readOnly("u-1"), chatId, text);
+    }
+
+    /** 带通道的一条私聊：用来验「同一把锁跟的是会话，不是通道」。 */
+    private static InboundMessage channelMessage(String channel, String chatId) {
+        return new InboundMessage(Principal.readOnly("u-1"), chatId, "上周华东成交额",
+                Instant.now(), null, channel, NotifyPolicy.DEFAULT, null, null, true);
     }
 
     /** 只活在内存里的会话存储：验的是记忆有没有进提示词，不是 Postgres 的 SQL。 */
