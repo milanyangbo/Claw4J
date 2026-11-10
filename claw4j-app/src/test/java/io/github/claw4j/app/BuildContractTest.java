@@ -253,28 +253,32 @@ class BuildContractTest {
 
     // ---------------------------------------------------------------- 迁移合成一套 schema
 
-    /** 和 {@code SearchSqlTest} 用同一个镜像：{@code V4} 要 {@code create extension vector}。 */
+    /** 和 {@code SearchSqlTest} 用同一个镜像：{@code V5} 要 {@code create extension vector}。 */
     @Container
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：1..10 全跑到，六个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：六份基线全跑到，五个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
 
         // 断言"跑完之后历史里有什么"，而不是"这一次执行了几条"——同一份容器被两条用例共用，
         // 谁先跑都会把迁移做完，盯着 migrationsExecuted 会变成一条看执行顺序的用例。
+        //
+        // **没有 4**：V4 原来是语义缓存，那个能力改落 Redis 之后整张表连同 schema 一起删了，
+        // 编号不复用（与 ADR 编号同一个口径）——它下面那个位置放的是已经不存在的东西。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
+                .containsExactly("1", "2", "3", "5", "6", "7");
 
         var jdbc = new JdbcTemplate(dataSource());
 
         // 五个 schema 各自的归属：business 是示例插件的，其余是 agent 的
         // （会话 claw4j_session、调度/审批/审计在 claw4j_run、知识库在 claw4j_rag、
         // 入站队列在 claw4j_channel）。**缓存不在其中**：语义缓存 2026-11-09 改落 Redis Stack，
-        // `claw4j_cache` 由 V9 删掉；它一旦重新出现，就是有人又把缓存往库里写了。
+        // 那张表在基线里已经不存在（整个 claw4j_cache schema 都没了）；它一旦重新出现，
+        // 就是有人又把缓存往库里写了。
         // 入站队列单独一个是因为它跟着**通道**走（V7）：它是"平台把消息交给了我们"这件事的账，
         // 与一次 agent 运行没有父子关系。
         assertThat(jdbc.queryForList(
@@ -304,7 +308,7 @@ class BuildContractTest {
         var flyway = flyway();
         flyway.migrate();
 
-        // 8 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
+        // 6 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
         assertThat(flyway.migrate().migrationsExecuted)
                 .as("第二次调用不该再执行任何迁移")
                 .isZero();

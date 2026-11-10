@@ -34,7 +34,7 @@
 这条照 OpenClaw 的 `Ask before new config options, breaking public contracts, intentional
 schema/durability/retention/permission changes beyond bug fix`（它 `AGENTS.md` 的
 Authority and safety）与 `read approval checkpoint before schema ... changes`——
-2026-11-09 的 V6 改列名、V10 加表都是自己拍的，偏差就从这里开始。
+2026-11-09 的 V6 改列名、V10 加表（现已并入 V5）都是自己拍的，偏差就从这里开始。
 
 改行为之前先有三样东西，缺一样都别动代码：
 

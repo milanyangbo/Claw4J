@@ -644,7 +644,7 @@ class SearchSqlTest {
      *
      * <p><b>断言必须看落库位置，不能只看返回值</b>：写死时 {@code segmentOf} 照样返回
      * {@code seg-1}，因为它确实写成功了，只是写进了另一张同名表。所以这里查的是
-     * {@code claw4j_alt.conversation_pointer} 的行数——那一行才证明"配了哪个 schema 就写哪个"。
+     * {@code claw4j_alt.session_entry} 的行数——那一行才证明"配了哪个 schema 就写哪个"。
      */
     @Test
     @DisplayName("会话指针跟着 claw4j.session.schema 走：写死的话它悄悄写进另一张表")

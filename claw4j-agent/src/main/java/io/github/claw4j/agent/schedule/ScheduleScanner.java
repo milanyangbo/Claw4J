@@ -178,7 +178,7 @@ public class ScheduleScanner {
      * 继承用户私聊的上下文作答、还吃掉用户那份预算。
      *
      * <p>会话标识带<b>本次触发时刻</b>：每次运行天然是一个新段，不需要走指针
-     * （{@code conversation_pointer} 只服务"人"这条路——那里才有"上次说到哪儿"）。
+     * （{@code session_entry} 的段只服务"人"这条路——那里才有"上次说到哪儿"）。
      * 形状与 OpenClaw 的 {@code cron:<jobId>} 同源，一眼能看出这不是人的对话。
      */
     private static InboundMessage message(ScheduleStore.Due task, Principal owner, Instant now) {

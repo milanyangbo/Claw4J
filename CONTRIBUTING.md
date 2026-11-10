@@ -98,18 +98,25 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | 版本 | 在哪 | 建什么 | 谁在用 |
 | --- | --- | --- | --- |
 | `V1` `V2` | `claw4j-example-sales` | 业务表与种子（`business`） | 示例插件自己的工具 |
-| `V3` | `claw4j-agent` | 会话四张表（`claw4j_session`） | `agent.session` / `agent.goal` |
-| `V4` | `claw4j-agent` | 语义缓存（`claw4j_cache`）——**已被 `V9` 删掉** | 曾经是 `agent.cache` |
-| `V5` | `claw4j-agent` | 知识库的文件账 `claw4j_rag.source`（块与向量在框架建的 `vector_store` 里）+ `pg_trgm` 扩展（全文那一路的 GIN 索引在应用启动时建，表归框架） | `agent.rag` |
+| `V3` | `claw4j-agent` | 会话三张表（`claw4j_session`）：`ai_session`、`ai_session_event`、`session_entry` | `agent.session` / `agent.goal` |
+| `V5` | `claw4j-agent` | 知识库的文件账 `source` 与索引身份 `index_meta`（`claw4j_rag`；块与向量在框架建的 `vector_store` 里）+ `vector` / `pg_trgm` 扩展 | `agent.rag` |
 | `V6` | `claw4j-agent` | 审批 / 定时任务 / 审计（`claw4j_run`） | `agent.approval` / `agent.schedule` / `agent.audit` |
 | `V7` | `claw4j-agent` | 入站队列（`claw4j_channel`） | `channel.kernel` / `agent.inbound` |
-| `V8` | `claw4j-agent` | 会话状态并成一张表（把 `conversation_pointer` 与 `conversation_goal` 回填进 `session_entry` 后删掉） | `agent.session` / `agent.goal` |
-| `V9` | `claw4j-agent` | 删 `claw4j_cache` schema：语义缓存改落 Redis Stack，表不再需要 | 无（`agent.cache` 已改用 `DefaultSemanticCache`） |
 
-**这五份是基线，不是历史。**（`V8` 之后是新的一轮，不是基线的一部分。） 2026-11-09 把原来 `claw4j-agent` 侧的 25 个迁移（V3..V27）合并成了这五份：
-其中大半在反复改同一批表，而 `agent_run` / `agent_step` / `agent_run_delivery` 三张表最后整体删掉了。
-合并只删历史、不改设计——合并前后各 `pg_dump -s` 比过，结构差异 0。
-代价：**已经跑过旧迁移的库要重建**（V4..V27 在本地已经不存在，Flyway 校验会直接失败），
+**没有 `V4`，不是漏了。** 它原来是语义缓存（`claw4j_cache`），2026-11-09 缓存改落 Redis Stack
+之后整张表连同 schema 一起删了。**编号不复用**——与 ADR 编号同一个口径，空出来的号不挪给别的表。
+同理，`V8` / `V9` / `V10` 也已经并回上表，不再单独存在。
+
+**这六份是基线，不是历史。** 两轮合并：
+
+- 2026-11-09：把 `claw4j-agent` 侧 25 个迁移（V3..V27）按 schema 合成五份。那一轮的大半内容在
+  反复改同一批表，而 `agent_run` / `agent_step` / `agent_run_delivery` 三张表与 `audit_trail` 视图
+  最后整体删掉了。
+- 2026-11-10：把随后新增的三份（`V8` 会话并表、`V9` 删缓存、`V10` 索引身份）并回各自的基线。
+  于是目录里只剩四份 DDL，加示例插件两份。
+
+合并只删历史、不改设计——11-09 那轮前后各 `pg_dump -s` 比过一次，结构差异 0。
+代价：**已经跑过旧迁移的库要重建**（`V4`、`V8`..`V10` 在本地已经不存在，Flyway 校验会直接失败），
 开发库 drop 之后重启一次即可。生产没有部署过这套基线之前的历史。
 
 判据只有一条：**谁读这张表，DDL 就放在谁的模块里**。这三张框架表原先都在 `claw4j-capability`，

@@ -1,6 +1,6 @@
--- 会话的四张表（ADR-0005：一个 Postgres 多种存储，靠 schema 分开）。
+-- 会话的表（ADR-0005：一个 Postgres 多种存储，靠 schema 分开）。
 --
--- 本文件是旧 V3 / V16 / V17 / V20 / V22 五段历史合并后的**基线**，写法与执行顺序都已定稿：
+-- 本文件是旧 V3 / V16 / V17 / V20 / V22 与 V8 六段历史合并后的**基线**，写法与执行顺序都已定稿：
 -- 后续改表结构请加新版本，不要再动这里——Flyway 的 checksum 会把"改过的历史"当成损坏。
 --
 -- **为什么建表写全限定名、运行时查询却不写**：{@code ai_session} 与 {@code ai_session_event}
@@ -13,7 +13,7 @@
 -- 换来的好处是建表只有 Flyway 一个入口——官方自动配置那个 initializer 默认只在嵌入式
 -- 数据库上跑，在 Postgres 上它什么都不做，靠它就等于"以为建了其实没建"。
 --
--- **指针与目标是手写的 SQL，所以它们一律写全限定名**：那些类跑在主连接池上
+-- **session_entry 的手写 SQL 一律写全限定名**（下同）：那些类跑在主连接池上
 -- （搜索路径里没有 claw4j_session），schema 段从 {@code claw4j.session.schema} 取。
 -- 这两件事的判据不同、落点相同，别把"运行时查询不带前缀"当成整层约定。
 create schema if not exists claw4j_session;
@@ -57,68 +57,85 @@ create table claw4j_session.ai_session_event (
 create index idx_ai_session_event_session_seq
     on claw4j_session.ai_session_event (session_id, seq);
 
--- 会话段的指针（ADR-0026）：这段对话现在叫什么。
+-- 会话状态一张表（票 06，形状照 OpenClaw 的 SessionEntry）。
 --
--- 会话 id 原来是"人 + 权限 + 通道 + chatId"，永远不会变，于是"这段对话什么时候结束"
--- 这件事没有落点。这张表给一段对话一个显式的生命周期：换段 = 换对话，旧段只读不写。
--- 与 OpenClaw 的 sessions.json 是同一个东西：每个 sessionKey 一条指针，重启之后靠它接回原处。
---
--- 放在 claw4j_session 而不是 claw4j_run：它回答的是"这是哪一段话"，不是"这件事做完了没有"。
-create table claw4j_session.conversation_pointer (
-    -- SessionKeys.ownerOf 的结果（userId@权限指纹）。不拆成两列：
-    -- 权限变了就是另一段对话，拆开反而会让人以为可以按 userId 聚合。
-    owner       text        not null,
-    -- 缺省落 '-'（SessionKeys.NO_CHAT），与 sessionId 里的占位保持同一口径。
-    channel     text        not null,
-    chat_id     text        not null,
-    -- 当前段。形状是 <epochMilli>-<4 位随机>：时间前缀让排查时一眼看出这段对话何时开始，
-    -- 清理任务也能按它排序。
-    segment     text        not null,
-    -- 空闲判定的依据，**每次入站消息都刷新**——不刷新的话 120 分钟是从"这一段的第一次说话"
-    -- 算起的，之后每句话都会换段。
-    touched_at  timestamptz not null,
-    -- 跨天判定的依据。存"逻辑日"：按 claw4j.agent.zone 的日期，且从
-    -- claw4j.session.reset.at-hour 那一小时起算新的一天（默认 4 点）。
-    -- 存 date 而不是 timestamp，是因为判定只问"是不是同一天"。
-    day_started date        not null,
-    primary key (owner, channel, chat_id)
-);
+-- 曾经是 conversation_pointer + conversation_goal 两张表，2026-11-09 合成这一张：
+-- 它的 entry 就是"一条记录装着 sessionId、时间和 goal"，goal 换段时跟着那一条一起清掉。
+-- 拆成两张表的代价已经发生过：`/new` 只换了段、没清目标，旧段的 goal 行永久留着，
+-- 而 `where status = 'active'` 的部分索引把它们算进"现在有几个目标在推进"。
+-- 合成一张之后，换段是同一条 update：改 segment、清 goal_*，两件事不可能只做一半。
+create table claw4j_session.session_entry (
+    -- 会话节点的键（不含段）：'claw4j:user:' || owner || ':' || channel || ':' || chat_id。
+    -- 与 OpenClaw 的 sessionKey 同义；段是下面的一列，不是主键的一部分。
+    session_key            text        primary key,
+    owner                  text        not null,
+    channel                text        not null,
+    chat_id                text        not null,
 
--- 会话上的目标（ADR-0027 决定三）。
---
--- 挂在会话而不是 run：OpenClaw 的原话是 "Goals are session state: they move with the
--- session key, survive process restarts."，而 run 的寿命只有一轮——那正是"跨轮盯着一个目标"
--- 在旧设计里根本表达不出来的原因。
--- 主键是 session_key（含段）：一个会话一行，这就是"同时只能有一个目标"。
--- 段跟着 /new 换掉之后这一行读不到了，新段天然没有目标——不需要谁去删。
-create table claw4j_session.conversation_goal (
-    -- 与 SessionKeys.sessionIdOf 同形状（claw4j:user:<owner>:<通道>:<chatId>:<段>）。
-    session_key  varchar(255) primary key,
-    -- 六态照 OpenClaw 的词表。usage_limited 我们现在进不去，但词表少一个状态，
-    -- 将来加回来时要同时改约束、命令与注入逻辑三处。
-    status       varchar(24)  not null,
-    objective    text         not null,
-    -- 最新一条状态说明：/goal pause waiting for CI 里那一句。
-    status_note  varchar(1024),
-    -- null 表示不限额。有值时必须是正数（OpenClaw："可选的正数 Token 预算"）。
-    -- 额度是**目标的属性**：一件有终点的事带一份预算，用完了 resume 开新窗口。
-    -- 旧设计里那张会话级额度表（agent_session_budget）已经删掉：一段对话本身没有"额度"这回事。
-    token_budget bigint,
-    tokens_used  bigint       not null default 0,
-    -- 每次改写加一。edit 与 setStatus 都加，于是"这一版目标什么时候变的"查得到。
-    revision     integer      not null default 1,
-    created_at   timestamptz  not null default now(),
-    updated_at   timestamptz  not null default now(),
-    constraint conversation_goal_status_allowed check (status in (
-        'active', 'paused', 'blocked', 'budget_limited', 'usage_limited', 'complete')),
-    -- 空目标等于没有目标：写在约束里，别让"目标存在但内容是空白"这种行进来。
-    constraint conversation_goal_objective_present check (length(btrim(objective)) > 0),
-    constraint conversation_goal_budget_positive check (token_budget is null or token_budget > 0),
-    constraint conversation_goal_used_non_negative check (tokens_used >= 0)
+    -- = 它的 sessionId。换段 = 改这一列 + 清空下面的 goal_* 列（同一条 update）。
+    segment                text        not null,
+    -- = sessionStartedAt。存**时刻**而不是"算好的逻辑日"：daily 边界在读时算，
+    -- 改 at-hour 或改时区之后判定立刻跟着变。旧表存 day_started 是那次合并前的偏离。
+    session_started_at     timestamptz not null,
+    -- = lastInteractionAt。每轮入站刷新，idle 判定用它。
+    last_interaction_at    timestamptz not null,
+    -- 节点创建时间，跨段不变（它的 createdAt 就是这个语义）。
+    created_at             timestamptz not null,
+    -- = previousSessionId。换段时写旧段，回答"上一段是什么"。
+    previous_segment       text,
+    -- = totalTokens。**段级累计**，换段清零；目标的预算按 "total_tokens - goal_token_start" 算。
+    total_tokens           bigint      not null default 0,
+
+    -- goal 平铺（关系库没有嵌套对象）。goal_id is null 表示这一段没有目标。
+    goal_schema_version    smallint,
+    -- 它的 id：所有变更请求都带它，防"旧按钮改到替换后的目标"。
+    goal_id                uuid,
+    goal_objective         text,
+    goal_status            varchar(24),
+    -- 预算窗口的起点（创建目标时会话的累计用量）。
+    goal_token_start       bigint,
+    -- 起点是不是真实快照。false = 创建那轮拿不到用量，等下一次真实用量到来才采纳。
+    goal_token_start_fresh boolean,
+    -- 从起点算起的用量（存下的"最后一次已知值"，account 用 max 自愈）。
+    goal_tokens_used       bigint,
+    goal_token_budget      bigint,
+    goal_continuation_turns integer,
+    goal_last_status_note  text,
+    -- 五个时刻分开存：合用一个 updated_at 就答不了"首次完成时间"。
+    goal_paused_at         timestamptz,
+    goal_blocked_at        timestamptz,
+    goal_completed_at      timestamptz,
+    goal_usage_limited_at  timestamptz,
+    goal_budget_limited_at timestamptz,
+    goal_created_at        timestamptz,
+    goal_updated_at        timestamptz,
+
+    -- 目标要么整份在、要么整份不在：三列里有一列非空就都得非空，且内容不能是空白。
+    constraint session_entry_goal_all_or_nothing check (
+        (goal_id is null and goal_objective is null and goal_status is null)
+        or (goal_id is not null and goal_objective is not null and goal_status is not null
+            and length(btrim(goal_objective)) > 0)
+    ),
+    -- 六态逐字照 SessionGoalStatus。
+    constraint session_entry_goal_status_allowed check (
+        goal_status is null or goal_status in
+        ('active', 'paused', 'blocked', 'budget_limited', 'usage_limited', 'complete')
+    ),
+    constraint session_entry_goal_budget_positive check (
+        goal_token_budget is null or goal_token_budget > 0
+    ),
+    constraint session_entry_goal_window_non_negative check (
+        (goal_token_start is null or goal_token_start >= 0)
+        and (goal_tokens_used is null or goal_tokens_used >= 0)
+    )
 );
 
 -- "这个会话有没有活跃目标"每回合都问一次，走主键就够；
--- 按状态筛（"现在有几个目标在推进"）也要能走索引，所以补一条部分索引。
-create index conversation_goal_active_idx
-    on claw4j_session.conversation_goal (status)
-    where status = 'active';
+-- 按状态筛（"现在有几个目标在推进"）要能走索引。合并成一张表之后孤儿没了，这个数才会降。
+create index session_entry_active_goal_idx
+    on claw4j_session.session_entry (goal_status)
+    where goal_status = 'active';
+
+-- 清理按最后交互时间扫。
+create index session_entry_last_interaction_idx
+    on claw4j_session.session_entry (last_interaction_at);
