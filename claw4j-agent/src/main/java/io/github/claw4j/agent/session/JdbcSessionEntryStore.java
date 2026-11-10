@@ -210,6 +210,13 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
      * <p>键落到 {@code main} 的私聊是 {@code shared-main}——一个人的所有私聊共用这一段；
      * 群聊是 {@code group}；其余私聊（{@code per-channel-peer} 等）是 {@code conversation}。
      * 这个值回答"这一段的边界是什么"，查的时候不用再把键拆开。
+     *
+     * <p>判据照抄 OpenClaw 的 {@code resolveSqliteSessionScope}：{@code chatType === "direct"}
+     * 且键是 {@code main} 或以 {@code :main} 结尾
+     * （{@code src/config/sessions/session-accessor.sqlite-session-row.ts:143}）。
+     * 包括它那处粗糙也一并照抄：{@code dm-scope: per-peer} 下 peer 段就是 chatId，
+     * 一个恰好叫 {@code main} 的 chatId 会被算成共享主会话。改判据要两边一起改，
+     * 否则同一条会话在两边拿到两个 scope，而对账的人是看不出来的。
      */
     private static String scopeOf(Key key) {
         if (!key.direct()) {
@@ -223,41 +230,77 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
         jdbc.queryForList(lock, key.sessionKey());
     }
 
+    /**
+     * 写进列的时刻：截到毫秒，与 {@code entry_json.updatedAt} 同源同精度。
+     *
+     * <p>{@code Timestamp.from(Instant.now())} 留到纳秒（列上截成微秒），而 JSON 里存的是整毫秒，
+     * 于是"列是 JSON 的投影"这句话只对到 0.999 毫秒——拿 {@code extract(epoch)*1000} 去比对账，
+     * 差的那一毫秒还会被 {@code ::bigint} 的四舍五入放大成 1。它的存储本来就是整毫秒
+     * （SQLite 那套 INTEGER），我们跟着它，投影才是真的。
+     */
+    private static Timestamp millis(Instant value) {
+        return Timestamp.from(Instant.ofEpochMilli(value.toEpochMilli()));
+    }
+
     private Previous read(Key key) {
         List<Previous> rows = jdbc.query(read, (rs, rowNum) -> new Previous(
                 rs.getString("current_session_id"),
-                rs.getTimestamp("session_started_at").toInstant(),
-                rs.getTimestamp("last_interaction_at").toInstant()), key.sessionKey());
+                instantOf(rs.getTimestamp("session_started_at")),
+                instantOf(rs.getTimestamp("last_interaction_at"))), key.sessionKey());
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /**
+     * 可空的时间列，空就是"很久没动"。
+     *
+     * <p>V8 允许这两列为空：{@code entry_valid = -1} 那一档（逻辑 entry 被清空、行还在）的语义
+     * 就是"把 entry_json 置成空、把提升列置空"。直接 {@code toInstant()} 的话这里是一个 NPE，
+     * 它会被 {@code SessionEntries} 的兜底吞成"这段没有段"——而这个人的会话从此再也不换段，
+     * 日志只有第一条。读成纪元之后，判定把它当陈旧，下一轮换段时时间被写回去，那一行自己就好了。
+     *
+     * <p>这与 OpenClaw 读侧的取舍一致：{@code normalizeSessionEntryTimestamp} 在
+     * {@code updatedAt} 缺失时拿 {@code sessionStartedAt} 或当前时刻兜底
+     * （{@code src/config/sessions/session-entry-json.ts:57}），不抛。
+     */
+    private static Instant instantOf(Timestamp value) {
+        return value == null ? Instant.EPOCH : value.toInstant();
+    }
+
+    /**
+     * 插一行"这一世"。
+     *
+     * <p>{@code account_id} 恒为 {@code null}：本仓库没有 account 这一维（一个通道实例只配一台
+     * 机器人），而 V8 那列本来就是可空的——它记的是"这段来自哪台通道账号"，与
+     * {@code channel} 是两件事。曾经这里两个参数都传了 {@code key.channel()}，
+     * 于是库里每一段都声称自己属于一台名叫 {@code feishu} 的账号。
+     */
     private void insertWindow(Key key, Previous before, String sessionId, String reason,
                               Rotation rotation) {
-        Timestamp now = Timestamp.from(rotation.now());
+        Timestamp now = millis(rotation.now());
         jdbc.update(insertWindow,
                 sessionId, key.sessionKey(), before == null ? null : before.sessionId(),
                 reason, scopeOf(key),
                 now, now, now,
                 key.direct() ? "direct" : "group",
-                key.channel(), key.channel());
+                key.channel(), null);
     }
 
     private void insertNode(Key key, String sessionId, Rotation rotation) {
-        Timestamp now = Timestamp.from(rotation.now());
+        Timestamp now = millis(rotation.now());
         jdbc.update(insertNode,
                 key.sessionKey(), sessionId, sessionId, rotation.now().toEpochMilli(),
                 now, now, now, now);
     }
 
     private void rotateNode(Key key, String sessionId, Rotation rotation) {
-        Timestamp now = Timestamp.from(rotation.now());
+        Timestamp now = millis(rotation.now());
         jdbc.update(updateNodeRotated,
                 sessionId, now, sessionId, rotation.now().toEpochMilli(),
                 now, now, key.sessionKey());
     }
 
     private void touchNode(Key key, Rotation rotation) {
-        Timestamp now = Timestamp.from(rotation.now());
+        Timestamp now = millis(rotation.now());
         jdbc.update(updateNodeTouched, now, now, rotation.now().toEpochMilli(), key.sessionKey());
     }
 

@@ -9,6 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -47,18 +48,32 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
     /** 同一条读，加行锁。写路径用它。 */
     private static final String READ_FOR_UPDATE = READ + " for update";
 
+    /**
+     * 写目标：{@code entry_json} 里只动目标与用量两个键，其余（{@code sessionId} 等）原样保留。
+     *
+     * <p>{@code updatedAt} 也要跟着写，而且用的是<b>同一个</b> {@code now}：列是 JSON 的投影，
+     * 两个写方各写一份的话，{@code session_nodes.updated_at} 与 {@code entry_json.updatedAt}
+     * 从第一次记用量起就分叉。OpenClaw 那边是靠"每次写都由同一份 entry postimage 派生出
+     * {@code entry_json} 与全部提升列"避免这件事的
+     * （{@code src/config/sessions/session-accessor.sqlite-entry-write-queries.ts:65}），
+     * 我们这里一次只改几个键，所以至少要保证同一条语句里两处取值同源。
+     */
     private static final String WRITE_WITH_GOAL = """
             update %1$ssession_nodes
-               set entry_json = jsonb_set(jsonb_set(entry_json, '{goal}', ?::jsonb),
-                                          '{totalTokens}', to_jsonb(?::bigint)),
-                   updated_at = now()
+               set entry_json = jsonb_set(
+                       jsonb_set(jsonb_set(entry_json, '{goal}', ?::jsonb),
+                                 '{totalTokens}', to_jsonb(?::bigint)),
+                       '{updatedAt}', to_jsonb(?::bigint)),
+                   updated_at = ?
              where session_key = ?
             """;
 
     private static final String WRITE_WITHOUT_GOAL = """
             update %1$ssession_nodes
-               set entry_json = jsonb_set(entry_json - 'goal', '{totalTokens}', to_jsonb(?::bigint)),
-                   updated_at = now()
+               set entry_json = jsonb_set(
+                       jsonb_set(entry_json - 'goal', '{totalTokens}', to_jsonb(?::bigint)),
+                       '{updatedAt}', to_jsonb(?::bigint)),
+                   updated_at = ?
              where session_key = ?
             """;
 
@@ -237,9 +252,21 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
             if (before == null || before.goal() == null || !before.goal().id().equals(goalId)) {
                 return 0;
             }
-            jdbc.update(writeWithoutGoal, before.totalTokens(), sessionKey);
+            Instant now = Instant.now();
+            jdbc.update(writeWithoutGoal, before.totalTokens(), now.toEpochMilli(),
+                    millis(now), sessionKey);
             return 1;
         })).orElse(0) > 0;
+    }
+
+    /**
+     * 写进列的时刻：截到毫秒，与 {@code entry_json.updatedAt} 同源同精度。
+     *
+     * <p>不截的话，列留到微秒、JSON 是整毫秒，那句"列是 JSON 的投影"只对到 0.999 毫秒；
+     * 拿 {@code extract(epoch)*1000} 去对账，差的那点还会被 {@code ::bigint} 的四舍五入放大成 1。
+     */
+    private static Timestamp millis(Instant value) {
+        return Timestamp.from(Instant.ofEpochMilli(value.toEpochMilli()));
     }
 
     /** 有事务就开，没有就直接跑（只在单测的 mock 上发生）。 */
@@ -265,12 +292,14 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
             if (after == null) {
                 return null;
             }
+            Instant now = Instant.now();
             if (after.goal() == null) {
-                jdbc.update(writeWithoutGoal, after.totalTokens(), key);
+                jdbc.update(writeWithoutGoal, after.totalTokens(), now.toEpochMilli(),
+                        millis(now), key);
             }
             else {
                 jdbc.update(writeWithGoal, SessionGoalJson.toJson(after.goal()),
-                        after.totalTokens(), key);
+                        after.totalTokens(), now.toEpochMilli(), millis(now), key);
             }
             return after.goal();
         }));

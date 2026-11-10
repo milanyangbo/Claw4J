@@ -14,6 +14,7 @@ import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.ApprovalCards;
 import io.github.claw4j.domain.port.ApprovalDecider;
@@ -235,7 +236,7 @@ class ChatPipelineTest {
         assertThat(text)
                 .as("给用户的是「这一步做了太多次」，不是框架的 limit exceeded")
                 .isEqualTo(ChatClientAgentPort.TOOL_CALL_CAPPED);
-        assertThat(goals.of(SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-cap"))
+        assertThat(goals.of(nodeKey("chat-cap"))
                 .orElseThrow().status())
                 .as("熔断不改目标状态：止损与额度是两件事")
                 .isEqualTo(GoalStatus.ACTIVE);
@@ -535,7 +536,7 @@ class ChatPipelineTest {
             return answer("好");
         });
         ChatClientAgentPort port = port(model, new RecordingAudit().toolCallAudit(), goals);
-        String key = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-1");
+        String key = nodeKey("chat-1");
 
         port.reply(message("chat-1", "/goal 让 CI 变绿"));
         goals.account(key, 1200L);
@@ -573,7 +574,7 @@ class ChatPipelineTest {
     void aCompletedGoalMustBeResumedBeforeItCanBeChanged() {
         InMemoryGoals goals = new InMemoryGoals();
         ChatClientAgentPort port = port(new FixedChatModel("好"), new RecordingAudit().toolCallAudit(), goals);
-        String key = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), null, "chat-1");
+        String key = nodeKey("chat-1");
 
         port.reply(message("chat-1", "/goal 让 CI 变绿"));
         port.reply(message("chat-1", "/goal complete"));
@@ -902,6 +903,19 @@ class ChatPipelineTest {
 
     private static InboundMessage message(String chatId, String text) {
         return new InboundMessage(Principal.readOnly("u-1"), chatId, text);
+    }
+
+    /**
+     * 这一轮的会话节点键（不含段）：默认 scope 下私聊并进主会话（ADR-0029）。
+     *
+     * <p>目标与状态行按它定位，所以用例读目标时不能自己拼
+     * {@code sessionIdOf(principal, null, chatId)}——那是 dmScope 之前的形状，
+     * 与端口算出来的不是同一个节点。这类"用例自己拼一把键"正是
+     * "目标落在另一个节点上"能藏住的原因。
+     */
+    private static String nodeKey(String chatId) {
+        return SessionKeys.conversationKeyOf(SessionKeys.ownerOf(Principal.readOnly("u-1")),
+                true, null, chatId, SessionScopeProperties.defaults());
     }
 
     /**

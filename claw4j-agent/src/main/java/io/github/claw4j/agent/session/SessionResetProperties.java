@@ -70,7 +70,13 @@ public record SessionResetProperties(String mode, Integer atHour, long idleMinut
         return new SessionResetProperties(null, null, 0L);
     }
 
-    /** 要不要换段。{@code none} 时连库都不碰。 */
+    /**
+     * 自动换段开不开。
+     *
+     * <p>只影响"自动"那一半：{@code /new} 不看它——{@link #MODE_NONE} 的语义是"不自动结束"，
+     * 不是"不许结束"。它也不决定要不要查库：段是 {@code session_nodes} 里的一列，
+     * 不查就不知道当前是哪一段，所以 {@code none} 照样每轮读那一行，只是永远不会判成过期。
+     */
     public boolean rotates() {
         return !MODE_NONE.equals(mode);
     }

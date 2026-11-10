@@ -1,6 +1,7 @@
 package io.github.claw4j.agent.schedule;
 
 import io.github.claw4j.agent.TaskLauncher;
+import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.principal.Principal;
@@ -182,15 +183,27 @@ public class ScheduleScanner {
      * {@code cron:<jobId>} 同源（{@code src/cron/isolated-agent/run-prepare.ts:190}），
      * 一眼能看出这不是人的对话。
      *
+     * <p>会话键在这里<b>算好</b>，由 {@code sessionId} 交出去，而不是让编排层从
+     * {@code conversationId} 猜。交给它猜的代价是那条路上必须有一个"自带会话身份"的隐式分支，
+     * 而分支的判据（{@code conversationId} 是否为空）借的是另一个字段的语义——任何通道哪天填了它，
+     * 就会被静默踢出 dmScope 规则。OpenClaw 那边也是这个形状：cron 的键由
+     * {@code resolveEventSessionKey} 按键本身识别（{@code src/routing/session-key.ts}），
+     * 不由"哪个字段为空"推断。
+     *
      * @param task 本轮要跑的任务
      * @param owner 任务主人此刻的身份
      * @param now 本次触发时刻
      * @return 交给 {@link TaskLauncher} 的消息
      */
     private static InboundMessage message(ScheduleStore.Due task, Principal owner, Instant now) {
-        return new InboundMessage(owner, task.channelRef() == null ? task.id() : task.channelRef(),
-                task.goal(), now, null, task.channel(), task.notifyPolicy(),
-                "cron:" + task.id() + ":" + now.toEpochMilli(), null,
+        String chatId = task.channelRef() == null ? task.id() : task.channelRef();
+        String conversationId = "cron:" + task.id() + ":" + now.toEpochMilli();
+        // 形状与人对自己的对话算出来的那条同构（owner + 通道 + 地址），只是地址换成 cron 那个：
+        // 维护任务按 `%:cron:%` 认它，能不能认出来只取决于这个形状。
+        String sessionId = SessionKeys.sessionIdOf(
+                SessionKeys.ownerOf(owner), task.channel(), conversationId);
+        return new InboundMessage(owner, chatId, task.goal(), now, null, task.channel(),
+                task.notifyPolicy(), conversationId, sessionId,
                 // 定时任务没有"听众"这个概念：它不是群聊，会话键也不按 peer 分段（ADR-0029）。
                 true);
     }

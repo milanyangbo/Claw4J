@@ -11,7 +11,7 @@ import java.util.Objects;
  * <p>{@link #ownerOf} 是归属键：{@code userId@权限指纹}。run 的 owner、审计、定时任务的归属
  * 都用它，回答"这是谁的东西"。
  *
- * <p>{@link #sessionIdOf} 是对话键：{@code 前缀 + owner + 通道 + chatId + 段}，只用于对话历史
+ * <p>{@link #sessionIdOf(String, String)} 是对话键：{@code 节点键 + 段}，只用于对话历史
  * （记忆 Advisor 的 sessionId），回答"这是哪一段话"。
  *
  * <p>段是对话键的第三件事（ADR-0026）：前两件回答"谁的""哪条通道的哪个地址"，都不随时间变；
@@ -22,14 +22,18 @@ import java.util.Objects;
  * 就是一次没人复核的泄露。权限指纹挡不住这一层——它保证"权限一样才共享"，
  * 而这里两个人的权限一样，听众不一样。
  *
- * <p>对话键还要带通道：{@code chatId} 是通道侧寻址键，不同通道各自编号，撞车是常事。
- * 形状与 OpenClaw 的 session key 同构（{@code agent:<agentId>:<channel>:<peer>}，
- * {@code docs/channels/whatsapp.md:140}），对应它的 {@code session.dmScope: per-channel-peer}
- * （{@code docs/concepts/session.md:164}）。
+ * <p>节点键的 peer 段由 {@code direct} 与两个 scope 决定（ADR-0029），判定在
+ * {@link SessionScopeProperties}：私聊默认落 {@code main}（一个人的所有私聊算同一段），
+ * 群聊默认按通道 + 群 id。形状与 OpenClaw 的 session key 同构
+ * （{@code agent:<agentId>:<peer>}，{@code src/routing/session-key.ts:94}），
+ * 对应它的 {@code session.dmScope: main} / {@code groupScope: per-group}
+ * （{@code docs/concepts/session.md:158-166}）。
  *
- * <p>代价：同一个人从网页切到飞书私聊，讲过的口径要重讲一遍。OpenClaw 把跨通道共享做成显式
- * 配置 {@code session.identityLinks}（{@code docs/concepts/session.md:172-176}），
- * 本仓库没有这个配置项，所以换通道等于换一段对话。
+ * <p>代价要认清：{@code dm-scope: main} 下换通道<b>不再</b>换段——网页里问到的数字，
+ * 飞书私聊里的模型也看得见；这在一人一台机器上是便利，多人可及的部署里是串话。
+ * 那一档必须显式配成 {@code per-channel-peer}，代价才是"同一个人换个通道要重讲一遍"。
+ * 它把跨通道共享做成显式配置 {@code session.identityLinks}
+ * （{@code docs/concepts/session.md:172-176}），本仓库把"共享"做成了默认、"隔离"做成配置。
  *
  * <p>权限指纹仍然在对话键里：记忆是把上一次的答案原样带进下一次提示词。降权之后若历史里躺着
  * 降权前查出的数字，模型会直接从上下文里念出来——不查库、不鉴权、不报错，因为记忆读取早于

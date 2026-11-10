@@ -310,32 +310,19 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      */
     private String sessionIdOf(InboundMessage message, String owner, boolean reset) {
         // 调用方直接给了整段会话键：用它，不换段也不查指针。
-        // 审批批准之后走的就是这条——回到发起请求的那一段对话里开新一轮（ADR-0027）。
+        // 两条路走这里——审批批准之后回到发起请求的那一段（ADR-0027），
+        // 以及定时任务（每次触发自带一个一次性的键）。
         if (message.sessionId() != null && !message.sessionId().isBlank()) {
             return message.sessionId();
         }
         String peer = conversationOf(message);
-        // 节点键按 peer 类型分段（ADR-0029）：私聊默认并进主会话，群聊按群。这一段算错，
-        // 现象不是报错，而是"群里的上下文并进了私聊"或者"同一个人跨通道接不上"。
-        //
-        // **自带会话身份的那条路不走这个规则**：定时任务每次是 `cron:<taskId>:<触发时刻>`，
-        // 它本来就没有"和谁共用一段"这回事；套上 dmScope: main 会让两次触发落进同一个主会话，
-        // 第二次就看得见第一次的上下文（与它"cron 每次新开"的语义相反）。
-        SessionScopeProperties scopes = pointers == null
-                ? SessionScopeProperties.defaults()
-                : pointers.scopes();
-        String conversationKey = message.conversationId() == null
-                ? SessionKeys.conversationKeyOf(
-                        owner, message.direct(), message.channel(), peer, scopes)
-                : SessionKeys.conversationKeyOf(owner, message.channel(), peer);
-        // 调用方自带会话标识的那条路（定时任务）不走指针：它的"段"就是触发时刻本身，
-        // 每次运行天然是一个新的。指针只服务"人"这条路——那里才有"上次说到哪儿"。
-        String segment = pointers == null || message.conversationId() != null
+        // 指针缺席或读不到时就是"不加段"：段回答"这段对话叫什么"，不是"能不能回答"。
+        String segment = pointers == null
                 ? ""
                 : reset
                         ? pointers.rotate(owner, message.direct(), message.channel(), peer)
                         : pointers.segmentOf(owner, message.direct(), message.channel(), peer);
-        return SessionKeys.sessionIdOf(conversationKey, segment);
+        return SessionKeys.sessionIdOf(conversationKeyOf(message, owner), segment);
     }
 
     /**
@@ -361,12 +348,22 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 这一轮属于哪个会话节点（不含段）。目标与状态行都按它定位。
      *
+     * <p><b>这是键形状的唯一一处定义。</b>含段的 {@link #sessionIdOf} 也是先拿到它再拼段——
+     * 两边各写一份的话，会出现"记忆落在 {@code ...:main:<段>}、目标落在
+     * {@code ...:<channel>:<chatId>}"，两个节点都不是对方，而报错一个也没有：
+     * {@code /goal} 只会说"这个会话还没有目标"。ADR-0029 把 peer 段交给 dmScope 之后，
+     * 这个分叉不再是"某个配置下才发生"，默认配置下就是它。
+     *
      * <p>不复用 sessionId 去解析：{@code chatId} 里可以有冒号（定时任务就是
      * {@code cron:<taskId>:<时刻>}），按分隔符切会在那种 id 上切错，而切错的表现是目标挂到了另一个
      * 节点上，不报错，只是读到空。
      */
-    private static String conversationKeyOf(InboundMessage message, String owner) {
-        return SessionKeys.conversationKeyOf(owner, message.channel(), conversationOf(message));
+    private String conversationKeyOf(InboundMessage message, String owner) {
+        SessionScopeProperties scopes = pointers == null
+                ? SessionScopeProperties.defaults()
+                : pointers.scopes();
+        return SessionKeys.conversationKeyOf(
+                owner, message.direct(), message.channel(), conversationOf(message), scopes);
     }
 
     /**

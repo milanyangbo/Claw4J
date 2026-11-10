@@ -395,8 +395,12 @@ class ObservabilityTest {
         assertThat(asked.getFirst().principal().userId()).isEqualTo("u-1");
         assertThat(asked.getFirst().channel()).isEqualTo("feishu");
         assertThat(asked.getFirst().sessionId())
-                .as("到点那一刻没有会话键：它按 conversationId 派生自己那一段（ADR-0026）")
-                .isNull();
+                .as("会话键由扫描器自己算好（ADR-0029）：交给编排层从 conversationId 派生的话，"
+                        + "那条路上必须有一个\"自带会话身份\"的隐式分支，而分支的判据借的是另一个"
+                        + "字段的语义")
+                .isNotNull()
+                .contains(":cron:" + DUE_ID + ":")
+                .startsWith("claw4j:user:");
         assertThat(asked.getFirst().notifyPolicy()).isEqualTo(NotifyPolicy.SILENT);
         assertThat(fired("ok")).isEqualTo(1);
     }

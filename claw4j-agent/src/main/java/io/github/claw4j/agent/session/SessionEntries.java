@@ -11,8 +11,8 @@ import java.time.ZoneId;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * 一段对话现在叫什么、最后一次交互是什么时候（ADR-0026 决定一，票 06 起落在
- * {@code session_entry} 上）。
+ * 一段对话现在叫什么、最后一次交互是什么时候（ADR-0026 决定一；ADR-0029 起落在
+ * {@code session_nodes} 的一行 + {@code session_windows} 的一世）。
  *
  * <p>它解决的是"会话没有结束"这件事：在此之前会话 id 永远不变，记忆因此永不换段、预算只能
  * 按空闲猜、TTL 只能整行删掉。用户想开一段新对话，唯一的手段是清空浏览器；而 web 端的
@@ -22,11 +22,11 @@ import java.util.concurrent.ThreadLocalRandom;
  * 一份新的预算。目标跟着 entry 一起清掉——它是这一段对话的承诺，不是历史，
  * 旧段的记忆还在，但那件事已经不用再推。
  *
- * <p>指针读不到时不拦这一轮：库没迁、连不上、语句报错，都退回加段之前的形状
- * （{@link SessionKeys} 的老口径），打一条 WARN，记一个计数。段回答的是"这段对话叫什么"，
+ * <p>指针读不到时不拦这一轮：库没迁、连不上、语句报错，都退回不加段的形状
+ * （{@code sessionId} 就是节点键本身），打一条 WARN，记一个计数。段回答的是"这段对话叫什么"，
  * 不是"能不能回答"，与 {@link FaultTolerantSessionService} 同一个判断。
  *
- * <p>降级之后所有对话退到同一个永不过期的 id，也就是回到改造之前的行为，不是更糟。
+ * <p>降级之后所有对话退到"每个节点一段、永不换段"，也就是回到改造之前的行为，不是更糟。
  * {@code claw4j.session.pointer.failures} 是"它到底生效了没有"的唯一信号。
  */
 public final class SessionEntries {
