@@ -181,13 +181,19 @@ class McpToolTest {
                     () -> opens.getAndIncrement() == 0 ? first : server.openTransport());
 
             try (McpConnection connection = new McpConnection(endpoint, Duration.ofSeconds(10))) {
-                assertThat(connection.listTools()).extracting(Tool::name).contains("add");
+                Tool add = connection.listTools().stream()
+                        .filter(tool -> "add".equals(tool.name()))
+                        .findFirst()
+                        .orElseThrow();
+                // 回调在这里就建好：它不该在构造时抓住当时那条 client，否则下面这次重开之后
+                // 手上就是一个死掉的会话（票 02 的判据）。
+                McpToolCallback callback = new McpToolCallback(connection, add);
 
                 first.failNext(new McpTransportSessionNotFoundException("gone"));
-                CallToolResult result = connection.callTool(
-                        CallToolRequest.builder("add").arguments(Map.of("a", 2, "b", 3)).build());
 
-                assertThat(textOf(result)).isEqualTo("5");
+                assertThat(callback.call("{\"a\":2,\"b\":3}")).isEqualTo("5");
+                // 第二次仍然走同一个回调：仍然成功，且没有再多开一条连接（回调没有缓存 client）
+                assertThat(callback.call("{\"a\":2,\"b\":3}")).isEqualTo("5");
                 assertThat(connection.initializations()).isEqualTo(2);
             }
         }
