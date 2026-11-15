@@ -42,7 +42,9 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 同一个端点接一个 **Java** 版也是同样的写法：`claw4j-example-mcp-server` 是一个
 `java -jar` 就能跑的 stdio server，与那三个 Python 的对端完全平级——
 宿主只认协议，不认对端用什么语言写。
-子进程的**环境默认为空**，需要 `PATH` 就显式写一行——应用的模型 key 与数据库口令不会漏过去。
+子进程的环境**只能加、不能减**：显式声明的变量一定在（需要 `PATH` 就写一行），而父进程的其余
+变量也会被继承——SDK 起进程时只 `putAll` 不清空（见 `ProcessStdioMcpEndpoint` 类注释）。
+要隔离得靠部署层的容器策略；脚本层那一路是另一回事，它自己 `clear()` 后再填。
 
 **另一种传输是 HTTP。** 对方的 server 已经跑着，我们只当一个 JSON-RPC 客户端：
 `transport: http`（Streamable HTTP，2025 版协议的标准）与 `transport: sse`（旧版 HTTP+SSE）

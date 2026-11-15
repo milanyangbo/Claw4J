@@ -194,7 +194,7 @@ McpServerEndpoint javaDemoMcp() {
             .of("java-demo",
                     Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                     List.of("-jar", "claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPSHOT.jar"),
-                    Map.of())          // 环境默认为空：应用的模型 key 与数据库口令不会漏给子进程
+                    Map.of())          // 不额外给变量；注意父进程的其余变量仍会被继承，隔离靠部署层
             .endpoint(ToolPermission.read());   // 不带表 = 没有业务表权限
 }
 ```
