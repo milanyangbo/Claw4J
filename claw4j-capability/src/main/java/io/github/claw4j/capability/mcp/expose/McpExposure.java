@@ -4,22 +4,16 @@ import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
-import io.modelcontextprotocol.json.McpJsonDefaults;
-import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
-import io.modelcontextprotocol.server.McpSyncServerExchange;
-import io.modelcontextprotocol.spec.McpSchema;
-import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
-import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.mcp.McpToolUtils;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -40,15 +34,19 @@ import java.util.Optional;
  *       工具在装配期就被拒之门外，而不是"调用时返回等你批"。</li>
  * </ul>
  *
- * <p>拒绝是一条结果，不是异常：MCP 的调用结果里有 {@code isError}，用它。抛异常会让客户端
- * 看到一次协议层故障（可能触发重连），而"这个身份读不了这张表"是一件正常的事，只是它的结果。
- * 工具本身报错同样变成 {@code isError}，与 IM 侧"远端工具报错变成一次失败的工具结果"一致。
+ * <p><b>规格本身由 Spring AI 生成</b>（票 01）：{@code McpSchema.Tool} 与
+ * {@code CallToolResult} 的构造交给 {@link McpToolUtils#toSyncToolSpecification}，
+ * 这一层只加一件它没有的东西——调用前按身份判一次权（{@link Guarded}）。
+ * 自己再拼一遍 Tool 与结果，等于把"参数 JSON 与 Schema 怎么对上"这件事抄第二遍。
+ *
+ * <p>拒绝是一条结果，不是异常：{@link Guarded} 抛出的 {@link IllegalStateException} 由
+ * {@code McpToolUtils} 的处理器转成 {@code isError=true} 的结果。抛到协议层会让客户端看到
+ * 一次故障（可能触发重连），而"这个身份读不了这张表"是一件正常的事，只是它的结果。
+ * 工具本身报错同样如此，与 IM 侧"远端工具报错变成一次失败的工具结果"一致。
  */
 public final class McpExposure {
 
     private static final Logger log = LoggerFactory.getLogger(McpExposure.class);
-
-    private static final McpJsonMapper MAPPER = McpJsonDefaults.getMapper();
 
     private McpExposure() {
     }
@@ -96,7 +94,8 @@ public final class McpExposure {
                         + "，而外部客户端的身份只有 read。写动作不该由一个零上下文的客户端发起——"
                         + "真要交出去，那是另一个决定。");
             }
-            specifications.add(specification(callback.get(), permission, properties));
+            specifications.add(McpToolUtils.toSyncToolSpecification(
+                    new Guarded(callback.get(), permission, properties)));
         }
 
         if (!notInCatalog.isEmpty()) {
@@ -111,52 +110,6 @@ public final class McpExposure {
         return List.copyOf(specifications);
     }
 
-    private static SyncToolSpecification specification(ToolCallback callback, ToolPermission permission,
-                                                       McpExposureProperties properties) {
-        ToolDefinition definition = callback.getToolDefinition();
-        McpSchema.Tool tool = McpSchema.Tool.builder()
-                .name(definition.name())
-                .description(definition.description())
-                // 直接吃工具定义里那串 JSON Schema：自己再拼一遍等于手写一个解析器，
-                // 而两边一定会对不上（少一个 required、多一层 properties）。
-                .inputSchema(MAPPER, definition.inputSchema())
-                .build();
-        return SyncToolSpecification.builder()
-                .tool(tool)
-                .callHandler((exchange, request) -> call(callback, permission, properties, exchange, request))
-                .build();
-    }
-
-    private static CallToolResult call(ToolCallback callback, ToolPermission permission,
-                                       McpExposureProperties properties,
-                                       McpSyncServerExchange exchange, CallToolRequest request) {
-        String toolName = callback.getToolDefinition().name();
-        Principal principal = properties.principal(clientNameOf(exchange));
-
-        if (!permission.grantedTo(principal)) {
-            log.info("MCP 客户端 {} 调 {} 被拒：工具需要 {} 动作读表 {}，而这个身份能读的表是 {}",
-                    principal.userId(), toolName, permission.action(), permission.tables(), properties.tables());
-            return result("没有权限：工具 " + toolName + " 需要读取表 " + permission.tables()
-                    + "，而外部客户端能读的表是 " + properties.tables() + "。", true);
-        }
-
-        long started = System.nanoTime();
-        try {
-            // 单参重载：外部调用没有 ToolContext，也就没有 runId 与 Principal 可供工具内部读。
-            // 这正是"零上下文客户端"的含义，也是为什么需要审批与需要身份的工具在装配期就被挡在外面。
-            String answer = callback.call(argumentsOf(request));
-            // 这不是审计：审计是 run 级、落库可查的（ADR-0023），而外部调用没有 run。
-            // 留这一行只为出问题时能回答"谁在什么时候调了什么"。
-            log.info("MCP 调用 {} -> {} 成功（{} ms）", toolName, principal.userId(), millisSince(started));
-            return result(answer, false);
-        }
-        catch (RuntimeException failure) {
-            log.warn("MCP 调用 {} -> {} 失败（{} ms）：{}", toolName, principal.userId(), millisSince(started),
-                    failure.toString());
-            return result("工具 " + toolName + " 执行失败：" + failure.getMessage(), true);
-        }
-    }
-
     private static Optional<ToolPermission> permissionFor(String toolName,
                                                           List<ToolPermissionRegistry> registries) {
         for (ToolPermissionRegistry registry : registries) {
@@ -168,35 +121,71 @@ public final class McpExposure {
         return Optional.empty();
     }
 
-    private static String argumentsOf(CallToolRequest request) {
-        Map<String, Object> arguments = request.arguments();
-        if (arguments == null || arguments.isEmpty()) {
-            // 空参数按 {} 处理：工具定义里 schema 允许无参，传空串会让参数反序列化先失败一次。
-            return "{}";
-        }
-        try {
-            return MAPPER.writeValueAsString(arguments);
-        }
-        catch (IOException failure) {
-            throw new IllegalStateException("MCP 调用的参数无法序列化成 JSON", failure);
-        }
-    }
+    /**
+     * 一个工具 + 一道按身份的闸。名字与 Schema 来自被包的工具，调用前先判权，判不过就不执行。
+     *
+     * <p>抛异常而不是返回结果：{@code McpToolUtils} 的处理器只认异常（它把
+     * {@code getMessage()} 放进一条 {@code isError=true} 的结果里）。这一层的形状因此由
+     * Spring AI 决定，我们只决定说哪句话。
+     *
+     * <p>每次调用都从 {@link ToolContext} 取当时那个客户端自报的名字，不缓存：同一份工具规格
+     * 会被不同客户端调用。
+     */
+    private record Guarded(ToolCallback tool, ToolPermission permission, McpExposureProperties properties)
+            implements ToolCallback {
 
-    private static CallToolResult result(String text, boolean isError) {
-        return CallToolResult.builder()
-                .addTextContent(text)
-                .isError(isError)
-                .build();
-    }
-
-    private static String clientNameOf(McpSyncServerExchange exchange) {
-        if (exchange == null || exchange.getClientInfo() == null) {
-            return null;
+        @Override
+        public ToolDefinition getToolDefinition() {
+            return tool.getToolDefinition();
         }
-        return exchange.getClientInfo().name();
-    }
 
-    private static long millisSince(long startedNanos) {
-        return (System.nanoTime() - startedNanos) / 1_000_000;
+        @Override
+        public String call(String toolInput) {
+            return call(toolInput, null);
+        }
+
+        @Override
+        public String call(String toolInput, ToolContext toolContext) {
+            String toolName = tool.getToolDefinition().name();
+            Principal principal = properties.principal(clientNameOf(toolContext));
+
+            if (!permission.grantedTo(principal)) {
+                log.info("MCP 客户端 {} 调 {} 被拒：工具需要 {} 动作读表 {}，而这个身份能读的表是 {}",
+                        principal.userId(), toolName, permission.action(), permission.tables(),
+                        properties.tables());
+                // 由 McpToolUtils 的处理器转成一条 isError 结果，不是协议层故障
+                throw new IllegalStateException("没有权限：工具 " + toolName + " 需要读取表 " + permission.tables()
+                        + "，而外部客户端能读的表是 " + properties.tables() + "。");
+            }
+
+            long started = System.nanoTime();
+            try {
+                // 单参调用：外部调用没有 run、没有 IM 身份，工具那一侧不该看见一个装了 MCP exchange
+                // 的上下文——计量与审计的包装会去里面读 principal / runId，读到一个它不认识的东西，
+                // 结果是"有人调过，但查不出是谁"。context 只用在本层判权。
+                String answer = tool.call(toolInput);
+                // 这不是审计：审计是 run 级、落库可查的（ADR-0023），而外部调用没有 run。
+                // 留这一行只为出问题时能回答"谁在什么时候调了什么"。
+                log.info("MCP 调用 {} -> {} 成功（{} ms）", toolName, principal.userId(), millisSince(started));
+                return answer;
+            }
+            catch (RuntimeException failure) {
+                log.warn("MCP 调用 {} -> {} 失败（{} ms）：{}", toolName, principal.userId(), millisSince(started),
+                        failure.toString());
+                // 这句前缀必须由这里给：McpToolUtils 只把 getMessage() 原样当失败文本
+                throw new IllegalStateException("工具 " + toolName + " 执行失败：" + failure.getMessage(), failure);
+            }
+        }
+
+        private static String clientNameOf(ToolContext context) {
+            return McpToolUtils.getMcpExchange(context)
+                    .map(exchange -> exchange.getClientInfo())
+                    .map(client -> client == null ? null : client.name())
+                    .orElse(null);
+        }
+
+        private static long millisSince(long startedNanos) {
+            return (System.nanoTime() - startedNanos) / 1_000_000;
+        }
     }
 }
