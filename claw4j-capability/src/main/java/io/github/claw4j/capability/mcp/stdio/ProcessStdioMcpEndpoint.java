@@ -32,9 +32,18 @@ import java.util.Optional;
  * <p>模型的输出进不了这条命令行：工具入参走 MCP 的 JSON-RPC 帧，由 SDK 序列化后写进 stdin，
  * 永远不会成为 argv 的一部分。
  *
- * <p>环境变量只给显式列出的那些：不传就是空表，子进程拿不到应用进程的环境，应用的模型 key、
- * 数据库口令都不会漏过去。需要 {@code PATH} / {@code HOME} 就在 {@code inherit-env} 里写明——
- * 给了什么在这份配置里看得见，而不是"继承了一切"这种说不清的状态。
+ * <p>环境变量：<b>显式声明的那些一定在，父进程的其余变量也仍然在</b>。
+ * 前者是 {@code env} / {@code inherit-env} 给的；后者是因为 SDK 的 {@link StdioClientTransport}
+ * 用 {@code new ProcessBuilder()} 起进程，再把这份表 {@code putAll} 上去——它没有清空父环境
+ * （{@code mcp-core 2.1.0} {@code StdioClientTransport.java:145-148}）。所以"给了什么看得见"
+ * 这句话只对前者成立，**这里不承诺隔离**。
+ *
+ * <p>真要隔离，得继承 {@code StdioClientTransport} 覆盖 {@code getProcessBuilder()} 里
+ * {@code environment().clear()}（八行，同仓 {@code capability/process/LocalProcessRunner.java:72-75}
+ * 就是这么写对的）。没做，是因为它会触碰 {@code ToolsBoundaryTest} 的
+ * "起进程只经 {@code LocalProcessRunner} / {@code ShellCommandRunner}" 那条红线——
+ * 加第三个例外要一次裁决（票 03 挂着）。别在这里写"子进程拿不到应用进程的环境"：
+ * 那句承诺曾经是假的，是本仓最忌讳的那种偏差。
  *
  * <p>凭据是句柄，真值在起进程那一刻才换出来（P08）：{@link #openTransport()} 是"给子进程的
  * 环境"这条路的唯一出口，之后真值进入子进程，这个对象里仍然只有名字。

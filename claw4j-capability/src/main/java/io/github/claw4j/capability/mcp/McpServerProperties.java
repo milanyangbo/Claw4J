@@ -91,8 +91,10 @@ public class McpServerProperties {
      * @param env       stdio：显式给出的环境变量，值是句柄不是真值（{@code secret:<名字>}；
      *                  非凭据常量写 {@code plain:<文本>}，裸写会被拒并点名到具体一行）；
      *                  同名键覆盖 {@code inheritEnv} 透传进来的值
-     * @param inheritEnv stdio：从本进程透传哪些变量名。默认只给 {@code PATH}——
-     *                  不给它连启动器都找不到，给多了应用的模型 key 就漏过去了
+     * @param inheritEnv stdio：从本进程按名字补进去哪些变量。默认只给 {@code PATH}——
+     *                  不给它连启动器都找不到。注意这**不是白名单**：子进程仍会继承父进程的
+     *                  其余变量（SDK 的传输不清空环境，见 {@code ProcessStdioMcpEndpoint} 类注释），
+     *                  要隔离得靠部署层的容器策略
      * @param url       http / sse：base URI，例如 {@code https://mcp.example.com}
      * @param endpoint  http / sse：base URI 之后的路径。不填走 SDK 默认（{@code /mcp}、{@code /sse}）
      * @param headers   http / sse：每次请求都带的头，值是句柄，可以带前后缀
