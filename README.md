@@ -119,19 +119,22 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 ## 扩展
 
 加一个能力或一条通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
+每一步怎么做、代码长什么样，见 **[`docs/adding-capabilities.md`](docs/adding-capabilities.md)**（八个能直接抄的例子）。
 
-| 你要加的东西 | 写什么 |
-| --- | --- |
-| 一个工具 | `@Tool` 方法 + 三个 bean（工具、权限登记、档位）+ `AutoConfiguration.imports` |
-| 一个 MCP server | 一段 YAML，server 用任何语言写，宿主侧不写代码 |
-| 一个脚本包 | 一个目录（`package.properties` + 入口脚本），配 `claw4j.scripts.directory` |
-| 一个 Skill / 子 Agent / 人设 | 一份或一个目录的 `*.md`，配对应的 `claw4j.*.directory` |
-| 一份知识库 | 一个 `*.md` / `*.txt` 目录，配 `claw4j.rag.directory` |
-| 一条通道 | `ChatChannel` 实现 + 自己的端点，不带任何 IM SDK |
+| 你要加的东西 | 写什么 | 例子 |
+| --- | --- | --- |
+| 一个工具 | `@Tool` 方法 + 三个 bean（工具、权限登记、档位）+ `AutoConfiguration.imports` | [1](docs/adding-capabilities.md#1-java-工具4-个文件) |
+| 一个 MCP server | 一段 YAML，server 用任何语言写，宿主侧不写代码 | [2](docs/adding-capabilities.md#2-mcp-server一段-yaml) |
+| 一个脚本包 | 一个目录（`package.properties` + 入口脚本），配 `claw4j.scripts.directory` | [3](docs/adding-capabilities.md#3-脚本包一个目录) |
+| 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | [4](docs/adding-capabilities.md#4-skill一份做法) |
+| 一个子 Agent | 一份 `*.md`，配 `claw4j.subagents.directory` | [5](docs/adding-capabilities.md#5-子-agent一份-md) |
+| 一个人设 | 一份 `*.md`，配 `claw4j.agent.directory` 与 `claw4j.agent.default` | [6](docs/adding-capabilities.md#6-agent人设这个部署是谁) |
+| 一份知识库 | 一个 `*.md` / `*.txt` 目录，配 `claw4j.rag.directory` | [7](docs/adding-capabilities.md#7-知识库一个目录) |
+| 一条通道 | `ChatChannel` 实现 + 自己的端点，不带任何 IM SDK | [8](docs/adding-capabilities.md#8-通道收认人发) |
 
 两种情况会**启动失败并点名**，不是默认放行：工具没登记权限或档位；插件没在
-`META-INF/claw4j-plugin.properties` 里报它要的核心版本。完整模板、能照抄的例子、
-三种"静默失效"的写法在 [`docs/design/extension-points.md`](docs/design/extension-points.md)。
+`META-INF/claw4j-plugin.properties` 里报它要的核心版本。契约细节与三种"静默失效"的写法在
+[`docs/design/extension-points.md`](docs/design/extension-points.md)。
 
 ## 配置
 
@@ -190,6 +193,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | 要找什么 | 在哪 |
 | --- | --- |
 | 怎么跑、门禁有哪些、迁移怎么加 | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| **加一个工具 / MCP / 脚本包 / Skill / 子 Agent / 人设 / 知识库 / 通道** | **[docs/adding-capabilities.md](docs/adding-capabilities.md)** |
 | 某个能力怎么验、期望值是什么 | [docs/capability-tests.md](docs/capability-tests.md) |
 | 扩展点的完整模板、静默失效的写法 | [docs/design/extension-points.md](docs/design/extension-points.md) |
 | 能力层、鉴权、会话、缓存的设计说明 | [docs/design/](docs/design/) |
