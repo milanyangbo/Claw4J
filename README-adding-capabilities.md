@@ -128,7 +128,10 @@ claw4j:
 [`claw4j-example-mcp-server`](claw4j-example-mcp-server)（Java，`java -jar` 就能跑）。
 最容易撞的一条：**stdout 是协议通道**，日志一律走 stderr。
 
-**怎么确认**：启动日志 `MCP server 状态：deepwiki → UP(工具 3 个)`；`DOWN` 会说明原因，并在后台按 15 秒起翻倍退避重连。
+**怎么确认**：启动日志 `MCP server 状态：deepwiki → UP(工具 3 个)`。连不上时是
+`broken → DOWN(15 秒后重试)`——括号里是**下次重试的间隔**，原因在同一时刻旁边那行 WARN 里
+（`MCP server broken 暂时不可用（…连不上：Client failed to initialize by explicit API call）`）。
+之后按 15 秒起、每次翻倍、封顶 10 分钟在后台重连，应用照常起。
 
 ---
 
@@ -151,7 +154,7 @@ timeoutMillis=20000
 
 ```sh
 #!/bin/sh
-# 参数已经由框架做过校验与引号转义，这里不再解析、也不拼进任何命令
+# 参数已过沙箱校验（只能是包内相对路径），并以 argv 数组送达——不经 shell，所以没有引号要转义
 exec python3 "$(dirname "$0")/weather.py" "$@"
 ```
 
@@ -168,6 +171,9 @@ exec python3 "$(dirname "$0")/weather.py" "$@"
 
 **边界**：脚本本体**不进上下文**，进上下文的只有标准输出；子进程只拿得到 `PATH`，**拿不到任何凭据**——
 需要 key 的能力在这一层跑不通，该走 MCP。
+
+**怎么确认**：把一份文件放进包目录，问一句「用 `<包名>` 处理 `x.md`」；然后看
+`claw4j.tool.calls?tag=tool=<包名>&tag=outcome:ok` 是不是 1（问之前这个标签不存在，返回 404）。
 
 ---
 
@@ -195,6 +201,10 @@ description: 出一份上周各区成交额周报。用户问“上周卖得怎�
 **渐进式披露**：启动时只把 `name` + `description` 放前面，命中之后正文作为一次工具调用的结果进来。
 所以二十份做法只花二十行描述。它**不新增能力**——真正碰表那一步照样过鉴权。
 
+**怎么确认**：问一句只有这份做法能答的话（比如"周报的成交额按什么口径算"），
+`claw4j.tool.calls?tag=tool=Skill&tag=outcome:ok` +1，且回答里出现 `SKILL.md` 正文的原话——
+那句原话进了上下文，才说明正文真的被加载，而不是模型照常识编的。
+
 ---
 
 ## 5. 子 Agent（一份 md）
@@ -212,11 +222,17 @@ tools:
 ```
 
 - `tools` 是白名单；也可以改成 `disallowedTools`（继承全部再减）。
-- 点了容器里没有的工具、或点了 `Task` 自己，**启动失败**。
-- 用的是父的身份，过同一套鉴权——**委派不提权**。
+- 白名单里写了 `Task` 自己 → **启动失败**（委派不嵌套）。写了容器里**没有的**工具 →
+  **首次委派时**才失败并点名，不是启动时：工具集要等 `Task` 这个 bean 建好才能取，装配期取会撞循环依赖。
+- 用父的身份，过同一套鉴权——**委派不提权**。
 
 **打开**：`--claw4j.subagents.directory=examples/subagents`。工具名 `Task`，动作 `delegate_task`。
 三个能直接抄的形状在 [`examples/subagents/`](examples/subagents)。
+
+**怎么确认**：`claw4j.tool.calls?tag=tool=Task&tag=outcome:ok` +1；把
+`--logging.level.org.springframework.ai=DEBUG` 打开还能看到
+`委派 task 给 Subagent <名字>：它这趟能用的工具是 […]`。回答里的结论只能来自那几个工具——
+多出一项查库结果，就是白名单没生效。
 
 ---
 
@@ -301,7 +317,10 @@ public class TelegramChannelAutoConfiguration {
 ACK 之后的去重 / 认人 / 异步 / 分段回推 / 失败也回一句，已经在 `channel.kernel` 里做好了——
 它在 `claw4j-core`，所以接 Telegram 不用把飞书 SDK 拖进 classpath。
 
-**怎么确认**：给它发一条消息，收到回答；再故意发一条重复事件，回答只出现一次。
+**怎么确认**：给它发一条消息，收到回答；再让通道**重投同一条事件**（IM 通道有事件 id：钉钉取
+`msgId`、Slack 取 `event_id`），回答只出现一次。HTTP 通道没有事件 id，验的是"能问答"与
+"没身份被拒"这两条，验不了重复：往它灌同一句话两次，会再答一次（可能命中语义缓存）——那不是 bug，
+是它本来就没有幂等键。
 
 ---
 
