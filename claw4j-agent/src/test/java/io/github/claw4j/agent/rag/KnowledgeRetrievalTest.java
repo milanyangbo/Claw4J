@@ -2,6 +2,7 @@ package io.github.claw4j.agent.rag;
 
 import com.sun.net.httpserver.HttpServer;
 import io.github.claw4j.agent.PermissionFingerprint;
+import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
@@ -433,20 +434,26 @@ class KnowledgeRetrievalTest {
     // ---- 装配 ----
 
     @Test
-    @DisplayName("配了目录才装 advisor，且 order 排在记忆之后")
+    @DisplayName("重排保持默认（开）也能装配，且 advisor 排在记忆之后")
     void advisorIsRegisteredAfterMemory(@TempDir Path docs) throws IOException {
         Files.writeString(docs.resolve("a.md"), "# 退货\n\n华东区 7 天无理由退货。");
 
+        // 这里**不写** claw4j.rag.rerank.enabled=false：默认就是开，而"重排开着的装配"正是曾经
+        // 起不来的那一条（票 01——knowledgeReranker 当时向容器要 Jackson 2 的 ObjectMapper，
+        // 而 Spring Boot 4 已经不再提供这颗 bean）。把它关掉再验，等于绕过唯一会出问题的路径。
         new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(RagAutoConfiguration.class))
                 .withBean(DataSource.class, () -> mock(DataSource.class))
                 .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
                 .withBean(EmbeddingModel.class, () -> mock(EmbeddingModel.class))
                 .withBean(VectorStore.class, () -> mock(VectorStore.class))
-                .withPropertyValues("claw4j.rag.enabled=true", "claw4j.rag.directory=" + docs,
-                        "claw4j.rag.rerank.enabled=false")
+                .withBean(ModelProperties.class)
+                .withPropertyValues("claw4j.rag.enabled=true", "claw4j.rag.directory=" + docs)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
+                    assertThat(context)
+                            .as("重排默认开着，它必须能装配出来；这里少了就是启动会失败的那一颗 bean")
+                            .hasSingleBean(RerankDocumentPostProcessor.class);
                     Advisor advisor = context.getBean(Advisor.class);
                     assertThat(advisor.getOrder())
                             .as("排在记忆之后，否则检索看到的是没有历史的一轮")
