@@ -7,7 +7,7 @@
 
 **Type:** investigation
 
-**Status:** needs-decision
+**Status:** resolved（跟框架一致，不加自定义处理）
 
 **Demo:** 一次"派不出去"的回答之后，换一个用户、换一个实例问同类问题，**不会**拿到那句旧回答。
 
@@ -54,3 +54,24 @@
 
 方案定下来之后补。现在能写的只有一条：**复测任何能力之前，`--claw4j.cache.enabled=false`**
 （已写进 `docs/capability-tests.md` §6）。
+
+## 裁决（用户 2026-11-16）：框架怎么处理就怎么处理，不额外加我们的逻辑
+
+结论：**这件事不是我们的缺陷，是本仓刻意"跟框架走"的结果，因此不改。**
+依据是反编译 `spring-ai-redis-semantic-cache-2.0.2` 得到的实际行为，不是推测：
+
+| 问题 | 框架的做法 | 证据（`SemanticCacheAdvisor` 字节码） |
+| --- | --- | --- |
+| 键里有没有身份 | **没有**。键 = 用户文本 + `sha256(系统提示词)` | `extractUserText` 取 `prompt.getUserMessage().getText()`；`extractContextHash` 只对 `getSystemMessage().getText()` 做 `computeHash`，整条路径没有 principal / chatId |
+| 失败回答进不进库 | **进**。只要 `chatResponse != null` 就 `set`，不看 `finishReason`、不看有没有异常、不看被拒过几次 | `adviseCall` 内 `cache.get(...)` 未命中 → `nextCall(...)` → `if (resp.chatResponse() != null) cache.set(text, chatResponse, hash)`；流式那条同构（`lambda$adviseStream$0`） |
+| 命中能不能看出来 | **看不出来**：直接 `ChatClientResponse.builder().chatResponse(命中).context(原 context).build()` 返回，不打日志、不计指标 | 同上，命中分支只有 builder 三条指令 |
+
+所以"换用户拿到同一句"与"失败被固化"都是**框架的既定语义**，不是我们包装出来的一层。
+要做隔离或过滤，就是在本仓自己加一条框架没有的规则——与 `docs/agents/alignment.md` 的判据相反
+（上一轮 `ApprovalService` 那个多余的守卫就是因为这个被回退的）。
+
+**唯一保留的动作在文档侧，不在代码侧**：`docs/capability-tests.md` §6 已写明"复测任何能力前
+`--claw4j.cache.enabled=false`"，否则测出来的是缓存不是能力（票 02 的教训）。
+
+如果将来要改这条口径（比如键里带用户、或拒答不入库），那是一次**产品决定**，要单独开票并在票里
+写明"我们与框架的分歧是什么、为什么值得分歧"——不能顺手加。
