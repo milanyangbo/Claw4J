@@ -7,7 +7,7 @@
 
 **Type:** bug
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Demo:** 起实例（`rag.enabled=true`，重排默认开着），问「东西买了能退吗」，日志里**没有**
 `重排失败（UnrecognizedPropertyException）`；`RerankDocumentPostProcessor` 打 debug 时能看到
@@ -51,3 +51,17 @@ io.github.claw4j.agent.rag.RerankDocumentPostProcessor$Response), not marked as 
 
 `rerankCandidates()` 默认 10、`topK` 5，这两个数没有参与本 bug。响应的 `results` 里若只有前 N 条，
 `reorder()` 会把没被点到的按原顺序补在后面，条数不变——这条逻辑没动。
+
+## 实现记录
+
+- `Response` 与 `Result` **两个** record 都加 `@JsonIgnoreProperties(ignoreUnknown = true)`。
+  只改 `Response` 不够：把用例改成真实响应形状之后，先红的是 `Result` ——
+  真实返回的每条结果里还带 `document`（我们请求时给了 `return_documents=false`，它照样回一个 `null`）。
+  两处都容忍"我们不关心的字段"，但缺 `results`、类型不对仍走失败路径。
+- **先把用例改成真实形状再修**：`rerankReordersAndCapsInput` 的 Stub 响应体换成
+  `{"object":"list","id":…,"model":…,"usage":{…},"results":[{"index":2,…,"document":null},…]}`，
+  跑出来红在 `Unrecognized field "document"`（`Result`），修完绿。这就是票里缺的那条"断言真的排了序"。
+- 加了一行 DEBUG（`process()` 里）：`重排完成：候选 N 条，服务返回 M 条，前三条 [ids] → [ids]`。
+  理由写在注释里：不留痕时"跑过了"与"根本没跑"长得一模一样——本票就是这么漏掉的。
+- 真实例验证：`重排完成：候选 2 条，服务返回 2 条，前三条 [7504cc21…, e1b31545…] → [7504cc21…, e1b31545…]`，
+  没有 `重排失败` 的 WARN。`M` 非 0 说明响应真的被解析并用上了。

@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.rag;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -97,7 +98,15 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
             return pool;
         }
         try {
-            return reorder(pool, rerank(query.text(), pool));
+            List<Result> results = rerank(query.text(), pool);
+            List<Document> reordered = reorder(pool, results);
+            // 重排唯一可观察的结果就是"顺序变了没有"。不留这一行，验的人只能靠"日志里没有 WARN"
+            // 推断它跑过了——而那与"根本没跑"长得一模一样（票 04 就是这么漏掉的）。
+            log.debug("重排完成：候选 {} 条，服务返回 {} 条，前三条 {} → {}",
+                    pool.size(), results.size(),
+                    pool.stream().limit(3).map(Document::getId).toList(),
+                    reordered.stream().limit(3).map(Document::getId).toList());
+            return reordered;
         }
         catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -192,8 +201,15 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
     /**
      * 响应体。只要 {@code results}：文本已经有了，{@code return_documents=false} 让它别回传。
      *
+     * <p>{@code ignoreUnknown}: 端点是 OpenAI 兼容格式，除了 {@code results} 还会回
+     * {@code object} / {@code id} / {@code model} / {@code usage}。只声明 {@code results} 的 record
+     * 默认不容忍多余字段（Jackson 2 的 {@code FAIL_ON_UNKNOWN_PROPERTIES=true}），于是一次成功的重排
+     * 会被当成解析失败、静静退回原顺序——**功能从来没见过效果，而日志里只有一行 WARN**。
+     * 容忍的是"我们不关心的字段"，不是"格式错"：缺 {@code results}、类型不对仍然走失败路径。
+     *
      * @param results 每条候选的下标与相关性分
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     record Response(List<Result> results) {
     }
 
@@ -201,6 +217,7 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
      * @param index          对应输入 {@code documents} 中的下标
      * @param relevanceScore 0~1，同一请求内可比、跨请求不可比
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     record Result(int index, @JsonProperty("relevance_score") double relevanceScore) {
     }
 }

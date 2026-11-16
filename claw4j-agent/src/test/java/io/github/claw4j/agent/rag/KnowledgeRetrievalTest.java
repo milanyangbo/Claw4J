@@ -338,10 +338,16 @@ class KnowledgeRetrievalTest {
     @Test
     @DisplayName("重排只换顺序不截断：送进去的是候选池前 N 条，回来还是这些条")
     void rerankReordersAndCapsInput() throws Exception {
+        // 响应体照着真实端点抄：除了 results，顶层还有 object / id / model / usage。
+        // 只声明 results 的 record 若不容忍多余字段，Jackson 2 默认抛
+        // UnrecognizedPropertyException，于是"解析失败 → 退回原顺序"——重排看起来正常，
+        // 其实一次都没排过（票 04 是在真实例日志里抓到的）。
         try (Stub endpoint = new Stub("""
-                {"results":[{"index":2,"relevance_score":0.9},
-                            {"index":0,"relevance_score":0.5},
-                            {"index":1,"relevance_score":0.2}]}
+                {"object":"list","id":"req-1","model":"qwen3-rerank",
+                 "usage":{"total_tokens":42},
+                 "results":[{"index":2,"relevance_score":0.9,"document":null},
+                            {"index":0,"relevance_score":0.5,"document":null},
+                            {"index":1,"relevance_score":0.2,"document":null}]}
                 """)) {
             List<Document> pool = List.of(doc("d1", "a.md", 1), doc("d2", "b.md", 1),
                     doc("d3", "c.md", 1), doc("d4", "d.md", 1));
