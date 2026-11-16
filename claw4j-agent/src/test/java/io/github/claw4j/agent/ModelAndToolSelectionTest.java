@@ -74,7 +74,7 @@ class ModelAndToolSelectionTest {
     private static final ToolCallback TOOL = new RecordingTool("querySales", "128400");
 
     @Test
-    @DisplayName("主模型正常时备模型一次都不碰")
+    @DisplayName("主模型正常时备模型一次都不碰；路由顺序就是主在前（日志与降级都按这个顺序）")
     void primarySuccessDoesNotTouchBackup() {
         AtomicInteger backupCalls = new AtomicInteger();
         RoutingChatModel routing = new RoutingChatModel(List.of(
@@ -94,6 +94,7 @@ class ModelAndToolSelectionTest {
 
         assertThat(textOf(response)).isEqualTo("主模型的回答");
         assertThat(backupCalls).hasValue(0);
+        assertThat(routing.routeOrder()).containsExactly("primary", "backup");
     }
 
     @Test
@@ -230,15 +231,43 @@ class ModelAndToolSelectionTest {
     }
 
     @Test
-    @DisplayName("路由顺序就是主在前：日志与降级都按这个顺序")
-    void routeOrderIsPrimaryFirst() {
+    @DisplayName("模型生成的字节解析不出来 → 同一家再试一次；限流不走这条路（SDK 自己会重试）")
+    void unparseableOutputIsRetriedOnceOnTheSameModel() {
+        AtomicInteger attempts = new AtomicInteger();
         RoutingChatModel routing = new RoutingChatModel(List.of(
                 new RoutingChatModel.Route("deepseek", model(
-                        DeepSeekChatOptions.builder().build(), prompt -> answer(""), prompt -> Flux.empty())),
-                new RoutingChatModel.Route("qwen", model(
-                        OpenAiChatOptions.builder().build(), prompt -> answer(""), prompt -> Flux.empty()))));
+                        DeepSeekChatOptions.builder().build(),
+                        prompt -> {
+                            if (attempts.incrementAndGet() == 1) {
+                                // 真实形状：Spring AI 解析工具参数时把 Jackson 3 的解析异常包了一层
+                                throw new IllegalStateException("Conversion from JSON to java.util.Map failed",
+                                        new tools.jackson.core.exc.StreamReadException(
+                                                "Unexpected character ('专'): was expecting comma to separate Object entries"));
+                            }
+                            return answer("第二次成了");
+                        },
+                        prompt -> Flux.empty()))));
 
-        assertThat(routing.routeOrder()).containsExactly("deepseek", "qwen");
+        assertThat(textOf(routing.call(prompt(DeepSeekChatOptions.builder().build()))))
+                .as("单供应商部署里没有下一家可降：不在同一家重试，一次抖动就是整个请求失败")
+                .isEqualTo("第二次成了");
+        assertThat(attempts).hasValue(2);
+
+        AtomicInteger limitedCalls = new AtomicInteger();
+        RoutingChatModel limited = new RoutingChatModel(List.of(
+                new RoutingChatModel.Route("deepseek", model(
+                        DeepSeekChatOptions.builder().build(),
+                        prompt -> {
+                            limitedCalls.incrementAndGet();
+                            throw statusFailure(429, "429 too many requests");
+                        },
+                        prompt -> Flux.empty()))));
+
+        assertThatThrownBy(() -> limited.call(prompt(DeepSeekChatOptions.builder().build())))
+                .isInstanceOf(ModelRoutingException.class);
+        assertThat(limitedCalls)
+                .as("429 立刻重打同一家只会更糟；那是 SDK 重试层的事，路由层不掺和")
+                .hasValue(1);
     }
 
     @Test
@@ -312,6 +341,9 @@ class ModelAndToolSelectionTest {
         table.put(new java.net.ConnectException("连接被拒"), true);
         table.put(new java.net.http.HttpTimeoutException("读超时"), true);
         table.put(new RuntimeException("被框架包了一层", statusFailure(502, "网关错误")), true);
+        // 模型生成的内容解析不了：字节每次重新生成都不同，值得再要一份
+        table.put(new tools.jackson.core.exc.StreamReadException("Unexpected character ('专')"), true);
+        table.put(new com.fasterxml.jackson.core.JsonParseException(null, "Unexpected end-of-input"), true);
         // 换一家也一样
         table.put(statusFailure(401, "key 无效"), false);
         table.put(statusFailure(403, "无权限"), false);

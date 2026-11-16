@@ -207,6 +207,10 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 - `npx` 起的 server 起不来：`request-timeout`（默认 30s）与 `initialization-timeout`（默认 60s）
   **两个都要调大**，`npx` 冷启动实测 36 秒。
 - 要带 `Authorization` 的端点：头里只能写句柄（`Bearer secret:mcp_token`），裸写明文启动就被拒。
+- **偶发 503 与 `模型这一轮没有产出可用的回答，请把这句话再发一次`**：这不是 MCP 的问题，
+  是模型这一轮把工具参数写成了坏 JSON（真实见过 `Unexpected character ('专')`）。
+  模型侧会先在同一家重试一次，还不行才回 503——**再发一次就行**。
+  以前这种情况是 `500 Internal Server Error` + 空 body，看不出任何线索。
 
 ---
 

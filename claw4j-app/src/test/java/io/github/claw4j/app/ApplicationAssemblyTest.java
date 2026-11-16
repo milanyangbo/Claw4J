@@ -2,6 +2,7 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
+import io.github.claw4j.agent.model.ModelRoutingException;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
@@ -11,6 +12,7 @@ import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.capability.mcp.expose.McpExposure;
 import io.github.claw4j.capability.mcp.expose.McpExposureProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
+import io.github.claw4j.channel.http.HttpChatController;
 import io.github.claw4j.channel.dingtalk.DingtalkReplySender;
 import io.github.claw4j.channel.dingtalk.client.DingtalkChannel;
 import io.github.claw4j.channel.wecom.WecomReplySender;
@@ -40,6 +42,8 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -594,9 +598,25 @@ class ApplicationAssemblyTest {
                 .hasMessageContaining("sales");
     }
 
+    @Test
+    @DisplayName("模型这一轮给不出可用结果 → 503，不是 500；body 里不带内部原文")
+    void modelFailureIsUnavailableNotAServerError() {
+        ResponseEntity<HttpChatController.ErrorResponse> response = new ModelFailureAdvice()
+                .onModelUnavailable(new ModelRoutingException(
+                        "模型 deepseek 调用失败，这类错误换一家也不会好："
+                                + "Conversion from JSON to java.util.Map failed"));
+
+        assertThat(response.getStatusCode())
+                .as("500 是「服务端有 bug」，网关与客户端都不会重试；这里是上游这一轮不行，再发一次就可能好")
+                .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(response.getBody().error())
+                .isEqualTo(ModelFailureAdvice.UNAVAILABLE)
+                .as("供应商名、状态码与栈信息对调用方没用，对攻击者有用；原文只进日志")
+                .doesNotContain("deepseek", "Conversion from JSON");
+    }
+
     /** 金额可能被写成 128,400 或 ￥128400：去掉分隔符再比，比的就是那个数。 */
-    private static boolean mentions(String answer, String amount) {
-        String normalized = answer.replace(",", "").replace("，", "").replace(" ", "");
+    private static boolean mentions(String answer, String amount) {        String normalized = answer.replace(",", "").replace("，", "").replace(" ", "");
         return normalized.contains(amount);
     }
 

@@ -54,3 +54,24 @@ tools.jackson.core.exc.StreamReadException: Unexpected character ('专' (code 19
 | 只重试一次、且只对解析类 | 用假模型两次都抛解析失败 → 总调用次数 2（不是 3、不是 1） |
 | 限流不被同家重试 | 假模型抛 `TransientAiException` → 同一次 `call` 里不重复打同一家 |
 | 兜底不是 500 | 单供应商 + 解析失败两次 → HTTP 503，body 里有 `runId` 与"再发一次" |
+
+## 实现记录
+
+- `ModelFailures`：新增 `isUnparseableContent`（Jackson 2 的 `JsonProcessingException` +
+  Jackson 3 的 `JacksonException`），`worthTryingAnother` 对它返回 **true**，javadoc 改掉
+  "同一份解析不了的响应换一家也解析不了"那条推理；新增
+  `worthRetryingTheSameModel`（只对解析类为 true）。
+- `RoutingChatModel.call`：每个模型最多调两次，第二次只在"解析不出来"时发生；限流/网络/5xx
+  不重试同一家。流式那侧不重试（吐过之后重生成会让客户端看到两遍）。
+- `ModelFailureAdvice`（app 层）：`ModelRoutingException` → 503 + 一句可读的话，
+  内部原文只进日志。放 app 是因为异常在 agent、状态码在 channel，只有 app 同时认识两者。
+- 用例：`ModelAndToolSelectionTest#unparseableOutputIsRetriedOnceOnTheSameModel`
+  （断言解析失败两次 → 成功且调用 2 次；429 → 调用 1 次且抛 `ModelRoutingException`）、
+  分类表补两行（Jackson 3 / Jackson 2 → true）、`ApplicationAssemblyTest`
+  加一条直接调 advice 的映射断言（503 + body 不含供应商名）。两处都没有新增测试文件。
+  为腾位置，把原 `routeOrderIsPrimaryFirst` 并进 `primarySuccessDoesNotTouchBackup`。
+- **变异验证**：把重试条件改成 `false &&` → 只有新加那条红（报错就是那条
+  `StreamReadException`）；把 stdout 那段删掉 → 只有 `ScriptPackageTest` 那条红。
+- 端到端：`demo_echo` 连跑 6 次全 200（改之前五次里出过一次 500）；
+  用无效 key 起实例 → **503** + `{"error":"模型这一轮没有产出可用的回答，请把这句话再发一次"}`，
+  不再是 500 空 body。
