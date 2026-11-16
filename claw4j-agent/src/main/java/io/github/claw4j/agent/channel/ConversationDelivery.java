@@ -2,6 +2,7 @@ package io.github.claw4j.agent.channel;
 
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.OutboundDelivery;
+import io.github.claw4j.domain.untrusted.OutboundText;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -75,7 +76,9 @@ public class ConversationDelivery {
             return;
         }
         try {
-            delivery.send(target.channelRef(), text);
+            // 主动推的文本同样过一遍出站剥离：定时任务与审批续跑的结果也是模型写的，
+            // 也可能复述工具返回（票 02）。
+            delivery.send(target.channelRef(), OutboundText.clean(text));
             count("sent", "channel", target.channel());
         }
         catch (RuntimeException failure) {

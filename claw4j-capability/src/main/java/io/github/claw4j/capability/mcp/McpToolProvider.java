@@ -1,5 +1,6 @@
 package io.github.claw4j.capability.mcp;
 
+import io.github.claw4j.capability.untrusted.UntrustedDescriptionCallback;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.slf4j.Logger;
@@ -111,7 +112,11 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     public synchronized ToolCallback[] getToolCallbacks() {
         List<ToolCallback> collected = new ArrayList<>();
         for (Server server : servers) {
-            collected.addAll(server.callbacks);
+            for (ToolCallback callback : server.callbacks) {
+                // 只改描述，不改返回值：MCP 的结果按设计不包装（对齐 OpenClaw），
+                // 但"输出是外部的"这件事要写在工具契约里，否则模型没有任何线索。
+                collected.add(UntrustedDescriptionCallback.marking(callback));
+            }
         }
         return collected.toArray(new ToolCallback[0]);
     }

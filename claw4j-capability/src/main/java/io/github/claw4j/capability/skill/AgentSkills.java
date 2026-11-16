@@ -1,8 +1,11 @@
 package io.github.claw4j.capability.skill;
 
 import io.github.claw4j.domain.principal.ToolPermission;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springaicommunity.agent.common.workspace.Workspace;
 import org.springaicommunity.agent.tools.SkillsTool;
+import org.springaicommunity.agent.tools.SkillsTool.Skill;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.nio.file.Path;
@@ -48,6 +51,11 @@ public final class AgentSkills {
      */
     public static final String ACTION = "use_skill";
 
+    /** 审批标记默认放在技能目录下的这个子目录：位置固定，好记也好忽略。 */
+    public static final String DEFAULT_REVIEW_DIRECTORY = ".review";
+
+    private static final Logger log = LoggerFactory.getLogger(AgentSkills.class);
+
     private AgentSkills() {
     }
 
@@ -64,11 +72,58 @@ public final class AgentSkills {
      * @throws IllegalStateException 目录不存在，或里面没有可用的 Skill
      */
     public static ToolCallback callback(Path directory) {
+        return callback(directory, null, true);
+    }
+
+    /**
+     * 把一个技能目录变成工具回调，并按审批标记筛。
+     *
+     * <p><b>校验与加载用同一份内存快照。</b>原来先 {@link SkillCatalog#load} 校验、再让
+     * {@code addSkillsDirectory} 读一次盘，两次读之间文件被改就是"校验一份、用另一份"（TOCTOU）。
+     * 改成逐份 {@code addSkill(name, description, content)}，校验过的内容就是进上下文的内容。
+     *
+     * <p>代价要认：{@code addSkill} 只保留 name / description 两个 front matter 字段，
+     * {@code allowed-tools} 之类的字段不进清单（它们本来也不生效，见票 04 的缺口）；
+     * {@code basePath} 是空串，"技能目录在哪"那一行由 {@link SkillTrust#statement} 之外的说法补不了，
+     * 这里接受缺失——技能正文该自己写清随包文件叫什么。
+     *
+     * @param directory 技能目录
+     * @param reviewDirectory 审批标记目录；{@code null} 表示技能目录下的 {@code .review}
+     * @param requireApproval 没有审批标记时是否拒绝加载。false 只给"我知道自己在做什么"的部署
+     * @return 名为 {@link #TOOL_NAME} 的工具回调
+     * @throws IllegalStateException 目录不存在、里面没有 Skill，或没有一份通过审批
+     */
+    public static ToolCallback callback(Path directory, Path reviewDirectory, boolean requireApproval) {
         Path absolute = directory.toAbsolutePath().normalize();
-        SkillCatalog.load(absolute);
+        List<Skill> skills = SkillCatalog.load(absolute);
+        Path review = reviewDirectory == null
+                ? absolute.resolve(DEFAULT_REVIEW_DIRECTORY)
+                : reviewDirectory.toAbsolutePath().normalize();
+
+        SkillsTool.Builder builder = SkillsTool.builder();
+        int loaded = 0;
+        for (Skill skill : skills) {
+            Path skillDirectory = skill.basePath() == null || skill.basePath().isBlank()
+                    ? absolute : Path.of(skill.basePath());
+            SkillTrust.Decision decision = requireApproval
+                    ? SkillTrust.decision(review, skill.name(), SkillTrust.digest(skillDirectory))
+                    : null;
+            if (requireApproval && decision == null) {
+                // fail-closed，而且点名是哪个技能、标记该放哪：不点名的话，排查只能靠猜。
+                log.warn("技能未审批或内容已变更，未加载：{}；标记文件应为 {}", skill.name(),
+                        review.resolve(SkillTrust.markerName(skill.name())));
+                continue;
+            }
+            String statement = decision == null ? "" : SkillTrust.statement(skill.name(), decision.by());
+            builder.addSkill(skill.name(), SkillTrust.descriptionOf(skill), statement + skill.content());
+            loaded++;
+        }
+        if (loaded == 0) {
+            throw new IllegalStateException("技能目录里没有通过审批的 Skill：" + absolute
+                    + "（标记放在 " + review + "，status=" + SkillTrust.APPROVED + " 且 sha256 对得上才加载）");
+        }
         try {
-            return SkillsTool.builder()
-                    .addSkillsDirectory(absolute.toString())
+            return builder
                     // 模型会看到"这个 Skill 的目录在哪"，那里可能有脚本与数据文件。
                     // 本地执行时 display 是恒等映射（宿主路径即脚本能访问的路径）；
                     // 换成容器沙箱时换掉这个实现即可，模型不会被喂一个它用不到的路径。

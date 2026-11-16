@@ -2,6 +2,8 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactor;
+import io.github.claw4j.domain.untrusted.InboundText;
+import io.github.claw4j.domain.untrusted.OutboundText;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.channel.DeliveryTarget;
@@ -403,7 +405,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     public OutboundMessage reply(InboundMessage message) {
         Objects.requireNonNull(message, "message");
         Turn turn = inLane(message, () -> answer(message, addressOf(message)));
-        return OutboundMessage.of(message.chatId(), turn.text(), turn.runId());
+        // 出站剥离：包装头、数据块标签、纯文本工具调用块都不该让用户读到（票 02）。
+        // 存进会话记忆的仍是原文——模型下一轮需要知道那段内容从哪来。
+        return OutboundMessage.of(message.chatId(), OutboundText.clean(turn.text()), turn.runId());
     }
 
     /**
@@ -488,7 +492,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         }
         // 送模型的是命令之后的内容：/new 帮我查华南 的第一句是「帮我查华南」，
         // 命令本身不该出现在提示词里，也不该成为这一轮的 run 目标。
-        String masked = PiiRedactor.mask(parsed.text());
+        String masked = InboundText.neutralizeSystemTags(PiiRedactor.mask(parsed.text()));
         // 这一轮的编号（ADR-0027）：本地生成，不落任何表。
         // 它只在三处用——审计的两条事件、trace 的一段 span、返回给调用方的回执。
         // OpenClaw 的 runId 也是这个角色：agent RPC 返回它，agent.wait 可以等它
@@ -580,7 +584,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
             return;
         }
-        String masked = PiiRedactor.mask(parsed.text());
+        String masked = InboundText.neutralizeSystemTags(PiiRedactor.mask(parsed.text()));
         String runId = UUID.randomUUID().toString();
         AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
                 message.channel());
@@ -590,6 +594,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         try (SpanTracer.SpanScope run = tracer.open(RUN_SPAN,
                 runAttributes(runId, message.principal()))) {
             StringBuilder answer = new StringBuilder();
+            // 流式的出站剥离必须有状态：标记可能被切在两片之间。三种收尾（正常/异常/超时）
+            // 都要 flush，否则最后半句永远发不出去（票 02）。
+            OutboundText.StreamStripper stripper = new OutboundText.StreamStripper();
             try (SpanTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
                 try {
                     promptOf(message, owner, sessionId, conversationKey,
@@ -600,9 +607,18 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                             .doOnNext(chunk -> {
                                 log.debug("出站分块 chatId={} runId={} chunk={}", message.chatId(), runId, chunk);
                                 answer.append(chunk == null ? "" : chunk);
-                                onChunk.accept(OutboundMessage.chunk(message.chatId(), chunk, runId));
+                                String out = stripper.feed(chunk);
+                                if (!out.isEmpty()) {
+                                    onChunk.accept(OutboundMessage.chunk(message.chatId(), out, runId));
+                                }
                             })
-                            .doOnComplete(() -> onChunk.accept(OutboundMessage.of(message.chatId(), "", runId)))
+                            .doOnComplete(() -> {
+                                String tail = stripper.flush();
+                                if (!tail.isEmpty()) {
+                                    onChunk.accept(OutboundMessage.chunk(message.chatId(), tail, runId));
+                                }
+                                onChunk.accept(OutboundMessage.of(message.chatId(), "", runId));
+                            })
                             .blockLast();
                     // 流式这一路手上没有 ChatResponse（汇总 usage 在最后一帧，未必到得了），
                     // 所以 token 传 null 而不是 0：0 会被读成「这一轮没花钱」，
@@ -611,6 +627,17 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                             pushTargetOf(addressOf(message), message), message.notifyPolicy(),
                             null);
                 } catch (RuntimeException | Error failure) {
+                    // 断流也要把暂存的那截吐出来，否则用户看到"话说到一半没了"。
+                    // 发不出去就算了：原始失败更重要，别被它盖掉。
+                    try {
+                        String tail = stripper.flush();
+                        if (!tail.isEmpty()) {
+                            onChunk.accept(OutboundMessage.chunk(message.chatId(), tail, runId));
+                        }
+                    }
+                    catch (RuntimeException ignored) {
+                        log.debug("断流时暂存的那截没发出去：chatId={} runId={}", message.chatId(), runId);
+                    }
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
                     turn.failed(failure);
                     run.failed(failure);

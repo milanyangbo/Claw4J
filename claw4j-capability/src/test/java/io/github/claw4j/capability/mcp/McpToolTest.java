@@ -45,6 +45,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.modelcontextprotocol.spec.McpTransportSessionNotFoundException;
 import org.junit.jupiter.api.DisplayName;
+import io.github.claw4j.capability.untrusted.UntrustedDescriptionCallback;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
@@ -96,7 +97,10 @@ class McpToolTest {
                         .filteredOn(callback -> callback.getToolDefinition().name().equals("add"))
                         .singleElement()
                         .satisfies(callback -> assertThat(callback.getToolDefinition().description())
-                                .isEqualTo("把两个整数相加"));
+                                // 原描述还在前面，末尾追加一句"输出是外部的"：MCP 的结果不包装（票 01），
+                                // 不可信这件事只能写在工具契约里。
+                                .startsWith("把两个整数相加")
+                                .contains(UntrustedDescriptionCallback.NOTICE));
                 assertThat(provider.permissions())
                         .containsOnlyKeys("add", "echo", "explode", "tick")
                         .allSatisfy((name, permission) -> assertThat(permission).isEqualTo(ToolPermission.read()));

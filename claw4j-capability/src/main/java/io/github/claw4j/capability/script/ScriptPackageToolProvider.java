@@ -1,7 +1,9 @@
 package io.github.claw4j.capability.script;
 
+import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.untrusted.ExternalContent;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 
@@ -98,6 +100,10 @@ public final class ScriptPackageToolProvider implements ToolCallbackProvider {
     public ToolCallback[] getToolCallbacks() {
         return registry.packages().stream()
                 .map(pkg -> (ToolCallback) new ScriptPackageToolCallback(pkg, runner, listener))
+                // 脚本的输出来自"脚本读了什么"，与网页同一种不可信：包边界、带警告句。
+                // 每轮现包，不在构造时拍快照——包列表是现取的（见类注释）。
+                .map(callback -> UntrustedToolCallback.wrapping(callback,
+                        ExternalContent.Source.SCRIPT, true))
                 .toArray(ToolCallback[]::new);
     }
 

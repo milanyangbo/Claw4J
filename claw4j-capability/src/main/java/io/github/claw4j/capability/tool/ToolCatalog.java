@@ -1,5 +1,6 @@
 package io.github.claw4j.capability.tool;
 
+import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.domain.principal.ToolProfile;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -91,7 +92,13 @@ public final class ToolCatalog implements ToolCallbackProvider {
      */
     public List<ToolCallback> tools() {
         List<ToolCallback> tools = source.get();
-        return tools == null ? List.of() : List.copyOf(tools);
+        if (tools == null || tools.isEmpty()) {
+            return List.of();
+        }
+        // 所有工具的返回值都过一遍特殊 token 净化。未包装的路径（Read / Grep / Bash / MCP）
+        // 同样能带回 <|im_start|> 这类伪造"角色边界"的串，而它们按设计不包装（票 01）。
+        // 已经包过的内容由净化器自己跳过：否则它会把人家的边界当伪造标记清掉。
+        return tools.stream().map(UntrustedToolCallback::sanitizing).toList();
     }
 
     /** 给 {@code ChatClient} 用：框架在每次请求时调它，于是清单按轮解析。 */

@@ -1,9 +1,11 @@
 package io.github.claw4j.capability.builtin.agenttools;
 
+import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import io.github.claw4j.domain.untrusted.ExternalContent;
 import org.springaicommunity.agent.tools.BraveWebSearchTool;
 import org.springaicommunity.agent.tools.FileSystemTools;
 import org.springaicommunity.agent.tools.GlobTool;
@@ -184,7 +186,13 @@ public class AgentToolsAutoConfiguration {
     @Conditional(SearchKeyPresent.class)
     public ToolCallbackProvider webSearchTools(WebToolsProperties properties) {
         BraveWebSearchTool tool = BraveWebSearchTool.builder(properties.searchApiKey()).build();
-        return MethodToolCallbackProvider.builder().toolObjects(tool).build();
+        ToolCallback[] exported = MethodToolCallbackProvider.builder().toolObjects(tool).build().getToolCallbacks();
+        // 搜索结果也包边界，但不带警告句——与 OpenClaw 的 wrapWebContent(content, "web_search") 一致：
+        // 它的 includeWarning 只在 web_fetch 时为 true。搜索结果是一小段摘要，边界足够说明来源。
+        return ToolCallbackProvider.from(Arrays.stream(exported)
+                .map(callback -> UntrustedToolCallback.wrapping(callback,
+                        ExternalContent.Source.WEB_SEARCH, false))
+                .toList());
     }
 
     /**

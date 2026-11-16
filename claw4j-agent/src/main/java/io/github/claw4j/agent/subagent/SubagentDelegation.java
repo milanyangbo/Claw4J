@@ -3,6 +3,7 @@ package io.github.claw4j.agent.subagent;
 import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.untrusted.PromptData;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -121,7 +122,11 @@ public final class SubagentDelegation implements ToolCallback {
                     + String.join("\n", registrations());
         }
         try {
-            return runner.delegate(chosen, task, principal);
+            String report = runner.delegate(chosen, task, principal);
+            // 子 Agent 的结论是"一份报告，供你综合"，不是"新的任务"。包成数据块，label 带上是谁报的：
+            // 它是这一段上下文里最像结论的东西，也正因如此最需要标出来源。
+            String block = PromptData.wrapDataBlock("Subagent result: " + chosen.name(), report, 0);
+            return block.isEmpty() ? "Subagent 没有返回内容。" : block;
         }
         catch (RuntimeException failure) {
             throw new ToolExecutionException(definition, failure);

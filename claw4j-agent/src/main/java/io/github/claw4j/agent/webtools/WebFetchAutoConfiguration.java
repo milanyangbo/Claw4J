@@ -1,18 +1,22 @@
 package io.github.claw4j.agent.webtools;
 
+import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import io.github.claw4j.domain.untrusted.ExternalContent;
 import org.springaicommunity.agent.tools.SmartWebFetchTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -49,7 +53,12 @@ public class WebFetchAutoConfiguration {
     @ConditionalOnMissingBean
     public SmartWebFetchTool smartWebFetchTool(ChatModel chatModel) {
         ChatClient summarizer = ChatClient.builder(chatModel).build();
-        return SmartWebFetchTool.builder(summarizer).build();
+        return SmartWebFetchTool.builder(summarizer)
+                // 关掉库自带的"域名安全检查"：它只是问 https://claude.ai/api/web/domain_info 一句黑名单，
+                // 不判 IP 段，而且在国内恒返回 403 region_unavailable——开着就是"所有抓取全被拦"。
+                // 出网边界改由 WebFetchGuard 按解析后的 IP 判（票 03），比那份黑名单更靠得住。
+                .domainSafetyCheck(false)
+                .build();
     }
 
     /**
@@ -60,7 +69,15 @@ public class WebFetchAutoConfiguration {
      */
     @Bean
     public ToolCallbackProvider webFetchTools(SmartWebFetchTool tool) {
-        return MethodToolCallbackProvider.builder().toolObjects(tool).build();
+        ToolCallback[] exported = MethodToolCallbackProvider.builder().toolObjects(tool).build().getToolCallbacks();
+        // 两层，顺序不能换：
+        //   外层 guard 先判 URL（拒绝内网/非法协议），通过才执行；
+        //   内层 wrapping 把抓回来的内容包上边界与来源行。
+        // 反过来的话，先抓再判等于洞已经开了。
+        return ToolCallbackProvider.from(Arrays.stream(exported)
+                .map(callback -> WebFetchGuard.guarding(
+                        UntrustedToolCallback.wrapping(callback, ExternalContent.Source.WEB_FETCH, true)))
+                .toList());
     }
 
     /**

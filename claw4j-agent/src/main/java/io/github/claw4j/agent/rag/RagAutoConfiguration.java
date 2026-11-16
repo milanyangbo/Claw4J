@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.claw4j.agent.model.EmbeddingAutoConfiguration;
 import io.github.claw4j.agent.model.EmbeddingProperties;
 import io.github.claw4j.agent.model.ModelProperties;
+import io.github.claw4j.domain.untrusted.ExternalContent;
+import io.github.claw4j.domain.untrusted.PromptData;
 import io.github.claw4j.secret.SecretResolver;
 import io.github.claw4j.capability.secret.SpringSecretResolver;
 import org.slf4j.Logger;
@@ -322,11 +324,15 @@ public class RagAutoConfiguration {
         StringBuilder text = new StringBuilder();
         for (int i = 0; i < documents.size(); i++) {
             Document document = documents.get(i);
-            String citation = RagMetadata.citation(document);
+            // 出处里的路径是运行期字符串：文件名带一个换行，就能把「[1] 路径 第 3 段」拆成两行，
+            // 第二行在模型看来就是一条新指令（OpenClaw 威胁模型 OC-19 说的就是这件事）。
+            String citation = PromptData.sanitizeLiteral(RagMetadata.citation(document));
             text.append('[').append(i + 1).append("] ").append(citation).append('\n')
                     .append(document.getText()).append('\n');
         }
-        return text.toString();
+        // 整段包一次边界：这些段落来自磁盘上的文档，是数据不是指令。边界包住所有 [n]，
+        // 出处格式不变（引用仍回得到原文），只是外面多了一层来源声明。
+        return ExternalContent.wrap(text.toString(), ExternalContent.Source.KNOWLEDGE, true);
     }
 
     /**

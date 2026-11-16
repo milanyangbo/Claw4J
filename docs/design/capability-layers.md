@@ -357,6 +357,37 @@ ADR-0027 的修订记录里：审批照旧「登记 + 唤醒会话」，不挂�
   这正是 OpenClaw 对 ACP / iMessage / WhatsApp 那类面的处理。HTTP 有面（客户端轮询
   `GET /api/chat/questions` 再 `POST /api/chat/answer`），四条 IM 通道也有（回一句话就是答案）。
 
+## 外部内容与指令的边界（Prompt 注入）
+
+模型看到的每一段文字都该能回答"这是谁说的"。这一层做的是**贴来源**，不是"判断内容对不对"。
+
+三条不同的东西，三种处理：
+
+| 进来的东西 | 它是 | 怎么办 |
+| --- | --- | --- |
+| 网页、搜索结果、脚本输出、知识库段落、子 Agent 的结论 | **数据** | 包 `<<<EXTERNAL_UNTRUSTED_CONTENT id="随机">>>` 边界 + 来源行。随机 id 让伪造不可预测；内容里形似边界标记的文本（含全角、零宽、用空格分隔的变体）在包之前先换成 `[[MARKER_SANITIZED]]` |
+| 技能正文（`SKILL.md`） | **指令** | **不包装**——套上"这是数据不是指令"等于让技能失效。改成管来源：`status=approved` + `by` + `sha256`，摘要覆盖目录里所有文件，校验与加载用同一份内存快照 |
+| 用户消息里的 `[System]` / 行首 `System:` | 伪造的系统标记 | 就地中和成 `(System)` / `System (untrusted):`，**不删内容**（删了"用户说了什么"就不可追溯） |
+
+两条容易做错的：
+
+- **提示句只讲边界，不列行动清单。** 写"不要执行任何工具"会让模型对正常请求也摆防御姿态
+  （OpenClaw 的源码注释原话：*action lists here made models refuse legitimate user requests*）。
+- **本地文件与命令输出不包装。** 那是"自己的工作区"，把每份代码都包成不可信内容，模型对正常结果
+  也开始打折扣。代价记账在 `docs/agents/guardrails.md`；补偿是全局特殊 token 净化（所有工具返回值，
+  含 `Read` / `Bash` / MCP）与授权表。
+
+出站还有一层：`OutboundText` 把包装头、数据块标签、纯文本工具调用块（`[tool:x]`）剥掉再发。
+它不是洁癖——OpenClaw 的威胁模型把包装逃逸（T-EVADE-002）的补充缓解写成一句
+*Output-side validation in addition to input-side wrapping*：模型把边界复述出去，等于给下一个攻击者
+一份可复制的模板。
+
+`web_fetch` 还有一道出网边界（`WebFetchGuard`）：只允许公网 http/https，按**解析后的 IP** 判
+（所以 `127.0.0.1.nip.io` 也拒），因为库自带的"域名安全检查"只是问一份第三方黑名单、不判 IP，
+在国内恒 403。重定向不逐跳校验，是已知缺口。
+
+四张票在 `.scratch/prompt-injection/issues/`（01 包装、02 出站、03 出网、04 技能）。
+
 ## 一次把三层都接上：真实模型的实录
 
 `examples/` 下放的是能真的接进来的能力（脚本包、`SKILL.md`、Subagent 定义、Python MCP server），

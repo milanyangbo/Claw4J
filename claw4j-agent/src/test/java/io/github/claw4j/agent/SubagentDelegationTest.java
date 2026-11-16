@@ -255,7 +255,12 @@ class SubagentDelegationTest {
 
         String result = delegation.call("{\"subagent\":\"alpha\",\"task\":\"上周华东成交额\"}", identity);
 
-        assertThat(result).isEqualTo("结论：128400").doesNotContain("原始行");
+        // 结论按"数据块"回来：它是供父综合的报告，不是新的任务（票 01 的子 Agent 出口）。
+        assertThat(result)
+                .contains("结论：128400")
+                .contains("<prompt-data>")
+                .contains("Subagent result: alpha")
+                .doesNotContain("原始行");
         assertThat(child.prompts())
                 .as("三次模型调用：检索 → 查到工具后调用 → 给结论；中间两轮的明细都不回父")
                 .hasSize(3);

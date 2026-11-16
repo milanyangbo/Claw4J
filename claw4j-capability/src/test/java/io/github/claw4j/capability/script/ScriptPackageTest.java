@@ -2,6 +2,7 @@ package io.github.claw4j.capability.script;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import io.github.claw4j.domain.untrusted.ExternalContent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.tool.ToolCallback;
@@ -212,7 +213,11 @@ class ScriptPackageTest {
         assertThat(provider.toolNames()).containsExactly("first", "second");
         ToolCallback late = provider.getToolCallbacks()[1];
         assertThat(late.getToolDefinition().name()).isEqualTo("second");
-        assertThat(late.call("{}")).isEqualTo("two");
+        // 输出被包上一层边界：脚本读到什么，与网页同一种不可信（票 01）。
+        assertThat(late.call("{}"))
+                .contains("two")
+                .contains(ExternalContent.START)
+                .contains("Source: Script");
     }
 
     @Test

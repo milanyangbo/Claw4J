@@ -81,7 +81,7 @@ class SkillCatalogTest {
     @Test
     @DisplayName("工具描述里只有元数据：正文一个字都不进去")
     void descriptionCarriesMetadataButNotTheBody() {
-        ToolCallback callback = AgentSkills.callback(skills);
+        ToolCallback callback = AgentSkills.callback(skills, null, false);
 
         assertThat(callback.getToolDefinition().description())
                 .contains("refunds")
@@ -92,7 +92,7 @@ class SkillCatalogTest {
     @Test
     @DisplayName("按名字调用之后正文才回来一次")
     void invokingASkillByNameReturnsItsBody() {
-        ToolCallback callback = AgentSkills.callback(skills);
+        ToolCallback callback = AgentSkills.callback(skills, null, false);
 
         String expanded = callback.call("{\"command\":\"refunds\"}");
 
@@ -104,7 +104,7 @@ class SkillCatalogTest {
     @Test
     @DisplayName("工具名与动作是这一层自己声明的那两个，业务表一张都不挂")
     void toolNameAndPermissionAreDeclaredByThisLayer() {
-        ToolCallback callback = AgentSkills.callback(skills);
+        ToolCallback callback = AgentSkills.callback(skills, null, false);
 
         assertThat(callback.getToolDefinition().name()).isEqualTo(AgentSkills.TOOL_NAME).isEqualTo("Skill");
         assertThat(AgentSkills.permission().action()).isEqualTo("use_skill");

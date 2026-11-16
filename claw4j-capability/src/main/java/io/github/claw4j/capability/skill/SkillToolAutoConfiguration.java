@@ -30,10 +30,20 @@ import java.util.Map;
 @ConditionalOnProperty(prefix = "claw4j.skills", name = "directory")
 public class SkillToolAutoConfiguration {
 
-    /** 技能目录里一个 {@code SKILL.md} 都没有即启动失败（见 {@link SkillCatalog#load}）。 */
+    /**
+     * 技能工具。审批标记是<b>默认要求</b>的：没有它就不加载，启动日志点名是哪个技能、标记该放哪。
+     *
+     * @param directory 技能目录
+     * @param reviewDirectory 审批标记目录；空表示技能目录下的 {@code .review}
+     * @param requireApproval 是否要求审批。关掉只该用于"本地随手试一份做法"
+     * @return 名为 {@code Skill} 的工具
+     */
     @Bean
-    public ToolCallback skillToolCallback(@Value("${claw4j.skills.directory}") String directory) {
-        return AgentSkills.callback(Path.of(directory));
+    public ToolCallback skillToolCallback(@Value("${claw4j.skills.directory}") String directory,
+                                          @Value("${claw4j.skills.review-directory:}") String reviewDirectory,
+                                          @Value("${claw4j.skills.require-approval:true}") boolean requireApproval) {
+        Path review = reviewDirectory == null || reviewDirectory.isBlank() ? null : Path.of(reviewDirectory);
+        return AgentSkills.callback(Path.of(directory), review, requireApproval);
     }
 
     /** 这一层的权限登记表：动作是加载 Skill，业务表一张都没有（ADR-0003）。 */
