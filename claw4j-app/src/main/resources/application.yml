@@ -1,26 +1,17 @@
-# Claw4J 的应用配置。
+# Claw4J 的默认配置：不起数据库、不连任何外部服务也能启动。
+# 要库与本地示例就用 local profile（从 application-local.yml.example 复制一份）。
 #
-# 写法约定（改这份文件前先看）：
-#   - 注释只回答"这是什么、默认值多少、动它之前要知道什么"。设计理由在各配置类的 javadoc
-#     与 docs/design/ 下，两边不重复写——两处写同一件事，早晚改一处漏一处。
-#   - claw4j.* 的每个键都有明确的拥有者：某个 @ConfigurationProperties 类，或装配类上的
-#     @ConditionalOnProperty。在这里加一个没人读的键，就是又一处"配了不生效"。
-#   - 模型 key 与 MCP 的 env / headers 写**句柄**：`secret:<名字>`，名字是环境变量名的小写写法
-#     （P08、ADR-0002）。真值在发请求那一刻才由出口解析，配置、日志、审计、模型上下文里都只有名字。
-#     裸写明文会在启动时失败并点名是哪一行——不靠"看着像凭据"来判断。
-#   - 通道凭据（feishu / wecom / dingtalk / slack 里的 secret 类）**不在上面那条规则里**：
-#     它们是 `${FEISHU_APP_SECRET:}` 这样的环境变量占位，真值在绑定时由 Spring 替换。
-#     两边差一层不是疏忽：解析句柄的 SpringSecretResolver 在 claw4j-capability，而 channel
-#     不依赖它（ChannelBoundaryTest 钉着这条边）。要让通道也用句柄，得先把 SecretResolver
-#     接口下沉到 core——那是另一件事，P12 的 Comments 里记着这个偏差。
+# 三条约定：
+#   - 每个 claw4j.* 键都属于某个 @ConfigurationProperties 类；为什么这么设计在 docs/design 与类的 javadoc 里。
+#   - 模型与 MCP 的凭据写**句柄**：secret:<环境变量名的小写>，真值在发请求那一刻才解析，
+#     配置、日志、审计、模型上下文里都只有名字。裸写明文会在启动时失败并点名是哪一行。
+#   - 通道凭据（feishu / wecom / dingtalk / slack）用 ${VAR:} 占位，由 Spring 在绑定时替换。
 
 spring:
   application:
     name: claw4j
 
-  # ---- 运行环境：默认什么都不拉 ----
-  # 没有 Docker 时应用照样启动（Hikari 懒连接、Flyway 关）。需要库时用 local profile：
-  # 由 Boot 拉起 compose.yaml 并打开迁移，模板见 application-local.yml.example。
+  # 默认不拉容器、不连库：没有 Docker 的机器也能启动（连接池懒建、迁移关着）。
   docker:
     compose:
       enabled: false
@@ -31,34 +22,24 @@ spring:
     password: ${CLAW4J_DB_PASSWORD:claw4j}
     driver-class-name: org.postgresql.Driver
 
-  # 迁移要在启动时真连库；默认开着的话，"没 Docker 也能起"那条承诺就没了。
+  # 迁移要真连库，所以默认关；local profile 打开。
   flyway:
     enabled: false
 
   ai:
     session:
-      # 会话寿命**不再由这里决定**（ADR-0026 收尾）。这个键写的是"建行时刻 + TTL"，
-      # 之后不随活动刷新——在它眼里"每天都在用"与"三天前用过"没有区别，到期一起删。
-      # 判据已经换成"多久没动"，在 claw4j.session.maintenance 下。这里**刻意不写**：
-      # 写了就会给每一行留一个会骗人的 expires_at（它说"过期了"，但那与有没有人在用无关）。
       repository:
         jdbc:
-          # 建表归 Flyway（claw4j-agent 的 V3）。框架那个 initializer 默认只在嵌入式库上跑，
-          # 在 Postgres 上什么都不做——"以为建了其实没建"，而且它建 bean 时就要探测驱动类型。
+          # 建表归 Flyway（claw4j-agent 的 V3），不用框架自带的初始化。
           initialize-schema: never
     mcp:
       client:
-        # 由本项目的 McpToolAutoConfiguration 接管（ADR-0002 / 0003）。框架那份会注册一个空的
-        # ToolCallbackProvider（按类型注入的地方直接装配失败），两套机制还会把同一个工具收两遍。
+        # MCP 客户端由本项目的 McpToolAutoConfiguration 装配：框架那份会再注册一份空清单。
         enabled: false
 
 claw4j:
-  # ---- 模型：一个 key 都没有就启动失败（ADR-0011，没有 mock 兜底） ----
-  # 两家都配时 primary 决定谁先上，另一家是备。主家没配 key 时也启动失败，
-  # 不会悄悄拿备用那家顶上——"我以为在用千问、其实还在 DeepSeek"要靠失败暴露。
-  # api-key 写的是句柄（P08）：secret:deepseek_api_key 对应环境变量 DEEPSEEK_API_KEY
-  #（本机也可以写进 .env，它由 local profile 导入；句柄名与变量名是同一个东西的两种写法）。
-  # 句柄取不到真值时启动失败，报错只说名字、不说值。
+  # ---- 模型 ----
+  # 两家都配时 primary 先上、另一家备用。一个 key 都没有就启动失败，没有 mock 兜底。
   model:
     primary: ${CLAW4J_MODEL_PRIMARY:deepseek}
     deepseek:
@@ -70,161 +51,120 @@ claw4j:
       api-key: secret:qwen_api_key
       model: ${QWEN_MODEL:qwen-plus}
 
-    # ---- 向量模型：语义缓存与知识库共用这一份（P10 从 claw4j.cache 下面搬上来） ----
-    # 它跟着 qwen 的凭据走（DeepSeek 没有 embedding 接口），但**不跟着任何功能的开关走**：
-    # 原先它挂在 claw4j.cache.enabled 上，于是"关掉缓存"这个省钱开关会连带让知识库起不来。
-    # 现在只有一个条件——配了 qwen key。关掉缓存之后它还在，只是没人调用（懒加载，不发请求）。
+    # 向量模型：语义缓存与知识库共用这一份，只跟 qwen key 走，不受任何功能开关影响。
     embedding:
       model: ${QWEN_EMBEDDING_MODEL:text-embedding-v3}
-      # 必须与 V4（缓存）和 V15（知识库）两个迁移里的 vector(1024) 一致。
-      # 改这个数要同时改两处迁移：维度不符时 Postgres 直接报错，不会静默截断。
+      # 必须与迁移里的 vector(1024) 一致；改这个数要同时改两处迁移。
       dimensions: 1024
 
-  # ---- 这个部署是哪个 agent（P15） ----
-  # 三样东西以前都没有配置入口：系统提示词是 Java 常量（改一个字要重新编译）、
-  # 业务口径被抄在各份 Skill 与子 Agent 的正文里、时间压根没进提示词。
-  # 现在都从这一段来——"同一个 jar 两次部署只改配置"靠的就是它。
+  # ---- 这个部署是哪个 agent ----
   agent:
-    # 人设目录：顶层每份 *.md 是一个 agent（front matter 是配置，正文是系统提示词），
-    # 子目录放口径。不配就用内置的最小可用人设，启动日志会说清用的是哪一个。
+    # 人设目录：顶层每份 *.md 是一个 agent。不配就用内置的最小可用人设。
     directory: ${CLAW4J_AGENT_DIRECTORY:}
-    # 目录里用哪一个。只有一份时可以不写；多份不写就启动失败，并把候选列出来。
-    # 不猜：一个进程只跑一个 agent，猜错的表现是"这个部署怎么说话像销售"，没有报错。
+    # 目录里用哪一个。只有一份时可以不写；多份不写就启动失败并列出候选。
     default: ${CLAW4J_AGENT_DEFAULT:}
-    # "今天"按哪个时区算。默认取业务时区而不是技术默认——
-    # 容器里 ZoneId.systemDefault() 通常是 UTC，差八小时会让晚上八点之后的"今天"变成明天。
-    # 时间由 AgentContextAdvisor **每轮**算，不是启动时算一次。
+    # "今天"按哪个时区算。容器里通常是 UTC，差八小时会让晚上八点之后的"今天"变成明天。
     zone: ${CLAW4J_AGENT_ZONE:Asia/Shanghai}
-    # 同一段对话等上一位说完，最多等多久（ADR-0026）。
-    # 会话记忆在 before 读、after 写，两条并发时第二条看不到第一条的答案——
-    # 而它长得像"模型偶尔会忘事"，不会有人想到根因是并发。所以按对话串行。
-    # 等不到就回一句"现在有点忙，请稍后再问一次"，不排队到磁盘、不跨进程。
-    # 配成 0 等于"忙就说话"：连发第二条会立刻收到那句话，而不是排队——这是可选项，不是默认。
+    # 同一段对话串行：等上一位说完最多这么久，超时回一句"现在有点忙"。
+    # 配 0 = 忙就立刻说话，不排队。
     lane-wait: 60s
-    # 一轮里最多调几次工具。到点就停，回一句"这一步做了太多次"，**不改任何持久状态**。
-    #
-    # **它不是额度**（ADR-0027 决定五）。额度是目标上的 token 预算：一件事带一份预算，
-    # 用完进 budget_limited，由人决定要不要 /goal resume 开新窗口。
-    # 这个数管的是"这一轮绕了太多次"——OpenClaw 用 agents.defaults.timeoutSeconds
-    # （默认 48 小时）兜住跑飞的一轮，我们没有 per-turn 超时，所以需要一个更早的止损点。
-    # 两者混成一个数，运维看到"停了"分不清是该加预算还是该让模型收敛。
-    # 单工具那 3 次不可配：那种循环调大上限只会让它绕得更久。
+    # 一轮最多调几次工具，到点就停（熔断，不改任何持久状态）。单工具 3 次不可配。
+    # 它不是 token 额度——额度在会话目标上。
     tool-call-limit: 6
 
-  # ---- 通道：谁能进来 ----
+  # ---- 通道 ----
+  # 每条通道都是"凭据齐了才装配，缺一样整份退让"（HTTP 照常跑）：只做演示的部署不该因为
+  # 没配企业微信而起不来。凭据齐了却连不上，则是启动失败。
+  # 下面各通道的 roles 只登记"谁是谁"；能读哪些表、能做哪些动作只有 http 那一份授权表，
+  # 角色名必须与它同名，写错一个启动即失败。
   channel:
     http:
       enabled: ${CLAW4J_HTTP_ENABLED:true}
       # 请求没带角色头时用它。给最小权限而不是拒绝：本机 curl 演示不该先去配角色。
       default-role: read-only
-      # 授权表**只有这一份**，飞书也按角色名用它（见下面的 feishu.roles）。加动作只改这里。
-      # 认人由通道做、授权从这里查表、Agent 只执行（ADR-0007）。actions 与工具的动作名同口径：
-      #   read            读业务表，范围由 tables 决定。**知识库也用它**，伪表名是 doc（P10）
-      #   use_skill       加载一份做法。它本身不读表，真正碰表那一步仍各自鉴权
-      #   delegate_task   委派给子 Agent。委派不提权：子 Agent 用父的身份，照样过鉴权看表
-      #   read_system     看 JVM/容器指标。不是业务数据，也不是"能读表的人"就该看的运维信息
-      #   recall_session  读自己的历史。不复用 read："能不能回忆"与"能不能查销售单"是两件事
-      #   get_goal        看这一段对话的目标：状态、内容、用量。目标是会话状态，不是业务表
-      #   create_goal     给这一段对话定目标。已有目标时会失败——那是不静默覆盖的保证
-      #   update_goal     把目标标成达成或阻塞。暂停/恢复/清除/改写都不归模型，那是人的按钮
-      #   schedule_task   定一个"以后按点做"的任务（P05）。给它是安全的：任务到点按创建者
-      #                   **当时**的权限跑，所以它永远不比这个人现在能做的更多
-      #   list_schedules  看自己有哪些定时任务
-      #   cancel_schedule 取消自己定的任务。只碰自己的：按归属键判，不按编号判
-      #   draft_script    提交脚本草稿。只给 admin：能提议不等于能执行（run_script 是另一个动作）
+      # 授权表只有这一份，四个通道共用。actions 与工具的动作名同口径：
+      #   read            读业务表，范围由 tables 决定（知识库的伪表名是 doc）
+      #   use_skill       加载一份做法；真正碰表那一步仍各自鉴权
+      #   delegate_task   委派子 Agent：用父的身份，不提权
+      #   read_system     看 JVM / 容器指标
+      #   recall_session  读自己的历史会话
+      #   get_goal / create_goal / update_goal   会话目标的读与写（暂停、清除归人）
+      #   schedule_task / list_schedules / cancel_schedule   自己的定时任务
+      #   draft_script    提交脚本草稿（只给 admin）；执行脚本是另一个动作 run_script
+      #   exec_command    跑通用 shell 命令（只给 admin）
       #   "*"             全部
-      # 表里没有的角色一律拒绝，没有默认角色兜底。
+      # 表里没有的角色一律拒绝，没有默认兜底。
       roles:
         # "*" 也包含知识库那个伪表 doc，所以 read-only 能检索知识库。
-        # guest 只给了 region，于是**看不到知识库**——那是想要的默认（能查业务表不等于能看制度文档），
-        # 但必须写在这里：不写的话，某天会变成"配了知识库，某个角色问什么都说没有"。
         read-only:
           tables: ["*"]
           actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session",
                     "get_goal", "create_goal", "update_goal",
                     "schedule_task", "list_schedules", "cancel_schedule"]
-        # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"
+        # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"。
+        # 它只给了 region，于是也看不到知识库——想给就加 doc。
         guest:
           tables: ["region"]
           actions: ["read", "use_skill", "delegate_task"]
         admin:
           tables: ["*"]
           actions: ["*"]
+
+    # 飞书：长连接接消息，凭据是 app-id + app-secret。
     feishu:
-      # 凭据齐全才装配，缺一个整个通道退让（HTTP 照常）；配了却连不上则启动失败（ADR-0009）。
       enabled: ${CLAW4J_FEISHU_ENABLED:true}
       app-id: ${FEISHU_APP_ID:}
       app-secret: ${FEISHU_APP_SECRET:}
       # 等长连接就绪的上限。少了它，"还在连"与"连不上"在日志里长得一样。
       ready-timeout: 15s
-      # 这里只登记"谁是谁"（飞书 open_id），**不写 tables/actions**：授权共用上面 http 那份，
-      # 角色名必须对得上，错一个就启动失败。open_id 是真实的人，填在 application-local.yml。
       roles:
         read-only:
-          users: []
+          users: []          # 填 open_id
 
-    # ---- 企业微信（P06）：入站是公网回调地址，出站是一次 POST ----
-    # 五样齐了才装配（corp-id / corp-secret / agent-id / token / encoding-aes-key），
-    # 少一样整份退让、只跑 HTTP——只跑演示通道的部署不该因为"没配企微"而起不来。
-    # 回调地址固定是 /api/wecom/callback：后台"接收消息 → URL"填它，同一页上的 Token 与
-    # EncodingAESKey 与这里一一对应。三样里错一个的表现都一样：回调静默失败，用户永远等不到回答。
+    # 企业微信：公网回调 /api/wecom/callback，五样齐了才装配。
+    # 后台"接收消息"那页的 Token 与 EncodingAESKey 必须与这里一致，错一个的表现都是
+    # 回调静默失败、用户永远等不到回答。
     wecom:
       enabled: ${CLAW4J_WECOM_ENABLED:true}
       corp-id: ${WECOM_CORP_ID:}
       corp-secret: ${WECOM_CORP_SECRET:}
-      # AgentId 是数字，缺省 0 表示没配（装配条件会因此不成立，而不是拿 0 去发消息）
+      # 数字；缺省 0 表示没配（装配条件因此不成立，而不是拿 0 去发消息）
       agent-id: ${WECOM_AGENT_ID:0}
       token: ${WECOM_TOKEN:}
       encoding-aes-key: ${WECOM_ENCODING_AES_KEY:}
-      # 这里只登记"谁是谁"（成员 UserID），**不写 tables/actions**：授权共用上面 http 那份，
-      # 角色名必须对得上，错一个就启动失败。UserID 是真人，填在 application-local.yml。
       roles:
         read-only:
-          users: []
+          users: []          # 填成员 UserID
 
-    # ---- 钉钉（P12）：入站是公网回调地址，报文是**明文 JSON**、签名在 header 里 ----
-    # 与上面两条最大的不同：报文不加密，所以验签是唯一的门。少一道就是"公网端点直连模型"。
-    # 三样齐了才装配（client-id / client-secret / robot-code），少一样整份退让、只跑 HTTP。
-    # 回调地址固定是 /api/dingtalk/callback：开发者后台"机器人 → 消息接收地址"填它。
-    # client-secret 同时干两件事——换 token、**验签**：配错它既有"发不出去"也有"所有回调被拒"。
+    # 钉钉：公网回调 /api/dingtalk/callback，报文是明文 JSON、验签在 header 里。
+    # client-secret 同时干两件事——换 token 与验签：配错它既有"发不出去"也有"所有回调被拒"。
     dingtalk:
       enabled: ${CLAW4J_DINGTALK_ENABLED:true}
       client-id: ${DINGTALK_CLIENT_ID:}
       client-secret: ${DINGTALK_CLIENT_SECRET:}
-      # RobotCode 通常与 Client ID 同值，但它是一个独立配置项（换机器人不必换应用凭据）。
+      # 通常与 Client ID 同值，但独立配置：换机器人不必换应用凭据。
       robot-code: ${DINGTALK_ROBOT_CODE:}
-      # 这里只登记"谁是谁"（企业内 userId），**不写 tables/actions**：授权共用上面 http 那份，
-      # 角色名必须对得上，错一个就启动失败。userId 是真人，填在 application-local.yml。
-      # 注意这里没有"默认角色"：机器人没发布上线时钉钉不返回 senderStaffId，
-      # 那种情况会记一条"钉钉没给身份"的 WARN，不是"这个人没登记"。
+      # 没有默认角色：机器人没发布上线时钉钉不返回 senderStaffId，那种情况只记一条 WARN。
       roles:
         read-only:
-          users: []
+          users: []          # 填企业内 userId
 
-    # ---- Slack（P13）：入站是 Events API 的公网回调，报文是**明文 JSON**、签名在 header 里 ----
-    # 与钉钉最大的不同：签名覆盖**整个原始报文**（v0:timestamp:body），所以控制器收的是字符串，
-    # 反序列化再拼回去就验不过。时间戳是**秒**、窗口 5 分钟（钉钉是毫秒、1 小时）。
-    # 两样齐了才装配（signing-secret / bot-token），少一样整份退让、只跑 HTTP。
-    # 请求地址固定是 /api/slack/events：App 后台 → Event Subscriptions → Request URL 填它，
-    # 并在同一页订阅 app_mention 与 message.im（**两个都要**：私聊不走 app_mention）。
-    # 两把凭据各管一头，不要混：signing-secret 只验签，bot-token（xoxb- 开头、长期有效）只发消息。
+    # Slack：Events API 回调 /api/slack/events，签名覆盖整个原始报文、时间戳单位是秒。
+    # 后台要同时订阅 app_mention 与 message.im（私聊不走 app_mention）。
+    # 两把凭据各管一头：signing-secret 只验签，bot-token（xoxb-）只发消息。
     slack:
       enabled: ${CLAW4J_SLACK_ENABLED:true}
       signing-secret: ${SLACK_SIGNING_SECRET:}
       bot-token: ${SLACK_BOT_TOKEN:}
-      # 同频道两条消息之间的最小间隔，默认 1 秒（Slack 的 chat.postMessage 限流）。
-      # 调小不会更快，只会撞 429；而撞上之后 InboundDispatcher 会停在第 2 段，用户收到半截答案。
+      # 同频道两条消息的最小间隔（chat.postMessage 限流）。调小不会更快，只会撞 429。
       min-interval: 1s
-      # 这里只登记"谁是谁"（Slack user id，U 开头），**不写 tables/actions**：授权共用上面 http 那份，
-      # 角色名必须对得上，错一个就启动失败。user id 是真人，填在 application-local.yml。
       roles:
         read-only:
-          users: []
+          users: []          # 填 Slack user id（U 开头）
 
-  # ---- 入站拦截：命中词表任意一条就整轮拒答，连模型都不调、也不进会话历史 ----
-  # 词表为空时整个 Advisor 不装配——"配了但一条都没拦"与"根本没装"在容器里长得一样。
-  # 这份表是自拟的：官方只给机制不给词表，通用敏感词库是内容审核用的、判据宽得多。
-  # 匹配是子串 + 大小写不敏感，挡的是随口一问；有备而来的改写靠权限与数据本身兜住（ADR-0007）。
+  # ---- 入站拦截 ----
+  # 命中词表任意一条就整轮拒答：不调模型、也不进会话历史。词表为空时整个拦截不装配。
+  # 匹配是子串 + 大小写不敏感，挡的是随口一问；有备而来的改写靠权限与数据本身兜住。
   guard:
     sensitive-words:
       # 套取系统提示词
@@ -246,318 +186,202 @@ claw4j:
 
   # ---- 记忆与一段对话的边界 ----
   session:
-    # 会话键的 peer 段怎么拼（ADR-0029）。两个键分开是因为两者的默认值本来就该不同。
-    #
-    # dm-scope：私聊的边界。
-    #   main（默认）：一个人的所有私聊共用一个主会话。与 OpenClaw 的 session.dmScope 同默认。
-    #   **多人可及的部署必须改成 per-channel-peer**：main 意味着网页里问到的数字，
-    #   飞书私聊里的模型也看得见。
-    #   per-peer：按对端身份分（同一个人跨通道共用）。
-    #   per-channel-peer：按通道 + 对端分，换一条通道就是另一段。
-    #   per-account-channel-peer：本仓库没有 account 这一维，等同 per-channel-peer。
+    # 私聊的边界。
+    #   main（默认）          一个人的所有私聊共用一个主会话。
+    #   per-peer              按对端身份分（同一个人跨通道共用）。
+    #   per-channel-peer      按通道 + 对端分，换一条通道就是另一段。
+    #   per-account-channel-peer  本仓库没有 account 这一维，等同 per-channel-peer。
+    # **多人可及的部署必须改成 per-channel-peer**：main 意味着网页里问到的数字，
+    # 飞书私聊里的模型也看得见。
     dm-scope: main
-    # group-scope：群聊的边界。per-group（默认）按群隔离；main 把群并进主会话。
+    # 群聊的边界：per-group（默认）按群隔离；main 把群并进主会话。
     group-scope: per-group
-    # 会话表落在哪个 schema。默认 claw4j_session，与业务数据的 business 分开（ADR-0005）。
-    # **改它会影响五处**：框架那一路（另开一个连接池把 currentSchema 指过去）、会话指针、
-    # 会话目标、清理任务、跨会话召回。后四个是手写全限定名的 SQL，都从这一个键取；
-    # 写死一处就会变成"框架往新 schema 写、那一处读旧表"，而症状是功能悄悄失效。
-    # 挡这件事的是 BuildContractTest#sessionSchemaLiteralLivesInOnePlace。
+    # 会话表落在哪个 schema，默认与业务数据的 business 分开。
+    # 改它会影响五处（框架那一路、会话指针、会话目标、清理、跨会话召回），都由这一个键取。
     # schema: claw4j_session
-    # 过期会话的清理间隔。写出来是为了让人知道有这个后台任务：不写也成立
-    # （@Scheduled 上的默认值同样是 PT1H），但"有一个每小时删东西的任务"不该只活在代码里。
+    # 过期会话的清理间隔。这是"确实有一个每小时删东西的后台任务"的说明。
     cleanup-interval: PT1H
-    # 主模型的上下文窗口（token）。**这是模型的元数据，不是会话的偏好**：OpenClaw 把它放在
-    # 模型条目上（models.providers.*.models[].contextWindow，另有 contextTokens 作主动输入上限），
-    # 我们没有模型目录，暂放在这里——有了目录之后这一行要跟着挪过去，键名不变。
-    # 压缩阈值 = 它 × 0.5，比例与保留条数**刻意不做配置项**（OpenClaw 的 compaction 段里也没有
-    # 这两个旋钮：阈值是算出来的、保留量是 token 不是条数）。要知道生效值看启动日志那一行。
+    # 主模型的上下文窗口（token）。压缩阈值是它的 0.5 倍，比例与保留条数不做配置。
+    # 换主模型就改这一行，不用翻代码。
     context-window: 65536
-    # 旧会话怎么清（判据照 OpenClaw 的 session.maintenance，ADR-0026）。
+    # 旧会话怎么清。
     maintenance:
-      # enforce（默认）：真删。与 OpenClaw 同默认——它的留存承诺是"到期就删"，
-      # 默认只算不删的话，那条承诺从来没有被执行过（见 docs/agents/guardrails.md）。
-      # warn：只算不删，把"本来会删多少"打进日志与指标。要在本地保住历史时用它。
+      # enforce（默认）真删；warn 只算不删，把"本来会删多少"打进日志与指标。
       mode: enforce
-      # 多久没动算陈旧，不是"建了多久"。OpenClaw 的 pruneAfter 默认也是 30d。
+      # 多久**没动**算陈旧（不是"建了多久"）。
       prune-after: 30d
-      # 节点数上限（OpenClaw 的 maxEntries，默认 5000）。这是单用户形态的数：
-      # 多租户部署要按"人数 × 通道数"调大，否则到上限时被驱逐的是"最久没动的那个"——
-      # 与那个人的行为无关，他下次开口就是一段新对话。
+      # 节点数上限。单用户形态的数：多租户要按"人数 × 通道数"调大，
+      # 否则到上限被驱逐的是"最久没动的那个"，与他做了什么无关。
       max-entries: 5000
-    # 换段 = 换对话（ADR-0026）。换段之后记忆、预算、召回都从零开始，旧段留在库里只读。
-    # 这里是"会话什么时候结束"**唯一**的定义：以前它散在四处（记忆认为永不结束、
-    # 预算按 120 分钟自己判、TTL 按 30 天删行、定时任务借用创建者那一份），
-    # 四个答案各自都说得通，合起来就是"会话"这个词没有定义。
+    # 换段 = 换对话：记忆、预算、召回都从零开始。
     reset:
-      # none（默认）：不自动结束，靠上下文压缩管长度。与 OpenClaw 的 session.reset 同默认（ADR-0029）。
-      # daily-and-idle：跨天或空闲，谁先到算谁
-      # idle：只看空闲，适合"一段对话跟一个项目走"
-      # 三档下 /new 都有效：这一档配的是"不自动结束"，不是"不许结束"。
+      # none（默认）不自动结束，靠上下文压缩管长度；daily-and-idle 跨天或空闲；
+      # idle 只看空闲。三档下 /new 都有效。
       mode: none
-      # 逻辑日的分界点。4 点的意思是"凌晨三点还在聊的那件事，还是昨天那件"。
-      # 时区取 claw4j.agent.zone，不取容器时区——容器里通常是 UTC，
-      # 差八小时会让东八区凌晨 0~8 点的行为全错，而 CI 上（UTC）是绿的。
+      # 逻辑日的分界点：4 点的意思是"凌晨三点还在聊的那件事还是昨天那件"。
+      # 时区取 claw4j.agent.zone，不取容器时区。
       at-hour: 4
       # 多久没动静算结束。OpenClaw 的 idleMinutes 默认也是 120。
-      # 行业里没有哪个 Agent 框架判定"用户这件事做完了"——判不了，
-      # 判错的代价是把人卡住；能判的只有"多久没说话"。
       idle-minutes: 120
 
-  # ---- run：一件"事"的执行记录（A01/A02/A03） ----
+  # ---- 需要库的几样：审计、审批、投递配置、定时任务 ----
+  # 关掉之后判了不留痕、批了查不到、到点没人跑。迁移默认关着，所以这一层默认开。
   persistence:
-    # 要不要装配"需要库的那几样东西"：审计、审批、投递配置、定时任务。
-    # 关掉之后这几样都没有落点——判了也不留痕、批了也查不到、到点也没人跑。
-    #
-    # 这个开关以前叫 claw4j.run.enabled，因为那时它装配的核心是 run / step 两张表。
-    # 那两张表在 ADR-0027 之后删了，run 只是一轮的句柄、不落库，于是名字跟着改对了。
-    #
-    # 迁移默认是关着的（"没起数据库也能启动"是硬承诺），所以这一层默认开着、
-    # 无库的部署显式关掉它——比让每一句提问去撞一张不存在的表好。
     enabled: true
 
-  # ---- 审批：一次点头能放行多远、谁能点头（P02、P03） ----
+  # ---- 审批 ----
   approval:
-    # 一条请求等人等多久。默认十分钟。
-    # 太短则审批人开个会回来卡片已经作废，人会开始要求刷新而不是点按钮；
-    # 太长则一条被忘掉的请求三天后还能放行，而三天前的上下文早就不是现在要干的事了。
-    # 过期判定用的是库的时钟（now() 与 expires_at 同一个来源），不是应用进程的。
-    # 到点的 pending 由清扫落成 expired（decision=deny、terminal_reason=timeout、resolver_kind=system）：
-    # 不落终态的话它会永远停在 pending，审计里看起来还在等人批。节拍默认一分钟，
-    # 要改就写 claw4j.approval.sweep-interval（如 30s），默认值在 ApprovalService 的注解上。
+    # 一条请求等人等多久。太短则审批人开个会回来卡片已作废；太长则三天前的上下文还能放行。
     ttl: 10m
-    # 谁能批。与 claw4j.channel.http.roles 是两张表：那个回答"能读哪些表"，
-    # 这个回答"愿意为别人的操作负责"。挂到角色上的话，任何一次提权都会静默扩大审批面。
-    # 飞书那边的人填 open_id，HTTP 那边填用户名（两个 id 空间各自独立）。
-    # 空 = 没人能批：忘配置时请求会一直挂着直到过期，启动日志里有一条 WARN 说明这件事。
-    # 这里不写默认人：默认值会让"没配"和"配了一个不存在的人"看起来一样。
+    # 谁能批：飞书那边填 open_id，HTTP 那边填用户名（X-Claw4j-User）。
+    # 与 roles 是两张表：那个回答"能读哪些表"，这个回答"愿意为别人的操作负责"。
+    # 空 = 没人能批（请求会挂到过期，启动日志有一条 WARN）。
     approvers: []
 
-  # ---- 定时任务：到点 = 创建一个 run（P04、P05） ----
+  # ---- 定时任务：到点 = 创建一个 run ----
   schedule:
-    # 关掉之后扫描任务与那三个工具（schedule_task / list_schedules / cancel_schedule）
-    # 一起不装配（表与已建的任务照旧保留，重新打开即恢复）。能建任务却没有东西会跑它，
-    # 等于对用户说"已经定好了"而实际不会发生。
-    # 它的读者是那几个 @Bean 上的 @ConditionalOnProperty，不是 ScheduleProperties——
-    # 在那里再声明一次就是"人人都以为自己读了的键"。
+    # 关掉之后扫描与那三个工具一起不装配（已建的任务照旧保留，重新打开即恢复）。
     enabled: true
-    # 扫表间隔。它只被 @Scheduled 读（占位符原文），写 0 会让调度退化成热循环，
-    # 所以非法值在 ScheduleProperties 里直接拒绝启动，不静默归一到 30 秒。
+    # 扫表间隔。写 0 会让调度退化成热循环，所以非法值直接拒绝启动。
     scan-interval: PT30S
-    # 一次扫描最多认领几条，逐条串行跑完再回来看下一轮。
-    # 调大等于让 "同一时刻有 N 个模型调用在烧不同人的额度"——没做配额之前，串行是唯一说得清的算法。
+    # 一次扫描最多认领几条，逐条串行跑完再看下一轮。调大等于同一时刻有 N 个模型在烧不同人的额度。
     max-per-scan: 5
-    # 连续几次没跑成就自动停用（并推一条带最后错误的通知）。成功一次清零。
-    # 只对"可能是暂时的"失败计数（模型抽风、库连不上）。角色被删、工具权限被收回
-    # 这类问题再试三次也不会变好，它们当场停用——见 ScheduleScanner#fire。
+    # 连续几次没跑成就自动停用并推一条带最后错误的通知（成功一次清零）。
+    # 只对"可能是暂时的"失败计数：权限被收回那类当场停用。
     failure-threshold: 3
-    # 一条被认领之后占多久。管的是"认领之后进程崩了"：行锁随连接消失，
-    # 没有租约的话那条任务会一直躺在"已认领"里没人敢再跑。
+    # 一条被认领之后占多久：管的是"认领之后进程崩了"，否则它会一直躺在"已认领"里没人再跑。
     lease: PT5M
-    # 一次定时运行留下的那段会话留多久（OpenClaw 的 cron.sessionRetention，默认 24h）。
-    # 与"人的对话留 30 天"是两条口径：定时任务每次运行都是一个新段（03），一天一段，
-    # 按 30 天留会让整张会话表都是没人看的 cron 段。留 24 小时是为了"这一趟跑出了什么"还查得到。
+    # 一次定时运行留下的会话留多久。定时任务一次运行一个新段，按 30 天留会撑满会话表。
     session-retention: PT24H
 
-  # ---- 审计：一行 = 一次动作的开始或结束（ADR-0027，取代 ADR-0023 的"长在 step 上"） ----
-  # 30 天与 10 万行是照 OpenClaw 的固定上限（commit f533469），**不是部署参数**：
-  # 做成可配的那一刻，"留存有上限"就变成一句取决于这个文件的话，
-  # 而下一个改它的人不会知道它原来是有依据的。
-  # 查询按四维过滤：actor / session_key / run_id / status（就是那四条索引）。
+  # ---- 审计：一行 = 一次动作的开始或结束 ----
   audit:
-    # 记不记新事件。默认 true，与 OpenClaw 的 logging.audit.enabled 同默认值：
-    # 只在出事之后才打开的审计，解释不了那次事故。
-    # 关掉之后不再写新的，已有记录照常可查、照常按上面两条清。
+    # 记不记新事件。关掉之后不再写新的，已有记录照常可查。
     enabled: true
-    # 清理任务之间隔多久。启动时也清一次，另外每 500 次写入清一次。
+    # 清理间隔（启动时也清一次，另外每 500 次写入清一次）。
     prune-interval: PT1H
 
-  # ---- 工具检索：工具循环只有这一种，没有"要不要开"的开关，也没有"少于几个就全塞"的阈值 ----
-  # 代价是工具集很小时也要多一次检索往返；收益是模型看到的行为不随工具数量改变。
+  # ---- 工具检索：工具循环只有这一种，没有开关，也没有"少于几个就全塞"的阈值 ----
   tool-search:
-    # 一次检索返回几个候选（框架约定 1–10）。给多了等于把省下来的 token 又还回去一部分。
+    # 一次检索返回几个候选（框架约定 1–10）。给多了等于把省下来的 token 又还回去。
     max-results: 5
 
-  # ---- 工具档位：这个部署允许出现到哪一档（P09） ----
-  # 四档是累进的：minimal < messaging < coding < full。每个工具声明它**最低**需要哪一档，
-  # 声明档不高于 profile 的工具才进清单——不在清单里的工具，检索也检索不到。
-  # 按"清单"而不是"调了被拒"：后者会让模型先计划再撞墙，白烧一轮上下文。
-  # 默认 full = 升级前后一模一样。minimal 只留检索 / 计划 / 会话记忆 / 进程状态四类；
-  # messaging 是"只做消息与问答"的部署，脚本类工具在这一档消失，而查表不受影响。
+  # ---- 工具档位 ----
+  # 四档累进：minimal < messaging < coding < full。工具声明它最低需要哪一档，
+  # 声明档位高于 profile 的工具不进清单，检索也检索不到。默认 full = 升级前后一样。
   tools:
     profile: ${CLAW4J_TOOLS_PROFILE:full}
-    # 白名单：只能**收窄**，不能越过 profile。想"messaging 档但要一个脚本"，
-    # 只能调高 profile 再 deny 掉别的——否则 allow 就成了绕过档位的口子。
+    # 白名单，只能收窄、不能越过 profile（否则它就是绕过档位的口子）。
     allow: []
-    # 黑名单：在档位与白名单之后生效。同一个名字同时写进 allow 与 deny 会启动失败。
-    # 写了清单里不存在的名字不报错（部署裁剪时它本来就该落空），但启动日志会列出来——
-    # 因为拼错也长这样，而拼错的那一条永远不生效。
+    # 黑名单，在档位与白名单之后生效。同一个名字写进 allow 与 deny 会启动失败；
+    # 写了不存在的名字不报错，但启动日志会列出来（拼错也长这样）。
     deny: []
 
-    # ---- 通用 shell：工具是 Spring AI 的 Bash / BashOutput / KillShell，边界在我们自己的后端里 ----
-    # （票 01，照 OpenClaw 的 exec 补的通用 shell；工具形态用现成的，不自己写）
-    # 四档，默认 full —— 它未配置时报文写的就是 "full / off baseline"。它的推荐值是 auto，
-    # 但 auto 要一个原生复核器（我们还没有），所以这一版没有那一档。
-    #   deny      不装配这个工具
-    #   allowlist 只跑白名单里的命令，未命中直接拒
-    #   ask       白名单命中也要人先批（比它的 ask 严，见票 01 偏离 3）
-    #   full      不判白名单、不批
-    # **安全位不在 mode 上，在授权表上**：动作 exec_command 默认只给 admin，
-    # read-only / guest 在下面的 roles 里就没有它。要更严就配 allowlist 或 ask。
-    #
-    # 工具参数只有 command / timeout / description / runInBackground —— 没有 workdir、没有 env：
-    # 目录固定是下面的 workspace（要换目录在命令里 cd），要临时改一个变量就写 FOO=bar cmd。
-    # 这两个不放进参数是故意的：放进去就得再判一遍"它有没有越界"。
-    # 命令里的 PATH / LD_* / DYLD_* 覆盖会被拒（换解释器那条路），
-    # 其余变量继承本进程的环境——所以**不要把密钥 export 到进程环境**（本机与 CI 的 .env 会）。
+    # ---- 通用 shell ----
+    # 工具是 Spring AI 的 Bash / BashOutput / KillShell，边界在后端里。
+    #   deny       不装配
+    #   allowlist  只跑白名单里的命令
+    #   ask        白名单命中也要人先批
+    #   full       不判白名单、不批（默认）
+    # **安全位不在 mode 上，在授权表上**：exec_command 默认只给 admin。
+    # 参数只有 command / timeout / description / runInBackground，没有 workdir 与 env：
+    # 目录固定是下面的 workspace（要换就 cd），要临时改变量就写 FOO=bar cmd。
     exec:
       mode: ${CLAW4J_EXEC_MODE:full}
-      # 默认是进程的工作目录（照它 workdir 默认 cwd 的做法）；填了就必须是已存在的目录，否则启动失败。
+      # 默认是进程的工作目录；填了就必须是已存在的目录，否则启动失败。
       workspace: ${CLAW4J_EXEC_WORKSPACE:.}
-      # 白名单：整条命令等于某一项、或以"某一项 + 空格"开头，**且命令里不许有 shell 控制符**
-      #（; | & > < ` $( 换行）——否则 `ls; curl … | sh` 这种只看首词就能过。要管道就配 ask / full。
+      # 白名单：整条命令等于某一项、或以"某一项 + 空格"开头，且命令里不许有
+      # shell 控制符（; | & > < ` $( 换行）。要管道就用 ask 或 full。
       allow: []
 
-    # ---- 会话可见性：recall_session 能看见哪些会话（票 05，照 OpenClaw 的 tools.sessions.visibility）----
-    # 四档，**默认 all** —— 它的原文就是 "Default: all (every session on the Gateway,
-    # including other agents' and other users' transcripts)"。
-    #   self   只有当前这一段对话
-    #   tree   当前 + 它派生的子 Agent 会话（子 Agent 会话今天不落库，暂等同 self）
-    #   agent  本 agent 的全部会话（我们只有一个 agent 命名空间，暂等同 all）
-    #   all    全部会话，含其他用户的
-    # **多用户、角色不同的部署必须配 self**：默认 all 意味着一个 read-only 身份能召回别人的
-    # 会话内容——那是它的默认，不是 bug；安全位就在这个配置项上。配成 self/tree 时它还要求
-    # "这段会话属于你"（核归属前缀），跨会话那两档不做这个核对。
-    # 写错的词（例如 everybody）启动失败并点名四个合法值：它的实现会静默回落成 all，
-    # 而"写错了"与"写的是 all"在日志上一模一样——那是 fail-open，这一处不照抄（见票 05）。
+    # ---- 会话可见性：recall_session 能看见哪些会话 ----
+    #   self   只有当前这一段
+    #   tree   当前 + 它派生的子 Agent 会话
+    #   agent  本 agent 的全部会话
+    #   all    全部会话，含其他用户的（默认）
+    # **多用户、角色不同的部署必须配 self**：默认 all 意味着 read-only 能召回别人的会话内容。
+    # 写错词（everybody）启动失败并点名四个合法值。
     sessions:
       visibility: ${CLAW4J_SESSION_VISIBILITY:all}
 
-  # ---- 把自己交出去：当 MCP server 用（P11） ----
-  # 默认关。开了之后在标准输入输出上说 MCP，Claude Code 这类客户端可以把这里的工具
-  # 当成自己的工具调。交出去的工具只能是"模型能用的那一份"里的——不是另收一遍，
-  # 所以档位与 allow/deny 在它上面照常生效。
-  # stdio 的硬约束：**stdout 是协议通道**，日志与横幅一个字节都不能往那去。
-  # 因此不要直接用默认日志配置起它，用 application-mcp-stdio.yml 那一份（见 README）。
+  # ---- 把自己当 MCP server 交出去 ----
+  # 默认关。开了之后在标准输入输出上说 MCP，Claude Code 这类客户端可以把这里的工具当自己的用。
+  # stdio 的硬约束：stdout 是协议通道，一个字节的日志都不能往那去——用 application-mcp-stdio.yml 起。
   mcp:
     server:
+      # 开着却一个都不交是启动失败：客户端连得上、握手成功、拿到空清单，看起来像 server 坏了。
       enabled: ${CLAW4J_MCP_SERVER_ENABLED:false}
-      # 交出去哪几个。默认空＝一个都不交；开着却一个都不交是启动失败
-      #（客户端连得上、握手成功、拿到空清单——看起来像 server 坏了）。
-      # 只能写清单里有的工具：写错或没装那个模块只告警并跳过。
-      # 需要审批的工具、动作不是 read 的工具交不出去，启动时就失败并点名。
+      # 交出去哪几个工具（只能是模型能用的那一份里的，档位与 allow/deny 照常生效）。
       expose: []
-      # 外部客户端能读的表。它与 channel.http.roles 那张授权表**无关**：
-      # 客户端没有 IM 身份，拿它去查角色表只能靠猜。默认与只读身份同口径。
-      # 收窄之后，工具要读的表对不上就在调用时被拒——拒绝落在执行之前，工具一次都不会跑。
+      # 外部客户端能读的表，与 channel.http.roles 无关：客户端没有 IM 身份。
       tables: ["*"]
 
-  # ---- 语义缓存：只在配了通义 key 时整套装配（向量走 text-embedding-v3，复用 qwen 凭据） ----
-  # 只配 DeepSeek 的环境没有这个能力，对话照常。
+  # ---- 语义缓存：只在配了通义 key 时装配 ----
+  # 命中即返回上次的回答，这一轮不调模型。它默认是强依赖：索引在启动时建，连不上就启动失败。
   cache:
     enabled: ${CLAW4J_CACHE_ENABLED:true}
-    # 0.93 取的是"宁漏不误"那一侧：换指标（0.9154）与同义改写（0.9117~0.9501）的分数是交叠的，
-    # 任何阈值都分不开，只能选往哪边错——漏了只是没省到钱，误了是给出另一个问题的答案。
-    # 完整的实测表在 CacheProperties.DEFAULT_SIMILARITY_THRESHOLD 的 javadoc 里。
+    # 0.93 取的是"宁漏不误"那一侧：换指标与同义改写的分数是交叠的，漏了只是没省到钱。
     similarity-threshold: ${CLAW4J_CACHE_THRESHOLD:0.93}
-    # 缓存落 Redis Stack（RediSearch + RedisJSON）。**普通 Redis 不行**：向量索引建不出来。
-    #
-    # **它现在是强依赖**（照框架实现走之后的既定状态）：索引在启动时建，连不上就启动失败；
-    # 运行中挂掉，advisor 调 get/set 时没有兜底，这一轮会报错。这两条不由我们再包一层去抹平——
-    # 那是自研，判据见 docs/agents/alignment.md。
-    #
-    # 过期同理交给它自己：框架的 DefaultSemanticCache 不实现 TTL（`ttl` 字段是死代码），
-    # 唯一的失效方式是"系统提示词里的日期变了 → contextHash 变了 → 查不到旧行"。
-    # 物理行会一直留，靠 Redis 的 maxmemory-policy 淘汰，不要给这个实例配持久化。
+    # 必须 Redis Stack（RediSearch + RedisJSON），普通 Redis 建不出向量索引。
     redis-uri: ${CLAW4J_CACHE_REDIS_URI:redis://127.0.0.1:6379}
-    # 向量模型的两项配置**不在这里**（P10 搬去了 claw4j.model.embedding）：
-    # 知识库要用同一个模型，而这里的 enabled 是成本开关。放在这里 = 关掉缓存就连带关掉知识库。
 
-  # ---- 知识库检索（P10）：向量 + 关键词两路，结果带出处 ----
-  # 默认关：它要一份文档目录与一次 embedding 调用，绝大多数部署没有这两样。
-  # 这与 claw4j.skills.directory 那几个键同一条约定——不配就是没有这一层。
-  #
-  # 开着就必须能用：缺目录、目录不存在、目录里一个 .md/.txt 都没有、embedding 算不出来，
-  # 四种都是**启动失败并点名**。反过来（启动成功但库是空的）更糟：每次检索都答
-  # "没有相关资料"，而那与"这段确实没写"在用户看来完全一样。
+  # ---- 知识库检索：向量 + 关键词两路，结果带出处 ----
+  # 默认关：它要一份文档目录与一次 embedding 调用。开着就必须能用——缺目录、目录空、
+  # embedding 算不出来都是启动失败，不给你一个"每次都说没有相关资料"的空库。
   rag:
     enabled: ${CLAW4J_RAG_ENABLED:false}
-    # 文档目录，递归找 .md / .txt。启动后同步一次，按文件内容哈希跳过没变的；
-    # 文件删了，库里的块也跟着删（目录是事实来源）。
+    # 文档目录，递归找 .md / .txt。启动后同步一次，按内容哈希跳过没变的；文件删了块也跟着删。
     directory: ${CLAW4J_RAG_DIRECTORY:}
-    # 一次检索最终注入几段。**由 TopKDocumentPostProcessor 在链路最后截断**，不是框架的
-    # SearchRequest.topK——那一个是"每路召回多少"，由下面的 candidates-per-route 管。
+    # 最终注入几段（在链路最后截断），与下面"每路召回多少"是两件事。
     top-k: ${CLAW4J_RAG_TOP_K:5}
-    # 相似度下限。**这个数没有实测依据**（与缓存那个 0.93 不是一回事），
-    # 它只负责"把明显不相关的挡掉"。换成框架的检索之后分数就是余弦相似度，
-    # 这个阈值第一次直接决定返回什么——调它之前先攒一批真实问题。
+    # 相似度下限，只负责把明显不相关的挡掉。调它之前先攒一批真实问题。
     min-similarity: ${CLAW4J_RAG_MIN_SIMILARITY:0.5}
-    # 一块文档最多多少 **token**（不是字符）。切块交给框架的 TokenTextSplitter，
-    # 默认 800 就是它的默认值。按 token 算意味着同样的数字块比原来的 800 字符大一截。
+    # 一块文档多少 **token**（不是字符），切块交给框架的 TokenTextSplitter。
     chunk-size: 800
 
-    # ---- 混合检索：向量 + 全文两路，加权融合 0.7 / 0.3（与 OpenClaw 同权重）----
-    # 全文那一路是 `content ilike '%q%'`（GIN trgm 加速），照 OpenClaw 的 FTS5 trigram——
-    # 它也是子串，不是分词。实测 `similarity()` 对中文长文本恒 0（分母是块长），
-    # 所以那一路给的是**命中次数**，融合时按"本次查询的最强命中"归一成 0~1 再加权。
-    # 权重是常量、不在这里配：OpenClaw 的配置键已经进死键清单了。
+    # 混合检索：向量 + 全文（`content ilike '%q%'`，GIN trgm 加速）加权 0.7 / 0.3。
     hybrid:
       # 关掉只剩向量：`SKU-2024` 这类"字面精确、语义无关"的查询会退化。
       enabled: ${CLAW4J_RAG_HYBRID_ENABLED:true}
-      # 每路各召回多少条。比 top-k 大是必须的：候选只有 5 条时"两路都命中"根本发生不了。
+      # 每路各召回多少条。必须比 top-k 大，否则"两路都命中"根本发生不了。
       candidates-per-route: ${CLAW4J_RAG_CANDIDATES_PER_ROUTE:15}
 
-    # ---- 重排：通义 qwen3-rerank（OpenAI 兼容端点）----
-    # 这是本项目唯一一处"官方没有、直接调 HTTP"的能力：Spring AI 2.0.2 全仓没有 rerank
-    # 类型（连 `RerankModel` 接口都不存在）。落点是框架的 DocumentPostProcessor。
+    # 重排：通义 qwen3-rerank，走 OpenAI 兼容端点。
     rerank:
       enabled: ${CLAW4J_RAG_RERANK_ENABLED:true}
-      # 送进重排的条数（输入上限）：候选池 30 条没必要整池发过去，一次 HTTP 一次计费。
-      # 重排只换顺序、不截断；"最终留几段"由上面的 top-k 在链路最后决定。
+      # 送进重排的条数（输入上限）。重排只换顺序、不截断，"最终留几段"由上头的 top-k 决定。
       candidates: ${CLAW4J_RAG_RERANK_CANDIDATES:10}
-      # **是 compatible-api 不是 compatible-mode**：与 chat/embedding 那两个不是同一个前缀，
-      # 所以单独配一个，不从 qwen 的 base-url 拼（拼接迟早拼错）。
+      # **是 compatible-api 不是 compatible-mode**：与 chat / embedding 不是同一个前缀，
+      # 所以单独配，不从 qwen 的 base-url 拼。
       base-url: ${CLAW4J_RAG_RERANK_BASE_URL:https://dashscope.aliyuncs.com/compatible-api/v1}
       model: ${CLAW4J_RAG_RERANK_MODEL:qwen3-rerank}
-      # 挂在每轮检索路径上，用户等的是首字延迟。超时/4xx/5xx 一律按候选原顺序继续。
+      # 挂在每轮检索路径上，用户等的是首字延迟。超时或 4xx/5xx 一律按候选原顺序继续。
       timeout: 2s
-      # 凭据不在这里：复用 `claw4j.model.qwen.api-key`，不引第二把钥匙。
+      # 凭据复用 claw4j.model.qwen.api-key，不引第二把钥匙。
 
-  # ---- 观测：trace 走 OTLP，默认一段都不导（P14）----
-  # 与上面 rag 同一条约定：默认关，配了才装。关着时容器里没有 provider、没有 exporter，
-  # 也不起线程——一个空转的 provider 会带起 batch 线程与连接池，"关"不该只是少发几条数据。
-  #
-  # **开了却没配 endpoint 时一条也不导**，启动日志会点名缺哪一项。不回落
-  # "localhost:4318"：那样每 5 秒一条连接被拒，人去查网络，而真正缺的那项没人说。
-  #
-  # 指标仍走下面 management 那套（actuator + Prometheus），**trace 只走 OTLP**：
-  # 两套导出器各配一遍端点是运维负担，而 metrics 那条路已经能用。
-  #
-  # 根 span 是 run（不是请求）：五个通道都把回答丢进线程池，请求的 trace 在入池那一刻就断了。
-  # 工具与模型轮挂在它下面，与审计靠 `claw4j.run.id` 对上——span 上不写账本行号，
-  # 审计与 trace 各自演进（OpenClaw 也是这个分法）。
+  # ---- 观测：trace 走 OTLP，默认一段都不导 ----
+  # 关着时容器里没有 provider、没有 exporter，也不起线程。
+  # 开了却没配 endpoint 时一条也不导，启动日志点名缺哪一项（不回落 localhost:4318）。
+  # 指标仍走下面 management 那套，trace 只走 OTLP。
   observability:
     enabled: ${CLAW4J_OBSERVABILITY_ENABLED:false}
-    # OTLP HTTP 的地址，例如 http://localhost:4318（带上 /v1/traces 也认）。
-    # **不走 gRPC**：exporter 的运行时依赖只带 HTTP sender，gRPC 那个编译得过、启动时找不到实现。
+    # OTLP **HTTP** 的地址，例如 http://localhost:4318（带 /v1/traces 也认）。不走 gRPC。
     endpoint: ${OTLP_ENDPOINT:}
     service-name: ${OTEL_SERVICE_NAME:claw4j}
-    # 采样比例。实现是 ParentBased(TraceIdRatioBased)——裸 ratio 会出现"有 run、没有 tool"，
-    # 而那种缺口在图上看起来像工具没被调用。
+    # 采样比例。实现是 ParentBased(TraceIdRatioBased)：裸比例会出现"有 run、没有 tool"。
     sample-ratio: 1.0
-    # 单次导出的超时。collector 不在同机时留一次重试的余量。
+    # 单次导出超时。collector 不在同机时留一次重试的余量。
     timeout: PT10S
-    # batch 队列上限。满了会丢，丢的时候 OTel 自己打日志（不另加计数器，见 P14 判据 10）。
+    # batch 队列上限，满了会丢（丢的时候 OTel 自己打日志）。
     max-queue-size: 2048
 
-  # ---- 能力层：配了目录才有这一层，不配就没有 ----
-  # claw4j.skills.directory / claw4j.scripts.directory / claw4j.subagents.directory /
-  # claw4j.generator.staging-directory（另有 review-directory / published-directory / audit-file 子键）
-  # 这里刻意不给默认值：给一个默认目录就等于默认打开这一层。怎么打开见 examples/README.md。
+  # ---- 能力层：配了目录才有，不配就没有 ----
+  # claw4j.scripts.directory / claw4j.skills.directory / claw4j.subagents.directory / claw4j.rag.directory
+  # 这里不给默认值：给一个默认目录就等于默认打开这一层。怎么开见 README-adding-capabilities.md。
 
 # ---- 运维面：指标与服务端口分开 ----
-# 指标里有"谁被拒了几次""花了多少 token"，和业务端口混在一起的话，"能发消息"就等于"能看运营数据"。
-# 只绑本机的代价是容器里看不到——单实例本地演示是既定形态；接 Prometheus 时再改地址并同时加鉴权。
+# 指标里有"谁被拒了几次""花了多少 token"，与业务端口混在一起的话，"能发消息"就等于"能看运营数据"。
+# 只绑本机；接 Prometheus 时再改地址并同时加鉴权。
 management:
   server:
     port: 9090
@@ -565,10 +389,9 @@ management:
   endpoints:
     web:
       exposure:
-        # 只开这两个。env / beans 那类会把配置与内部结构整份吐出来，
-        # 它们排障有用，但那是"临时打开看一眼"的东西，不该是默认暴露面。
+        # 只开这两个。env / beans 那类会把配置与内部结构整份吐出来，要用时临时打开。
         include: health,metrics
   metrics:
     tags:
-      # 每个指标都带这个标签：以后接了 Prometheus 或第二个服务，数据不会混在一起。
+      # 每个指标都带这个标签：以后接了第二个服务，数据不会混在一起。
       application: claw4j

@@ -1,22 +1,19 @@
-# 本地开发配置模板。复制为 application-local.yml 后生效：
+# 本地开发配置模板。复制一份改名为 application-local.yml 即生效：
 #   cp application-local.yml.example application-local.yml
 #
-# 真正的 application-local.yml 已被 .gitignore 忽略 —— 它可能放真实 API key、
-# 真实的人（飞书 open_id），绝不能入库。这个文件是模板，随仓库走。
+# 真正的 application-local.yml 不入库（.gitignore）：它可能放真实 key、真实的人。
 #
-# **MCP 那一层也在这里**。接哪几个 server 是这台机器/这个部署的事，不是框架的默认值：
-# 所以它不在 application.yml 里，也没有单独的 mcp-* profile —— 起 local 就是
-# "这台机器决定要连的那些"，一处看全。不接 MCP 就把 claw4j.capability.mcp 整段注释掉，
-# 那一层会干净地消失（没有端点就没有工具，不影响启动）。
+# 这一份替你做三件事：导入 .env、让 Boot 拉起 compose.yaml 里的 Postgres(pgvector) 并打开迁移、
+# 打开知识库。MCP 那一层也在这里——接哪几个 server 是"这台机器"的事，不是框架的默认值。
 
 spring:
-  # Boot 默认不读 .env（那是 docker compose 的约定），这行按 properties 解析进来。
+  # Boot 不读 .env（那是 docker compose 的约定），这行按 properties 解析进来。
   # 两个位置对应两种工作目录：仓库根目录（命令行）与 claw4j-app 模块（IDEA 默认）。
   config:
     import: optional:file:./.env[.properties],optional:file:../.env[.properties]
 
-  # 让 Boot 自动拉起并回收 compose.yaml 里的 Postgres(pgvector)。
-  # 工作目录要能找到 compose.yaml，也就是从仓库根目录启动。
+  # 让 Boot 拉起并回收 compose.yaml 里的 Postgres。工作目录要能找到 compose.yaml，
+  # 也就是从仓库根目录启动。
   docker:
     compose:
       enabled: true
@@ -24,9 +21,8 @@ spring:
       lifecycle-management: start-and-stop
 
   # 库起来了才做迁移（默认 profile 里是关的，免得没 Docker 时启动失败）。
-  # 迁移脚本散在各模块自己的 classpath:db/migration 下（示例插件 V1/V2、agent 的 V3~V5），
-  # Flyway 会扫遍 classpath 上所有同名目录再按版本号排序，所以不需要写 locations。
-  # 改 schema 是加一个版本号更大的新文件，不要回头改已提交的。
+  # 迁移脚本散在各模块的 classpath:db/migration 下，Flyway 会扫遍并按版本号排序，不用写 locations。
+  # 改 schema = 加一个版本号更大的新文件，不要回头改已提交的。
   flyway:
     enabled: true
 
@@ -37,52 +33,43 @@ logging:
 claw4j:
   channel:
     feishu:
-      # 谁能用飞书通道：把提问那个人的 open_id 填在这里。这里只登记"谁是谁"——
-      # 角色能看哪些表、能做哪些动作只有一份，在 application.yml 的 claw4j.channel.http.roles 里。
-      # 角色名必须与那边同名，写错一个启动就会失败并点名（不会变成"查不到权限"的哑状态）。
-      # 必须写在本文件而不是仓库那份 application.yml：open_id 是真实的人，不该入库。
-      # 没填时通道照样连得上，但任何人提问都只会收到"没有权限"（日志里有带 sender=ou_... 的 WARN）。
+      # 谁能用飞书通道：把提问那个人的 open_id 填在这里。
+      # 只登记"谁是谁"——角色能看哪些表、能做哪些动作只有一份，在 application.yml 的 roles 里。
+      # 没填时通道照样连得上，但任何人提问都只收到"没有权限"（日志里有带 sender= 的 WARN）。
       roles:
         read-only:
           users: ["ou_xxxxxxxxxxxxxxxx"]
 
-  # ---- 知识库（P10）------------------------------------------------------
-  # 本地开发默认开着：目录就是仓库里那两份示例文档，起 local 就有得可查。
-  # application.yml 里默认关（别的部署没有 embedding 凭据、也没有 pgvector 那张表，配了就是启动失败），
-  # 这里覆盖成开——本地两样都有：compose 起的 pgvector，加 .env 里的 qwen key。
-  # 重排跟着默认值走（开）：它要同一个 qwen key，挂掉时只是不重排，不影响检索。
-  # 相对路径按当前工作目录解析，所以要从仓库根目录起（与上面 MCP 那段同一个约定）。
+  # 谁能点审批按钮：飞书那边写 open_id，HTTP 那边写用户名（X-Claw4j-User）。
+  # 不写就是没人能批：待批请求会挂到过期，启动日志里有一条 WARN。
+  approval:
+    approvers: []
+
+  # 知识库：默认关（别的部署没有 embedding 凭据、也没有 pgvector 那张表），本地两样都有。
+  # 重排跟着默认值走（开），挂掉时只是不重排，不影响检索。
+  # 相对路径按当前工作目录解析，所以要从仓库根目录起。
   rag:
     enabled: true
     directory: examples/knowledge
 
-  # ---- MCP 那一层 --------------------------------------------------------
-  # 一段配置 = 一条连接 = 一个能力来源。server 用什么语言写、在不在本进程里，宿主都不关心：
-  # stdio 起一个子进程用它的 stdin/stdout 说协议，http 连一个别人已经跑着的端点。
-  # 差别只在 transport 那一个键，连接生命周期与鉴权一行都不用改。
-  #
-  # 相对路径（examples/...）按**当前工作目录**解析——stdio 子进程继承宿主的 CWD，
-  # 所以从仓库根目录起才对。从别处起（systemd、容器）就换成绝对路径。
-  # 子进程的环境默认**只有 PATH**：应用的模型 key 与数据库口令不会漏过去；
-  # 需要 HOME 之类的变量，就在那个 server 的 inherit-env 里显式写。
-  # 要给子进程一份专用凭据就写 env：值是**句柄**（secret:<名字>，对应同名环境变量），
-  # 非凭据常量写 plain:<文本>；裸写会被拒并点名到 servers.<名字>.env.<键>（P08）。
+  # ---- MCP：一段配置 = 一条连接 = 一个能力来源 ----
+  # stdio 起一个子进程用它的 stdin/stdout 说协议，http 连一个别人已经跑着的端点；
+  # 差别只在 transport 一个键，连接生命周期与鉴权不用改。
+  # 相对路径按**当前工作目录**解析（stdio 子进程继承宿主 CWD），所以从仓库根目录起才对。
+  # 子进程的环境只有 PATH；需要 HOME 之类的变量就在那个 server 的 inherit-env 里写。
+  # 要给子进程专用凭据就写 env，值是句柄 secret:<名字>（常量写 plain:<文本>），裸写会被拒并点名。
+  # 不接 MCP 就把整段注释掉：没有端点就没有工具，不影响启动。
   capability:
     mcp:
-      # 下面那段"别人写的"里有一个 npx 起的 server。要打开它，先把这两行一起解注释：
-      # `npx -y` 本机实测**每次启动要 36 秒**（缓存已热也一样，它要先解析包），而默认的
-      # request-timeout 是 30 秒——它会在 server 就绪之前先超时，症状是
-      # "Client failed to initialize by explicit API call"，server 侧一切正常。
-      # 两个都得调大（2026-10-28 三组对照）：只给 initialization-timeout=90s 时仍在 30s 失败；
-      # 只给 request-timeout=120s、initialization-timeout=1s 时在 1s 失败；两个都给才起得来。
+      # npx 起的 server 每次启动约 36 秒（缓存热了也一样），而默认 request-timeout 是 30 秒——
+      # 它会在 server 就绪前超时，症状是 "Client failed to initialize by explicit API call"。
+      # 要打开下面注释着的那两个，先把这两行一起解注释，两个都得给。
       # request-timeout: 120s
       # initialization-timeout: 90s
 
       servers:
-        # == 仓库自带的三个，只要 python3，就在 examples/mcp/ 下 ==
-        #
-        # 不依赖任何外部 CLI 的那个：一个回话、一个报时。
-        # demo_now 每次都返回不同的 pid 与时间戳，于是"结果确实来自新起的进程"是可判定的。
+        # 仓库自带的三个，只要 python3，都在 examples/mcp/ 下。
+        # demo_now 每次返回不同的 pid 与时间戳，"结果来自新起的进程"因此可判定。
         demo:
           command: python3
           args:
@@ -90,8 +77,7 @@ claw4j:
           permission:
             action: read
 
-        # 把 gh 包成只读能力：列表、CI 状态、API 查询。开 issue / 合 PR 不在这个 server 里，
-        # 所以整条按只读声明是准确的。要本机装了 gh 且已登录。
+        # 把 gh 包成只读能力：列表、CI 状态、API 查询。要本机装了 gh 且已登录。
         github:
           command: python3
           args:
@@ -99,10 +85,8 @@ claw4j:
           permission:
             action: read
 
-        # 混装的那一个：mail_list_unread 是读，mail_send 有副作用。
-        # 整条只给一个权限只有两个结局——写动作也被只读身份调用（权限放大），
-        # 或者只读身份连读都不行（整条不可用）。所以按工具覆盖：
-        # 兜底是 read，只有 mail_send 这一条要 send_email。要本机装了 himalaya 且配好账户。
+        # 混装的那一个：mail_list_unread 是读，mail_send 有副作用，所以按工具覆盖权限。
+        # 兜底 read，只有 mail_send 要 send_email。要本机装了 himalaya 且配好账户。
         mail:
           command: python3
           args:
@@ -113,22 +97,15 @@ claw4j:
             mail_send:
               action: send_email
 
-        # == 别人写的两个：默认关着，因为要 Node 与出网 ==
-        #
-        # 解注释的方法：从下面那行 `# everything:` 起到**文件末尾**，逐行删掉行首的 "# "，
-        # 缩进就自动对齐了（块里没有说明行，说明只在这里和行尾）——另外把上面那两行
-        # 超时也一起解注释，否则 npx 那 36 秒启动会被默认的 30 秒判成"连不上"。
-        #
-        # everything = 官方参考实现：零参数、零凭据，工具名与返回都是确定的；它导出的工具里有
-        #   几个是"模拟/开关"性质（触发长任务、开关模拟日志），不写业务数据，所以整条按只读声明准确。
-        # deepwiki = 公开的 Streamable HTTP 端点：无需凭据、不起进程；工具都是"读某个 GitHub 仓库的
-        #   文档"，只读声明与事实一致。点了 server 并不导出的工具名，启动就失败（报错里带 server 名
-        #   与实际导出的清单）。
+        # ---- 别人写的两个：默认关着，因为要 Node 与出网 ----
+        # 打开方法：把下面 `# everything:` 到文件末尾的行首 "# " 去掉，再把上面两行超时也解注释。
+        # everything = 官方参考实现：零参数、零凭据，工具名与返回都是确定的，整条按只读声明准确。
+        # deepwiki  = 公开的 Streamable HTTP 端点：无需凭据、不起进程，工具都是"读某个仓库的文档"。
         #
         # everything:
         #   command: npx
         #   args: ["-y", "@modelcontextprotocol/server-everything"]
-        #   inherit-env: [PATH, HOME]   # npx 靠 PATH 找到自己、靠 HOME 放包缓存；没列的变量子进程看不到
+        #   inherit-env: [PATH, HOME]   # npx 靠 PATH 找到自己、靠 HOME 放包缓存
         #   permission:
         #     action: read
         # deepwiki:
@@ -136,8 +113,7 @@ claw4j:
         #   url: https://mcp.deepwiki.com   # endpoint 不填就走 SDK 默认的 /mcp
         #   permission:
         #     action: read
-        #   # 要连需要凭据的端点时，把下面两行解注释。头里写的是**句柄**（P08）：
-        #   #   secret:deepwiki_token 对应环境变量 DEEPWIKI_TOKEN，真值在**每次请求**时才换出来；
-        #   #   裸写 "Bearer xxx" 会在启动时被拒，并点名 servers.deepwiki.headers.Authorization。
+        #   # 要连需要凭据的端点就解开下面两行。头里写句柄：secret:deepwiki_token 对应环境变量
+        #   # DEEPWIKI_TOKEN，真值在每次请求时才换出来；裸写 "Bearer xxx" 启动就会被拒。
         #   # headers:
         #   #   Authorization: "Bearer secret:deepwiki_token"
