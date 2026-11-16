@@ -23,7 +23,6 @@
 - **知识库检索带出处** —— 混合检索（向量 + 全文）加 `qwen3-rerank` 重排，每段都带「文档 + 第几段」
 - **一轮一个 trace** —— 配一个 OTLP 端点就导出整条链路，根 span 是 run，与审计靠 `claw4j.run.id` 对上
 - **也能反过来当 MCP server** —— 点名几个工具，Claude Code 这类客户端就能像用别的工具一样调它们
-- **边界由测试守护** —— 谁能依赖谁写在 ArchUnit 规则里，加错依赖当场红
 
 ## 快速开始
 
@@ -119,22 +118,21 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 ## 扩展
 
 加一个能力或一条通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
-每一步怎么做、代码长什么样，见 **[`docs/adding-capabilities.md`](docs/adding-capabilities.md)**（八个能直接抄的例子）。
+每一步怎么做、代码长什么样，见 **[`README-adding-capabilities.md`](README-adding-capabilities.md)**（八个能直接抄的例子）。
 
 | 你要加的东西 | 写什么 | 例子 |
 | --- | --- | --- |
-| 一个工具 | `@Tool` 方法 + 三个 bean（工具、权限登记、档位）+ `AutoConfiguration.imports` | [1](docs/adding-capabilities.md#1-java-工具4-个文件) |
-| 一个 MCP server | 一段 YAML，server 用任何语言写，宿主侧不写代码 | [2](docs/adding-capabilities.md#2-mcp-server一段-yaml) |
-| 一个脚本包 | 一个目录（`package.properties` + 入口脚本），配 `claw4j.scripts.directory` | [3](docs/adding-capabilities.md#3-脚本包一个目录) |
-| 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | [4](docs/adding-capabilities.md#4-skill一份做法) |
-| 一个子 Agent | 一份 `*.md`，配 `claw4j.subagents.directory` | [5](docs/adding-capabilities.md#5-子-agent一份-md) |
-| 一个人设 | 一份 `*.md`，配 `claw4j.agent.directory` 与 `claw4j.agent.default` | [6](docs/adding-capabilities.md#6-agent人设这个部署是谁) |
-| 一份知识库 | 一个 `*.md` / `*.txt` 目录，配 `claw4j.rag.directory` | [7](docs/adding-capabilities.md#7-知识库一个目录) |
-| 一条通道 | `ChatChannel` 实现 + 自己的端点，不带任何 IM SDK | [8](docs/adding-capabilities.md#8-通道收认人发) |
+| 一个工具 | `@Tool` 方法 + 三个 bean（工具、权限登记、档位）+ `AutoConfiguration.imports` | [1](README-adding-capabilities.md#1-java-工具4-个文件) |
+| 一个 MCP server | 一段 YAML，server 用任何语言写，宿主侧不写代码 | [2](README-adding-capabilities.md#2-mcp-server一段-yaml) |
+| 一个脚本包 | 一个目录（`package.properties` + 入口脚本），配 `claw4j.scripts.directory` | [3](README-adding-capabilities.md#3-脚本包一个目录) |
+| 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | [4](README-adding-capabilities.md#4-skill一份做法) |
+| 一个子 Agent | 一份 `*.md`，配 `claw4j.subagents.directory` | [5](README-adding-capabilities.md#5-子-agent一份-md) |
+| 一个人设 | 一份 `*.md`，配 `claw4j.agent.directory` 与 `claw4j.agent.default` | [6](README-adding-capabilities.md#6-agent人设这个部署是谁) |
+| 一份知识库 | 一个 `*.md` / `*.txt` 目录，配 `claw4j.rag.directory` | [7](README-adding-capabilities.md#7-知识库一个目录) |
+| 一条通道 | `ChatChannel` 实现 + 自己的端点，不带任何 IM SDK | [8](README-adding-capabilities.md#8-通道收认人发) |
 
 两种情况会**启动失败并点名**，不是默认放行：工具没登记权限或档位；插件没在
-`META-INF/claw4j-plugin.properties` 里报它要的核心版本。契约细节与三种"静默失效"的写法在
-[`docs/design/extension-points.md`](docs/design/extension-points.md)。
+`META-INF/claw4j-plugin.properties` 里报它要的核心版本。
 
 ## 配置
 
@@ -178,44 +176,27 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | `claw4j-example-mcp-server` | 示例插件：`java -jar` 就能跑的 Java MCP server，不依赖 Claw4J 任何模块 |
 | `claw4j-app` | 启动与装配，唯一打 fat jar 的模块 |
 
-## 测试
-
-```bash
-./scripts/verify.sh     # 载入 .env → clean verify（全部用例 + 覆盖率下限）→ 跳过数 / 文件数核对
-```
-
-门禁跑的是替身与真容器，能证明"装配成立"，证明不了"能力真能用"。后者要一次真跑：按工具逐条的命令与
-期望值在 [`docs/capability-tests.md`](docs/capability-tests.md)，判定看
-`claw4j.tool.calls{tool=…,outcome=ok|denied|error}` 这个计数，不看模型措辞。
-
-## 文档
-
-| 要找什么 | 在哪 |
-| --- | --- |
-| 怎么跑、门禁有哪些、迁移怎么加 | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| **加一个工具 / MCP / 脚本包 / Skill / 子 Agent / 人设 / 知识库 / 通道** | **[docs/adding-capabilities.md](docs/adding-capabilities.md)** |
-| 某个能力怎么验、期望值是什么 | [docs/capability-tests.md](docs/capability-tests.md) |
-| 扩展点的完整模板、静默失效的写法 | [docs/design/extension-points.md](docs/design/extension-points.md) |
-| 能力层、鉴权、会话、缓存的设计说明 | [docs/design/](docs/design/) |
-| 为什么这么设计、否决了什么 | [docs/adr/](docs/adr/) |
-| 踩过的坑（代码里看不出来，只会再犯一次） | [docs/design/pitfalls.md](docs/design/pitfalls.md) |
-| 示例素材（脚本包、Skill、Subagent、Python MCP） | [examples/README.md](examples/README.md) |
-| 术语 | [GLOSSARY.md](GLOSSARY.md) |
-
 ## 与 OpenClaw 的关系
 
 OpenClaw 是单用户常驻的个人助手（Gateway 控制面 + 浏览器 / 语音 / 手机节点做外设）；Claw4J 是企业里
 那一层：多用户身份、权限在模型之前裁决、可嵌在网关后面。两者形态不同，同一个功能落在两边判定可以相反，
 所以**不抄它的功能清单**，逐条的取舍见 [ADR-0021](docs/adr/0021-explicitly-not-doing.md)。
 
-已达的能力与验法在 [docs/capability-tests.md](docs/capability-tests.md)；未达项带编号，见
-[ADR-0020](docs/adr/0020-platform-capabilities-ride-on-run.md)。
-
 ## 还没做的
 
 - **MCP 的凭据只有"静态请求头"**：需要浏览器跳转、刷新 token、按用户授权的端点（OAuth 授权码流）接不了。
 - **MCP 的出口只有 stdio**：`spring-ai-starter-mcp-server-webmvc` 的 2.0.2 不在本地仓库，离线构建拉不到；
   也没有 WebSocket。stdio 天生只对一个客户端。
+
+## 门禁与验收
+
+一条命令跑完全部用例与覆盖率闸：`./scripts/verify.sh`。它证明的是"装配成立"，证明不了"能力真能用"——
+后者按工具逐条真跑，命令与期望值在 [docs/capability-tests.md](docs/capability-tests.md)，
+判定看 `claw4j.tool.calls{tool=…,outcome=ok|denied|error}` 这个计数，不看模型措辞。
+
+贡献者要看的：[CONTRIBUTING.md](CONTRIBUTING.md)（怎么跑、迁移怎么加）· [docs/design/](docs/design/)
+（能力层、鉴权、会话、缓存的设计）· [docs/adr/](docs/adr/)（为什么这么设计、否决了什么）·
+[examples/](examples/README.md)（脚本包、Skill、Subagent、Python MCP 素材）· [GLOSSARY.md](GLOSSARY.md)（术语）。
 
 ## License
 

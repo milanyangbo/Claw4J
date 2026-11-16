@@ -2,7 +2,7 @@
 
 > 设计说明：为什么这么做、否决了什么。要看结论去 [README](../../README.md)，要看决策去 [ADR](../adr/)。
 > 讲"为什么要分三层"的是 [capability-layers.md](capability-layers.md)；这一份讲**契约、边界与失效姿势**，
-> 照着抄的最小例子在 [adding-capabilities.md](../adding-capabilities.md)（八个 demo + 怎么确认生效）。
+> 照着抄的最小例子在 [README-adding-capabilities.md](../../README-adding-capabilities.md)（八个 demo + 怎么确认生效）。
 
 核心只有一句：**插件就是 Spring Boot 的自动配置**。一个 jar、一个
 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` 文件，
@@ -21,7 +21,7 @@
 | 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-core`（**不带任何 IM SDK**） | `claw4j-channel/http`、`claw4j-channel/feishu` |
 
 脚本包与 Subagent **没有单独的小节**：它们各自只有一个目录或一份 markdown 的形状，
-最小例子在 [adding-capabilities.md](../adding-capabilities.md) 的第 3、5 节，这里不重复写第二份。
+最小例子在 [README-adding-capabilities.md](../../README-adding-capabilities.md) 的第 3、5 节，这里不重复写第二份。
 
 ---
 

@@ -1,7 +1,9 @@
 # 加一个能力：八个照着抄的最小例子
 
+> [README.md](README.md) 讲怎么把它跑起来；这一份讲**怎么往里面加东西**。八节，每节一个能直接抄的 demo。
+
 这一份是**操作手册**：每节给一个最小可跑的 demo，再说怎么打开、怎么确认它生效。
-为什么这么设计、哪些写法会静默失效，在 [design/extension-points.md](design/extension-points.md)（同一件事的契约视角）。
+为什么这么设计、哪些写法会静默失效，在 [docs/design/extension-points.md](docs/design/extension-points.md)（同一件事的契约视角）。
 
 共同前提：能力来源都是**同进程的可信代码**，加它不用改 Claw4J 一行代码，也不用在父 POM 里登记。
 只有两条必须记住：**权限漏了 = 一律拒绝**，**档位漏了 = 起不来**。
@@ -21,7 +23,7 @@
 
 ## 1. Java 工具（4 个文件）
 
-产出：一个普通 Java 对象 + 一段自动配置 + 一行注册。照抄 [`claw4j-example-sales`](../claw4j-example-sales) 即可。
+产出：一个普通 Java 对象 + 一段自动配置 + 一行注册。照抄 [`claw4j-example-sales`](claw4j-example-sales) 即可。
 
 ```text
 jira-plugin/
@@ -115,8 +117,8 @@ claw4j:
   非凭据常量用 `plain:`。裸写明文启动就被拒。
 - **环境不是白名单**：显式声明的变量一定在，父进程其余变量也会被继承——要隔离靠部署层的容器策略。
 
-**自己写 server**：语言随便，协议一样。两个平级样本：[`examples/mcp/`](../examples/mcp)（Python，零依赖）、
-[`claw4j-example-mcp-server`](../claw4j-example-mcp-server)（Java，`java -jar` 就能跑）。
+**自己写 server**：语言随便，协议一样。两个平级样本：[`examples/mcp/`](examples/mcp)（Python，零依赖）、
+[`claw4j-example-mcp-server`](claw4j-example-mcp-server)（Java，`java -jar` 就能跑）。
 最容易撞的一条：**stdout 是协议通道**，日志一律走 stderr。
 
 **怎么确认**：启动日志 `MCP server 状态：deepwiki → UP(工具 3 个)`；`DOWN` 会说明原因，并在后台按 15 秒起翻倍退避重连。
@@ -199,7 +201,7 @@ tools:
 - 用的是父的身份，过同一套鉴权——**委派不提权**。
 
 **打开**：`--claw4j.subagents.directory=examples/subagents`。工具名 `Task`，动作 `delegate_task`。
-三个能直接抄的形状在 [`examples/subagents/`](../examples/subagents)。
+三个能直接抄的形状在 [`examples/subagents/`](examples/subagents)。
 
 ---
 
