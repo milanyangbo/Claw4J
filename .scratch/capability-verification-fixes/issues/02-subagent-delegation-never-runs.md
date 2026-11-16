@@ -8,7 +8,7 @@
 
 **Type:** investigation
 
-**Status:** ready-for-agent
+**Status:** resolved（结论：功能正常，错在验证方法）
 
 **Demo:** 用户说「派 capacity-triage 去看一下现在的容量」，`claw4j.tool.calls{tool=Task,outcome=ok}`
 从 0 变成 1，日志里有一行子 Agent 的派发记录，回答里带堆内存与线程数。
@@ -57,7 +57,37 @@
 若复跑显示"检索没返回 Task"，那是**索引与描述**的问题（`ChineseToolIndex` 相邻两字一组），
 修法是改描述文案，不是改索引算法。
 
-## 验收判据
+## 结论（2026-11-16 实测，不服不改代码）
 
-本票以"证据 + 根因一句话"为交付物。若定到岔路 2/3 并且要动代码，再补 TDD 用例清单——
-到时候按 `.scratch` 里既有票的格式追加，不在动手前先编用例名。
+**三条岔路都不是。`Task` 一直是通的**，之前那份"三次零计数"的负结论是自己的验证方法被两样东西污染了。
+
+### 证据
+
+`--claw4j.cache.enabled=false --logging.level.org.springframework.ai=DEBUG`，一个新用户
+（`X-Claw4j-User: probe2`），一句「派 capacity-triage 看一下这个服务的容量紧不紧」：
+
+```
+DEBUG RegexToolIndex : Converted query '派发任务给 capacity-triage 子代理，分析服务容量是否紧张' to regex …
+DEBUG DefaultToolCallingManager : Executing tool call: Task
+DEBUG SubagentRunner : 委派 task 给 Subagent capacity-triage：它这趟能用的工具是 [systemStatus]
+DEBUG RegexToolIndex : Added 1 tools to session 'subagent:capacity-triage'
+```
+
+`claw4j.tool.calls{tool=Task,outcome=ok} = 1`，回答里是真实数值（堆 已用 190 MB / 上限 8192 MB、线程 85），
+并且按子 Agent 的规矩**没给扩容建议**。默认配置（缓存开着）换一个说法再问（`probe3`）同样 `Task/ok=1`。
+
+### 上一次为什么会得出"零计数"
+
+1. **语义缓存把失败的回答当成答案缓存了。** 上一轮某个实例产生了一句"派不出去（空返回）"的答复，
+   进 Redis；此后**换用户、换实例**，只要问题相似度 ≥ 0.93 就原样返回——本次 `probe1` 在新进程、
+   新会话上拿到的回答与 `ethan` 那次**一字不差**，而本轮框架侧确实一次都没调 `Task`。这就同时解释了
+   "模型说失败"和"计数为 0"：模型那句失败的话是从缓存里念出来的，本轮根本没有模型调用。
+2. **对话记忆让模型拒绝重试。** 同一个 `X-Claw4j-User` 连问几次，模型"记得"上次空返回，
+   第二、三次直接回"已经连续三次空返回，我不重复试了"，一次都不发 tool_call。
+
+两条都写进了 `docs/capability-tests.md` §6 的前提里（票 03）。**本票不动任何代码。**
+
+### 遗留（转票 05，未开工）
+
+语义缓存把失败回执也当答案缓存、且不区分用户，这件事本身值得单独裁决：它会把"今天这个能力不行"
+固化给所有人。判据在票 05。
