@@ -7,7 +7,7 @@
 
 **Type:** docs
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Demo:** 一个新用户照第 1 节做完 jira 工具，按文档去启动日志里找那行 `工具档位 messaging：…` ——
 找不到。改完之后他按文档能找到真正能判定的那个数。
@@ -66,3 +66,17 @@ if (selection.droppedAnything()) { log.info("工具档位 {}：清单 {} 个，�
 1. 按第 1 节的计数判据去查，刚启动（还没问话）时 curl 该指标返回 404，问完之后返回一个数；
 2. 按第 3 节把文件放进包目录、用包内相对路径调用，能拿到摘要（本次实测已验过一次）；
 3. §6 的"先检索再调用"与 `ToolSearch.SYSTEM_SUFFIX` 的措辞一致，不引入第二套说法。
+
+## 实现记录
+
+- 第 1 节换成计数判据（`claw4j.tool.calls?tag=tool=…&tag=outcome:ok`，问之前 404、问之后有数），
+  并明确写出"别去启动日志找 `工具档位 … 清单 N 个`，那行只在有工具被挡掉时才打印"。
+- 第 3 节加 **参数** 一段：绝对路径与 `../` 被拒、普通字符串原样送达、含斜杠的 URL 被规范化改写
+  （`http://a/b` → `http:/a/b`，所以 URL 模式实际不可用）。
+- `examples/scripts/summarize/package.properties` 的描述从"URL 或本地文件"改成"包内一份文本文件"，
+  与上一行说的实际行为对齐。
+- `docs/capability-tests.md` §19 原来写着 `用 summarize 摘要一下 examples/README.md` —— **这条照做必然失败**
+  （包外路径）。改成包内的 `sample.md`，并新增 `examples/scripts/summarize/sample.md` 当夹具
+  （实测 `env -i PATH=… sh run.sh sample.md` 退出码 0，输出 5 句摘要）。
+- §6 补三条前提：派活是两步（先检索出 `Task`）、复测关语义缓存、同一个用户连测会累积对话记忆。
+  前两条来自票 02 的实测（那次负结论就是没关缓存造成的）。

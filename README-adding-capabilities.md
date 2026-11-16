@@ -81,8 +81,15 @@ com.acme.jira.JiraToolsAutoConfiguration
 
 **依赖**：`claw4j-core` + `spring-ai-client-chat`。**打开**：把 jar 加进依赖（或见文末 `loader.path`）。
 
-**怎么确认**：启动日志里那行 `工具档位 messaging：清单 N 个，挡掉 M 个（…）` —— `N` 应该比之前多 1；
-然后问一句只有这个工具能答的话。
+**怎么确认**：问一句只有这个工具能答的话，然后看计数——
+
+```bash
+curl -s "localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool=jiraSearchIssues&tag=outcome:ok"
+```
+
+问之前这个地址返回 404（还没有这个标签），问之后有数、`ok` 为 1。**别去启动日志里找
+`工具档位 … 清单 N 个`**：那行只在真有工具被挡掉时才打印（默认档位 `full` 什么都不挡），
+刚加一个工具时它根本不会出现。
 
 **三条不要写**：三个 bean 上都不要 `@ConditionalOnMissingBean`（会让别的来源静默消失）；
 档位不要写成"任何名字都算"；不要在自动配置里用 `@ConditionalOnBean` 依赖同类里 `@Bean` 的声明顺序。
@@ -150,6 +157,14 @@ exec python3 "$(dirname "$0")/weather.py" "$@"
 
 **打开**：`--claw4j.scripts.directory=examples/scripts`。**权限动作是 `run_script`**，与 `read` 是两个口径：
 默认三个角色里只有 `admin` 有它。
+
+**参数**：每个参数都会被当成**包目录内的相对路径**过一遍校验，再把结果交给脚本。于是——
+
+- 读文件就把它放进包目录，参数写包内相对路径（`demo.md`），**绝对路径与 `../` 都会被拒**
+  （`路径参数必须是相对路径` / `越出了脚本包自己的目录`）；
+- 普通字符串（城市名、一句话）原样送达：包内没有同名文件时它就是它自己；
+- 含斜杠的 URL 会被路径规范化改写（`http://a/b` → `http:/a/b`），所以**这个示例的 URL 模式
+  实际用不了**，本机文件才可靠。
 
 **边界**：脚本本体**不进上下文**，进上下文的只有标准输出；子进程只拿得到 `PATH`，**拿不到任何凭据**——
 需要 key 的能力在这一层跑不通，该走 MCP。

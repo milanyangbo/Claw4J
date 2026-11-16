@@ -386,7 +386,7 @@ claw4j:
 | # | 工具 | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- | --- | --- |
 | 18 | `weather-forecast` | 要出网 | `t '用 weather-forecast 查一下深圳未来三天的天气'` | 出温度区间（实测 23~30℃ 一带）；`hit weather-forecast` +1 |
-| 19 | `summarize` | 读本地文件、抽取式 | `t '用 summarize 摘要一下 examples/README.md，三句以内'` | 原文句子（不是改写——子进程只拿得到 `PATH`，没有 key） |
+| 19 | `summarize` | 读包内文件、抽取式 | `t '用 summarize 摘要一下 sample.md，三句以内'` | 原文句子（不是改写——子进程只拿得到 `PATH`，没有 key）。**参数只能是包内相对路径**：`examples/README.md` 这种包外路径会被沙箱拒掉 |
 | 20 | `xurl` | 要外部 CLI | `t '用 xurl 看一条推文'` | 有 CLI 时返回内容；没装时返回安装方法（说明脚本跑起来了、缺的是依赖） |
 | — | 全部 | 动作级鉴权 | `R=read-only t '用 weather-forecast 查一下深圳的天气'` | 被拒；`hit weather-forecast denied` +1、`ok` 不涨 |
 
@@ -404,6 +404,16 @@ claw4j:
 
 每次派完 `hit Task` +1；子 Agent 自己的工具调用也记在同一个计数上，所以 `hit querySales` 会跟着涨——
 这是"子 Agent 真的自己查了"的直接证据（父这一轮没有查库）。
+
+三条**前提**，不知道就会白判一次"这个功能坏了"：
+
+- **派活是两步**。模型一开始只看得见 `toolSearchTool`（`ToolSearch.SYSTEM_SUFFIX`），要先检索出
+  `Task` 才调得到它。所以"零计数"要先看检索有没有把 `Task` 交出去，再看调用。
+- **复测时关掉语义缓存**：`--claw4j.cache.enabled=false`。缓存会把上一轮的回答（包括"派不出去"
+  这种失败回执）按相似度复用，`0.93` 阈值下换个说法照样命中——实测同一个问题换个用户、换个实例，
+  拿到的是一字不差的旧回答。不关缓存，测出来的是缓存，不是能力。
+- 同理，同一个 `X-Claw4j-User` 连测多轮会累积对话记忆，模型可能"记得"上次失败而拒绝重试；
+  每次复测换一个用户或换一个说法。
 
 委派不提权：`U=guest9 R=guest t '派 sql-reviewer 复核一条查 order_item 的 SQL'` 应当拿到表级拒，而不是一份数字。
 
