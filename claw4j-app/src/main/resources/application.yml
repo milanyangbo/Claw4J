@@ -163,26 +163,14 @@ claw4j:
           users: []          # 填 Slack user id（U 开头）
 
   # ---- 入站拦截 ----
-  # 命中词表任意一条就整轮拒答：不调模型、也不进会话历史。词表为空时整个拦截不装配。
-  # 匹配是子串 + 大小写不敏感，挡的是随口一问；有备而来的改写靠权限与数据本身兜住。
+  # 命中词表任意一条就整轮拒答：不调模型、也不进会话历史。匹配是子串 + 大小写不敏感。
+  # 词表在文件里：一行一个词，# 开头的行是注释。文件配了却不存在时启动失败——
+  # "什么都没拦"和"拦住了"在日志上长得一样，只能在这里拦住。
   guard:
-    sensitive-words:
-      # 套取系统提示词
-      - "系统提示词"
-      - "你的系统指令"
-      - "system prompt"
-      - "repeat your instructions"
-      # 覆盖既有指令。写成整句而不是"忽略之前"——后者在业务对话里太常见
-      #（"忽略之前的条件，按新口径算"），放进来会天天误伤。
-      - "忽略之前的指令"
-      - "忽略以上指令"
-      - "ignore previous instructions"
-      - "ignore all previous"
-      - "disregard the system"
-      # 提权诱导
-      - "绕过权限"
-      - "跳过鉴权"
-      - "开发者模式"
+    # 相对路径按启动时的工作目录解析；换到别的目录部署就把 CLAW4J_GUARD_WORDS_FILE 指到实际文件。
+    sensitive-words-file: ${CLAW4J_GUARD_WORDS_FILE:examples/guard/sensitive-words.txt}
+    # 命中时回给用户的话。别写命中了哪个词，那等于把词表告诉想绕过的人。
+    # failure-response: 这条消息我没法处理，换个说法再试一次。
 
   # ---- 记忆与一段对话的边界 ----
   session:

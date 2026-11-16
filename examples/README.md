@@ -13,6 +13,11 @@
 | `skills/` | Skill | `claw4j.skills.directory=examples/skills` |
 | `subagents/` | Subagent | `claw4j.subagents.directory=examples/subagents` |
 | `mcp/` | 二层：MCP server（跨进程） | `claw4j.capability.mcp.servers`（三个 server 都写在 `application-local.yml` 里） |
+| `guard/` | 不属于能力层：入站拦截的词表 | `claw4j.guard.sensitive-words-file`，**默认就指向这里** |
+
+`guard/sensitive-words.txt` 是唯一一个默认生效的：一行一个词，`#` 开头是注释，命中任意一条
+整轮拒答。不想拦就把键清空（拦不拦得住单看这份文件，见
+[`docs/design/inbound-guard.md`](../docs/design/inbound-guard.md)）。
 
 `agents/` 与其余几层不是一回事：那几层是"给这个 agent 加能力"，人设是"这个 agent 是谁"。
 同一个 jar 换一份人设，就从销售助手变成运维助手——两份定义在 `agents/sales.md` 与 `agents/ops.md`，

@@ -9,6 +9,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.core.Ordered;
 
+import java.nio.file.Path;
+
 /**
  * 入站拦截（{@link SafeGuardAdvisor}）的装配。
  *
@@ -24,7 +26,7 @@ import org.springframework.core.Ordered;
  * spring-ai-client-chat 2.0.2 {@code SafeGuardAdvisor.java:42}）。两者位置也不同：一个在
  * 入站，一个在出站。
  *
- * <p>没有 enabled 开关：装配与否由词表是否为空决定（{@link SensitiveWordsConfigured}）。再加
+ * <p>没有 enabled 开关：装配与否由词表文件里有没有词决定（{@link SensitiveWordsConfigured}）。再加
  * 一个布尔开关，就会出现「开关打开但词表是空的」这种既没生效又看不出来的组合。
  */
 @AutoConfiguration
@@ -48,16 +50,19 @@ public class GuardAutoConfiguration {
     public static final int ORDER = Ordered.HIGHEST_PRECEDENCE;
 
     /**
-     * 按配置装一个入站拦截器。
+     * 按配置装一个入站拦截器，词从文件读。
      *
-     * @param properties 词表与命中时的答复
+     * <p>{@code properties.sensitiveWordsFile()} 在这里不会是 null：这条装配本身就挂在
+     * {@link SensitiveWordsConfigured} 上，路径没配时它不会跑。
+     *
+     * @param properties 词表文件与命中时的答复
      * @return 挂在全链最前的拦截器
      */
     @Bean
     @ConditionalOnMissingBean(SafeGuardAdvisor.class)
     public SafeGuardAdvisor safeGuardAdvisor(GuardProperties properties) {
         return SafeGuardAdvisor.builder()
-                .sensitiveWords(properties.sensitiveWords())
+                .sensitiveWords(SensitiveWords.load(Path.of(properties.sensitiveWordsFile())))
                 .failureResponse(properties.failureResponse())
                 .order(ORDER)
                 .build();

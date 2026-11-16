@@ -2,6 +2,7 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
+import io.github.claw4j.agent.guard.SensitiveWords;
 import io.github.claw4j.agent.model.ModelRoutingException;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
@@ -158,6 +159,10 @@ class ApplicationAssemblyTest {
         registry.add("claw4j.channel.dingtalk.client-id", () -> DINGTALK_CLIENT_ID);
         registry.add("claw4j.channel.dingtalk.client-secret", () -> DINGTALK_CLIENT_SECRET);
         registry.add("claw4j.channel.dingtalk.robot-code", () -> DINGTALK_ROBOT_CODE);
+        // 词表文件在仓库里，而 Maven 下工作目录是模块：把 application.yml 里那个相对路径换成绝对路径，
+        // 读的还是同一份 examples/guard/sensitive-words.txt。
+        registry.add("claw4j.guard.sensitive-words-file",
+                () -> ExamplesSubagentsTest.repositoryFile("examples/guard/sensitive-words.txt").toString());
         registry.add("claw4j.channel.dingtalk.roles.admin.users[0]", () -> DINGTALK_USER);
     }
 
@@ -166,8 +171,8 @@ class ApplicationAssemblyTest {
 
     /**
      * 注入它本身就是一条守卫：{@code GuardAutoConfiguration} 整份挂在
-     * "词表非空"这个条件上，所以 yml 里那份列表一旦因为缩进或改名绑不上，
-     * 这个 bean 就不存在，整个类起不来——比一条断言更早、更硬。
+     * "词表文件里有词"这个条件上，所以那个键一旦因为缩进或改名绑不上，这个 bean 就不存在，
+     * 整个类起不来——比一条断言更早、更硬。
      */
     @Autowired
     private GuardProperties guardProperties;
@@ -204,11 +209,13 @@ class ApplicationAssemblyTest {
             .build();
 
     @Test
-    @DisplayName("词表真从 application.yml 绑上了：绑不上就一条都不拦，而且看不出来")
+    @DisplayName("词表文件真从 application.yml 绑上了：绑不上就一条都不拦，而且看不出来")
     void guardWordsAreBoundFromApplicationYml() {
-        assertThat(guardProperties.sensitiveWords())
-                .as("yml 里那份列表要么没绑上、要么被缩进搞成了别的键")
-                .isNotEmpty()
+        assertThat(guardProperties.sensitiveWordsFile())
+                .as("yml 里那个键要么没绑上、要么被缩进搞成了别的键")
+                .isNotNull();
+        assertThat(SensitiveWords.load(Path.of(guardProperties.sensitiveWordsFile())))
+                .as("不配路径时守卫整份不装配，所以这里顺带证明它读得出词来")
                 .contains("系统提示词");
     }
 

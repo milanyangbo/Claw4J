@@ -147,18 +147,27 @@ class ExamplesSubagentsTest {
                 .anySatisfy(definition -> assertThat(definition.tools()).hasSizeGreaterThan(1));
     }
 
-    /** 从工作目录往上找 {@code examples/subagents}：Maven 下工作目录是模块，IDE 下是仓库根。 */
-    private static Path examplesSubagents() {
+    /**
+     * 从工作目录往上找仓库里的一份文件：Maven 下工作目录是模块，IDE 下是仓库根。
+     *
+     * <p>包内可见，给同样要读仓库里那几份示例文件的用例共用（{@code ApplicationAssemblyTest}
+     * 读的是 {@code examples/guard/sensitive-words.txt}）。
+     */
+    static Path repositoryFile(String relative) {
         Path current = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         while (current != null) {
-            Path candidate = current.resolve("examples").resolve("subagents");
-            if (Files.isDirectory(candidate)) {
+            Path candidate = current.resolve(relative);
+            if (Files.exists(candidate)) {
                 return candidate;
             }
             current = current.getParent();
         }
-        throw new IllegalStateException("找不到 examples/subagents，当前工作目录："
-                + System.getProperty("user.dir") + "。这条用例要读仓库里那一份定义。");
+        throw new IllegalStateException("找不到 " + relative + "，当前工作目录："
+                + System.getProperty("user.dir") + "。这条用例要读仓库里那一份。");
+    }
+
+    private static Path examplesSubagents() {
+        return repositoryFile("examples/subagents");
     }
 
     /** 只提供一个名字的替身：这一组用例判的是"选得出哪些名字"，不是工具真的被调用。 */

@@ -2,28 +2,23 @@ package io.github.claw4j.agent.guard;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-import java.util.List;
-
 /**
  * 入站拦截的配置。
  *
- * <p>词表自己写，不抄现成的：Spring AI 的 {@code SafeGuardAdvisor} 只做大小写不敏感的子串
- * 匹配，也明说它「can be used as a starting point」（spring-ai-client-chat 2.0.2，
- * {@code SafeGuardAdvisor.java:40-42}），没有附带词表。公开的中文敏感词库（sensitive-word
- * 那一类）是给内容审核用的，动辄几万条，判据是这句话能不能出现在平台上；这里是这条消息要不要
- * 直接拒答、连模型都不调，判据窄得多。把审核词库塞进来，用户说一句「这个客户真难缠」就可能
- * 整轮被拒。所以这里的表只覆盖两件确实会遇到的事：套取系统提示词、诱导越权与覆盖指令。
+ * <p>词表在文件里（默认 {@code examples/guard/sensitive-words.txt}），一行一个词。
+ * 不抄公开的中文敏感词库：那些是给内容审核用的，判据是"这句话能不能出现在平台上"，动辄几万条；
+ * 这里的判据窄得多——"这条消息要不要直接拒答、连模型都不调"，误判的代价是一个人的问题被整轮拒掉。
+ * 所以只覆盖两件确实会遇到的事：套取系统提示词、诱导越权与覆盖指令。
  *
- * <p>没配等于空表：配置绑定对缺失的键只能传 null，而配了一个空列表走的是另一条路。两者在这件
- * 事上是同一件事——没有要拦的词，所以构造器把 null 归一到空列表，
- * {@link SensitiveWordsConfigured} 再依据归一后为空决定整个 Advisor 装不装。同类坑见票 06：
- * {@code int} 字段被绑成 0 而不是没配，而 0 在那里恰好是个有效值。
+ * <p>没配等于不装拦截：配置绑定对缺失的字符串只能传 null，这里把它归一到 null，
+ * {@link SensitiveWordsConfigured} 再据此决定整个 Advisor 装不装。配了但文件读不到是另一回事——
+ * 那种情况启动失败，见 {@link SensitiveWords#load(java.nio.file.Path)}。
  *
- * @param sensitiveWords 命中任一即拒答。大小写不敏感，子串匹配
- * @param failureResponse 命中时原样返回给用户的文本
+ * @param sensitiveWordsFile 词表文件路径，相对路径按启动时的工作目录解析；空表示不装拦截
+ * @param failureResponse    命中时原样返回给用户的文本
  */
 @ConfigurationProperties("claw4j.guard")
-public record GuardProperties(List<String> sensitiveWords, String failureResponse) {
+public record GuardProperties(String sensitiveWordsFile, String failureResponse) {
 
     /**
      * 命中时的答复。
@@ -36,19 +31,16 @@ public record GuardProperties(List<String> sensitiveWords, String failureRespons
             "这条消息我没法处理，换个说法再试一次。";
 
     public GuardProperties {
-        sensitiveWords = sensitiveWords == null ? List.of()
-                : sensitiveWords.stream()
-                        .filter(word -> word != null && !word.isBlank())
-                        .map(String::trim)
-                        .toList();
+        sensitiveWordsFile = (sensitiveWordsFile == null || sensitiveWordsFile.isBlank())
+                ? null : sensitiveWordsFile.trim();
         failureResponse = (failureResponse == null || failureResponse.isBlank())
                 ? DEFAULT_FAILURE_RESPONSE : failureResponse.trim();
     }
 
     /**
-     * 造一份全默认的配置：空词表，默认答复。
+     * 造一份全默认的配置：不配词表，默认答复。
      *
-     * @return 空词表的配置，装配时等于不装拦截
+     * @return 不装拦截的配置
      */
     public static GuardProperties defaults() {
         return new GuardProperties(null, null);

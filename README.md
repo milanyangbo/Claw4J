@@ -151,7 +151,8 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | `CLAW4J_CACHE_REDIS_URI` | 否 | 语义缓存地址，默认 `redis://127.0.0.1:6379` |
 
 `claw4j.*` 的每个键都有明确的拥有者，`application.yml` 里逐项写了默认值与"动它之前要知道什么"。
-最常改的几个：`claw4j.channel.http.roles`、`claw4j.guard.sensitive-words`、`claw4j.cache.*`、
+最常改的几个：`claw4j.channel.http.roles`、`claw4j.guard.sensitive-words-file`（词表在
+`examples/guard/sensitive-words.txt`，一行一个词）、`claw4j.cache.*`、
 `claw4j.rag.*`，以及三个能力目录 `claw4j.{scripts,skills,subagents}.directory`。
 
 ## 模块
