@@ -151,9 +151,10 @@ class ScriptPackageTest {
     }
 
     @Test
-    @DisplayName("非零退出变成一次失败的工具结果，不把半截 stdout 当成功交回去")
+    @DisplayName("非零退出变成一次失败的工具结果：两个流的原因都交回，但半截 stdout 不当成功")
     void nonZeroExitBecomesAToolFailure() throws IOException {
-        ScriptPackage pkg = packageWith("fail", "#!/bin/sh\necho 'missing input' >&2\nexit 7\n", 5_000);
+        ScriptPackage pkg = packageWith("fail",
+                "#!/bin/sh\necho '读不到内容：sample.md' >&2\necho '没有可摘要的正文。'\nexit 7\n", 5_000);
 
         Throwable thrown = catchThrowableOfType(() -> callbackFor(pkg).call("{}"), ToolExecutionException.class);
 
@@ -161,7 +162,10 @@ class ScriptPackageTest {
         assertThat(thrown.getCause())
                 .isInstanceOf(ScriptExecutionException.class)
                 .hasMessageContaining("退出码=7")
-                .hasMessageContaining("missing input");
+                // 脚本自己说的原因在 stdout 上，崩溃栈在 stderr 上：只带后者的话，
+                // 前者的失败会以一句与此无关的警告的形式出现（票 13 的现场）
+                .hasMessageContaining("没有可摘要的正文。")
+                .hasMessageContaining("读不到内容：sample.md");
     }
 
     @Test

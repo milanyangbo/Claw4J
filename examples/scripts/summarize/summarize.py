@@ -12,7 +12,12 @@ import sys
 import urllib.request
 
 TIMEOUT = 15
-SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?.；;])\s*")
+# 逐段取出"到标点为止"的片段，而不是在标点后面 split。两种写法在这里不等价：
+# 用零宽的 `(?<=[…])` 加 `\s*` 去 split 时，Python 3.7 以前会告
+# `FutureWarning: split() requires a non-empty pattern match`，而且老版本的
+# re.split 对零宽匹配的处理不同——同一份文件在 3.6 上会被切成 5 句、3.13 上 7 句。
+# 脚本包的输出不该随宿主装的是哪个 python 变化（票 13）。
+SENTENCE = re.compile(r"[^。！？!?.；;]+[。！？!?.；;]?")
 TAG = re.compile(r"<script.*?</script>|<style.*?</style>|<[^>]+>", re.S)
 SPACE = re.compile(r"\s+")
 
@@ -36,7 +41,7 @@ def strip_html(raw):
 
 
 def sentences(text):
-    return [sentence.strip() for sentence in SENTENCE_SPLIT.split(text)
+    return [sentence.strip() for sentence in SENTENCE.findall(text)
             if len(sentence.strip()) > 8]
 
 

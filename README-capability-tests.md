@@ -111,6 +111,12 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
   -H 'X-Claw4j-User: t1' -H 'X-Claw4j-Role: admin' \
   -d '{"text":"上周华东区的成交额是多少"}'
+  
+  
+  curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: t1' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"三周前华东区的成交额是多少"}'
 ```
 
 **期望**：回答里是 `128400`。然后换两个时间窗各问一次（把 `t1` 换成 `t2`、`t3`，
@@ -233,6 +239,11 @@ curl -s --noproxy '*' \
 
 **不对时先看哪里**：
 
+- **`退出码=1` 且 stderr 里只有一句 `FutureWarning` / `UnicodeEncodeError: 'ascii' codec`**：
+  子进程没有 locale（只给了 `PATH`），你 PATH 上的 `python3` 如果是 3.7 以前的，
+  stdout 就是 ASCII，打印中文直接崩。修法是脚本入口那行写
+  `PYTHONIOENCODING=utf-8 exec python3 …`（[README-adding-capabilities.md](README-adding-capabilities.md)
+  第 3 节的模板里就有）。现在失败消息里会带 `stdout=`，脚本自己说的原因不会再被吞掉。
 - 问"三句以内"却要"逐字"，是**自相矛盾**：脚本默认输出 5 句，模型会压缩改写。
   验逐字就别限制句数。
 - 参数被拒：`路径参数必须是相对路径，拿到的是 …` / `路径 … 越出了脚本包自己的目录`——

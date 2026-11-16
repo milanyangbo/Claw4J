@@ -159,7 +159,9 @@ timeoutMillis=20000
 ```sh
 #!/bin/sh
 # 参数已过沙箱校验（只能是包内相对路径），并以 argv 数组送达——不经 shell，所以没有引号要转义
-exec python3 "$(dirname "$0")/weather.py" "$@"
+# PYTHONIOENCODING 不能省：子进程只拿到 PATH，没有 LANG/LC_ALL，Python 3.7 以前
+# 的 stdout 会落在 ASCII 上，打印中文直接崩（退出码 1）。写 Python 脚本包就照这一行抄。
+PYTHONIOENCODING=utf-8 exec python3 "$(dirname "$0")/weather.py" "$@"
 ```
 
 **打开**：`--claw4j.scripts.directory=examples/scripts`。**权限动作是 `run_script`**，与 `read` 是两个口径：
@@ -174,7 +176,12 @@ exec python3 "$(dirname "$0")/weather.py" "$@"
   实际用不了**，本机文件才可靠。
 
 **边界**：脚本本体**不进上下文**，进上下文的只有标准输出；子进程只拿得到 `PATH`，**拿不到任何凭据**——
-需要 key 的能力在这一层跑不通，该走 MCP。
+需要 key 的能力在这一层跑不通，该走 MCP。反过来要记住：**没有 locale 也是这条边界的代价**，
+脚本里的输出编码、时间格式、大小写规则都别指望环境给（`run.sh` 里那行 `PYTHONIOENCODING` 就是为它写的）。
+
+**失败会说什么**：非零退出时，异常消息里带退出码 + 两个流的**第一行非空内容**（`stdout=` 与 `stderr=`），
+因为脚本自己说的原因几乎都在 stdout 上（`读不到内容：…`），只有崩溃才在 stderr。
+少一个，模型只能猜。
 
 **怎么确认**：把一份文件放进包目录，问一句「用 `<包名>` 处理 `x.md`」；然后看
 `claw4j.tool.calls?tag=tool=<包名>&tag=outcome:ok` 是不是 1（问之前这个标签不存在，返回 404）。
