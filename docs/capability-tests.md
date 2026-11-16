@@ -1,4 +1,9 @@
-# 能力测试接口
+# 能力测试接口（机器向全量清单）
+
+> **这份是给 AI / 维护者跑回归用的**：每个工具、每个子 Agent、每个通道各一行，含库表断言与负向用例。
+> 刚加完一个能力、只想确认它生效没有的读者，看 [README-capability-tests.md](../README-capability-tests.md)
+> ——那八节与 [README-adding-capabilities.md](../README-adding-capabilities.md) 一一对应。
+> 两份的分工：这一份回答"全部能力逐条对没对上"，那一份回答"我加的那个能不能用"。
 
 所有能力**共用一个接口**，测哪个功能取决于你发哪句话：
 
@@ -53,8 +58,9 @@ psql "$DATABASE_URL" -c "select goal_id, goal_objective, goal_status, goal_token
 ```
 
 **一轮最多调几次工具**：`claw4j.agent.tool-call-limit`（默认 6；单个工具 3 次，不可配）。
-它是**熔断**不是额度：到点就停、回一句"这一步做了太多次"，不改任何持久状态，
-也不动目标的状态。两者要分开看——一个回答"这件事花超了吗"（额度），
+它是**熔断**不是额度：到点就停、**不改任何持久状态**，也不动目标的状态。
+注意：到点时回给用户的是框架原文 `Total tool call limit (N) exceeded for this turn.`
+（不是中文那句）——它直接成了这一轮的回答。两者要分开看——一个回答"这件事花超了吗"（额度），
 一个回答"这一轮绕了太多次吗"（止损）。
 
 ## 0. 起实例

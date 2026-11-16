@@ -191,8 +191,10 @@ OpenClaw 是单用户常驻的个人助手（Gateway 控制面 + 浏览器 / 语
 ## 门禁与验收
 
 一条命令跑完全部用例与覆盖率闸：`./scripts/verify.sh`。它证明的是"装配成立"，证明不了"能力真能用"——
-后者按工具逐条真跑，命令与期望值在 [docs/capability-tests.md](docs/capability-tests.md)，
-判定看 `claw4j.tool.calls{tool=…,outcome=ok|denied|error}` 这个计数，不看模型措辞。
+后者要真跑：**加了能力想确认它生效，按 [README-capability-tests.md](README-capability-tests.md) 的八节走**
+（每节一句触发话 + 该看到什么 + 不对时看哪里）；要逐条跑全部工具与子 Agent，
+清单在 [docs/capability-tests.md](docs/capability-tests.md)。判定看
+`claw4j.tool.calls{tool=…,outcome=ok|denied|error}` 这个计数，不看模型措辞。
 
 贡献者要看的：[CONTRIBUTING.md](CONTRIBUTING.md)（怎么跑、迁移怎么加）· [docs/design/](docs/design/)
 （能力层、鉴权、会话、缓存的设计）· [docs/adr/](docs/adr/)（为什么这么设计、否决了什么）·
