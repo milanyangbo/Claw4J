@@ -1,5 +1,19 @@
 # README-adding-capabilities.md 八项能力实测（2026-11-16）
 
+> **更正（同日，晚些时候）**：下面第 5 项（子 Agent）的结论**是错的**，第 7 项（知识库）已修好。
+> 两处的更正与证据见 `.scratch/capability-verification-fixes/issues/02-subagent-delegation-never-runs.md`
+> 与 `…/01-knowledge-reranker-needs-no-jackson2-bean.md`。要点：
+>
+> - **子 Agent 一直是通的。** 关掉语义缓存、换一个用户、加 `spring-ai=DEBUG` 复跑：
+>   `Executing tool call: Task` → `委派 task 给 Subagent capacity-triage：它这趟能用的工具是 [systemStatus]`
+>   → `Task/ok=1`，回答里是真实堆内存与线程数。原来那三次"零计数"是**缓存**造成的——
+>   Redis 语义缓存把上一轮"派不出去"的答复按相似度复用，新进程、新用户拿到的回答与旧的一字不差，
+>   而本轮零次模型调用。教训：**验证能力之前先关缓存**，否则测的是缓存。
+> - **知识库已修**：`knowledgeReranker` 不再向容器要 Jackson 2 的 `ObjectMapper`（Boot 4 已不提供），
+>   默认配置能启动；但顺带发现重排的**调用**一直解析失败（响应多一个 `object` 字段），票 04 挂着。
+> - 第 3 项（脚本包）的两条补充（参数只能是包内相对路径、URL 会被改写）已写进操作手册第 3 节；
+>   `capability-tests.md` §19 原来那条让人读包外文件、照做必然失败，也一并改了。
+
 **怎么测的**：`./mvnw -DskipTests package` 出 fat jar，按 `docs/capability-tests.md` 的方式起实例
 （`local` profile + 三个能力目录 + `.env` 里的真 key），用真模型（DeepSeek）提问，判据只认两条——
 **回答内容对得上**，以及 **`claw4j.tool.calls{tool=…,outcome=…}` 计数涨了**。模型的自述不算证据
