@@ -300,6 +300,47 @@ claw4j:
 
 **这里没有的**：自动生成 Java `@Tool`；自动人审（这一步必须是人）。
 
+## 默认工具：六个来自 `spring-ai-agent-utils` 的，一行实现都不写
+
+`Read` / `Grep` / `Glob` / `TodoWrite` / `WebFetch` / `WebSearch` 启动就在清单里，
+`Write` / `Edit` 由 `claw4j.tools.files.write-enabled` 单独打开。工具代码一行没写，
+全部是社区包的类（`AgentToolsAutoConfiguration` 与 `WebFetchAutoConfiguration` 只做装配）。
+
+**为什么用库而不是自己写**：读文件、按正则搜、按 glob 找、记一份计划、抓一个网页，这五件
+"什么 agent 都会用一次"的操作，自己写只会多出五个与库描述不同步的 Schema，而 Schema 与描述
+正是模型选工具的唯一依据。这个仓库自己的工具（`querySales`、`run_script`、`Skill`、`Task`）
+都是**有业务语义**的，那些才是该自己写的东西。
+
+| 工具 | 动作 | 档位 | 默认 |
+| --- | --- | --- | --- |
+| `Read` / `Grep` / `Glob` | `read_files` | `CODING` | 开 |
+| `Write` / `Edit` | `write_files` | `CODING` | **关** |
+| `TodoWrite` | `plan` | `MINIMAL` | 开 |
+| `WebFetch` / `WebSearch` | `web_fetch` / `web_search` | `CODING` | `WebFetch` 开；`WebSearch` 要 `BRAVE_API_KEY` |
+
+三条边界值得记住：
+
+- **读不等于改**。写默认关，不是因为难写，是因为改错一次就是一次脏工作区，而"只读三件套"
+  已经够回答"这个仓库里有什么"。
+- **档位是 `CODING` 不是 `MESSAGING`**。`MESSAGING` 的承诺是"只做消息与业务只读"；读服务器磁盘
+  与出网都不是那条线上的事。默认角色配置里只有 `admin`（`actions: ["*"]`）调得动它们——
+  `read-only` 拿 `read` 不该顺带拿到 `cat .env`。
+- **路径边界只管位置，不管内容**。`..`（含软链接 + `..`）与软链接跳出去都拒，但 `.env`
+  这类文件在边界内就照读。这与 `Bash`（`exec_command`，同样只给 `admin`）是同一档暴露。
+
+`WebFetch` 单独在 `claw4j-agent`：它抓完要模型按 prompt 提炼，需要一个 `ChatClient`，而那是
+agent 模块造的。它用的是**现场建的、不带 Advisor 也不带工具**的一个（不进容器）——注册成 bean
+的话容器里就有两个 `ChatClient`，主聊天客户端的 `@ConditionalOnMissingBean` 会让位，整条
+Advisor 链与工具循环静默消失。
+
+**一个踩过的坑，值得所有"默认目录"记着**：`Path.of(".").toAbsolutePath()` 在 Servlet 应用里
+不是启动目录。内嵌 Tomcat 起来时会把 `user.dir` 改成它的 docbase
+（实测 `/var/folders/…/T/tomcat-docbase.8080.…`），于是 `files.directory` 与 `exec.workspace`
+的 `.` 都落到那个临时目录上——表现是 `Bash` 的 `pwd` 不是仓库根、`Read` 说仓库里的文件在
+允许目录之外，两个都像权限问题。修法是一个 `EnvironmentPostProcessor`
+（`LaunchDirectoryEnvironmentPostProcessor`）在环境准备好的时候把 `user.dir` 记成
+`claw4j.launch-directory`，两处默认值都指向它。
+
 ## 一次把三层都接上：真实模型的实录
 
 `examples/` 下放的是能真的接进来的能力（脚本包、`SKILL.md`、Subagent 定义、Python MCP server），

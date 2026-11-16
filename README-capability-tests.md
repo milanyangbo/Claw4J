@@ -152,6 +152,47 @@ curl -s --noproxy '*' \
 - 你新加的工具**连清单都没进**：`@Bean` 的三个件（工具、权限、档位）漏一个就跑不动，
   档位漏了是**启动失败**，权限漏了是**每次都被拒**（`outcome:denied` 会涨）。
 
+### 默认就有的那几个：Read / Grep / Glob / TodoWrite / WebFetch
+
+它们不用配，启动就在清单里（写文件的那两个要开开关，见下）。判据是**工具真的被执行了**，
+不是回答里提到了文件名。
+
+```bash
+# Glob：找到真实存在的文件
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: d1' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"用 Glob 找 examples 目录下的 .md，path 传 examples，把返回原样贴出来"}'
+
+# Read：读出真实内容（路径要是绝对路径）
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: d2' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"用 Read 读 /绝对路径/examples/README.md 前 6 行，原文贴出来"}'
+
+# WebFetch：抓一个确定的网页
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: d3' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"用 WebFetch 抓 https://example.com，prompt 用「这一页在说什么」"}'
+```
+
+**期望**：`Glob` 回来的路径在磁盘上真的存在（`ls` 一下）；`Read` 回来的前几行与文件一致；
+`WebFetch` 给的是一段摘要而不是 HTML。计数各涨 1：
+
+```bash
+curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:Glob&tag=outcome:ok'
+```
+
+**写文件默认是关的**。不开时问「用 Write 写一个文件」，模型应该说没有这个工具；想要它就
+`CLAW4J_FILES_WRITE_ENABLED=true` 重启一次，启动日志会写「Write / Edit 已开」。
+
+**`WebSearch` 要 key**：没配 `BRAVE_API_KEY` 时它根本不装配（启动日志同一行里写着「WebSearch 未配 key，未装」）。
+
+**不对时先看哪里**：启动日志那行「文件工具的边界目录：…」——它决定了模型能看哪里。
+读到「Path is outside the allowed directories」就是路径不在那个目录下（默认是**启动时**的目录，
+不是 Tomcat 的临时目录；这一条修过一次，见 `docs/design/capability-layers.md`「默认工具」）。
+
 ---
 
 ## 2. MCP server

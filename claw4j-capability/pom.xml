@@ -44,7 +44,8 @@
              换沙箱等于换一个 ExecBackend 实现，调用方一行不动，这是这条边界唯一可测的地方。
 
              排除 flexmark：它是这个包里 Skills 那部分做 Markdown 转换用的，
-             本项目只用执行那一层，不引就别带上（带上就是一个没人用得上的传递依赖）。
+             默认工具那一层（Read / Grep / Glob / TodoWrite / WebSearch）一个都不用它；
+             唯一要它的是 WebFetch，那个在 claw4j-agent 里，所以这份排除仍然成立。
              版本由根 POM 的 dependencyManagement 管（0.13.0），不在这里写死。 -->
         <dependency>
             <groupId>org.springaicommunity</groupId>
@@ -55,6 +56,16 @@
                     <artifactId>flexmark-html2md-converter</artifactId>
                 </exclusion>
             </exclusions>
+        </dependency>
+        <!--
+          `BraveWebSearchTool`（默认工具里的 WebSearch）用 RestClient 发请求，而 agent-utils
+          把 spring-web 声明成 provided —— 它自己不带，用的人必须自己给。
+          少了这一条不是编译错，是 `NoClassDefFoundError: RestClientException` 在装配
+          WebSearch 的时候炸，且只在配了搜索 key 的部署里出现。
+        -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
         </dependency>
         <!-- 自动配置注解（@AutoConfiguration / @ConditionalOnMissingBean）来自这里。
              工具层用自动配置把自己交给容器，调用方就不用点名工具类。 -->

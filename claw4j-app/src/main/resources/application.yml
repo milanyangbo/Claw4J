@@ -276,11 +276,25 @@ claw4j:
     # 目录固定是下面的 workspace（要换就 cd），要临时改变量就写 FOO=bar cmd。
     exec:
       mode: ${CLAW4J_EXEC_MODE:full}
-      # 默认是进程的工作目录；填了就必须是已存在的目录，否则启动失败。
-      workspace: ${CLAW4J_EXEC_WORKSPACE:.}
+      # 默认是**启动时的**工作目录（`claw4j.launch-directory`，启动钩子写下）。
+      # 不能写 `.`：内嵌 Tomcat 起来时会把 user.dir 改成它的 docbase，`.` 就成了临时目录。
+      workspace: ${CLAW4J_EXEC_WORKSPACE:${claw4j.launch-directory:.}}
       # 白名单：整条命令等于某一项、或以"某一项 + 空格"开头，且命令里不许有
       # shell 控制符（; | & > < ` $( 换行）。要管道就用 ask 或 full。
       allow: []
+
+    # ---- 文件工具：Read / Grep / Glob（+ 可选 Write / Edit）----
+    # 读与搜默认就有，路径只能落在 directory 里（`..` 与软链接跳出去会被拒）。
+    # 写要单独开：读文件和改文件是两种能力，默认能改磁盘意味着一次误判就是一次脏工作区。
+    files:
+      # 同 exec：默认是启动时的目录，不是 `.`（`. ` 在这里已经被 Tomcat 改过）。
+      directory: ${CLAW4J_FILES_DIRECTORY:${claw4j.launch-directory:.}}
+      write-enabled: ${CLAW4J_FILES_WRITE_ENABLED:false}
+
+    # ---- 联网：WebFetch（不要 key）与 WebSearch（要 key）----
+    # 搜索没 key 就不装配，不做"装了但调不通"。
+    web:
+      search-api-key: ${BRAVE_API_KEY:}
 
     # ---- 会话可见性：recall_session 能看见哪些会话 ----
     #   self   只有当前这一段

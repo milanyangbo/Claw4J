@@ -3,8 +3,8 @@
 #
 # 真正的 application-local.yml 不入库（.gitignore）：它可能放真实 key、真实的人。
 #
-# 这一份替你做三件事：导入 .env、让 Boot 拉起 compose.yaml 里的 Postgres(pgvector) 并打开迁移、
-# 打开知识库。MCP 那一层也在这里——接哪几个 server 是"这台机器"的事，不是框架的默认值。
+# 这一份替你做四件事：导入 .env、让 Boot 拉起 compose.yaml 里的 Postgres(pgvector) 并打开迁移、
+# 打开知识库与技能。MCP 那一层也在这里——接哪几个 server 是"这台机器"的事，不是框架的默认值。
 
 spring:
   # Boot 不读 .env（那是 docker compose 的约定），这行按 properties 解析进来。
@@ -51,6 +51,11 @@ claw4j:
   rag:
     enabled: true
     directory: examples/knowledge
+
+  # 技能：默认不配（别的部署没有这个目录，配了目录里没 SKILL.md 会启动失败）。
+  # 这一层导出的是 Skill 工具：描述里只有名字与一句话，正文要按名字调一次才回来。
+  skills:
+    directory: examples/skills
 
   # ---- MCP：一段配置 = 一条连接 = 一个能力来源 ----
   # stdio 起一个子进程用它的 stdin/stdout 说协议，http 连一个别人已经跑着的端点；
