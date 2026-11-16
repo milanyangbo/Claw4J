@@ -128,9 +128,20 @@ claw4j:
   非凭据常量用 `plain:`。裸写明文启动就被拒。
 - **环境不是白名单**：显式声明的变量一定在，父进程其余变量也会被继承——要隔离靠部署层的容器策略。
 
-**自己写 server**：语言随便，协议一样。两个平级样本：[`examples/mcp/`](examples/mcp)（Python，零依赖）、
-[`claw4j-example-mcp-server`](claw4j-example-mcp-server)（Java，`java -jar` 就能跑）。
-最容易撞的一条：**stdout 是协议通道**，日志一律走 stderr。
+**自己写 server**：语言随便、传输随便，宿主只认协议。两个平级样本：
+[`examples/mcp/`](examples/mcp)（Python，stdio，零依赖）与
+[`claw4j-example-mcp-server`](claw4j-example-mcp-server)（Java，Streamable HTTP，`java -jar` 就能跑，
+先起它再起宿主）。接 HTTP 那个只要三行：
+
+```yaml
+java-http:
+  transport: http
+  url: http://127.0.0.1:8082
+  permission: { action: read }
+```
+
+写 stdio server 时最容易撞的一条：**stdout 是协议通道**，日志一律走 stderr。HTTP 那份没这个约束，
+它的日志照常往 stdout 打。
 
 **怎么确认**：启动日志 `MCP server 状态：deepwiki → UP(工具 3 个)`。连不上时是
 `broken → DOWN(15 秒后重试)`——括号里是**下次重试的间隔**，原因在同一时刻旁边那行 WARN 里

@@ -187,24 +187,24 @@ claw4j:
 ### 什么时候仍然写 bean
 
 值要**算出来**的时候：路径要拼、token 要从 vault 取、传输要包一层重试或代理。
-配置写不出表达式，bean 可以——比如把一个 `java -jar` 的 server 接进来（`java` 的绝对路径按 `java.home` 算，
-不依赖 `PATH`）：
+配置写不出表达式，bean 可以——比如内网端点的域名按环境变量拼、路径写死成 `/mcp`：
 
 ```java
 @Bean
-McpServerEndpoint javaDemoMcp() {
-    return ProcessStdioMcpEndpoint
-            .of("java-demo",
-                    Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                    List.of("-jar", "claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPSHOT.jar"),
-                    Map.of())          // 不额外给变量；注意父进程的其余变量仍会被继承，隔离靠部署层
+McpServerEndpoint internalDocsMcp(SecretResolver secrets) {
+    String host = System.getenv().getOrDefault("DOCS_MCP_HOST", "docs.internal");
+    return HttpMcpEndpoint
+            .of("internal-docs", "https://" + host, "/mcp", Map.of(), false, secrets)
             .endpoint(ToolPermission.read());   // 不带表 = 没有业务表权限
 }
 ```
 
+仓库里那个 `java -jar` 的示例 server（现在是 HTTP 的）**不需要**写 bean：它是已经跑着的端点，
+配置里 `transport: http` + `url` 就够，`command` 那一路留给 stdio。
+
 两条路都在 `McpToolAutoConfiguration` / `ConfiguredMcpServersAutoConfiguration` 里收，
 各自出**一份** `McpToolProvider`：多份是设计上允许的，Agent 侧按 `ObjectProvider` 收全部。
-每条连接在启动时试一次：连不上**不抛**，那个 server 记 `DOWN`，后台按 30 秒起、每次翻倍、
+每条连接在启动时试一次：连不上**不抛**，那个 server 记 `DOWN`，后台按 15 秒起、每次翻倍、
 封顶 10 分钟退避重试；工具清单是**每轮解析**的，恢复之后下一轮就看得见它。于是：
 
 - **配置错误当场失败**：`tools` 里点名了它没导出的工具、两个 server 导出同名工具。
@@ -219,23 +219,31 @@ McpServerEndpoint javaDemoMcp() {
 
 ### server 侧：两个能直接抄的样本
 
-**Java**：`claw4j-example-mcp-server`。它只有一个 `main`：
+**Java（HTTP）**：`claw4j-example-mcp-server`。它是个普通 Spring Boot 应用，MCP 那一层由
+starter 装配，没有一行手写的传输代码：
 
 ```java
-var transport = new StdioServerTransportProvider(McpJsonDefaults.getMapper(), System.in, System.out);
-var specs = new SyncMcpToolProvider(List.of(new DemoJavaTools())).getToolSpecifications();
-var server = McpServer.sync(transport).serverInfo("claw4j-java-demo", "1.0.0").tools(specs).build();
-Runtime.getRuntime().addShutdownHook(new Thread(server::closeGracefully));
-// 不用挂 CountDownLatch 阻塞 main：传输线程不是守护线程，main 返回后进程照样活着。
-// 构建过程中实测过一次——加了 latch 与不加没有区别，于是删掉了它。
+@SpringBootApplication
+public class McpServerApplication {
+    public static void main(String[] args) { SpringApplication.run(McpServerApplication.class, args); }
+}
+
+@McpTool(name = "cronNext", description = "解析五字段 cron 并给出未来几次触发时间")
+public String cronNext(@McpToolParam(description = "表达式") String expression) { … }
 ```
 
-它踩过一次坑，值得所有人提前知道：**stdout 是协议通道**。SDK 自己的 INFO 日志默认也走 stdout，
-于是第一帧 JSON 前面插进一行日志，客户端报 `Client failed to initialize`，
-server 侧看起来一切正常。修法是把日志出口改到 stderr（模块里的 `logback.xml`）。
+端点、协议、端口都在 `application.yml` 里（`protocol: streamable`，端点默认 `/mcp`，
+端口 8082）；工具靠 `@McpTool` 注解扫描器收进清单。**它是 HTTP 自己的进程，不是被宿主 fork 的**，
+所以启动顺序是"先起它、再起宿主"，宿主那边的配置只有 `transport: http` + `url`。
 
-**Python**：`examples/mcp/demo_mcp_server.py`，零第三方依赖，包的是几个 shell 命令。
-用 `python3` 起它，端点写法与上面那份 Java 的一模一样——只换 `command` 与 `args`。
+**Python（stdio）**：`examples/mcp/demo_mcp_server.py`，零第三方依赖，包的是几个 shell 命令。
+用 `python3` 起它，宿主侧写 `command` + `args`。两份样本的工具刻意不重叠：
+Python 那份验"帧能过去"，Java 那份验"服务端真在算 + 状态可观测"。
+
+stdio 这一路有一个坑值得提前知道：**stdout 是协议通道**。SDK 自己的 INFO 日志默认也走 stdout，
+于是第一帧 JSON 前面插进一行日志，客户端报 `Client failed to initialize`，server 侧看起来一切正常。
+修法是把日志出口改到 stderr。HTTP 那一路没有这个约束——现在示例模块就是 HTTP，
+那条 `logback.xml` 也随之删掉了。
 
 ---
 

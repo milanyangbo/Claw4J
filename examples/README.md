@@ -65,6 +65,12 @@ Java 这边起的是**真的子进程**，用它的 stdin/stdout 说 MCP——�
   所以配置里按工具覆盖权限（兜底 `read`，只有 `mail_send` 是 `send_email`）——
   整条声明成只读就会变成"只读角色能发邮件"
 
+这三个都是 stdio：宿主去 fork 它们的进程。**另外还有一个 HTTP 的**，不在这个目录里，
+是仓库模块 `claw4j-example-mcp-server`（`java -jar` 起，`/mcp`，端口 8082）：
+它的工具是 `runtimeSnapshot` / `cronNext` / `simulateSlowCall`，与上面那份 Python 的不重名、
+也不干同一件事——那份验 stdio 往返，这份验 HTTP、服务端状态与请求超时。
+接它的配置在 `application-local.yml` 里（`java-http`），**先起它再起宿主**。
+
 `mcp_stdio.py` 是这三个共用的最小骨架（约 100 行，零第三方依赖）：读 JSON-RPC 帧、分派、写回。
 用它而不是官方 SDK，是为了让"Java 侧连的到底是个什么"从头到尾看得见。
 

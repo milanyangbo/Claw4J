@@ -1,54 +1,40 @@
 package io.github.claw4j.example.mcp.server;
 
-import io.modelcontextprotocol.json.McpJsonDefaults;
-import io.modelcontextprotocol.server.McpServer;
-import io.modelcontextprotocol.server.McpSyncServer;
-import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
-import org.springframework.ai.mcp.annotation.provider.tool.SyncMcpToolProvider;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-import java.util.List;
 /**
- * 一个独立运行的 Java MCP server：标准输入输出上说的是 MCP 协议，工具来自 {@link DemoJavaTools}。
+ * 一个独立运行的 Java MCP server：{@code /mcp} 上说 Streamable HTTP，工具来自 {@link OperationalTools}。
  *
- * <p>与 {@code examples/mcp/*.py} 并排看就明白，接一个 MCP server 与语言无关。三个 Python server
- * 包的是 {@code gh} 与 {@code himalaya}，这个包的是几个 Java 方法；对宿主来说它们一样，
- * 都是起一个进程、说 JSON-RPC、交出工具清单。
+ * <p>这是一个普通的 Spring Boot 应用，MCP 那一层由 {@code spring-ai-starter-mcp-server-webmvc}
+ * 装配：端口、端点路径、协议版本都在 {@code application.yml} 里，工具是带 {@code @McpTool} 的
+ * 普通方法，由注解扫描器收进清单——没有一行手写的传输代码。
  *
- * <p>用法，宿主侧照抄这条命令即可：
+ * <p>为什么不是 stdio：stdio 那一路要求宿主与 server 在同一台机器上并且能被 fork；
+ * 公网上的第三方服务、容器里的 server、要独立扩容的 server，都只能走 HTTP。2025 版协议用
+ * Streamable HTTP 取代了 SSE，所以这里是 Streamable，端点默认 {@code /mcp}。
+ *
+ * <p>宿主侧照抄这三行（{@code application-local.yml}）：
  * <pre>{@code
- * java -jar claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPSHOT.jar
+ * java-http:
+ *   transport: http
+ *   url: http://127.0.0.1:8082
+ *   permission: { action: read }
  * }</pre>
  *
- * <p>三条与 stdio 有关的硬约束，写在这里因为它们不报错、只表现为连不上：标准输出是协议通道，
- * 这里一个字都不能打印，日志一律走 stderr，否则一帧 JSON 中间插进一行日志，客户端解析失败；
- * 别在 {@code build()} 之后调 {@code System.exit}，也别关掉 stdin 之后继续干活，{@code main}
- * 返回之后进程不会退出，因为传输线程不是守护线程，客户端关掉 stdin 后那些线程收尾、进程随之结束，
- * 什么时候停因此由客户端说了算（{@code JavaMcpServerProcessTest} 盯着这一条）；工具清单为空
- * 等于失败，连接是通的、握手成功，只是它一件能力都没有，那种状态不该靠调用方去发现。
+ * <p>启动顺序是**先起它、再起宿主**。反过来也能跑：宿主先起时这条连接记 DOWN，
+ * 之后按 15 秒起、每次翻倍、封顶 10 分钟退避重连，起来之后不必重启宿主。
+ * 这两种顺序在日志里都看得见，是测试手册里那一节的内容。
  */
-public final class McpServerApplication {
-
-    private McpServerApplication() {
-    }
+@SpringBootApplication
+public class McpServerApplication {
 
     /**
-     * 在标准输入输出上起 MCP server，等客户端断开后自行收尾。
+     * 起一个 HTTP MCP server，端口默认 8082，可用 {@code CLAW4J_EXAMPLE_MCP_PORT} 覆盖。
      *
-     * @param args 未使用；宿主按上面的命令原样启动即可
-     * @throws InterruptedException 传输线程被中断
+     * @param args Spring Boot 的命令行参数
      */
-    public static void main(String[] args) throws InterruptedException {
-        var transport = new StdioServerTransportProvider(McpJsonDefaults.getMapper(), System.in, System.out);
-        var toolSpecifications = new SyncMcpToolProvider(List.of(new DemoJavaTools())).getToolSpecifications();
-
-        McpSyncServer server = McpServer.sync(transport)
-                .serverInfo("claw4j-java-demo", "1.0.0")
-                .tools(toolSpecifications)
-                .build();
-
-        Runtime.getRuntime().addShutdownHook(new Thread(server::closeGracefully, "mcp-server-shutdown"));
-
-        // 到这里就可以返回了：传输的非守护线程让进程继续活着，客户端关掉 stdin 之后它们收尾。
-        // 不要在这里加"等一等再退出"：main 返回 JVM 并不会退出，那种等待是一行测不到的假设。
+    public static void main(String[] args) {
+        SpringApplication.run(McpServerApplication.class, args);
     }
 }

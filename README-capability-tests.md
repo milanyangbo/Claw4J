@@ -156,8 +156,9 @@ curl -s --noproxy '*' \
 
 ## 2. MCP server
 
-**前提**：`application-local.yml` 里已经写了 `demo` / `github` / `mail` 三个（`local` profile 即连）。
-接自己的 server 就照 [README-adding-capabilities.md](README-adding-capabilities.md) 第 2 节加一段 YAML。
+**前提**：`application-local.yml` 里已经写了四个 server（`demo` / `github` / `mail` 走 stdio，
+`java-http` 走 HTTP），`local` profile 即连。接自己的 server 就照
+[README-adding-capabilities.md](README-adding-capabilities.md) 第 2 节加一段 YAML。
 
 **触发**：连问两次同一件事，中间隔两秒——
 
@@ -198,6 +199,44 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ```
 
 回答里那句话要逐字出现。
+
+### 走 HTTP 的那个（Java 示例）：先起 server
+
+前面三个都是 stdio——应用去 fork 一个进程。`java-http` 不一样：它是个自己监听的端点，
+**启动顺序是人为的**，也是这一节唯一能看见退避重连的地方。
+
+```bash
+# 另开一个终端，仓库根目录
+java -jar claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPSHOT.jar
+# 最后一行：Tomcat started on port 8082；端口可用 CLAW4J_EXAMPLE_MCP_PORT 改
+```
+
+它的三个工具和上面 Python 那份**不重名也不干同一件事**：
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: m4' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"用 runtimeSnapshot 报一下 pid、启动时刻与已处理调用数"}'
+```
+
+- `runtimeSnapshot`：`pid` 与宿主不同（宿主用 `jps -l` 找 `claw4j-app`），再问一次
+  `handledCalls` 会变大——同一个实例在答。
+- `cronNext`：`用 cronNext 算 0 9 * * 1-5 未来两次触发时间`，两行都该是工作日的 09:00。
+- `simulateSlowCall`：`用 simulateSlowCall 睡 40000 毫秒`，30 秒左右报超时，
+  但日志里**没有** DOWN，紧接着问 `runtimeSnapshot` 仍然成功——慢不等于掉线。
+
+**退避重连怎么验**（这是 HTTP 这一路才看得到的）：
+
+1. 先起应用、**不**起 server：启动日志里 `MCP server broken 暂时不可用…`，紧接着
+   `DOWN(15 秒后重试)`。应用照常可用，只是那三个工具不在清单里。
+2. 起 server：等一轮退避（15 秒起、每次翻倍、封顶 10 分钟），日志变成
+   `MCP server java-http 第 N 次重试后恢复，工具 3 个`，**不用重启应用**，
+   这时再问 `runtimeSnapshot` 就能通。
+3. 反过来（运行期掉线）：起好之后 `kill` 掉 server，问一句会拿到 **500**
+   ——这是已知缺陷，不是预期的"失败一次、模型照常回答"；server 起回来之后再问一句就正常
+   （HTTP 传输会懒重建连接）。注意这一点：**运行期掉线不走退避**，日志里不会出现 DOWN，
+   退避只在"启动时连不上"这一条路上生效。
 
 **不对时先看哪里**：
 

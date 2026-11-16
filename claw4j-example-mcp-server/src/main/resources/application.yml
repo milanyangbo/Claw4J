@@ -1,0 +1,24 @@
+server:
+  # 固定端口：宿主那边的 url 写的是 http://127.0.0.1:8082，端口一变就得上两边一起改。
+  port: ${CLAW4J_EXAMPLE_MCP_PORT:8082}
+
+spring:
+  application:
+    name: claw4j-example-mcp-server
+  ai:
+    mcp:
+      server:
+        # 宿主握手时看到的名字，断言里用的就是它（换名字要一起换测试手册）。
+        name: claw4j-http-demo
+        version: 1.0.0
+        # streamable：2025 版协议，一个 POST 一次请求，会话靠 Mcp-Session-Id 头。
+        # 老 server 才用 sse。
+        protocol: streamable
+        type: sync
+        # 工具清单由 @McpTool 注解扫描器收，不需要在这里逐个登记。
+        annotation-scanner:
+          enabled: true
+
+logging:
+  level:
+    root: INFO

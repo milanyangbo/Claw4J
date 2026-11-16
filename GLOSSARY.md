@@ -72,7 +72,8 @@ _Avoid_: Function（1.x 时期的叫法）、Callback、插件（插件是打包
 **打包单位，不是能力单位**：一个独立 jar，通过 Spring Boot 的自动配置被装配进核心，
 内容可以是若干 Tool、一条 Channel，或一个 MCP server 的宿主侧端点。
 插件与核心同进程，因此被视为**可信代码**——沙箱只针对模型自己写出来的脚本，不针对插件。
-仓库自带两个插件示例：`claw4j-example-sales`（业务工具）与 `claw4j-example-mcp-server`（MCP server）。
+仓库自带两个插件示例：`claw4j-example-sales`（业务工具）与 `claw4j-example-mcp-server`（MCP server，
+Streamable HTTP）。
 判断它是不是真插件的标准只有一条：**删掉这条依赖，核心照常构建、照常启动**。
 _Avoid_: 扩展包、addon、module（module 在本仓库专指 Maven 模块）、把某个 Tool 叫成"一个插件"
 

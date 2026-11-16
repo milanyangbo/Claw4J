@@ -318,27 +318,36 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | 14 | `mail_send` | 按工具覆盖权限 | `R=read-only t '用 mail_send 给 ops@example.com 发一封邮件，主题 test，正文 hello'` | 被拒；`hit mail_send denied` +1、`ok` 不涨 |
 | 14 | 同上 | 同上（放行侧） | `t '用 mail_send 给 ops@example.com 发一封邮件，主题 test，正文 hello'` | 真发出去；`hit mail_send ok` +1（不想发就别跑） |
 
-### 2.4 `claw4j-example-mcp-server`（Java，需手动加配置）
+### 2.4 `claw4j-example-mcp-server`（Java，HTTP，**先起 server**）
 
-```yaml
-claw4j:
-  capability:
-    mcp:
-      servers:
-        java-demo:
-          command: /绝对路径/jdk-21.jdk/Contents/Home/bin/java
-          args: ["-jar", "claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPSHOT.jar"]
-          permission: { action: read }
+它不再是 `command` + `args` 那种要被 fork 的文件，而是一个自己监听的 HTTP 端点（Streamable
+HTTP，`/mcp`，端口 8082）。`application-local.yml` 里已经写好 `java-http` 这一段，所以只有启动
+顺序是人为的：
+
+```bash
+# 另开一个终端，仓库根目录
+java -jar claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPSHOT.jar
+# 日志最后一行：Tomcat started on port 8082
 ```
+
+它的工具和 `examples/mcp/demo_mcp_server.py` **不重叠**：那份验 stdio 往返（`demo_echo` /
+`demo_now`），这份验 HTTP + 服务端状态 + 真算一遍。
 
 | # | 工具 | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- | --- | --- |
-| 15 | `echo` | 回显 | `t '用 echo 把 ok 带回来'` | 返回 `ok`；`hit echo` +1 |
-| 16 | `serverTime` | 读对端时间 | `t '用 serverTime 报一下对端进程的 UTC 时间'` | ISO-8601 UTC，在发问时刻 ±1 分钟内 |
-| 17 | `processId` | **证明真的跨了进程** | `t '用 processId 报一下服务进程号'` | 返回的 pid **与宿主不同**（宿主用 `jps -l` 找 `claw4j-app`） |
+| 15 | `runtimeSnapshot` | 真跨进程、同一实例在答 | `t '用 runtimeSnapshot 报一下 pid、启动时刻与已处理调用数'` | `pid` 与宿主不同（宿主用 `jps -l` 找 `claw4j-app`）；再问一次 `handledCalls` 变大 |
+| 16 | `cronNext` | 服务端真在算，不是回显 | `t '用 cronNext 算 0 9 * * 1-5 未来两次触发时间'` | 两行都是工作日 09:00，日期递增 |
+| 17 | `simulateSlowCall` | 请求超时 ≠ server 掉线 | `t '用 simulateSlowCall 睡 40000 毫秒'` | 30 秒左右报超时；**日志里没有 DOWN**；紧接着调 `runtimeSnapshot` 仍然成功 |
+
+启动顺序本身就是要验的东西——退避重连平时没有对端可看：
+
+| 做法 | 该看到什么 |
+| --- | --- |
+| 先起 app、后起 server | 启动日志 `MCP server broken 暂时不可用…` → `DOWN(15 秒后重试)`；server 起来后 `第 N 次重试后恢复，工具 3 个`，**不用重启 app** |
+| 起好之后再 `kill` 掉 server，问一句 | **今天会拿到 500**（`java.net.ConnectException` 一路冒到 MVC，见票 03 的缺口）；再问一句就正常——HTTP 传输懒重建。**运行期掉线不走退避**，日志里没有 DOWN |
 
 协议层可以不起宿主单独跑：`./mvnw -pl claw4j-example-mcp-server test -Dtest=JavaMcpServerProcessTest`
-（起真进程，客户端关掉后进程必须消失）。
+（起真进程、真端口，客户端关掉后进程必须消失）。
 
 ## 3. MCP：接第三方的 server（写配置，不写代码）
 
@@ -436,15 +445,16 @@ claw4j:
 | 断连即中断 | `ts '...'` 后立刻 Ctrl-C | 连接立刻断，上游被取消，不是"断了但模型还在跑" |
 | 流式不写缓存 | 流式问一句，紧接着同步问同一句 | 同步那次不命中缓存（工具会被再调一次） |
 
-## 8. Java 实现 vs 非 Java 实现
+## 8. 两种传输 vs 两种语言
 
-同一件事两种语言写，宿主侧代码不变，只有配置里 `command` 不同。成对跑，判定完全一样：
+宿主侧代码不变，变的只有配置里那几行。两份样本刻意验的不是同一件事，成对跑才覆盖两条传输：
 
-| 测什么功能 | 非 Java | Java | 通过标准 |
+| 测什么功能 | Python（stdio） | Java（HTTP） | 通过标准 |
 | --- | --- | --- | --- |
-| 回显往返 | `t '用 demo_echo 把 ok 带回来'` | `t '用 echo 把 ok 带回来'` | 分别 `echo: ok` 与 `ok`；两边 `hit` 各 +1 |
-| 读对端时间 | `t '用 demo_now 报一次时间戳'` | `t '用 serverTime 报一下对端 UTC 时间'` | 每次不同 / ISO-8601 |
-| 证明是另一个进程 | `demo_now` 返回里的 pid | `processId` 返回值 | 两个都与宿主 pid 不同，且**彼此也不同**（两个独立进程） |
+| 帧能不能过去 | `t '用 demo_echo 把 ok 带回来'` | 不需要——HTTP 那边一上来就要握手 | 分别 `demo_echo: ok`；`hit` +1 |
+| 结果是远端来的 | `demo_now` 返回的 pid 与时间戳 | `runtimeSnapshot` 的 pid / startedAt | 两个 pid 都与宿主不同 |
+| server 自己在算 | 无（那份只回显） | `cronNext` | 触发时间递增且在正确的星期 |
+| 慢 ≠ 掉线 | 无 | `simulateSlowCall` | 超时但日志无 DOWN |
 
 顺带一提：这一层只有 MCP 是"协议级"语言无关；脚本包（能不能起进程）、Skill / Subagent（文件格式）
 的语言无关来自本项目自己的接缝，所以它们配错时报在启动期，不是连接期。

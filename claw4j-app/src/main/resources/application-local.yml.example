@@ -77,6 +77,17 @@ claw4j:
           permission:
             action: read
 
+        # Java 版走 HTTP，不是要被 fork 的文件，所以没有 command / args。
+        # 先起它，再起本应用（另开一个终端，在仓库根目录）：
+        #   java -jar claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPSHOT.jar
+        # 反过来也能跑：本应用先起时这条连接记 DOWN，之后按 15 秒起、翻倍、封顶 10 分钟
+        # 退避重连；server 起来后自动 UP，不用重启本应用。
+        java-http:
+          transport: http
+          url: http://127.0.0.1:8082
+          permission:
+            action: read
+
         # 把 gh 包成只读能力：列表、CI 状态、API 查询。要本机装了 gh 且已登录。
         github:
           command: python3

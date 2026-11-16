@@ -174,7 +174,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | `claw4j-channel` | 入站出站适配，按平台分包 |
 | `claw4j-capability` | 能力来源的接缝：MCP、脚本包、Skill、子 Agent、生成器，加一个平台无关的 `system` 工具 |
 | `claw4j-example-sales` | 示例插件：一个业务工具 + 四张业务表 + 种子数据 |
-| `claw4j-example-mcp-server` | 示例插件：`java -jar` 就能跑的 Java MCP server，不依赖 Claw4J 任何模块 |
+| `claw4j-example-mcp-server` | 示例插件：`java -jar` 就能跑的 Java MCP server（Streamable HTTP，`/mcp`），不依赖 Claw4J 任何模块 |
 | `claw4j-app` | 启动与装配，唯一打 fat jar 的模块 |
 
 ## 与 OpenClaw 的关系

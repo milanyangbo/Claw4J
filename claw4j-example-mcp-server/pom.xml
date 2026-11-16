@@ -12,7 +12,7 @@
 
     <artifactId>claw4j-example-mcp-server</artifactId>
     <name>Claw4J :: Example :: MCP Server</name>
-    <description>一个能 java -jar 独立运行的 Java MCP server（stdio），与 examples/mcp 下的 Python 版平级</description>
+    <description>一个独立运行的 Java MCP server（Streamable HTTP，/mcp），与 examples/mcp 下的 Python 版平级</description>
 
     <dependencies>
         <!--
@@ -20,28 +20,20 @@
           MCP server 与宿主之间只有协议，没有代码。它不需要 Claw4J 的任何类型，
           也不需要知道将来谁把它接进去——这正是 MCP 这一层的价值。
 
-          spring-ai-mcp 传递引 MCP Java SDK（mcp / mcp-core / mcp-json-jackson3）；
-          spring-ai-mcp-annotations 提供 @McpTool 与 SyncMcpToolProvider，
-          于是"Java 工具"可以照常写成带注解的普通对象，不必手写 JSON Schema。
+          starter 带三样：spring-boot-starter-web（servlet 容器）、
+          mcp-spring-webmvc（WebMvcStreamableServerTransportProvider，/mcp 那个端点）、
+          spring-ai-mcp-annotations（@McpTool 与注解扫描器，于是工具照常写成带注解的普通方法，
+          不必手写 JSON Schema）。传输取 Streamable HTTP 不取 SSE：2025 版协议以它取代 SSE，
+          宿主那边的 HttpClientStreamableHttpTransport 对的就是它。
         -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-mcp</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-mcp-annotations</artifactId>
+            <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
         </dependency>
 
-        <!-- 日志实现显式引，并且只走 stderr（见 src/main/resources/logback.xml）。
-             不引也能跑——stdout 反而更干净——但那样这个 server 一旦出问题就是"什么都不说"，
-             而示例的价值一半在于能被调试。 -->
-        <dependency>
-            <groupId>ch.qos.logback</groupId>
-            <artifactId>logback-classic</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-
+        <!-- 日志实现不再单独引：web starter 带 spring-boot-starter-logging（logback），
+             也不再需要 logback.xml 把出口改到 stderr——那是 stdio 传输的约束，
+             stdout 是协议通道；HTTP 之后日志走哪儿都不影响协议。 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

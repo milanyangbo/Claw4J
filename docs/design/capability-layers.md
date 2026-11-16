@@ -40,8 +40,10 @@ ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
 `himalaya_mcp_server.py` 包 `himalaya`（它导出会发邮件的 `mail_send`，所以接它的端点登记的是
 `send_email` 而不是只读）、`demo_mcp_server.py` 不依赖任何 CLI。
 同一个端点接一个 **Java** 版也是同样的写法：`claw4j-example-mcp-server` 是一个
-`java -jar` 就能跑的 stdio server，与那三个 Python 的对端完全平级——
-宿主只认协议，不认对端用什么语言写。
+`java -jar` 就能跑的 Streamable HTTP server（`/mcp`），与那三个 Python 的对端完全平级——
+宿主只认协议，不认对端用什么语言写、用什么传输。它的工具刻意不与 Python 那份重名：
+`runtimeSnapshot`（进程身份与调用计数）、`cronNext`（真算一遍触发时间）、
+`simulateSlowCall`（卡请求超时的边界）。
 子进程的环境**只能加、不能减**：显式声明的变量一定在（需要 `PATH` 就写一行），而父进程的其余
 变量也会被继承——SDK 起进程时只 `putAll` 不清空（见 `ProcessStdioMcpEndpoint` 类注释）。
 要隔离得靠部署层的容器策略；脚本层那一路是另一回事，它自己 `clear()` 后再填。

@@ -10,6 +10,7 @@ import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.agent.rag.HybridDocumentRetriever;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.capability.mcp.McpServerProperties;
 import io.github.claw4j.capability.mcp.expose.McpExposure;
 import io.github.claw4j.capability.mcp.expose.McpExposureProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
@@ -37,12 +38,18 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
+import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.PropertySource;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -228,6 +235,26 @@ class ApplicationAssemblyTest {
                 .as("这条消息应当在模型之前被挡下，回答是配置里那句固定答复：%s", answer)
                 .contains(GuardProperties.DEFAULT_FAILURE_RESPONSE)
                 .doesNotContain(EAST_LAST_WEEK);
+    }
+
+    @Test
+    @DisplayName("local 模板里 java-http 配的是 HTTP 端点：写成 stdio 就缺 command，照着做启动就失败")
+    void httpMcpServerIsConfiguredAsAnEndpoint() throws IOException {
+        // 读的是**模板**（application-local.yml 本机才有、且被 .gitignore 排除），
+        // 断言的是"仓库里发出去的那份配置解得开、解出来是 HTTP"，不是"某个 bean 在容器里"。
+        // local profile 在测试里不激活，所以这里直接把 yml 解析一遍、再用 Binder 走真的绑定。
+        List<PropertySource<?>> sources = new YamlPropertySourceLoader()
+                .load("application-local", new ClassPathResource("application-local.yml.example"));
+        McpServerProperties properties = new Binder(ConfigurationPropertySources.from(sources))
+                .bind("claw4j.capability.mcp", Bindable.of(McpServerProperties.class))
+                .orElseThrow(() -> new AssertionError("application-local.yml.example 里没有 claw4j.capability.mcp"));
+
+        McpServerProperties.Server javaHttp = properties.getServers().get("java-http");
+        assertThat(javaHttp).as("yml 里那段被改名或删掉了，示例 server 就再也没人连").isNotNull();
+        assertThat(javaHttp.transport()).isEqualTo(McpServerProperties.Transport.HTTP);
+        assertThat(javaHttp.url()).as("http 这一路要的是 base url，不是文件路径").startsWith("http://");
+        assertThat(javaHttp.command()).as("它自己监听端口，不是被宿主 fork 的程序").isNull();
+        assertThat(javaHttp.enabled()).as("默认开着：注释掉就看不见退避重连了").isTrue();
     }
 
     @Test
