@@ -341,6 +341,22 @@ Advisor 链与工具循环静默消失。
 （`LaunchDirectoryEnvironmentPostProcessor`）在环境准备好的时候把 `user.dir` 记成
 `claw4j.launch-directory`，两处默认值都指向它。
 
+### 唯一会挂起一轮的工具：`AskUserQuestionTool`
+
+库里的这个工具要一个同步的 `QuestionHandler`，也就是**它本来就要等**。按 OpenClaw 的
+`ask_user` 接过来（`docs/tools/ask-user.md`）：问题推到「这一轮来自的那段对话」，**在同一轮里等人答**，
+默认 900 秒、钳 30–3600，等不到返回 `no_answer` 让模型按自己的判断继续。与审批的分别写在
+ADR-0027 的修订记录里：审批照旧「登记 + 唤醒会话」，不挂起；提问挂起，但挂在**进程内**——
+重启即丢，丢了的按 `no_answer` 收场。
+
+三条边界：
+
+- **一条会话最多挂一个问题**。同时挂两个，用户下一句话该算哪个说不清；顶掉前一个会让先那一轮永远等不到。
+- **答复的人权限要与提问人一致**。不一致时那句话不当答案，照常走一轮——不然谁都能替提问人做决定。
+- **没有提问面的通道不装这个能力**。`QuestionGate` 给 `UNSUPPORTED`，模型改用普通文字问；
+  这正是 OpenClaw 对 ACP / iMessage / WhatsApp 那类面的处理。HTTP 有面（客户端轮询
+  `GET /api/chat/questions` 再 `POST /api/chat/answer`），四条 IM 通道也有（回一句话就是答案）。
+
 ## 一次把三层都接上：真实模型的实录
 
 `examples/` 下放的是能真的接进来的能力（脚本包、`SKILL.md`、Subagent 定义、Python MCP server），

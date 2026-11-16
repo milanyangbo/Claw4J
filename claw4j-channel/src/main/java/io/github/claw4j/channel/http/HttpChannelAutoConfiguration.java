@@ -3,6 +3,7 @@ package io.github.claw4j.channel.http;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalDecider;
 import io.github.claw4j.domain.port.RoleDirectory;
+import io.github.claw4j.domain.question.QuestionGate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -79,12 +80,23 @@ public class HttpChannelAutoConfiguration {
         return new HttpChatChannel(agentPort, streamExecutor);
     }
 
+    /**
+     * 对话入口。{@code questions} 走 {@code ObjectProvider}：没有提问设施（`claw4j.tools.ask.enabled=false`）
+     * 时 {@code /questions} 与 {@code /answer} 仍在，只是永远"没人在等"——端点凭空消失比空表难查。
+     *
+     * @param channel 通道
+     * @param principalResolver 认人
+     * @param properties 流式超时等配置
+     * @param questions 交互提问的登记表，可能不存在
+     * @return 入口
+     */
     @Bean
     @ConditionalOnMissingBean
     public HttpChatController httpChatController(HttpChatChannel channel,
                                                  HttpPrincipalResolver principalResolver,
-                                                 HttpChannelProperties properties) {
-        return new HttpChatController(channel, principalResolver, properties);
+                                                 HttpChannelProperties properties,
+                                                 ObjectProvider<QuestionGate> questions) {
+        return new HttpChatController(channel, principalResolver, properties, questions);
     }
 
     /**

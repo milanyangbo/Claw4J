@@ -98,14 +98,14 @@ claw4j:
         # "*" 也包含知识库那个伪表 doc，所以 read-only 能检索知识库。
         read-only:
           tables: ["*"]
-          actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session",
+          actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session", "ask_user",
                     "get_goal", "create_goal", "update_goal",
                     "schedule_task", "list_schedules", "cancel_schedule"]
         # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"。
         # 它只给了 region，于是也看不到知识库——想给就加 doc。
         guest:
           tables: ["region"]
-          actions: ["read", "use_skill", "delegate_task"]
+          actions: ["read", "use_skill", "delegate_task", "ask_user"]
         admin:
           tables: ["*"]
           actions: ["*"]
@@ -295,6 +295,15 @@ claw4j:
     # 搜索没 key 就不装配，不做"装了但调不通"。
     web:
       search-api-key: ${BRAVE_API_KEY:}
+
+    # ---- 交互提问：模型在**同一轮里**问一句、等人答，再往下走 ----
+    # 只有这个工具会挂起一轮（审批不挂起，见 ADR-0027 的修订记录）：
+    #   IM   把问题推到这段对话，用户回一句话就是答案
+    #   HTTP 请求挂着等，客户端轮询 GET /api/chat/questions 再 POST /api/chat/answer
+    # 等不到就按"没答"继续，不去重试同一个问题。超时照 OpenClaw 钳在 30–3600 秒。
+    ask:
+      enabled: ${CLAW4J_ASK_ENABLED:true}
+      timeout-seconds: ${CLAW4J_ASK_TIMEOUT_SECONDS:900}
 
     # ---- 会话可见性：recall_session 能看见哪些会话 ----
     #   self   只有当前这一段

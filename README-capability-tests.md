@@ -193,6 +193,39 @@ curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=too
 读到「Path is outside the allowed directories」就是路径不在那个目录下（默认是**启动时**的目录，
 不是 Tomcat 的临时目录；这一条修过一次，见 `docs/design/capability-layers.md`「默认工具」）。
 
+### 交互提问：`AskUserQuestionTool`
+
+它是**唯一会挂起一轮**的工具：模型问一句、这一轮原地等人答，答完接着做。默认等 900 秒。
+
+HTTP 没有推送面，所以客户端要问两次——一次是挂着的那一轮，一次是拿问题：
+
+```bash
+# 终端 A：这一句会挂住，直到你回答（或超时）
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"用 AskUserQuestionTool 问我：部署到生产还是预发？两个选项，推荐预发。等我答完再往下说"}'
+
+# 终端 B：先看它问了什么（没在等时是空表）
+curl -s --noproxy '*' 'localhost:8080/api/chat/questions' \
+  -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Role: admin'
+
+# 再回答。204 = 那一轮收下了；409 = 这段对话没有在等答案的问题
+curl -s --noproxy '*' -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/api/chat/answer \
+  -H 'Content-Type: application/json' \
+  -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Role: admin' \
+  -d '{"text":"2"}'
+```
+
+**期望**：终端 A 的那个请求在 `answer` 之后返回，回答里出现「预发」；回 `1` 就出现「生产」。
+回一句自由文本（比如「都行，你定」）也算答，模型拿到的是你这句话。
+
+**IM 上不用这两条命令**：问题会发到那段对话里，你直接回一句话就是答案，会先收到一句「收到你的回答，接着做。」
+（前提：答复的人权限要和提问的人一致——别人替你答不会被当成答案。）
+
+**不想等 15 分钟**：`CLAW4J_ASK_TIMEOUT_SECONDS=30` 起实例，不答，30 秒后模型回一句
+「没有人回答这个问题，我按自己的判断……」继续。
+
 ---
 
 ## 2. MCP server

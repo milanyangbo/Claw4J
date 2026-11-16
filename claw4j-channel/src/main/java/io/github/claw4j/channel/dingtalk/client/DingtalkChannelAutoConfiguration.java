@@ -5,6 +5,7 @@ import io.github.claw4j.channel.dingtalk.DingtalkReplySender;
 import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.inbound.InboundStore;
+import io.github.claw4j.domain.question.QuestionGate;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import org.springframework.beans.factory.ObjectProvider;
@@ -132,10 +133,11 @@ public class DingtalkChannelAutoConfiguration {
                 @Qualifier(DINGTALK_EXECUTOR) Executor dingtalkExecutor,
                 DingtalkPrincipalResolver principalResolver,
                 DingtalkReplySender replySender,
-                ObjectProvider<InboundStore> store) {
+                ObjectProvider<InboundStore> store,
+                ObjectProvider<QuestionGate> questions) {
             InboundDispatcher dispatcher = new InboundDispatcher(agentPort, dingtalkExecutor, principalResolver,
                     replySender, "钉钉", DingtalkOutboundDelivery.CHANNEL, DingtalkChannel.RECEIPT_REPLY,
-                    store.getIfAvailable());
+                    store.getIfAvailable(), questions.getIfAvailable());
             // 启动恢复 + 定时扫描。必须在端点开始接请求之前（见 Slack 那边同一句）。
             dispatcher.start();
             return new DingtalkCallbackController(signature, dispatcher, replySender);

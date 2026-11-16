@@ -3,12 +3,15 @@ package io.github.claw4j.channel.http;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
+import io.github.claw4j.domain.question.QuestionGate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -17,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
@@ -49,12 +53,23 @@ public class HttpChatController {
 
     private final HttpChannelProperties properties;
 
+    /**
+     * 交互提问的登记表。HTTP 没有推送面（连接是请求-响应的），所以这里的两个接口是它唯一的答复方式：
+     * 同步请求挂着的时候，另一个连接先 {@code GET /questions} 看有没有人在等，再 {@code POST /answer}。
+     *
+     * <p>用 {@code ObjectProvider} 而不是直接注入：没有提问设施（关了 {@code claw4j.tools.ask.enabled}）
+     * 时这两个接口回 404 语义的空答案，而不是让整个 HTTP 通道起不来。
+     */
+    private final ObjectProvider<QuestionGate> questions;
+
     public HttpChatController(HttpChatChannel channel,
                               HttpPrincipalResolver principalResolver,
-                              HttpChannelProperties properties) {
+                              HttpChannelProperties properties,
+                              ObjectProvider<QuestionGate> questions) {
         this.channel = channel;
         this.principalResolver = principalResolver;
         this.properties = properties;
+        this.questions = questions;
     }
 
     /**
@@ -129,6 +144,64 @@ public class HttpChatController {
         });
 
         return emitter;
+    }
+
+    /**
+     * 这段对话里有没有正在等人回答的问题。
+     *
+     * <p>它是 HTTP 这一侧的"提问面板"：{@code /ask} 那一轮正挂在模型调用里等答案，客户端在另一个
+     * 连接上问「有没有要我问的」，拿到之后再 {@code POST /answer}。
+     *
+     * @param user 请求头里的用户标识
+     * @param role 请求头里的角色名
+     * @param chatId 请求头里的会话标识
+     * @return 正在等的问题；一条都没有时是空表
+     */
+    @GetMapping(path = "/questions", produces = MediaType.APPLICATION_JSON_VALUE)
+    public PendingQuestionsResponse pendingQuestions(
+            @RequestHeader(value = HttpPrincipalResolver.USER_HEADER, required = false) String user,
+            @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
+            @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
+        var principal = principalResolver.resolve(user, role);
+        String chatRef = principalResolver.chatId(principal.userId(), chatId);
+        List<PendingQuestion> pending = gate().pending(CHANNEL, chatRef).stream()
+                .flatMap(ask -> ask.questions().stream())
+                .map(question -> new PendingQuestion(question.header(), question.text(),
+                        question.options(), question.multiSelect()))
+                .toList();
+        return new PendingQuestionsResponse(pending);
+    }
+
+    /**
+     * 回答一个正在等的问题。
+     *
+     * <p>与 IM 那条路走同一个 {@link QuestionGate#answer}：认人、比对权限、解析答案都在登记表里，
+     * 这里只做传输。答复的人与提问的人权限不一致时返回 403——那句话不会被当成答案。
+     *
+     * @param request 说了什么
+     * @param user 请求头里的用户标识
+     * @param role 请求头里的角色名
+     * @param chatId 请求头里的会话标识
+     * @return 204：这个答复已被那一轮收下。409：这段对话没有在等答案的问题
+     */
+    @PostMapping(path = "/answer", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Void> answer(@RequestBody AnswerRequest request,
+                                       @RequestHeader(value = HttpPrincipalResolver.USER_HEADER, required = false) String user,
+                                       @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
+                                       @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
+        if (request == null || request.text() == null || request.text().isBlank()) {
+            throw new InvalidRequestException("text 不能为空");
+        }
+        var principal = principalResolver.resolve(user, role);
+        String chatRef = principalResolver.chatId(principal.userId(), chatId);
+        boolean consumed = gate().answer(CHANNEL, chatRef, principal, request.text());
+        return consumed ? ResponseEntity.noContent().build() : ResponseEntity.status(HttpStatus.CONFLICT).build();
+    }
+
+    /** 没有提问设施时按"没有人在等"处理，两个接口都不会因此 500。 */
+    private QuestionGate gate() {
+        QuestionGate gate = questions == null ? null : questions.getIfAvailable();
+        return gate == null ? QuestionGate.unsupported() : gate;
     }
 
     /**
@@ -263,6 +336,35 @@ public class HttpChatController {
      * @param error 错误原因
      */
     public record ErrorResponse(String error) {
+    }
+
+    /**
+     * 一个正在等答案的问题。不带宽的 {@code creator}：客户端不需要知道是谁在问，
+     * 它自己就是那个人。
+     *
+     * @param header 短标签
+     * @param question 完整问句
+     * @param options 可选项
+     * @param multiSelect 能不能多选
+     */
+    public record PendingQuestion(String header, String question, List<QuestionGate.Option> options,
+                                  boolean multiSelect) {
+    }
+
+    /**
+     * 待答问题清单。
+     *
+     * @param questions 正在等的问题，可能为空
+     */
+    public record PendingQuestionsResponse(List<PendingQuestion> questions) {
+    }
+
+    /**
+     * 回答的请求体。
+     *
+     * @param text 说了什么：数字、选项名，或者自由文本
+     */
+    public record AnswerRequest(String text) {
     }
 
     /** 请求体本身不合法，与"身份不合法"分开处理，便于调用方区分。 */

@@ -162,7 +162,8 @@ class HttpChatControllerTest {
         return new HttpChatController(
                 new HttpChatChannel(agent, executor),
                 new HttpPrincipalResolver(properties),
-                properties);
+                properties,
+                null);
     }
 
     /** 按脚本回块，并记录"推给调用方的回调一共被调了几次"。 */

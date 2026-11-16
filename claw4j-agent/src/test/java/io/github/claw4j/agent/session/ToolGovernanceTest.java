@@ -23,6 +23,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.session.CreateSessionRequest;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.util.JsonHelper;
 import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.Session;
 import org.springframework.ai.session.SessionEvent;
@@ -487,6 +488,22 @@ class ToolGovernanceTest {
      * <p>用内存替身而不是真库：这里验的是规则（谁被拒、改完之后哪几格不动），库那一侧
      * （六态约束、主键唯一）由 {@code RunSchemaSqlTest} 在真 Postgres 上验。
      */
+    @Test
+    @DisplayName("工具的手写入参 Schema 必须是合法 JSON：少转义一个引号，那一轮所有工具都发不出去")
+    void handwrittenToolSchemasAreValidJson() {
+        GoalTools tools = new GoalTools(new InMemoryGoals());
+        JsonHelper json = new JsonHelper();
+
+        for (ToolCallback callback : tools.getToolCallbacks()) {
+            assertThatCode(() -> json.fromJsonToMap(callback.getToolDefinition().inputSchema()))
+                    .as("%s 的 inputSchema 解析不了。模型调用方在发请求之前就要把它转成 Map："
+                            + "坏一个，整轮的工具清单都发不出去，而模型那边只会看到「没有工具」"
+                            + "（2026-11-16 实测：Objective 描述里的「更\"专业\"」少了转义，"
+                            + "DeepSeek 与 OpenAI 两条路都在这里炸）", callback.getToolDefinition().name())
+                    .doesNotThrowAnyException();
+        }
+    }
+
     @Test
     @DisplayName("一个会话一个目标：再建一次失败且原文不变；edit 动目标不动状态与用量")
     void oneGoalPerSessionAndEditKeepsStatusAndUsage() {

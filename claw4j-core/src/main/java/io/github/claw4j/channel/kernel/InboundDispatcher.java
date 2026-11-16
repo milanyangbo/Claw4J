@@ -9,6 +9,7 @@ import io.github.claw4j.domain.inbound.QueuedInbound;
 import io.github.claw4j.domain.inbound.Retention;
 
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.question.QuestionGate;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
@@ -112,6 +113,15 @@ public class InboundDispatcher {
     private final InboundStore store;
 
     /**
+     * 交互提问的登记表（票 02）。默认是「一律不支持」：没有提问设施时，那条消息照常走一轮。
+     *
+     * <p>它只在这一处被用到：{@link #accept} 的最前面。放在那儿是因为一条「答复」在语义上不属于
+     * 新的入站事件——它要回到**正在等它的那一轮**上去，而不是排进车道再开一轮。排在车道后面的话，
+     * 同一段对话的车道正被那一轮占着，答复会被当成"忙"跳过，等它的那一轮永远等不到。
+     */
+    private final QuestionGate questions;
+
+    /**
      * 队列名：一个通道一份。它就是 {@code channel}（{@code feishu} / {@code slack} …），
      * 没给通道名的调用方（老的、测试）落在 {@code default} 上。
      *
@@ -136,7 +146,6 @@ public class InboundDispatcher {
     private final AtomicBoolean drainAgain = new AtomicBoolean();
 
     private final AtomicBoolean started = new AtomicBoolean();
-
     /**
      * 认不出人时的答复。说清"找谁"比说"无权访问"有用——后者会被当成系统故障。
      *
@@ -223,6 +232,29 @@ public class InboundDispatcher {
     }
 
     /**
+     * 建一个没有提问设施的调度器：那句「答复」不存在，所有消息都走正常一轮。
+     *
+     * @param agentPort 回答的来源
+     * @param executor 执行认领与执行任务的线程池
+     * @param principalResolver 平台用户标识到 {@link Principal} 的解析
+     * @param replySender 回推的目标通道
+     * @param platformName 答复里用来称呼平台的名字
+     * @param channel 本通道的标识。null 表示这条消息不登记收件地址（A05）
+     * @param receipt 认出人之后先推的一句"收到了"
+     * @param store 入站事件的落点，null 表示不落库
+     */
+    public InboundDispatcher(AgentPort agentPort,
+                             Executor executor,
+                             Function<String, Optional<Principal>> principalResolver,
+                             ReplySender replySender,
+                             String platformName,
+                             String channel,
+                             String receipt,
+                             InboundStore store) {
+        this(agentPort, executor, principalResolver, replySender, platformName, channel, receipt, store, null);
+    }
+
+    /**
      * 建一个完整配置的调度器。
      *
      * @param agentPort 回答的来源
@@ -236,6 +268,7 @@ public class InboundDispatcher {
      * @param store 入站事件的落点。null 表示不落库：用内存实现（重启之后没人接着跑），
      *              并 WARN 一句。这个默认值只服务没有 DataSource 的部署与单测，
      *              生产的四个通道都从容器里拿真的那一份
+     * @param questions 交互提问的登记表。null 表示这个部署没有提问设施：那条消息照常走一轮
      */
     public InboundDispatcher(AgentPort agentPort,
                              Executor executor,
@@ -244,7 +277,8 @@ public class InboundDispatcher {
                              String platformName,
                              String channel,
                              String receipt,
-                             InboundStore store) {
+                             InboundStore store,
+                             QuestionGate questions) {
         this.agentPort = Objects.requireNonNull(agentPort, "agentPort");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.principalResolver = Objects.requireNonNull(principalResolver, "principalResolver");
@@ -252,6 +286,7 @@ public class InboundDispatcher {
         this.channel = channel == null || channel.isBlank() ? null : channel.strip();
         this.queueName = this.channel == null ? "default" : this.channel;
         this.receipt = receipt == null || receipt.isBlank() ? null : receipt;
+        this.questions = questions == null ? QuestionGate.unsupported() : questions;
         this.store = store == null ? new InMemoryInboundStore() : store;
         if (store == null) {
             log.warn("入站事件不落库（队列 {}）：重启之后没跑完的那条不会有人接着跑。"
@@ -308,6 +343,9 @@ public class InboundDispatcher {
         Objects.requireNonNull(event, "event");
         String eventId = eventIdOf(event);
         String conversationId = event.conversationId();
+        if (answersPendingQuestion(event, eventId, conversationId)) {
+            return;
+        }
         log.info("收到事件：eventId={} conversationId={} sender={}",
                 eventId, conversationId, event.senderId());
 
@@ -329,6 +367,56 @@ public class InboundDispatcher {
         }
         submitDrain();
     }
+
+    /**
+     * 这句话是不是在回答一个正等着的问题（票 02）。
+     *
+     * <p>在**入队之前**判：答复要回到正在等它的那一轮，而不是开新的一轮。放在入队之后的话，
+     * 同一段对话的车道正被那一轮占着，这条会被当成"忙"跳过——等它的那一轮永远等不到，
+     * 而用户那边看起来是"我说了、它没反应"。
+     *
+     * <p>认不出人就不当答复（返回 false）：让正常那一轮去回一句"没有权限"，比在这里静默吞掉好。
+     *
+     * @param event 平台上刚收到的那条消息
+     * @param eventId 事件标识，只用于日志
+     * @param conversationId 这段对话的地址
+     * @return 消费掉了这句时为 {@code true}（不再入队、不开新一轮）
+     */
+    private boolean answersPendingQuestion(InboundEvent event, String eventId, String conversationId) {
+        Optional<Principal> principal;
+        try {
+            principal = principalResolver.apply(event.senderId());
+        }
+        catch (RuntimeException error) {
+            log.warn("认人失败，这句不按答复处理：sender={} {}", event.senderId(), error.toString());
+            return false;
+        }
+        if (principal.isEmpty()) {
+            return false;
+        }
+        boolean consumed;
+        try {
+            consumed = questions.answer(channel, conversationId, principal.get(), event.text());
+        }
+        catch (RuntimeException error) {
+            log.warn("答复处理失败，这句按普通消息继续：eventId={} {}", eventId, error.toString());
+            return false;
+        }
+        if (!consumed) {
+            return false;
+        }
+        log.info("这句话回答了一个待答问题：eventId={} user={} conversationId={}",
+                eventId, principal.get().userId(), conversationId);
+        // 回一句"收到"：那一轮拿到答案之后还要跑一会儿，中间不说话的话，用户看到的是
+        // "我答了、它没动"。失败只记日志，答案早就交到那一轮手里了。
+        sendWithoutBlocking(conversationId, ANSWER_RECEIVED_REPLY);
+        return true;
+    }
+
+    /**
+     * 收到答复时回的一句。短，因为真正的回答紧接着会来。
+     */
+    static final String ANSWER_RECEIVED_REPLY = "收到你的回答，接着做。";
 
     /**
      * 认领并执行，直到再没有能认领的。

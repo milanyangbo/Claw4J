@@ -176,3 +176,27 @@ OpenClaw 有 `agents.defaults.timeoutSeconds`（默认 48 小时）兜住跑飞�
   ——它没有这个字段，而我们也没拿它做条件。
 - 用量改成**快照差**（`max(旧值, 会话累计 - tokenStart)`），不是增量累加；漏记一轮下一轮能补回来。
 - `/new` 清目标是同一条 update 的一部分，不靠"新段读不到旧行"。
+
+**2026-11-16（`default-agent-tools` 票 02）：交互提问例外地**挂起一轮**——审批的结论不变。**
+
+本文当时一句话把两件事并成一件：「它的审批是运行内等待，或 approval-pending + 系统事件唤醒会话」，
+本项目只取了后者。那条对**审批**仍然成立，`ApprovalGate` 的类注释也不改。但 OpenClaw 另有一个
+`ask_user`，它自己就是运行内等待，而且写明不是持久账本：
+
+> The wait is attributed to the original run and retains its cancellation and current-authority checks.
+> It uses the existing **process-local** question lifecycle, **not a durable recovery ledger**.
+> A Gateway restart or an aborted/replaced run does not turn an unresolved step into success.
+> （`docs/tools/ask-user.md`）
+
+所以新增 `io.github.claw4j.domain.question.QuestionGate`：模型调工具就把问题推到「这一轮来自的那段对话」，
+**在同一轮里等**答案，默认 900 秒、钳 30–3600（照它），等不到返回 `no_answer` 让模型按自己的判断继续。
+边界写在类型上：
+
+- **进程内，不落库**：重启即丢，丢了的按 `no_answer` 收场——不是"隔夜重启之后忽然收到一个旧问题的答复"。
+- **一条会话最多挂一个问题**：同时挂两个，用户的下一句话该算哪个说不清，而顶掉前一个会让先那一轮永远等不到。
+- **答复的人权限要与提问人一致**（OpenClaw 同一条）：不一致时那句话不当答案，照常走一轮。
+- **没有提问面的通道不装这个能力**：`QuestionGate` 返回 `UNSUPPORTED`，模型改用普通文字问
+  ——这正是它对 ACP / iMessage / WhatsApp 那类面的处理。
+
+顺带一句对本文「run 只是一轮的句柄」的影响：**没有影响**。等待期间那一轮是活的（线程占着、上下文在内存里），
+不是"一件事跨请求活着"；它没有状态机、没有续跑入口，重启之后也没有任何东西去捡它——本文要拆的那三样一样都没有。

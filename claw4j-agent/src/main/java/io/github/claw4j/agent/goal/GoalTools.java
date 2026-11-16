@@ -110,7 +110,7 @@ public final class GoalTools implements ToolCallbackProvider {
                               "properties": {
                                 "objective": {
                                   "type": "string",
-                                  "description": "目标本身，一句话或一份清单。用户说的原话照抄，不要自己改写成更"专业"的说法"
+                                  "description": "目标本身，一句话或一份清单。用户说的原话照抄，不要自己改写成更「专业」的说法"
                                 },
                                 "token_budget": {
                                   "type": "integer",

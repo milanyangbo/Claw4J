@@ -275,7 +275,8 @@ class HttpChatChannelTest {
         return new HttpChatController(
                 new HttpChatChannel(agent, executor),
                 new HttpPrincipalResolver(properties),
-                properties);
+                properties,
+                null);
     }
 
     // ---------------------------------------------------------------- 边界外的替身
