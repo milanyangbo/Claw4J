@@ -270,7 +270,13 @@ claw4j:
 启动后同步一次，按文件内容哈希跳过没变的。默认混合检索（向量 + 全文）加 `qwen3-rerank` 重排：
 向量与重排都复用 `QWEN_API_KEY`，全文那一路用 PG 的 `pg_trgm`。**每段结果都带「文档 + 第几段」**，不写出处等于让模型自由发挥。
 
+**本地开发什么都不用配**：`application-local.yml.example` 里已经写着 `enabled: true` 与
+`directory: examples/knowledge`，起 `--spring.profiles.active=local` 就带着知识库（要 compose 的 pgvector
+与 `.env` 里的 qwen key）。上面那段 yaml 是**别的部署**要加的那几行。
+
 **怎么确认**：问一个只有这份文档能答的问题，回答里应带出处；再问一句闲聊，不该被"资料里没有"劫持。
+重排有没有真跑，看 DEBUG 日志那一行 `重排完成：候选 N 条，服务返回 M 条，前三条 […] → […]`——
+只有它出现了才说明响应被解析、顺序被应用过；`M` 为 0 或整个不出现，就是重排没生效（失败会另有一行 WARN）。
 
 ---
 

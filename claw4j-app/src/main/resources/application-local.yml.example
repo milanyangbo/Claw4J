@@ -46,6 +46,16 @@ claw4j:
         read-only:
           users: ["ou_xxxxxxxxxxxxxxxx"]
 
+  # ---- 知识库（P10）------------------------------------------------------
+  # 本地开发默认开着：目录就是仓库里那两份示例文档，起 local 就有得可查。
+  # application.yml 里默认关（别的部署没有 embedding 凭据、也没有 pgvector 那张表，配了就是启动失败），
+  # 这里覆盖成开——本地两样都有：compose 起的 pgvector，加 .env 里的 qwen key。
+  # 重排跟着默认值走（开）：它要同一个 qwen key，挂掉时只是不重排，不影响检索。
+  # 相对路径按当前工作目录解析，所以要从仓库根目录起（与上面 MCP 那段同一个约定）。
+  rag:
+    enabled: true
+    directory: examples/knowledge
+
   # ---- MCP 那一层 --------------------------------------------------------
   # 一段配置 = 一条连接 = 一个能力来源。server 用什么语言写、在不在本进程里，宿主都不关心：
   # stdio 起一个子进程用它的 stdin/stdout 说协议，http 连一个别人已经跑着的端点。
