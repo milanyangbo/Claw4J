@@ -64,9 +64,6 @@ public final class ExternalContent {
         /** 联网搜索。 */
         WEB_SEARCH("Web Search"),
 
-        /** 脚本包的输出。 */
-        SCRIPT("Script"),
-
         /** 知识库检索到的段落。 */
         KNOWLEDGE("Knowledge");
 

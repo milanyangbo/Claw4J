@@ -74,7 +74,7 @@ public class SalesExampleAutoConfiguration {
      * 工具来源：一个 provider 就是这一层有哪些工具。
      *
      * <p>不写 {@code @ConditionalOnMissingBean(ToolCallbackProvider.class)}：那条条件会在容器里
-     * 已有 provider 时让位，于是 MCP、脚本包、别的插件一旦先注册，{@code querySales} 就静默消失，
+     * 已有 provider 时让位，于是 MCP、别的插件一旦先注册，{@code querySales} 就静默消失，
      * 模型手上没这个工具，于是它开始编答案。容器里本来就该有多个来源，让位等于随机少一种。
      *
      * <p>条件改成本层能不能成立，即有没有可用的执行器，多个来源各交各的。

@@ -418,7 +418,6 @@ claw4j:
 
   # ---- 能力层：配了目录才有，不配就没有 ----
   # claw4j.skills.directory / claw4j.subagents.directory / claw4j.rag.directory
-  # （claw4j.scripts.directory 还在，但 2026-11-18 起只作生成器的账本，不是执行入口）
   # 这里不给默认值：给一个默认目录就等于默认打开这一层。怎么开见 README-adding-capabilities.md。
 
 # ---- 运维面：指标与服务端口分开 ----

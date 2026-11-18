@@ -138,11 +138,10 @@ class BuildContractTest {
      * 会命令解释器的写法。shell 会把参数里的分号当成第二条命令，于是传一个参数变成了执行一段脚本。
      * 注释里也不许出现：扫的是整份文件，区分代码与注释要写解析器，那份代价比注释换个说法贵得多。
      *
-     * <p>两个豁免文件都是同一件事：**不拼命令行**，只是把解释器名字交给库的 builder
+     * <p>唯一的豁免文件**不拼命令行**：它只是把解释器名字交给库的 builder
      * （{@code LocalExecBackend.builder().shellCommand("/bin/sh", "-c")}），起进程发生在 jar 里。
-     * 一个是 {@code exec} 的宿主后端，一个是生成器的自测沙箱。
-     * （2026-11-18 之前这两个名额在 {@code ShellCommandRunner} 与 {@code LocalProcessRunner} 上，
-     * 那两个类已经删了。）
+     * （2026-11-18 之前这里有两个名额：{@code ShellCommandRunner} 与 {@code LocalProcessRunner}
+     * 随后被删；生成器的自测沙箱也退出去了——整层删了。）
      * 豁免的是文件名，不是这批字面量——多一个文件想出现 {@code bash -c} 就得先改这里，
      * 那一步和要不要再开一个 shell 入口是同一个决定。
      */
@@ -150,7 +149,7 @@ class BuildContractTest {
             List.of("sh -c", "bash -c", "/bin/sh", "/bin/bash", "cmd.exe");
 
     private static final java.util.Set<String> SHELL_ENTRY_FILES =
-            java.util.Set.of("ExecAutoConfiguration.java", "GeneratorSandbox.java");
+            java.util.Set.of("ExecAutoConfiguration.java");
 
     /** 会话 schema 的默认名。带点号才是"被拼进了表名"，不带点号的是那个常量自己。 */
     private static final String SESSION_SCHEMA_LITERAL = "claw4j_session.";

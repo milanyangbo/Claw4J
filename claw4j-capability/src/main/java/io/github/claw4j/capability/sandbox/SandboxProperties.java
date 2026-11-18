@@ -71,7 +71,7 @@ public record SandboxProperties(Mode mode,
         /** 读写挂载。 */
         RW,
 
-        /** 不挂。脚本包用不了这一档（入口就在包里），exec 用得到。 */
+        /** 不挂。exec 用得到（模型看不见工作区，这条命令基本没意义）。 */
         NONE
     }
 

@@ -13,7 +13,7 @@ import java.util.Map;
  * MCP server 清单：{@code claw4j.capability.mcp.servers.<名字>} 一段就是一个 server。
  *
  * <p>这一层做成配置而不是 bean：别人的 server 装在别人的机器上，接进来不该要求改源码再重新
- * 打包。配置化之后"接一个第三方 MCP server"就是写四行 yml，与 {@code claw4j.scripts.directory}
+ * 打包。配置化之后"接一个第三方 MCP server"就是写四行 yml，与 {@code claw4j.skills.directory}
  * 同一个取向——能力来源是运行时才知道的事。接哪几种传输仍然是编译期的事，见 {@link Transport}。
  *
  * <p>权限默认按 server 声明，可以按工具覆盖：同一个 server 往往同时导出只读查询与会改东西

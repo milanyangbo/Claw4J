@@ -89,7 +89,7 @@ class UntrustedTextTest {
         String once = ExternalContent.wrap("正文", ExternalContent.Source.WEB_FETCH, false);
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> ExternalContent.wrap(once, ExternalContent.Source.SCRIPT, false));
+                () -> ExternalContent.wrap(once, ExternalContent.Source.WEB_SEARCH, false));
 
         assertTrue(thrown.getMessage().contains("已经被包过一次"), thrown.getMessage());
     }

@@ -15,8 +15,8 @@ import java.util.Map;
  * 运行时状态这一层的装配。
  *
  * <p>不挂任何开关：这一层读本进程自己的指标，不依赖外部运行时、不碰业务数据、没有副作用，
- * 于是"有没有这一层"不需要是一个决定。它与脚本层（{@code claw4j.scripts.directory}）、
- * 生成器（{@code claw4j.generator.staging-directory}）那种"放开执行能力"的开关不是一回事。
+ * 于是"有没有这一层"不需要是一个决定。它与技能目录（{@code claw4j.skills.directory}）那种
+ * "放开一条能力"的开关不是一回事。
  *
  * <p>权限登记在这里而不是写在 Agent 侧：只有写工具的人知道它要不要受表级约束（ADR-0007）。
  * 登记的动作是 {@code read_system}，表清单为空——JVM 指标不是业务数据，所以不受"能读哪些表"约束，
