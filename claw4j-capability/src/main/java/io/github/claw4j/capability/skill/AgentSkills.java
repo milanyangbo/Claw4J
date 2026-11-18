@@ -82,8 +82,9 @@ public final class AgentSkills {
      *
      * <p>代价要认：{@code addSkill} 只保留 name / description 两个 front matter 字段，
      * {@code allowed-tools} 之类的字段不进清单（它们本来也不生效，见票 04 的缺口）；
-     * {@code basePath} 是空串，"技能目录在哪"那一行由 {@link SkillTrust#statement} 之外的说法补不了，
-     * 这里接受缺失——技能正文该自己写清随包文件叫什么。
+     * 它也不带 {@code basePath}，所以"技能目录在哪"那一行由 {@link #withBaseDirectory} 自己补。
+     * 补这一行不是锦上添花：技能可以随包带脚本与数据文件（OpenClaw 的形态，{@code {baseDir}}），
+     * 模型拿不到目录就只能靠猜路径，那份脚本永远跑不起来。
      *
      * @param directory 技能目录
      * @param reviewDirectory 审批标记目录；{@code null} 表示技能目录下的 {@code .review}
@@ -99,6 +100,9 @@ public final class AgentSkills {
                 : reviewDirectory.toAbsolutePath().normalize();
 
         SkillsTool.Builder builder = SkillsTool.builder();
+        // 本地执行时 display 是恒等映射（宿主路径即脚本能访问的路径）；
+        // 换成容器沙箱时换掉这个实现即可，模型不会被喂一个它用不到的路径。
+        Workspace workspace = Workspace.local(absolute);
         int loaded = 0;
         for (Skill skill : skills) {
             Path skillDirectory = skill.basePath() == null || skill.basePath().isBlank()
@@ -113,7 +117,8 @@ public final class AgentSkills {
                 continue;
             }
             String statement = decision == null ? "" : SkillTrust.statement(skill.name(), decision.by());
-            builder.addSkill(skill.name(), SkillTrust.descriptionOf(skill), statement + skill.content());
+            builder.addSkill(skill.name(), SkillTrust.descriptionOf(skill),
+                    statement + withBaseDirectory(workspace, skillDirectory, skill.content()));
             loaded++;
         }
         if (loaded == 0) {
@@ -122,15 +127,33 @@ public final class AgentSkills {
         }
         try {
             return builder
-                    // 模型会看到"这个 Skill 的目录在哪"，那里可能有脚本与数据文件。
-                    // 本地执行时 display 是恒等映射（宿主路径即脚本能访问的路径）；
-                    // 换成容器沙箱时换掉这个实现即可，模型不会被喂一个它用不到的路径。
-                    .workspace(Workspace.local(absolute))
+                    .workspace(workspace)
                     .build();
         }
         catch (IllegalArgumentException noUsableSkill) {
             throw new IllegalStateException("技能目录里没有可用的 Skill：" + absolute, noUsableSkill);
         }
+    }
+
+    /**
+     * 把"这份技能的目录在哪"写进正文，并把 {@code {baseDir}} 换掉。
+     *
+     * <p>社区包只在 {@code addSkillsDirectory} 那条路上补这一行；我们走 {@code addSkill}
+     * （为了校验过的就是进上下文的那一份），于是这一行要自己补——不补，随包的脚本就没法被指到。
+     *
+     * <p>{@code {baseDir}} 是 OpenClaw 技能正文里的写法（"Run the helper script at
+     * {@code {baseDir}/scripts/run.sh}"）。原样替换而不是留一个占位符：模型不该被要求知道
+     * 某个框架的模板约定。两个写法同时给，是让"从 ClawHub 抄一份技能过来"能直接跑。
+     *
+     * @param workspace     路径映射（本地是恒等，容器沙箱里换成容器内路径）
+     * @param skillDirectory 这份技能的目录
+     * @param content       正文
+     * @return 正文前面多一行目录、正文里的 {@code {baseDir}} 已替换
+     */
+    private static String withBaseDirectory(Workspace workspace, Path skillDirectory, String content) {
+        String display = workspace.display(skillDirectory.toString());
+        return "Base directory for this skill: " + display + "\n\n"
+                + content.replace("{baseDir}", display);
     }
 
     /** 目录里有哪些 Skill，供日志与断言使用。 */

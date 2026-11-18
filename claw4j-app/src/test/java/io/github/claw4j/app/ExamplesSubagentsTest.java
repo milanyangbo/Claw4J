@@ -47,9 +47,7 @@ class ExamplesSubagentsTest {
     private static final Set<String> SAMPLE_TOOLS = Set.of(
             "systemStatus",      // capability/builtin/system，不挂开关
             "querySales",        // claw4j-example-sales 的 @Tool
-            "summarize",         // examples/scripts/summarize 的包名就是工具名
-            "weather-forecast",  // 同上
-            "xurl",              // 同上
+            "Bash",              // capability/exec：技能里的脚本由模型用这个跑
             "Skill",             // capability/skill：AgentSkills.TOOL_NAME
             SubagentDelegation.TOOL_NAME);
 

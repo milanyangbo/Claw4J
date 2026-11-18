@@ -1,10 +1,7 @@
 package io.github.claw4j.capability.generator;
 
-import io.github.claw4j.domain.ContextKeys;
-import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
-import io.github.claw4j.capability.script.ExecutionListeners;
 import io.github.claw4j.capability.script.ScriptPackageAutoConfiguration;
 import io.github.claw4j.capability.script.ScriptPackageRegistry;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -91,7 +88,7 @@ public class GeneratorAutoConfiguration {
     /**
      * 档位：{@link ToolTier#CODING}。
      *
-     * <p>交草稿与跑脚本分开管（动作名一个是 {@code draft_script}、一个是 {@code run_script}），
+     * <p>交草稿与跑脚本分开管（动作名一个是 {@code draft_script}、一个是 {@code exec_command}），
      * 但档位上是同一档：会写脚本的部署就在 {@code coding}，而"不碰代码"的部署两样都不该有。
      * 拆成两档的话，"能写不能跑"这个组合要么没人用，要么得再补一条 deny，得不偿失。
      */
@@ -103,23 +100,4 @@ public class GeneratorAutoConfiguration {
                 ToolTier.CODING);
     }
 
-    /**
-     * 把脚本层的执行接到审计上：已注册的包被真正执行时也要留一条。
-     *
-     * <p>挂在 {@link ExecutionListeners} 上而不是注入一个 listener，
-     * 是因为脚本层先装配：到这里才有人知道"审计是什么"。
-     * 那个容器存在的唯一理由就是这个顺序（见它的类注释）。
-     */
-    @Bean
-    public ExecutionListeners generatorExecutionListenerBridge(ExecutionListeners listeners,
-                                                               GenerationAudit audit,
-                                                               Clock claw4jClock) {
-        listeners.add((packageName, context, outcome, output) -> {
-            Object value = context == null ? null : context.getContext().get(ContextKeys.PRINCIPAL);
-            String who = value instanceof Principal principal ? principal.userId() : "anonymous";
-            audit.record(claw4jClock.instant(), who, GenerationAudit.Stage.EXECUTED, packageName,
-                    outcome + "：" + output, "ok".equals(outcome));
-        });
-        return listeners;
-    }
 }

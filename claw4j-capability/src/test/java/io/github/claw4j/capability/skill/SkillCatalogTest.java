@@ -109,11 +109,63 @@ class SkillCatalogTest {
         assertThat(callback.getToolDefinition().name()).isEqualTo(AgentSkills.TOOL_NAME).isEqualTo("Skill");
     }
 
+    @Test
+    @DisplayName("正文里带着技能目录：随包的脚本能被指到，{baseDir} 也换成了那个目录")
+    void bodyCarriesTheSkillDirectorySoScriptsCanBeFound() throws IOException {
+        Path withScript = skill("packaging", "packaging", "按包装规范复核。",
+                "跑这条：bash {baseDir}/scripts/check.sh\n");
+        Files.createDirectories(withScript.resolve("scripts"));
+        Files.writeString(withScript.resolve("scripts/check.sh"), "#!/bin/sh\necho ok\n", UTF_8);
+
+        String expanded = AgentSkills.callback(skills, null, false).call("{\"command\":\"packaging\"}");
+
+        assertThat(expanded)
+                .as("模型要靠这一行拼出绝对路径；没有它，随包脚本永远跑不起来")
+                .contains("Base directory for this skill: " + withScript)
+                .contains("bash " + withScript + "/scripts/check.sh")
+                .doesNotContain("{baseDir}");
+    }
+
+    @Test
+    @DisplayName("仓库里那四份示例技能真的加载得出来：目录形状与审批标记都对得上")
+    void exampleSkillsLoadWithTheirApprovalMarkers() {
+        Path examples = repositoryFile("examples/skills");
+
+        // 审批标记的 sha256 是按目录内容算的：改一个字节、或者漏写一份标记，
+        // 对应的技能就会从这里消失。示例是给人照抄的，"看着像能加载"不算。
+        assertThat(AgentSkills.names(examples))
+                .containsExactlyInAnyOrder("summarize", "weather-forecast", "xurl", "weekly-sales");
+
+        String body = AgentSkills.callback(examples, null, true).call("{\"command\":\"summarize\"}");
+        assertThat(body)
+                .as("带脚本的技能要能让模型拼出脚本的绝对路径，否则它只能猜")
+                .contains("Base directory for this skill: " + examples.resolve("summarize"))
+                .contains("/scripts/run.sh");
+    }
+
     private Path skill(String directory, String name, String description, String body) throws IOException {
         Path root = Files.createDirectories(skills.resolve(directory));
         Files.writeString(root.resolve("SKILL.md"),
                 "---\nname: " + name + "\ndescription: " + description + "\n---\n\n" + body,
                 UTF_8);
         return root;
+    }
+    /**
+     * 从工作目录往上找仓库里的一份文件：Maven 下工作目录是模块，IDE 下是仓库根。
+     *
+     * <p>{@code claw4j-app} 里那份示例用例有一个同名方法；这里是模块级的那一份，
+     * 读的是同一批素材（{@code examples/skills}）。
+     */
+    private static Path repositoryFile(String relative) {
+        Path current = Path.of(System.getProperty("user.dir")).toAbsolutePath();
+        while (current != null) {
+            Path candidate = current.resolve(relative);
+            if (Files.exists(candidate)) {
+                return candidate;
+            }
+            current = current.getParent();
+        }
+        throw new IllegalStateException("找不到 " + relative + "，当前工作目录："
+                + System.getProperty("user.dir") + "。这条用例要读仓库里那一份。");
     }
 }

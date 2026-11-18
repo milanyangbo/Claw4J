@@ -56,13 +56,13 @@ class ToolFilterBindingTest {
     @DisplayName("脚本层与生成器：同一段写法绑出同一个形状")
     void scriptAndGeneratorBindTheSameShape() {
         Map<String, Object> properties = new LinkedHashMap<>();
-        properties.put("claw4j.scripts.directory", "examples/scripts");
+        properties.put("claw4j.scripts.directory", ".claw4j/scripts");
         properties.put("claw4j.scripts.tool-filter.exclude[0]", "weekly-digest");
         properties.put("claw4j.generator.staging-directory", "target/staging");
         properties.put("claw4j.generator.tool-filter.include[0]", "propose_script");
 
         ScriptPackageProperties scripts = bind("claw4j.scripts", ScriptPackageProperties.class, properties);
-        assertThat(scripts.directory()).isEqualTo("examples/scripts");
+        assertThat(scripts.directory()).isEqualTo(".claw4j/scripts");
         assertThat(scripts.toolFilter().matches("weekly-digest")).isFalse();
         assertThat(scripts.toolFilter().matches("summarize")).isTrue();
 

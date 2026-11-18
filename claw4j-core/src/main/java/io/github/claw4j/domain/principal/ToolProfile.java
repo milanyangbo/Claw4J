@@ -22,7 +22,7 @@ import java.util.stream.Stream;
  *       只打一条告警（{@code widenBlocked}）。让 allow 放宽画像的话，画像就不再是安全默认，
  *       而变成一句"我大致开了这些"。</li>
  *   <li>{@code alsoAllow}——<b>显式放宽，能突破画像</b>。这是照 OpenClaw 的口子：
- *       想"messaging 画像但要一个脚本"就写 {@code alsoAllow: [run_script]}，
+ *       想"messaging 画像但要跑一条命令"就写 {@code alsoAllow: [Bash]}，
  *       而不是把整个部署调成 coding 再 deny 一大串。只有显式写出来才放宽，这就是
  *       "不再隐式放宽"那条（它在 issue #47487 里专门把隐式行为改成了告警）。</li>
  *   <li>{@code deny}——排除，最后生效，压过前两者。</li>

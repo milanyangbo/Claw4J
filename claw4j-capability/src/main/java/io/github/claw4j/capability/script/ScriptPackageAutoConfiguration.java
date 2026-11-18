@@ -1,7 +1,6 @@
 package io.github.claw4j.capability.script;
 
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -14,7 +13,8 @@ import java.nio.file.Path;
  * <p><b>2026-11-18：这一层不再是"可执行包"。</b>按 OpenClaw 的形态，技能是"目录 + {@code SKILL.md}
  * + 支撑文件"，本身不被执行；脚本由模型用 {@code Bash} 去跑（`docs/reviews/2026-11-18-open-source-inventory.md`、
  * `.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md`）。于是这里不再产出
- * {@code run_script} 这个工具，也不再建执行后端（那条自研的 argv 执行器整包删掉了）。
+ * {@code run_script} 这个工具，也不再建执行后端（那条自研的 argv 执行器整包删掉了）；
+ * 连"执行观察者"那条链也一起删了——没有发射者之后，它只剩一句"这一层会执行脚本"的误导。
  *
  * <p>清单还留着，只有一个用处：生成器那层要判断"这个名字是不是已经被别的来源占了、这份内容是不是
  * 已经发布过"（{@link ScriptPackageRegistry}）。它是账本，不是执行入口。
@@ -36,19 +36,5 @@ public class ScriptPackageAutoConfiguration {
     @Bean
     public ScriptPackageRegistry scriptPackageRegistry(ScriptPackageProperties properties) {
         return new ScriptPackageRegistry(ScriptPackageCatalog.load(Path.of(properties.directory())));
-    }
-
-    /**
-     * 执行观察者的容器：先落地、后来者往里加（见 {@link ExecutionListeners}）。
-     *
-     * <p>没有别的来源时它是空的，于是"没接审计"表现为空容器而不是装配失败：审计是留痕手段，
-     * 不是这条链路能不能工作的前提。
-     *
-     * @return 空的观察者容器
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public ExecutionListeners executionListeners() {
-        return new ExecutionListeners();
     }
 }

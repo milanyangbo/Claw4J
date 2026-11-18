@@ -108,9 +108,9 @@ public class ExecAutoConfiguration {
         ExecBackend container = SandboxBackends.execContainer(sandbox,
                 properties.workspace().toAbsolutePath().normalize());
         if (container != null && sandbox.workspaceAccess() == SandboxProperties.WorkspaceAccess.RO) {
-            log.warn("claw4j.tools.sandbox.workspace-access=ro 只作用于脚本层：exec 侧的挂载由 "
-                    + "DockerCliExecBackend 管理，只支持读写。容器里的命令能改工作区——"
-                    + "只读要等 P17b/c 的限额那一层。");
+            log.warn("claw4j.tools.sandbox.workspace-access=ro 目前不生效：exec 侧的挂载由 "
+                    + "DockerCliExecBackend 管理，只支持读写；脚本包那一层已经删了，这个键没有使用者。"
+                    + "容器里的命令能改工作区——只读根要等 P17b（blocked：等上游加限额参数）。");
         }
         return ShellTools.builder()
                 .execBackend(new SandboxedExecBackend(properties, execHostBackend,

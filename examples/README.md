@@ -9,8 +9,7 @@
 | 目录 | 层 | 启用方式 |
 | --- | --- | --- |
 | `agents/` | 人设（Persona）：这个部署是谁 | `claw4j.agent.directory=examples/agents` + `claw4j.agent.default=sales` |
-| `scripts/` | 三层：Script Package | `claw4j.scripts.directory=examples/scripts` |
-| `skills/` | Skill | `claw4j.skills.directory=examples/skills` |
+| `skills/` | Skill（含技能里的脚本） | `claw4j.skills.directory=examples/skills` |
 | `subagents/` | Subagent | `claw4j.subagents.directory=examples/subagents` |
 | `mcp/` | 二层：MCP server（跨进程） | `claw4j.capability.mcp.servers`（三个 server 都写在 `application-local.yml` 里） |
 | `guard/` | 不属于能力层：入站拦截的词表 | `claw4j.guard.sensitive-words-file`，**默认就指向这里** |
@@ -24,25 +23,30 @@
 共用的业务口径在 `agents/glossary/metrics.md`（**引用，不是抄写**：改一处，两个助手下一轮都变）。
 
 四层里**只有 MCP 那一层是协议层面的语言无关**（对端可以是任何语言写的程序）；
-脚本包、Skill、Subagent 的语言无关来自文件格式与本项目的接缝，Spring AI 没有对应抽象。
+技能（含技能里的脚本）、Subagent 的语言无关来自文件格式与本项目的接缝，Spring AI 没有对应抽象。
 这条分界在根 README 的「集成」与 [`docs/capability-tests.md`](../docs/capability-tests.md) §8 里写清楚了，
 别把它们当成同一件事。每一个工具怎么验（命令、要涨的计数、期望值）也在那份测试手册里。
 
-## 脚本层（三层）
+## 技能里的脚本（原来的"脚本层"）
 
 ```bash
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
-  --claw4j.scripts.directory=examples/scripts \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents
 ```
 
-三个包：`weather-forecast`（查天气）、`summarize`（摘要）、`xurl`（包 `xurl` CLI）。
+三个技能带着脚本：`weather-forecast`（查天气）、`summarize`（摘要）、`xurl`（包 `xurl` CLI）。
+**它们不是工具**——2026-11-18 起按 OpenClaw 的形态，技能是"目录 + `SKILL.md` + 支撑文件"，
+本身不被执行，脚本由模型用 `Bash` 去跑（正文写清怎么跑、路径由 `{baseDir}` 给出）。
+以前那个 `run_script` 工具与它背后的自研执行链已经删掉，原因与影响面见
+[`.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md`](../.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md)。
 
 它们各自只依赖 Python 标准库（`xurl` 那个还要本机装了 `xurl`）。这不是洁癖：
-脚本层的子进程**只拿得到 `PATH`**（`SandboxPolicy`），拿不到任何 API key，
+`Bash` 的子进程**只拿得到声明的那几个环境变量**（默认只有 `PATH`），拿不到任何 API key，
 所以凡是依赖凭据的能力在这一层都跑不通——`summarize` 因此做成抽取式而不是调大模型，
-这个取舍在它自己的 `run.sh` 里写明了。需要凭据的能力该走 MCP 那一层。
+这个取舍写在它自己的 `scripts/run.sh` 里。需要凭据的能力该走 MCP 那一层。
+
+审批标记在 `.review/`，摘要覆盖**整个目录**（含脚本）：改一个脚本字节，旧标记就作废。
 
 ## MCP 层（二层，真的跨进程）
 
@@ -83,23 +87,23 @@ Java 这边起的是**真的子进程**，用它的 stdin/stdout 说 MCP——�
 ```bash
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --claw4j.skills.directory=examples/skills \
-  --claw4j.scripts.directory=examples/scripts \
   --claw4j.subagents.directory=examples/subagents
 ```
 
-（`scripts` 这一行不是可有可无的：`weekly-digest` 的白名单里点了脚本包 `summarize`，
-少了它，启动时会按"白名单点名了没有的工具"失败。只想试子 Agent 的话，
+（`skills` 这一行对 `weekly-digest` 是必需的：它的白名单里有 `Skill`——要用 `summarize`
+那份正文才知道脚本在哪。少了它，启动时会按"白名单点名了没有的工具"失败。只想试子 Agent 的话，
 把 `--claw4j.subagents.directory` 指到一个只放 `capacity-triage.md` 的目录也行。）
 
 - `skills/weekly-sales/SKILL.md`：一份做法（口径 + 步骤 + 输出格式 + 不要做的事）。
   平时只有一行描述在模型眼前，命中才把全文加载进来——它不提新工具，只决定现有工具怎么用。
+- `skills/summarize` / `weather-forecast` / `xurl`：带脚本的技能，做法与脚本在同一个目录里。
 - `subagents/` 里五份定义，覆盖三种委派形状，照着改比从零写快：
   - `capacity-triage.md`：容量初诊。白名单只给 `systemStatus`，**零额外配置就能加载**
     （不用数据库、不用别的目录配好）——想先试通这一层，用这一份。
   - `metric-glossary.md`：口径解释。同样只有一个只读工具，但它不查数，只回答"这个指标怎么算"。
   - `sql-reviewer.md`：SQL 复核。白名单只有 `querySales`，要示例销售插件在才有这个工具。
-  - `weekly-digest.md`：周报汇总。白名单**跨层**（`querySales` + 脚本包 `summarize`），
-    于是这一份要求同时配 `claw4j.scripts.directory`，否则启动时按"白名单点名了没有的工具"失败。
+  - `weekly-digest.md`：周报汇总。白名单**跨层**（`querySales` + `Skill` + `Bash`），
+    于是这一份要求同时配 `claw4j.skills.directory`，否则启动时按"白名单点名了没有的工具"失败。
   - `incident-triage.md`：值班初筛。**不写 `tools`**（继承全部），用 `disallowedTools`
     减掉 `Skill` 与 `querySales`——这是"能力多但要收窄"的那种写法。
 

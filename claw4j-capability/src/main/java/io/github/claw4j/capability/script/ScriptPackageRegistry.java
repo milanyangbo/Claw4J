@@ -3,27 +3,23 @@ package io.github.claw4j.capability.script;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.Consumer;
 
 /**
- * 脚本包的清单：启动时从目录读进来，之后只有人审通过的包能被加进来。
+ * 脚本包的**账本**：启动时从目录读进来，之后只有人审通过的包能被加进来。
  *
- * <p>"未人审的脚本不在工具清单里"这条边界落在这里：工具清单由 {@link ScriptPackageToolProvider}
- * 从本注册表现取，于是"注册"与"不注册"是同一件事的两面——生成器产出的脚本落在暂存区，
- * 有人签了字之后清单才多出一项，模型才看得见它。
+ * <p><b>2026-11-18 之后它不再决定"谁看得见什么"</b>：脚本包退化成技能，
+ * {@code run_script} 工具与它的工具清单来源一起删掉了。现在这个账本只回答一件事——
+ * 生成器那层"这个名字是不是已经被占了、这份内容是不是已经发布过"。
+ * 注册进来**不会**让模型多出任何能力，这是票 02 留下的缺口（
+ * {@code .scratch/oss-alignment/issues/03-generator-emits-skills.md}）。
  *
  * <p>不靠"重启时重新扫目录"：重启把"人点了一下通过"变成一次发布，而暂存区里那份脚本在这期间
  * 可以被重新生成，扫描式的读法会把"审的是哪一版"交给文件系统，文件系统答不上来
  * （人审比对的是脚本摘要，见 generator 包）。
- *
- * <p>{@link #onRegister} 给 {@link ScriptPackageRunner} 用：执行后端按包建、建一次缓存，
- * 新包进来要有人把它接上，否则"清单里有它、跑的时候说没有这个包"。
  */
 public final class ScriptPackageRegistry {
 
     private final List<ScriptPackage> packages = new CopyOnWriteArrayList<>();
-
-    private final List<Consumer<ScriptPackage>> listeners = new CopyOnWriteArrayList<>();
 
     /**
      * 用一份初始清单建注册表。
@@ -45,16 +41,7 @@ public final class ScriptPackageRegistry {
     }
 
     /**
-     * 新包进来时要被通知的一方（runner 建后端）。
-     *
-     * @param listener 收到新包的回调
-     */
-    public void onRegister(Consumer<ScriptPackage> listener) {
-        listeners.add(Objects.requireNonNull(listener, "listener"));
-    }
-
-    /**
-     * 人审通过后把它加进清单，然后通知所有监听者。
+     * 人审通过后把它加进账本。
      *
      * <p>重名直接失败：同名工具会让模型分不清该调哪个，覆盖则让"人审通过的是这一版"说不清。
      *
@@ -68,9 +55,6 @@ public final class ScriptPackageRegistry {
                     + "同名工具会让模型分不清该调哪个，这里不去重而是直接失败");
         }
         packages.add(pkg);
-        for (Consumer<ScriptPackage> listener : listeners) {
-            listener.accept(pkg);
-        }
     }
 
     /**

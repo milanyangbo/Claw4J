@@ -475,6 +475,13 @@ class ApplicationAssemblyTest {
         assertThat(context.getBeanNamesForType(HybridDocumentRetriever.class))
                 .as("关着时连 retriever 都不装，不是「装了但没挂上去」")
                 .isEmpty();
+        // 脚本包退化成技能之后（oss 票 02），执行只剩 Bash 一个入口：清单里不该再出现
+        // run_script。这条断言与"那个类已经被删掉"不是同一件事——类没了但有人重新造一个
+        // 同名的工具，只有这里会红。
+        assertThat(toolCatalog.names())
+                .as("run_script 是已删除的专用执行入口；它回来等于第二个执行入口又长出来了")
+                .isNotEmpty()
+                .doesNotContain("run_script");
     }
 
     /**
