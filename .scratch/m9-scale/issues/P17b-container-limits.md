@@ -18,23 +18,55 @@ P17a 把命令搬进了容器，但一个默认参数的 `docker run` 仍然是�
 各拼一份 argv 的话，加第五条限额时必然只改一边，而漏掉的表现为"脚本被锁了、`Bash` 没有"——
 一个只在其中一条路上存在的边界，比没有边界更坏，因为它会被人当成已经有了。
 
-**Blocked by:** P17a（没有容器后端就无处加限额）。
+**Blocked by:** 上游 `spring-ai-agent-utils` 给 `DockerCliExecBackend.Builder` 加限额入口。
+P17a 已经 resolved，那个前置不再是卡点。
 
 **Type:** task
 
-**Status:** ready-for-agent
+**Status:** blocked（2026-11-18 裁决：等库加参数）
 
 **裁决来源：** ADR-0020 §M9 · P17（`network=none`、只读根 FS、内存/CPU 限额、临时 workdir）；
 ADR-0021 §"追平 2：执行隔离"。
 
-## 要动的地方（预计）
+## Answer
+
+**等上游，不自建。** 2026-11-18 用户裁决，三选一里选了中间那条。
+
+事实（`javap -p` 读 `0.13.0` 的 `DockerCliExecBackend$Builder`）：builder 只有
+`dockerCommand` / `containerId` / `image` / `mount` / `containerWorkingDirectory` /
+`environment` / `shellCommand`，**没有任何限额入口**。`containerId(...)` 那条路能接一个
+外部建好的容器（带限额），但那样限额由 compose/k8s 写、不在本仓配置里，`SandboxProperties`
+就变成一半生效一半在别处——正是本仓最忌讳的那种偏差。
+
+上游要补的七项（按 ADR-0020 点名的四条拆开）：
+
+| 参数 | 对应 `docker run` | 哪个判据要它 |
+| --- | --- | --- |
+| `network` | `--network`（默认给 `none`） | 断网 |
+| `readOnlyRootfs` | `--read-only` | 只读根 |
+| `tmpfs` / `workdirSize` | `--tmpfs /tmp:size=…` | 可写临时 workdir |
+| `memory` | `--memory` | 内存上限 |
+| `pidsLimit` | `--pids-limit` | pid 上限 |
+| `user` | `--user` | 非 root |
+| `cpus` | `--cpus` | CPU（不列入验收，macOS 上不保证） |
+
+回来时改哪儿：exec 侧只动 `SandboxBackends.execContainer(...)`（把七项映射到 builder）；
+脚本侧仍是 `ContainerSpec` 出 argv——那份是 argv 形态，库里给不了（`ExecSpec` 只有字符串），
+所以"容器规格只写一次"这条结构判断到时候要重新答一次：要么两边参数各写一份并加一条
+"逐字段相等"的单测（票里已有 `#bothPathsShareOneContainerSpec`），要么脚本层也换到库。
+
+**若上游长期不动**：唯一能一次解决"argv + 四条限额"的高质量件是 `docker-java`（3.2k★，活跃，
+`execCreateCmd.withCmd(List<String>)` 是 argv、`HostConfig` 有 Memory/PidsLimit/NetworkMode/
+ReadonlyRootfs/User）。那时要连 exec 侧一起换，避免两套 docker 访问方式。记在这里，不开票。
+
+## 要动的地方（预计，只剩脚本侧）
 
 | 位置 | 改什么 |
 | --- | --- |
-| 新 `ContainerSpec`（值对象） | 一次写全：镜像、网络、挂载、内存、pid、用户、workdir、只读根。两条路径都从这里取 |
-| `DockerSandboxRunner` | 从 `ContainerSpec` 生成 argv，自己不拼参数 |
-| `SandboxedExecBackend` 的容器分支 | 同样从 `ContainerSpec` 取，不另拼一份 |
-| 新 `SandboxLimitsProperties`（或并入 `SandboxProperties`） | 内存、pid、CPU、用户、workdir 大小；给默认值并写明"默认是上限不是建议" |
+| `ContainerSpec`（值对象） | 补网络、只读根、内存、pid、用户、cpus；脚本侧 argv 从这里出 |
+| `DockerSandboxRunner` | 不自己拼参数（现在已经不拼，只透传） |
+| exec 侧 | **等上游**，本票不动 |
+| 新 `SandboxLimitsProperties`（或并入 `SandboxProperties`） | 六项限额；给默认值并写明"默认是上限不是建议" |
 
 ## TDD 用例清单
 
@@ -45,10 +77,10 @@ ADR-0021 §"追平 2：执行隔离"。
 | workdir 可写，进程退出后不残留 | `#workdirIsWritableAndEphemeral` | 今天写在宿主目录里，留着 |
 | 超内存被 OOM 杀掉，退出码非 0 且宿主存活 | `#memoryLimitKillsTheContainer` | 今天无限额，能吃满宿主 |
 | 容器内 `id -u` 不为 0 | `#runsAsNonRoot` | 今天只拒绝宿主上的 root |
-| 两条路径产出的容器规格逐字段相等 | `#bothPathsShareOneContainerSpec`（单测，假后端） | 无；防的是"脚本锁了、Bash 没锁" |
-| 第五条限额加上去只改一处 | 同上，断言两边都从 `ContainerSpec` 取 | 无 |
+| 两条路径产出的容器规格逐字段相等 | `#bothPathsShareOneContainerSpec`（单测，假后端） | 无；防的是"脚本锁了、Bash 没锁"。**上游加参数之后才有意义，本票先挂 ⏳** |
+| 第五条限额加上去只改一处 | 同上，断言两边都从 `ContainerSpec` 取 | 无。同上，`⏳` |
 
-**标记：整张表未复核（票还没开始）。** 收票时逐行改成 `✅` / `❌` / `⏳`，规则见 `AGENTS.md` 第 2 条。
+**标记：整张表未复核（票被上游卡住，还没开始）。** 收票时逐行改成 `✅` / `❌` / `⏳`，规则见 `AGENTS.md` 第 2 条。
 
 ## 验收判据
 
@@ -58,7 +90,7 @@ ADR-0021 §"追平 2：执行隔离"。
 | 只读根 | `touch /probe` 失败并返回只读文件系统错误；`touch $WORKDIR/probe` 成功 |
 | 内存 | `--memory 64m` 下跑一个吃 256m 的进程：容器非 0 退出、宿主内存不涨 |
 | 非 root | `id -u` 输出非 0；进程属主与镜像 `USER` 一致 |
-| 两条路径一致 | 同一个 `ContainerSpec` 分别经 `ProcessRunnerFactory` 与 `ExecBackend` 生成 argv，差异只有 argv 头部 |
+| 两条路径一致 | 同一个 `ContainerSpec` 分别经 `ProcessRunnerFactory` 与 `ExecBackend` 生成 argv，差异只有 argv 头部（**等上游**） |
 | 默认不误伤 | 限额默认值下，现有的 `ExecToolTest` / `ScriptPackageTest` 全绿（它们走宿主，`mode=off`） |
 
 ## 缺口

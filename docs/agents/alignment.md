@@ -2,6 +2,10 @@
 
 **一句话**：外部有对应物的能力，就用它本来的样子。它的缺口不补，我们的不变式给它让路。
 
+**ADR 不是豁免**（2026-11-18 加）：本项目自己的 ADR 与 OpenClaw 的机制冲突时，**以 OpenClaw 为准**——
+改 ADR，不改对齐目标；"它没有这个形态"也不算理由，要问它用什么达成同一件事。
+规则与对照表的要求写在 `AGENTS.md`「设计一律照 OpenClaw」。
+
 这一份是判据，不是清单。清单会过期，判断方式不会。
 
 ## 三条判据
@@ -98,8 +102,25 @@ try/catch 去维持"缓存不参与可用性"——那是拿自研代码给自�
 理由写在 `DockerCli` 的类注释里，一句话说得完。
 
 **这一条也顺带纠正了一个旧习惯**：本项目手写的 `ShellCommandRunner` / `LocalProcessRunner`
-同样早于库里的 `LocalExecBackend`。要不要换是另一张票的事（换它等于重做票 01 那层的接缝），
-但它属于"该被找一遍"的清单，不属于"已经证明该自研"。
+同样早于库里的 `LocalExecBackend`。2026-11-18 已把这四个包（`process` / `sandbox` / `exec` /
+`script`）逐件对着源码核过一遍，结论与判据在 `docs/reviews/2026-11-18-open-source-inventory.md`：
+
+- `ShellCommandRunner` / `ShellProcess` → **已换**成库的 `LocalExecBackend`（2026-11-18，
+  `.scratch/oss-alignment/issues/01-exec-host-backend-to-local.md`）；
+- `LocalProcessRunner` → 换成 Apache Commons Exec（zt-exec 的 `applyEnvironment()` 只能增删单个键，
+  表达不了"环境只有 PATH"这条约束）。还没换；
+- 容器 argv、命令白名单、脚本包、路径边界四件：Java 侧没有够格的对等物，留下并记账。
+
+第二条与"脚本包要不要 argv"都还没定，别把它们当成已经做过的结论。
+
+### 质量门槛与两个判例
+
+四道筛（使用面 / 维护面 / 代价 / 能不能表达我们的约束）写在 `AGENTS.md`「开源的质量怎么判」，这里只记判例：
+
+- **164★ 胜过 919★**：`commons-exec` 走 `Runtime.exec(cmdarray, envp, dir)`，envp 整份替换，
+  正好表达"环境只有 PATH"；`zt-exec` 的 `applyEnvironment()` 只能增删单键。星数只负责先筛掉没人用的。
+- **形状最对的反而不能引**：`markpollack/agent-sandbox` 1.0.0 的 `ExecSpec` 每个后端都是 argv，
+  正是脚本层要的，但 3★、个人仓、1.0.0 刚发（2026-11-15）、且没有限额参数——只看，不引。
 
 ## 这条同样适用于 OpenClaw
 
