@@ -3,8 +3,7 @@ package io.github.claw4j.capability.sandbox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Condition;
 import org.springframework.context.annotation.ConditionContext;
@@ -40,6 +39,7 @@ public class SandboxAutoConfiguration {
      */
     @Bean
     @Conditional(SandboxEnabled.class)
+    @ConditionalOnProperty(prefix = "claw4j.scripts", name = "directory")
     public DockerCli dockerCli(SandboxProperties properties) {
         properties.requireUsable();
         DockerCli cli = DockerCli.resolve(properties);

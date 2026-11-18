@@ -1,7 +1,11 @@
 package io.github.claw4j.capability.script;
 
+import io.github.claw4j.capability.sandbox.DockerCli;
+import io.github.claw4j.capability.sandbox.SandboxBackends;
+import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -48,8 +52,29 @@ public class ScriptPackageAutoConfiguration {
      * 报出来的是"已经有一个叫 X 的包"，离"listener 挂重了"隔着一层。
      */
     @Bean
-    public ScriptPackageRunner scriptPackageRunner(ScriptPackageRegistry registry) {
-        return new ScriptPackageRunner(registry.packages());
+    public ScriptPackageRunner scriptPackageRunner(ScriptPackageRegistry registry,
+                                                   ProcessRunnerFactory processRunnerFactory) {
+        return new ScriptPackageRunner(registry.packages(), processRunnerFactory);
+    }
+
+    /**
+     * 执行后端：宿主那条沙箱子进程，或者另一台容器（P17a）。
+     *
+     * <p>挑哪一个是 {@link SandboxBackends} 那一处的事，这里只把配置与 CLI 交过去——
+     * 判断放在装配里会变成"改一处配置要动三个装配类"，而它们各写一遍 {@code mode} 判断时，
+     * 加第三档必然只改一边。
+     *
+     * <p>{@code mode=off} 时拿到的是 {@link ProcessRunnerFactory#SANDBOXED} 本身，不是包装。
+     *
+     * @param properties 沙箱配置
+     * @param dockerCli  docker CLI；{@code mode=off} 时不存在
+     * @return 这一层用的工厂
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ProcessRunnerFactory processRunnerFactory(SandboxProperties properties,
+                                                     ObjectProvider<DockerCli> dockerCli) {
+        return SandboxBackends.scriptFactory(properties, dockerCli.getIfAvailable());
     }
 
     /**

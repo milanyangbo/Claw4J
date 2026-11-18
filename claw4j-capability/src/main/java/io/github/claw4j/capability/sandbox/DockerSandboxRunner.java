@@ -59,7 +59,7 @@ public final class DockerSandboxRunner implements ProcessRunner {
         for (String argument : request.argv()) {
             inner.add(containerArgument(argument));
         }
-        return cli.run(spec, List.copyOf(inner), Map.of(), request.timeoutMillis());
+        return cli.run(spec, List.copyOf(inner), request.timeoutMillis());
     }
 
     /**

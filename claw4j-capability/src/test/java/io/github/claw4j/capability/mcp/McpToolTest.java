@@ -1,6 +1,7 @@
 package io.github.claw4j.capability.mcp;
 
 import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.modelcontextprotocol.client.McpClient;
@@ -34,8 +35,11 @@ import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.modelcontextprotocol.spec.McpTransportSessionNotFoundException;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.extension.ExtendWith;
 import io.github.claw4j.capability.untrusted.UntrustedDescriptionCallback;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.ai.tool.ToolCallback;
@@ -68,7 +72,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>只有"接别人的 server"这一个方向：反方向（自己当 MCP server、把工具交出去）已由 ADR-0030 整块下线
  * （票 08）。它原来占这个文件后半，判据也是"客户端视角看到了什么"——只是站在管道的另一端；
  * 这一端现在不存在了，于是那个进程内 server 只剩一个用途：给客户端这一侧当真对端。
+ *
+ * <p>存在性过滤（票 07）那五条 2026-11-18 并回这里：它们原来单独一份
+ * （{@code McpToolFilterTest}），拆出去的理由是"这个类已经 20 个方法"，而那时门禁上限是 20。
+ * 上限抬到 26 之后，模块的测试<b>文件数</b>成了新的约束（P17a 要给 sandbox 腾一个位置），
+ * 于是按当初拆出去的理由并回来。
  */
+@ExtendWith(OutputCaptureExtension.class)
 class McpToolTest {
 
     /** 管道缓冲：一帧可能带上整个工具结果，1KB 的默认值会频繁阻塞。 */
@@ -247,6 +257,97 @@ class McpToolTest {
 
     private static McpServerEndpoint endpoint(String name, InProcessStdioMcpServer server) {
         return McpServerEndpoint.of(name, server::openTransport);
+    }
+
+    /*
+     * 存在性过滤（票 07）：以前单独一个 McpToolFilterTest，理由是"那个类已经 20 个方法（门禁上限）"。
+     * 上限 2026-11-18 抬到 26，而模块的测试文件数到顶（14），所以并回来。
+     *
+     * 它要验的是一条链上四处一起少掉：callbacks、权限登记、画像（knowsTool）、
+     * 以及启动日志里那份清单。只少一处的实现会让模型"看得见却调不动"或者反过来，
+     * 而两种现象都不指向配置。
+     */
+
+    @Test
+    @DisplayName("没配 tool-filter 时清单与改前逐个相同：这条最容易漏，漏了就是所有 MCP 工具静默消失")
+    void noFilterKeepsEveryTool() {
+        try (InProcessStdioMcpServer calc = InProcessStdioMcpServer.of("calc", new CalcTools());
+             McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(endpoint(calc, ToolFilter.none()))))) {
+            assertThat(provider.toolNames()).containsExactlyInAnyOrder("add", "echo", "explode", "tick");
+        }
+    }
+
+    @Test
+    @DisplayName("include 两个：第三个的 callback 与权限都不存在，画像也查不到它")
+    void includeFiltersCallbacksAndPermissions() {
+        try (InProcessStdioMcpServer calc = InProcessStdioMcpServer.of("calc", new CalcTools());
+             McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(
+                     endpoint(calc, new ToolFilter(List.of("add", "echo"), List.of())))))) {
+            assertThat(provider.toolNames())
+                    .as("清单里少一个就是少一个：没有 callback 的名字不该还留着一个能问到的登记")
+                    .containsExactlyInAnyOrder("add", "echo");
+            assertThat(provider.knowsTool("tick"))
+                    .as("画像层问的就是这个：答 true 的话，allow 里写 tick 会被当成一个存在的工具")
+                    .isFalse();
+            assertThat(provider.status()).singleElement()
+                    .satisfies(snapshot -> assertThat(snapshot.tools())
+                            .as("启动日志那份清单读的是同一份，不是另抄的一份")
+                            .containsExactlyInAnyOrder("add", "echo"));
+        }
+    }
+
+    @Test
+    @DisplayName("exclude 一个：等价于把其余写进 include，结果一致")
+    void excludeRemovesTool() {
+        try (InProcessStdioMcpServer calc = InProcessStdioMcpServer.of("calc", new CalcTools());
+             McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(
+                     endpoint(calc, new ToolFilter(List.of(), List.of("explode"))))))) {
+            assertThat(provider.toolNames()).containsExactlyInAnyOrder("add", "echo", "tick");
+            assertThat(provider.toolNames()).doesNotContain("explode");
+        }
+    }
+
+    @Test
+    @DisplayName("通配：runtime* 这类写法按整串命中，只留下名字对得上的那个")
+    void globFiltersByName() {
+        try (InProcessStdioMcpServer calc = InProcessStdioMcpServer.of("calc", new CalcTools());
+             McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(
+                     endpoint(calc, new ToolFilter(List.of("e*"), List.of())))))) {
+            assertThat(provider.toolNames())
+                    .as("echo 与 explode 都以 e 开头：两个都留，tick 与 add 都走")
+                    .containsExactlyInAnyOrder("echo", "explode");
+        }
+    }
+
+    @Test
+    @DisplayName("恢复之后重新筛一遍：拿到的不是第一次列出来的那份快照")
+    void filterReappliedWhenTheServerComesBack(CapturedOutput output) {
+        try (InProcessStdioMcpServer calc = InProcessStdioMcpServer.of("calc", new CalcTools())) {
+            McpServerRetryTest.RecordingScheduler scheduler = new McpServerRetryTest.RecordingScheduler();
+            AtomicInteger opens = new AtomicInteger();
+            ToolFilter filter = new ToolFilter(List.of("add", "echo"), List.of());
+            McpServerEndpoint flaky = McpServerEndpoint.of("calc", filter, () -> {
+                if (opens.getAndIncrement() == 0) {
+                    throw new IllegalStateException("对端正在重启");
+                }
+                return calc.openTransport();
+            });
+
+            try (McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(flaky)), scheduler)) {
+                assertThat(provider.toolNames()).as("第一次没连上：这一轮它不在清单里").isEmpty();
+
+                assertThat(scheduler.runNext()).isTrue();
+
+                assertThat(provider.toolNames())
+                        .as("恢复时走的是同一条装上清单的路：过滤在 install 里，所以重新筛，不是沿用快照")
+                        .containsExactlyInAnyOrder("add", "echo");
+                assertThat(output).contains("第 1 次重试后恢复，工具 4 个");
+            }
+        }
+    }
+
+    private static McpServerEndpoint endpoint(InProcessStdioMcpServer server, ToolFilter filter) {
+        return McpServerEndpoint.of("calc", filter, server::openTransport);
     }
 
     private static McpToolProvider providerOf(String name, InProcessStdioMcpServer server) {

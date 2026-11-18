@@ -4,8 +4,8 @@ import io.github.claw4j.capability.process.LocalProcessRunner;
 import io.github.claw4j.capability.process.ProcessOutcome;
 import io.github.claw4j.capability.process.ProcessRequest;
 import io.github.claw4j.capability.process.ProcessRunner;
-import io.github.claw4j.capability.process.ShellProcess;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -15,22 +15,21 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * docker CLI 的那一层：找到它、探一次、然后用它起容器。
+ * 找得到、探得通、跑得起来的 {@code docker}。
  *
- * <p>为什么是 CLI 而不是 docker 的 Java 客户端：起 {@code docker run} 与起任何别的命令没有区别，
- * 而 {@link LocalProcessRunner} 正是那条被架构测试点名过的接缝（全仓只有两个类碰
- * {@code ProcessBuilder}）。引一个客户端库会多出第三条起进程的路，还会自带一套模型对象，
- * 换来的只是"少写两行 argv"。
+ * <p><b>它只服务脚本层。</b> {@code exec} 那侧的容器由社区的
+ * {@code DockerCliExecBackend}（{@code spring-ai-agent-utils-docker-cli}）负责——它做托管容器、
+ * 后台句柄、超时后在容器内杀 PID、JVM 退出时回收，这些都不该再写一遍。
+ * 脚本层用不了它：那一侧的接口是 {@code ExecSpec}（一条命令字符串），而脚本的参数必须是
+ * argv（ADR-0002，参数不能被解释器再看一遍）。
  *
- * <p>它不是 {@code ProcessRunner} 的又一个实现：{@link DockerSandboxRunner} 才是（脚本侧），
- * 这里只回答"docker 在哪、能不能用、怎么把一条 argv 交给它"。
- *
- * <p>探测放在启动期：{@code docker info} 验守护进程、{@code docker image inspect} 验镜像。
- * 两条分开报，因为修法完全不同——一个是"把 docker 起来"，一个是"把镜像拉下来"。
+ * <p>为什么是 CLI 而不是 Java 的 docker 客户端：{@code docker run} 与任何别的命令没有区别，
+ * 而 {@link LocalProcessRunner} 就是那条被架构测试点名过的接缝（全仓只有两个类碰
+ * {@code ProcessBuilder}）。多引一个客户端库等于多开第三条起进程的路。
  */
 public final class DockerCli {
 
-    /** 探测的墙上时钟上限：冷启动的 docker 守护进程可能慢，但 15 秒还没应答就是没有。 */
+    /** 探测的墙上时钟上限：冷启动的守护进程可能慢，但 15 秒还没应答就是没有。 */
     private static final long PROBE_TIMEOUT_MILLIS = 15_000;
 
     private final String binary;
@@ -74,6 +73,8 @@ public final class DockerCli {
     /**
      * 探一次：守护进程在不在、镜像有没有。任何一条不过就抛，消息里点名是哪一条。
      *
+     * <p>两条分开报，因为修法完全不同：一个是"把 docker 起来"，一个是"把镜像拉下来"。
+     *
      * @param image 要用的镜像
      * @throws SandboxUnavailableException 守护进程不在，或镜像不在本机
      */
@@ -90,57 +91,27 @@ public final class DockerCli {
         if (!succeeded(imageCheck)) {
             throw new SandboxUnavailableException("claw4j.tools.sandbox.image=" + image + " 本机没有，也拉不下来"
                     + "（命令：" + binary + " image inspect " + image + "）。先 docker pull " + image
-                    + "，或者换一个本地已有的镜像站地址。"
+                    + "，或者换一个本地已有的镜像。"
                     + firstLine(imageCheck));
         }
     }
 
     /**
-     * 跑一次容器，同步等结束。
+     * 跑一次容器，同步等结束。脚本层的容器是一次性的：{@code --rm}，跑完就删。
      *
-     * @param spec         容器规格
-     * @param inner        容器里要执行的 argv
-     * @param environment  容器里能看到的全部环境变量
-     * @param timeoutMillis 墙上时钟上限
-     * @return docker CLI 的结果；容器里那条命令的退出码就是它的退出码
+     * <p>一次性容器与 exec 侧那个托管容器是两个决定：脚本是"一个包、一次调用、一个结果"，
+     * 每次跑完就该消失；exec 是"一段会话里反复敲命令"，容器留着才有意义（那也是库里做的）。
+     *
+     * @param spec    容器规格
+     * @param inner   容器里要执行的 argv
+     * @param timeout 墙上时钟上限
+     * @return docker CLI 的结果；脚本的退出码就是它的退出码
      */
-    public ProcessOutcome run(ContainerSpec spec, List<String> inner, Map<String, String> environment,
-                              long timeoutMillis) {
-        return runner.run(new ProcessRequest(argvOf(spec, inner, environment), timeoutMillis));
-    }
-
-    /**
-     * 起一个后台容器，不设超时。
-     *
-     * <p>后台句柄管的是本机这条 docker 客户端；{@code docker run} 不带 {@code -d} 时客户端在前台
-     * 盯着容器，所以杀掉它容器也跟着停。
-     *
-     * @param spec        容器规格
-     * @param inner       容器里要执行的 argv
-     * @param environment 容器里能看到的全部环境变量
-     * @return 后台句柄
-     */
-    public ShellProcess start(ContainerSpec spec, List<String> inner, Map<String, String> environment) {
-        List<String> argv = argvOf(spec, inner, environment);
-        if (!(runner instanceof LocalProcessRunner binaryRunner)) {
-            throw new SandboxUnavailableException("后台容器需要能从本机起进程的执行器");
-        }
-        return binaryRunner.start(argv);
-    }
-
-    /**
-     * 完整 argv：docker 这个程序 + {@code run} 的一串参数。
-     *
-     * @param spec        容器规格
-     * @param inner       容器里要执行的 argv
-     * @param environment 容器里能看到的全部环境变量
-     * @return 可直接交给进程的参数数组
-     */
-    List<String> argvOf(ContainerSpec spec, List<String> inner, Map<String, String> environment) {
+    public ProcessOutcome run(ContainerSpec spec, List<String> inner, long timeout) {
         List<String> argv = new ArrayList<>();
         argv.add(binary);
-        argv.addAll(spec.argv(inner, environment));
-        return List.copyOf(argv);
+        argv.addAll(spec.argv(inner, Map.of()));
+        return runner.run(new ProcessRequest(List.copyOf(argv), timeout));
     }
 
     /** docker CLI 的路径：日志与失败信息里要能看出用的是哪一个。 */
@@ -182,7 +153,7 @@ public final class DockerCli {
         }
         String path = System.getenv("PATH");
         if (path != null) {
-            for (String directory : path.split(java.io.File.pathSeparator)) {
+            for (String directory : path.split(File.pathSeparator)) {
                 if (directory.isBlank()) {
                     continue;
                 }

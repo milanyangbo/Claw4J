@@ -4,6 +4,7 @@ import io.github.claw4j.capability.process.ProcessOutcome;
 import io.github.claw4j.capability.process.ProcessStartException;
 import io.github.claw4j.capability.process.ShellCommandRunner;
 import io.github.claw4j.capability.process.ShellProcess;
+import io.github.claw4j.capability.sandbox.SandboxProperties;
 import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.common.exec.ExecHandle;
 import org.springaicommunity.agent.common.exec.ExecResult;
@@ -28,8 +29,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * 任何一步拒绝都不起进程、不写文件、不占端口。
  *
  * <p>后端替模型定死的三样：工作目录（就是 workspace，换目录由模型在命令里 {@code cd} 表达）、
- * 环境（继承，且拒改 {@code PATH} / {@code LD_*} / {@code DYLD_*}）、超时上限（由
- * {@code ExecSpec} 自己 clamp，{@code ExecSpec.java:45}）。三样都不在工具参数里，模型改不了。
+ * 环境（宿主上继承、且拒改 {@code PATH} / {@code LD_*} / {@code DYLD_*}；容器里不继承宿主那份）、
+ * 超时上限（由 {@code ExecSpec} 自己 clamp，{@code ExecSpec.java:45}）。三样都不在工具参数里，模型改不了。
+ *
+ * <p>命令跑在哪儿是<b>另一个决定</b>（P17a）：{@code container} 非空时，判定通过后整段交给它，
+ * 生产上那是社区的 {@code DockerCliExecBackend}。这一层不因为换了执行位置就多判或少判一条——
+ * 白名单、审批、非 root 与"在哪跑"正交。
  *
  * <p>拒绝让模型看见的方式：{@link ExecViolationException} 从 {@code run} 里抛出去，
  * {@code ShellTools} 的同步分支不吞异常，工具调用管理器把它包成 {@code ToolExecutionException}，
@@ -53,6 +58,14 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
 
     /** 后台 shell 由这里持有：{@code ShellTools} 只管自己的那份 id → handle，回收这件事在 {@link #destroy()}。 */
     private final Map<String, ShellProcess> background = new ConcurrentHashMap<>();
+
+    /**
+     * 命令交给谁跑。{ null} 表示宿主那条 shell 解释器。
+     *
+     * <p>非空时是社区的 {@code DockerCliExecBackend}：托管容器、后台句柄、超时在容器内杀 PID、
+     * 退出回收都在里面。这一层只留判定，不再自己拼 {@code docker run}。
+     */
+    private final ExecBackend container;
 
     /**
      * 用进程自身的环境与账号建后端：生产路径走这个。
@@ -106,12 +119,38 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
                                 Map<String, String> inheritedEnvironment, String accountName,
                                 ExecApprovalPort approvals, ExecReviewer reviewer) {
+        this(properties, runner, inheritedEnvironment, accountName, approvals, reviewer, null);
+    }
+
+    /**
+     * 完整的一档，并且指定"命令交给谁跑"。
+     *
+     * <p>{@code container} 非空时，<strong>判定之后的执行整段交给它</strong>——生产上那是社区的
+     * {@code DockerCliExecBackend}（托管容器、后台句柄、超时在容器内杀 PID、退出回收都在里面）。
+     * 这一层只保留判定：白名单、审批、非 root、环境，与"在哪跑"正交。
+     *
+     * <p>为什么不在这层自己拼 {@code docker run}：Docker 有个已知限制——杀掉 docker 客户端
+     * 不会杀掉容器里的进程。库里为每条命令在容器内记了 PID，超时时在容器内发 TERM 再 KILL；
+     * 自己写一版最容易漏的正是这一条，而且漏的时候没人知道。
+     *
+     * @param properties           {@code claw4j.tools.exec} 的配置
+     * @param runner               宿主上起进程的执行器
+     * @param inheritedEnvironment 宿主上继承给命令的环境；容器那条路不用它（容器不继承宿主环境）
+     * @param accountName          当前执行账号
+     * @param approvals            审批端口；{@code null} 按"没有设施"处理
+     * @param reviewer             复核器；{@code null} 按"恒回落"处理
+     * @param container            容器执行后端；{@code null} 表示跑在宿主上
+     */
+    public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
+                                Map<String, String> inheritedEnvironment, String accountName,
+                                ExecApprovalPort approvals, ExecReviewer reviewer, ExecBackend container) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.runner = Objects.requireNonNull(runner, "runner");
         this.inheritedEnvironment = Map.copyOf(Objects.requireNonNull(inheritedEnvironment, "inheritedEnvironment"));
         this.accountName = accountName;
         this.approvals = approvals == null ? ExecApprovalPort.denyAll() : approvals;
         this.reviewer = reviewer == null ? ExecReviewer.fallback() : reviewer;
+        this.container = container;
     }
 
     /**
@@ -127,6 +166,9 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     @Override
     public ExecResult run(ExecSpec spec) {
         authorize(spec);
+        if (container != null) {
+            return container.run(spec);
+        }
         Path directory = runner.workingDirectory();
         try {
             ProcessOutcome outcome = runner.run(spec.command(), directory, environment(spec), spec.timeoutMillis());
@@ -152,6 +194,9 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     @Override
     public ExecHandle start(ExecSpec spec) {
         authorize(spec);
+        if (container != null) {
+            return container.start(spec);
+        }
         // 顺手清掉已经结束的后台 shell：它们不会自己从表里消失，留着的唯一作用是占一个 id。
         background.values().removeIf(shell -> !shell.isAlive());
         ShellProcess shell = runner.start(spec.command(), runner.workingDirectory(), environment(spec));
@@ -168,6 +213,15 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     public void destroy() {
         background.values().forEach(ShellProcess::kill);
         background.clear();
+        // 容器跟着这一层一起回收：托管容器由库建、也由库删（它还挂了 shutdown hook 兜底）。
+        if (container instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            }
+            catch (Exception failure) {
+                throw new IllegalStateException("关闭容器后端失败：" + failure.getMessage(), failure);
+            }
+        }
     }
 
     private void authorize(ExecSpec spec) {
@@ -217,7 +271,7 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
      */
     private void settle(ExecSpec spec, List<String> segments, ExecPolicy.Settings settings) {
         ExecApprovalPort.Request request = new ExecApprovalPort.Request(
-                spec.command(), runner.workingDirectory(), segments, askReason());
+                spec.command(), displayDirectory(), segments, askReason());
         ExecApprovalPort.Decision decision = approvals.decide(request);
         switch (decision.kind()) {
             case ALLOW_ONCE -> requireFrozenPlan(decision, request);
@@ -307,7 +361,7 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         List<String> argv = segments.isEmpty()
                 ? List.of()
                 : List.of(segments.getFirst().split("\\s+"));
-        return new ExecReviewer.Request(spec.command(), argv, null, runner.workingDirectory(),
+        return new ExecReviewer.Request(spec.command(), argv, null, displayDirectory(),
                 inheritedEnvironment.keySet(), properties.settings().host().name(),
                 askReason(), "", null);
     }
@@ -326,6 +380,20 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
 
     private Map<String, String> environment(ExecSpec spec) {
         return ExecPolicy.environment(inheritedEnvironment, spec.env());
+    }
+
+    /**
+     * 命令"看起来在哪个目录里跑"。审批请求、复核器与拒绝信息读的都是它。
+     *
+     * <p>容器模式下报的是容器里的目录：模型写的命令确实跑在 {@code /workspace}，给它看宿主路径
+     * 等于让它拿着一个自己点不到的地方去解释失败。宿主模式照旧报工作区。
+     *
+     * @return 给模型与审批人看的目录
+     */
+    private Path displayDirectory() {
+        return container == null
+                ? runner.workingDirectory()
+                : Path.of(SandboxProperties.CONTAINER_WORKDIR);
     }
 
     private String allowText() {

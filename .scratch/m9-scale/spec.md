@@ -12,7 +12,7 @@
 
 | 编号 | 一件事 | 状态 |
 | --- | --- | --- |
-| **P17** | 脚本沙箱加固（真正的隔离边界）：从"四条约束"到"容器级限额" | 拆成 `P17a` / `P17b` / `P17c`，均 `ready-for-agent` |
+| **P17** | 脚本沙箱加固（真正的隔离边界）：从"四条约束"到"容器级限额" | 拆成 `P17a` / `P17b` / `P17c`；`P17a` resolved（2026-11-18），另两张 `ready-for-agent` |
 | **P18** | `doctor` 自检 | 拆成 `P18a` / `P18b`，均 `ready-for-agent` |
 | **P19** | WebSocket 传输 | **暂不需要**（2026-11-18 用户裁决），未拆票 |
 
@@ -20,7 +20,7 @@ P17 的三张：
 
 | 票 | 一件事 | Blocked by |
 | --- | --- | --- |
-| `P17a-sandbox-mode-and-docker-backend` | `tools.sandbox.*` 四个键；命令真的跑进容器 | 无 |
+| `P17a-sandbox-mode-and-docker-backend` | `tools.sandbox.*` 的键；命令真的跑进容器 | 无。**已 resolved** |
 | `P17b-container-limits` | 断网、只读根、内存与 pid 上限、非 root；两条路径共用一份容器规格 | P17a |
 | `P17c-workspace-and-lifecycle` | 工作目录进出、容器复用、退出清理 | P17a（可与 b 并行） |
 

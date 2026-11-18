@@ -134,6 +134,13 @@
                 <artifactId>spring-ai-agent-utils</artifactId>
                 <version>${spring-ai-agent-utils.version}</version>
             </dependency>
+            <!-- 容器里的 exec 后端（P17a）：社区给的 ExecBackend 实现，托管容器、后台句柄、
+                 超时杀容器内 PID、shutdown hook 全在里面。自己写一套只会重踩它踩过的坑。 -->
+            <dependency>
+                <groupId>org.springaicommunity</groupId>
+                <artifactId>spring-ai-agent-utils-docker-cli</artifactId>
+                <version>${spring-ai-agent-utils.version}</version>
+            </dependency>
             <!-- 飞书长连接通道，只在 claw4j-channel 里以 optional 引入，见 ADR-0009 -->
             <dependency>
                 <groupId>com.larksuite.oapi</groupId>
@@ -189,11 +196,14 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire.version}</version>
                     <!--
-                      三组"不属于回归基线"的用例默认不跑：
+                      四组"不属于回归基线"的用例默认不跑：
 
                       - real-cli（本机装了 gh / himalaya / xurl）
                       - real-mcp（要 Node、要能出网，去连真的第三方 MCP server）
                       - eval（评测集：五十条真模型调用，一次十几分钟。A06）
+                      - docker（P17a：要守护进程与镜像。CI 上没有 docker，而这几条验的正是
+                        "换台机器就没有容器"这件事本身——不排除的话，换台机器整份回归变红，
+                        而红的原因跟被测的那行代码无关）
 
                       为什么是"排除"而不是在测试里 assume：assume 出来的结果是 skipped，
                       而跳过的绿和通过的绿在报表里长得一模一样——`scripts/verify.sh` 有一条
@@ -209,12 +219,12 @@
                       用例集自洽由 EvalCaseSetTest 守着（不调模型，进回归），
                       判分口径由 EvalScorerTest 守着（同样进回归）。
 
-                      本机想跑：./mvnw test -Preal-cli、./scripts/eval.sh
+                      本机想跑：./mvnw test -Preal-cli、./mvnw test -Pdocker、./scripts/eval.sh
                     -->
                     <configuration>
-                        <!-- 默认排除这两组；profile 里换成不存在的组名来放开。
+                        <!-- 默认排除这几组；profile 里换成不存在的组名来放开。
                              "空"在 surefire 里会被当成没设置（于是继承这一份，照样排除）。 -->
-                        <excludedGroups>real-cli,real-mcp,eval</excludedGroups>
+                        <excludedGroups>real-cli,real-mcp,eval,docker</excludedGroups>
                     </configuration>
                 </plugin>
             </plugins>
@@ -342,6 +352,31 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <groups>real-cli,real-mcp</groups>
+                            <excludedGroups>no-such-group</excludedGroups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          容器（P17a）：那几条验的是"命令真的在另一台容器里跑"，要守护进程与镜像。
+          CI 上没有 docker，所以默认排除；本机要看真隔离时：
+
+              ./mvnw -Pdocker -pl claw4j-capability test -Dtest=DockerSandboxTest
+
+          形状与 real-cli 那份相同，理由也一样：groups 与 excludedGroups 必须一起换，
+          否则继承下来的排除会把这组再排除一次。
+        -->
+        <profile>
+            <id>docker</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>docker</groups>
                             <excludedGroups>no-such-group</excludedGroups>
                         </configuration>
                     </plugin>

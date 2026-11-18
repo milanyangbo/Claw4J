@@ -303,6 +303,27 @@ claw4j:
       # 会进 exec_allowlist 表，与这一份按同一规则合并匹配（表里的是运维批出来的）。
       allow: []
 
+    # ---- 沙箱：命令跑在宿主进程里，还是跑在另一台容器里（P17a / ADR-0030 裁决六）----
+    # 默认 off：与接入这一层之前逐字节一致。打开之后脚本与 exec 都进容器。
+    # 探不通 docker **启动失败**，不会悄悄回落到宿主——那样你以为有隔离，其实没有。
+    #
+    # 两条路径用的不是同一套东西，这不是分裂：exec 用社区的
+    # `DockerCliExecBackend`（托管容器、后台句柄、超时在容器内杀 PID、退出回收都在库里），
+    # 脚本层保留自己的 argv 实现（脚本参数不能拼回一条命令交给 sh，ADR-0002）。
+    sandbox:
+      # off / all。non-main 的判定函数已经写好，但"这一段算不算主对话"要在工具清单那一层判
+      # （票 06），所以现在配 non-main 是启动失败，不是悄悄当成 all。
+      mode: ${CLAW4J_SANDBOX_MODE:off}
+      # docker；ssh 未实现，配了启动即失败（留一个配了不生效的取值比不支持更坏）。
+      backend: ${CLAW4J_SANDBOX_BACKEND:docker}
+      # ro / rw / none。**只作用于脚本层**：exec 侧的挂载由库管理、只支持读写，
+      # 配 ro 时启动日志会有一条 WARN 说明这件事（只读要等 P17b/c 的限额那一层）。
+      workspace-access: ${CLAW4J_SANDBOX_WORKSPACE_ACCESS:ro}
+      # 镜像要带 POSIX shell；exec 侧还要 sleep（托管容器靠它保活）、可写的 /tmp（记 PID 用）。
+      # 国内网络下拉不到官方镜像时，换本机已有的那个（例如本地镜像站的前缀）。
+      image: ${CLAW4J_SANDBOX_IMAGE:alpine:3}
+      docker-binary: ${CLAW4J_SANDBOX_DOCKER_BINARY:docker}
+
     # ---- 文件工具：Read / Grep / Glob（+ 可选 Write / Edit）----
     # 读与搜默认就有，路径只能落在 directory 里（`..` 与软链接跳出去会被拒）。
     # 写要单独开：读文件和改文件是两种能力，默认能改磁盘意味着一次误判就是一次脏工作区。

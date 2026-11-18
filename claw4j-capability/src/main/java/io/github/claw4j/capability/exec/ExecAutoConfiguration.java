@@ -1,8 +1,13 @@
 package io.github.claw4j.capability.exec;
 
 import io.github.claw4j.capability.process.ShellCommandRunner;
+import io.github.claw4j.capability.sandbox.SandboxBackends;
+import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.tools.ShellTools;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -45,6 +50,8 @@ import java.util.Map;
 @EnableConfigurationProperties(ExecProperties.class)
 public class ExecAutoConfiguration {
 
+    private static final Logger log = LoggerFactory.getLogger(ExecAutoConfiguration.class);
+
     /**
      * 三个工具名，取自 {@link ShellTools} 的 {@code @Tool(name = …)}。
      *
@@ -82,12 +89,21 @@ public class ExecAutoConfiguration {
     @ConditionalOnMissingBean
     public ShellTools shellTools(ExecProperties properties, ShellCommandRunner shellCommandRunner,
                                  ObjectProvider<ExecApprovalPort> approvals,
-                                 ObjectProvider<ExecReviewer> reviewer) {
+                                 ObjectProvider<ExecReviewer> reviewer,
+                                 ObjectProvider<SandboxProperties> sandboxProperties) {
+        SandboxProperties sandbox = sandboxProperties.getIfAvailable(SandboxProperties::defaults);
+        ExecBackend container = SandboxBackends.execContainer(sandbox, shellCommandRunner.workingDirectory());
+        if (container != null && sandbox.workspaceAccess() == SandboxProperties.WorkspaceAccess.RO) {
+            log.warn("claw4j.tools.sandbox.workspace-access=ro 只作用于脚本层：exec 侧的挂载由 "
+                    + "DockerCliExecBackend 管理，只支持读写。容器里的命令能改工作区——"
+                    + "只读要等 P17b/c 的限额那一层。");
+        }
         return ShellTools.builder()
                 .execBackend(new SandboxedExecBackend(properties, shellCommandRunner,
                         System.getenv(), System.getProperty("user.name", ""),
                         approvals.getIfAvailable(ExecApprovalPort::denyAll),
-                        reviewer.getIfAvailable(ExecReviewer::fallback)))
+                        reviewer.getIfAvailable(ExecReviewer::fallback),
+                        container))
                 .build();
     }
 

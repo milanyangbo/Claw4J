@@ -16,7 +16,7 @@ import java.util.Objects;
  * 因为它会被当成已经锁好了。
  *
  * <p>argv 是数组，不是一条命令字符串：{@code docker run} 的每个参数各占一个元素，
- * 于是宿主的 {@code /bin/sh} 从不参与解释（ADR-0002）。容器里那条命令要不要 shell 语义
+ * 于是宿主那个 shell 解释器从不参与解释（ADR-0002）。容器里那条命令要不要 shell 语义
  * 由调用方决定，它只是数组末尾的<strong>一个元素</strong>。
  *
  * @param image     镜像名

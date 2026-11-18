@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -33,6 +34,9 @@ public final class LocalProcessRunner implements ProcessRunner {
 
     private final Map<String, String> environment;
 
+    /** 入口必须是带 shebang 的脚本。容器后端起的 {@code docker} 是编译好的二进制，对它不成立。 */
+    private final boolean scriptHeaderRequired;
+
     /**
      * 用一个固定工作目录与一份完整环境建执行器。
      *
@@ -43,8 +47,31 @@ public final class LocalProcessRunner implements ProcessRunner {
      * @param environment 子进程能看到的全部环境变量
      */
     public LocalProcessRunner(Path workingDirectory, Map<String, String> environment) {
+        this(workingDirectory, environment, true);
+    }
+
+    private LocalProcessRunner(Path workingDirectory, Map<String, String> environment, boolean scriptHeaderRequired) {
         this.workingDirectory = Objects.requireNonNull(workingDirectory, "workingDirectory");
         this.environment = Map.copyOf(Objects.requireNonNull(environment, "environment"));
+        this.scriptHeaderRequired = scriptHeaderRequired;
+    }
+
+    /**
+     * 起**编译好的可执行文件**（没有 shebang 的那种）：容器后端起 {@code docker} 走这一档。
+     *
+     * <p>shebang 那条检查是为脚本入口写的：直接执行时没人替它解释，缺这一行报出来的
+     * {@code Exec format error} 离"忘了写 shebang"隔了一层。但把它套到一个 Mach-O / ELF 上
+     * 就是一条假失败——二进制本来就没有 shebang。所以这里收窄成"这类入口不查这一条"，
+     * 而不是把检查整个删掉：脚本入口那条仍然照查。
+     *
+     * <p>另外两条（普通文件、有可执行位）对它同样成立，也照样查。
+     *
+     * @param workingDirectory 子进程的工作目录
+     * @param environment 子进程能看到的全部环境变量
+     * @return 不要求 shebang 的执行器
+     */
+    public static LocalProcessRunner binaries(Path workingDirectory, Map<String, String> environment) {
+        return new LocalProcessRunner(workingDirectory, environment, false);
     }
 
     /**
@@ -68,20 +95,8 @@ public final class LocalProcessRunner implements ProcessRunner {
     @Override
     public ProcessOutcome run(ProcessRequest request) {
         Objects.requireNonNull(request, "request");
-        Path program = requireRunnable(workingDirectory, request.program());
-        ProcessBuilder builder = new ProcessBuilder(request.argv());
-        builder.directory(workingDirectory.toFile());
-        builder.environment().clear();
-        builder.environment().putAll(environment);
-        // 两路输出分开收：混成一路之后"退出码非零时该给模型看哪一句"就说不清了。
-        builder.redirectErrorStream(false);
-        Process process;
-        try {
-            process = builder.start();
-        }
-        catch (IOException failure) {
-            throw new ProcessStartException("起进程失败：" + program + "（工作目录 " + workingDirectory + "）", failure);
-        }
+        Path program = requireRunnable(request.program());
+        Process process = startProcess(request.argv(), program);
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         ByteArrayOutputStream stderr = new ByteArrayOutputStream();
         Thread out = drain(process.getInputStream(), stdout);
@@ -109,6 +124,29 @@ public final class LocalProcessRunner implements ProcessRunner {
     }
 
     /**
+     * 起一个进程（内部那一处）：argv 原样交给操作系统，不经任何解释器。
+     *
+     * @param argv 程序与参数
+     * @param program 解析后的程序路径，只用于失败信息
+     * @return 已启动的进程
+     * @throws ProcessStartException 进程起不来
+     */
+    private Process startProcess(List<String> argv, Path program) {
+        ProcessBuilder builder = new ProcessBuilder(argv);
+        builder.directory(workingDirectory.toFile());
+        builder.environment().clear();
+        builder.environment().putAll(environment);
+        // 两路输出分开收：混成一路之后"退出码非零时该给模型看哪一句"就说不清了。
+        builder.redirectErrorStream(false);
+        try {
+            return builder.start();
+        }
+        catch (IOException failure) {
+            throw new ProcessStartException("起进程失败：" + program + "（工作目录 " + workingDirectory + "）", failure);
+        }
+    }
+
+    /**
      * 在起进程之前判明入口可执行，并给出说得清的失败原因。
      *
      * <p>直接交给操作系统时它给的是 {@code Permission denied} 与 {@code Exec format error}，
@@ -120,7 +158,7 @@ public final class LocalProcessRunner implements ProcessRunner {
      * @return 入口的绝对路径
      * @throws ProcessStartException 不是普通文件、没有可执行位，或第一行不是 shebang
      */
-    private static Path requireRunnable(Path workingDirectory, String program) {
+    private Path requireRunnable(String program) {
         Path path = Path.of(program);
         Path resolved = path.isAbsolute() ? path : workingDirectory.resolve(path);
         if (!Files.isRegularFile(resolved)) {
@@ -130,7 +168,7 @@ public final class LocalProcessRunner implements ProcessRunner {
             throw new ProcessStartException("入口 " + program + " 没有可执行位："
                     + "脚本不再经解释器执行，直接执行要求它自己是可执行的");
         }
-        if (!hasShebang(resolved)) {
+        if (scriptHeaderRequired && !hasShebang(resolved)) {
             throw new ProcessStartException("入口 " + program + " 的第一行不是 shebang（#! 开头给出解释器）："
                     + "直接执行时没人替它解释，缺这一行进程起不来");
         }

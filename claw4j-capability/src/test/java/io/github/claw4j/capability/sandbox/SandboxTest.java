@@ -1,13 +1,20 @@
 package io.github.claw4j.capability.sandbox;
 
+import io.github.claw4j.capability.exec.ExecProperties;
+import io.github.claw4j.capability.exec.SandboxedExecBackend;
 import io.github.claw4j.capability.process.ProcessOutcome;
 import io.github.claw4j.capability.process.ProcessRequest;
 import io.github.claw4j.capability.process.ProcessRunner;
+import io.github.claw4j.capability.process.ShellCommandRunner;
 import io.github.claw4j.capability.script.ProcessRunnerFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springaicommunity.agent.common.exec.ExecBackend;
+import org.springaicommunity.agent.common.exec.ExecHandle;
+import org.springaicommunity.agent.common.exec.ExecResult;
+import org.springaicommunity.agent.common.exec.ExecSpec;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -97,7 +104,7 @@ class SandboxTest {
                 SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.NONE, null, null);
         ContainerSpec none = ContainerSpec.of(noMount, root);
 
-        assertThat(none.argv(List.of("sh", "-c", "pwd")))
+        assertThat(none.argv(List.of("sh", "-c", "pwd"), Map.of()))
                 .as("不挂载时不该出现 --volume：写了一个空挂载等于把宿主的空目录挂进去")
                 .doesNotContain("--volume");
         assertThat(none.workdir()).isEqualTo("/");
@@ -188,6 +195,65 @@ class SandboxTest {
                 .as("宿主 HOME 出现在容器里，说明有人把整份环境照抄进去了")
                 .doesNotContain(hostHome);
     }
+
+    @Test
+    @DisplayName("容器后端接上之后：判定之后整段交给它，宿主那条 /bin/sh 一次都不跑")
+    void containerBackendTakesOverAfterThePolicyLayer(@TempDir Path workspace) {
+        List<String> hostCalls = new java.util.ArrayList<>();
+        // 宿主那条是真执行器：它要是被调到了，结果会是 "hi" 而不是 "in-container"，断言直接抓到。
+        ShellCommandRunner host = new ShellCommandRunner(workspace);
+        ExecBackend container = new ExecBackend() {
+
+            @Override
+            public ExecResult run(ExecSpec spec) {
+                hostCalls.add(spec.command());
+                return ExecResult.completed(0, "in-container", "");
+            }
+
+            @Override
+            public ExecHandle start(ExecSpec spec) {
+                throw new UnsupportedOperationException("这条用例只走同步那条");
+            }
+        };
+        SandboxedExecBackend backend = new SandboxedExecBackend(
+                ExecProperties.of(ExecProperties.Mode.FULL, workspace, List.of()), host,
+                Map.of("CLAW4J_HOST_ONLY", "yes"), System.getProperty("user.name", ""),
+                null, null, container);
+
+        ExecResult result = backend.run(ExecSpec.of("echo hi"));
+
+        assertThat(result.stdout()).isEqualTo("in-container");
+        assertThat(hostCalls).as("命令只交出去一次，宿主那条路没有被顺手跑一遍").containsExactly("echo hi");
+    }
+
+    @Test
+    @Tag("docker")
+    @DisplayName("exec 侧用社区的 DockerCliExecBackend：托管容器真的起来，命令在容器里跑，宿主环境不进去")
+    void execContainerBackendRunsInsideAContainer(@TempDir Path workspace) throws Exception {
+        String hostHome = System.getenv("HOME");
+        assertThat(hostHome).as("这条用例拿宿主 HOME 当对照，取不到就没法判").isNotNull();
+        SandboxProperties properties = new SandboxProperties(SandboxProperties.Mode.ALL,
+                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.RO, IMAGE, "docker");
+        ExecBackend container = SandboxBackends.execContainer(properties, workspace);
+        try {
+            assertThat(container).as("mode=all 时 exec 侧必须拿到容器后端，而不是 null").isNotNull();
+
+            ExecResult hostname = container.run(ExecSpec.of("hostname"));
+            assertThat(hostname.exitCode()).as("stderr：%s", hostname.stderr()).isZero();
+            assertThat(hostname.stdout().strip())
+                    .as("主机名与宿主相同就说明命令没进容器")
+                    .isNotEqualTo(hostName());
+
+            ExecResult env = container.run(ExecSpec.of("echo \"HOME=$HOME\""));
+            assertThat(env.stdout().strip())
+                    .as("库不继承宿主环境；这里出现宿主 HOME 就说明有人给它塞了一份")
+                    .doesNotContain(hostHome);
+        }
+        finally {
+            if (container instanceof AutoCloseable closeable) {
+                closeable.close();
+            }
+        }    }
 
     private static SandboxProperties properties(SandboxProperties.Mode mode, SandboxProperties.Backend backend,
                                                 SandboxProperties.WorkspaceAccess access) {
