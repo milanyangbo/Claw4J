@@ -5,7 +5,6 @@ import io.github.claw4j.capability.exec.SandboxedExecBackend;
 import io.github.claw4j.capability.process.ProcessOutcome;
 import io.github.claw4j.capability.process.ProcessRequest;
 import io.github.claw4j.capability.process.ProcessRunner;
-import io.github.claw4j.capability.process.ShellCommandRunner;
 import io.github.claw4j.capability.script.ProcessRunnerFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -15,6 +14,7 @@ import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.common.exec.ExecHandle;
 import org.springaicommunity.agent.common.exec.ExecResult;
 import org.springaicommunity.agent.common.exec.ExecSpec;
+import org.springaicommunity.agent.exec.LocalExecBackend;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -201,7 +201,13 @@ class SandboxTest {
     void containerBackendTakesOverAfterThePolicyLayer(@TempDir Path workspace) {
         List<String> hostCalls = new java.util.ArrayList<>();
         // 宿主那条是真执行器：它要是被调到了，结果会是 "hi" 而不是 "in-container"，断言直接抓到。
-        ShellCommandRunner host = new ShellCommandRunner(workspace);
+        Map<String, String> hostEnv = Map.of("CLAW4J_HOST_ONLY", "yes");
+        ExecBackend host = LocalExecBackend.builder()
+                .workingDirectory(workspace)
+                .cleanEnvironment(true)
+                .environment(hostEnv)
+                .shellCommand("/bin/sh", "-c")
+                .build();
         ExecBackend container = new ExecBackend() {
 
             @Override
@@ -217,13 +223,35 @@ class SandboxTest {
         };
         SandboxedExecBackend backend = new SandboxedExecBackend(
                 ExecProperties.of(ExecProperties.Mode.FULL, workspace, List.of()), host,
-                Map.of("CLAW4J_HOST_ONLY", "yes"), System.getProperty("user.name", ""),
+                hostEnv.keySet(), System.getProperty("user.name", ""),
                 null, null, container);
 
         ExecResult result = backend.run(ExecSpec.of("echo hi"));
 
         assertThat(result.stdout()).isEqualTo("in-container");
         assertThat(hostCalls).as("命令只交出去一次，宿主那条路没有被顺手跑一遍").containsExactly("echo hi");
+    }
+
+    @Test
+    @DisplayName("destroy() 收掉还活着的后台 shell：KillShell 是礼貌，不是回收机制")
+    void destroyKillsTrackedBackgroundShells(@TempDir Path workspace) {
+        Map<String, String> env = Map.of("PATH", System.getenv("PATH"));
+        ExecBackend host = LocalExecBackend.builder()
+                .workingDirectory(workspace)
+                .cleanEnvironment(true)
+                .environment(env)
+                .shellCommand("/bin/sh", "-c")
+                .build();
+        SandboxedExecBackend backend = new SandboxedExecBackend(
+                ExecProperties.of(ExecProperties.Mode.FULL, workspace, List.of()), host, env.keySet(), "tester");
+        ExecHandle handle = backend.start(ExecSpec.of("sleep 10"));
+        assertThat(handle.isAlive()).as("后台 shell 没起来，这条用例就验不到回收").isTrue();
+
+        backend.destroy();
+
+        assertThat(handle.isAlive())
+                .as("destroy 之后后台 shell 还活着，等于容器关闭后留下一个没人杀的进程")
+                .isFalse();
     }
 
     @Test

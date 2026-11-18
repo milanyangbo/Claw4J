@@ -1,11 +1,12 @@
 package io.github.claw4j.capability.exec;
 
-import io.github.claw4j.capability.process.ShellCommandRunner;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.common.exec.ExecSpec;
+import org.springaicommunity.agent.exec.LocalExecBackend;
 import org.springaicommunity.agent.tools.ShellTools;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.execution.ToolExecutionException;
@@ -38,9 +39,24 @@ class ExecToolTest {
     Path workspace;
 
     private ShellTools tools(ExecProperties.Mode mode, List<String> allow, String account, Map<String, String> env) {
-        ShellCommandRunner runner = new ShellCommandRunner(workspace);
         return ShellTools.builder()
-                .execBackend(new SandboxedExecBackend(ExecProperties.of(mode, workspace, allow), runner, env, account))
+                .execBackend(new SandboxedExecBackend(ExecProperties.of(mode, workspace, allow),
+                        host(env), env.keySet(), account))
+                .build();
+    }
+
+    /**
+     * 宿主上的执行后端：与装配处同一份配置（整份清空环境、显式给 {@code sh}）。
+     *
+     * @param env 这次要继承的环境
+     * @return 库的本地后端
+     */
+    private ExecBackend host(Map<String, String> env) {
+        return LocalExecBackend.builder()
+                .workingDirectory(workspace)
+                .cleanEnvironment(true)
+                .environment(env)
+                .shellCommand("/bin/sh", "-c")
                 .build();
     }
 
@@ -81,10 +97,10 @@ class ExecToolTest {
     @Test
     @DisplayName("PATH 与加载器变量不许覆盖（照 OpenClaw：防二进制劫持），普通变量照常合并")
     void refusesToOverridePathAndLoaderVariables() {
-        ShellCommandRunner runner = new ShellCommandRunner(workspace);
+        Map<String, String> env = Map.of("PATH", System.getenv("PATH"));
         SandboxedExecBackend backend = new SandboxedExecBackend(
-                ExecProperties.of(ExecProperties.Mode.FULL, workspace, List.of()), runner,
-                Map.of("PATH", System.getenv("PATH")), "tester");
+                ExecProperties.of(ExecProperties.Mode.FULL, workspace, List.of()), host(env),
+                env.keySet(), "tester");
 
         assertThatThrownBy(() -> backend.run(new ExecSpec("echo hi", 5_000L, Map.of("PATH", "/tmp"))))
                 .isInstanceOf(ExecViolationException.class)
@@ -108,6 +124,11 @@ class ExecToolTest {
 
         assertThat(answer).contains("from-parent");
         assertThat(answer).contains("exec");
+
+        // 宿主那份不许顺带跟进来：这条后端是 cleanEnvironment(true)，只放上面声明的两个。
+        assertThat(tools.bash("echo \"[$HOME]\"", null, "Echo home", false))
+                .as("HOME 有值说明子进程拿到了宿主环境，而不是声明的那一份")
+                .contains("[]");
     }
 
     @Test
@@ -247,10 +268,10 @@ class ExecToolTest {
     }
 
     private ShellTools tools(ExecProperties properties, ExecApprovalPort port, ExecReviewer reviewer) {
-        ShellCommandRunner runner = new ShellCommandRunner(workspace);
+        Map<String, String> env = Map.of("PATH", System.getenv("PATH"));
         return ShellTools.builder()
-                .execBackend(new SandboxedExecBackend(properties, runner,
-                        Map.of("PATH", System.getenv("PATH")), "tester", port, reviewer))
+                .execBackend(new SandboxedExecBackend(properties, host(env),
+                        env.keySet(), "tester", port, reviewer))
                 .build();
     }
 

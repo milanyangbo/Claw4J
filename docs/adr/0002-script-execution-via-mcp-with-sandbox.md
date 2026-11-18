@@ -26,6 +26,8 @@ date: 2026-10-22
 
 > 修订记录（2026-11-10）：**退避起点从 30 秒改成 15 秒**，照它 `src/agents/mcp-startup-backoff.ts:125` 的 `delayMs: 15_000`（封顶 `:158` 的 600 秒不变），这样两边的日志能直接对着数。上一条的判据不变：连不上、握手超时、空清单、运行期掉线都可恢复，只有配置错误当场失败。
 
+> 修订记录（2026-11-18）：**exec 那条路上不再由本项目起进程**。`ShellCommandRunner` 与 `ShellProcess` 删掉，宿主后端换成 `spring-ai-agent-utils` 的 `LocalExecBackend`（同一个依赖，0.13.0，Apache-2.0）。理由不是"它更强"，而是同一层东西库里已经有、且有人在维护：`cleanEnvironment(true)`（整份清空环境）、超时先 `destroy()` 五秒再 `forcibly`、后台句柄的游标 `newOutput`。**代价写清**：库的默认解释器是 bash，本项目显式传 `sh`（不绑定 bash 专有语法）；`SandboxedExecBackend` 从此只留判定，不再认识进程；扫 shell 字面量的豁免从 `ShellCommandRunner.java` 挪到 `ExecAutoConfiguration.java`（它只把解释器名字交给 builder，不拼命令行）。**红线回到一个例外**：`ProcessBuilder` 只剩 `LocalProcessRunner`（脚本层的 argv），`BuildContractTest` 与 `ToolsBoundaryTest` 都已改。对照与质量判据见 `docs/reviews/2026-11-18-open-source-inventory.md`，票 `.scratch/oss-alignment/issues/01-exec-host-backend-to-local.md`。
+
 ## Considered Options
 
 **保留进程调用，只做参数白名单**

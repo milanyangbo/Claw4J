@@ -75,15 +75,15 @@ class BuildContractTest {
     // ---------------------------------------------------------------- 不起进程（ADR-0002）
 
     /**
-     * 全仓仅有的两个被允许起进程的类。
+     * 全仓唯一被允许起进程的类。
      *
-     * <p>{@code LocalProcessRunner} 收 argv，脚本包走这条；{@code ShellCommandRunner} 把命令交给
-     * {@code /bin/sh -c}，{@code exec} 走这条。区别在命令行是谁给的：包清单给的是 argv，
-     * 模型给的是命令。加第三个之前先想清楚超时、目录锁、干净环境这三件事还成不成立。
+     * <p>{@code LocalProcessRunner} 收 argv，脚本包走这条。{@code exec} 那条自 2026-11-18 起
+     * 不再由本项目起进程：宿主后端是库的 {@code LocalExecBackend}，容器后端是库的
+     * {@code DockerCliExecBackend}，两者都在 jar 里，这条规则看不见也不需要看见
+     * （`docs/reviews/2026-11-18-open-source-inventory.md`）。加第二个之前先想清楚超时、
+     * 目录锁、干净环境这三件事还成不成立。
      */
     private static final String PROCESS_SPAWNER = "io.github.claw4j.capability.process.LocalProcessRunner";
-
-    private static final String SHELL_SPAWNER = "io.github.claw4j.capability.process.ShellCommandRunner";
 
     /**
      * 用 {@code callMethodWhere} 而不是 {@code callMethod(Runtime.class, "exec")}：
@@ -99,10 +99,9 @@ class BuildContractTest {
     static final ArchRule java_side_must_not_spawn_processes =
             noClasses().that().resideInAPackage("io.github.claw4j..")
                     .and().doNotHaveFullyQualifiedName(PROCESS_SPAWNER)
-                    .and().doNotHaveFullyQualifiedName(SHELL_SPAWNER)
                     .should().callMethodWhere(RUNTIME_EXEC)
                     .orShould().dependOnClassesThat().haveFullyQualifiedName("java.lang.ProcessBuilder")
-                    .because("起进程只发生在 " + PROCESS_SPAWNER + " 与 " + SHELL_SPAWNER
+                    .because("起进程只发生在 " + PROCESS_SPAWNER
                             + "，别处不自己拼命令行（ADR-0002）");
 
     /**
@@ -143,14 +142,16 @@ class BuildContractTest {
      * 会命令解释器的写法。shell 会把参数里的分号当成第二条命令，于是传一个参数变成了执行一段脚本。
      * 注释里也不许出现：扫的是整份文件，区分代码与注释要写解析器，那份代价比注释换个说法贵得多。
      *
-     * <p>唯一豁免是 {@code ShellCommandRunner}。它的全部内容就是把命令交给 {@code /bin/sh -c}，
-     * 而那条命令是模型给的、已经过了白名单与工作区边界。豁免的是这一个文件名，不是这批字面量，
-     * 多一个文件想出现 {@code bash -c} 就得先改这里，那一步和要不要再开一个 shell 入口是同一个决定。
+     * <p>唯一豁免是 {@code ExecAutoConfiguration}：它**不拼命令行**，只是把解释器名字交给库的
+     * builder（{@code LocalExecBackend.builder().shellCommand("/bin/sh", "-c")}），起进程发生在 jar 里。
+     * （2026-11-18 之前这个豁免在 {@code ShellCommandRunner} 上，那个类已经删了。）
+     * 豁免的是这一个文件名，不是这批字面量——多一个文件想出现 {@code bash -c} 就得先改这里，
+     * 那一步和要不要再开一个 shell 入口是同一个决定。
      */
     private static final List<String> SHELL_INTERPRETERS =
             List.of("sh -c", "bash -c", "/bin/sh", "/bin/bash", "cmd.exe");
 
-    private static final String SHELL_ENTRY = "ShellCommandRunner.java";
+    private static final String SHELL_ENTRY = "ExecAutoConfiguration.java";
 
     /** 会话 schema 的默认名。带点号才是"被拼进了表名"，不带点号的是那个常量自己。 */
     private static final String SESSION_SCHEMA_LITERAL = "claw4j_session.";

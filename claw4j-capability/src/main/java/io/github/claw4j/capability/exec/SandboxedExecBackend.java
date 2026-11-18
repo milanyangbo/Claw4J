@@ -1,9 +1,5 @@
 package io.github.claw4j.capability.exec;
 
-import io.github.claw4j.capability.process.ProcessOutcome;
-import io.github.claw4j.capability.process.ProcessStartException;
-import io.github.claw4j.capability.process.ShellCommandRunner;
-import io.github.claw4j.capability.process.ShellProcess;
 import io.github.claw4j.capability.sandbox.SandboxProperties;
 import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.common.exec.ExecHandle;
@@ -15,6 +11,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -25,16 +22,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * 库已经做好了。这里要加的只有一件事——这条命令准不准跑，而 {@code ExecBackend} 的
  * {@code run(ExecSpec)} 正好是那个缝。
  *
- * <p>判定顺序固定：非 root → 白名单 → 环境 → 起进程。先判便宜的、再判要碰环境的，
- * 任何一步拒绝都不起进程、不写文件、不占端口。
+ * <p><b>本类不碰进程。</b>宿主那条由库的 {@code LocalExecBackend} 起（整份清空环境、超时先礼后兵、
+ * 后台句柄都是它的），容器那条由库的 {@code DockerCliExecBackend} 起。这一层只留判定：
+ * 非 root → 白名单 → 审批 → 环境覆盖的合法性。顺序固定，任何一步拒绝都不起进程、不写文件、不占端口。
  *
- * <p>后端替模型定死的三样：工作目录（就是 workspace，换目录由模型在命令里 {@code cd} 表达）、
- * 环境（宿主上继承、且拒改 {@code PATH} / {@code LD_*} / {@code DYLD_*}；容器里不继承宿主那份）、
- * 超时上限（由 {@code ExecSpec} 自己 clamp，{@code ExecSpec.java:45}）。三样都不在工具参数里，模型改不了。
- *
- * <p>命令跑在哪儿是<b>另一个决定</b>（P17a）：{@code container} 非空时，判定通过后整段交给它，
- * 生产上那是社区的 {@code DockerCliExecBackend}。这一层不因为换了执行位置就多判或少判一条——
- * 白名单、审批、非 root 与"在哪跑"正交。
+ * <p>判定与"在哪跑"正交：{@code container} 非空时，判定通过后整段交给它。这一层不因为换了执行位置
+ * 就多判或少判一条。
  *
  * <p>拒绝让模型看见的方式：{@link ExecViolationException} 从 {@code run} 里抛出去，
  * {@code ShellTools} 的同步分支不吞异常，工具调用管理器把它包成 {@code ToolExecutionException}，
@@ -44,9 +37,11 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
 
     private final ExecProperties properties;
 
-    private final ShellCommandRunner runner;
+    /** 宿主上的执行后端（生产上是库的 {@code LocalExecBackend}）。 */
+    private final ExecBackend host;
 
-    private final Map<String, String> inheritedEnvironment;
+    /** 继承环境的键名，只给复核器看：值里可能有密钥，进程拿到什么由 {@code host} 决定。 */
+    private final Set<String> environmentKeys;
 
     private final String accountName;
 
@@ -56,97 +51,80 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     /** 未命中时的复核器。没有实现时恒回落人工，所以 {@code AUTO} 与 {@code ASK} 行为一致。 */
     private final ExecReviewer reviewer;
 
-    /** 后台 shell 由这里持有：{@code ShellTools} 只管自己的那份 id → handle，回收这件事在 {@link #destroy()}。 */
-    private final Map<String, ShellProcess> background = new ConcurrentHashMap<>();
+    /**
+     * 后台句柄由这里记账：{@code ShellTools} 自己攥着 id → handle 的表，{@code destroy()} 看不到它们，
+     * 不记的话容器关闭之后会留下没人杀的进程。
+     */
+    private final Set<ExecHandle> backgroundShells = ConcurrentHashMap.newKeySet();
 
     /**
-     * 命令交给谁跑。{ null} 表示宿主那条 shell 解释器。
+     * 命令交给谁跑。{@code null} 表示宿主。
      *
-     * <p>非空时是社区的 {@code DockerCliExecBackend}：托管容器、后台句柄、超时在容器内杀 PID、
-     * 退出回收都在里面。这一层只留判定，不再自己拼 {@code docker run}。
+     * <p>非空时是库的 {@code DockerCliExecBackend}：托管容器、后台句柄、超时在容器内杀 PID、
+     * 退出回收都在里面。这一层不再自己拼 {@code docker run}。
      */
     private final ExecBackend container;
 
     /**
-     * 用进程自身的环境与账号建后端：生产路径走这个。
+     * 用给定的宿主后端与执行账号建后端。
      *
-     * @param properties {@code claw4j.tools.exec} 的配置
-     * @param runner 起进程的执行器
+     * @param properties      {@code claw4j.tools.exec} 的配置
+     * @param host            宿主上的执行后端
+     * @param environmentKeys 继承环境的键名，只给复核器看
+     * @param accountName     当前执行账号
      */
-    public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner) {
-        this(properties, runner, System.getenv(), System.getProperty("user.name", ""));
-    }
-
-    /**
-     * 用给定的环境与账号建后端。
-     *
-     * @param properties  {@code claw4j.tools.exec} 的配置
-     * @param runner      起进程的执行器
-     * @param inheritedEnvironment 继承给命令的环境；测试传一份固定值，免得断言依赖跑测试的那台机器
-     * @param accountName          当前执行账号；测试传 {@code root} 验那条拒绝
-     */
-    public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
-                                Map<String, String> inheritedEnvironment, String accountName) {
-        this(properties, runner, inheritedEnvironment, accountName,
-                ExecApprovalPort.denyAll(), ExecReviewer.fallback());
+    public SandboxedExecBackend(ExecProperties properties, ExecBackend host, Set<String> environmentKeys,
+                                String accountName) {
+        this(properties, host, environmentKeys, accountName, ExecApprovalPort.denyAll(),
+                ExecReviewer.fallback(), null);
     }
 
     /**
      * 完整的一档：接上审批端口。
      *
-     * @param properties  {@code claw4j.tools.exec} 的配置
-     * @param runner      起进程的执行器
-     * @param inheritedEnvironment 继承给命令的环境
-     * @param accountName          当前执行账号
-     * @param approvals            审批端口；{@code null} 按"没有设施"处理，需要批的命令直接拒
+     * @param properties      {@code claw4j.tools.exec} 的配置
+     * @param host            宿主上的执行后端
+     * @param environmentKeys 继承环境的键名，只给复核器看
+     * @param accountName     当前执行账号
+     * @param approvals       审批端口；{@code null} 按"没有设施"处理，需要批的命令直接拒
      */
-    public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
-                                Map<String, String> inheritedEnvironment, String accountName,
-                                ExecApprovalPort approvals) {
-        this(properties, runner, inheritedEnvironment, accountName, approvals, ExecReviewer.fallback());
+    public SandboxedExecBackend(ExecProperties properties, ExecBackend host, Set<String> environmentKeys,
+                                String accountName, ExecApprovalPort approvals) {
+        this(properties, host, environmentKeys, accountName, approvals, ExecReviewer.fallback(), null);
     }
 
     /**
      * 完整的一档：审批端口 + 复核器。
      *
-     * @param properties           {@code claw4j.tools.exec} 的配置
-     * @param runner               起进程的执行器
-     * @param inheritedEnvironment 继承给命令的环境
-     * @param accountName          当前执行账号
-     * @param approvals            审批端口；{@code null} 按"没有设施"处理
-     * @param reviewer             复核器；{@code null} 按"恒回落"处理
+     * @param properties      {@code claw4j.tools.exec} 的配置
+     * @param host            宿主上的执行后端
+     * @param environmentKeys 继承环境的键名，只给复核器看
+     * @param accountName     当前执行账号
+     * @param approvals       审批端口；{@code null} 按"没有设施"处理
+     * @param reviewer        复核器；{@code null} 按"恒回落"处理
      */
-    public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
-                                Map<String, String> inheritedEnvironment, String accountName,
-                                ExecApprovalPort approvals, ExecReviewer reviewer) {
-        this(properties, runner, inheritedEnvironment, accountName, approvals, reviewer, null);
+    public SandboxedExecBackend(ExecProperties properties, ExecBackend host, Set<String> environmentKeys,
+                                String accountName, ExecApprovalPort approvals, ExecReviewer reviewer) {
+        this(properties, host, environmentKeys, accountName, approvals, reviewer, null);
     }
 
     /**
      * 完整的一档，并且指定"命令交给谁跑"。
      *
-     * <p>{@code container} 非空时，<strong>判定之后的执行整段交给它</strong>——生产上那是社区的
-     * {@code DockerCliExecBackend}（托管容器、后台句柄、超时在容器内杀 PID、退出回收都在里面）。
-     * 这一层只保留判定：白名单、审批、非 root、环境，与"在哪跑"正交。
-     *
-     * <p>为什么不在这层自己拼 {@code docker run}：Docker 有个已知限制——杀掉 docker 客户端
-     * 不会杀掉容器里的进程。库里为每条命令在容器内记了 PID，超时时在容器内发 TERM 再 KILL；
-     * 自己写一版最容易漏的正是这一条，而且漏的时候没人知道。
-     *
-     * @param properties           {@code claw4j.tools.exec} 的配置
-     * @param runner               宿主上起进程的执行器
-     * @param inheritedEnvironment 宿主上继承给命令的环境；容器那条路不用它（容器不继承宿主环境）
-     * @param accountName          当前执行账号
-     * @param approvals            审批端口；{@code null} 按"没有设施"处理
-     * @param reviewer             复核器；{@code null} 按"恒回落"处理
-     * @param container            容器执行后端；{@code null} 表示跑在宿主上
+     * @param properties      {@code claw4j.tools.exec} 的配置
+     * @param host            宿主上的执行后端
+     * @param environmentKeys 继承环境的键名，只给复核器看
+     * @param accountName     当前执行账号
+     * @param approvals       审批端口；{@code null} 按"没有设施"处理
+     * @param reviewer        复核器；{@code null} 按"恒回落"处理
+     * @param container       容器执行后端；{@code null} 表示跑在宿主上
      */
-    public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
-                                Map<String, String> inheritedEnvironment, String accountName,
-                                ExecApprovalPort approvals, ExecReviewer reviewer, ExecBackend container) {
+    public SandboxedExecBackend(ExecProperties properties, ExecBackend host, Set<String> environmentKeys,
+                                String accountName, ExecApprovalPort approvals, ExecReviewer reviewer,
+                                ExecBackend container) {
         this.properties = Objects.requireNonNull(properties, "properties");
-        this.runner = Objects.requireNonNull(runner, "runner");
-        this.inheritedEnvironment = Map.copyOf(Objects.requireNonNull(inheritedEnvironment, "inheritedEnvironment"));
+        this.host = Objects.requireNonNull(host, "host");
+        this.environmentKeys = environmentKeys == null ? Set.of() : Set.copyOf(environmentKeys);
         this.accountName = accountName;
         this.approvals = approvals == null ? ExecApprovalPort.denyAll() : approvals;
         this.reviewer = reviewer == null ? ExecReviewer.fallback() : reviewer;
@@ -154,14 +132,14 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     }
 
     /**
-     * 同步执行一条命令：判定通过才起进程。
+     * 同步执行一条命令：判定通过才交给执行后端。
      *
-     * <p>起不来（{@link ProcessStartException}）算一次普通失败，与超时同一档，交给工具层报给模型；
+     * <p>起不来、超时都是"这条命令跑了但没跑成"，由库翻成 {@code ExecResult} 的对应状态；
      * 只有判定不通过才是拒绝。
      *
      * @param spec 库给出的命令、超时与本次覆盖的环境
-     * @return 执行结果，翻成库的 {@link ExecResult}
-     * @throws ExecViolationException 身份是 root，或命令没通过白名单
+     * @return 执行结果
+     * @throws ExecViolationException 身份是 root、命令没通过白名单，或环境覆盖不合法
      */
     @Override
     public ExecResult run(ExecSpec spec) {
@@ -169,27 +147,17 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         if (container != null) {
             return container.run(spec);
         }
-        Path directory = runner.workingDirectory();
-        try {
-            ProcessOutcome outcome = runner.run(spec.command(), directory, environment(spec), spec.timeoutMillis());
-            return outcome.status() == ProcessOutcome.Status.TIMED_OUT
-                    ? ExecResult.timedOut(outcome.stdout(), outcome.stderr())
-                    : ExecResult.completed(outcome.exitCode(), outcome.stdout(), outcome.stderr());
-        }
-        catch (ProcessStartException failure) {
-            // 起不来是"这条命令跑了但没跑成"，不是拒绝：交给工具层当普通失败报，与超时同一档。
-            return ExecResult.launchFailed(failure.getMessage());
-        }
+        return host.run(withValidatedOverrides(spec));
     }
 
     /**
-     * 起一个后台 shell 并自己留一份，回收发生在 {@link #destroy()}。
+     * 起一个后台 shell，由本类记账：{@code KillShell} 是模型的礼貌，不能当回收机制。
      *
-     * <p>顺带清掉已经结束的后台 shell：它们不会自己从表里消失，留着只占一个 id。
+     * <p>顺带清掉已经结束的句柄：它们不会自己从表里消失，留着只占一个位置。
      *
      * @param spec 库给出的命令与本次覆盖的环境
      * @return 后台句柄，由库转交给 {@code BashOutput} / {@code KillShell}
-     * @throws ExecViolationException 身份是 root，或命令没通过白名单
+     * @throws ExecViolationException 身份是 root、命令没通过白名单，或环境覆盖不合法
      */
     @Override
     public ExecHandle start(ExecSpec spec) {
@@ -197,23 +165,22 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         if (container != null) {
             return container.start(spec);
         }
-        // 顺手清掉已经结束的后台 shell：它们不会自己从表里消失，留着的唯一作用是占一个 id。
-        background.values().removeIf(shell -> !shell.isAlive());
-        ShellProcess shell = runner.start(spec.command(), runner.workingDirectory(), environment(spec));
-        background.put(shell.id(), shell);
-        return new Handle(shell);
+        backgroundShells.removeIf(handle -> !handle.isAlive());
+        ExecHandle handle = host.start(withValidatedOverrides(spec));
+        backgroundShells.add(handle);
+        return handle;
     }
 
     /**
-     * 强制结束所有还活着的后台 shell。
+     * 强制结束所有还活着的后台 shell，并关掉容器后端。
      *
-     * <p>{@code KillShell} 是模型的礼貌，不能当回收机制：容器关闭时这里必须收干净。
+     * <p>容器由库建、也由库删（它还挂了 shutdown hook 兜底）；宿主上没有这层兜底，
+     * 所以本类必须自己收。
      */
     @Override
     public void destroy() {
-        background.values().forEach(ShellProcess::kill);
-        background.clear();
-        // 容器跟着这一层一起回收：托管容器由库建、也由库删（它还挂了 shutdown hook 兜底）。
+        backgroundShells.forEach(ExecHandle::kill);
+        backgroundShells.clear();
         if (container instanceof AutoCloseable closeable) {
             try {
                 closeable.close();
@@ -222,6 +189,22 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
                 throw new IllegalStateException("关闭容器后端失败：" + failure.getMessage(), failure);
             }
         }
+    }
+
+    /**
+     * 把本次的环境覆盖洗一遍再交给宿主：拒改 {@code PATH} / 加载器变量那条判据在
+     * {@link ExecPolicy#environment} 里，不能因为换了执行后端就少判一次。
+     *
+     * <p>固定环境由后端的构造给定（整份替换掉，从零开始），这里只给覆盖——库是
+     * "先放固定环境、再合并这次给的"，顺序与以前一致。
+     *
+     * @param spec 调用方给的命令、超时与环境覆盖
+     * @return 覆盖已经洗过的同一份规格
+     * @throws ExecViolationException 覆盖里出现不许改的键，或值为空
+     */
+    private static ExecSpec withValidatedOverrides(ExecSpec spec) {
+        Map<String, String> overrides = ExecPolicy.environment(Map.of(), spec.env());
+        return new ExecSpec(spec.command(), spec.timeoutMillis(), overrides);
     }
 
     private void authorize(ExecSpec spec) {
@@ -362,7 +345,7 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
                 ? List.of()
                 : List.of(segments.getFirst().split("\\s+"));
         return new ExecReviewer.Request(spec.command(), argv, null, displayDirectory(),
-                inheritedEnvironment.keySet(), properties.settings().host().name(),
+                environmentKeys, properties.settings().host().name(),
                 askReason(), "", null);
     }
 
@@ -378,10 +361,6 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         return "这条命令没有命中白名单，当前档位要求人先批（白名单：" + allowText() + "）";
     }
 
-    private Map<String, String> environment(ExecSpec spec) {
-        return ExecPolicy.environment(inheritedEnvironment, spec.env());
-    }
-
     /**
      * 命令"看起来在哪个目录里跑"。审批请求、复核器与拒绝信息读的都是它。
      *
@@ -392,46 +371,11 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
      */
     private Path displayDirectory() {
         return container == null
-                ? runner.workingDirectory()
+                ? properties.workspace().toAbsolutePath().normalize()
                 : Path.of(SandboxProperties.CONTAINER_WORKDIR);
     }
 
     private String allowText() {
         return properties.allow().isEmpty() ? "空，等于一条都不放行" : String.join("、", properties.allow());
-    }
-
-    /** 把 {@link ShellProcess} 说成 Spring AI 要的 {@link ExecHandle}。只转发，不加工。 */
-    private static final class Handle implements ExecHandle {
-
-        private final ShellProcess shell;
-
-        private Handle(ShellProcess shell) {
-            this.shell = shell;
-        }
-
-        @Override
-        public String id() {
-            return shell.id();
-        }
-
-        @Override
-        public boolean isAlive() {
-            return shell.isAlive();
-        }
-
-        @Override
-        public String newOutput(String filter) {
-            return shell.newOutput(filter);
-        }
-
-        @Override
-        public int exitCode() {
-            return shell.exitCode();
-        }
-
-        @Override
-        public void kill() {
-            shell.kill();
-        }
     }
 }

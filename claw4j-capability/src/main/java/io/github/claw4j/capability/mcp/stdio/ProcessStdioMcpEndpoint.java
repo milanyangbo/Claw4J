@@ -41,8 +41,8 @@ import java.util.Optional;
  * <p>真要隔离，得继承 {@code StdioClientTransport} 覆盖 {@code getProcessBuilder()} 里
  * {@code environment().clear()}（八行，同仓 {@code capability/process/LocalProcessRunner.java:72-75}
  * 就是这么写对的）。没做，是因为它会触碰 {@code ToolsBoundaryTest} 的
- * "起进程只经 {@code LocalProcessRunner} / {@code ShellCommandRunner}" 那条红线——
- * 加第三个例外要一次裁决（票 03 挂着）。别在这里写"子进程拿不到应用进程的环境"：
+ * "起进程只经 {@code LocalProcessRunner}" 那条红线——加第二个例外要一次裁决（票 03 挂着）。
+ * 别在这里写"子进程拿不到应用进程的环境"：
  * 那句承诺曾经是假的，是本仓最忌讳的那种偏差。
  *
  * <p>凭据是句柄，真值在起进程那一刻才换出来（P08）：{@link #openTransport()} 是"给子进程的

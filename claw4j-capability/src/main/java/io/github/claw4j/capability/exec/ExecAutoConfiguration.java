@@ -1,6 +1,5 @@
 package io.github.claw4j.capability.exec;
 
-import io.github.claw4j.capability.process.ShellCommandRunner;
 import io.github.claw4j.capability.sandbox.SandboxBackends;
 import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolTier;
@@ -8,6 +7,7 @@ import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springaicommunity.agent.common.exec.ExecBackend;
+import org.springaicommunity.agent.exec.LocalExecBackend;
 import org.springaicommunity.agent.tools.ShellTools;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -60,16 +60,29 @@ public class ExecAutoConfiguration {
      */
     public static final List<String> TOOL_NAMES = List.of("Bash", "BashOutput", "KillShell");
 
-    /** 起进程的执行器，工作目录取配置里的 workspace；目录不存在就启动失败。 */
+    /**
+     * 宿主上的执行后端：库的 {@code LocalExecBackend}，工作目录取配置里的 workspace；目录不存在就启动失败。
+     *
+     * <p>三样由这里定死：工作目录（就是 workspace，换目录由模型在命令里 {@code cd} 表达）、
+     * 环境（整份清空后只放进程自己的那份 —— {@code cleanEnvironment(true)} 加 {@code environment(..)}）、
+     * 解释器（显式给 {@code sh}，不用库默认的 bash：ADR-0002 的口径是不绑定 bash 专有语法）。
+     *
+     * <p>超时上限不在这里：{@code ExecSpec} 自己 clamp（默认 2 分钟、封顶 10 分钟）。
+     */
     @Bean
     @ConditionalOnMissingBean
-    public ShellCommandRunner shellCommandRunner(ExecProperties properties) {
+    public ExecBackend execHostBackend(ExecProperties properties) {
         Path workspace = properties.workspace().toAbsolutePath().normalize();
         if (!Files.isDirectory(workspace)) {
             throw new IllegalStateException("claw4j.tools.exec.workspace 不是一个已存在的目录：" + workspace
                     + "。exec 只在这个目录里跑命令；建好它，或者把这条配置指到别处。");
         }
-        return new ShellCommandRunner(workspace);
+        return LocalExecBackend.builder()
+                .workingDirectory(workspace)
+                .cleanEnvironment(true)
+                .environment(System.getenv())
+                .shellCommand("/bin/sh", "-c")
+                .build();
     }
 
     /**
@@ -80,27 +93,28 @@ public class ExecAutoConfiguration {
      * 这一轮拿不到结论，按 {@code askFallback} 处置（默认拒）。
      *
      * @param properties {@code claw4j.tools.exec} 的配置
-     * @param shellCommandRunner 起进程的执行器
+     * @param execHostBackend 宿主上的执行后端
      * @param approvals 审批端口，可能不存在
      * @param reviewer 复核器，可能不存在
      * @return 库的工具对象
      */
     @Bean
     @ConditionalOnMissingBean
-    public ShellTools shellTools(ExecProperties properties, ShellCommandRunner shellCommandRunner,
+    public ShellTools shellTools(ExecProperties properties, ExecBackend execHostBackend,
                                  ObjectProvider<ExecApprovalPort> approvals,
                                  ObjectProvider<ExecReviewer> reviewer,
                                  ObjectProvider<SandboxProperties> sandboxProperties) {
         SandboxProperties sandbox = sandboxProperties.getIfAvailable(SandboxProperties::defaults);
-        ExecBackend container = SandboxBackends.execContainer(sandbox, shellCommandRunner.workingDirectory());
+        ExecBackend container = SandboxBackends.execContainer(sandbox,
+                properties.workspace().toAbsolutePath().normalize());
         if (container != null && sandbox.workspaceAccess() == SandboxProperties.WorkspaceAccess.RO) {
             log.warn("claw4j.tools.sandbox.workspace-access=ro 只作用于脚本层：exec 侧的挂载由 "
                     + "DockerCliExecBackend 管理，只支持读写。容器里的命令能改工作区——"
                     + "只读要等 P17b/c 的限额那一层。");
         }
         return ShellTools.builder()
-                .execBackend(new SandboxedExecBackend(properties, shellCommandRunner,
-                        System.getenv(), System.getProperty("user.name", ""),
+                .execBackend(new SandboxedExecBackend(properties, execHostBackend,
+                        System.getenv().keySet(), System.getProperty("user.name", ""),
                         approvals.getIfAvailable(ExecApprovalPort::denyAll),
                         reviewer.getIfAvailable(ExecReviewer::fallback),
                         container))

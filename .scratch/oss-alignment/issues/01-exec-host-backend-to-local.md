@@ -42,13 +42,17 @@ Apache-2.0，2026-10-03 发布，近 12 个月有 release。纯 JDK `ProcessBuil
 | 判什么行为 | 用例名 | 先红的样子 |
 | --- | --- | --- |
 | 命令照旧执行，工具的 `bash_id` 头也在 | `ExecToolTest#runsACommandThroughTheLibraryTool` ✅ | 构造改不过来，编译红 |
-| 超时仍然是"工具说 timed out"，且不等满 5 秒 | `ExecToolTest#timesOutAndSaysSo` ✅ | 库的 `destroy` 先礼后兵，耗时断言可能红 |
+| 超时仍然是"工具说 timed out"，且不等满 5 秒 | `ExecToolTest#timeoutKillsTheProcess` ✅ | 库的 `destroy` 先礼后兵，耗时断言可能红 |
 | `PATH` / `LD_*` 不许覆盖，普通变量照常合并 | `ExecToolTest#refusesToOverridePathAndLoaderVariables` ✅ | 覆盖校验若跟着旧 runner 一起被删，这条红 |
 | 容器非空时判定通过就整段交给它，宿主一次都不跑 | `SandboxTest#containerBackendTakesOverAfterThePolicyLayer` ✅ | 宿主的 `LocalExecBackend` 被调到就会拿到 `hi` 而不是 `in-container` |
-| `destroy()` 把还活着的后台 shell 收掉 | `ExecToolTest#destroyKillsTrackedBackgroundShells` ✅ | 库的 handle 不归我们记账，`destroy` 之后 `isAlive()` 仍为真 |
-| 宿主环境不继承（只给声明的那份） | `ExecToolTest#inheritsOnlyTheDeclaredEnvironment` ✅ | `cleanEnvironment` 漏了就会看到宿主变量 |
+| `destroy()` 把还活着的后台 shell 收掉 | `SandboxTest#destroyKillsTrackedBackgroundShells` ✅ | 库的 handle 不归我们记账，`destroy` 之后 `isAlive()` 仍为真 |
+| 宿主环境不继承（只给声明的那份） | `ExecToolTest#inheritsEnvironmentAndMarksItself` 里追加断言 ✅ | `cleanEnvironment` 漏了就会看到宿主的 `HOME` |
 
-**标记：已复核（2026-11-18）。** 表里各行都是实测绿；门禁见文末。
+（`ExecToolTest` 已经在 26 个方法的上限上，所以最后两条不是新方法：一条加了断言，
+一条放进了 `SandboxTest`——它验的是后端生命周期，放那边也更对。）
+
+**标记：已复核（2026-11-18）。** 六行全绿；门禁 `./scripts/verify.sh` 四步全绿，
+capability 154 条用例、失败/错误/跳过均 0、覆盖率 81.9%、文件数 14 / 最大方法数 26（都到顶，不再加）。
 
 ## 验收判据
 
@@ -61,8 +65,10 @@ Apache-2.0，2026-10-03 发布，近 12 个月有 release。纯 JDK `ProcessBuil
 
 ## 实现记录
 
-- 删除 `ShellCommandRunner`（186 行）、`ShellProcess`（108 行）；`SandboxedExecBackend` 从 437 行降到 344 行。
+- 删除 `ShellCommandRunner`（186 行）、`ShellProcess`（108 行）；`SandboxedExecBackend` 从 437 行降到 381 行，
+  `ExecAutoConfiguration` 从 148 行到 162 行（多了一个后端的 javadoc，少了一个私有类）。
 - 环境这条路没变：`ExecPolicy.environment` 仍然负责"拒改 `PATH` / `LD_*` / `DYLD_*`"并加 `SHELL_MARKER`，
   只是算出来的覆盖交给 `ExecSpec.env()`，由库在固定环境之上合并。
 - 后台句柄：`ShellTools` 自己攥着 id → handle 的表，`destroy()` 看不到；本类留一个
   `Set<ExecHandle>` 记账（宿主那条才需要，容器那条由库回收）。
+- 门禁：`./scripts/verify.sh` 四步全绿（2026-11-18），capability 154 条、覆盖率 81.9%。

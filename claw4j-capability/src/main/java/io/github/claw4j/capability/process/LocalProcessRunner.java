@@ -18,9 +18,10 @@ import java.util.concurrent.TimeUnit;
  * 只收一个 {@code String command}，起进程时自己加解释器前缀——本项目拼好的字符串会被解释。
  * 数组形态过不去那条接缝，于是起进程收回到本项目，做成这个被点名的类。
  *
- * <p>代价写清楚：全仓禁 {@code ProcessBuilder} 的规则现在有两个例外（这里与
- * {@link ShellCommandRunner}），写在 {@code BuildContractTest} 与 {@code ToolsBoundaryTest} 里。
- * 收窄而不是删除，是因为删掉之后"Java 侧不起进程"就没有任何机器证据。
+ * <p>代价写清楚：全仓禁 {@code ProcessBuilder} 的规则只剩这一个例外（{@code exec} 那条
+ * 自 2026-11-18 起走库的 {@code LocalExecBackend}，不再自己起进程），写在
+ * {@code BuildContractTest} 与 {@code ToolsBoundaryTest} 里。收窄而不是删除，是因为删掉之后
+ * "Java 侧不起进程"就没有任何机器证据。
  *
  * <p>它不判工作目录该锁在哪、环境该给哪些、超时上限是多少——那些是 {@code SandboxPolicy} 的约束，
  * 由调用方在把请求交进来之前过一遍。这里只负责"按给的 argv 起一个进程，到点掐断，把两路输出收回来"。
