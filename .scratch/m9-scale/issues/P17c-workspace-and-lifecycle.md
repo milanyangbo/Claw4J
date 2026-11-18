@@ -7,8 +7,7 @@
 2. **容器活多久**（`scope`: `session` / `agent` / `shared`）
 3. **谁来收尸**（进程退出、异常、超时之后，容器还在不在 `docker ps -a` 里）
 
-**Status:** blocked（2026-11-18 重估：三件事今天都不在我方手里，与 P17b 同一个上游；
-另外 P17a 已回滚，连"命令进容器"这一步都要重做）
+**Status:** blocked（2026-11-18 重估：三件事今天都不在我方手里，与 P17b 同一个上游）
 
 > **这一票在 2026-11-18 被重写过一次**。原稿假设我们自己拼 `docker run`（`ContainerSpec` +
 > `DockerSandboxRunner` + `SandboxSessionRegistry`），那套东西随票 02（脚本包退化成技能）整包删了。

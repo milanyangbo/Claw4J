@@ -31,7 +31,7 @@
 
 | 偏差 | 实际给的 | 补偿 | 记在哪 |
 | --- | --- | --- | --- |
-| **执行没有隔离，也没有资源上限** | 命令跑在宿主上：库的 `LocalExecBackend`（环境从零开始只给声明的那几个变量、超时有上限），边界只有 `claw4j.tools.exec.workspace` + 白名单 + 审批。**资源上限（内存 / pids / CPU）与网络隔离都没有** | 真正的隔离要等容器化（P17b，blocked 在上游给 `DockerCliExecBackend` 加限额参数）；在那之前只能靠部署层（把整个应用放进受限容器）与 `security=allowlist` | P17b、ADR-0020 |
+| **容器没有资源上限，网络也没关** | 命令能进容器（`claw4j.tools.sandbox.mode=all`，库的 `DockerCliExecBackend`），但**限额还没做**：`network` / 只读根 / 内存 / pids / 非 root 归 P17b，等上游给 `Builder` 加参数。宿主那一档只有 `LocalExecBackend` 的环境与超时 | 进容器解决的是"另一份文件系统"；资源与网络要么等 P17b，要么由部署层（把整个应用放进受限容器）给 | P17a / P17b、ADR-0020 |
 | "非 root"取 `user.name` 而非 uid | uid 0 而 `user.name` 非 root 时会放行；macOS 与常见 runner 上恒非 root，等于从不触发 | 真正的保证是容器镜像的 `USER`；这一条只挡应用被跑成 root | 票 03 |
 | 入口脚本必须有可执行位与 shebang | 不再经命令解释器执行（票 08），这两件事从"能跑就行"变成硬要求 | 静态检查在落盘之前挡（`NO_SHEBANG`）；漏过去的执行侧给一句指名"第一行"的话 | 票 08、ADR-0002 修订 |
 | 知识库没有 ACL：谁都能检索全部文档 | `HybridDocumentRetriever` 只判"这一轮有没有身份"，有身份就检索。原来的"能不能看伪表 `doc`"随权限登记表在 ADR-0030 里整块下线 | 知识库整份文档集就是可见范围：多租户 / 分级文档的部署今天只能靠"一个部署一份知识库"隔离。重开条件：第二步补 ACL（ADR-0030 缺口表第 1 条）。`KnowledgeRetrievalTest#anyPrincipalCanRetrieve` 显式钉着这个放宽，不让它悄悄变化 | 票 04、ADR-0030 |

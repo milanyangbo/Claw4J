@@ -212,19 +212,19 @@ _Avoid_: 命令行拼接、shell 调用、exec 字符串
 _Avoid_: Skill、技能、插件、工具（它不是工具）
 
 **沙箱（执行位置）**:
-跑东西的那一层。**今天只有一档：宿主**——库的 `LocalExecBackend`，环境从零开始只给声明的那几个变量、
-超时先 `destroy` 再 `forcibly`、后台句柄归它。
-**容器化没有落地**（2026-11-18 裁决整体回滚）：库的 `DockerCliExecBackend` 能把命令送进容器，
-但 `Builder` 没有任何限额入口（network / read-only rootfs / memory / pids / user / cpus 一个都没有），
-于是"跑进去了但关不住"——那种隔离比没有更坏。等上游加参数（P17b，blocked）。
-所以现在一条命令能读到什么，由 `claw4j.tools.exec.workspace`、白名单与审批决定，**没有第二层边界**。
+跑东西的那一层，两档：**宿主**（库的 `LocalExecBackend`：环境从零开始只给声明的那几个变量、
+超时先 `destroy` 再 `forcibly`、后台句柄归它）与**容器**（库的 `DockerCliExecBackend`，
+容器由它建、由它删，`claw4j.tools.sandbox.mode=all` 时生效）。
+容器**还没有限额**（network / 只读根 / 内存 / pids / 非 root 归 P17b，等上游给 `Builder` 加参数），
+所以它今天是"另一台机器 + 另一份文件系统"，不是"关得住的那台"。
+一条命令能读到什么，由 `exec.workspace`、白名单、审批、以及有没有进容器共同决定。
 判据是"能不能在一台干净的机器上跑起来"：跑不起来的沙箱等于没有测试，
 没有测试的边界不能当成承诺。
-它挡得住环境与时长，**挡不住命令自己读绝对路径或自己连网**——今天没有哪一层挡这个，
+它挡得住环境与时长，**挡不住命令自己读绝对路径或自己连网**（容器那一档还没有网络限额），
 别在文档里写成挡住了。
-全仓**没有一个类自己起进程**：起进程发生在库的 `LocalExecBackend` 里，
+全仓**没有一个类自己起进程**：起进程发生在库的 `LocalExecBackend` / `DockerCliExecBackend` 里，
 `ToolsBoundaryTest` 与 `BuildContractTest` 那两条规则都是零例外。
-_Avoid_: 容器（那是另一台，今天不存在这个后端）、chroot、安全边界（挡不住命令自己的行为）
+_Avoid_: chroot、安全边界（挡不住命令自己的行为）
 
 **delegate_task**:
 把一件活派给 Subagent。它自己**不碰库**——碰库的是子要调的那个工具，那一步按子那份清单走。

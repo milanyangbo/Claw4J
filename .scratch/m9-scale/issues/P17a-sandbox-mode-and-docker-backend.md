@@ -32,7 +32,7 @@ PATH-only 环境、30 秒超时、非 root、工作目录不越界——脚本�
 
 **Type:** task
 
-**Status:** withdrawn（2026-11-18 裁决：去掉 docker 相关功能、代码回滚、继续等上游）
+**Status:** resolved（2026-11-18；中途回滚过一次，同日按裁决恢复——见文末）
 
 **裁决来源：** ADR-0020 §M9 · P17（四条约束 → 容器级限额）；ADR-0030 §裁决六（`mode` / `backend` /
 `scope` / `workspaceAccess` 四个键与取值）；ADR-0021 §"追平 2：执行隔离"。
@@ -144,9 +144,9 @@ PATH-only 环境、30 秒超时、非 root、工作目录不越界——脚本�
 **门禁（2026-11-18）**：`./scripts/verify.sh` 四步全绿——806 条用例，失败 0 / 错误 0 / 跳过 0，
 capability 行覆盖率 81.5%，文件数 14 / 最大方法数 26 未越线。
 
-## Withdrawn（2026-11-18 晚）
+## 回滚与恢复（2026-11-18 晚）
 
-**这一票做完又整体回滚了。** 记录如下，别把它当成"已落地"。
+**这一票做完、回滚过一次、又按裁决恢复了。** 现在的状态是 resolved：代码在，命令真的进容器。
 
 - 做完时：`claw4j.tools.sandbox.*` 五个键、`SandboxProperties` / `SandboxBackends` /
   `SandboxAutoConfiguration` / `SandboxUnavailableException`、exec 侧的

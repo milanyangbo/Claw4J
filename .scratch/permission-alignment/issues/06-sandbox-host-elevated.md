@@ -16,7 +16,7 @@
 
 **Type:** task
 
-**Status:** blocked（2026-11-18 复核：四件里三件的前提是容器化，而 P17 已整体回滚；`exec.host` 的合法性校验已落地，见文末「部分落地」）
+**Status:** resolved（2026-11-18）：沙箱层 / `exec.host` / `elevated` 三件已落地；`exec_allowlist` 的 agent 维度没有对象，见文末「没做的那一行」
 
 **裁决来源：** ADR-0030 §裁决六（沙箱三键、MCP 闸门、elevated 四档与启用前提）与
 §实现过程·阶段 6。
@@ -84,38 +84,60 @@
 - **`host=node` 只是占位**：我们没有多宿主，值可以配进来但只会落到本机。
 - **`elevated` 的 `allowFrom` 通配 `*` 只告警不拦**：它的 policy 检查链我们不做（ADR「不做」）。
 
-## 部分落地（2026-11-18）
+## Answer（2026-11-18 收票）
 
-### 已做：`exec.host` 的合法性（只有这一件今天能真做）
+前提按裁决补齐了：P18 回滚、P17b / P17c 等上游加参数（不自己实现）、**P17a 恢复**
+（`3dbf99c`，命令真的跑进容器）。这一票的三件因此都有对象，逐件落地：
 
-`ExecProperties.Host` 这个枚举与键本来就在（票 01 建的），但它一直是"只解析不生效"：
-写 `host: sandbox` 会**静默**跑在宿主上。这次补上 `ExecProperties#requireUsable()`，
-由装配处（`ExecAutoConfiguration#execHostBackend`）在启动时调一次：
+### 1. `tools.sandbox.tools`（第 9 层 + MCP 闸门）
 
-| 取值 | 今天的行为 |
+- 键：`claw4j.tools.sandbox.tools.{allow,deny,also-allow}`，绑在 `SandboxProperties.Tools`。
+- 生效条件：`ToolPolicyContext#sandboxed`，由装配处每轮从 `sandbox.mode` 盖上去
+  （部署级——逐会话那档 `non-main` 仍然配了启动失败）。
+- 位置：管线第 9 层（第 8 层之后、子 Agent 之前），标签 `sandbox`。
+- **`bundle-mcp` 是组名**，不写它沙箱会话里看不见任何 MCP 工具——即使 `allow` 是空的。
+  展开靠 `ToolTierRegistry#source()`（`builtin` / `business` / `mcp`），MCP 的活视图登记表报
+  `mcp`：这样只点名 MCP 那一支，不会把业务工具（`querySales`）顺手放进来。
+- 用例：`ToolPolicyAssemblerTest` 4 条（不写 bundle-mcp 不可见 / 写了可见 / 非沙箱不看这三张表 /
+  空配置不出层）。
+
+### 2. `tools.exec.host`
+
+`SandboxedExecBackend#target()` 四档：
+
+| 取值 | 行为 |
 | --- | --- |
-| 不写 / `auto` | 落本机（默认） |
-| `gateway` | 落本机——这个应用既是控制面也是执行面，两者是同一台机器，不是"大致等价" |
-| `sandbox` | **启动失败**，消息里写明"容器化 2026-11-18 回滚、等上游加限额参数、改成 auto" |
-| `node` | **启动失败**，消息里写明"本仓没有多宿主与节点注册" |
+| `auto` | 有容器进容器，没有落宿主 |
+| `sandbox` | 必须进容器；`sandbox.mode=off` 时装配期就起不来（`ExecProperties#requireUsable`） |
+| `gateway` | 本机；**沙箱开着时被拒**（那是"从沙箱提到宿主"，属于 `elevated`，不是 `host` 的取值） |
+| `node` | 启动期被拒：本仓没有多宿主 |
 
-用例：`ExecHostTest`（4 条：auto / gateway / sandbox 失败 / node 失败）。
-判据是"配了做不到的就不许起"——一个以为自己在容器里的部署，比一个知道自己没进的部署危险。
+用例：`ExecHostTest` 5 条（auto / gateway / sandbox 缺沙箱 / sandbox 有沙箱 / node）。
 
-### 没做，以及为什么（逐件核过，不是没看）
+### 3. `elevated` 四档
 
-| 票里的东西 | 为什么今天做不了 |
+- 配置：`claw4j.tools.elevated.{enabled,allow-from,ttl}`，**默认关**，名单为空时谁都不许。
+- 状态：`Elevations`（内存、按会话键、30 分钟过期；`/new` 换段之后跟着走）。
+- 命令：`/elevated on|off|ask|full`，`ask` 是 `on` 的别名，裸命令看当前档，词不认识回用法。
+  与 `/new`、`/goal` 同层——消息里认出来就当场办，不进模型、不开 run。
+- 效果：`on` 跑到沙箱外但**审批照旧**；`full` 跑沙箱外且**跳过审批**（只把 `ASK` 抬成 `RUN`，
+  `DENY` 不动——`security=deny` 不是审批能改的东西）。
+- 用例：`ExecElevationTest` 4 条（off 进容器 / on 走宿主且问一次 / full 不问直接跑 /
+  full 压不过 `security=deny`）；`SessionMemoryTest` 4 条（解析、部署没开、人不在名单、过期回落）。
+
+### 没做的那一行：`exec_allowlist` 的 agent 维度
+
+`agentId` 取的是**选中的人设名**，而换人设要重启——一个进程只有一个 agent，于是
+"wildcard 桶（`agent_id` 为 null）与当前 agent 桶"里第二个桶永远不存在。与 `scope=shared`
+的 per-agent 覆盖同一类问题：**没有对象**。等多 agent 真存在时再加那一列，那时它才是加列的理由。
+
+### 验收
+
+| 判什么 | 结果 |
 | --- | --- |
-| `tools.sandbox.tools`（第 9 层 + MCP 的 `bundle-mcp` 闸门） | 它判的是"**沙箱会话**里放不放行"，而 `ToolPolicyContext.sandboxed` 今天恒为 `false`（`ToolPolicyAssembler` 的注释就写着"沙箱本体在票 06"）。没有沙箱会话，这一层的两个分支永远只走一个——写了也没有任何东西能触发它 |
-| `elevated` 四档 | ADR-0030 裁决六写死了顺序：**必须等 P17 全部落地**；而且它自己的语义就是"我在沙箱里，这一次要跑到沙箱外"，非沙箱部署里等于 no-op（票面上面那四条照抄的语义里第一条就写着）。做一个 `/elevated` 命令加一张会话状态表、而它什么都不改变，是这次刚刚删掉的那类东西 |
-| `exec_allowlist` 的 agent 维度 | `agentId` 取的是**选中的人设名**，而换人设要重启（`AgentAutoConfiguration` 的注释：换人设不热切换）。一个进程只有一个 agent，于是"wildcard 桶（`agent_id` 为 null）与当前 agent 桶"里第二个桶永远不存在——与 `scope=shared` 的 per-agent 覆盖丢弃同一类问题：没有对象。**等多 agent 真存在时再做**，那时它才是加一列的理由 |
-| `host` 的路由本身（`auto` 进沙箱、`gateway` 从沙箱提到宿主、`node`） | 只有 `auto`/`gateway` 有对象，而它们都落本机；`sandbox`/`node` 见上 |
+| 门禁 | `./scripts/verify.sh` 四步全绿：789 用例，失败/错误/跳过 0 |
+| 真隔离 | 本机跑 `-Pdocker` 那几条（`SandboxTest` 的容器用例）需要 docker 与镜像；CI 上没有，按既有分组排除 |
+| 清单 | `docs/capability-tests.md` 新增第 9 节（沙箱与提权），标注"要 docker 或要开 elevated 才验得到" |
 
-### 解锁条件（按顺序）
-
-1. 上游给 `DockerCliExecBackend.Builder` 加限额参数 → 重做 P17a（命令真的进容器）；
-2. P17b / P17c → 容器有一套能说清的限额与生命周期；
-3. 这时本票剩下的三件才有对象：`tools.sandbox.tools`（会话级）、`elevated`（沙箱内提权）、
-   `host` 的真正路由（`auto` 在有容器时优先进容器）。
-
-**不要**在 1、2 之前用"外部编排容器 + `containerId` 接上"绕过——那是新的架构决定（见 `AGENTS.md`「卡住就停」）。
+**仍然等上游的**：P17b 的限额（网络 / 只读根 / 内存 / pids / 非 root）——那是"隔离关不关得住"的
+那一半，本票不做也不绕。
