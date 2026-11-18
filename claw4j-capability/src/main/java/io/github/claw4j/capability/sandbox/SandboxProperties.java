@@ -93,24 +93,6 @@ public record SandboxProperties(Mode mode,
     }
 
     /**
-     * 这一段会话要不要进容器。
-     *
-     * <p>{@link Mode#OFF} 与 {@link Mode#ALL} 不看会话，只有 {@link Mode#NON_MAIN} 看。
-     * 写成显式三支而不是"比较大小"：档位之间没有顺序，把 {@code off < non-main < all} 当成阶梯，
-     * 加第四档时必然判错（票 02 在工具画像上踩过同一件事）。
-     *
-     * @param session 这一段会话的身份
-     * @return 是否进容器
-     */
-    public boolean sandboxed(SandboxSession session) {
-        return switch (mode) {
-            case OFF -> false;
-            case ALL -> true;
-            case NON_MAIN -> session != SandboxSession.MAIN;
-        };
-    }
-
-    /**
      * 这一段配置能不能真的生效。启动期调一次，不通过就别起来。
      *
      * <p>两条都按"配了却做不到 → 起不来"处理：{@code backend=ssh} 没有实现，{@code mode=non-main}

@@ -87,7 +87,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | --- | --- | --- |
 | `read-only`（缺省） | `*` | 只读类动作：`read`、`use_skill`、`delegate_task`、会话与目标、定时任务等 |
 | `guest` | `region` | `read`、`use_skill`、`delegate_task` |
-| `admin` | `*` | `*`（含 `run_script`） |
+| `admin` | `*` | `*`（含 `Bash`） |
 
 逐项默认值在 `application.yml` 的 `claw4j.channel.http.roles`，表里没有的角色一律拒绝。
 

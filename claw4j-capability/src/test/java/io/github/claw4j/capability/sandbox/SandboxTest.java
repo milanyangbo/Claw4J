@@ -2,10 +2,6 @@ package io.github.claw4j.capability.sandbox;
 
 import io.github.claw4j.capability.exec.ExecProperties;
 import io.github.claw4j.capability.exec.SandboxedExecBackend;
-import io.github.claw4j.capability.process.ProcessOutcome;
-import io.github.claw4j.capability.process.ProcessRequest;
-import io.github.claw4j.capability.process.ProcessRunner;
-import io.github.claw4j.capability.script.ProcessRunnerFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -17,9 +13,8 @@ import org.springaicommunity.agent.common.exec.ExecSpec;
 import org.springaicommunity.agent.exec.LocalExecBackend;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -27,179 +22,52 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 沙箱这一层：开关怎么判、argv 怎么拼、探不通时怎么失败。
+ * 沙箱这一层现在只剩 exec 一侧（2026-11-18，脚本层退化成技能之后）。
  *
- * <p>真隔离那两条带 {@code @Tag("docker")}（方法级，不是类级）：这一类里还有六条不需要容器，
- * 类级打标签会把它们一起排除出回归。方法级标签的排除效果与类级一致，2026-11-18 实测过
- * （一条带标签的方法在默认 {@code excludedGroups} 下没有跑）。
+ * <p>三件事要守住：{@code mode=off} 时一个容器都不建（默认零变化）；配了做不到的组合启动即失败、
+ * 不静默降级；容器后端接上之后，判定通过的命令整段交给库的 {@link ExecBackend}，宿主那条一次都不跑。
  *
- * <p>本机 Docker Hub 不通时，真隔离那两条用本地已有的镜像跑：
- * {@code ./mvnw -Pdocker -pl claw4j-capability test -Dtest=SandboxTest -Dclaw4j.test.sandbox.image=<本地镜像>}。
+ * <p>脚本侧的容器后端（`DockerSandboxRunner` / `DockerCli`）随脚本层一起删了，所以这个文件从
+ * 原来的十几条用例收到这几条——不是覆盖变少，是被测对象本身少了一半。
  */
 class SandboxTest {
 
-    /** 真隔离用的镜像：要带 POSIX shell。默认值在 Hub 通时可用，通不了就换本地已有的那个。 */
-    private static final String IMAGE = System.getProperty("claw4j.test.sandbox.image", "alpine:3");
+    private static final String IMAGE = "alpine:3";
 
     @Test
-    @DisplayName("mode 不配时拿到的就是今天那个工厂本身：默认零变化要能被断言，不是靠读代码相信")
+    @DisplayName("mode=off（默认）时 exec 侧不建容器：返回 null，交给宿主那条")
     void offKeepsRunningOnHost() {
-        assertThat(SandboxBackends.scriptFactory(SandboxProperties.defaults(), null))
-                .as("off 时返回包装层的话，这条判据就变成「行为看起来一样」，而它必须是「就是同一个」")
-                .isSameAs(ProcessRunnerFactory.SANDBOXED);
+        assertThat(SandboxBackends.execContainer(SandboxProperties.defaults(), Path.of(".")))
+                .as("默认配置下不该建容器；建了就是默认零变化这条判据破了")
+                .isNull();
     }
 
     @Test
-    @DisplayName("mode 三档各自对主/非主会话的判定：non-main 只看非主会话，其余两档不看会话")
-    void modeDecidesPerSession() {
-        SandboxProperties off = properties(SandboxProperties.Mode.OFF, SandboxProperties.Backend.DOCKER,
-                SandboxProperties.WorkspaceAccess.RO);
-        SandboxProperties nonMain = properties(SandboxProperties.Mode.NON_MAIN, SandboxProperties.Backend.DOCKER,
-                SandboxProperties.WorkspaceAccess.RO);
-        SandboxProperties all = properties(SandboxProperties.Mode.ALL, SandboxProperties.Backend.DOCKER,
-                SandboxProperties.WorkspaceAccess.RO);
+    @DisplayName("backend=ssh 配了却做不到：启动即失败，不静默回落宿主")
+    void sshBackendFailsFast() {
+        SandboxProperties properties = new SandboxProperties(SandboxProperties.Mode.ALL,
+                SandboxProperties.Backend.SSH, SandboxProperties.WorkspaceAccess.RW, IMAGE, "docker");
 
-        assertThat(off.sandboxed(SandboxSession.MAIN)).isFalse();
-        assertThat(off.sandboxed(SandboxSession.OTHER)).isFalse();
-        assertThat(nonMain.sandboxed(SandboxSession.MAIN))
-                .as("主对话留在宿主：那是人直接看着的那一段")
-                .isFalse();
-        assertThat(nonMain.sandboxed(SandboxSession.OTHER)).isTrue();
-        assertThat(all.sandboxed(SandboxSession.MAIN)).isTrue();
-        assertThat(all.sandboxed(SandboxSession.OTHER)).isTrue();
-    }
-
-    @Test
-    @DisplayName("容器 argv 是数组：命令里带空格、分号也只是一个元素，宿主那条 sh 从不参与")
-    void argvIsNotAShellString(@TempDir Path workspace) throws IOException {
-        Path root = Files.createDirectories(workspace.resolve("pkg"));
-        ContainerSpec spec = new ContainerSpec("alpine:3", SandboxProperties.WorkspaceAccess.RO, root);
-
-        List<String> argv = spec.argv(List.of("/workspace/run.sh", "a; rm -rf /", "x y"), Map.of());
-
-        assertThat(argv).startsWith("run", "--rm", "-i", "--workdir", "/workspace");
-        assertThat(argv).contains("--volume", root + ":/workspace:ro");
-        assertThat(argv).containsSequence("alpine:3", "/workspace/run.sh");
-        assertThat(argv)
-                .as("参数带分号与空格也各自占一个元素：数组形态里没有解释器这一环")
-                .endsWith("a; rm -rf /", "x y");
-        assertThat(argv)
-                .as("拼成一整条命令字符串就说明有人又在构造命令行：那等于把注入面放回来")
-                .noneMatch(element -> element.contains("--volume ") || element.startsWith("/bin/sh"));
-    }
-
-    @Test
-    @DisplayName("镜像、挂载方式、容器工作目录都来自配置，不写死在 Java 里")
-    void containerSpecComesFromProperties(@TempDir Path workspace) throws IOException {
-        Path root = Files.createDirectories(workspace.resolve("pkg"));
-        SandboxProperties readWrite = new SandboxProperties(SandboxProperties.Mode.ALL,
-                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.RW, "busybox:1.36", "podman");
-        ContainerSpec rw = ContainerSpec.of(readWrite, root);
-
-        assertThat(rw.image()).isEqualTo("busybox:1.36");
-        assertThat(rw.argv(List.of("/workspace/run.sh"), Map.of())).contains("--volume", root + ":/workspace:rw");
-        assertThat(rw.workdir()).isEqualTo("/workspace");
-
-        SandboxProperties noMount = new SandboxProperties(SandboxProperties.Mode.ALL,
-                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.NONE, null, null);
-        ContainerSpec none = ContainerSpec.of(noMount, root);
-
-        assertThat(none.argv(List.of("sh", "-c", "pwd"), Map.of()))
-                .as("不挂载时不该出现 --volume：写了一个空挂载等于把宿主的空目录挂进去")
-                .doesNotContain("--volume");
-        assertThat(none.workdir()).isEqualTo("/");
-    }
-
-    @Test
-    @DisplayName("配了 docker 而守护进程探不通 → 启动失败，并点名是守护进程那条；镜像不在则点名镜像")
-    void unavailableDockerFailsFast(@TempDir Path workspace) {
-        DockerCli noDaemon = DockerCli.of("docker", workspace,
-                fakeRunner(request -> request.program().equals("docker") && request.argv().contains("info")
-                        ? ProcessOutcome.completed(1, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock")
-                        : ProcessOutcome.completed(0, "abc", "")));
-
-        assertThatThrownBy(() -> noDaemon.requireUsable("alpine:3"))
+        assertThatThrownBy(properties::requireUsable)
                 .isInstanceOf(SandboxUnavailableException.class)
-                .hasMessageContaining("守护进程")
-                .hasMessageContaining("不会悄悄回落到宿主");
+                .hasMessageContaining("ssh");
+    }
 
-        DockerCli noImage = DockerCli.of("docker", workspace,
-                fakeRunner(request -> request.argv().contains("image")
-                        ? ProcessOutcome.completed(1, "", "No such image: alpine:3")
-                        : ProcessOutcome.completed(0, "29.9.2", "")));
+    @Test
+    @DisplayName("mode=non-main 还没接上：同样启动即失败")
+    void nonMainModeFailsFast() {
+        SandboxProperties properties = new SandboxProperties(SandboxProperties.Mode.NON_MAIN,
+                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.RW, IMAGE, "docker");
 
-        assertThatThrownBy(() -> noImage.requireUsable("alpine:3"))
-                .as("两条探测要分开报：修法一个是把 docker 起来，一个是把镜像拉下来")
+        assertThatThrownBy(properties::requireUsable)
                 .isInstanceOf(SandboxUnavailableException.class)
-                .hasMessageContaining("镜像")
-                .hasMessageContaining("alpine:3");
+                .hasMessageContaining("non-main");
     }
 
     @Test
-    @DisplayName("配了 ssh、或配了 non-main，都启动失败：留一个配了不生效的取值比不支持更坏")
-    void unimplementedBackendIsRejected() {
-        SandboxProperties ssh = properties(SandboxProperties.Mode.ALL, SandboxProperties.Backend.SSH,
-                SandboxProperties.WorkspaceAccess.RO);
-        assertThatThrownBy(ssh::requireUsable)
-                .isInstanceOf(SandboxUnavailableException.class)
-                .hasMessageContaining("ssh")
-                .hasMessageContaining("还没有实现");
-
-        SandboxProperties nonMain = properties(SandboxProperties.Mode.NON_MAIN, SandboxProperties.Backend.DOCKER,
-                SandboxProperties.WorkspaceAccess.RO);
-        assertThatThrownBy(nonMain::requireUsable)
-                .as("「这一段算不算主对话」要在清单那一层判，脚本层与 exec 层答不出来")
-                .isInstanceOf(SandboxUnavailableException.class)
-                .hasMessageContaining("non-main")
-                .hasMessageContaining("票 06");
-    }
-
-    @Test
-    @Tag("docker")
-    @DisplayName("真隔离：脚本跑在另一台容器里，工作目录是 /workspace，主机名不是宿主那个")
-    void commandRunsInsideContainer(@TempDir Path workspace) throws IOException {
-        Path root = Files.createDirectories(workspace.resolve("pkg"));
-        Path entrypoint = script(root, "hostname; pwd");
-        DockerCli cli = usableCli();
-        String host = hostName();
-
-        ProcessOutcome outcome = new DockerSandboxRunner(
-                new ContainerSpec(IMAGE, SandboxProperties.WorkspaceAccess.RO, root), cli)
-                .run(new ProcessRequest(List.of(entrypoint.toString()), 60_000));
-
-        assertThat(outcome.exitCode()).as("docker 的 stderr：%s", outcome.stderr()).isZero();
-        assertThat(outcome.status()).isEqualTo(ProcessOutcome.Status.COMPLETED);
-        List<String> lines = outcome.stdout().strip().lines().toList();
-        assertThat(lines).hasSize(2);
-        assertThat(lines.get(1)).as("工作目录挂在 --workdir 上").isEqualTo("/workspace");
-        assertThat(lines.get(0))
-                .as("主机名与宿主相同就说明命令根本没进容器（宿主是 %s）", host)
-                .isNotEqualTo(host);
-    }
-
-    @Test
-    @Tag("docker")
-    @DisplayName("容器里看不到宿主的环境变量：HOME 是镜像那个，不是跑测试这台机器的")
-    void hostEnvironmentIsNotInherited(@TempDir Path workspace) throws IOException {
-        String hostHome = System.getenv("HOME");
-        assertThat(hostHome).as("这条用例拿宿主 HOME 当对照，取不到就没法判").isNotNull();
-        Path root = Files.createDirectories(workspace.resolve("pkg"));
-        Path entrypoint = script(root, "echo \"HOME=$HOME\"");
-        DockerCli cli = usableCli();
-
-        ProcessOutcome outcome = new DockerSandboxRunner(
-                new ContainerSpec(IMAGE, SandboxProperties.WorkspaceAccess.RO, root), cli)
-                .run(new ProcessRequest(List.of(entrypoint.toString()), 60_000));
-
-        assertThat(outcome.stdout().strip())
-                .as("宿主 HOME 出现在容器里，说明有人把整份环境照抄进去了")
-                .doesNotContain(hostHome);
-    }
-
-    @Test
-    @DisplayName("容器后端接上之后：判定之后整段交给它，宿主那条 /bin/sh 一次都不跑")
+    @DisplayName("容器后端接上之后：判定通过就整段交给它，宿主那条一次都不跑")
     void containerBackendTakesOverAfterThePolicyLayer(@TempDir Path workspace) {
-        List<String> hostCalls = new java.util.ArrayList<>();
+        List<String> hostCalls = new ArrayList<>();
         // 宿主那条是真执行器：它要是被调到了，结果会是 "hi" 而不是 "in-container"，断言直接抓到。
         Map<String, String> hostEnv = Map.of("CLAW4J_HOST_ONLY", "yes");
         ExecBackend host = LocalExecBackend.builder()
@@ -281,27 +149,7 @@ class SandboxTest {
             if (container instanceof AutoCloseable closeable) {
                 closeable.close();
             }
-        }    }
-
-    private static SandboxProperties properties(SandboxProperties.Mode mode, SandboxProperties.Backend backend,
-                                                SandboxProperties.WorkspaceAccess access) {
-        return new SandboxProperties(mode, backend, access, "alpine:3", "docker");
-    }
-
-    /** 探测通过的那一份：先探真 docker，探不过就直接失败——这条用例本来就要真容器。 */
-    private static DockerCli usableCli() {
-        SandboxProperties properties = new SandboxProperties(SandboxProperties.Mode.ALL,
-                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.RO, IMAGE, "docker");
-        DockerCli cli = DockerCli.resolve(properties);
-        cli.requireUsable(IMAGE);
-        return cli;
-    }
-
-    private static Path script(Path root, String body) throws IOException {
-        Path script = root.resolve("run.sh");
-        Files.writeString(script, "#!/bin/sh\n" + body + "\n");
-        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwxr-xr-x"));
-        return script;
+        }
     }
 
     private static String hostName() {
@@ -311,20 +159,5 @@ class SandboxTest {
         catch (IOException failure) {
             return "";
         }
-    }
-
-    /**
-     * 假执行器：按 argv 决定答什么。用它验"探测失败怎么报"，不必真的有 docker。
-     *
-     * @param answer 给定请求给出的结果
-     * @return 只答不跑的 ProcessRunner
-     */
-    private static ProcessRunner fakeRunner(java.util.function.Function<ProcessRequest, ProcessOutcome> answer) {
-        return new ProcessRunner() {
-            @Override
-            public ProcessOutcome run(ProcessRequest request) {
-                return answer.apply(request);
-            }
-        };
     }
 }

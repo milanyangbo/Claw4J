@@ -3,9 +3,8 @@ package io.github.claw4j.capability.generator;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.capability.script.ScriptPackage;
 import io.github.claw4j.capability.script.ScriptPackageCatalog;
-import io.github.claw4j.capability.process.ProcessOutcome;
-import io.github.claw4j.capability.process.ProcessRequest;
 import io.github.claw4j.capability.script.ScriptPackageRegistry;
+import org.springaicommunity.agent.common.exec.ExecResult;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -404,10 +403,9 @@ public final class SkillGenerator {
         GeneratorSandbox sandbox = GeneratorSandbox.forCandidate(candidate, spec);
         try {
             Path entrypoint = sandbox.sandboxDirectory().resolve(entrypointOf(request));
-            ProcessOutcome outcome = sandbox.run(new ProcessRequest(List.of(entrypoint.toString()),
-                    spec.timeoutMillis()));
-            return new SelfTestResult(outcome.exitCode(), clip(outcome.stdout()), clip(outcome.stderr()),
-                    outcome.status() == ProcessOutcome.Status.COMPLETED);
+            ExecResult result = sandbox.run(entrypoint.toString(), spec.timeoutMillis());
+            return new SelfTestResult(result.exitCode(), clip(result.stdout()), clip(result.stderr()),
+                    result.status() == ExecResult.Status.COMPLETED);
         }
         catch (RuntimeException failure) {
             // 自测自己出问题（沙箱起不来、超时被杀）也要变成"脚本没跑出来"，

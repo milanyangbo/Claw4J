@@ -72,3 +72,4 @@ capability 154 条用例、失败/错误/跳过均 0、覆盖率 81.9%、文件�
 - 后台句柄：`ShellTools` 自己攥着 id → handle 的表，`destroy()` 看不到；本类留一个
   `Set<ExecHandle>` 记账（宿主那条才需要，容器那条由库回收）。
 - 门禁：`./scripts/verify.sh` 四步全绿（2026-11-18），capability 154 条、覆盖率 81.9%。
+- 同日晚：脚本层退化成技能之后，那个唯一例外（`LocalProcessRunner`）也删了，红线归零——见票 02。

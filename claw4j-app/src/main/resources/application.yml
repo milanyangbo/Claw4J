@@ -237,7 +237,7 @@ claw4j:
     # 接受 group:* 简写：group:fs / group:runtime / group:web / group:agents /
     # group:plugins（业务模块 + MCP）/ group:openclaw（其余内置工具）。
     allow: []
-    # 显式放宽：**能突破画像**。"messaging 画像但要一个脚本"写 [run_script] 就够，
+    # 显式放宽：**能突破画像**。"messaging 画像但要跑条命令"写 [Bash] 就够，
     # 不必把整个部署调成 coding 再 deny 一大串。
     # 注意：只配这一项、不配 allow 时，那一层等于不设限（照 OpenClaw 的语义）——
     # 空 allow 本来是"不收窄"，加上 alsoAllow 若变成"只放这几个"就与 writer 的意图相反。

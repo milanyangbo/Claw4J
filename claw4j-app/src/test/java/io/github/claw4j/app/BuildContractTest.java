@@ -75,16 +75,14 @@ class BuildContractTest {
     // ---------------------------------------------------------------- 不起进程（ADR-0002）
 
     /**
-     * 全仓唯一被允许起进程的类。
+     * 全仓没有一个类允许起进程（2026-11-18 起零例外）。
      *
-     * <p>{@code LocalProcessRunner} 收 argv，脚本包走这条。{@code exec} 那条自 2026-11-18 起
-     * 不再由本项目起进程：宿主后端是库的 {@code LocalExecBackend}，容器后端是库的
-     * {@code DockerCliExecBackend}，两者都在 jar 里，这条规则看不见也不需要看见
-     * （`docs/reviews/2026-11-18-open-source-inventory.md`）。加第二个之前先想清楚超时、
-     * 目录锁、干净环境这三件事还成不成立。
+     * <p>脚本层的 argv 执行器（{@code LocalProcessRunner}）随脚本层一起删了——脚本退化成技能，
+     * 由模型用 {@code Bash} 去跑；{@code exec} 的宿主后端是库的 {@code LocalExecBackend}、
+     * 容器后端是库的 {@code DockerCliExecBackend}，两者都在 jar 里，这条规则看不见也不需要看见。
+     * 想再开一个例外之前，先读 `docs/reviews/2026-11-18-open-source-inventory.md` 与
+     * `.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md`。
      */
-    private static final String PROCESS_SPAWNER = "io.github.claw4j.capability.process.LocalProcessRunner";
-
     /**
      * 用 {@code callMethodWhere} 而不是 {@code callMethod(Runtime.class, "exec")}：
      * 后者第三个参数是可变形参类型，写 {@code "exec"} 等于"无参的 exec"，而它没有无参重载——
@@ -98,11 +96,9 @@ class BuildContractTest {
     @ArchTest
     static final ArchRule java_side_must_not_spawn_processes =
             noClasses().that().resideInAPackage("io.github.claw4j..")
-                    .and().doNotHaveFullyQualifiedName(PROCESS_SPAWNER)
                     .should().callMethodWhere(RUNTIME_EXEC)
                     .orShould().dependOnClassesThat().haveFullyQualifiedName("java.lang.ProcessBuilder")
-                    .because("起进程只发生在 " + PROCESS_SPAWNER
-                            + "，别处不自己拼命令行（ADR-0002）");
+                    .because("本仓不再起进程：脚本层已退化成技能，exec 的两条后端都在库的 jar 里（ADR-0002）");
 
     /**
      * 通用 shell 工具（{@code spring-ai-agent-utils} 的 {@code ShellTools}：{@code Bash}、
@@ -142,16 +138,19 @@ class BuildContractTest {
      * 会命令解释器的写法。shell 会把参数里的分号当成第二条命令，于是传一个参数变成了执行一段脚本。
      * 注释里也不许出现：扫的是整份文件，区分代码与注释要写解析器，那份代价比注释换个说法贵得多。
      *
-     * <p>唯一豁免是 {@code ExecAutoConfiguration}：它**不拼命令行**，只是把解释器名字交给库的
-     * builder（{@code LocalExecBackend.builder().shellCommand("/bin/sh", "-c")}），起进程发生在 jar 里。
-     * （2026-11-18 之前这个豁免在 {@code ShellCommandRunner} 上，那个类已经删了。）
-     * 豁免的是这一个文件名，不是这批字面量——多一个文件想出现 {@code bash -c} 就得先改这里，
+     * <p>两个豁免文件都是同一件事：**不拼命令行**，只是把解释器名字交给库的 builder
+     * （{@code LocalExecBackend.builder().shellCommand("/bin/sh", "-c")}），起进程发生在 jar 里。
+     * 一个是 {@code exec} 的宿主后端，一个是生成器的自测沙箱。
+     * （2026-11-18 之前这两个名额在 {@code ShellCommandRunner} 与 {@code LocalProcessRunner} 上，
+     * 那两个类已经删了。）
+     * 豁免的是文件名，不是这批字面量——多一个文件想出现 {@code bash -c} 就得先改这里，
      * 那一步和要不要再开一个 shell 入口是同一个决定。
      */
     private static final List<String> SHELL_INTERPRETERS =
             List.of("sh -c", "bash -c", "/bin/sh", "/bin/bash", "cmd.exe");
 
-    private static final String SHELL_ENTRY = "ExecAutoConfiguration.java";
+    private static final java.util.Set<String> SHELL_ENTRY_FILES =
+            java.util.Set.of("ExecAutoConfiguration.java", "GeneratorSandbox.java");
 
     /** 会话 schema 的默认名。带点号才是"被拼进了表名"，不带点号的是那个常量自己。 */
     private static final String SESSION_SCHEMA_LITERAL = "claw4j_session.";
@@ -176,7 +175,7 @@ class BuildContractTest {
                 }
                 try (Stream<Path> files = Files.walk(sources)) {
                     for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
-                        if (file.getFileName().toString().equals(SHELL_ENTRY)) {
+                        if (SHELL_ENTRY_FILES.contains(file.getFileName().toString())) {
                             continue;
                         }
                         String content = Files.readString(file, StandardCharsets.UTF_8);

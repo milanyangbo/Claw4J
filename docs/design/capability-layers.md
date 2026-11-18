@@ -90,6 +90,13 @@ MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没
 
 ## Script Package：脚本本体不进上下文，只有输出进
 
+> **2026-11-18 变更（本节大部分已不成立）**：脚本包这一层按 OpenClaw 的形态退化成**技能**
+> （目录 + `SKILL.md` + 支撑文件），`run_script` 工具与自研的 argv 执行器一并删除，
+> 脚本由模型用 `Bash` 去跑。下面关于 `ScriptPackageRunner`、沙箱五条约束、`run_script` 动作的描述
+> 是**历史记录**，重写在 `.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md` 里跟踪。
+> 仍然成立的部分：`ScriptPackage` / `ScriptPackageCatalog` / `ScriptPackageRegistry` 作为生成器的账本。
+
+
 脚本层这一层（`io.github.claw4j.capability.script`）的不是"能跑脚本"，而是**跑在什么里面**。
 模型看到的仍然只是"工具名 + 一个参数"，看不到脚本写了什么；它拿到的返回值只有标准输出。
 

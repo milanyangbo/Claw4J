@@ -2,7 +2,6 @@ package io.github.claw4j.capability.generator;
 
 import io.github.claw4j.capability.script.ScriptPackage;
 import io.github.claw4j.capability.script.ScriptPackageRegistry;
-import io.github.claw4j.capability.script.ScriptPackageRunner;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.BeforeEach;
@@ -103,7 +102,7 @@ class SkillGeneratorTest {
         assertThat(registered.root()).isEqualTo(published.resolve("weekly"));
         assertThat(registered.root()).isNotEqualTo(staging.resolve("weekly"));
         assertThat(Files.readString(registered.entrypointPath())).isEqualTo(script);
-        assertThat(new ScriptPackageRunner(List.of(registered)).run("weekly", List.of())).isEqualTo("weekly");
+        assertThat(Files.readString(registered.entrypointPath())).contains("echo weekly");
     }
 
     @Test
@@ -118,8 +117,7 @@ class SkillGeneratorTest {
 
         assertThat(generator.publishApproved()).isEmpty();
         ScriptPackage registered = registry.packages().getFirst();
-        assertThat(new ScriptPackageRunner(List.of(registered)).run("weekly", List.of()))
-                .isEqualTo("reviewed");
+        assertThat(Files.readString(registered.entrypointPath())).contains("echo reviewed");
     }
 
     @Test

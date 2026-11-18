@@ -9,7 +9,7 @@
 
 **Type:** task
 
-**Status:** draft（等确认）
+**Status:** in-progress（2026-11-18 用户裁决"肯定要跟 OpenClaw 对齐"；代码已落地，文档与示例待改）
 
 ## 为什么是"退化成文件 + 说明"（2026-11-18 核过 OpenClaw 文档原文）
 
@@ -77,3 +77,32 @@
   换成 `Bash` 之后这两样要靠 workspace 边界与 exec 白名单，强度不同，要在 `docs/` 里改写而不是悄悄消失。
 - **`run_script` 的审计事件与语义缓存里的"副作用工具"判定**要跟着改名，否则缓存会把"跑脚本"当成只读。
 - **示例要重写**：`examples/scripts/summarize`、`weather-forecast` 改成技能目录 + `SKILL.md`。
+
+## 实现记录（2026-11-18）
+
+**已做（代码全绿，`./scripts/verify.sh` 四步过；capability 13 文件 / 26 方法 / 覆盖率 81.1%）：**
+
+- 删 `capability/script` 的执行侧：`ScriptPackageRunner`、`ScriptPackageToolProvider`、
+  `ScriptPackageToolCallback`、`ProcessRunnerFactory`、`SandboxedProcessBackend`、`ScriptExecutionException`。
+- 删 `capability/process` 整包（`ProcessRunner` / `ProcessRequest` / `ProcessOutcome` /
+  `ProcessStartException` / `LocalProcessRunner`）。
+- 删 `capability/sandbox` 的脚本侧：`DockerCli`、`DockerSandboxRunner`、`ContainerSpec`、
+  `SandboxSession`、`SandboxBackends.scriptFactory`、`SandboxProperties.sandboxed(...)`；
+  `SandboxAutoConfiguration` 只剩配置绑定（容器探测由库的 `build()` fail-fast 承担）。
+- `ScriptPackageAutoConfiguration` 只留账本（`ScriptPackageRegistry`）与观察者容器，不再注册工具与档位。
+- `GeneratorSandbox` 改成库的 `LocalExecBackend`（`cleanEnvironment(true)` + `sh -c`）；自测保留，
+  但它已经**不是**模型能触发的执行入口。
+- 两条架构规则改成**零例外**：`ToolsBoundaryTest#nobodyStartsProcesses`、
+  `BuildContractTest#java_side_must_not_spawn_processes` 不再点名任何类。
+- 测试：删 `ScriptPackageTest`（19 条，全部针对已删的执行链）；`SandboxTest` 收到 6 条；
+  `SkillGeneratorTest` 两处执行断言改成读发布快照的内容。
+
+**还没做（下一步，都在这一票里）：**
+
+- `examples/scripts/*` 改成技能目录（`SKILL.md` + 脚本），`README-capability-tests.md` §19 重写。
+- `README-adding-capabilities.md` §3、`docs/design/capability-layers.md` 的脚本层整节：已加"已下线"横幅，
+  正文仍是历史描述，要真改。
+- ADR-0013（五步链）、ADR-0017（副作用与幂等）、ADR-0020（M9 P17 提到脚本层）、ADR-0030（权限动作
+  `run_script`）各加一条修订记录；ADR-0002 的"两个点名例外"要改成零例外。
+- eval 用例里对脚本包的那几条；`CONTRIBUTING.md` 角色表那一行。
+- **缺一条用例**：断言工具清单里没有 `run_script`（现在靠"类被删了"保证，没有机器证据）。
