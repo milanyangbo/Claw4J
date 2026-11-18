@@ -77,6 +77,31 @@ class ExecElevationTest {
         assertThat(recorder.hostCalls.get()).isZero();
     }
 
+    @Test
+    @DisplayName("host=gateway + 沙箱开着：运行期被拒——那是「从沙箱提到宿主」，只有 elevated 能出去")
+    void gatewayIsRejectedWhileTheSandboxIsOn() {
+        Recorder recorder = new Recorder();
+
+        assertThatThrownBy(() -> recorder.run(Elevation.OFF, ExecProperties.Mode.FULL,
+                ExecProperties.Host.GATEWAY))
+                .isInstanceOf(ExecViolationException.class)
+                .hasMessageContaining("host=gateway");
+        assertThat(recorder.containerCalls.get()).isZero();
+        assertThat(recorder.hostCalls.get()).isZero();
+    }
+
+    @Test
+    @DisplayName("没有容器时 /elevated 等于什么都没改：本来就在宿主上，gateway 也不再被拒")
+    void elevatedHasNoEffectWithoutAContainer() {
+        Recorder recorder = new Recorder();
+
+        recorder.run(Elevation.ON, ExecProperties.Mode.ASK, ExecProperties.Host.GATEWAY,
+                false);
+
+        assertThat(recorder.hostCalls.get()).as("非沙箱部署里它本来就在宿主上跑").isOne();
+        assertThat(recorder.approvalsAsked.get()).as("on 不跳审批").isEqualTo(1);
+    }
+
     /** 两个假后端 + 一个会计数的审批端口；审批一律放行，好让"跑没跑"这件事可断言。 */
     private final class Recorder {
 
@@ -87,10 +112,20 @@ class ExecElevationTest {
         final AtomicInteger approvalsAsked = new AtomicInteger();
 
         void run(Elevation elevation, ExecProperties.Mode mode) {
-            SandboxedExecBackend backend = new SandboxedExecBackend(
-                    ExecProperties.of(mode, workspace, List.of()),
+            run(elevation, mode, ExecProperties.Host.AUTO, true);
+        }
+
+        void run(Elevation elevation, ExecProperties.Mode mode, ExecProperties.Host host) {
+            run(elevation, mode, host, true);
+        }
+
+        void run(Elevation elevation, ExecProperties.Mode mode, ExecProperties.Host host,
+                 boolean withContainer) {
+            ExecProperties properties = new ExecProperties(mode, null, null, null, host, null, null,
+                    workspace, List.of());
+            SandboxedExecBackend backend = new SandboxedExecBackend(properties,
                     counting(hostCalls), Set.of("PATH"), "tester", approving(), ExecReviewer.fallback(),
-                    counting(containerCalls));
+                    withContainer ? counting(containerCalls) : null);
             ExecCallContext context = new ExecCallContext(new Principal("tester"), "session-1",
                     "http", "chat-1", "run-1", elevation);
             Supplier<ExecResult> call = () -> backend.run(ExecSpec.of("echo hi"));

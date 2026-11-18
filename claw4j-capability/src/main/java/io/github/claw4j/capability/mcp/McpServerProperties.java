@@ -16,10 +16,11 @@ import java.util.Map;
  * 打包。配置化之后"接一个第三方 MCP server"就是写四行 yml，与 {@code claw4j.skills.directory}
  * 同一个取向——能力来源是运行时才知道的事。接哪几种传输仍然是编译期的事，见 {@link Transport}。
  *
- * <p>权限默认按 server 声明，可以按工具覆盖：同一个 server 往往同时导出只读查询与会改东西
- * 的动作（{@code list_inbox} 与 {@code send_email}）。只按 server 声明时只有两个结局——
- * 整条声明成只读（写动作也被只读身份调用，权限放大），或整条声明成写（只读身份连查一下都不行）。
- * 所以 {@link Server#tools} 允许逐个覆盖，没点名的仍走 server 那一条（ADR-0003 第二层）。
+ * <p>能看见哪些工具由工具清单那一层决定（{@code claw4j.tools.*}，票 03 / 07），
+ * 这里只回答"接哪一个 server"：权限不再按 server 声明，也不按工具逐个覆盖——
+ * 那是两套判定并存的老写法，ADR-0030 阶段 4 整块删掉了（{@code Server.tools} 随之删除）。
+ * 现在要收窄就用清单里的 {@code deny} 点名工具名，要过滤 server 自己导出的那批就用
+ * {@link Server#toolFilter}（存在性过滤，票 07）。
  *
  * <p>用 {@code @ConfigurationProperties} 而不是 {@code @Value}：这里是一串结构化条目，
  * 不是几个标量。{@code @Value} 表达不了"任意多个 server、每个都有自己的 argv 与环境变量"。
@@ -93,7 +94,7 @@ public class McpServerProperties {
      *                  非凭据常量写 {@code plain:<文本>}，裸写会被拒并点名到具体一行）；
      *                  同名键覆盖 {@code inheritEnv} 透传进来的值
      * @param inheritEnv stdio：从本进程按名字补进去哪些变量。默认只给 {@code PATH}——
-     *                  不给它连启动器都找不到。注意这**不是白名单**：子进程仍会继承父进程的
+     *                  不给它连启动器都找不到。注意这<b>不是白名单</b>：子进程仍会继承父进程的
      *                  其余变量（SDK 的传输不清空环境，见 {@code ProcessStdioMcpEndpoint} 类注释），
      *                  要隔离得靠部署层的容器策略
      * @param url       http / sse：base URI，例如 {@code https://mcp.example.com}
@@ -101,7 +102,7 @@ public class McpServerProperties {
      * @param headers   http / sse：每次请求都带的头，值是句柄，可以带前后缀
      *                  （{@code Authorization: "Bearer secret:deepwiki_token"}）；
      *                  真值在每次写头那一刻才换出来（P08）
-     * @param toolFilter 这个 server 的哪些工具**存在**（ADR-0030 裁决二）：{@code include} 非空
+     * @param toolFilter 这个 server 的哪些工具<b>存在</b>（ADR-0030 裁决二）：{@code include} 非空
      *                   则必须命中，{@code exclude} 命中即排除，条目支持 {@code *}。过滤发生在
      *                   "工具变成工具"之前，所以被排掉的工具不进清单、不进画像登记，
      *                   也不在 {@code toolNames()} 里——{@code allow} 加不回来

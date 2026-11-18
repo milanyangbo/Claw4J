@@ -263,7 +263,7 @@ class McpToolTest {
      * 存在性过滤（票 07）：以前单独一个 McpToolFilterTest，理由是"那个类已经 20 个方法（门禁上限）"。
      * 上限 2026-11-18 抬到 26，而模块的测试文件数到顶（14），所以并回来。
      *
-     * 它要验的是一条链上四处一起少掉：callbacks、权限登记、画像（knowsTool）、
+     * 它要验的是一条链上三处一起少掉：callbacks、名字登记（toolNames）、画像（knowsTool）、
      * 以及启动日志里那份清单。只少一处的实现会让模型"看得见却调不动"或者反过来，
      * 而两种现象都不指向配置。
      */
@@ -278,7 +278,7 @@ class McpToolTest {
     }
 
     @Test
-    @DisplayName("include 两个：第三个的 callback 与权限都不存在，画像也查不到它")
+    @DisplayName("include 两个：第三个的 callback 与名字登记都不存在，画像也查不到它")
     void includeFiltersCallbacksAndPermissions() {
         try (InProcessStdioMcpServer calc = InProcessStdioMcpServer.of("calc", new CalcTools());
              McpToolProvider provider = new McpToolProvider(List.of(new McpConnection(

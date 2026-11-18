@@ -255,7 +255,7 @@ public final class ExecPolicy {
      * {@code askFallback=full}，字面上是"没人看见就放行"，而 {@code allowlist} 那一档的全部意义
      * 是"未命中就是不跑"。两个配置项打架时取更严的那个，否则"硬边界"这个词就不成立了。
      *
-     * <p>{@code ALLOWLIST} 档在这里恒等于不放：能走到"等不到人"这一步的，正是**没有命中**白名单
+     * <p>{@code ALLOWLIST} 档在这里恒等于不放：能走到"等不到人"这一步的，正是<b>没有命中</b>白名单
      * 的那些命令（命中的早就 {@code RUN} 了）。写成"再查一次白名单"是同一件事的两次实现，
      * 而两处口径迟早会分开。
      *
@@ -281,7 +281,7 @@ public final class ExecPolicy {
      * <p><b>它认不出 {@code auto}</b>：{@code allowlist} + {@code on-miss} + {@code autoReview}
      * 会归到 {@code ASK}——因为"有没有复核器"是另一件事，档位不该假装表达了它。照抄。
      *
-     * <p>这条反解最关键的一句：{@code security=full} 配 {@code ask=always} **反解回 {@code ASK}**，
+     * <p>这条反解最关键的一句：{@code security=full} 配 {@code ask=always} <b>反解回 {@code ASK}</b>，
      * 意思是"每条都问"。实现里别把 {@code full} 当成"什么都不问"。
      *
      * @param settings 三段式
@@ -314,7 +314,7 @@ public final class ExecPolicy {
      * <p>两条容易实现错的次序：
      *
      * <ul>
-     *   <li><b>{@code always} 优先于持久批准</b>：批过一次之后，{@code ask=always} 的下一次**仍然要问**。
+     *   <li><b>{@code always} 优先于持久批准</b>：批过一次之后，{@code ask=always} 的下一次<b>仍然要问</b>。
      *       这是"每次都要人看"的唯一含义，也是卡片上不给 {@code allow-always} 的原因。</li>
      *   <li><b>{@code full} + {@code on-miss} 不问</b>：最后一句要求 {@code security=allowlist}，
      *       {@code full} 下没有"未命中"这回事。</li>
@@ -339,6 +339,27 @@ public final class ExecPolicy {
         return settings.ask() == ExecProperties.Ask.ON_MISS
                 && settings.security() == ExecProperties.Security.ALLOWLIST
                 && (!analysisOk || !allowlistSatisfied);
+    }
+
+    /**
+     * 这条命令分析出结果了吗——每段都取得到可执行名才算。
+     *
+     * <p>它就是 {@link #requiresApproval} 的 {@code analysisOk} 那一维。OpenClaw 在调用点还另 OR 了
+     * 一条 {@code allowlist 计划不可用}，我们这两条是同一件事：能落成 {@code pattern} 的段说明它分析得
+     * 出来，落不成的（{@code ./run.sh}、{@code FOO=bar cmd}、引号开头）既没有白名单计划、也说不清
+     * "要放行的是什么"，于是只能问人。
+     *
+     * <p>差别只在 {@code security=allowlist} + {@code ask=on-miss} 下"文本命中白名单但入口说不清"这一格：
+     * 白名单按整条命令匹配，{@code ./run.sh} 可以配进去，而它是什么程序取决于那个文件本身——
+     * {@code full} 档不看白名单，所以不受这条影响。
+     *
+     * @param command 模型的原始命令
+     * @return 至少一段、且每段都取得到可执行名时为 {@code true}
+     */
+    public static boolean analysisOk(String command) {
+        java.util.List<String> segments = segments(command);
+        return !segments.isEmpty()
+                && segments.stream().allMatch(segment -> patternOf(segment).isPresent());
     }
 
     /**
@@ -386,7 +407,7 @@ public final class ExecPolicy {
      * 这一段是不是"解释器 + 内联求值"的形态。
      *
      * <p>清单照 ADR-0030 裁决四那张表抄全，不只抄七个解释器：漏一个就等于给那个解释器留了一条
-     * "白名单直通任意代码"的路。按**可执行文件名的 basename** 认（{@code /usr/bin/python3} 与
+     * "白名单直通任意代码"的路。按<b>可执行文件名的 basename</b> 认（{@code /usr/bin/python3} 与
      * {@code python3} 是同一个东西），参数里出现对应旗标即算命中。
      *
      * @param segment 一段命令
@@ -448,15 +469,17 @@ public final class ExecPolicy {
      * </ul>
      *
      * @param settings    生效策略
+     * @param command     模型的原始命令，用来判 {@link #analysisOk}
      * @param allowlisted 是否命中白名单（{@code security=full} 时忽略）
      * @param durable     是否已有持久批准
      * @return 该走哪条路
      */
-    public static Verdict verdict(Settings settings, boolean allowlisted, boolean durable) {
+    public static Verdict verdict(Settings settings, String command, boolean allowlisted,
+                                  boolean durable) {
         if (settings.security() == ExecProperties.Security.DENY) {
             return Verdict.DENY;
         }
-        if (requiresApproval(settings, true, allowlisted, durable)) {
+        if (requiresApproval(settings, analysisOk(command), allowlisted, durable)) {
             return Verdict.ASK;
         }
         if (settings.security() == ExecProperties.Security.ALLOWLIST && !allowlisted && !durable) {

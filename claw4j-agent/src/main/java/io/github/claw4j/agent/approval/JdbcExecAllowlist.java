@@ -16,7 +16,7 @@ import java.util.UUID;
 /**
  * {@code allow-always} 的落点：{@code claw4j_run.exec_allowlist}（V11）上的一条持久放行（票 05）。
  *
- * <p>一条记录对**一段**命令，不是对整条命令行：批了 {@code rg -n TODO && ls} 会写成两行，
+ * <p>一条记录对<b>一段</b>命令，不是对整条命令行：批了 {@code rg -n TODO && ls} 会写成两行，
  * 于是下一次 {@code ls} 也在放行之内；而只落整条命令的哈希，下一次 {@code rg -n FIXME}
  * 还要再问一遍——人会开始无脑点批准，那比不问更糟。
  *
@@ -91,27 +91,60 @@ public class JdbcExecAllowlist {
     }
 
     /**
+     * 这份计划能落成哪几条 pattern。有一段表达不出来就整份作废。
+     *
+     * <p>单独抽出来是因为同一个判断有两个消费者：写的时候决定落不落（{@link #remember}），
+     * 画卡片的时候决定给不给那个按钮（{@link #remembers}）。两处各写一遍，迟早一处改成
+     * "落一半"、另一处还在给按钮。
+     *
+     * @param plan 冻结件，可以为 {@code null}
+     * @return 每段一条 pattern；有任何一段表达不出来、或一段都没有时为空
+     */
+    static Optional<Set<String>> patterns(FrozenPlan plan) {
+        if (plan == null) {
+            return Optional.empty();
+        }
+        Set<String> patterns = new LinkedHashSet<>();
+        for (String segment : ExecPolicy.segments(plan.command())) {
+            Optional<String> pattern = ExecPolicy.patternOf(segment);
+            if (pattern.isEmpty()) {
+                return Optional.empty();
+            }
+            patterns.add(pattern.get());
+        }
+        return patterns.isEmpty() ? Optional.empty() : Optional.of(patterns);
+    }
+
+    /**
+     * 这份计划能不能落成持久放行。
+     *
+     * <p>落不了的时候卡片上不给 {@code allow-always}：那一项点了只会写零条、却回一句
+     * "以后都放行"，下一次照旧弹——比没有这一项更坏。照 OpenClaw 的
+     * {@code resolveExecApprovalAllowedDecisions}，它在"本次只能一次性持久化"时也只返回
+     * {@code allow-once} 与 {@code deny}。
+     *
+     * @param plan 冻结件，可以为 {@code null}
+     * @return 每段都能取到可执行名时为 {@code true}
+     */
+    static boolean remembers(FrozenPlan plan) {
+        return patterns(plan).isPresent();
+    }
+
+    /**
      * 把这份计划按段记下来。
      *
      * @param plan 刚被批准的那份计划
      * @return 写下去的条目数；有一段表达不出来时为 0（整条不记）
      */
     public int remember(FrozenPlan plan) {
-        if (plan == null) {
-            return 0;
-        }
-        Set<String> patterns = new LinkedHashSet<>();
-        for (String segment : ExecPolicy.segments(plan.command())) {
-            Optional<String> pattern = ExecPolicy.patternOf(segment);
-            if (pattern.isEmpty()) {
+        Optional<Set<String>> resolved = patterns(plan);
+        if (resolved.isEmpty()) {
+            if (plan != null) {
                 log.info("这条命令有一段表达不成可执行名，整条不落 allow-always：{}", plan.command());
-                return 0;
             }
-            patterns.add(pattern.get());
-        }
-        if (patterns.isEmpty()) {
             return 0;
         }
+        Set<String> patterns = resolved.get();
         int written = 0;
         for (String pattern : patterns) {
             try {

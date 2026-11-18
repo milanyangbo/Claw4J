@@ -1,6 +1,5 @@
 package io.github.claw4j.agent.approval;
 
-import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
@@ -14,7 +13,7 @@ import org.springframework.ai.tool.metadata.ToolMetadata;
 import java.util.Optional;
 
 /**
- * 给"声明了要人批"的工具套一层闸：执行前问一次，没批准就**回一条工具结果**（票 05）。
+ * 给"声明了要人批"的工具套一层闸：执行前问一次，没批准就<b>回一条工具结果</b>（票 05）。
  *
  * <p>为什么不在 Advisor 层做：Advisor 只能改写模型的回答，或者把整轮拦掉。前者会让模型以为
  * "这件事我做了"（它拿到了拒绝文本，却看不见自己那条工具调用被换掉），后者会让这一轮彻底结束，
@@ -40,9 +39,6 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
      * ADR-0030 里整块下线之后，这句话跟着唯一还会用到它的地方搬到这里。
      */
     public static final String APPROVAL_PREFIX = "这个动作要先审批";
-
-    /** 审批行上给人看的参数摘要上限，与 {@code args_summary varchar(512)} 对齐。 */
-    private static final int SUMMARY_CHARS = 480;
 
     private final ToolCallback delegate;
 
@@ -156,17 +152,13 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
     }
 
     /**
-     * 给人看的参数摘要：脱敏之后截断。
-     *
-     * <p>脱敏在截断之前：反过来的话，一个手机号被截成两半，两半都不再匹配号码规则，于是掩码失效。
+     * 给人看的参数摘要：脱敏之后截断（见 {@link ArgsSummary}）。
      *
      * @param toolInput 参数原文
      * @return 摘要
      */
     private static String summaryOf(String toolInput) {
-        String masked = PiiRedactor.mask(toolInput == null ? "" : toolInput);
-        return masked.length() <= SUMMARY_CHARS
-                ? masked : masked.substring(0, SUMMARY_CHARS - 1) + "…";
+        return ArgsSummary.of(toolInput);
     }
 
     /**

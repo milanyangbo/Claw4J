@@ -220,6 +220,24 @@ class ExecApprovalTest {
     }
 
     @Test
+    @DisplayName("落不进库的命令不给「以后都放行」：按钮只会点出一句空话")
+    void anUnrepresentableRequestRefusesThePersistentChoice() {
+        ExecProperties ask = ExecProperties.of(ExecProperties.Mode.ASK, WORKSPACE, List.of());
+        String approvalId = asOwner(() -> port(ask).decide(request("./run.sh"))).approvalId();
+
+        assertThat(service(ask).find(approvalId).orElseThrow().allowAlways())
+                .as("卡片上就不该有这一项：点了写零条，却回一句「以后都放行」，下一次照旧弹")
+                .isFalse();
+
+        ApprovalDecider.Result result = service(ask)
+                .decide(approvalId, APPROVER, ApprovalChoice.ALLOW_ALWAYS, null);
+
+        assertThat(result.verdict()).isEqualTo(ApprovalVerdict.NOT_APPLICABLE);
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.exec_allowlist", Integer.class))
+                .isZero();
+    }
+
+    @Test
     @DisplayName("子 Agent 会话被拒：结论落库，但不往那段会话投")
     void denialForASubagentSessionIsNotDelivered() {
         CountingAgent agent = new CountingAgent();

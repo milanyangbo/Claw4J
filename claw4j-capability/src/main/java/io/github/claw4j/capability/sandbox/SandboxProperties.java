@@ -10,7 +10,7 @@ import java.util.List;
  * <p>它回答的是<b>在哪跑</b>，与"准不准跑"（工具清单、审批）正交。两者混在一起时，
  * 想收紧一边就不得不动另一边，于是"把命令关进容器"与"给这个人少开一个工具"成了同一件事。
  *
- * <p>{@code mode} 默认 {@link Mode#OFF}：**默认零变化**。没有这一条，升级一次应用就把所有人的
+ * <p>{@code mode} 默认 {@link Mode#OFF}：<b>默认零变化</b>。没有这一条，升级一次应用就把所有人的
  * 命令搬进一个没有网络的容器里，失败会以"某个脚本忽然跑不通"的形式出现。
  *
  * @param mode            要不要进容器，见 {@link Mode}；默认关
@@ -31,7 +31,13 @@ public record SandboxProperties(Mode mode,
     /** 默认镜像：小、带 {@code sh}。换镜像不该改代码，所以它只是个默认值。 */
     public static final String DEFAULT_IMAGE = "alpine:3";
 
-    /** 默认的 docker CLI 名字：解析成绝对路径是在启动期做的事（见 {@link DockerCli#resolve}）。 */
+    /**
+     * 默认的 docker CLI 名字。
+     *
+     * <p>本仓不解析它，也不自己拼 {@code docker run}：装配时原样交给库的
+     * {@code DockerCliExecBackend.Builder#dockerCommand}，认不认得出这个名字由库决定
+     * （见 {@link SandboxBackends#execContainer}）。
+     */
     public static final String DEFAULT_DOCKER_BINARY = "docker";
 
     /** 容器里的工作目录。挂在 {@code --workdir} 上，与宿主路径无关。 */
@@ -40,9 +46,9 @@ public record SandboxProperties(Mode mode,
     /**
      * 要不要进容器。
      *
-     * <p>{@link #NON_MAIN} 是"主对话留在宿主、其余进容器"。它需要知道"这一段算不算主对话"，
-     * 而那个问题在脚本层与 exec 层都答不出来（那两层只认一个包、一条命令）。所以它是
-     * **判定函数已经写好、装配还没接上**的那一档：配了它启动即失败，而不是悄悄退化成 {@link #ALL}。
+     * <p>{@link #NON_MAIN} 是"主对话留在宿主、其余进容器"。它要先回答"这一段算不算主对话"，
+     * 而沙箱这一层只认一条命令、拿不到会话键。所以它是<b>定了取值、装配还没接上</b>的那一档：
+     * 配了它启动即失败，而不是悄悄退化成 {@link #ALL}。
      */
     public enum Mode {
 
@@ -62,14 +68,14 @@ public record SandboxProperties(Mode mode,
         /** 本机的 docker 守护进程。 */
         DOCKER,
 
-        /** 远端机器。**未实现**，配了启动即失败。 */
+        /** 远端机器。<b>未实现</b>，配了启动即失败。 */
         SSH
     }
 
     /**
      * 沙箱会话里的工具策略（第 9 层，票 06）。
      *
-     * <p>照 OpenClaw 的 {@code tools.sandbox.tools}：**只在沙箱会话里生效**，非沙箱会话不看它。
+     * <p>照 OpenClaw 的 {@code tools.sandbox.tools}：<b>只在沙箱会话里生效</b>，非沙箱会话不看它。
      * 三张表的语义与 {@code claw4j.tools.*} 那份完全一致（deny 先判、allow 空则全放），
      * 因为它是同一套管线的第 9 层，不是另一套规则。
      *
@@ -148,7 +154,7 @@ public record SandboxProperties(Mode mode,
         }
         if (mode == Mode.NON_MAIN) {
             throw new SandboxUnavailableException("claw4j.tools.sandbox.mode=non-main 还没有接上："
-                    + "「这一段算不算主对话」要在工具清单那一层判（票 06），脚本层与 exec 层答不出来。"
+                    + "「这一段算不算主对话」要按会话键判，沙箱这一层拿不到它（票 06 的缺口）。"
                     + "现在要么写 all（全部进容器），要么写 off（都不进）。");
         }
     }

@@ -294,8 +294,8 @@ claw4j:
       mode: ${CLAW4J_EXEC_MODE:full}
       # 在哪台机器上跑：auto / gateway / sandbox / node。
       # 这个应用既是控制面也是执行面，所以 **auto 与 gateway 是同一件事**（都落本机）。
-      # sandbox 要容器（容器化 2026-11-18 回滚，等上游加限额参数）、node 要多宿主（没有），
-      # 这两个配了**启动失败**，不静默回落——"以为进了容器"比"知道没进"危险。
+      # sandbox 要容器（见下面的 sandbox 段；限额还没做，归 P17b）、node 要多宿主（没有），
+      # 做不到的那两档配了**启动失败**，不静默回落——"以为进了容器"比"知道没进"危险。
       # host: auto
       # 三段式的显式字段：不写就取 mode 预设，写了就覆盖那一段。
       # security: allowlist
@@ -327,7 +327,9 @@ claw4j:
     # 退出回收都在库里）。限额（网络、只读根、内存/pids、非 root）归 P17b，**等上游给
     # `DockerCliExecBackend.Builder` 加参数**，我们不自己实现。
     sandbox:
-      # off / all。non-main 要判"这一段算不算主对话"，随票 06 的沙箱层一起做。
+      # off / all。non-main（"主对话留在宿主、其余进容器"）还没接上：它要按会话键判，
+      # 沙箱这一层拿不到，配了**启动失败**。
+      # 下面这些键要与 `claw4j.tools.exec.host` 对得上：host=sandbox 而这里 off，启动即失败。
       mode: ${CLAW4J_SANDBOX_MODE:off}
       # docker；ssh 未实现，配了启动即失败（留一个配了不生效的取值比不支持更坏）。
       backend: ${CLAW4J_SANDBOX_BACKEND:docker}

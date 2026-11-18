@@ -1,6 +1,5 @@
 package io.github.claw4j.agent.approval;
 
-import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.capability.exec.ExecApprovalPort;
 import io.github.claw4j.capability.exec.ExecCallContext;
 import io.github.claw4j.capability.exec.ExecProperties;
@@ -38,14 +37,6 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
      */
     public static final String TOOL_NAME = "Bash";
 
-    /**
-     * 卡片上那句命令摘要的长度上限，与 {@code args_summary varchar(512)} 对齐。
-     *
-     * <p>超过它就会被库拒掉——而拒绝的方式是"审批请求没登记上"，人看到的是"没人能批"。
-     * 截断在写之前做，比让库去挡清楚。
-     */
-    private static final int SUMMARY_CHARS = 480;
-
     private final ApprovalGate gate;
 
     private final JdbcExecAllowlist allowlist;
@@ -69,17 +60,25 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
     }
 
     /**
-     * 这一档接不接受"以后都放行"。
+     * 这一条请求接不接受"以后都放行"。
      *
-     * <p>{@code ask=always} 时**不接受**：那一档的含义是"每条都要人看"，落一条持久放行等于把它
-     * 悄悄改成 {@code on-miss}。照 OpenClaw 的 {@code resolveExecApprovalAllowedDecisions}——
-     * 它在那里也只返回 {@code allow-once} 与 {@code deny}。
+     * <p>两个条件，逐条对着 OpenClaw 的 {@code resolveExecApprovalAllowedDecisions}：
+     *
+     * <ul>
+     *   <li>{@code ask=always} 时<b>不接受</b>：那一档的含义是"每条都要人看"，落一条持久放行等于把它
+     *       悄悄改成 {@code on-miss}。它在那里也只返回 {@code allow-once} 与 {@code deny}。</li>
+     *   <li><b>本次只能一次性持久化时也不接受</b>（{@code ./run.sh}、{@code /tmp/x} 这类取不出可执行名
+     *       的段）：给了按钮，点下去写零条、却回一句"以后都放行"，下一次照旧弹。</li>
+     * </ul>
      *
      * @param properties exec 配置，可以为 {@code null}
-     * @return 接受时为 {@code true}；没有配置时按不接受（没有可持久的东西）
+     * @param plan       这一条请求冻结的计划，可以为 {@code null}
+     * @return 接受时为 {@code true}；没有配置或落不了库时按不接受
      */
-    public static boolean allowsAlways(ExecProperties properties) {
-        return properties != null && properties.settings().ask() != ExecProperties.Ask.ALWAYS;
+    public static boolean allowsAlways(ExecProperties properties, FrozenPlan plan) {
+        return properties != null
+                && properties.settings().ask() != ExecProperties.Ask.ALWAYS
+                && JdbcExecAllowlist.remembers(plan);
     }
 
     @Override
@@ -107,7 +106,7 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
         }
         Optional<String> approvalId = gate.ask(new ApprovalLedger.Ask(
                 context.runId(), context.owner(), TOOL_NAME, plan.digest(), summaryOf(plan),
-                originOf(context), FrozenPlanJson.encode(plan), allowsAlways(properties)));
+                originOf(context), FrozenPlanJson.encode(plan), allowsAlways(properties, plan)));
         if (approvalId.isEmpty()) {
             return Decision.undecided(null,
                     "没能登记成一条审批请求（这个部署没有审批设施，或者库写不进去）");
@@ -121,7 +120,7 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
      * 兑现到一条批准之后，交回给后端。
      *
      * <p>冻结件不一致就拒：指纹本来就是计划算出来的，正常路径上这里永远相等，所以这一句是
-     * **断言**而不是判据——它挡的是将来有人改了指纹口径（比如只算命令名）之后，一条批准能跨命令
+     * <b>断言</b>而不是判据——它挡的是将来有人改了指纹口径（比如只算命令名）之后，一条批准能跨命令
      * 复用。那种改动不会让任何一条用例红，而后果是"批了 A 也等于批了 B"。
      *
      * @param grant 兑现到的批准
@@ -142,18 +141,13 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
     }
 
     /**
-     * 卡片上给人看的那句话：在哪个目录里跑什么，脱敏并截断。
-     *
-     * <p>脱敏在截断之前：反过来的话，一个手机号会被截成两半，两半都不再匹配号码规则，
-     * 于是掩码失效、前半截原样进库。
+     * 卡片上给人看的那句话：在哪个目录里跑什么，脱敏并截断（见 {@link ArgsSummary}）。
      *
      * @param plan 冻结件
      * @return 摘要
      */
     private static String summaryOf(FrozenPlan plan) {
-        String masked = PiiRedactor.mask(plan.summary());
-        return masked.length() <= SUMMARY_CHARS
-                ? masked : masked.substring(0, SUMMARY_CHARS - 1) + "…";
+        return ArgsSummary.of(plan.summary());
     }
 
     /**

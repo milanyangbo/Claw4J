@@ -2,24 +2,25 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.approval.ApprovalGate;
-import io.github.claw4j.agent.audit.ToolCallAudit;
-import io.github.claw4j.agent.elevated.ElevatedProperties;
-import io.github.claw4j.agent.elevated.Elevations;
-import io.github.claw4j.capability.sandbox.SandboxProperties;
-import io.github.claw4j.domain.principal.ToolPolicyContext;
-import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
+import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.agent.channel.ConversationDelivery;
+import io.github.claw4j.agent.elevated.ElevatedProperties;
+import io.github.claw4j.agent.elevated.Elevations;
+import io.github.claw4j.agent.model.ModelConfiguration;
+import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
-import io.github.claw4j.agent.channel.ConversationDelivery;
-import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.SessionCompactor;
+import io.github.claw4j.agent.session.SessionEntries;
+import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.domain.principal.ToolPolicyPipeline;
 import io.github.claw4j.domain.principal.ToolProfile;
 import io.github.claw4j.domain.principal.ToolTier;
@@ -28,6 +29,8 @@ import io.github.claw4j.persona.Persona;
 import io.github.claw4j.persona.PersonaCatalog;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
@@ -40,8 +43,6 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.time.Clock;
@@ -50,11 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import io.github.claw4j.agent.model.ModelConfiguration;
-import io.github.claw4j.agent.model.ModelProperties;
 
 /**
  * Agent 的最小装配：一个系统提示词加一条 Advisor 链。
@@ -153,11 +150,6 @@ public class AgentAutoConfiguration {
         // 沙箱是部署级的（mode=non-main 配了启动失败），所以这一轮的 sandboxed 就是它。
         SandboxProperties sandbox = sandboxProperties.getIfAvailable(SandboxProperties::defaults);
         boolean sandboxed = sandbox.containerized();
-        // bundle-mcp 要能只点名 MCP 那批工具：靠登记表自己报来源，不靠名字猜。
-        Set<String> mcpToolNames = registries.stream()
-                .filter(registry -> "mcp".equals(registry.source()))
-                .flatMap(registry -> registry.externalToolNames().stream())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         // "这次用的是哪份人设、画像来自哪一层"必须能从日志里读出来。内置默认尤其要说：
         // 一份谁也没注意到的默认人设，比一份写错的配置更难查——前者没有任何报错，
         // 只是说话的方式不对。
@@ -176,7 +168,7 @@ public class AgentAutoConfiguration {
             ToolPolicyContext round = (context == null ? ToolPolicyContext.anonymous() : context)
                     .withSandboxed(sandboxed);
             ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(toolPolicy, round,
-                    sandbox.tools(), mcpToolNames);
+                    sandbox.tools(), mcpToolNames(registries));
             ToolProfile effective = decision.profile() == profile.profile()
                     ? profile
                     : new ToolProfile(decision.profile(), profile.allow(), profile.deny(),
@@ -520,6 +512,24 @@ public class AgentAutoConfiguration {
                     + "要么这个部署没装提供它的模块（正常），要么名字拼错了（不正常）——"
                     + "拼错的话那一条永远不生效。", selection.unused());
         }
+    }
+
+    /**
+     * 这一轮里 MCP 那批工具叫什么。
+     *
+     * <p>{@code bundle-mcp} 要能只点名它们，靠登记表自己报来源，不靠名字猜。<b>每轮现算</b>，不在
+     * 装配时算好存着：MCP 启动时连不上、之后重连是正常路径（{@code LiveMcpTiers} 就是为它建的），
+     * 快照一份的话那批工具在重连后永远看不见，而"沙箱会话不写 {@code bundle-mcp} 就看不见 MCP 工具"
+     * 这条也就不成立了。
+     *
+     * @param registries 当前登记着的工具来源
+     * @return MCP 工具名的集合
+     */
+    private static Set<String> mcpToolNames(List<ToolTierRegistry> registries) {
+        return registries.stream()
+                .filter(registry -> "mcp".equals(registry.source()))
+                .flatMap(registry -> registry.externalToolNames().stream())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     /**

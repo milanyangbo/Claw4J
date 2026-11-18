@@ -162,11 +162,14 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     @Override
     public ExecHandle start(ExecSpec spec) {
         authorize(spec);
-        if (container != null) {
-            return target().start(spec);
-        }
         backgroundShells.removeIf(handle -> !handle.isAlive());
-        ExecHandle handle = host.start(withValidatedOverrides(spec));
+        // 记账要盖住两条路径，不只是宿主那条：沙箱部署里 `/elevated on` 起的就是宿主进程，
+        // 而 destroy() 只认这张表——漏记等于关掉应用之后留下没人杀的 shell。
+        ExecBackend chosen = target();
+        // 环境覆盖的合法性只对宿主那一侧有意义：容器那条由库的 DockerCliExecBackend 决定。
+        // 判据是"最终跑在哪"，不是"有没有配容器"——提权之后跑的是宿主，这一句就得判。
+        ExecSpec effective = chosen == host ? withValidatedOverrides(spec) : spec;
+        ExecHandle handle = chosen.start(effective);
         backgroundShells.add(handle);
         return handle;
     }
@@ -179,7 +182,7 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
      *   <li>{@code auto}：有沙箱进沙箱，没有就落宿主；</li>
      *   <li>{@code sandbox}：必须进容器（没有容器时装配期就已经起不来了，见
      *       {@link ExecProperties#requireUsable()}）；</li>
-     *   <li>{@code gateway}：本机。**沙箱开着时被拒**——那是"从沙箱提到宿主"，不是一条随时能用的
+     *   <li>{@code gateway}：本机。<b>沙箱开着时被拒</b>——那是"从沙箱提到宿主"，不是一条随时能用的
      *       逃生门；在沙箱里要出去得走 {@code elevated}（它自己还带审批那一层）。</li>
      *   <li>{@code node}：本仓没有多宿主，{@code requireUsable()} 已经挡在启动期。</li>
      * </ul>
@@ -244,7 +247,7 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
 
         // heredoc 与内联求值会把"白名单直接放行"抬成"问人"（票 01 的追加项，照它的 requiresAsk）。
         // 只在 RUN 上叠加：已经 DENY 的不该因为"要问人"变得更容易过。
-        ExecPolicy.Verdict verdict = ExecPolicy.verdict(settings, allowlisted, durable);
+        ExecPolicy.Verdict verdict = ExecPolicy.verdict(settings, spec.command(), allowlisted, durable);
         if (verdict == ExecPolicy.Verdict.RUN && ExecPolicy.forceAsk(settings, spec.command())) {
             verdict = ExecPolicy.Verdict.ASK;
         }

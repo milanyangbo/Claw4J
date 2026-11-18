@@ -138,7 +138,7 @@ class ExecPolicyTest {
     void forceAskOnlyWidensRun() {
         ExecPolicy.Settings deny = ExecPolicy.expand(ExecProperties.Mode.DENY);
 
-        assertThat(ExecPolicy.verdict(deny, true, false)).isEqualTo(ExecPolicy.Verdict.DENY);
+        assertThat(ExecPolicy.verdict(deny, "cat <<EOF", true, false)).isEqualTo(ExecPolicy.Verdict.DENY);
         assertThat(ExecPolicy.forceAsk(deny, "cat <<EOF"))
                 .as("forceAsk 只回答'要不要问人'，改判留给调用方，且只抬 RUN——否则 deny 会被 heredoc 撬开")
                 .isTrue();
@@ -172,6 +172,19 @@ class ExecPolicyTest {
     void analysisFailureForcesPrompt() {
         ExecPolicy.Settings settings = ExecPolicy.expand(ExecProperties.Mode.ASK);
         assertThat(ExecPolicy.requiresApproval(settings, false, true, false)).isTrue();
+    }
+
+    @Test
+    @DisplayName("入口说不清的段算分析失败：文本命中白名单也要问")
+    void unnamableSegmentIsAnalysisFailure() {
+        assertThat(ExecPolicy.analysisOk("rg -n TODO && ls")).isTrue();
+        assertThat(ExecPolicy.analysisOk("./run.sh")).isFalse();
+        assertThat(ExecPolicy.analysisOk("FOO=bar rg TODO")).isFalse();
+
+        ExecPolicy.Settings settings = ExecPolicy.expand(ExecProperties.Mode.ASK);
+        assertThat(ExecPolicy.verdict(settings, "./run.sh", true, false))
+                .as("白名单按整条命令文本匹配，./run.sh 能配进去，但它是什么程序取决于那个文件")
+                .isEqualTo(ExecPolicy.Verdict.ASK);
     }
 
     @Test

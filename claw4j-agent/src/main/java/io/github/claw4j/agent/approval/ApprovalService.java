@@ -179,15 +179,17 @@ public class ApprovalService implements ApprovalDecider {
     /**
      * 这条请求接不接受"以后都放行"。
      *
-     * <p>两个条件都要满足：它是 exec 的命令（只有 exec 有持久放行的落点），且当前档位不是
-     * {@code ask=always}（那一档的含义是每条都要人看）。
+     * <p>三个条件都要满足：它是 exec 的命令（只有 exec 有持久放行的落点）、当前档位不是
+     * {@code ask=always}（那一档的含义是每条都要人看）、以及<b>这一条真的落得进库</b>——
+     * {@code ./run.sh} 这类取不出可执行名的命令落不了，给了按钮只会回一句空话。
      *
      * @param toolName 审批行上的工具名
+     * @param frozenPlan 那一行冻结的计划（JSON），可空
      * @return 接受时为 {@code true}
      */
-    private boolean allowsAlways(String toolName) {
+    private boolean allowsAlways(String toolName, String frozenPlan) {
         return AgentExecApprovalPort.TOOL_NAME.equals(toolName)
-                && AgentExecApprovalPort.allowsAlways(exec);
+                && AgentExecApprovalPort.allowsAlways(exec, FrozenPlanJson.decode(frozenPlan));
     }
 
     /**
@@ -221,9 +223,10 @@ public class ApprovalService implements ApprovalDecider {
         if (refused.isPresent()) {
             return new Result(refused.get(), refusalText(refused.get()));
         }
-        if (decision == ApprovalChoice.ALLOW_ALWAYS && !allowsAlways(row.toolName())) {
-            // 这个请求不接受长期放行（ask=always，或不是 exec 的命令）。什么都不改：
-            // 那条请求仍然挂着，等他选"批准"或"拒绝"。
+        if (decision == ApprovalChoice.ALLOW_ALWAYS
+                && !allowsAlways(row.toolName(), row.frozenPlan())) {
+            // 这个请求不接受长期放行（ask=always，或不是 exec 的命令，或这条命令落不进库）。
+            // 什么都不改：那条请求仍然挂着，等他选"批准"或"拒绝"。
             return new Result(ApprovalVerdict.NOT_APPLICABLE,
                     "这一条不接受“以后都放行”：当前档位要求每次都由人看一眼，或者它没有可持久的地方。"
                             + "点“批准”只放行这一次。");
@@ -291,7 +294,7 @@ public class ApprovalService implements ApprovalDecider {
     /**
      * 这段会话要不要跳过投递。
      *
-     * <p>照 OpenClaw 的 {@code isSubagentSessionKey || isCronSessionKey}，**只对拒绝生效**：
+     * <p>照 OpenClaw 的 {@code isSubagentSessionKey || isCronSessionKey}，<b>只对拒绝生效</b>：
      * 子 Agent 拿到的拒绝会变成它那一轮的工具结果，再投一条 follow-up 只会让它把同一件事再做一遍；
      * 定时任务没有人正在读它，投进去等于往一个没人看的分支里写字。批准完成的结果照常投——那是
      * "接着做"的入口。
@@ -614,7 +617,7 @@ public class ApprovalService implements ApprovalDecider {
         }
         try {
             return jdbc.query(
-                    "select id, run_id, owner, tool_name, args_summary, status,"
+                    "select id, run_id, owner, tool_name, args_summary, status, frozen_plan,"
                             + " expires_at <= now() as expired, expires_at"
                             + " from claw4j_run.approval_request where id = ?",
                     this::pendingOf, approvalId).stream().findFirst();
@@ -629,7 +632,7 @@ public class ApprovalService implements ApprovalDecider {
         return new Pending(row.getString("id"), row.getString("run_id"), row.getString("owner"),
                 row.getString("tool_name"), row.getString("args_summary"), row.getString("status"),
                 row.getBoolean("expired"), row.getObject("expires_at", java.time.OffsetDateTime.class)
-                .toInstant(), allowsAlways(row.getString("tool_name")));
+                .toInstant(), allowsAlways(row.getString("tool_name"), row.getString("frozen_plan")));
     }
 
     private Row rowOf(ResultSet row, int index) throws SQLException {

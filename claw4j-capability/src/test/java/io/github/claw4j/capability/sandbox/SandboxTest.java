@@ -1,7 +1,10 @@
 package io.github.claw4j.capability.sandbox;
 
+import io.github.claw4j.capability.exec.ExecCallContext;
 import io.github.claw4j.capability.exec.ExecProperties;
 import io.github.claw4j.capability.exec.SandboxedExecBackend;
+import io.github.claw4j.domain.principal.Elevation;
+import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -27,12 +30,52 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>三件事要守住：{@code mode=off} 时一个容器都不建（默认零变化）；配了做不到的组合启动即失败、
  * 不静默降级；容器后端接上之后，判定通过的命令整段交给库的 {@link ExecBackend}，宿主那条一次都不跑。
  *
- * <p>脚本侧的容器后端（`DockerSandboxRunner` / `DockerCli`）随脚本层一起删了，所以这个文件从
+ * <p>脚本侧的容器后端（{@code DockerSandboxRunner} / {@code DockerCli}）随脚本层一起删了，所以这个文件从
  * 原来的十几条用例收到这几条——不是覆盖变少，是被测对象本身少了一半。
  */
 class SandboxTest {
 
     private static final String IMAGE = "alpine:3";
+
+    @Test
+    @DisplayName("沙箱部署里提权起的宿主后台 shell 也要被收掉：destroy 只认那一张表")
+    void destroyKillsElevatedHostShellsWhenAContainerIsConfigured(@TempDir Path workspace) {
+        Map<String, String> env = Map.of("PATH", System.getenv("PATH"));
+        ExecBackend host = LocalExecBackend.builder()
+                .workingDirectory(workspace)
+                .cleanEnvironment(true)
+                .environment(env)
+                .shellCommand("/bin/sh", "-c")
+                .build();
+        // 容器配上了、这一条却要跑在宿主上（/elevated on）：旧写法在这种部署里直接 return 容器那条，
+        // 句柄一条都不记，于是 destroy() 收不到它。
+        ExecBackend container = new ExecBackend() {
+
+            @Override
+            public ExecResult run(ExecSpec spec) {
+                return ExecResult.completed(0, "in-container", "");
+            }
+
+            @Override
+            public ExecHandle start(ExecSpec spec) {
+                throw new UnsupportedOperationException("这条用例走宿主那条");
+            }
+        };
+        SandboxedExecBackend backend = new SandboxedExecBackend(
+                ExecProperties.of(ExecProperties.Mode.FULL, workspace, List.of()), host,
+                env.keySet(), "tester", null, null, container);
+
+        ExecCallContext context = new ExecCallContext(new Principal("tester"), "session-1",
+                "http", "chat-1", "run-1", Elevation.ON);
+        ExecHandle handle = ExecCallContext.with(context, () -> backend.start(ExecSpec.of("sleep 10")));
+        assertThat(handle.isAlive()).as("后台 shell 没起来，这条用例就验不到回收").isTrue();
+
+        backend.destroy();
+
+        assertThat(handle.isAlive())
+                .as("沙箱部署里提权起的那条也是宿主进程，漏记就是关掉应用之后留下没人杀的 shell")
+                .isFalse();
+    }
 
     @Test
     @DisplayName("mode=off（默认）时 exec 侧不建容器：返回 null，交给宿主那条")
