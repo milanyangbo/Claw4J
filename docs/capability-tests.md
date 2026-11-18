@@ -310,7 +310,6 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | 4 | 同上 | 记忆按「人 + 这一段对话」隔离（**不再按权限分区**：会话键回到只有 `userId`，降权不重置会话） | `t '用 recall_session 查一下我早些时候问过哪些口径'` | 能列出上一轮那条；`hit recall_session` +1 |
 | 4 | 同上 | **配 `self` 时召回不跨对话**：私聊里的数字不会被群聊取走（先设 `claw4j.tools.sessions.visibility=self` 再起服务） | `t '记住：上周华东成交额 128,400，先别外传'`，再换一段对话：`t '用 recall_session 查一下华东成交额'`（换 `-H 'X-Claw4j-Chat-Id: group-a'`） | 第二段答"本段对话里没有找到（范围：只有当前这一段对话）"；**回答里不出现 128,400** |
 | 4 | 同上 | **默认 `all` 时跨对话召得回来，且带出处**（不配 `visibility`，即默认） | 同上两句，仍是换一段对话问 | 第二段能召回 128,400；结果里每条带它来自哪一段（`claw4j:user:…`） |
-| 5 | `propose_script` | 交脚本草稿（**需先配 `claw4j.generator.*`**） | `t '写一个脚本，统计 examples/skills 下有几份技能'` | `.claw4j/staging/` 出现候选包；`hit propose_script` +1 |
 | 6 | `create_goal` | 目标挂在会话上，跨轮可见 | `t '给这段对话定个目标：让 CI 变绿并推送修复'` | `select goal_objective, goal_status from claw4j_session.session_entry where goal_id is not null` 有一行 `active`；`hit create_goal` +1 |
 | 6 | `get_goal` | 读状态、内容、用量、预算 | `t '现在这个目标是什么、用了多少 token'` | 回答里有状态与用量；`hit get_goal` +1 |
 | 6 | `update_goal` | 模型只能标达成或阻塞 | `t '目标达成了，标一下'` | 状态变 `complete`；`hit update_goal` +1。再说 `t '把它暂停'` → 模型应回"暂停不归我"，状态不变 |
@@ -320,7 +319,7 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | 22 | `list_schedules` | 列出自己名下的任务 | `t '我定了哪些定时任务'` | 列出刚建的那条；`hit list_schedules` +1 |
 | 23 | `cancel_schedule` | 软停用：记录留着，只是不再跑 | `t '把 <前 8 位> 那条取消掉'` | `enabled=false` 而行还在；`hit cancel_schedule` +1 |
 
-- **7 号位是空的，这是有意的**：7 号留给 `Skill`（§4），`Task` 见 §6、不占号。所以 8 号起是 MCP、18–20 曾经是脚本包（2026-11-18 起变成技能里的脚本，见 §5）、21–23 是 P05 的三个调度工具——**编号只追加，不跟着章节顺序走**，重排会让别处所有引用失效。
+- **7 号位是空的，这是有意的**：7 号留给 `Skill`（§4），`Task` 见 §6、不占号。所以 8 号起是 MCP、18–20 曾经是脚本包（现在是技能里的脚本，见 §5）、21–23 是 P05 的三个调度工具。**5 号位（`propose_script`）随着生成器整层删除而空出来了**——**编号只追加，不跟着章节顺序走**，重排会让别处所有引用失效。
 - 三个调度工具跟着 `claw4j.schedule.enabled` 一起进退：关掉调度时它们从工具清单里消失，不是被拒。
 - 上表默认按 `full` 档跑（`claw4j.tools.profile` 的默认值）。**看不到某个工具**不再靠"换个角色被拒"来验：
   权限只剩清单级，看不见就是清单里没有（`claw4j.tools.profile` / `deny` / 按发送者的 `toolsBySender`）。

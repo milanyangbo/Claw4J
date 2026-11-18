@@ -121,6 +121,6 @@
   里断言清单不含 `run_script`（类被删了不等于没人再造一个同名工具）。
 - `SkillCatalogTest#bodyCarriesTheSkillDirectorySoScriptsCanBeFound`：正文带目录、`{baseDir}` 被替换。
 
-**留给下一张票（不在这张里）：** 生成器的产出物还是"脚本包 + `package.properties`"，
-而注册进账本之后没有任何执行入口——这是票 02 留下的缺口，
-`.scratch/oss-alignment/issues/03-generator-emits-skills.md`（draft，等裁决改产出物还是下掉整层）。
+**留给下一张票（已收）：** 生成器的产出物还是"脚本包 + `package.properties`"，而注册进账本之后
+没有任何执行入口——这条缺口在票 03 里收掉了：用户裁决"先整层删掉"，生成器与账本两个包一起删除
+（`.scratch/oss-alignment/issues/03-generator-emits-skills.md`）。

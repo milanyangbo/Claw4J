@@ -1,25 +1,24 @@
 # Skill Generator 走五步链路，未人审的脚本不注册
 
 ---
-status: accepted
+status: superseded
 date: 2026-10-24
+superseded-by: 删除（2026-11-18，见下）
 ---
 
 让 Agent 能自己产出一个新的 Script Package。
 
-> 修订记录（2026-11-18）：五步链路本身没变（生成 → 静态检查 → 自测 → 审计 → 人审），
-> 但**产出物的形态要重新对**：脚本包退化成技能之后，生成器写出来的 `package.properties` 与
-> "注册即进工具清单"这条通路已经没有任何执行入口——注册到 `ScriptPackageRegistry` 的包不会被
-> 任何东西跑起来。这是**已知缺口**，不是已经解决的问题：要么让生成器直接产出一份
-> `SKILL.md`（OpenClaw 的 Skill Workshop 就是这么做的），要么把这层一起下掉。
-> 跟踪票：`.scratch/oss-alignment/issues/03-generator-emits-skills.md`（draft）。
-1.x 的 `SkillGeneratorSkill` 让模型写出 Python 落盘执行，
-并允许脚本自行 `pip install --break-system-packages`，那条链路把宿主机 shell 交给了模型。
-新架构里执行位置收口了（ADR-0002），但"能不能产出新能力"这件事本身是本项目"开放扩展"定位
-唯一能自证的部分，不能因为原实现危险就整体砍掉。
-
-链路固定为五步：**生成 → 静态检查 → 隔离沙箱自测 → 审计留痕 → 人审通过才注册**。
-未人审的脚本拿不到被调用的资格。
+> **整层删除（2026-11-18）**：脚本包退化成技能之后，这条链路的产出物没有任何执行入口——
+> 生成器写的是 `package.properties` + 入口脚本，注册进账本之后谁也跑不起来（`run_script` 已删，
+> 账本只被它自己读）。一个通过人审的包跑不了，而五步、审计、人审标记看起来全绿，
+> 这比没有这个功能更坏。所以**整层删掉**：`capability/generator`（11 个类）、`capability/script`
+> （账本）、`propose_script`、`claw4j.generator.*` / `claw4j.scripts.*` 两段配置，
+> 以及各自的测试。用户裁决是"先整层删掉"。
+>
+> 本文保留的是当时的推理（为什么要有这道闸、五步为什么是这个顺序），**不是现状**。
+> 以后要重建，按 OpenClaw 的 **Skill Workshop** 形状做：产物是一份 `SKILL.md` + `scripts/`，
+> 写进技能目录，审批复用 `SkillTrust`、执行复用 `Bash`，**不要再建第二套执行入口**。
+> 见 `.scratch/oss-alignment/issues/03-generator-emits-skills.md`。
 
 ## Considered Options
 
@@ -92,11 +91,11 @@ date: 2026-10-24
 ### 权限：`draft_script` 与 `run_script` 是两个动作
 
 提交一份草稿不等于能跑脚本。把两个动作合成一个，等于让"能提议的人"顺手拿到了执行权。
-生成器登记不到任何业务表，它只写暂存区。
+生成器登记不到任何业务表，它只写暂存区。（这一段是历史：整层已删。）
 
 ### 装配上的两个约束
 
-- **没有脚本层就没有生成器**（`@ConditionalOnBean(ScriptPackageRegistry.class)`）：
+- **没有脚本层就没有生成器**（`@ConditionalOnBean(ScriptPackageRegistry.class)`，两边都已删除）：
   人审之后的注册目标就是脚本层的清单，没有它，"人签了字"会变成一个没有任何效果、
   却看起来成功的动作——那比"这一层不存在"更难发现。
 - **执行留痕要挂在 `ExecutionListeners` 这个容器上**，而不是注入一个 listener：

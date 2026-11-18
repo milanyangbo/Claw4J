@@ -7,9 +7,11 @@
 
 1. **迁移是否最新**：读 `classpath:db/migration` 里最大的 version，与库里 `flyway_schema_history`
    的最高成功 version 比。落后就报"库里是 V{n}，还有 V{n+1}..V{m} 没跑"。
-2. **目录存在且可读**：`claw4j.agent.directory` / `.subagents.directory` / `.skills.directory` /
-   `.scripts.directory` / `.rag.directory` / `.generator.staging-directory`。**配了但不存在** = FAIL
-   ——今天这种情况会让启动直接失败，doctor 的价值是在不启动的前提下先说。
+2. **目录存在且可读**：`claw4j.agent.directory` / `.skills.directory` / `.subagents.directory` /
+   `.rag.directory`。**配了但不存在** = FAIL——今天这种情况会让启动直接失败，doctor 的价值是
+   在不启动的前提下先说。
+   （`.scripts.directory` 与 `.generator.staging-directory` 两个键已经不存在：脚本包与生成器
+   在 2026-11-18 整层删除，见 `.scratch/oss-alignment/issues/02`、`03`）
 3. **凭据句柄能否解析**：`claw4j.model.*.api-key` 存的是句柄（`secret:deepseek_api_key`），
    用 `SpringSecretResolver` 解析一次，**不发请求**。这一项分得开两种完全不同的故障：
    "句柄名写错了"（解析不出来）和"key 过期了"（能解析、但 P18b 那条会红）。

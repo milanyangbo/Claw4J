@@ -5,9 +5,9 @@
 - Supersedes: 本文件 2026-11-17 的前一稿（核到实际实现后有九处对不上，见「前一稿错在哪」）
 
 - 修订（2026-11-18）：权限动作表里已经没有 `run_script`——脚本包退化成技能（目录 + `SKILL.md`
-  + 支撑文件，由模型用 `Bash` 跑），那个专用执行入口删掉了。执行相关的动作只剩
-  `exec_command`（`Bash`）与 `draft_script`（生成器交草稿）。本文提到 `run_script` 的地方
-  都是当时的形态，按 `exec_command` 读。
+  + 支撑文件，由模型用 `Bash` 跑），那个专用执行入口删掉了。**同一天晚些，生成器整层也删了**
+  （ADR-0013 标 superseded），所以 `draft_script` 与 `propose_script` 也不存在了：执行相关的动作
+  只剩 `exec_command`（`Bash`）。本文提到 `run_script` / `draft_script` 的地方都是当时的形态。
 
 
 ## 背景

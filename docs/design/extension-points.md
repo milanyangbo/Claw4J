@@ -101,7 +101,7 @@ MCP 那边默认按 server 一份，`servers.<名字>.tools.<工具名>` 可以�
 只跟自己和对话有关的是 `minimal`，业务只读与消息类是 `messaging`，
 跑脚本是 `coding`，外部 MCP 是 `full`。
 
-两个整批归档的场合，因为名字要到运行时才知道：外部 MCP 跟 `full`（生成器那组的工具跟 `coding`）。
+一个整批归档的场合，因为名字要到运行时才知道：外部 MCP 跟 `full`。
 它们用 `ToolTierRegistry.sameFor(自己导出的名字, 档)`，**不要写成"任何名字都算"**——
 那种实现会让"没登记档位就失败"这条校验永远通过。
 
@@ -685,7 +685,7 @@ requires-core=>=0.1.0 <0.2.0
 | --- | --- | --- |
 | 一个业务工具 | 新 jar：工具类 + 自动配置 + imports 文件 + 一条依赖 | 框架任何一处 |
 | 一个新的 MCP 能力 | 一段 `claw4j.capability.mcp.servers.<名字>` 配置；要算值时才写 bean | 连接的建立、重连、权限登记 |
-| 一个命令行能力 | 一个目录（`package.properties` + 入口脚本）+ `claw4j.scripts.directory` | 代码 |
+| 一个命令行能力 | 技能目录里的 `scripts/` 一个文件 + 正文写清怎么跑（模型用 `Bash` 跑） | 代码 |
 | 一套做事流程 | 一个目录 + `SKILL.md` + `claw4j.skills.directory` | 代码 |
 | 一个专职的子 Agent | 一份 `*.md` + `claw4j.subagents.directory` | 代码 |
 | **一个 agent（人设）** | 一份 `*.md` + 可选口径目录 + `claw4j.agent.directory` / `default` | 代码 |

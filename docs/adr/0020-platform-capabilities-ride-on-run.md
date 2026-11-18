@@ -72,7 +72,7 @@ date: 2026-10-29
 
 加 `Approval{NONE, REQUIRED}` 并建 `approval_request` 表。全仓只有 3 处构造点（两个工厂 +
 `McpEndpoints`），调用点一处都不用改。**默认 `NONE`**，审批只加在真正有副作用的动作上
-（`run_script` / `mail_send` / `draft_script`）。
+（当时的 `run_script` / `draft_script`；今天只剩 `mail_send` 与 `Bash` 那类）
 
 判据：20 个工具的默认放行面一个都不变；标了 `REQUIRED` 的那个动作在无批准记录时被拦。
 
@@ -139,7 +139,7 @@ OpenClaw 的七条企业属性里我们明确差的一条：**凭据有主**。�
 会把"读消息"一起卡住。补一条**能力轴**：`minimal / messaging / coding / full` 四档 profile +
 按工具的 allow / deny 分组。这对应 OpenClaw 的 `tools.profile` 与 `tools.exec.mode`。
 
-判据：切到 `messaging` 档，`run_script` 与 `draft_script` 不在工具清单里，其余不受影响。
+判据：切到 `messaging` 档，`Bash`（当时的 `run_script` / `draft_script`）不在工具清单里，其余不受影响。
 
 **P10 · 知识库检索（必须独立的表）**
 
