@@ -1,11 +1,7 @@
 package io.github.claw4j.capability.exec;
 
-import io.github.claw4j.capability.sandbox.SandboxBackends;
-import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.exec.LocalExecBackend;
 import org.springaicommunity.agent.tools.ShellTools;
@@ -50,8 +46,6 @@ import java.util.Map;
 @EnableConfigurationProperties(ExecProperties.class)
 public class ExecAutoConfiguration {
 
-    private static final Logger log = LoggerFactory.getLogger(ExecAutoConfiguration.class);
-
     /**
      * 三个工具名，取自 {@link ShellTools} 的 {@code @Tool(name = …)}。
      *
@@ -86,11 +80,15 @@ public class ExecAutoConfiguration {
     }
 
     /**
-     * 工具对象：库的 {@link ShellTools}，执行后端换成沙箱这一份。
+     * 工具对象：库的 {@link ShellTools}，执行后端换成带了判定的这一份。
      *
      * <p>审批端口与复核器从容器里取（票 05）：端口实现在 agent 侧（它要落库、要发卡片），
      * 这里只认接口。取不到时后端退到 {@link ExecApprovalPort#denyAll()}——需要人批的命令
      * 这一轮拿不到结论，按 {@code askFallback} 处置（默认拒）。
+     *
+     * <p><b>命令只跑在宿主上</b>（2026-11-18 裁决：容器化整体回滚，等上游给
+     * {@code DockerCliExecBackend.Builder} 加限额参数）。这里不留"以后接容器"的空洞参数：
+     * 一个恒为 {@code null} 的字段会让人以为那条路已经通了。
      *
      * @param properties {@code claw4j.tools.exec} 的配置
      * @param execHostBackend 宿主上的执行后端
@@ -102,22 +100,12 @@ public class ExecAutoConfiguration {
     @ConditionalOnMissingBean
     public ShellTools shellTools(ExecProperties properties, ExecBackend execHostBackend,
                                  ObjectProvider<ExecApprovalPort> approvals,
-                                 ObjectProvider<ExecReviewer> reviewer,
-                                 ObjectProvider<SandboxProperties> sandboxProperties) {
-        SandboxProperties sandbox = sandboxProperties.getIfAvailable(SandboxProperties::defaults);
-        ExecBackend container = SandboxBackends.execContainer(sandbox,
-                properties.workspace().toAbsolutePath().normalize());
-        if (container != null && sandbox.workspaceAccess() == SandboxProperties.WorkspaceAccess.RO) {
-            log.warn("claw4j.tools.sandbox.workspace-access=ro 目前不生效：exec 侧的挂载由 "
-                    + "DockerCliExecBackend 管理，只支持读写；脚本包那一层已经删了，这个键没有使用者。"
-                    + "容器里的命令能改工作区——只读根要等 P17b（blocked：等上游加限额参数）。");
-        }
+                                 ObjectProvider<ExecReviewer> reviewer) {
         return ShellTools.builder()
                 .execBackend(new SandboxedExecBackend(properties, execHostBackend,
                         System.getenv().keySet(), System.getProperty("user.name", ""),
                         approvals.getIfAvailable(ExecApprovalPort::denyAll),
-                        reviewer.getIfAvailable(ExecReviewer::fallback),
-                        container))
+                        reviewer.getIfAvailable(ExecReviewer::fallback)))
                 .build();
     }
 

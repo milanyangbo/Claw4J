@@ -55,7 +55,7 @@ public final class Doctor {
     /** 默认的那一组：都要出去的两项（key 有效性、MCP 连通性）不在里面，它们归 P18b。 */
     public static Doctor defaults() {
         return new Doctor(List.of(new MigrationCheck(), new DirectoryCheck(),
-                new SecretHandleCheck(), new ConfigSanityCheck()));
+                new SecretHandleCheck()));
     }
 
     /**

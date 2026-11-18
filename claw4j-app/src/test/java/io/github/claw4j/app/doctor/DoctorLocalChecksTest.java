@@ -43,7 +43,7 @@ class DoctorLocalChecksTest {
 
         Report report = run(Doctor.of(List.of(
                 new MigrationCheck(() -> List.of(1, 2), env -> List.of("1", "2")),
-                new DirectoryCheck(), new SecretHandleCheck(), new ConfigSanityCheck())), environment);
+                new DirectoryCheck(), new SecretHandleCheck())), environment);
 
         assertThat(report.code).isZero();
         assertThat(report.text).contains("PASS").doesNotContain("FAIL");
@@ -119,22 +119,6 @@ class DoctorLocalChecksTest {
         assertThat(finding.detail())
                 .as("这一项只碰 Environment；真去问模型是 P18b 的事")
                 .contains("没发请求");
-    }
-
-    @Test
-    @DisplayName("backend=ssh：报「未实现」，不是静默忽略")
-    void unimplementedBackendIsReported() {
-        MockEnvironment environment = new MockEnvironment()
-                .withProperty("claw4j.tools.sandbox.mode", "all")
-                .withProperty("claw4j.tools.sandbox.backend", "ssh")
-                .withProperty("claw4j.tools.sandbox.workspace-access", "rw");
-
-        List<Finding> findings = new ConfigSanityCheck().run(environment);
-
-        assertThat(findings).anySatisfy(finding -> {
-            assertThat(finding.status()).isEqualTo(Status.FAIL);
-            assertThat(finding.detail()).contains("ssh").contains("没有实现");
-        });
     }
 
     @Test

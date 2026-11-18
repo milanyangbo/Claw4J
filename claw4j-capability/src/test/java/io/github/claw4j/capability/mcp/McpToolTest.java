@@ -75,8 +75,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>存在性过滤（票 07）那五条 2026-11-18 并回这里：它们原来单独一份
  * （{@code McpToolFilterTest}），拆出去的理由是"这个类已经 20 个方法"，而那时门禁上限是 20。
- * 上限抬到 26 之后，模块的测试<b>文件数</b>成了新的约束（P17a 要给 sandbox 腾一个位置），
- * 于是按当初拆出去的理由并回来。
+ * 上限抬到 26 之后，模块的测试<b>文件数</b>成了新的约束（那时要给 sandbox 腾一个位置），
+ * 于是按当初拆出去的理由并回来。（那个位置后来空了：P17a 的容器沙箱 2026-11-18 回滚，SandboxTest 也删了。）
  */
 @ExtendWith(OutputCaptureExtension.class)
 class McpToolTest {
