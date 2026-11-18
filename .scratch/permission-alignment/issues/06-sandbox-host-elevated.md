@@ -16,7 +16,10 @@
 
 **Type:** task
 
-**Status:** resolved（2026-11-18）：沙箱层 / `exec.host` / `elevated` 三件已落地；`exec_allowlist` 的 agent 维度没有对象，见文末「没做的那一行」
+**Status:** resolved（2026-11-18）：沙箱层 / `exec.host` / `elevated` 三件已落地；`exec_allowlist` 的 agent 维度没有对象，见文末「没做的那一行」。
+**二审（2026-11-18，code-review 之后）**：补了 `gateway` 拒与「非沙箱下 elevated 无行为」两条用例、
+补了 `SandboxedExecBackend#start` 的句柄记账（沙箱部署里提权起的那条也是宿主进程）、
+把 `bundle-mcp` 的 MCP 工具名改成每轮现算（原来是装配期快照，MCP 重连后看不见）；四条无对象的用例搬进缺口。
 
 **裁决来源：** ADR-0030 §裁决六（沙箱三键、MCP 闸门、elevated 四档与启用前提）与
 §实现过程·阶段 6。
@@ -38,6 +41,11 @@
 所以查询要同时看 wildcard 桶与当前 agent 桶。判据：`coding` agent 批过的 `rg`，`messaging` agent 那边
 **仍然问一次**；写在 wildcard 桶（`agent_id` 为 `null`）的条目对所有 agent 生效。
 
+**落地后回填（2026-11-18）**：上表三行没做，理由是**没有对象**——`scope` 键与 per-agent `docker`
+覆盖随多 agent 一起才成立；`agent_id` 同上（见文末「没做的那一行」）；`/elevated` 的解析落在
+`claw4j-agent/**/elevated/`（与 `/new`、`/goal` 同层），不在 `claw4j-channel`。
+其余各行按表落地，实际路径见「Answer」。
+
 四条照抄的语义：
 
 - **`elevated` 只在沙箱化时改变行为**：非沙箱部署里 exec 本来就在宿主上跑，这个指令等于无操作。
@@ -49,30 +57,43 @@
 
 ## TDD 用例清单
 
-| 判什么行为 | 用例名 | 先红的样子 |
-| --- | --- | --- |
-| 容器内 `curl` 出网失败（`network: none`） | `SandboxExecTest#containerHasNoEgress` | 现在没有容器 |
-| 沙箱白名单内的命令在容器里跑通 | `#allowlistedCommandRunsInsideSandbox` | 同上 |
-| **未在白名单里放 `bundle-mcp` 时，MCP 工具不可见**（负例） | `#mcpInvisibleWithoutBundleMcpInSandboxAllow` | 现在接上就能看见 → 这条红 |
-| 放了 `bundle-mcp` 之后 MCP 工具可见 | `#mcpVisibleWithBundleMcp` | 同上的另一半 |
-| `host=auto`：有沙箱进沙箱，无沙箱落宿主 | `#autoPrefersSandboxThenHost` | 现在只有宿主一条路 |
-| `host=gateway` 在沙箱会话里被拒（只有 `auto` 允许从沙箱提到宿主） | `#gatewayHostRejectedFromSandbox` | —— |
-| `/elevated on` 在沙箱外跑但**保留审批** | `#elevatedOnKeepsApprovals` | 没有这个指令 |
-| `/elevated full` 在 `enabled` + 名单内时跳过审批 | `#elevatedFullSkipsApprovals` | —— |
-| 名单外的人发 `/elevated full` 直接被拒 | `#elevatedFullRejectedForUnlistedSender` | —— |
-| 全局名单有、per-agent 名单没有 → 视为未授权（交集不是覆盖） | `#elevatedAllowFromIsIntersection` | 容易实现成覆盖 → 这条红 |
-| 非沙箱部署里 `/elevated` 无行为 | `#elevatedIsNoopWithoutSandbox` | —— |
-| `scope=shared` 时 per-agent 的 `docker` 覆盖被忽略 | `#sharedScopeDropsPerAgentDocker` | —— |
-| wildcard 桶的条目对所有 agent 生效 | `ExecAllowlistTest#wildcardEntryAppliesToEveryAgent` | 现在没有 agent 维度 |
-| 某个 agent 批过的条目不外溢 | `#agentEntryDoesNotLeakToOtherAgent` | 同上；这条是加 `agent_id` 的全部理由 |
+| 判什么行为 | 用例名 | 先红的样子 | 过没过 |
+| --- | --- | --- | --- |
+| 沙箱白名单内的命令在容器里跑通 | `SandboxTest#containerBackendTakesOverAfterThePolicyLayer` + `#execContainerBackendRunsInsideAContainer`（后者要 docker） | 现在只有宿主一条路 | ✅ |
+| **未在白名单里放 `bundle-mcp` 时，MCP 工具不可见**（负例） | `ToolPolicyAssemblerTest#mcpInvisibleWithoutBundleMcp` | 接上就能看见 → 这条红 | ✅ |
+| 放了 `bundle-mcp` 之后 MCP 工具可见 | `ToolPolicyAssemblerTest#mcpVisibleWithBundleMcp` | 同上的另一半 | ✅ |
+| 非沙箱会话不看这三张表 | `ToolPolicyAssemblerTest#sandboxToolsIgnoredOutsideSandbox` | 沙箱层的判据挂错位置就会在普通会话里生效 | ✅ |
+| 三张表全空时不出这一层 | `ToolPolicyAssemblerTest#emptySandboxConfigAddsNoLayer` | 空层会让"挡掉 0 个"天天刷日志 | ✅ |
+| `host=auto`：没有容器就落宿主 | `ExecHostTest#autoNeedsNoSandbox` | 现在只有宿主一条路 | ✅ |
+| `host=auto`：有容器就进容器 | `ExecElevationTest#offRunsInContainer` | 同上 | ✅ |
+| `host=gateway` 在沙箱会话里被拒 | `ExecElevationTest#gatewayIsRejectedWhileTheSandboxIsOn` | 老实现 `return host` 就放过去了 → 这条红 | ✅ |
+| `host=sandbox` 但沙箱没开：启动失败 | `ExecHostTest#sandboxWithoutSandboxFailsFast` | 静默回落宿主 | ✅ |
+| `host=node`：启动失败 | `ExecHostTest#nodeFailsFast` | 同上 | ✅ |
+| `/elevated on` 在沙箱外跑但**保留审批** | `ExecElevationTest#onRunsOnHostAndKeepsApprovals` | 没有这个指令 | ✅ |
+| `/elevated full` 跳过审批 | `ExecElevationTest#fullSkipsApprovals` | 同上 | ✅ |
+| `security=deny` 压过 `full` | `ExecElevationTest#fullDoesNotOverrideDeny` | 容易让 full 变成"什么都放" → 这条红 | ✅ |
+| 非沙箱部署里 `/elevated` 无行为 | `ExecElevationTest#elevatedHasNoEffectWithoutAContainer` | 会以为 `host=gateway` 也被拒 | ✅ |
+| 名单外的人发 `/elevated full` 直接被拒 | `SessionMemoryTest#elevatedRefusedForUnlistedSender` | 「没配」被当成「都行」 | ✅ |
+| 四档解析、`ask` 是 `on` 的别名、裸命令看当前档 | `SessionMemoryTest#elevatedParsesItsFourWords` | 没有这个指令 | ✅ |
+| 部署没开时拒，并说清该改哪个键 | `SessionMemoryTest#elevatedRefusedWhenDeploymentIsClosed` | 同上 | ✅ |
+| TTL 到点自动回到 `off` | `SessionMemoryTest#elevatedExpiresAfterItsTtl` | 忘了关就变成永久 | ✅ |
+| 沙箱部署里提权起的宿主后台 shell 也被收掉 | `SandboxTest#destroyKillsElevatedHostShellsWhenAContainerIsConfigured` | 老写法在 `container != null` 时直接 `return`，句柄一条不记 | ✅ |
+| 容器内 `curl` 出网失败（`network: none`） | ⏳ 归 **P17b**：`DockerCliExecBackend.Builder` 还没有 `--network`，等上游 | 没有容器 | ⏳ |
+| 全局名单有、per-agent 名单没有 → 视为未授权（交集不是覆盖） | ⏳ 无对象：一个进程一个 agent，没有 per-agent 名单可交 | 容易实现成覆盖 | ⏳ |
+| `scope=shared` 时 per-agent 的 `docker` 覆盖被忽略 | ⏳ 无对象：`scope` 键与 per-agent 覆盖都没有 | —— | ⏳ |
+| wildcard 桶的条目对所有 agent 生效 | ⏳ 无对象，同「没做的那一行」 | 现在没有 agent 维度 | ⏳ |
+| 某个 agent 批过的条目不外溢 | ⏳ 同上；这是加 `agent_id` 的全部理由 | 同上 | ⏳ |
 
-**标记：整张表未复核（票还没开始）。** 收票时逐行改成 `✅` / `❌` / `⏳`，规则见 `AGENTS.md` 第 2 条。
+**标记（2026-11-18 二审逐行复核）**：表里没有 `❌`；四条 `⏳` 已搬进「缺口」并写明去向。
+二审补了两条用例（`gatewayIsRejectedWhileTheSandboxIsOn` / `elevatedHasNoEffectWithoutAContainer`）——
+原表里点名的 `gatewayHostRejectedFromSandbox` 与 `elevatedIsNoopWithoutSandbox` 全仓都不存在，
+是「表比代码走得远」的典型，这次补上代码而不是改表。
 
 ## 验收判据
 
 | 判什么 | 判据 |
 | --- | --- |
-| 真隔离 | 起 local 实例 + docker 后端：`curl` 失败、宿主路径不可见、白名单命令跑通 |
+| 真隔离 | 起 local 实例 + docker 后端：白名单命令跑通、宿主路径不可见。**`curl` 失败这一条做不了**（P17b 的网络限额还没到位），见缺口 |
 | 闸门 | 沙箱会话里不列 `bundle-mcp`，`names()` 里没有 MCP 工具；列上之后出现 |
 | elevated | 会话里 `/elevated full` 后一条本该弹审批的命令直接跑；`/elevated on` 后仍弹 |
 | 门禁 | `./mvnw clean verify` 全绿 |
@@ -80,8 +101,21 @@
 
 ## 缺口
 
+下面四行原在 TDD 表里，现在搬到这里——**它们没有对象或没有上游参数，不是"以后补一条用例"**：
+
+- **`--network none` / 限额四项 → P17b**（blocked）：等 `DockerCliExecBackend.Builder` 加上
+  `network` / 只读根 / 内存 / pids 参数。回来时改 `SandboxBackends#execContainer` 一处，
+  用例写在 `SandboxTest`（`containerHasNoEgress`）。在那之前"真隔离"只到"另一份文件系统"这一步。
+- **per-agent 的 `allowFrom` 交集 → 无对象**：`agents[].tools.elevated.allowFrom` 要求
+  "sender 同时命中全局与 per-agent 两份名单"，而我们一个进程只有一个 agent（换人设要重启），
+  第二份名单永远不存在。多 agent 真存在时再补，那时 `Elevations#allows` 改成两段取交集。
+- **`scope=shared` 丢 per-agent 覆盖 → 无对象**：`SandboxProperties` 没有 `scope` 键，
+  也没有 per-agent 覆盖可丢。真要做多 agent 时它会跟着 `agent_id` 一起出现。
+- **`exec_allowlist` 的 agent 维度 → 无对象**：见下面「没做的那一行」。
+
+另外两条原来就在缺口里，不受影响：
+
 - **`openshell` 后端不做**（它是它的托管沙箱产品，我们有 docker + ssh 两条够用）。
-- **`host=node` 只是占位**：我们没有多宿主，值可以配进来但只会落到本机。
 - **`elevated` 的 `allowFrom` 通配 `*` 只告警不拦**：它的 policy 检查链我们不做（ADR「不做」）。
 
 ## Answer（2026-11-18 收票）

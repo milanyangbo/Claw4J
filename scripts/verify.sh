@@ -27,13 +27,13 @@ fi
 
 MODULES="claw4j-core claw4j-channel claw4j-capability claw4j-agent claw4j-example-sales claw4j-example-mcp-server claw4j-app claw4j-eval"
 
-# 两个上限是**实测现状**（2026-11-18），不是标准。
+# 两个上限跟 `docs/agents/testing.md` 是同一对数（2026-11-18 从 10 / 20 抬到实测值）。
 #
 # 原来是 10 / 20，被票 01 – 04 按模块追加用例顶穿了：ExecToolTest 26 个方法、
 # ToolProfileTest 22、KnowledgeRetrievalTest 21，另有四个模块文件数过了 10。
 # 抬而不是拆，是因为这些文件的边界本来就是**功能边界**（一个文件就是一件工具、
 # 一类检索的全部行为），硬拆只会造出一堆同名不同义的测试文件。
-# 代价要认：这两个数是"到顶"，下一批用例进来之前必须先拆或先合并，别再加。
+# 代价要认：这两个数是"到顶"，下一批用例进来之前必须先拆或先合并，别再加、也别再抬。
 MAX_FILES=14
 MAX_METHODS=26
 MIN_COVERAGE=60

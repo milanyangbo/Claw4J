@@ -75,15 +75,15 @@ OpenClaw tools*）与 `bundle-mcp` 占位（`CORE_TOOL_PROFILES`）。此处不�
 | `include` 非空时只有命中的留下 | `ToolFilterTest#includeKeepsOnlyMatches` ✅ | 还没有这个类型 |
 | `exclude` 命中即排除，`include` 为空时其余全留 | `ToolFilterTest#excludeWinsWhenNoInclude` ✅ | —— |
 | `*` 通配按整串匹配（`runtime*` 不匹配 `xcronNext`） | `ToolFilterTest#globMatchesWholeName` ✅ | 容易用 `contains` 实现 → 这条红 |
-| MCP：`include` 两个，第三个的 callback 与权限都不存在 | `McpToolFilterTest#includeFiltersCallbacksAndPermissions` ✅ | 现在全量暴露 |
-| MCP：`exclude` 一个，等价于上一个 | `McpToolFilterTest#excludeRemovesTool` ✅ | —— |
-| MCP：`tools` 里点名一个被排除的工具 → 启动失败且提示可能被 filter 排除 | `McpToolFilterTest#declaredToolRemovedByFilterFailsStartup` ✅ | 错误信息会误导成"server 没导出" |
-| MCP：重连后重新按 filter 筛（不是筛一次的快照） | `McpToolFilterTest#filterReappliedWhenTheServerComesBack` ✅ | 容易在首次 listTools 后就不再筛 |
-| 脚本包：`exclude` 掉一个包，`toolNames()` 里也没有它 | `ScriptPackageTest#filteredPackageLeavesNoToolName` ✅ | 现在按 provider 全量登记 |
+| MCP：`include` 两个，第三个的 callback 与名字登记都不存在 | `McpToolTest#includeFiltersCallbacksAndPermissions` ✅ | 现在全量暴露 |
+| MCP：`exclude` 一个，等价于上一个 | `McpToolTest#excludeRemovesTool` ✅ | —— |
+| MCP：`tools` 里点名一个被排除的工具 → 启动失败且提示可能被 filter 排除 | ⏳ 无对象：票 04 删掉了 `Server.tools`，没有"点名的工具"可撞 | 错误信息会误导成"server 没导出" |
+| MCP：重连后重新按 filter 筛（不是筛一次的快照） | `McpToolTest#filterReappliedWhenTheServerComesBack` ✅ | 容易在首次 listTools 后就不再筛 |
+| 脚本包：`exclude` 掉一个包，`toolNames()` 里也没有它 | ⏳ 无对象：脚本包整层删除（oss 票 02，退化成技能里的脚本） | 现在按 provider 全量登记 |
 | example-sales：`exclude: [querySales]` 之后清单里没有它 | `SalesToolFilterTest#excludedBusinessToolIsAbsent` ✅ | —— |
-| 没配 `toolFilter` 时清单与改前逐个工具相同 | `McpToolFilterTest#noFilterKeepsEveryTool` / `ScriptPackageTest#noToolFilterChangesNothing` / `SalesToolFilterTest#noFilterKeepsTheBusinessTool` ✅ | 这条最容易漏 |
+| 没配 `toolFilter` 时清单与改前逐个工具相同 | `McpToolTest#noFilterKeepsEveryTool` / `SalesToolFilterTest#noFilterKeepsTheBusinessTool` ✅ | 这条最容易漏 |
 | 配置真的绑得上（`@DefaultValue` 那层不出 null） | `ToolFilterBindingTest`（三条，`claw4j-app`）✅ | 缺省不写时 NPE 在第一轮请求里 |
-| 通配在 MCP 上也按整串 | `McpToolFilterTest#globFiltersByName` ✅ | —— |
+| 通配在 MCP 上也按整串 | `McpToolTest#globFiltersByName` ✅ | —— |
 
 ## 验收判据
 
@@ -94,24 +94,34 @@ OpenClaw tools*）与 `bundle-mcp` 占位（`CORE_TOOL_PROFILES`）。此处不�
 | 门禁 | ✅ `./mvnw clean verify` 九模块全绿 |
 | 清单 | ✅ `README-capability-tests.md` §2 与 `docs/capability-tests.md` §2.4 各加了一组"被 `tool-filter` 排掉的工具不在清单里"的验法（配置片段 + 该看到什么 + 与权限拒绝的区别） |
 
-**复核：2026-11-18 `./mvnw clean verify` 九模块全绿。** 12 行逐条对到真实用例：
-`ToolFilterTest` 9 条、`McpToolFilterTest` 6 条、`ScriptPackageTest` 19 条里的 2 条、
-`SalesToolFilterTest` 2 条、`ToolFilterBindingTest` 3 条、`ToolFilterIntegrationTest` 1 条（真进程四组）。
+**复核：2026-11-18 `./mvnw clean verify` 九模块全绿。** 12 行逐条对到真实用例（二审重对，
+把原来记的三个类名改成实际存在的；表里两行标 `⏳`，去向见缺口）：
+`ToolFilterTest` 9 条、`McpToolTest` 里的 filter 那 5 条、`SalesToolFilterTest` 2 条、
+`ToolFilterBindingTest` 3 条、`ToolFilterIntegrationTest` 1 条（真进程四组）。
+**二审更正**：`McpToolFilterTest` 已经不存在——它被 `6d0dde5` 并回了 `McpToolTest`（那时上限抬到 26，
+单开一个文件不再是必需的）。上面几行的用例名跟着改成 `McpToolTest#…`。
 
 ## 缺口
 
 - **`toolFilter` 只做"名字"，不做"参数级"**：它的 `toolFilter` 也只到名字与 `*`，参数级靠工具实现自己。
 - **没有 `openclaw mcp tools --include/--exclude` 那条 CLI**：我们改配置即生效，不加一条改配置的命令。
-- **内置工具（`Read`/`Grep`/`Bash`）不挂 filter**：它们的暴露由装配条件与档位决定，不引入第三个开关。
+- **内置工具（`Read`/`Grep`/`Bash`）不挂 filter**：它们的暴露由装配条件与画像决定，不引入第三个开关。
+- **"点名一个被排除的工具 → 启动失败"没有对象**：票 04 删掉了 `Server.tools`，配置里不再有
+  "这个 server 应该导出哪几个"的声明，于是没有东西可与 filter 之后的清单对不上。它原本防的是
+  "写错了名字还以为配上了"，现在那个位置本来就空着——真要防，等重新出现显式声明时再说。
+- **脚本包的 filter 用例没有对象**：脚本包整层删除（oss 票 02，退化成技能里的脚本），
+  技能不走 `toolNames()` 这条路。
 
 ## 实现记录（与票面的三处偏离）
 
 1. **过滤落在 `McpToolProvider#install`，不是构造期**：`listTools()` 之后、建 callback 与权限表之前筛一遍。
    `install` 每次 `contact()` 成功都会走，于是重连拿到的是重新筛过的清单，不是第一次的快照。
    端点与连接只需透出 `toolFilter()`（`McpServerEndpoint.of(...)` 新增一个五参工厂，老的两参/四参默认 `none()`）。
-2. **MCP 的用例单开了一个文件**（`McpToolFilterTest`）：`McpToolTest` 与 `McpServersConfigTest` 都是 20 个方法顶格，
+2. **MCP 的用例当时单开了一个文件**（`McpToolFilterTest`）：`McpToolTest` 与 `McpServersConfigTest` 都是 20 个方法顶格，
    塞进去就破上限。它复用 `McpToolTest` 里的进程内 server 与 `CalcTools`，不另造对端。
-   配置绑定那一层放在 `claw4j-app` 的 `ToolFilterBindingTest`——四个配置对象要在同一个 classpath 上都看得见。
+   **后来并回去了**（`6d0dde5`）：上限抬到 26 之后，为这五条单开一个文件不再划算，而"一类行为一个文件"
+   本来就是 `docs/agents/testing.md` 的取向。配置绑定那一层仍放在 `claw4j-app` 的 `ToolFilterBindingTest`
+   ——四个配置对象要在同一个 classpath 上都看得见。
 3. **脚本层与生成器从 `@Value` 换成了绑定对象**（`ScriptPackageProperties` / `GeneratorProperties`）：
    `tool-filter` 是嵌套结构，`@Value` 表达不了；而给同一段前缀单开一个 `@ConfigurationProperties` 又会出现两套读法。
    两个类的默认值逻辑（评审目录、发布目录、审计文件"落在暂存区旁边"）原样搬进去，没改行为。

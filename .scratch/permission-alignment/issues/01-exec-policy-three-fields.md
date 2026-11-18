@@ -57,21 +57,35 @@
 | `ask=on-miss`：未命中弹审批，批了能跑 | `ExecPolicyTest#askOnMissPromptsWhenMissed` + `ExecToolTest#askOnMissPromptsThroughPortAndRunsAfterAllowOnce` | 现在未命中是直接拒 → 这条红 | ✅ |
 | `ask=always`：命中白名单也弹 | `ExecPolicyTest#askAlwaysPromptsEvenOnAllowlisted` | 没有这一档 | ✅ |
 | `security=full` + `ask=always` 仍逐条弹（反解回 `ask`） | `ExecPolicyTest#fullWithAskAlwaysStillPrompts` | 容易实现成"full 就不弹" → 这条红 | ✅ |
-| `security=full` + `ask=off` 一次都不弹 | `ExecPolicyTest#fullWithAskOffNeverPrompts` | 同上的另一半 | ✅ |
+| `security=full` + `ask=off`：**白名单这件事**一次都不问 | `ExecPolicyTest#fullWithAskOffNeverPrompts` | 同上的另一半 | ✅ |
 | 显式配的 `security` / `ask` 逐字段盖过 `mode`（不是整体替换） | `ExecPolicyTest#settingsOverridesPerField` | 现在只有一层配置 | ✅ |
 | 复合命令 `a && b` 选 `allow-always` 后落两行 | `ExecApprovalTest#allowAlwaysWritesOneRowPerSegment` | 现在没有这张表 | ✅ |
-| 某段表达不出 pattern 时**不落库**、且卡片上不给 `allow-always` | `ExecPolicyTest#patternOfRejectsPathsAndAssignments` + `ExecApprovalTest#unrepresentableSegmentWritesNothing` + `FeishuApprovalTest#aNonPersistableRequestHasNoThirdButton` | 现在一律当一次性处理 | ✅ |
+| 某段表达不出 pattern 时**不落库**、且**这一条请求不给** `allow-always` | `ExecPolicyTest#patternOfRejectsPathsAndAssignments` + `ExecApprovalTest#unrepresentableSegmentWritesNothing` + `ExecApprovalTest#anUnrepresentableRequestRefusesThePersistentChoice` | 现在一律当一次性处理 | ✅ |
 | 选一次 `allow-always` 后，同可执行文件的第二次调用不再弹 | `ExecToolTest#allowAlwaysRemembersAfterRunning` | 无表可查 | ✅ |
 | `ask=always` 时卡片上没有 `allow-always` 这一项 | `ExecApprovalTest#askAlwaysRefusesThePersistentChoice` + `FeishuApprovalTest#aNonPersistableRequestHasNoThirdButton` | 现在卡片固定三选一 | ✅ |
 | `strictInlineEval` 开启后 `python3 -c` / `bash -c` 即使解释器在白名单也弹 | `ExecPolicyTest#strictInlineEvalForcesApproval` + `ExecToolTest#strictInlineEvalAsksEvenWhenAllowlisted` | 没有这个键 | ✅ |
 | `strictInlineEval` 关闭时 `python3 script.py` 不被误伤 | `ExecPolicyTest#strictInlineEvalLeavesScriptFileAlone` | 容易把"解释器"整类当危险 → 这条红 | ✅ |
-| heredoc 段强制审批 | `ExecPolicyTest#heredocForcesApproval` | 现在只有控制符一票否决，没有 heredoc 这一档 | ✅ |
+| heredoc 段强制审批（`ask=off` 也弹：照 OpenClaw 在调用点 OR 上去，与 `ask` 无关） | `ExecPolicyTest#heredocForcesApproval` | 现在只有控制符一票否决，没有 heredoc 这一档 | ✅ |
 | 未配复核器时 `AUTO` 与 `ASK` 行为一致 | `ExecToolTest#autoFallsBackWithoutReviewer` | `AUTO` 还不存在 | ✅ |
 
 **复核：2026-11-18 `./mvnw clean verify` 九模块全绿。** 两处与原表不同，写在下面「缺口」：
 `strictInlineEval` 与 heredoc 是这一轮复核时才发现**只有配置项、没有判定**（`Settings` 带着它，
 但没人读），补了 `ExecPolicy#forceAsk` 与两张表（解释器 → 内联旗标）才真正落地；per-agent 的 exec
 覆盖从来不在本票范围（ADR 偏差清单已判"不做"），原表那一行只是"一句 forecast"。
+
+**二审（2026-11-18，code-review 之后改承诺不改实现）**：原表上一行写着"`full`+`ask=off` 一次都不弹"，
+与 heredoc 那行在配置层互斥。照 ADR 裁决四记的 OpenClaw 调用点——
+`requiresAsk = requiresExecApproval(...) || heredoc || inline-eval || allowlist 计划不可用 || 安全审计压制`
+——后四项是**调用点 OR 上去的，不在 `requiresExecApproval` 体内**，所以 `ask=off` 也拦不住 heredoc。
+实现照抄的正是这一层（`forceAsk` 叠在 `verdict` 之后、只抬 `RUN`），所以改的是票面那半句：
+"一次都不弹"收窄成"白名单这件事不问"，heredoc 那一行补上"`ask=off` 也弹"。
+`fullWithAskOffNeverPrompts` 因此只断言 `requiresApproval`——它回答的就只有白名单那一层。
+
+同一次二审给 `analysisOk` 补了真生产者：它原来恒传 `true`（`verdict` 里写死），
+现在由 `ExecPolicy#analysisOk(command)` 现算（每段都取得到可执行名），
+写的正是 OpenClaw 的 `!analysisOk` 与 `allowlist 计划不可用` 那两条的合并语义。
+差别只在 `security=allowlist` + `ask=on-miss` 下"文本命中白名单但入口说不清"这一格，
+用例 `ExecPolicyTest#unnamableSegmentIsAnalysisFailure`。
 
 ## 验收判据
 

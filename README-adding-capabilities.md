@@ -92,11 +92,11 @@ curl -s "localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool=jiraSearchIs
 ```
 
 问之前这个地址返回 404（还没有这个标签），问之后有数、`ok` 为 1。**别去启动日志里找
-`工具档位 … 清单 N 个`**：那行只在真有工具被挡掉时才打印（默认档位 `full` 什么都不挡），
+`工具画像 … 清单 N 个`**：那行只在真有工具被挡掉时才打印（默认画像 `full` 什么都不挡），
 刚加一个工具时它根本不会出现。
 
 **三条不要写**：三个 bean 上都不要 `@ConditionalOnMissingBean`（会让别的来源静默消失）；
-档位不要写成"任何名字都算"；不要在自动配置里用 `@ConditionalOnBean` 依赖同类里 `@Bean` 的声明顺序。
+画像不要写成"任何名字都算"；不要在自动配置里用 `@ConditionalOnBean` 依赖同类里 `@Bean` 的声明顺序。
 
 ---
 

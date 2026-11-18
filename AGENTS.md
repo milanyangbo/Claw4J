@@ -127,7 +127,7 @@ Authority and safety）与 `read approval checkpoint before schema ... changes`�
   什么不该报（这个仓库的第一大类缺陷是"文档承诺比代码走得远"）；
   `docs/agents/guardrails.md`：已知偏差的清单与改红线怎么走。不看后者，已记账的偏差会被当成缺陷报出来。
 - **写、改、删测试，或判断一条测试该不该留** → `docs/agents/testing.md`：四条判据、
-  正反例、组织界限（每模块 ≤10 个文件、每文件 ≤20 个方法、行覆盖率 ≥60%）。
+  正反例、组织界限（每模块 ≤14 个文件、每文件 ≤26 个方法、行覆盖率 ≥60%）。
 - **写、改代码注释或 Javadoc** → `docs/agents/comments.md`：Google Java Style 第 7 章的硬格式，
   加上本仓库追加的七条（Javadoc 里禁 Markdown、一段一意、不自称「我们」、
   引用外部系统必须带得出处、不写变更史……）。
