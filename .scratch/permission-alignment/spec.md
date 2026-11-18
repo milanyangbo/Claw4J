@@ -43,7 +43,7 @@ slack / dingtalk）一律从"按角色分组的成员名单"退成一份允许�
 | `03-policy-pipeline-eleven-layers` | 十一条管线 + 每轮重算 | 02 |
 | `04-delete-pre-exec-authorization` | 删 `ToolPermission` / `ToolPermissionRegistry` / `Approval` 三个类型、四个消费方、整条角色目录 | 03、05、07 |
 | `05-approval-before-execution` | 审批落点从 Advisor 挪到工具执行前 | 01 |
-| `06-sandbox-host-elevated` | 沙箱层、`exec.host`、`elevated` 四档 | 03 + M9 的 `P17a` / `P17b` / `P17c`（已拆票，见 `.scratch/m9-scale/issues/`） |
+| `06-sandbox-host-elevated` | 沙箱层、`exec.host`、`elevated` 四档 | 03 已完成；M9 的 `P17a/b/c` **全部 blocked**（容器化 2026-11-18 回滚）。本票**部分落地**：`exec.host` 的合法性校验已做（`ExecHostTest`），其余三件等容器 |
 | `07-tool-filter-include-exclude` | 存在性过滤 `toolFilter` + `toolNames()` 独立 + 拿 example MCP server 联测 | 02 |
 | `08-retire-mcp-server-exposure` | 下线出站暴露（`claw4j.mcp.server.*` 整块删） | 无 |
 | `09-revise-capability-test-lists` | 修订两份能力验收清单（`README-capability-tests.md` / `docs/capability-tests.md`） | 01–05、08 |

@@ -1,0 +1,72 @@
+package io.github.claw4j.capability.exec;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springaicommunity.agent.common.exec.ExecBackend;
+
+import java.nio.file.Path;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * {@code claw4j.tools.exec.host} 的合法性：配了做不到的位置就起不来。
+ *
+ * <p>这条规则防的是一句假话。{@code host=sandbox} 在今天会**静默**跑在宿主上——配置看着是"进了容器"，
+ * 实际没有；那种部署出的安全问题，第一反应会是去翻容器配置。所以它必须是启动失败，而不是回落。
+ *
+ * <p>为什么 {@code gateway} 不算"配了做不到"：这个应用既是控制面也是执行面，两者是同一台机器。
+ * 它的语义（"控制面所在机器"）在我们的部署里就是宿主的另一种叫法。
+ */
+class ExecHostTest {
+
+    @TempDir
+    Path workspace;
+
+    @Test
+    @DisplayName("不写 host 时落在本机：auto 是默认，后端能建起来")
+    void autoRunsOnThisMachine() {
+        ExecProperties properties = withHost(null);
+
+        assertThat(properties.host()).isEqualTo(ExecProperties.Host.AUTO);
+        assertThatCode(() -> backend(properties)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("gateway 就是本机：控制面与执行面是同一个进程，不算「配了做不到」")
+    void gatewayIsThisMachine() {
+        assertThatCode(() -> backend(withHost(ExecProperties.Host.GATEWAY))).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("host=sandbox 启动失败：容器化没有落地，不许静默回落宿主")
+    void sandboxFailsFast() {
+        assertThatThrownBy(() -> backend(withHost(ExecProperties.Host.SANDBOX)))
+                .as("要人知道该改哪一行，也要知道为什么：库没有限额入口")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("host=sandbox")
+                .hasMessageContaining("claw4j.tools.exec.host")
+                .hasMessageContaining("回滚");
+    }
+
+    @Test
+    @DisplayName("host=node 启动失败：本仓没有多宿主")
+    void nodeFailsFast() {
+        assertThatThrownBy(() -> backend(withHost(ExecProperties.Host.NODE)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("host=node")
+                .hasMessageContaining("多宿主");
+    }
+
+    private ExecBackend backend(ExecProperties properties) {
+        return new ExecAutoConfiguration().execHostBackend(properties);
+    }
+
+    private ExecProperties withHost(ExecProperties.Host host) {
+        return new ExecProperties(ExecProperties.Mode.FULL, null, null, null, host, null, null,
+                workspace, List.of());
+    }
+}

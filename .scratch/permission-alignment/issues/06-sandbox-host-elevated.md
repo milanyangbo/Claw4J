@@ -16,7 +16,7 @@
 
 **Type:** task
 
-**Status:** ready-for-agent
+**Status:** blocked（2026-11-18 复核：四件里三件的前提是容器化，而 P17 已整体回滚；`exec.host` 的合法性校验已落地，见文末「部分落地」）
 
 **裁决来源：** ADR-0030 §裁决六（沙箱三键、MCP 闸门、elevated 四档与启用前提）与
 §实现过程·阶段 6。
@@ -83,3 +83,39 @@
 - **`openshell` 后端不做**（它是它的托管沙箱产品，我们有 docker + ssh 两条够用）。
 - **`host=node` 只是占位**：我们没有多宿主，值可以配进来但只会落到本机。
 - **`elevated` 的 `allowFrom` 通配 `*` 只告警不拦**：它的 policy 检查链我们不做（ADR「不做」）。
+
+## 部分落地（2026-11-18）
+
+### 已做：`exec.host` 的合法性（只有这一件今天能真做）
+
+`ExecProperties.Host` 这个枚举与键本来就在（票 01 建的），但它一直是"只解析不生效"：
+写 `host: sandbox` 会**静默**跑在宿主上。这次补上 `ExecProperties#requireUsable()`，
+由装配处（`ExecAutoConfiguration#execHostBackend`）在启动时调一次：
+
+| 取值 | 今天的行为 |
+| --- | --- |
+| 不写 / `auto` | 落本机（默认） |
+| `gateway` | 落本机——这个应用既是控制面也是执行面，两者是同一台机器，不是"大致等价" |
+| `sandbox` | **启动失败**，消息里写明"容器化 2026-11-18 回滚、等上游加限额参数、改成 auto" |
+| `node` | **启动失败**，消息里写明"本仓没有多宿主与节点注册" |
+
+用例：`ExecHostTest`（4 条：auto / gateway / sandbox 失败 / node 失败）。
+判据是"配了做不到的就不许起"——一个以为自己在容器里的部署，比一个知道自己没进的部署危险。
+
+### 没做，以及为什么（逐件核过，不是没看）
+
+| 票里的东西 | 为什么今天做不了 |
+| --- | --- |
+| `tools.sandbox.tools`（第 9 层 + MCP 的 `bundle-mcp` 闸门） | 它判的是"**沙箱会话**里放不放行"，而 `ToolPolicyContext.sandboxed` 今天恒为 `false`（`ToolPolicyAssembler` 的注释就写着"沙箱本体在票 06"）。没有沙箱会话，这一层的两个分支永远只走一个——写了也没有任何东西能触发它 |
+| `elevated` 四档 | ADR-0030 裁决六写死了顺序：**必须等 P17 全部落地**；而且它自己的语义就是"我在沙箱里，这一次要跑到沙箱外"，非沙箱部署里等于 no-op（票面上面那四条照抄的语义里第一条就写着）。做一个 `/elevated` 命令加一张会话状态表、而它什么都不改变，是这次刚刚删掉的那类东西 |
+| `exec_allowlist` 的 agent 维度 | `agentId` 取的是**选中的人设名**，而换人设要重启（`AgentAutoConfiguration` 的注释：换人设不热切换）。一个进程只有一个 agent，于是"wildcard 桶（`agent_id` 为 null）与当前 agent 桶"里第二个桶永远不存在——与 `scope=shared` 的 per-agent 覆盖丢弃同一类问题：没有对象。**等多 agent 真存在时再做**，那时它才是加一列的理由 |
+| `host` 的路由本身（`auto` 进沙箱、`gateway` 从沙箱提到宿主、`node`） | 只有 `auto`/`gateway` 有对象，而它们都落本机；`sandbox`/`node` 见上 |
+
+### 解锁条件（按顺序）
+
+1. 上游给 `DockerCliExecBackend.Builder` 加限额参数 → 重做 P17a（命令真的进容器）；
+2. P17b / P17c → 容器有一套能说清的限额与生命周期；
+3. 这时本票剩下的三件才有对象：`tools.sandbox.tools`（会话级）、`elevated`（沙箱内提权）、
+   `host` 的真正路由（`auto` 在有容器时优先进容器）。
+
+**不要**在 1、2 之前用"外部编排容器 + `containerId` 接上"绕过——那是新的架构决定（见 `AGENTS.md`「卡住就停」）。

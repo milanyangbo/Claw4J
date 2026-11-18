@@ -66,6 +66,7 @@ public class ExecAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public ExecBackend execHostBackend(ExecProperties properties) {
+        properties.requireUsable();
         Path workspace = properties.workspace().toAbsolutePath().normalize();
         if (!Files.isDirectory(workspace)) {
             throw new IllegalStateException("claw4j.tools.exec.workspace 不是一个已存在的目录：" + workspace

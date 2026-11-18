@@ -160,6 +160,36 @@ public record ExecProperties(Mode mode,
     }
 
     /**
+     * 这个部署能不能按配置跑起来。启动期调一次，不通过就别起来。
+     *
+     * <p>今天只判 {@code host}，因为它是唯一一个"写进去不一定照做"的键：
+     *
+     * <ul>
+     *   <li>{@link Host#AUTO} 与 {@link Host#GATEWAY}：都落在**这台机器**上。这个应用既是控制面
+     *       也是执行面，两者是同一台机器——不是"大致等价"，是同一件事的两种叫法。</li>
+     *   <li>{@link Host#SANDBOX}：要有容器后端，而容器化 2026-11-18 整体回滚（等上游给
+     *       {@code DockerCliExecBackend.Builder} 加限额参数）。配了**启动失败**，不静默回落宿主——
+     *       一个"以为进了容器"的部署，比一个知道自己没进容器的部署危险得多。</li>
+     *   <li>{@link Host#NODE}：要多宿主与节点注册，本仓没有这个东西。</li>
+     * </ul>
+     *
+     * @throws IllegalStateException 配置要求一个今天做不到的执行位置
+     */
+    public void requireUsable() {
+        switch (host) {
+            case SANDBOX -> throw new IllegalStateException("claw4j.tools.exec.host=sandbox 还没有落地："
+                    + "容器化在 2026-11-18 整体回滚（库的 DockerCliExecBackend 没有限额入口，"
+                    + "跑进去了也关不住），等上游加参数。把 host 改成 auto（或删掉这一行），"
+                    + "命令会跑在宿主上——边界是 claw4j.tools.exec.workspace 加白名单与审批。");
+            case NODE -> throw new IllegalStateException("claw4j.tools.exec.host=node 没有实现："
+                    + "本仓只有一个执行位置，没有多宿主与节点注册。把 host 改成 auto 或 gateway。");
+            case AUTO, GATEWAY -> {
+                // 两种写法都落在本机，见上面的类注释。
+            }
+        }
+    }
+
+    /**
      * 生效策略：{@code mode} 展开成三段，显式配的字段逐字段盖上去。
      *
      * <p>"逐字段"而不是"整体替换"：想从 {@code full} 收到"每条都问"，写一个
