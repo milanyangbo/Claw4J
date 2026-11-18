@@ -63,6 +63,12 @@ final class LiveMcpTiers implements ToolTierRegistry {
         return toolName != null && knows.test(toolName) ? Optional.of(PROFILES) : Optional.empty();
     }
 
+    /** MCP 是"外部来源"里的一支：沙箱会话的 {@code bundle-mcp} 靠它把这一支单独点名。 */
+    @Override
+    public String source() {
+        return "mcp";
+    }
+
     @Override
     public Set<String> externalToolNames() {
         Collection<String> current = names.get();

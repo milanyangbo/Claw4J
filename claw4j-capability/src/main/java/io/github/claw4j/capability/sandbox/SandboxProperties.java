@@ -2,6 +2,8 @@ package io.github.claw4j.capability.sandbox;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.List;
+
 /**
  * 沙箱的配置，键前缀 {@code claw4j.tools.sandbox}，取值照 ADR-0030 裁决六。
  *
@@ -16,13 +18,15 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param workspaceAccess 工作目录怎么给容器，见 {@link WorkspaceAccess}；默认只读
  * @param image           容器镜像；默认 {@value #DEFAULT_IMAGE}
  * @param dockerBinary    docker CLI 的名字或绝对路径；默认 {@value #DEFAULT_DOCKER_BINARY}
+ * @param tools           沙箱会话里的工具白/黑名单（第 9 层，票 06）；没配就是"不收窄"
  */
 @ConfigurationProperties("claw4j.tools.sandbox")
 public record SandboxProperties(Mode mode,
                                 Backend backend,
                                 WorkspaceAccess workspaceAccess,
                                 String image,
-                                String dockerBinary) {
+                                String dockerBinary,
+                                Tools tools) {
 
     /** 默认镜像：小、带 {@code sh}。换镜像不该改代码，所以它只是个默认值。 */
     public static final String DEFAULT_IMAGE = "alpine:3";
@@ -62,6 +66,39 @@ public record SandboxProperties(Mode mode,
         SSH
     }
 
+    /**
+     * 沙箱会话里的工具策略（第 9 层，票 06）。
+     *
+     * <p>照 OpenClaw 的 {@code tools.sandbox.tools}：**只在沙箱会话里生效**，非沙箱会话不看它。
+     * 三张表的语义与 {@code claw4j.tools.*} 那份完全一致（deny 先判、allow 空则全放），
+     * 因为它是同一套管线的第 9 层，不是另一套规则。
+     *
+     * <p>{@code bundle-mcp} 是组名而不是工具名：它代表"MCP 提供的那批工具"。**不写它，沙箱会话里
+     * 就看不见任何 MCP 工具**——即使 MCP server 连上了、画像也登记了。这条是照它文档里那句
+     * "沙箱会话里 MCP/插件工具是额外闸门"来的：外部工具的副作用在沙箱里更难观察，所以默认关上，
+     * 要开就显式写 {@code bundle-mcp}。
+     *
+     * @param allow     白名单；空表示不收窄（但 MCP 仍要 {@code bundle-mcp} 才可见）
+     * @param deny      黑名单；先判
+     * @param alsoAllow 与 allow 合并的显式放宽
+     */
+    public record Tools(List<String> allow, List<String> deny, List<String> alsoAllow) {
+
+        /** 代表"MCP 那批工具"的组名。 */
+        public static final String MCP_BUNDLE = "bundle-mcp";
+
+        public Tools {
+            allow = allow == null ? List.of() : List.copyOf(allow);
+            deny = deny == null ? List.of() : List.copyOf(deny);
+            alsoAllow = alsoAllow == null ? List.of() : List.copyOf(alsoAllow);
+        }
+
+        /** 三张表都空：沙箱会话与普通会话看到同一份清单。 */
+        public boolean isEmpty() {
+            return allow.isEmpty() && deny.isEmpty() && alsoAllow.isEmpty();
+        }
+    }
+
     /** 工作目录怎么给容器。 */
     public enum WorkspaceAccess {
 
@@ -81,6 +118,7 @@ public record SandboxProperties(Mode mode,
         workspaceAccess = workspaceAccess == null ? WorkspaceAccess.RO : workspaceAccess;
         image = image == null || image.isBlank() ? DEFAULT_IMAGE : image;
         dockerBinary = dockerBinary == null || dockerBinary.isBlank() ? DEFAULT_DOCKER_BINARY : dockerBinary;
+        tools = tools == null ? new Tools(null, null, null) : tools;
     }
 
     /**
@@ -89,7 +127,7 @@ public record SandboxProperties(Mode mode,
      * @return 默认配置
      */
     public static SandboxProperties defaults() {
-        return new SandboxProperties(null, null, null, null, null);
+        return new SandboxProperties(null, null, null, null, null, null);
     }
 
     /**

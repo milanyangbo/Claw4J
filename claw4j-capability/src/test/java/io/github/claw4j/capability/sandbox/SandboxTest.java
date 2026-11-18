@@ -46,7 +46,7 @@ class SandboxTest {
     @DisplayName("backend=ssh 配了却做不到：启动即失败，不静默回落宿主")
     void sshBackendFailsFast() {
         SandboxProperties properties = new SandboxProperties(SandboxProperties.Mode.ALL,
-                SandboxProperties.Backend.SSH, SandboxProperties.WorkspaceAccess.RW, IMAGE, "docker");
+                SandboxProperties.Backend.SSH, SandboxProperties.WorkspaceAccess.RW, IMAGE, "docker", null);
 
         assertThatThrownBy(properties::requireUsable)
                 .isInstanceOf(SandboxUnavailableException.class)
@@ -57,7 +57,7 @@ class SandboxTest {
     @DisplayName("mode=non-main 还没接上：同样启动即失败")
     void nonMainModeFailsFast() {
         SandboxProperties properties = new SandboxProperties(SandboxProperties.Mode.NON_MAIN,
-                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.RW, IMAGE, "docker");
+                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.RW, IMAGE, "docker", null);
 
         assertThatThrownBy(properties::requireUsable)
                 .isInstanceOf(SandboxUnavailableException.class)
@@ -129,7 +129,7 @@ class SandboxTest {
         String hostHome = System.getenv("HOME");
         assertThat(hostHome).as("这条用例拿宿主 HOME 当对照，取不到就没法判").isNotNull();
         SandboxProperties properties = new SandboxProperties(SandboxProperties.Mode.ALL,
-                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.RO, IMAGE, "docker");
+                SandboxProperties.Backend.DOCKER, SandboxProperties.WorkspaceAccess.RO, IMAGE, "docker", null);
         ExecBackend container = SandboxBackends.execContainer(properties, workspace);
         try {
             assertThat(container).as("mode=all 时 exec 侧必须拿到容器后端，而不是 null").isNotNull();

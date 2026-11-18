@@ -327,6 +327,14 @@ claw4j:
       # 国内网络下拉不到官方镜像时，换本机已有的那个（例如本地镜像站的前缀）。
       image: ${CLAW4J_SANDBOX_IMAGE:alpine:3}
       docker-binary: ${CLAW4J_SANDBOX_DOCKER_BINARY:docker}
+      # 沙箱会话里的工具白/黑（第 9 层，票 06）：**只在 mode≠off 时生效**，非沙箱会话不看它。
+      # 语义与上面对 tools.* 那份一样（deny 先判、allow 空则全放）。
+      # `bundle-mcp` 是组名：**不写它，沙箱会话里看不见任何 MCP 工具**——外部工具的副作用
+      # 在沙箱里更难观察，所以默认关，要开就显式写进 allow 或 also-allow。
+      tools:
+        allow: []
+        deny: []
+        also-allow: []
 
     # ---- 文件工具：Read / Grep / Glob（+ 可选 Write / Edit）----
     # 读与搜默认就有，路径只能落在 directory 里（`..` 与软链接跳出去会被拒）。

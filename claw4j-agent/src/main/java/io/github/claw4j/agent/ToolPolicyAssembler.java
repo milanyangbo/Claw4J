@@ -1,6 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.schedule.ScheduleTools;
+import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.domain.principal.ToolPolicyLayer;
 import io.github.claw4j.domain.principal.ToolPolicyPipeline;
@@ -32,8 +33,10 @@ import java.util.Set;
  *   <li>按 agent（第 5 层）、按 agent × 模型（第 6 层）：我们没有"一个进程里装多个 agent"这件事，
  *       人设只覆盖画像，不覆盖 allow / deny。造出来会是一层永远拿不到 agentId 的配置。</li>
  *   <li>按渠道群（第 7 层）：没有渠道群概念，{@code ToolPolicyContext} 的 {@code groupId} 恒为 null。</li>
- *   <li>沙箱层（第 9 层）：沙箱本体在票 06，{@code sandboxed} 恒为 false，这一层由 06 补。</li>
  * </ul>
+ *
+ * <p>第 9 层（沙箱会话的工具白/黑）2026-11-18 补上：{@code context.sandboxed()} 为真时把
+ * {@code claw4j.tools.sandbox.tools} 作为一层插在第 8 层之后、子 Agent 之前。
  */
 public final class ToolPolicyAssembler {
 
@@ -79,6 +82,20 @@ public final class ToolPolicyAssembler {
      * @return 画像与层的列表，层按作用顺序排好
      */
     public static Decision decide(ToolsProperties config, ToolPolicyContext context) {
+        return decide(config, context, null, Set.of());
+    }
+
+    /**
+     * 带沙箱层的一版。
+     *
+     * @param config       工具策略配置
+     * @param context      本轮上下文；{@code sandboxed} 为真时第 9 层才生效
+     * @param sandboxTools 沙箱会话的三张表（{@code claw4j.tools.sandbox.tools}）；{@code null} 按全空
+     * @param mcpToolNames MCP 那批工具的名字，供 {@code bundle-mcp} 展开
+     * @return 画像与层的列表，层按作用顺序排好
+     */
+    public static Decision decide(ToolsProperties config, ToolPolicyContext context,
+                                  SandboxProperties.Tools sandboxTools, Set<String> mcpToolNames) {
         ToolPolicyContext ctx = context == null ? ToolPolicyContext.anonymous() : context;
         ToolsProperties rules = config == null ? ToolsProperties.defaults() : config;
 
@@ -95,6 +112,8 @@ public final class ToolPolicyAssembler {
         addIfPresent(layers, layer("byProvider:" + ctx.providerKey(), byProvider));
         // 第 8 层：按发送者。命中即用——不是把候选链上每一条都叠上去。
         addIfPresent(layers, senderLayer(rules, ctx));
+        // 第 9 层：沙箱会话的工具白/黑（含 bundle-mcp 那道额外闸门）。
+        addIfPresent(layers, sandboxLayer(ctx, sandboxTools, mcpToolNames));
         // 第 10 层：子 Agent（内建角色清单 + 配置的收窄）
         addIfPresent(layers, subagentLayer(rules, ctx));
         // 第 11 层：继承。父会话的策略整层带过来，只在它之上继续收窄。
@@ -196,6 +215,48 @@ public final class ToolPolicyAssembler {
         // 显式点名放行的，从内建清单里摘掉。
         deny.removeAll(allow);
         return new ToolPolicyLayer("subagent:" + role, allow, deny, Set.of());
+    }
+
+    /**
+     * 第 9 层：沙箱会话的工具白/黑。
+     *
+     * <p>两条规则合在这一层里，因为它们必须一起判：白名单先算，{@code bundle-mcp} 再决定
+     * MCP 那批工具进不进——分开写的话，"allow 里有 Bash、没写 bundle-mcp"这种最常见的写法，
+     * 会在两处各判一半，而两处都以为什么都没漏。
+     *
+     * <p><b>不写 {@code bundle-mcp} 就看不见 MCP 工具</b>，即使 {@code allow} 是空的。空 allow 的
+     * 语义是"这一层不收窄"，但 MCP 那一道是额外的闸门（它自己文档里说的"沙箱会话里 MCP/插件
+     * 工具是额外闸门"）——外部工具的副作用在沙箱里更难观察，所以默认关、要开显式写。
+     *
+     * @param ctx      本轮上下文，只有 {@code sandboxed} 为真时才建层
+     * @param tools    沙箱工具配置
+     * @param mcpTools MCP 工具名
+     * @return 这一层；不需要时返回 {@code null}
+     */
+    private static ToolPolicyLayer sandboxLayer(ToolPolicyContext ctx, SandboxProperties.Tools tools,
+                                                Set<String> mcpTools) {
+        if (!ctx.sandboxed()) {
+            return null;
+        }
+        SandboxProperties.Tools configured = tools == null ? new SandboxProperties.Tools(null, null, null) : tools;
+        Set<String> mcps = mcpTools == null ? Set.of() : mcpTools;
+        if (configured.isEmpty() && mcps.isEmpty()) {
+            return null;
+        }
+        Set<String> allow = new LinkedHashSet<>(configured.allow());
+        Set<String> deny = new LinkedHashSet<>(configured.deny());
+        Set<String> alsoAllow = new LinkedHashSet<>(configured.alsoAllow());
+        boolean mcpAllowed = allow.remove(SandboxProperties.Tools.MCP_BUNDLE);
+        // 两个 remove 都要跑：写成 && 短路会让 alsoAllow 里那一个留着没展开。
+        mcpAllowed = alsoAllow.remove(SandboxProperties.Tools.MCP_BUNDLE) || mcpAllowed;
+        if (mcpAllowed) {
+            allow.addAll(mcps);
+            alsoAllow.addAll(mcps);
+        }
+        else {
+            deny.addAll(mcps);
+        }
+        return new ToolPolicyLayer("sandbox", allow, deny, alsoAllow);
     }
 
     private static ToolPolicyLayer layer(String label, ToolsProperties.PolicyRule rule) {

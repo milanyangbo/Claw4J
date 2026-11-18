@@ -1,6 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.schedule.ScheduleTools;
+import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.domain.principal.ToolPolicyLayer;
 import io.github.claw4j.domain.principal.ToolTier;
@@ -193,5 +194,61 @@ class ToolPolicyAssemblerTest {
                 "sender:channel:feishu:alice",
                 "subagent:leaf",
                 "parent");
+    }
+    /**
+     * 沙箱会话的三张表。
+     *
+     * @param allow 白名单
+     * @return 配置
+     */
+    private static SandboxProperties.Tools sandboxTools(List<String> allow) {
+        return new SandboxProperties.Tools(allow, List.of(), List.of());
+    }
+
+    @Test
+    @DisplayName("沙箱会话里没写 bundle-mcp：MCP 工具看不见，即使 allow 是空的")
+    void mcpInvisibleWithoutBundleMcp() {
+        ToolPolicyContext sandboxed = ToolPolicyContext.of("http", "alice").withSandboxed(true);
+
+        ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(ToolsProperties.defaults(),
+                sandboxed, sandboxTools(List.of()), Set.of("cronNo"));
+
+        assertThat(decision.narrow(List.of("Bash", "cronNo")).kept())
+                .as("空 allow 的语义是「这一层不收窄」，但 MCP 那一道是额外的闸门，要显式写 bundle-mcp")
+                .containsExactly("Bash");
+    }
+
+    @Test
+    @DisplayName("写了 bundle-mcp：MCP 工具进来，别的工具仍按 allow 收窄")
+    void mcpVisibleWithBundleMcp() {
+        ToolPolicyContext sandboxed = ToolPolicyContext.of("http", "alice").withSandboxed(true);
+
+        ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(ToolsProperties.defaults(),
+                sandboxed, sandboxTools(List.of("Bash", SandboxProperties.Tools.MCP_BUNDLE)),
+                Set.of("cronNo"));
+
+        assertThat(decision.narrow(List.of("Bash", "cronNo", "WebFetch")).kept())
+                .containsExactly("Bash", "cronNo");
+    }
+
+    @Test
+    @DisplayName("非沙箱会话不看沙箱那三张表：同一份配置对清单没有影响")
+    void sandboxToolsIgnoredOutsideSandbox() {
+        ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(ToolsProperties.defaults(),
+                ToolPolicyContext.of("http", "alice").withSandboxed(false),
+                sandboxTools(List.of("Bash")), Set.of("cronNo"));
+
+        assertThat(decision.layers()).extracting(ToolPolicyLayer::label).doesNotContain("sandbox");
+        assertThat(decision.narrow(List.of("Bash", "cronNo")).kept()).containsExactly("Bash", "cronNo");
+    }
+
+    @Test
+    @DisplayName("沙箱没配工具表、也没有 MCP 工具时不出这一层：审计里不该多一条空记录")
+    void emptySandboxConfigAddsNoLayer() {
+        ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(ToolsProperties.defaults(),
+                ToolPolicyContext.of("http", "alice").withSandboxed(true),
+                new SandboxProperties.Tools(null, null, null), Set.of());
+
+        assertThat(decision.layers()).isEmpty();
     }
 }

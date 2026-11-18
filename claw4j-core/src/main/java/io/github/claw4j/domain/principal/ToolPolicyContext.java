@@ -62,6 +62,20 @@ public record ToolPolicyContext(String agentId,
     }
 
     /**
+     * 标记这一轮在不在沙箱会话里。
+     *
+     * <p>沙箱层（第 9 层）只看这一个字段：它决定 {@code tools.sandbox.tools} 那三张表生不生效。
+     * 部署级的值由装配处给（{@code claw4j.tools.sandbox.mode}），逐会话的判定还没做
+     * （{@code mode=non-main} 配了启动失败，见 {@code SandboxProperties#requireUsable}）。
+     *
+     * @param enabled 这一轮是不是跑在沙箱里
+     * @return 新的上下文
+     */
+    public ToolPolicyContext withSandboxed(boolean enabled) {
+        return new ToolPolicyContext(agentId, providerKey, channel, senderId, groupId, enabled, subagentRole, inherited);
+    }
+
+    /**
      * 换一个子 Agent 角色。
      *
      * @param role 角色名

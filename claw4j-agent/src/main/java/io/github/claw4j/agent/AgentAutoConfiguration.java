@@ -3,6 +3,8 @@ package io.github.claw4j.agent;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.capability.sandbox.SandboxProperties;
+import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
@@ -141,9 +143,18 @@ public class AgentAutoConfiguration {
                                    PersonaCatalog.Catalog personas,
                                    AgentProperties agentProperties,
                                    ObjectProvider<ApprovalGate> gates,
-                                   ObjectProvider<ApprovalRequiredTools> approvals) {
+                                   ObjectProvider<ApprovalRequiredTools> approvals,
+                                   ObjectProvider<SandboxProperties> sandboxProperties) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
         List<ToolTierRegistry> registries = tierRegistries.orderedStream().toList();
+        // 沙箱是部署级的（mode=non-main 配了启动失败），所以这一轮的 sandboxed 就是它。
+        SandboxProperties sandbox = sandboxProperties.getIfAvailable(SandboxProperties::defaults);
+        boolean sandboxed = sandbox.containerized();
+        // bundle-mcp 要能只点名 MCP 那批工具：靠登记表自己报来源，不靠名字猜。
+        Set<String> mcpToolNames = registries.stream()
+                .filter(registry -> "mcp".equals(registry.source()))
+                .flatMap(registry -> registry.externalToolNames().stream())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         // "这次用的是哪份人设、画像来自哪一层"必须能从日志里读出来。内置默认尤其要说：
         // 一份谁也没注意到的默认人设，比一份写错的配置更难查——前者没有任何报错，
         // 只是说话的方式不对。
@@ -159,7 +170,10 @@ public class AgentAutoConfiguration {
         return new ToolCatalog(personas.selected().name(), profile, context -> {
             // 每轮现算：按模型那层可能换画像，按发送者 / 子 Agent 那几层再加几条收窄
             // （ADR-0030 裁决二）。全都在 select 之后，所以只能减不能加。
-            ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(toolPolicy, context);
+            ToolPolicyContext round = (context == null ? ToolPolicyContext.anonymous() : context)
+                    .withSandboxed(sandboxed);
+            ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(toolPolicy, round,
+                    sandbox.tools(), mcpToolNames);
             ToolProfile effective = decision.profile() == profile.profile()
                     ? profile
                     : new ToolProfile(decision.profile(), profile.allow(), profile.deny(),

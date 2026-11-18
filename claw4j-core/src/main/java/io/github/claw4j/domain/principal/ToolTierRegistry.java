@@ -46,6 +46,19 @@ public interface ToolTierRegistry {
     }
 
     /**
+     * 这批工具从哪来。
+     *
+     * <p>现在只有一个用处：沙箱会话里 {@code bundle-mcp} 要能<b>只把 MCP 那批</b>放进来，而
+     * {@code group:plugins} 是"MCP + 业务模块"的并集——两者混在一起时，"沙箱里放开 MCP"
+     * 会顺手把业务工具也放进来。所以来源必须是登记时就知道的事实，不能靠名字猜。
+     *
+     * @return {@code mcp} / {@code business} / {@code builtin}（默认）
+     */
+    default String source() {
+        return "builtin";
+    }
+
+    /**
      * 用一张固定映射表实现。登记之后不可变，避免运行期被人塞进去一条。
      *
      * @param profiles 工具名到画像集合的映射
@@ -120,6 +133,12 @@ public interface ToolTierRegistry {
             @Override
             public Set<String> externalToolNames() {
                 return external;
+            }
+
+            /** 业务模块的工具：外部来源，但不是 MCP。 */
+            @Override
+            public String source() {
+                return "business";
             }
         };
     }
