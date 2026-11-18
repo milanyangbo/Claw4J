@@ -7,7 +7,8 @@
 # **不打印用例条数**：条数不是质量信号（一个类里堆 20 个同形状的断言照样绿）。
 # 指标是覆盖率与"有没有红"，条数只活在 surefire 报告里，要看得自己去看。
 #
-# 另外两步：开机先查删除词（ADR-0030 删掉的那一层，源码里一个词都不许剩），
+# 另外三步：开机先查删除词（ADR-0030 删掉的那一层，源码里一个词都不许剩），
+# 再查票面（resolved 的票打了 ✅ 的用例名必须真的存在），
 # 最后打印每模块的文件数与最大方法数（上限 14 / 26），超了判红。
 #
 # 用法：./scripts/verify.sh
@@ -46,7 +47,7 @@ MIN_COVERAGE=60
 # 同理不加 `--include`（toybox 未必认），用 find 自己筛 *.java。
 GONE_WORDS="AuthorizationAdvisor ToolPermission ToolPermissionRegistry canReadTable canPerform PermissionFingerprint RoleDirectory RoleGrant X-Claw4j-Role owner_role"
 
-echo "== 1/4 删除词：这十个词必须一个都不剩 =="
+echo "== 1/5 删除词：这十个词必须一个都不剩 =="
 leftover=""
 for word in $GONE_WORDS; do
     hits=$(find . -name '*.java' -not -path '*/target/*' -type f -exec grep -Hn "$word" {} + 2>/dev/null)
@@ -61,7 +62,15 @@ if [ -n "$leftover" ]; then
     exit 1
 fi
 
-echo "== 2/4 构建 + 测试 + 覆盖率闸（./mvnw -o clean verify）=="
+echo "== 2/5 票面：resolved 里打 ✅ 的用例名必须真的存在 =="
+./scripts/check-ticket-cases.sh
+status=$?
+if [ "$status" -ne 0 ]; then
+    exit "$status"
+fi
+
+echo
+echo "== 3/5 构建 + 测试 + 覆盖率闸（./mvnw -o clean verify）=="
 ./mvnw -o clean verify
 status=$?
 if [ "$status" -ne 0 ]; then
@@ -71,7 +80,7 @@ if [ "$status" -ne 0 ]; then
 fi
 
 echo
-echo "== 3/4 单元测试全过（失败 / 错误 / 跳过 都必须为 0）=="
+echo "== 4/5 单元测试全过（失败 / 错误 / 跳过 都必须为 0）=="
 reports=$(find claw4j-* -path "*/surefire-reports/TEST-*.xml" -type f 2>/dev/null)
 if [ -z "$reports" ]; then
     echo "没有找到任何测试报告：一条用例都没跑，不能算通过。"
@@ -90,7 +99,7 @@ read -r skipped failures errors <<<"$stats"
 echo "失败 ${failures}，错误 ${errors}，跳过 ${skipped}"
 
 echo
-echo "== 4/4 三个数 =="
+echo "== 5/5 三个数 =="
 printf '%-20s %6s %10s %10s\n' 模块 文件数 最大方法数 行覆盖率
 red=0
 for module in $MODULES; do

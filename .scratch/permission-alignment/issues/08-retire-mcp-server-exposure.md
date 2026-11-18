@@ -57,7 +57,7 @@ claw4j.mcp.servers.*   复数 = 连别人的 MCP server，把工具拿进来    
 | --- | --- | --- |
 | 三个 bean 不再存在 | `BuildContractTest#outboundExposureIsGone` ✅ | 现在有三个 → 红 |
 | 全仓看不到 `McpExposure` / `McpExposureProperties` / `McpServerExposureAutoConfiguration` | 同一条 ✅（`Class.forName` 三个类名 + 扫所有 `AutoConfiguration.imports` 里没有 `mcp.expose.`） | 现在都在 |
-| 连别人的 MCP server 照常可用 | `McpToolTest` 11 条 + `McpServersConfigTest` 20 条 + `McpToolFilterTest` 6 条 ✅ | 删过头把 client 侧一起删了 → 红 |
+| 连别人的 MCP server 照常可用 | `McpToolTest` 15 条（含原先单开、后于 `6d0dde5` 并回来的 filter 那 5 条）+ `McpServersConfigTest` 20 条 ✅ | 删过头把 client 侧一起删了 → 红 |
 | 配置里没有 `claw4j.mcp.server` 绑定 | 同一条 ✅（读 `src/main/resources/application.yml` 源文件，断言不含 `mcp.server` 与 `MCP_SERVER_ENABLED`） | 段还在 → 红 |
 | `claw4j.mcp.servers` 的样例配置仍能启动 | `McpServersConfigTest` ✅ | 同上 |
 
@@ -67,7 +67,7 @@ claw4j.mcp.servers.*   复数 = 连别人的 MCP server，把工具拿进来    
 | --- | --- |
 | 类真的没了 | ✅ `grep -r "McpExposure" --include=*.java .` 只剩 `BuildContractTest` 里那三个**字符串**（`Class.forName` 的入参），没有 import 与类型引用 |
 | 配置真的没了 | ✅ `application.yml` 里 `mcp.server` / `MCP_SERVER_ENABLED` 都没有；`application-mcp-stdio.yml` 与 `logback-mcp-stdio.xml` 已删 |
-| 入站没误删 | ✅ `claw4j.mcp.servers.*` 的配置与 `McpToolTest` / `McpServersConfigTest` / `McpToolFilterTest` 全绿 |
+| 入站没误删 | ✅ `claw4j.mcp.servers.*` 的配置与 `McpToolTest` / `McpServersConfigTest` 全绿 |
 | 依赖没多删 | ✅ `spring-ai-starter-mcp-client` 仍在（客户端要用）；只改了 pom 里那段"client 与 server 两侧都用这一条"的注释 |
 | 文档 | ✅ 四处：`README.md` 整节删除、`GLOSSARY.md` 两条词条删除、`extension-points.md` 第八章改成存根 + 总结表那一行删除、ADR-0020 的 P11 段改写为"已下线" |
 | 清单不受影响 | `README-capability-tests.md` §2 与 `docs/capability-tests.md` §2 讲的是**连别人的** server，**不改**（这也是最容易误改的两处） |
@@ -76,7 +76,7 @@ claw4j.mcp.servers.*   复数 = 连别人的 MCP server，把工具拿进来    
 
 **复核：2026-11-18 `./mvnw clean verify` 九模块全绿。** 5 行逐条对上：`BuildContractTest#outboundExposureIsGone`
 一条覆盖前两行与第四行（类不在 / 配置段不在 / 注册表里没有 `mcp.expose.`），入站那两行由
-`McpToolTest` / `McpServersConfigTest` / `McpToolFilterTest` 全绿证明。
+`McpToolTest` / `McpServersConfigTest` 全绿证明（`McpToolFilterTest` 已在 `6d0dde5` 并回 `McpToolTest`）。
 
 ## 影响（写在这里，不写进缺口）
 

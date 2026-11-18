@@ -54,13 +54,13 @@ PATH-only 环境、30 秒超时、非 root、工作目录不越界——脚本�
 | 判什么行为 | 用例名 | 先红的样子 |
 | --- | --- | --- |
 | `mode=off` 时走宿主，行为与今天逐字节一致 | `SandboxTest#offKeepsRunningOnHost` ✅ | 现在没有 `mode`，恒走宿主；这条是"默认不改变任何现有行为"的守卫 |
-| `mode=all` 时判定为沙箱会话，`non-main` 时主会话不算 | `SandboxTest#modeDecidesPerSession` ✅ | 无 |
-| 拼出来的 argv 是数组形态的 `docker run`，不是一整条 shell 字符串 | `SandboxTest#argvIsNotAShellString` ✅ | 无；这条防的是"用 `sh -c` 把参数接起来"，那等于把注入面又放回来 |
-| 镜像名、挂载方式、容器工作目录都能从配置进来 | `SandboxTest#containerSpecComesFromProperties` ✅ | 无 |
-| docker 不可用且 `backend=docker` → 启动失败，消息里点名哪个探测失败 | `SandboxTest#unavailableDockerFailsFast` ✅ | 现在没有探测，配了也静默走宿主 |
-| `backend=ssh` 配了但没实现 → 启动失败（不是静默忽略这个键） | `SandboxTest#unimplementedBackendIsRejected` ✅ | 无。同一条用例顺手钉住 `mode=non-main` 也启动失败（见缺口） |
-| 真隔离：命令在容器里跑 | `SandboxTest#commandRunsInsideContainer`（`@Tag("docker")`）✅ 真跑 | 今天同进程空间 |
-| 容器里看不到宿主的环境变量 | `SandboxTest#hostEnvironmentIsNotInherited`（`@Tag("docker")`）✅ 真跑 | 今天 exec 路径"继承环境" |
+| `mode=non-main` 还没接上（要按会话键判"这一段算不算主对话"），配了启动失败 | `SandboxTest#nonMainModeFailsFast` ✅ | 无 |
+| 拼出来的 argv 是数组形态的 `docker run`，不是一整条 shell 字符串 | ⏳ 没有对象：自研 argv 通道整包删除（脚本层退化成技能，exec 用库的 `DockerCliExecBackend`），本仓不再拼容器 | 无 |
+| 镜像名、挂载方式、容器工作目录都能从配置进来 | ⏳ 没有可断言的拼装：三处是原样传给库的 `Builder`（`SandboxBackends#execContainer`） | 无 |
+| docker 不可用且 `backend=docker` → 启动失败，消息里点名哪个探测失败 | ⏳ 现在由库的 `Builder#build()` 做 fail-fast，本仓没有探测代码可断言 | 现在没有探测，配了也静默走宿主 |
+| `backend=ssh` 配了但没实现 → 启动失败（不是静默忽略这个键） | `SandboxTest#sshBackendFailsFast` ✅ | 无。`mode=non-main` 也启动失败，由 `#nonMainModeFailsFast` 单独钉 |
+| 真隔离：命令在容器里跑 | `SandboxTest#execContainerBackendRunsInsideAContainer`（`@Tag("docker")`）✅ 真跑 | 今天同进程空间 |
+| 容器里看不到宿主的环境变量 | 同一条（`SandboxTest#execContainerBackendRunsInsideAContainer`，它的 DisplayName 就写着"宿主环境不进去"）✅ 真跑 | 今天 exec 路径"继承环境" |
 | **（实现时补）exec 侧接的是社区的容器后端，判定在前、执行在后** | `SandboxTest#containerBackendTakesOverAfterThePolicyLayer` ✅ | 自己拼 docker run 的版本会漏掉"杀掉客户端容器里还在跑" |
 | **（实现时补）exec 侧真在容器里** | `SandboxTest#execContainerBackendRunsInsideAContainer`（`@Tag("docker")`）✅ 真跑 | 同上 |
 
@@ -95,18 +95,23 @@ PATH-only 环境、30 秒超时、非 root、工作目录不越界——脚本�
 
 ## 缺口
 
-- **`ssh` 后端不做**：配置里接受这个取值但启动即失败（见用例 `#unimplementedBackendIsRejected`）。
+- **`ssh` 后端不做**：配置里接受这个取值但启动即失败（见用例 `#sshBackendFailsFast`）。
   留一个"配了不生效"的键比不支持更坏——那正是这批票一直在删的东西。
 - **`openshell` 不做**（ADR-0021 已明确）。
+- **上面三条 `⏳`（argv 形态 / 容器参数 / docker 探测）没有对象**：它们断言的都是"我们自己拼 `docker run`"
+  那个版本的内部形状。2026-11-18 那版被删掉、换成库的 `DockerCliExecBackend` 之后，
+  argv 由库拼、参数由库的 `Builder` 收、可用性探测就是 `Builder#build()` 本身——**本仓没有可断言的东西**。
+  这不是"以后补一条用例"，是"被测对象搬走了"。真要看那三件事，得去 upstream 的测试里看。
 - **`host=node` 仍是占位**：我们没有多宿主，配进来只会落到本机。这条由票 06 处理，不在本票。
 - **镜像内容不由本票负责**：容器里有什么命令取决于用户给的镜像。`curl` 出网失败那条负例（P17b）
   要用的镜像得带 `curl`，所以判据里写清"用哪个镜像跑这条"，不假设默认镜像里有什么。
 - **`scope` 没加**：`session` / `agent` / `shared` 是容器复用的语义，归 P17c。见「实现记录」。
 - **`workspace-access=ro` 只作用于脚本层**：库的 `mount(Path, String)` 没有只读选项，exec 侧挂载是读写。
   配 `ro` 时启动日志有一条 WARN 说明，不静默；只读要等 P17b/c 的限额那一层。
-- **脚本侧超时杀掉的是 docker 客户端**，容器里的进程可能残留（Docker 限制；exec 侧由库的 PID 机制
-  处理掉了）。脚本超时上限 30 秒、容器带 `--rm`，但严格说这仍是缺口，P17c 的"退出清理"要收。
-- **`non-main` 现在启动失败**：判定函数写好了，按会话区分要等票 06（它要接第 9 层）。
+- **脚本侧超时杀掉的是 docker 客户端**，容器里的进程可能残留——脚本层已经整层删除（oss 票 02），
+  这条随之失去对象；exec 侧由库的 PID 机制处理。
+- **`non-main` 现在启动失败**：它要按会话键判"这一段算不算主对话"，沙箱这一层拿不到——票 06 收票时
+  也把它记成了缺口（"没有对象"），不是本票漏做。
 
 ## 实现记录（2026-11-18）
 
