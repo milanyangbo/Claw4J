@@ -10,8 +10,9 @@
 - **`elevated` 四档**：`on` / `ask`（别名）/ `full` / `off`，加 `enabled` 与按通道分组的 `allowFrom`；
   `full` 跳过审批。
 
-**Blocked by:** 03（第 9 层要挂在管线上）+ **M9 的 P17 容器化加固（尚未开票）**——本票只写"容器化之后"的那三件，
-不重复 P17 的范围。
+**Blocked by:** 03（第 9 层要挂在管线上）+ **M9 的 P17a / P17b / P17c**（已拆票，见
+`.scratch/m9-scale/issues/`）——本票只写"容器化之后"的那三件，不重复 P17 的范围。
+`elevated` 那一段另有一条硬顺序：必须等 P17 全部落地之后才动（ADR-0030 裁决六）。
 
 **Type:** task
 
