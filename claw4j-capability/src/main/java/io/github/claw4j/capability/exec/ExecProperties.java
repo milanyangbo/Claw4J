@@ -160,31 +160,36 @@ public record ExecProperties(Mode mode,
     }
 
     /**
-     * 这个部署能不能按配置跑起来。启动期调一次，不通过就别起来。
+     * 这个位置今天能不能真的做到。启动期由装配处调一次，做不到就别起来。
      *
-     * <p>今天只判 {@code host}，因为它是唯一一个"写进去不一定照做"的键：
+     * <p>判的是"写进去会不会照做"，不是"这个名字好不好"：
      *
      * <ul>
-     *   <li>{@link Host#AUTO} 与 {@link Host#GATEWAY}：都落在**这台机器**上。这个应用既是控制面
-     *       也是执行面，两者是同一台机器——不是"大致等价"，是同一件事的两种叫法。</li>
-     *   <li>{@link Host#SANDBOX}：要有容器后端，而容器化 2026-11-18 整体回滚（等上游给
-     *       {@code DockerCliExecBackend.Builder} 加限额参数）。配了**启动失败**，不静默回落宿主——
-     *       一个"以为进了容器"的部署，比一个知道自己没进容器的部署危险得多。</li>
+     *   <li>{@link Host#AUTO} 与 {@link Host#GATEWAY}：这一层都落在**这台机器**上（这个应用既是
+     *       控制面也是执行面）。沙箱开着时 {@code auto} 进容器、{@code gateway} 被拒——那一条在
+     *       执行时判，见后端。</li>
+     *   <li>{@link Host#SANDBOX}：要有容器后端。{@code claw4j.tools.sandbox.mode=off} 时它做不到，
+     *       配了**启动失败**，不静默回落宿主——"以为进了容器"比"知道没进"危险。</li>
      *   <li>{@link Host#NODE}：要多宿主与节点注册，本仓没有这个东西。</li>
      * </ul>
      *
+     * @param sandboxAvailable 这个部署有没有容器后端（{@code claw4j.tools.sandbox.mode} 不是 {@code off}）
      * @throws IllegalStateException 配置要求一个今天做不到的执行位置
      */
-    public void requireUsable() {
+    public void requireUsable(boolean sandboxAvailable) {
         switch (host) {
-            case SANDBOX -> throw new IllegalStateException("claw4j.tools.exec.host=sandbox 还没有落地："
-                    + "容器化在 2026-11-18 整体回滚（库的 DockerCliExecBackend 没有限额入口，"
-                    + "跑进去了也关不住），等上游加参数。把 host 改成 auto（或删掉这一行），"
-                    + "命令会跑在宿主上——边界是 claw4j.tools.exec.workspace 加白名单与审批。");
+            case SANDBOX -> {
+                if (!sandboxAvailable) {
+                    throw new IllegalStateException("claw4j.tools.exec.host=sandbox 与 "
+                            + "claw4j.tools.sandbox.mode=off 冲突：没有容器后端，命令只能跑在宿主上。"
+                            + "把 sandbox.mode 改成 all（要镜像与 docker），或者把 host 改成 auto。"
+                            + "不静默回落——一个「以为进了容器」的部署比知道自己没进的危险。");
+                }
+            }
             case NODE -> throw new IllegalStateException("claw4j.tools.exec.host=node 没有实现："
                     + "本仓只有一个执行位置，没有多宿主与节点注册。把 host 改成 auto 或 gateway。");
             case AUTO, GATEWAY -> {
-                // 两种写法都落在本机，见上面的类注释。
+                // 两种写法都落在本机，见上面的注释。
             }
         }
     }

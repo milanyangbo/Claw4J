@@ -1,7 +1,11 @@
 package io.github.claw4j.capability.exec;
 
+import io.github.claw4j.capability.sandbox.SandboxBackends;
+import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.exec.LocalExecBackend;
 import org.springaicommunity.agent.tools.ShellTools;
@@ -46,6 +50,8 @@ import java.util.Map;
 @EnableConfigurationProperties(ExecProperties.class)
 public class ExecAutoConfiguration {
 
+    private static final Logger log = LoggerFactory.getLogger(ExecAutoConfiguration.class);
+
     /**
      * 三个工具名，取自 {@link ShellTools} 的 {@code @Tool(name = …)}。
      *
@@ -65,8 +71,10 @@ public class ExecAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public ExecBackend execHostBackend(ExecProperties properties) {
-        properties.requireUsable();
+    public ExecBackend execHostBackend(ExecProperties properties,
+                                       ObjectProvider<SandboxProperties> sandboxProperties) {
+        SandboxProperties sandbox = sandboxProperties.getIfAvailable(SandboxProperties::defaults);
+        properties.requireUsable(sandbox.containerized());
         Path workspace = properties.workspace().toAbsolutePath().normalize();
         if (!Files.isDirectory(workspace)) {
             throw new IllegalStateException("claw4j.tools.exec.workspace 不是一个已存在的目录：" + workspace
@@ -87,26 +95,37 @@ public class ExecAutoConfiguration {
      * 这里只认接口。取不到时后端退到 {@link ExecApprovalPort#denyAll()}——需要人批的命令
      * 这一轮拿不到结论，按 {@code askFallback} 处置（默认拒）。
      *
-     * <p><b>命令只跑在宿主上</b>（2026-11-18 裁决：容器化整体回滚，等上游给
-     * {@code DockerCliExecBackend.Builder} 加限额参数）。这里不留"以后接容器"的空洞参数：
-     * 一个恒为 {@code null} 的字段会让人以为那条路已经通了。
+     * <p>执行位置由 {@code claw4j.tools.exec.host} 决定（票 06）：{@code auto} 在有沙箱时进容器、
+     * 否则落宿主；{@code sandbox} 必须进容器；{@code gateway} / {@code node} 今天就是本机。
+     * 容器后端由 {@link SandboxBackends} 给——{@code mode=off} 时为 {@code null}。
      *
      * @param properties {@code claw4j.tools.exec} 的配置
      * @param execHostBackend 宿主上的执行后端
      * @param approvals 审批端口，可能不存在
      * @param reviewer 复核器，可能不存在
+     * @param sandboxProperties {@code claw4j.tools.sandbox} 的配置，可能不存在
      * @return 库的工具对象
      */
     @Bean
     @ConditionalOnMissingBean
     public ShellTools shellTools(ExecProperties properties, ExecBackend execHostBackend,
                                  ObjectProvider<ExecApprovalPort> approvals,
-                                 ObjectProvider<ExecReviewer> reviewer) {
+                                 ObjectProvider<ExecReviewer> reviewer,
+                                 ObjectProvider<SandboxProperties> sandboxProperties) {
+        SandboxProperties sandbox = sandboxProperties.getIfAvailable(SandboxProperties::defaults);
+        ExecBackend container = SandboxBackends.execContainer(sandbox,
+                properties.workspace().toAbsolutePath().normalize());
+        if (container != null && sandbox.workspaceAccess() == SandboxProperties.WorkspaceAccess.RO) {
+            log.warn("claw4j.tools.sandbox.workspace-access=ro 目前不生效：exec 侧的挂载由 "
+                    + "DockerCliExecBackend 管理，只支持读写。只读根归 P17b（等上游加限额参数），"
+                    + "我们不自己实现——容器里的命令现在能改工作区。");
+        }
         return ShellTools.builder()
                 .execBackend(new SandboxedExecBackend(properties, execHostBackend,
                         System.getenv().keySet(), System.getProperty("user.name", ""),
                         approvals.getIfAvailable(ExecApprovalPort::denyAll),
-                        reviewer.getIfAvailable(ExecReviewer::fallback)))
+                        reviewer.getIfAvailable(ExecReviewer::fallback),
+                        container))
                 .build();
     }
 

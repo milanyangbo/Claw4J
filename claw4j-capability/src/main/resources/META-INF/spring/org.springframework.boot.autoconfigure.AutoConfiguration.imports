@@ -4,3 +4,4 @@ io.github.claw4j.capability.mcp.McpToolAutoConfiguration
 io.github.claw4j.capability.mcp.ConfiguredMcpServersAutoConfiguration
 io.github.claw4j.capability.skill.SkillToolAutoConfiguration
 io.github.claw4j.capability.exec.ExecAutoConfiguration
+io.github.claw4j.capability.sandbox.SandboxAutoConfiguration

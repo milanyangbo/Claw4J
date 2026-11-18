@@ -1,5 +1,6 @@
 package io.github.claw4j.capability.exec;
 
+import io.github.claw4j.capability.sandbox.SandboxProperties;
 import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.common.exec.ExecHandle;
 import org.springaicommunity.agent.common.exec.ExecResult;
@@ -21,13 +22,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * 库已经做好了。这里要加的只有一件事——这条命令准不准跑，而 {@code ExecBackend} 的
  * {@code run(ExecSpec)} 正好是那个缝。
  *
- * <p><b>本类不碰进程。</b>起进程由库的 {@code LocalExecBackend} 做（整份清空环境、超时先礼后兵、
- * 后台句柄都是它的）。这一层只留判定：非 root → 白名单 → 审批 → 环境覆盖的合法性。
- * 顺序固定，任何一步拒绝都不起进程、不写文件、不占端口。
+ * <p><b>本类不碰进程。</b>宿主那条由库的 {@code LocalExecBackend} 起（整份清空环境、超时先礼后兵、
+ * 后台句柄都是它的），容器那条由库的 {@code DockerCliExecBackend} 起。这一层只留判定：
+ * 非 root → 白名单 → 审批 → 环境覆盖的合法性。顺序固定，任何一步拒绝都不起进程、不写文件、不占端口。
  *
- * <p><b>命令只跑在宿主上</b>（2026-11-18 裁决：容器化整体回滚，等上游给 {@code DockerCliExecBackend}
- * 加限额参数）。以前这里有一个恒为 {@code null} 的 {@code container} 字段，现在连那个字段也删了——
- * 一个恒空的入口只会让人以为那条路已经通了。
+ * <p>执行位置由 {@code claw4j.tools.exec.host} 决定（票 06），判定与它正交——不因为换了位置就多判
+ * 或少判一条。沙箱会话里 {@code gateway} 会被拒：那是"从沙箱提到宿主"，只有 {@code auto} 允许
+ * 在没容器时落宿主，不是一条随时可用的逃生门。
  *
  * <p>拒绝让模型看见的方式：{@link ExecViolationException} 从 {@code run} 里抛出去，
  * {@code ShellTools} 的同步分支不吞异常，工具调用管理器把它包成 {@code ToolExecutionException}，
@@ -58,6 +59,14 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     private final Set<ExecHandle> backgroundShells = ConcurrentHashMap.newKeySet();
 
     /**
+     * 命令交给谁跑。{@code null} 表示宿主。
+     *
+     * <p>非空时是库的 {@code DockerCliExecBackend}：托管容器、后台句柄、超时在容器内杀 PID、
+     * 退出回收都在里面。这一层不自己拼 {@code docker run}。
+     */
+    private final ExecBackend container;
+
+    /**
      * 用给定的宿主后端与执行账号建后端。
      *
      * @param properties      {@code claw4j.tools.exec} 的配置
@@ -68,7 +77,7 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     public SandboxedExecBackend(ExecProperties properties, ExecBackend host, Set<String> environmentKeys,
                                 String accountName) {
         this(properties, host, environmentKeys, accountName, ExecApprovalPort.denyAll(),
-                ExecReviewer.fallback());
+                ExecReviewer.fallback(), null);
     }
 
     /**
@@ -82,7 +91,7 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
      */
     public SandboxedExecBackend(ExecProperties properties, ExecBackend host, Set<String> environmentKeys,
                                 String accountName, ExecApprovalPort approvals) {
-        this(properties, host, environmentKeys, accountName, approvals, ExecReviewer.fallback());
+        this(properties, host, environmentKeys, accountName, approvals, ExecReviewer.fallback(), null);
     }
 
     /**
@@ -97,12 +106,30 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
      */
     public SandboxedExecBackend(ExecProperties properties, ExecBackend host, Set<String> environmentKeys,
                                 String accountName, ExecApprovalPort approvals, ExecReviewer reviewer) {
+        this(properties, host, environmentKeys, accountName, approvals, reviewer, null);
+    }
+
+    /**
+     * 完整的一档，并且指定"命令交给谁跑"。
+     *
+     * @param properties      {@code claw4j.tools.exec} 的配置
+     * @param host            宿主上的执行后端
+     * @param environmentKeys 继承环境的键名，只给复核器看
+     * @param accountName     当前执行账号
+     * @param approvals       审批端口；{@code null} 按"没有设施"处理
+     * @param reviewer        复核器；{@code null} 按"恒回落"处理
+     * @param container       容器执行后端；{@code null} 表示没有沙箱，命令跑在宿主上
+     */
+    public SandboxedExecBackend(ExecProperties properties, ExecBackend host, Set<String> environmentKeys,
+                                String accountName, ExecApprovalPort approvals, ExecReviewer reviewer,
+                                ExecBackend container) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.host = Objects.requireNonNull(host, "host");
         this.environmentKeys = environmentKeys == null ? Set.of() : Set.copyOf(environmentKeys);
         this.accountName = accountName;
         this.approvals = approvals == null ? ExecApprovalPort.denyAll() : approvals;
         this.reviewer = reviewer == null ? ExecReviewer.fallback() : reviewer;
+        this.container = container;
     }
 
     /**
@@ -118,7 +145,8 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     @Override
     public ExecResult run(ExecSpec spec) {
         authorize(spec);
-        return host.run(withValidatedOverrides(spec));
+        ExecBackend backend = target();
+        return backend == host ? host.run(withValidatedOverrides(spec)) : backend.run(spec);
     }
 
     /**
@@ -133,10 +161,42 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     @Override
     public ExecHandle start(ExecSpec spec) {
         authorize(spec);
+        if (container != null) {
+            return target().start(spec);
+        }
         backgroundShells.removeIf(handle -> !handle.isAlive());
         ExecHandle handle = host.start(withValidatedOverrides(spec));
         backgroundShells.add(handle);
         return handle;
+    }
+
+    /**
+     * 这一条命令跑在哪：宿主还是容器（票 06）。
+     *
+     * <p>四档的语义按 ADR-0030 裁决六，不是"有容器就进容器"：
+     * <ul>
+     *   <li>{@code auto}：有沙箱进沙箱，没有就落宿主；</li>
+     *   <li>{@code sandbox}：必须进容器（没有容器时装配期就已经起不来了，见
+     *       {@link ExecProperties#requireUsable()}）；</li>
+     *   <li>{@code gateway}：本机。**沙箱开着时被拒**——那是"从沙箱提到宿主"，不是一条随时能用的
+     *       逃生门；在沙箱里要出去得走 {@code elevated}（它自己还带审批那一层）。</li>
+     *   <li>{@code node}：本仓没有多宿主，{@code requireUsable()} 已经挡在启动期。</li>
+     * </ul>
+     *
+     * @return 这一条命令的执行后端
+     * @throws ExecViolationException 沙箱开着却要求跑到宿主（{@code host=gateway}）
+     */
+    private ExecBackend target() {
+        if (container == null) {
+            return host;
+        }
+        return switch (properties.host()) {
+            case AUTO, SANDBOX -> container;
+            case GATEWAY -> throw new ExecViolationException("这条命令没有执行：claw4j.tools.exec.host=gateway"
+                    + " 在沙箱会话里不成立（沙箱开着，命令只能进容器）。要跑在容器里就把 host 改成 auto；"
+                    + "「从沙箱提到宿主」是 elevated 的事，不是 host 的一个取值。");
+            case NODE -> throw new ExecViolationException("这条命令没有执行：host=node 没有实现（本仓没有多宿主）");
+        };
     }
 
     /**
@@ -322,12 +382,17 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     }
 
     /**
-     * 命令在哪个目录里跑：工作区。审批请求、复核器与拒绝信息读的都是它。
+     * 命令"看起来在哪个目录里跑"。审批请求、复核器与拒绝信息读的都是它。
+     *
+     * <p>容器模式下报的是容器里的目录：模型写的命令确实跑在 {@code /workspace}，给它看宿主路径
+     * 等于让它拿着一个自己点不到的地方去解释失败。宿主模式照旧报工作区。
      *
      * @return 给模型与审批人看的目录
      */
     private Path displayDirectory() {
-        return properties.workspace().toAbsolutePath().normalize();
+        return container == null
+                ? properties.workspace().toAbsolutePath().normalize()
+                : Path.of(SandboxProperties.CONTAINER_WORKDIR);
     }
 
     private String allowText() {

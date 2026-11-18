@@ -60,6 +60,21 @@
             </exclusions>
         </dependency>
         <!--
+          容器里的 exec 后端（P17a）：`DockerCliExecBackend` 是社区给的 `ExecBackend` 实现，
+          托管容器、后台句柄、超时后在容器内杀 PID、JVM 退出回收容器都在里面。
+
+          为什么要引它而不是自己拼 `docker run`：这一层真正难的不是 argv，而是"超时杀掉的是
+          docker 客户端、容器里的进程还活着"这个 Docker 限制。库为每条命令在容器里记了 PID，
+          超时时在容器内发 TERM 再 KILL，还带了 label 供崩溃后清理。自己写一遍只会把这些坑
+          重新踩一次，而且踩的时候没人知道。
+
+          它只依赖 `spring-ai-agent-utils-common`（纯 JDK 的 SPI），不引 Java 的 Docker 客户端。
+        -->
+        <dependency>
+            <groupId>org.springaicommunity</groupId>
+            <artifactId>spring-ai-agent-utils-docker-cli</artifactId>
+        </dependency>
+        <!--
           `BraveWebSearchTool`（默认工具里的 WebSearch）用 RestClient 发请求，而 agent-utils
           把 spring-web 声明成 provided —— 它自己不带，用的人必须自己给。
           少了这一条不是编译错，是 `NoClassDefFoundError: RestClientException` 在装配

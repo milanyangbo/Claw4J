@@ -308,12 +308,25 @@ claw4j:
       # 会进 exec_allowlist 表，与这一份按同一规则合并匹配（表里的是运维批出来的）。
       allow: []
 
-    # ---- 容器化：**还没有**（不用找键，这一层不存在）----
-    # 2026-11-18 的裁决是整体回滚：库的 `DockerCliExecBackend.Builder` 没有任何限额入口
-    # （network / readOnlyRootfs / memory / pids-limit / user / cpus 一个都没有），于是"命令跑进容器"
-    # 这件事只能做到"跑进去了但关不住"。那种隔离比没有更坏——看起来有边界，实际没有。
-    # 限额要等上游加参数（票 `.scratch/m9-scale/issues/P17b-container-limits.md`，blocked）。
-    # 在那之前命令只跑在宿主上，边界是 `claw4j.tools.exec.workspace` + 白名单 + 审批。
+    # ---- 沙箱：命令跑在宿主进程里，还是跑在另一台容器里（P17a / ADR-0030 裁决六）----
+    # 默认 off：与接入这一层之前逐字节一致。打开之后 exec 进容器。
+    # 探不通 docker **启动失败**，不会悄悄回落到宿主——那样你以为有隔离，其实没有。
+    #
+    # 只有一条执行路径：库的 `DockerCliExecBackend`（托管容器、后台句柄、超时在容器内杀 PID、
+    # 退出回收都在库里）。限额（网络、只读根、内存/pids、非 root）归 P17b，**等上游给
+    # `DockerCliExecBackend.Builder` 加参数**，我们不自己实现。
+    sandbox:
+      # off / all。non-main 要判"这一段算不算主对话"，随票 06 的沙箱层一起做。
+      mode: ${CLAW4J_SANDBOX_MODE:off}
+      # docker；ssh 未实现，配了启动即失败（留一个配了不生效的取值比不支持更坏）。
+      backend: ${CLAW4J_SANDBOX_BACKEND:docker}
+      # ro / rw / none。**目前不生效**：exec 侧的挂载由库管理、只支持读写。
+      # 真正的只读根归 P17b（同上，等上游），这里配了会在启动日志里说清楚。
+      workspace-access: ${CLAW4J_SANDBOX_WORKSPACE_ACCESS:ro}
+      # 镜像要带 POSIX shell；exec 侧还要 sleep（托管容器靠它保活）、可写的 /tmp（记 PID 用）。
+      # 国内网络下拉不到官方镜像时，换本机已有的那个（例如本地镜像站的前缀）。
+      image: ${CLAW4J_SANDBOX_IMAGE:alpine:3}
+      docker-binary: ${CLAW4J_SANDBOX_DOCKER_BINARY:docker}
 
     # ---- 文件工具：Read / Grep / Glob（+ 可选 Write / Edit）----
     # 读与搜默认就有，路径只能落在 directory 里（`..` 与软链接跳出去会被拒）。
