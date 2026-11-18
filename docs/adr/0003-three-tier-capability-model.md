@@ -5,7 +5,15 @@ status: accepted
 date: 2026-10-22
 ---
 
-Agent 可用的能力不统一实现，按"是否需要鉴权、是否有外部副作用、是否依赖外部运行时"分成三层：业务动作写成 Java `@Tool`；依赖外部 CLI 或跨语言的能力包成 MCP server 的 `@McpTool`；保留一个脚本层走社区包 `SkillsTool` + `ShellTools`，维持"写个脚本就能扩展"的敏捷性。三层对 Agent 呈现为一回事——都是工具名加参数——但授权与执行环境不同。
+Agent 可用的能力不统一实现
+
+> 修订记录（2026-11-18）：**第三层"Script Package"已下线**。按 OpenClaw 的形态，脚本不再是
+> "一个目录一个工具"，而是**技能目录里的支撑文件**（`SKILL.md` + `scripts/`），由模型用 `Bash`
+> 跑；`run_script` 这个动作与它背后的自研 argv 执行器一并删除
+> （`.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md`）。
+> 仍然成立的是本文的判断：外部 CLI 不该用 Java 重写。变的是落点——它现在落在技能目录里，
+> 不再是一个自建的执行入口。下面"三层"按"Java Tool / MCP Server / 技能（可带脚本）"读。
+，按"是否需要鉴权、是否有外部副作用、是否依赖外部运行时"分成三层：业务动作写成 Java `@Tool`；依赖外部 CLI 或跨语言的能力包成 MCP server 的 `@McpTool`；保留一个脚本层走社区包 `SkillsTool` + `ShellTools`，维持"写个脚本就能扩展"的敏捷性。三层对 Agent 呈现为一回事——都是工具名加参数——但授权与执行环境不同。
 
 ## Considered Options
 

@@ -5,6 +5,11 @@ status: accepted
 date: 2026-10-29
 ---
 
+
+
+> 修订记录（2026-11-18）：P17 提到的"脚本侧沙箱"对象已经不存在——脚本包退化成技能之后，
+> 脚本由 `Bash` 跑，容器化只剩下 exec 一条路径。P17b 继续 blocked 在上游（等
+> `DockerCliExecBackend` 加限额参数），P17c 的"工作目录进出"并入 exec 那一层。
 > **被 0027 部分取代（2026-11-06）**：run 已判定为"一轮的句柄"，不落任何表。
 > 本文里"持久 run / step 落库 / 按 runId 续跑 / 审计长在 step 上 / 投递登记表"的部分
 > 已被 [ADR-0027](0027-run-is-a-handle-not-an-entity.md) 取代，代码里那两张表也已经删了。

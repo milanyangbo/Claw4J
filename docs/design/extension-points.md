@@ -15,12 +15,12 @@
 | --- | --- | --- | --- |
 | Java 工具 | `ToolCallbackProvider` + `ToolTierRegistry` | `claw4j-core`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
 | MCP server | 一段配置（或一个 `McpServerEndpoint` bean）；server 本身可以是任何语言 | 宿主侧 `claw4j-capability`；server 侧什么都不要 | [`application-local.yml.example`](../../claw4j-app/src/main/resources/application-local.yml.example)、[`claw4j-example-mcp-server`](../../claw4j-example-mcp-server)、[`examples/mcp/`](../../examples/mcp) |
-| 脚本包 | 一个目录（`package.properties` + 入口脚本） | 无（子进程 + 沙箱） | [`examples/scripts/`](../../examples/scripts) |
+| 技能里的脚本 | 一个目录（`SKILL.md` + `scripts/`），由模型用 `Bash` 跑 | 无（`Skill` 加载正文） | [`examples/skills/`](../../examples/skills) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](../../examples/skills/weekly-sales) |
 | Subagent | 一份 `*.md`（front matter + 正文） | 无（纯文本） | [`examples/subagents/capacity-triage.md`](../../examples/subagents/capacity-triage.md) |
 | 通道 | 实现 `ChatChannel` 的 bean + 自己的端点 | `claw4j-core`（**不带任何 IM SDK**） | `claw4j-channel/http`、`claw4j-channel/feishu` |
 
-脚本包与 Subagent **没有单独的小节**：它们各自只有一个目录或一份 markdown 的形状，
+技能里的脚本与 Subagent **没有单独的小节**：它们各自只有一个目录或一份 markdown 的形状，
 最小例子在 [README-adding-capabilities.md](../../README-adding-capabilities.md) 的第 3、5 节，这里不重复写第二份。
 
 ---
@@ -101,7 +101,7 @@ MCP 那边默认按 server 一份，`servers.<名字>.tools.<工具名>` 可以�
 只跟自己和对话有关的是 `minimal`，业务只读与消息类是 `messaging`，
 跑脚本是 `coding`，外部 MCP 是 `full`。
 
-两个整批归档的场合，因为名字要到运行时才知道：脚本包跟 `coding`，MCP 跟 `full`。
+两个整批归档的场合，因为名字要到运行时才知道：外部 MCP 跟 `full`（生成器那组的工具跟 `coding`）。
 它们用 `ToolTierRegistry.sameFor(自己导出的名字, 档)`，**不要写成"任何名字都算"**——
 那种实现会让"没登记档位就失败"这条校验永远通过。
 
@@ -472,7 +472,7 @@ public class WecomChannelAutoConfiguration {
 | 你手上的东西 | 变成什么 | 语言无关来自哪儿 | 官方还是本项目 |
 | --- | --- | --- | --- |
 | 会说 MCP 的程序 | 一个 MCP 端点（生成 `ToolCallback`） | **协议**：JSON-RPC 帧，与实现语言无关 | 官方（MCP SDK + `spring-ai-mcp`） |
-| 命令行程序 | 一个脚本包工具 | **进程边界**：起得来、读得懂 stdout | 本项目接缝（`capability/script`） |
+| 命令行程序 | 技能目录里的 `scripts/` + `SKILL.md`（模型用 `Bash` 跑） | **进程边界**：起得来、读得懂 stdout | 本项目接缝（`capability/skill`）+ 库的 `LocalExecBackend` |
 | 一份做法 | 一个 Skill | **文件格式**：`SKILL.md` | 本项目接缝（`capability/skill`） |
 | 一个专职的人 | 一个 Subagent | **文件格式**：markdown + front matter | 本项目接缝（`agent/subagent`） |
 
@@ -480,8 +480,9 @@ public class WecomChannelAutoConfiguration {
 
 - **要复用已有的 Python/Go 服务，就走 MCP。** 它有官方 SDK、有协议兜底、有会话与重连语义，
   而且对宿主是**唯一**一种"跨语言且跨进程"的接法。
-- **只是一条命令，就走脚本包。** 代价是子进程只拿得到 `PATH`（`SandboxPolicy`），
-  需要凭据的能力在这一层跑不通——那不是缺陷，是这一层故意的边界。
+- **只是一条命令，就放进技能目录的 `scripts/`，让模型用 `Bash` 跑。** 代价是子进程只拿得到
+  声明的那几个环境变量（默认只有 `PATH`），需要凭据的能力在这一层跑不通——那不是缺陷，
+  是 exec 那一层故意的边界（想给凭据走 MCP）。
 - **只是"怎么做"，就不要写成工具。** Skill 不提新能力，它只决定现有工具怎么用；
   把它写成工具等于让模型多一个需要检索的动作，收益为零。
 - **要隔离上下文与预算，才用 Subagent。** 它的 `tools` 是白名单，是这一层唯一的安全边界。

@@ -150,7 +150,6 @@ Flyway 扫遍 classpath 上所有 `db/migration` 再**按版本号排序**，所
 set -a; . ./.env; set +a
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --spring.profiles.active=local \
-  --claw4j.scripts.directory=examples/scripts \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents
 ```
@@ -162,8 +161,8 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 
 三条最容易踩的写在这里，因为不看那份文档的人也会踩：
 
-- **脚本层必须 `X-Claw4j-Role: admin`**：`run_script` 不在 `read-only` / `guest` 的动作表里，
-  用默认角色问会拿到"没有权限"，容易误判成脚本层坏了。
+- **`Bash` 不在 `read-only` 的动作表里**：技能里的脚本要靠它跑，用只读角色问会拿到"没有权限"，
+  容易误判成脚本坏了。要验脚本，用能跑命令的那个人设/角色（`tier: full` 或 `coding`）。
 - **判断"是不是被拒了"看日志与计数，不要看模型转述**。同一个会话里被拒过一次之后，模型可能照着那个句式
   编一条拒绝出来——2026-10-28 那次冒烟里它就编了个不存在的动作名（`load_skill`）。
 - **不要问模型"你有哪些工具"来核对清单**：工具是渐进式披露的，它只看得到检索工具。
@@ -180,7 +179,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | `ProcessBoundaryTest` | 主代码里没有手写的 shell 调用字面量：把命令行当字符串传下去时，起进程的不是本项目，上面那条 API 规则就看不见它 | `mvn test` |
 | maven-enforcer | JDK/Maven 版本基线；`claw4j-core` 的 POM 里出现 Spring / Spring AI / 厂商 SDK / Reactor 直接失败 | `validate` 阶段 |
 | `./scripts/verify.sh` | 一条命令跑完上面几步：载入 `.env` → `clean verify`（含覆盖率红线）→ **失败 / 错误 / 跳过必须都为 0** → 删除词闸 → 文件数/方法数上限（≤14 / ≤26）。**不打印用例条数**：条数不是质量信号，指标是覆盖率与有没有红 | 提交前 |
-| 本地冒烟 | 起应用带 `examples/{scripts,skills,subagents}`（三个示例 MCP server 已经写在 `application-local.yml` 里），真模型走一遍各层与工具清单可见性。**命令、每层问什么、该看到什么，见 [`docs/capability-tests.md`](docs/capability-tests.md)** | 改了装配或能力层之后 |
+| 本地冒烟 | 起应用带 `examples/{skills,subagents}`（三个示例 MCP server 已经写在 `application-local.yml` 里），真模型走一遍各层与工具清单可见性。**命令、每层问什么、该看到什么，见 [`docs/capability-tests.md`](docs/capability-tests.md)** | 改了装配或能力层之后 |
 | 要外部世界的两组（`real-cli` / `real-mcp`） | 真的 OS 子进程（Python、`gh`、`himalaya`）与真的公网 MCP 端点。**默认排除**，`-Preal-cli` 才跑；它们依赖本机装了什么与能不能出网，不属于回归基线 | 改 MCP 传输、改脚本层之后 |
 | `./scripts/eval.sh` | **评测集**：四十来条真模型调用，判分锚在数字与标识符上（`sales` / `knowledge` / `tools` / `memory` 四类）。回答"这版比上版好还是差"，而不是"接上了没有"。**默认不在 `verify.sh` 里**：一次十几分钟、几分钱、要联网。用例集写坏了与判分口径坏了仍然进回归（`EvalCaseSetTest` / `EvalScorerTest`） | 改了工具描述、换了模型、调了路由顺序之后，以及想说"这版更好"之前 |
 

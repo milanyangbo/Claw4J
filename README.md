@@ -18,7 +18,7 @@
 
 - **五条通道，同一份逻辑** —— HTTP+SSE、飞书长连接、企业微信、钉钉、Slack；通道只做
   "收进来 → 认出是谁 → 发出去"，去重 / 认人 / 异步 / 回推只有一份
-- **五种能力来源，对模型是一回事** —— Java `@Tool`、MCP server（stdio / HTTP）、脚本包、Skill、子 Agent
+- **五种能力来源，对模型是一回事** —— Java `@Tool`、MCP server（stdio / HTTP）、Skill（可带脚本）、子 Agent
 - **权限在模型之前** —— 角色到"可见表 × 可执行动作"的映射；越权与套提示词的消息不花 token、不进历史
 - **知识库检索带出处** —— 混合检索（向量 + 全文）加 `qwen3-rerank` 重排，每段都带「文档 + 第几段」
 - **一轮一个 trace** —— 配一个 OTLP 端点就导出整条链路，根 span 是 run，与审计靠 `claw4j.run.id` 对上
@@ -109,7 +109,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | --- | --- | --- |
 | 一个工具 | `@Tool` 方法 + 三个 bean（工具、权限登记、档位）+ `AutoConfiguration.imports` | [1](README-adding-capabilities.md#1-java-工具4-个文件) |
 | 一个 MCP server | 一段 YAML，server 用任何语言写，宿主侧不写代码 | [2](README-adding-capabilities.md#2-mcp-server一段-yaml) |
-| 一个脚本包 | 一个目录（`package.properties` + 入口脚本），配 `claw4j.scripts.directory` | [3](README-adding-capabilities.md#3-脚本包一个目录) |
+| 技能里的脚本 | 技能目录下的 `scripts/`，`SKILL.md` 写清怎么跑，模型用 `Bash` 跑 | [3](README-adding-capabilities.md#3-技能里的脚本一个目录--skillmd) |
 | 一个 Skill | 一个含 `SKILL.md` 的目录，配 `claw4j.skills.directory` | [4](README-adding-capabilities.md#4-skill一份做法) |
 | 一个子 Agent | 一份 `*.md`，配 `claw4j.subagents.directory` | [5](README-adding-capabilities.md#5-子-agent一份-md) |
 | 一个人设 | 一份 `*.md`，配 `claw4j.agent.directory` 与 `claw4j.agent.default` | [6](README-adding-capabilities.md#6-agent人设这个部署是谁) |
@@ -157,7 +157,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | `claw4j-core` | 契约与不变量：`domain`（端口、`Principal`、权限登记表）+ `channel.spi` + `channel.kernel`；编译期只有 slf4j |
 | `claw4j-agent` | ChatClient 装配、模型路由、Advisor 链、会话与缓存；不认识任何通道，也不认识任何工具类 |
 | `claw4j-channel` | 入站出站适配，按平台分包 |
-| `claw4j-capability` | 能力来源的接缝：MCP、脚本包、Skill、子 Agent、生成器，加上默认就有的文件 / 搜索 / 计划工具与一个平台无关的 `system` 工具 |
+| `claw4j-capability` | 能力来源的接缝：MCP、Skill（含技能里的脚本）、子 Agent、生成器，加上默认就有的文件 / 搜索 / 计划工具与一个平台无关的 `system` 工具 |
 | `claw4j-example-sales` | 示例插件：一个业务工具 + 四张业务表 + 种子数据 |
 | `claw4j-example-mcp-server` | 示例插件：`java -jar` 就能跑的 Java MCP server（Streamable HTTP，`/mcp`），不依赖 Claw4J 任何模块 |
 | `claw4j-app` | 启动与装配，唯一打 fat jar 的模块 |
@@ -184,7 +184,7 @@ OpenClaw 是单用户常驻的个人助手（Gateway 控制面 + 浏览器 / 语
 
 贡献者要看的：[CONTRIBUTING.md](CONTRIBUTING.md)（怎么跑、迁移怎么加）· [docs/design/](docs/design/)
 （能力层、鉴权、会话、缓存的设计）· [docs/adr/](docs/adr/)（为什么这么设计、否决了什么）·
-[examples/](examples/README.md)（脚本包、Skill、Subagent、Python MCP 素材）· [GLOSSARY.md](GLOSSARY.md)（术语）。
+[examples/](examples/README.md)（带脚本的技能、Subagent、Python MCP 素材）· [GLOSSARY.md](GLOSSARY.md)（术语）。
 
 ## License
 

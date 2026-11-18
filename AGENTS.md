@@ -99,10 +99,10 @@ Authority and safety）与 `read approval checkpoint before schema ... changes`�
 ## 按你要做什么，读那一份
 
 - **第一次进这个仓库** → `README.md`（它是什么、怎么跑起来）+ `README-adding-capabilities.md`
-  （加一个工具 / MCP / 脚本包 / Skill / 子 Agent / 人设 / 知识库 / 通道，各有最小 demo）
+  （加一个工具 / MCP / 技能（含脚本）/ 子 Agent / 人设 / 知识库 / 通道，各有最小 demo）
   + `CONTRIBUTING.md`（怎么验证、门禁有哪些）。
 - **要证明某个能力真的能用** → `docs/capability-tests.md`：**一个工具一条**（Tool / 自建 MCP /
-  第三方 MCP / Skill / 脚本包 / 子 Agent），流式与非流式、Java 与非 Java 的成对接口。
+  第三方 MCP / Skill / 技能里的脚本 / 子 Agent），流式与非流式、Java 与非 Java 的成对接口。
   每条都靠 `claw4j.tool.calls{tool=…}` 计数回读判定，不看模型措辞。改了装配或能力层之后按它走一遍。
 - **动手改代码之前** → `docs/design/pitfalls.md`：**踩过的坑**。这几条现在的形状都正常，
   掉进去的现象又不报错，重犯一次要花同样的时间排查——这是**最该先读的一份**。

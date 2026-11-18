@@ -88,71 +88,53 @@ MCP 层**不授予任何业务表权限**：它登记的权限里一张表都没
 没登记权限的工具一律按拒绝处理（ADR-0007）。按工具覆盖权限时（`servers.<名字>.tools.<工具名>`），
 覆盖只影响被点名的工具；点名了 server 没导出的工具名，启动就失败。
 
-## Script Package：脚本本体不进上下文，只有输出进
+## 技能里的脚本：脚本本体不进上下文，只有输出进
 
-> **2026-11-18 变更（本节大部分已不成立）**：脚本包这一层按 OpenClaw 的形态退化成**技能**
-> （目录 + `SKILL.md` + 支撑文件），`run_script` 工具与自研的 argv 执行器一并删除，
-> 脚本由模型用 `Bash` 去跑。下面关于 `ScriptPackageRunner`、沙箱五条约束、`run_script` 动作的描述
-> 是**历史记录**，重写在 `.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md` 里跟踪。
-> 仍然成立的部分：`ScriptPackage` / `ScriptPackageCatalog` / `ScriptPackageRegistry` 作为生成器的账本。
+> **2026-11-18 改的**：原来是"脚本包"——一个目录一个工具，背后是一套自研的 argv 执行器。
+> 按 OpenClaw 的形态改成**技能目录里的支撑文件**：技能本身不被执行（`skills_read` 只读正文），
+> 脚本由模型用 `exec`（这里是 `Bash`）去跑。差别不是命名：原来那版是**第二个执行入口**，
+> OpenClaw 只有一个。删除清单与影响面在
+> [`.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md`](../../.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md)。
 
+技能这一层的形态是"目录 + `SKILL.md` + 支撑文件"，脚本放在 `scripts/` 下：
 
-脚本层这一层（`io.github.claw4j.capability.script`）的不是"能跑脚本"，而是**跑在什么里面**。
-模型看到的仍然只是"工具名 + 一个参数"，看不到脚本写了什么；它拿到的返回值只有标准输出。
-
-执行后端是社区包的 `ExecBackend` 接缝（`org.springaicommunity:spring-ai-agent-utils`），
-**换沙箱等于换一个实现，调用方一行不动**——这是这条边界唯一可测的地方：
-
-```java
-new ScriptPackageRunner(packages)                 // 默认：受限子进程
-new ScriptPackageRunner(packages, myFactory)      // 换沙箱：换的是这个
+```text
+examples/skills/summarize/
+  SKILL.md            # 什么时候用、怎么跑、期望什么输出、不要做什么
+  sample.md           # 数据文件（与正文一起进审批摘要）
+  scripts/run.sh
+  scripts/summarize.py
 ```
 
-**沙箱的物理形态是"应用容器内的受限子进程"**，判据只有一条：**能不能在一台干净的机器上跑起来**
-（不依赖 Docker 守护进程、不依赖 Python）。跑不起来的沙箱等于没有测试，
-没有测试的边界不能写进 README 当承诺。
-（`LocalExecBackend` 自带 `workingDirectory` 与 `cleanEnvironment`，不需要 Docker 与 Python。）
+**正文负责"路径"，工具负责"执行"**。模型看到的第一行是
+`Base directory for this skill: <技能目录>`，正文里写 `bash {baseDir}/scripts/run.sh sample.md`，
+`{baseDir}` 在交给模型之前就替换成那个目录（OpenClaw 的写法，抄一份过来能直接跑）。
+执行那一步是 `Bash`：宿主的 `LocalExecBackend`、容器里的 `DockerCliExecBackend`，都在
+`spring-ai-agent-utils` 里，本项目一行执行器都没有。
 
-它真的挡住的五样，每样都有一条测试指着：
+| 这件事归谁 | 归谁 |
+| --- | --- |
+| 脚本在哪、要什么参数、输出算什么 | `SKILL.md`（人写的正文，会被审批） |
+| 怎么起进程、收流、超时、回收 | 库（`LocalExecBackend` / `DockerCliExecBackend`） |
+| 这条命令能不能跑 | exec 三段式：白名单 / 审批 / 复核（ADR-0023） |
 
-| 约束 | 做法 | 盯它的测试 |
-| --- | --- | --- |
-| 工作目录 | 进程起在脚本包自己的目录里 | 有测试用 `pwd` 验 |
-| 参数 | 每个参数都过路径校验：`..`、绝对路径、符号链接一律拒绝 | 有测试逐条验拒绝 |
-| 环境变量 | 环境从零开始，只给 `PATH`；调用方塞变量会被拒 | 有测试用 `env` 验 |
-| 超时 | 上限 30 秒，不给超时或超上限就拒绝执行（不夹取） | 有测试验上限与两种拒绝 |
-| 非 root | 账号是 root 时拒绝执行 | 有测试验 root 被拒 |
+**代价要记账**：脚本包那层"入口必须在包目录内、参数只能是包内相对路径"的校验，随包一起删了。
+现在一条 `bash …/run.sh /etc/hosts` 能不能读到 `/etc/hosts`，取决于 exec 那一层的边界
+（`claw4j.tools.exec.workspace`、`security=allowlist`、审批、容器沙箱），不取决于技能目录。
+**这是变松的地方**，别在文档里写成"脚本只能读自己目录"。
 
-它**挡不住**的，同样说清楚：脚本**体内**自己去读一个绝对路径、自己去连一次网。
-进程沙箱锁得住入口与参数，锁不住脚本自己的行为；那种越界要靠另一台容器
-（ADR-0003 的第 ② 类沙箱，给 Skill Generator 产出的未审核代码用，M2-06）。
+**审批比原来紧**：技能目录的摘要覆盖目录下所有文件（含 `scripts/`），改一个脚本字节，
+`.review/<name>.properties` 的 `sha256` 就作废。原来脚本是另一个账本，正文与脚本各审各的。
 
-**Java 侧不自己拼命令行**（ADR-0002），这条由两台机器盯着，不靠 review 记：
+**`ProcessBuilder` 的红线现在是零例外**：`ToolsBoundaryTest` 与 `BuildContractTest` 里那两条规则
+不点名任何类——全仓没有一个类起进程了。
 
-- ArchUnit：`io.github.claw4j..` 主代码不许调用 `Runtime.exec`、不许碰 `ProcessBuilder`
-  ——**例外只有一个被点名的类**：`LocalProcessRunner`。加第二个之前先读票 08 里那段取舍；
-- 源码扫描：`claw4j-*/src/main/java` 里不许出现手写的 shell 调用字面量。
-  后者挡的是"把命令行当一个字符串传下去"——那种写法起进程的不是本项目，
-  于是 API 那条规则看不见它，而宿主机的命令行照样交出去了。
-
-脚本层交给进程的是**一个 argv 数组**，不是一条命令行（票 08）：
-入口脚本来自包清单（绝对路径），参数一律先过沙箱的路径校验（越界即拒绝），
-然后作为数组里的元素原样交给进程。数组形态没有命令解释器这一步，
-所以参数里带 `; echo pwned` 或 `$(...)` 也只是"一个字符串"，不是语法——
-"挡住注入"不再依赖任何一处转义写得对不对。代价是入口脚本必须自己可执行、
-第一行给出解释器（缺了就在静态检查那一关被挡下，见 Skill Generator 那节）。
-起进程的全仓只有 `LocalProcessRunner` 一个地方，工作目录与环境变量由沙箱在构造它时给定。
-
-脚本层**不授予任何业务表权限**，而且它要的动作不是 `read` 而是 **`run_script`**：
-只读角色能查数是"只读"的本意，能执行脚本就不是了——脚本能写文件、能往外连，
-那是比读一张表宽得多的口子。没登记权限的工具一律按拒绝（ADR-0007）。
-
-启用这一层要显式配目录（配了却不存在即启动失败，那是配置错误不是"这一层不存在"）：
+启用这一层只需要一个目录（配了却不存在即启动失败，那是配置错误不是"这一层不存在"）：
 
 ```yaml
 claw4j:
-  scripts:
-    directory: skills      # 每个子目录一个包，包里用 package.properties 说明自己
+  skills:
+    directory: examples/skills     # 目录树下每个 SKILL.md 是一份技能
 ```
 
 ## Agent Skills：命中才加载全文，加载完自己编排工具
@@ -295,13 +277,13 @@ claw4j:
 "自测未通过"指不出任何东西。
 
 生成器这个工具自己登记的权限是 **`draft_script` 动作，业务表一张都没有**；
-它不等于 `run_script`：提交一份草稿不等于能跑脚本，把两个动作合成一个，
+它不等于 `exec_command`（`Bash` 的动作）：提交一份草稿不等于能跑脚本，把两个动作合成一个，
 就等于让"能提议的人"顺手拿到了执行权。所以只有 admin 能提。
 
 ```yaml
 claw4j:
   scripts:
-    directory: skills          # 生成器要往这里注册，没配脚本层就没有生成器
+    directory: skills          # 生成器要往这里注册（账本）；2026-11-18 起这个目录只作账本用
   generator:
     staging-directory: .claw4j/staging   # 候选包落在这
     review-directory: .claw4j/reviews    # 人审标记放这（默认在暂存区**旁边**，不在里面）
@@ -318,7 +300,7 @@ claw4j:
 
 **为什么用库而不是自己写**：读文件、按正则搜、按 glob 找、记一份计划、抓一个网页，这五件
 "什么 agent 都会用一次"的操作，自己写只会多出五个与库描述不同步的 Schema，而 Schema 与描述
-正是模型选工具的唯一依据。这个仓库自己的工具（`querySales`、`run_script`、`Skill`、`Task`）
+正是模型选工具的唯一依据。这个仓库自己的工具（`querySales`、`Skill`、`Task`、`propose_script`）
 都是**有业务语义**的，那些才是该自己写的东西。
 
 | 工具 | 动作 | 档位 | 默认 |
@@ -400,12 +382,11 @@ ADR-0027 的修订记录里：审批照旧「登记 + 唤醒会话」，不挂�
 
 ## 一次把三层都接上：真实模型的实录
 
-`examples/` 下放的是能真的接进来的能力（脚本包、`SKILL.md`、Subagent 定义、Python MCP server），
+`examples/` 下放的是能真的接进来的能力（带脚本的技能、`SKILL.md`、Subagent 定义、Python MCP server），
 不是文档片段。目录说明见 [`examples/README.md`](../../examples/README.md)，这里是一次接上全部：
 
 ```bash
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
-  --claw4j.scripts.directory=examples/scripts \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents \
   --spring.profiles.active=local
@@ -429,7 +410,8 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
   -d '{"text":"用 demo_echo 这个工具，把“跨进程调用成功”这句话原样带回来，只回这句话"}'
 # {"chatId":"http:ops9","text":"跨进程调用成功"}
 
-# 三层：脚本包在受限子进程里跑，回来的只有它的标准输出
+# 三层（当时的形态）：脚本包在受限子进程里跑，回来的只有它的标准输出。
+# 2026-11-18 起这一段跑法变了：技能正文 -> Bash 跑 scripts/run.sh，回来的同样是标准输出
 curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
   -H 'X-Claw4j-User: ops9' -H 'X-Claw4j-Role: admin' \
   -d '{"text":"深圳未来三天的天气怎么样"}'
@@ -468,6 +450,7 @@ curl -s -X POST localhost:8080/api/chat -H 'Content-Type: application/json' \
   -H 'X-Claw4j-User: guest9' -H 'X-Claw4j-Role: guest' \
   -d '{"text":"深圳未来三天天气怎么样"}'
 # {"chatId":"http:guest9","text":"没有权限：角色 guest 不允许执行 run_script 动作（工具 weather-forecast）。"}
+# ↑ 当时的动作名（脚本包那层还在）。今天的等价物是 `Bash` 的 `exec_command`，拒绝的样子一样。
 ```
 
 上面这五条里，MCP 那条依赖本机装了 python3（那三个 Python server 零第三方依赖），

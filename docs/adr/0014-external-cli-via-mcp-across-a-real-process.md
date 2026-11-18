@@ -5,6 +5,11 @@ status: accepted
 date: 2026-10-24
 ---
 
+
+
+> 修订记录（2026-11-18）：示例路径变了——`examples/scripts/*` 现在是
+> `examples/skills/<name>/scripts/`（技能目录里的支撑文件，由模型用 `Bash` 跑）。
+> 本文关于"外部 CLI 走 MCP 还是走脚本"的取舍不变：需要凭据的走 MCP，一条命令能解决的留在本地。
 ADR-0003 的二层保留场景（`github`、`unread-mail`、`send-email`）要包的是 **外部 CLI**：`gh` 与 `himalaya`。
 包法固定为"一个 MCP server 进程 + stdio"，Java 侧只见工具名与参数 Schema。
 M2-02 先把这条链路在**进程内**跑通（连接生命周期、fail-fast、会话丢失重连都进默认构建），

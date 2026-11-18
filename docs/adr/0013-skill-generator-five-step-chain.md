@@ -5,7 +5,15 @@ status: accepted
 date: 2026-10-24
 ---
 
-让 Agent 能自己产出一个新的 Script Package。1.x 的 `SkillGeneratorSkill` 让模型写出 Python 落盘执行，
+让 Agent 能自己产出一个新的 Script Package。
+
+> 修订记录（2026-11-18）：五步链路本身没变（生成 → 静态检查 → 自测 → 审计 → 人审），
+> 但**产出物的形态要重新对**：脚本包退化成技能之后，生成器写出来的 `package.properties` 与
+> "注册即进工具清单"这条通路已经没有任何执行入口——注册到 `ScriptPackageRegistry` 的包不会被
+> 任何东西跑起来。这是**已知缺口**，不是已经解决的问题：要么让生成器直接产出一份
+> `SKILL.md`（OpenClaw 的 Skill Workshop 就是这么做的），要么把这层一起下掉。
+> 跟踪票：`.scratch/oss-alignment/issues/03-generator-emits-skills.md`（draft）。
+1.x 的 `SkillGeneratorSkill` 让模型写出 Python 落盘执行，
 并允许脚本自行 `pip install --break-system-packages`，那条链路把宿主机 shell 交给了模型。
 新架构里执行位置收口了（ADR-0002），但"能不能产出新能力"这件事本身是本项目"开放扩展"定位
 唯一能自证的部分，不能因为原实现危险就整体砍掉。

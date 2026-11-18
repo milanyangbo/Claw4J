@@ -9,6 +9,10 @@
 >   是否对齐，要重新答。
 > - **脚本层的容器 argv**：对应物是 `exec host=sandbox`（容器里 `sh -lc`），容器由宿主编排
 >   （`host` 参数），不由应用拼 `docker run`。我们那份 `ContainerSpec` 要重新答。
+> - **结论（同日收口）**：脚本包这一层**已经删了**——按 OpenClaw 的形态退化成"技能 + 脚本"
+>   （目录 + `SKILL.md` + `scripts/`，由模型用 `Bash` 跑），`ExecPolicy` 留下并按它的口径记账。
+>   落地在 `.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md`，
+>   代码与文档都已改完（`./scripts/verify.sh` 全绿）。
 > - **`ExecPolicy`**：当时写"无对应物"，**是错的**。OpenClaw 的 allowlist 就是这套：
 >   `security=allowlist` 下每个管道段都要命中白名单，`;`/`&&`/`||` 与重定向默认拒。
 >   结论（留）不变，理由要改成"照它实现"；差异也要记：它按段判、能放行"全是白名单段"的管道，

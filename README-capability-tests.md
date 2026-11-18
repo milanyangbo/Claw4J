@@ -26,14 +26,13 @@ set -a; . ./.env; set +a
 
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --spring.profiles.active=local \
-  --claw4j.scripts.directory=examples/scripts \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents \
   --claw4j.agent.directory=examples/agents --claw4j.agent.default=ops \
   --claw4j.cache.enabled=false
 ```
 
-三个能力目录给全才是"八节都能验"。`agent.directory` 与 `default` 是 §4 与 §6 的前提
+两个能力目录 + 子 Agent 目录给全才是"八节都能验"。`agent.directory` 与 `default` 是 §4 与 §6 的前提
 （口径写在人设的 `glossary` 里）；只用 Tool/MCP 时可以不给。
 
 ### 为什么最后一行要关掉缓存
@@ -423,9 +422,11 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ---
 
-## 3. 脚本包
+## 3. 技能里的脚本（原来的"脚本包"）
 
-**前提**：`--claw4j.scripts.directory=examples/scripts`；**要读的文件必须在包目录里**。
+**前提**：`--claw4j.skills.directory=examples/skills`（**没有单独的脚本层了**）。
+脚本不再是工具：`summarize` 现在是一份技能，模型调 `Skill` 拿到正文（含"脚本在哪"），
+再用 `Bash` 跑 `bash <技能目录>/scripts/run.sh sample.md`。
 
 **触发**：
 
@@ -433,37 +434,40 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
   -H 'X-Claw4j-User: s1' \
-  -d '{"text":"用 summarize 处理 sample.md，把工具返回的原文原样贴给我，不要总结、不要改写"}'
+  -d '{"text":"用 summarize 处理 sample.md，把返回的原文原样贴给我，不要总结、不要改写"}'
 ```
 
 **期望**：输出里有 `sample.md` 的**原句**，逐字能对上：
 
 ```
-- 华东区自签收之日起 7 天内可无理由退货，商品需保持完好、配件齐全、不影响二次销售。
-- 华南区为 5 天，需提供原包装；
+摘要（5 句，摘自 5 句原文）：
+  - 华东区自签收之日起 7 天内可无理由退货，商品需保持完好、配件齐全、不影响二次销售。
+  - 华南区为 5 天，需提供原包装；
 ```
 
-**再确认**：
+**再确认**（脚本跑起来是 `Bash` 的调用，不是某个 `summarize` 工具）：
 
 ```bash
 curl -s --noproxy '*' \
-  'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:summarize&tag=outcome:ok'
+  'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:Bash&tag=outcome:ok'
 ```
 
 **不对时先看哪里**：
 
+- **`Skill` 计数是 0**：技能没加载。看启动日志里那句"技能未审批或内容已变更，未加载：summarize"——
+  改了 `SKILL.md` 或 `scripts/` 里任何一个字节，`.review/summarize.properties` 的 `sha256` 就作废了，
+  重新算一份再起（算法见 `SkillTrust#digest`：按相对路径排序，逐个喂路径与内容）。
+- **`Bash` 报 `No such file or directory`**：模型把脚本路径写成了相对路径。正文里那行
+  `Base directory for this skill:` 就是让它拼绝对路径的；容器模式下那是容器内的路径。
 - **`退出码=1` 且 stderr 里只有一句 `FutureWarning` / `UnicodeEncodeError: 'ascii' codec`**：
   子进程没有 locale（只给了 `PATH`），你 PATH 上的 `python3` 如果是 3.7 以前的，
-  stdout 就是 ASCII，打印中文直接崩。修法是脚本入口那行写
-  `PYTHONIOENCODING=utf-8 exec python3 …`（[README-adding-capabilities.md](README-adding-capabilities.md)
-  第 3 节的模板里就有）。现在失败消息里会带 `stdout=`，脚本自己说的原因不会再被吞掉。
+  stdout 就是 ASCII，打印中文直接崩。修法是脚本入口那行写 `PYTHONIOENCODING=utf-8`
+  （[README-adding-capabilities.md](README-adding-capabilities.md) 第 3 节的模板里就有）。
 - 问"三句以内"却要"逐字"，是**自相矛盾**：脚本默认输出 5 句，模型会压缩改写。
   验逐字就别限制句数。
-- 参数被拒：`路径参数必须是相对路径，拿到的是 …` / `路径 … 越出了脚本包自己的目录`——
-  把文件放进包目录、用包内相对路径。
 - `weather-forecast` 要出网：本机 SSL 不通时 `outcome:error` 会涨，
   说明**脚本跑起来了**、缺的是网络，不是装配。
-- 看不见脚本工具：脚本包属于 `coding` 档，`MESSAGING` 档的部署清单里根本没有 `run_script`。
+- 看不见 `Bash`：它属于 `coding` 档，`MESSAGING` 档的部署清单里根本没有它。
   要验"看不见"，把档位调低再看清单——**不是"换个人然后被拒"**：执行前的鉴权那一层在
   ADR-0030 里已经整块删掉，今天没有"调了才被拒"这回事。
 
@@ -517,7 +521,7 @@ curl -s --noproxy '*' \
 ## 5. 子 Agent
 
 **前提**：`--claw4j.subagents.directory=examples/subagents`，**并且白名单里的工具在容器里**
-（`weekly-digest` 要 `querySales` + `summarize`，后者要 `--claw4j.scripts.directory`）。
+（`weekly-digest` 要 `querySales` + `Skill` + `Bash`，后者要开 exec 与技能目录）。
 
 **触发**（两条典型，用户各换一个）：
 
@@ -548,12 +552,12 @@ curl -s --noproxy '*' \
 ```
 
 想看得更细，起实例时加 `--logging.level.org.springframework.ai=DEBUG`，会有一行
-`委派 task 给 Subagent weekly-digest：它这趟能用的工具是 [querySales, summarize]`。
+`委派 task 给 Subagent weekly-digest：它这趟能用的工具是 [querySales, Skill, Bash]`。
 
 **不对时先看哪里**：
 
 - **白名单点了容器里没有的工具**：启动不会失败，**第一次委派**才失败并点名。上面两条命令里
-  少了 `--claw4j.scripts.directory` 时，`weekly-digest` 就是这样挂的。
+  少了 `--claw4j.skills.directory` 时，`weekly-digest` 就是这样挂的（它的 `Skill` 没处来）。
 - **预算**：一轮最多 6 次工具调用（`claw4j.agent.tool-call-limit`，可调），单个工具 3 次（不可调）。
   回答里出现 `Total tool call limit (6) exceeded` 就是撞了这个——它是熔断，不是额度。
   多区/多窗的活要写成**一条 SQL 一次取回**（`weekly-digest` 的定义里就是这么要求的）。
@@ -699,7 +703,7 @@ HTTP 通道**没有事件 id**，所以"重复事件"这条验不了它：往它
 | --- | --- | --- | --- |
 | Java 工具 | 上周华东成交额（§1） | 128400 + `querySales ok` 计数 | 只看"答了数字"，不看计数 |
 | MCP | 连问两次 `demo_now`（§2） | pid 相同、时间戳变大 | `npx` 超时两个键都要调 |
-| 脚本包 | 用 `summarize` 处理 `sample.md`，原样贴回（§3） | 与原文逐字相同 | 限制"三句以内"就验不了逐字 |
+| 技能里的脚本 | 用 `summarize` 处理 `sample.md`，原样贴回（§3） | 与原文逐字相同 | 限制"三句以内"就验不了逐字 |
 | Skill | 按 `weekly-sales` 口径给上周各区成交额（§4） | 185900 + `Skill ok` 计数 | 没配人设 → 它会先问口径（正常） |
 | 子 Agent | 派 `weekly-digest` 写上周周报（§5） | 三区 + 185900 + `Task ok` 计数 | 白名单工具缺失 → **首次委派**才失败 |
 | 人设 | 看启动日志（§6） | `agent 是 sales…档位 MESSAGING（来自 人设文件的 tier）` | 多份没写 `default` → 启动失败 |
@@ -708,7 +712,11 @@ HTTP 通道**没有事件 id**，所以"重复事件"这条验不了它：往它
 
 ## 2026-11-18 真跑记录（改完权限模型后的第一次）
 
-本机按 §0 起实例（`local` profile、`cache.enabled=false`、三个目录给全、人设 `ops`＝full 档），
+> 这一遍是在**脚本包退化成技能之前**跑的（同一天晚些改的）：那时 §3 还是"一个包 = 一个工具"，
+> 所以下面"越界被拒"这一条现在不成立了——没有包边界了，路径就是 `Bash` 的路径。
+> 其余各节与今天一致。
+
+本机按 §0 起实例（`local` profile、`cache.enabled=false`、目录给全、人设 `ops`＝full 档），
 逐节跑了一遍。跑通的：§1 问答与 `querySales`（128400 + 计数涨）、§2 `demo_now`（pid 相同、时间戳递增）、
 §3 `summarize`（原文句子 + 越界被拒）、§4 Skill（185900 三区对）、§5 子 Agent（`Task ok` +1）、
 §7 知识库、§8 通道（不在名单的人拿 `401`、工具计数不动）。

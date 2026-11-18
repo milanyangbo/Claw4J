@@ -97,12 +97,30 @@
 - 测试：删 `ScriptPackageTest`（19 条，全部针对已删的执行链）；`SandboxTest` 收到 6 条；
   `SkillGeneratorTest` 两处执行断言改成读发布快照的内容。
 
-**还没做（下一步，都在这一票里）：**
+**第二步（2026-11-18 晚，同一票收尾）：**
 
-- `examples/scripts/*` 改成技能目录（`SKILL.md` + 脚本），`README-capability-tests.md` §19 重写。
-- `README-adding-capabilities.md` §3、`docs/design/capability-layers.md` 的脚本层整节：已加"已下线"横幅，
-  正文仍是历史描述，要真改。
-- ADR-0013（五步链）、ADR-0017（副作用与幂等）、ADR-0020（M9 P17 提到脚本层）、ADR-0030（权限动作
-  `run_script`）各加一条修订记录；ADR-0002 的"两个点名例外"要改成零例外。
-- eval 用例里对脚本包的那几条；`CONTRIBUTING.md` 角色表那一行。
-- **缺一条用例**：断言工具清单里没有 `run_script`（现在靠"类被删了"保证，没有机器证据）。
+- 示例改成技能：`examples/scripts/{summarize,weather-forecast,xurl}` →
+  `examples/skills/<name>/`（`SKILL.md` + `scripts/` + 数据），三个审批标记按**新目录**重算
+  （摘要覆盖整个目录，含脚本）；`examples/scripts/` 整个目录删掉。
+- **技能正文要能指到脚本**：`AgentSkills` 在正文前补 `Base directory for this skill: <目录>`
+  并把 `{baseDir}` 换掉（OpenClaw 的写法）。社区包只在 `addSkillsDirectory` 那条路上补这一行，
+  我们走 `addSkill`（校验过的就是进上下文的那一份），所以自己补。
+- `weekly-digest` 子 Agent 的白名单 `summarize`（工具已不存在）→ `Skill` + `Bash`；
+  `ExamplesSubagentsTest` 的手抄工具表同步。
+- 删掉没有发射者的执行观察者链：`ExecutionListeners`、`ScriptExecutionListener`、
+  `GeneratorAutoConfiguration#generatorExecutionListenerBridge`；
+  `GenerationAudit.Stage.EXECUTED` 留着并标注"不再写入"（旧审计文件按名字还原阶段，删了会让它们解析失败）。
+- 文档正文（不是加横幅���真改）：`README-adding-capabilities.md` §3、
+  `README-capability-tests.md` §3/§5/速查表、`docs/capability-tests.md` §5 与负向那行、
+  `docs/design/capability-layers.md` 脚本一节与实录命令、`examples/README.md`、
+  `GLOSSARY.md`（技能里的脚本 / 沙箱两条）、`README.md` 能力表与模块表、
+  `docs/design/extension-points.md`、`docs/agents/{guardrails,alignment}.md`、
+  `CONTRIBUTING.md`、`application.yml`（沙箱与目录两段注释）。
+- ADR-0003 / 0013 / 0014 / 0017 / 0020 / 0030 各加一条修订记录（0002 第一步已改）。
+- **补上缺失的机器证据**：`ApplicationAssemblyTest#theToolManifestIsOneBeanForBothExits`
+  里断言清单不含 `run_script`（类被删了不等于没人再造一个同名工具）。
+- `SkillCatalogTest#bodyCarriesTheSkillDirectorySoScriptsCanBeFound`：正文带目录、`{baseDir}` 被替换。
+
+**留给下一张票（不在这张里）：** 生成器的产出物还是"脚本包 + `package.properties`"，
+而注册进账本之后没有任何执行入口——这是票 02 留下的缺口，
+`.scratch/oss-alignment/issues/03-generator-emits-skills.md`（draft，等裁决改产出物还是下掉整层）。

@@ -108,10 +108,13 @@ try/catch 去维持"缓存不参与可用性"——那是拿自研代码给自�
 - `ShellCommandRunner` / `ShellProcess` → **已换**成库的 `LocalExecBackend`（2026-11-18，
   `.scratch/oss-alignment/issues/01-exec-host-backend-to-local.md`）；
 - `LocalProcessRunner` → 换成 Apache Commons Exec（zt-exec 的 `applyEnvironment()` 只能增删单个键，
-  表达不了"环境只有 PATH"这条约束）。还没换；
-- 容器 argv、命令白名单、脚本包、路径边界四件：Java 侧没有够格的对等物，留下并记账。
+  表达不了"环境只有 PATH"这条约束）。**后来不需要了**：脚本层按 OpenClaw 的形态退化成技能，
+  这条 argv 通道整包删掉（同一天第二张票）；
+- 命令白名单（`ExecPolicy`）：OpenClaw 有对应物（`security=allowlist` 按管道段判），我们见控制符一律拒，
+  比它严，属偏离，已记账；
+- 容器 argv 与路径边界：随脚本层一起删掉，不再有"要不要换"这个问题。
 
-第二条与"脚本包要不要 argv"都还没定，别把它们当成已经做过的结论。
+**这两张票都做完了**（`.scratch/oss-alignment/issues/01`、`02`），别再当成"还没定"。
 
 ### 质量门槛与两个判例
 

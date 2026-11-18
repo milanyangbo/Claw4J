@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | Java 工具 | 3 个 bean + 一个注册文件 | [1](#1-java-工具4-个文件) |
 | MCP server | 一段 YAML，或一个任何语言写的 server | [2](#2-mcp-server一段-yaml) |
-| 脚本包 | 一个目录（清单 + 入口脚本） | [3](#3-脚本包一个目录) |
+| 技能里的脚本 | 技能目录下的 `scripts/`，由模型用 `Bash` 跑 | [3](#3-技能里的脚本一个目录--skillmd) |
 | Skill | 一个含 `SKILL.md` 的目录 | [4](#4-skill一份做法) |
 | 子 Agent | 一份 `*.md` | [5](#5-子-agent一份-md) |
 | agent（人设） | 一份 `*.md` | [6](#6-agent人设这个部署是谁) |
@@ -150,56 +150,59 @@ java-http:
 
 ---
 
-## 3. 脚本包（一个目录）
+## 3. 技能里的脚本（一个目录 + `SKILL.md`）
 
-> **2026-11-18 起这一节已下线**：按 OpenClaw 的形态，脚本不再是"可执行包"，而是**技能目录里的
-> 支撑文件**（`SKILL.md` + 脚本），由模型用 `Bash` 去跑。下面留作历史与迁移参考。
+> **2026-11-18 改的**：原来是"脚本包"，一个目录就是一个工具（`package.properties` + 入口）。
+> 按 OpenClaw 的形态改成了**技能目录里的支撑文件**：技能不被执行，脚本由模型用 `Bash` 去跑。
+> 差别不是名字——原来那版是一种自建的执行入口，OpenClaw 只有一个 `exec`。
 
-
-产出：一个目录 = 一个工具，**工具名就是目录名**。
+产出：一个目录，`SKILL.md` 讲什么时候用、怎么跑，脚本与数据放在它下面。
 
 ```text
-examples/scripts/weather-forecast/
-  package.properties      # description=…  entrypoint=run.sh  timeoutMillis=20000
-  run.sh                  # 入口；参数是 argv 数组，不经 shell
+examples/skills/weather-forecast/
+  SKILL.md
+  scripts/run.sh
+  scripts/weather.py
 ```
 
-```properties
-# package.properties
-description=查一个城市未来几天的天气预报。用法：给一个城市名，例如“深圳”或“Shenzhen”。
-entrypoint=run.sh
-timeoutMillis=20000
+```markdown
+---
+name: weather-forecast
+description: 查一个城市未来三天的天气预报。用户问“明天深圳热不热”时用它。
+---
+
+## 怎么跑
+
+脚本在技能目录的 `scripts/` 下，拿 `Bash` 照抄这一条（`{baseDir}` 会被替换成那个目录）：
+
+    bash {baseDir}/scripts/run.sh 深圳
 ```
 
 ```sh
 #!/bin/sh
-# 参数已过沙箱校验（只能是包内相对路径），并以 argv 数组送达——不经 shell，所以没有引号要转义
-# PYTHONIOENCODING 不能省：子进程只拿到 PATH，没有 LANG/LC_ALL，Python 3.7 以前
-# 的 stdout 会落在 ASCII 上，打印中文直接崩（退出码 1）。写 Python 脚本包就照这一行抄。
-PYTHONIOENCODING=utf-8 exec python3 "$(dirname "$0")/weather.py" "$@"
+# 参数是模型写的一条命令里的一段；到这一层就是一个普通字符串，这里不解析也不拼进别的命令。
+# PYTHONIOENCODING 不能省：Bash 的子进程只拿到声明的那几个环境变量，没有 LANG/LC_ALL，
+# Python 3.7 以前的 stdout 会落在 ASCII 上，打印中文直接崩（退出码 1）。
+set -e
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec env PYTHONIOENCODING=utf-8 python3 "$here/weather.py" "$@"
 ```
 
-**打开**：`--claw4j.scripts.directory=examples/scripts`。**权限动作是 `run_script`**，与 `read` 是两个口径：
-默认三个角色里只有 `admin` 有它。
+**打开**：`--claw4j.skills.directory=examples/skills`，和 §4 是同一个目录——脚本没有单独那一层了。
 
-**参数**：每个参数都会被当成**包目录内的相对路径**过一遍校验，再把结果交给脚本。于是——
+**路径**：模型看到的第一行是 `Base directory for this skill: <技能目录>`，正文里的 `{baseDir}`
+在交给模型之前就替换成它（这是 OpenClaw 正文里的写法，抄一份过来能直接跑）。所以脚本的路径要写全，
+**不要写相对路径**：`Bash` 的工作目录是 `claw4j.tools.exec.workspace`，不是技能目录。
 
-- 读文件就把它放进包目录，参数写包内相对路径（`demo.md`），**绝对路径与 `../` 都会被拒**
-  （`路径参数必须是相对路径` / `越出了脚本包自己的目录`）；
-- 普通字符串（城市名、一句话）原样送达：包内没有同名文件时它就是它自己；
-- 含斜杠的 URL 会被路径规范化改写（`http://a/b` → `http:/a/b`），所以**这个示例的 URL 模式
-  实际用不了**，本机文件才可靠。
+**审批**：技能目录的摘要（所有文件，含脚本）绑在 `.review/<name>.properties` 的 `sha256` 上。
+改一个脚本字节，旧标记就作废——这条比"脚本单独一层"时更紧，那时审的是正文，脚本是另一个账本。
 
-**边界**：脚本本体**不进上下文**，进上下文的只有标准输出；子进程只拿得到 `PATH`，**拿不到任何凭据**——
-需要 key 的能力在这一层跑不通，该走 MCP。反过来要记住：**没有 locale 也是这条边界的代价**，
-脚本里的输出编码、时间格式、大小写规则都别指望环境给（`run.sh` 里那行 `PYTHONIOENCODING` 就是为它写的）。
+**边界**：脚本本体**不进上下文**，进上下文的只有 `Bash` 的返回；子进程只拿得到声明的那几个环境变量
+（默认只有 `PATH`），**拿不到任何凭据**——需要 key 的能力该走 MCP。反过来要记住：**没有 locale
+也是这条边界的代价**，脚本里的输出编码、时间格式、大小写规则都别指望环境给。
 
-**失败会说什么**：非零退出时，异常消息里带退出码 + 两个流的**第一行非空内容**（`stdout=` 与 `stderr=`），
-因为脚本自己说的原因几乎都在 stdout 上（`读不到内容：…`），只有崩溃才在 stderr。
-少一个，模型只能猜。
-
-**怎么确认**：把一份文件放进包目录，问一句「用 `<包名>` 处理 `x.md`」；然后看
-`claw4j.tool.calls?tag=tool=<包名>&tag=outcome:ok` 是不是 1（问之前这个标签不存在，返回 404）。
+**失败会说什么**：`Bash` 直接回模型的是一条工具结果（退出码 + stdout + stderr），不再经过一层
+"包装成异常"。所以正文里该写清"哪种退出码算环境问题、哪种算输入问题"——那是模型分流处理的依据。
 
 ---
 
