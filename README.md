@@ -51,6 +51,16 @@ curl -s -X POST http://localhost:8080/api/chat \
 # {"chatId":"http:ethan","text":"堆内存上限 8192 MB（8 GB），当前已用 73 MB；线程数 42。"}
 ```
 
+起不来时先跑体检（只读：不建目录、不跑迁移、不发请求、不起 web）：
+
+```bash
+java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar --doctor
+```
+
+它把"迁移是不是最新 / 四个能力目录在不在 / 凭据句柄解析得出来吗 / 有没有配了不生效的组合"
+一次报全，每条给一句修复动作；有 FAIL 就非 0 退出。`actuator/health` 回答的是"现在活着吗"，
+它回答的是"这套配置能不能用"。
+
 几个容易卡住的点：
 
 - 国内拉不到官方镜像：在 `.env` 里设 `CLAW4J_POSTGRES_IMAGE` / `CLAW4J_REDIS_IMAGE` 换镜像站。

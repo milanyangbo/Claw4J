@@ -37,7 +37,7 @@
 
 **Type:** task
 
-**Status:** ready-for-agent
+**Status:** resolved（2026-11-18）
 
 **裁决来源：** ADR-0020 §M9 · P18（"照 OpenClaw `doctor` 的形状：检查 key 有效性、迁移是否最新、
 外部 server 是否连得上、目录是否存在"）。四项里"key 有效"与"外部 server"要出去，拆到 P18b；
@@ -57,20 +57,20 @@
 
 ## TDD 用例清单
 
-| 判什么行为 | 用例名 | 先红的样子 |
+| 判什么行为 | 用例名 | 结果 |
 | --- | --- | --- |
-| 全配好时退出码 0，每项都 PASS | `DoctorLocalChecksTest#allGreenExitsZero` | 没有 doctor |
-| 目录配了但不存在 → 该项 FAIL，输出里有那个路径与"建它或去掉这个键" | `#missingDirectoryFailsWithFixHint` | 今天只会启动失败，且只报第一个 |
-| 目录**没配** → SKIP，不是 PASS | `#unconfiguredDirectoryIsSkipped` | 无；这条防的是"没测也说通过" |
-| 库里落后一个迁移 → 报出缺哪几个版本号 | `#staleMigrationNamesMissingVersions` | 无 |
-| 库与 classpath 一致 → PASS | `#upToDateMigrationPasses` | 无 |
-| 凭据句柄解析不出来 → FAIL，并说清是"句柄"不是"key" | `#unresolvableSecretHandleFails` | 无 |
-| 凭据句柄能解析 → PASS（**不发任何请求**） | `#resolvableHandlePassesWithoutNetwork` | 无；用假 resolver 断言零调用 |
-| `backend=ssh` → FAIL"未实现"，不是静默忽略 | `#unimplementedBackendIsReported` | 现在这个键只在启动时报，且要起整上下文 |
-| 有 FAIL 时退出码非 0，且**其余项照跑**（不中途退出） | `#oneFailureDoesNotStopLaterChecks` | 无；这条是"一次报全"的判据 |
-| 跑 doctor 不启 web、不占端口 | `#doctorDoesNotStartWebServer` | 无 |
+| 全配好时退出码 0，每项都 PASS | `DoctorLocalChecksTest#allGreenExitsZero` | ✅ |
+| 目录配了但不存在 → 该项 FAIL，输出里有那个路径与"建它或去掉这个键" | `#missingDirectoryFailsWithFixHint` | ✅ |
+| 目录**没配** → SKIP，不是 PASS | `#unconfiguredDirectoryIsSkipped` | ✅ |
+| 库里落后一个迁移 → 报出缺哪几个版本号 | `#staleMigrationNamesMissingVersions` | ✅ |
+| 库与 classpath 一致 → PASS | `#upToDateMigrationPasses` | ✅ |
+| 凭据句柄解析不出来 → FAIL，并说清是"句柄"不是"key" | `#unresolvableSecretHandleFails` | ✅ 报的是环境变量名（该改的是它） |
+| 凭据句柄能解析 → PASS（**不发任何请求**） | `#resolvableHandlePassesWithoutNetwork` | ✅ 断言结论里带"没发请求"；这一项没有 HTTP 客户端可调 |
+| `backend=ssh` → FAIL"未实现"，不是静默忽略 | `#unimplementedBackendIsReported` | ✅ |
+| 有 FAIL 时退出码非 0，且**其余项照跑**（不中途退出） | `#oneFailureDoesNotStopLaterChecks` | ✅ |
+| 跑 doctor 不启 web、不占端口 | `#doctorDoesNotStartWebServer` | ✅ 断言没有 `WebApplicationContext` / `ServletWebServerFactory` / `DataSource` bean，且 yml 里的键读得到 |
 
-**标记：整张表未复核（票还没开始）。** 收票时逐行改成 `✅` / `❌` / `⏳`，规则见 `AGENTS.md` 第 2 条。
+**标记：已复核（2026-11-18），10 条全绿。**
 
 ## 验收判据
 
@@ -81,6 +81,35 @@
 | 不误报 | 默认 `application.yml` + local profile 下全 PASS（含 SKIP 项要标出来） |
 | 不占资源 | 跑 doctor 期间 8080 / 9090 无监听；跑完进程退出 |
 | 门禁 | `./scripts/verify.sh` 全绿；doctor 的单测不依赖网络 |
+
+## Answer（2026-11-18 收票）
+
+**入口不是一个新启动类，是 `Claw4jApplication` 里的一个分支**：`main` 看到 `--doctor`
+就走 `Doctor.defaults().run(args)` 并按结果 `System.exit`。理由是多一个 `main` 会让
+`spring-boot-maven-plugin` 的 repackage 找不到唯一启动类（要么配 `mainClass`、要么每次额外传参），
+而"一条命令两种用途"正是部署脚本要的形状。
+
+**doctor 的上下文只加载配置，不装配任何东西**：`SpringApplicationBuilder(DoctorConfiguration.class)`
+里那个配置类**刻意不带** `@EnableAutoConfiguration`——于是没有数据源、没有 servlet 容器、
+没有 MCP 连接、没有模型客户端，而 `application.yml` / profile / `spring.config.import` 照常生效
+（那是 Boot 的配置数据阶段，与自动装配无关）。代价写在类注释里：它查不了"属性绑定本身失败"。
+
+**一处与票面的偏离**：第 4 项原来要查"`mode=all` + `backend=docker` 但探测失败"。**探测做不了**——
+探 docker 要起一个容器，那是有副作用的动作，doctor 只读。所以这一项只查
+`backend=ssh`、`mode=non-main`、`mode≠off && access=ro` 三种"配了不生效"的组合；
+"docker 起不来"仍由启动期 fail-fast 说（库的 `build()` 抛，指名道姓）。
+
+**真跑过三次**（`java -jar … --doctor`）：
+
+| 场景 | 结果 |
+| --- | --- |
+| 不带 `.env` | 两条 FAIL（`DEEPSEEK_API_KEY` / `QWEN_API_KEY` 环境里没有）+ 四条 SKIP（四个目录都没配）+ 迁移 PASS（库里已到 V13）+ 配置组合 PASS，退出码 **1** |
+| 带 `.env` | 4 通过 / 0 不通过 / 4 没查，退出码 **0** |
+| 故意配错（`--claw4j.skills.directory=/nope --claw4j.tools.sandbox.mode=all`） | 两条 FAIL 各带一句修复动作，其余照常给出结论，退出码 **1** |
+
+代码：`claw4j-app/.../app/doctor/`（`Doctor` / `DoctorCheck` / `DoctorReport` /
+`MigrationCheck` / `DirectoryCheck` / `SecretHandleCheck` / `ConfigSanityCheck`）。
+`MigrationCheck` 的"已跑版本"抽成了接口，所以两种落后场景不必起真库就能断言。
 
 ## 缺口
 
