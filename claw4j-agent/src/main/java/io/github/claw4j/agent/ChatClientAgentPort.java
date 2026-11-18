@@ -12,6 +12,8 @@ import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.elevated.ElevatedCommand;
+import io.github.claw4j.agent.elevated.Elevations;
 import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.SessionGoal;
@@ -182,6 +184,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /** 会话目标（ADR-0027）。为 null 表示没开目标存储。 */
     private final SessionGoalStore goals;
 
+    /** 这一段会话的提权档（票 06）；没有时为 {@code null}，等同于"这一族命令没开"。 */
+    private final Elevations elevations;
+
     /**
      * 审计规则层（ADR-0027）：这一轮开始与结束各一条事件。
      *
@@ -302,7 +307,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                                ConversationDelivery delivery, SpanTracer tracer,
                                SessionEntries pointers, ConversationLane lane, ToolCallAudit audit,
                                SessionGoalStore goals) {
-        this(chatClient, compactor, delivery, tracer, pointers, lane, audit, goals, null, null);
+        this(chatClient, compactor, delivery, tracer, pointers, lane, audit, goals, null, null, null);
     }
 
     /**
@@ -323,6 +328,30 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                                ConversationDelivery delivery, SpanTracer tracer,
                                SessionEntries pointers, ConversationLane lane, ToolCallAudit audit,
                                SessionGoalStore goals, ToolCatalog catalog, String providerKey) {
+        this(chatClient, compactor, delivery, tracer, pointers, lane, audit, goals, catalog, providerKey, null);
+    }
+
+    /**
+     * 完整的一档：加上提权状态。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     * @param delivery 结果投递，可以为 null
+     * @param tracer 埋点入口，为 null 时用 {@link SpanTracer#NONE}
+     * @param pointers 会话指针，可以为 null
+     * @param lane 通道串行器，可以为 null
+     * @param audit 工具调用审计，可以为 null
+     * @param goals 目标存储，可以为 null
+     * @param catalog 工具清单，可以为 null
+     * @param providerKey 当前 provider 键，可以为 null
+     * @param elevations 提权状态，可以为 null（等于这一族命令没开）
+     */
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery, SpanTracer tracer,
+                               SessionEntries pointers, ConversationLane lane, ToolCallAudit audit,
+                               SessionGoalStore goals, ToolCatalog catalog, String providerKey,
+                               Elevations elevations) {
+        this.elevations = elevations;
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.catalog = catalog;
         this.providerKey = providerKey;
@@ -526,6 +555,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         if (goalCommand.isPresent()) {
             return new Turn(null, GoalCommand.execute(goalCommand.get(), goals, conversationKey));
         }
+        // /elevated 与它们同层：认出来就当场办、回一句话，不进模型也不开 run（票 06）。
+        String elevated = elevatedReply(parsed.text(), message.principal(), conversationKey);
+        if (elevated != null) {
+            return new Turn(null, elevated);
+        }
         // 送模型的是命令之后的内容：/new 帮我查华南 的第一句是「帮我查华南」，
         // 命令本身不该出现在提示词里，也不该成为这一轮的 run 目标。
         String masked = InboundText.neutralizeSystemTags(PiiRedactor.mask(parsed.text()));
@@ -597,6 +631,26 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             onChunk.accept(OutboundMessage.of(message.chatId(), ConversationLane.BUSY_REPLY, null));
             onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
         }
+    }
+
+    /**
+     * 处理 {@code /elevated}。
+     *
+     * @param text            这一条消息的原文
+     * @param principal       发起人
+     * @param conversationKey 这一段会话的键
+     * @return 要回给用户的那句话；不是这条命令时为 {@code null}
+     */
+    private String elevatedReply(String text, io.github.claw4j.domain.principal.Principal principal,
+                                 String conversationKey) {
+        Optional<ElevatedCommand.Invocation> invocation = ElevatedCommand.parse(text);
+        if (invocation.isEmpty()) {
+            return null;
+        }
+        if (elevations == null) {
+            return "这个部署没有开提权（claw4j.tools.elevated.enabled=false），命令只能跑在配置好的位置。";
+        }
+        return ElevatedCommand.execute(invocation.get(), elevations, principal, conversationKey);
     }
 
     /** 真正的流式那一轮。锁由 {@link #stream} 拿——放在这里就晚了，run 已经开出来了。 */
@@ -1014,6 +1068,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // 会话节点键（不含段）也进工具上下文：目标挂在节点上，与记忆的按段隔离是两件事。
         // 让工具自己去 sessionId 里切段是不行的——chatId 里可以有冒号（cron: 就是）。
         toolContext.put(ContextKeys.CONVERSATION, conversationKey);
+        // 提权档也进工具上下文（票 06）：exec 的判定在工具那一层，它要知道"这一段刚 /elevated 过"。
+        // 状态在内存里、按会话键存；没开这一族命令时写 off，等于没提权。
+        toolContext.put(ContextKeys.ELEVATION,
+                (elevations == null ? io.github.claw4j.domain.principal.Elevation.OFF
+                        : elevations.level(conversationKey)).id());
         // 通道与地址也进工具上下文（ADR-0027）：审批要写"这条请求来自哪段对话"，
         // 定时任务要写"结果推回哪里"。地址是这一轮的属性——不该绕一次库，也不该靠另一张表登记。
         if (message.channel() != null && !message.channel().isBlank()) {

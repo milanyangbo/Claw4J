@@ -18,6 +18,15 @@ public final class ContextKeys {
     public static final String PRINCIPAL = "claw4j.principal";
 
     /**
+     * 这一段会话的提权档（{@code off} / {@code on} / {@code full}），在工具上下文里的键名。
+     *
+     * <p>为什么走工具上下文而不是让工具去查库：判定发生在 {layers} 的 {@code run(ExecSpec)} 里，
+     * 那一刻手边只有命令；而"这一段对话刚才 /elevated 过"是会话状态，只有对话那一层知道。
+     * 与 {@link #PRINCIPAL} 同一条理由——键名只能有一处定义，否则漂移的表现是"提权了但没生效"。
+     */
+    public static final String ELEVATION = "claw4j.elevation";
+
+    /**
      * 这一轮的编号，在工具上下文里的键名（ADR-0027）。
      *
      * <p>它是句柄，不是一件事：一轮答完就作废，没有状态、没有后续，也没有"按 id 接上它"那条路。

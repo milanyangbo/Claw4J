@@ -1,6 +1,7 @@
 package io.github.claw4j.capability.exec;
 
 import io.github.claw4j.capability.sandbox.SandboxProperties;
+import io.github.claw4j.domain.principal.Elevation;
 import org.springaicommunity.agent.common.exec.ExecBackend;
 import org.springaicommunity.agent.common.exec.ExecHandle;
 import org.springaicommunity.agent.common.exec.ExecResult;
@@ -190,6 +191,11 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         if (container == null) {
             return host;
         }
+        // /elevated on|full：这一段要跑到沙箱外。它只在有沙箱时才有意义——
+        // 没有沙箱时本来就在宿主上，这一档等于什么都没改。
+        if (elevation() != Elevation.OFF) {
+            return host;
+        }
         return switch (properties.host()) {
             case AUTO, SANDBOX -> container;
             case GATEWAY -> throw new ExecViolationException("这条命令没有执行：claw4j.tools.exec.host=gateway"
@@ -241,6 +247,11 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
         ExecPolicy.Verdict verdict = ExecPolicy.verdict(settings, allowlisted, durable);
         if (verdict == ExecPolicy.Verdict.RUN && ExecPolicy.forceAsk(settings, spec.command())) {
             verdict = ExecPolicy.Verdict.ASK;
+        }
+        // /elevated full：这一段跳过审批。**只把 ASK 抬成 RUN**，DENY 不动——
+        // security=deny 是"这个部署一条都不放"，那不是审批能改的东西。
+        if (verdict == ExecPolicy.Verdict.ASK && elevation() == Elevation.FULL) {
+            verdict = ExecPolicy.Verdict.RUN;
         }
 
         switch (verdict) {
@@ -379,6 +390,16 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
 
     private String askReason() {
         return "这条命令没有命中白名单，当前档位要求人先批（白名单：" + allowText() + "）";
+    }
+
+    /**
+     * 这一段会话的提权档。没有上下文（不是从工具回调进来的）时按不提权。
+     *
+     * @return 提权档
+     */
+    private static Elevation elevation() {
+        ExecCallContext context = ExecCallContext.current();
+        return context == null ? Elevation.OFF : context.elevation();
     }
 
     /**

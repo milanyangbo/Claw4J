@@ -1,6 +1,7 @@
 package io.github.claw4j.capability.exec;
 
 import io.github.claw4j.domain.ContextKeys;
+import io.github.claw4j.domain.principal.Elevation;
 import io.github.claw4j.domain.principal.Principal;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ToolContext;
@@ -79,7 +80,9 @@ public final class ExecContextToolCallback implements ToolCallback {
                 text(values, ChatMemory.CONVERSATION_ID),
                 text(values, ContextKeys.CHANNEL),
                 text(values, ContextKeys.CHAT_REF),
-                text(values, ContextKeys.RUN_ID));
+                text(values, ContextKeys.RUN_ID),
+                // 提权档由对话那一层写进来（/elevated）；读不出来就是不提权，不猜。
+                Elevation.parse(text(values, ContextKeys.ELEVATION)).orElse(Elevation.OFF));
     }
 
     private static String text(Map<String, Object> values, String key) {

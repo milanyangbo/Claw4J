@@ -1,5 +1,6 @@
 package io.github.claw4j.capability.exec;
 
+import io.github.claw4j.domain.principal.Elevation;
 import io.github.claw4j.domain.principal.Principal;
 
 /**
@@ -21,15 +22,17 @@ import io.github.claw4j.domain.principal.Principal;
  * @param channel    卡片往哪个通道发，可以为 {@code null}
  * @param chatRef    通道内的会话地址，可以为 {@code null}
  * @param runId      这一轮是哪一轮，可以为 {@code null}
+ * @param elevation  这一段会话的提权档（票 06 的 {@code /elevated}），{@code null} 按不提权
  */
 public record ExecCallContext(Principal principal, String sessionKey, String channel, String chatRef,
-                              String runId) {
+                              String runId, Elevation elevation) {
 
     /** 当前线程上这一次工具调用的上下文。没有绑定时是 {@code null}，表示"这次调用没有身份"。 */
     private static final ThreadLocal<ExecCallContext> CURRENT = new ThreadLocal<>();
 
     public ExecCallContext {
         java.util.Objects.requireNonNull(principal, "principal");
+        elevation = elevation == null ? Elevation.OFF : elevation;
     }
 
     /**

@@ -308,7 +308,7 @@ class ExecApprovalTest {
 
     private <T> T asOwnerIn(String sessionKey, java.util.function.Supplier<T> body) {
         Principal principal = new Principal(OWNER);
-        return ExecCallContext.with(new ExecCallContext(principal, sessionKey, "http", "chat-ap", "run-1"),
+        return ExecCallContext.with(new ExecCallContext(principal, sessionKey, "http", "chat-ap", "run-1", null),
                 body);
     }
 

@@ -3,6 +3,8 @@ package io.github.claw4j.agent;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.agent.elevated.ElevatedProperties;
+import io.github.claw4j.agent.elevated.Elevations;
 import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.agent.approval.ApprovalGate;
@@ -64,7 +66,8 @@ import io.github.claw4j.agent.model.ModelProperties;
  * 不必要求调用方把 {@code io.github.claw4j.agent} 加进组件扫描路径。
  */
 @AutoConfiguration
-@EnableConfigurationProperties({ToolSearchProperties.class, ToolsProperties.class, AgentProperties.class})
+@EnableConfigurationProperties({ToolSearchProperties.class, ToolsProperties.class, AgentProperties.class,
+        ElevatedProperties.class})
 public class AgentAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(AgentAutoConfiguration.class);
@@ -192,6 +195,21 @@ public class AgentAutoConfiguration {
                     gates.getIfAvailable(), approvals.getIfAvailable(ApprovalRequiredTools::none),
                     audit.getIfAvailable());
         });
+    }
+
+    /**
+     * 提权状态：{@code /elevated} 改的那一份（票 06）。
+     *
+     * <p>内存里、按会话键存、带有效期。不放库，是因为它是一段对话的临时状态——
+     * 重启之后重新决定才是对的（见 {@link Elevations} 的类注释）。
+     *
+     * @param properties 提权配置
+     * @return 状态
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public Elevations elevations(ElevatedProperties properties) {
+        return new Elevations(properties, java.time.Clock.systemUTC());
     }
 
     /**
@@ -579,7 +597,8 @@ public class AgentAutoConfiguration {
                                ObjectProvider<io.github.claw4j.agent.goal.SessionGoalStore> goals,
                                AgentProperties properties,
                                ToolCatalog catalog,
-                               ModelProperties model) {
+                               ModelProperties model,
+                               Elevations elevations) {
         // 投递走 ObjectProvider 而不是直接注入：没配推送实现时它是缺席而不是失败，
         // 门照常住着，只是结果只从请求里回去（ADR-0027：没有一个可推的地址就不推）。
         // 额度不在这条链上了——它是目标的属性（ADR-0027 决定五）。
@@ -596,6 +615,6 @@ public class AgentAutoConfiguration {
                 delivery.getIfAvailable(),
                 tracer.getIfAvailable(() -> SpanTracer.NONE), pointers.getIfAvailable(),
                 new ConversationLane(properties.laneWait()), audit.getIfAvailable(),
-                goals.getIfAvailable(), catalog, model.getPrimary());
+                goals.getIfAvailable(), catalog, model.getPrimary(), elevations);
     }
 }

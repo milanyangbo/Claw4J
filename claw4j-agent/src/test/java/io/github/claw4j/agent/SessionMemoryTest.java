@@ -8,6 +8,9 @@ import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionMaintenance;
+import io.github.claw4j.agent.elevated.ElevatedCommand;
+import io.github.claw4j.agent.elevated.ElevatedProperties;
+import io.github.claw4j.agent.elevated.Elevations;
 import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.session.SessionCommand;
 import io.github.claw4j.agent.session.SessionMaintenanceProperties;
@@ -876,5 +879,99 @@ class SessionMemoryTest {
         List<String> createdUserIds() {
             return List.copyOf(createdUserIds);
         }
+    }
+    @Test
+    @DisplayName("/elevated：四档、ask 是 on 的别名、裸命令看当前档、词不认识就提示用法")
+    void elevatedParsesItsFourWords() {
+        assertThat(ElevatedCommand.parse("/elevated"))
+                .as("裸命令是「看当前档」，不是「不认识」")
+                .contains(new ElevatedCommand.Invocation(null, null));
+        assertThat(ElevatedCommand.parse("/elevated full").orElseThrow().level())
+                .isEqualTo(io.github.claw4j.domain.principal.Elevation.FULL);
+        assertThat(ElevatedCommand.parse("/elevated ask").orElseThrow().level())
+                .as("ask 是 on 的别名（OpenClaw 文档里两者同义）")
+                .isEqualTo(io.github.claw4j.domain.principal.Elevation.ON);
+        assertThat(ElevatedCommand.parse("/elevated off").orElseThrow().level())
+                .isEqualTo(io.github.claw4j.domain.principal.Elevation.OFF);
+        assertThat(ElevatedCommand.parse("/elevated loudly").orElseThrow().unknownWord())
+                .as("写了认不出的词要回用法，不能当成「看当前档」")
+                .isTrue();
+        assertThat(ElevatedCommand.parse("/elevateds 是什么"))
+                .as("前缀匹配会把普通问题当成命令，而用户看到的是「我的问题它没回答」")
+                .isEmpty();
+        assertThat(ElevatedCommand.parse("帮我查一下上周的回款")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("/elevated：部署没开时拒，并说清该改哪个键（不是「你不许」）")
+    void elevatedRefusedWhenDeploymentIsClosed() {
+        Elevations elevations = new Elevations(ElevatedProperties.defaults(), null);
+
+        String answer = ElevatedCommand.execute(new ElevatedCommand.Invocation(
+                        io.github.claw4j.domain.principal.Elevation.FULL, "full"),
+                elevations, new io.github.claw4j.domain.principal.Principal("admin"), "conversation-1");
+
+        assertThat(answer).contains("enabled=false").contains("这个部署没有开提权");
+        assertThat(elevations.level("conversation-1"))
+                .as("拒了就不能顺手记上")
+                .isEqualTo(io.github.claw4j.domain.principal.Elevation.OFF);
+    }
+
+    @Test
+    @DisplayName("/elevated：名单为空时谁都不许——「没配」只能是「不许」")
+    void elevatedRefusedForUnlistedSender() {
+        Elevations openButNobody = new Elevations(
+                new ElevatedProperties(true, java.util.List.of("alice"), null), null);
+
+        String answer = ElevatedCommand.execute(new ElevatedCommand.Invocation(
+                        io.github.claw4j.domain.principal.Elevation.FULL, "full"),
+                openButNobody, new io.github.claw4j.domain.principal.Principal("bob"), "conversation-2");
+
+        assertThat(answer).contains("allow-from").contains("不在提权名单");
+        assertThat(openButNobody.level("conversation-2"))
+                .isEqualTo(io.github.claw4j.domain.principal.Elevation.OFF);
+    }
+
+    @Test
+    @DisplayName("/elevated full 有有效期：到点自动回到不提权，忘了关不会变成永久")
+    void elevatedExpiresAfterItsTtl() {
+        java.util.concurrent.atomic.AtomicReference<java.time.Instant> now =
+                new java.util.concurrent.atomic.AtomicReference<>(java.time.Instant.parse("2026-11-18T12:00:00Z"));
+        java.time.Clock moving = new java.time.Clock() {
+
+            @Override
+            public java.time.ZoneId getZone() {
+                return java.time.ZoneOffset.UTC;
+            }
+
+            @Override
+            public java.time.Clock withZone(java.time.ZoneId zone) {
+                return this;
+            }
+
+            @Override
+            public java.time.Instant instant() {
+                return now.get();
+            }
+        };
+        Elevations elevations = new Elevations(
+                new ElevatedProperties(true, java.util.List.of("alice"), null), moving);
+
+        String answer = ElevatedCommand.execute(new ElevatedCommand.Invocation(
+                        io.github.claw4j.domain.principal.Elevation.FULL, "full"),
+                elevations, new io.github.claw4j.domain.principal.Principal("alice"), "conversation-3");
+
+        assertThat(answer)
+                .as("回执要说清三件事：生效了、跳过审批、什么时候失效")
+                .contains("跳过审批")
+                .contains("自动失效");
+        assertThat(elevations.level("conversation-3"))
+                .isEqualTo(io.github.claw4j.domain.principal.Elevation.FULL);
+
+        now.set(now.get().plus(java.time.Duration.ofMinutes(31)));
+
+        assertThat(elevations.level("conversation-3"))
+                .as("30 分钟之后还在 full，等于把审批永久关掉了")
+                .isEqualTo(io.github.claw4j.domain.principal.Elevation.OFF);
     }
 }
