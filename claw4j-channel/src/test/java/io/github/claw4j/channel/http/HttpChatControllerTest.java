@@ -49,7 +49,7 @@ class HttpChatControllerTest {
                 OutboundMessage.of(CHAT_ID, ""));
 
         var emitter = controller(agent, Runnable::run)
-                .stream(new AskRequest("上周成交额"), "u-1", "read-only", null);
+                .stream(new AskRequest("上周成交额"), "u-1", null);
 
         assertNotNull(emitter, "流式必须当场把 emitter 交回容器，不能在请求线程上等模型");
         assertEquals(1, agent.received.size());
@@ -64,7 +64,7 @@ class HttpChatControllerTest {
 
         // 不抛就是这条的全部要求：抛出去会让客户端等到超时，而日志里只有一行堆栈
         assertNotNull(controller(agent, Runnable::run)
-                .stream(new AskRequest("问题"), "u-1", "read-only", null));
+                .stream(new AskRequest("问题"), "u-1", null));
     }
 
     @Test
@@ -104,9 +104,9 @@ class HttpChatControllerTest {
         HttpChatController controller = controller(agent, Runnable::run);
 
         assertThrows(InvalidRequestException.class,
-                () -> controller.ask(new AskRequest("   "), "u-1", "read-only", null));
+                () -> controller.ask(new AskRequest("   "), "u-1", null));
         assertThrows(InvalidRequestException.class,
-                () -> controller.stream(new AskRequest(""), "u-1", "read-only", null));
+                () -> controller.stream(new AskRequest(""), "u-1", null));
 
         assertEquals(0, agent.received.size());
     }
@@ -132,8 +132,8 @@ class HttpChatControllerTest {
         ScriptedAgent agent = new ScriptedAgent();
         HttpChatController controller = controller(agent, Runnable::run);
 
-        controller.ask(new AskRequest("继续", " silent "), "u-1", "read-only", null);
-        controller.ask(new AskRequest("随口问问"), "u-1", "read-only", null);
+        controller.ask(new AskRequest("继续", " silent "), "u-1", null);
+        controller.ask(new AskRequest("随口问问"), "u-1", null);
 
         InboundMessage silent = agent.received.getFirst();
         assertEquals(HttpChatController.CHANNEL, silent.channel(),
@@ -150,7 +150,7 @@ class HttpChatControllerTest {
         ScriptedAgent agent = new ScriptedAgent();
 
         assertThrows(InvalidRequestException.class, () -> controller(agent, Runnable::run)
-                .ask(new AskRequest("问题", "slience"), "u-1", "read-only", null));
+                .ask(new AskRequest("问题", "slience"), "u-1", null));
 
         assertEquals(0, agent.received.size(), "拼错的请求不该先跑一遍再报错");
     }
@@ -159,6 +159,7 @@ class HttpChatControllerTest {
 
     private static HttpChatController controller(AgentPort agent, Executor executor) {
         HttpChannelProperties properties = new HttpChannelProperties();
+        properties.setUsers(java.util.Set.of("u-1"));
         return new HttpChatController(
                 new HttpChatChannel(agent, executor),
                 new HttpPrincipalResolver(properties),

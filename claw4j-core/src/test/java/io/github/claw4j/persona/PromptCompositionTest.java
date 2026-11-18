@@ -15,7 +15,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 拼装的几条判据：正文、口径、时间、数据范围，以及"同一天里时间不变"。
+ * 拼装的几条判据：正文、口径、时间，以及"同一天里时间不变"。
+ *
+ * <p>原来还有一条"有身份才有数据范围"——提示词里那一段随权限指纹在 ADR-0030 里下线，
+ * 于是这条判据变成"提示词里**不该**再出现这一段"（{@code noDataScopeSection}）。
  *
  * <p>最后一条单独盯，是因为它同时是两件事的前提：时间必须是每轮算的（不能装配期固化），
  * 而粒度只能是天（分钟级会让以提示词为键的语义缓存每分钟失效一次）。
@@ -78,17 +81,12 @@ class PromptCompositionTest {
     }
 
     @Test
-    @DisplayName("有身份才有数据范围：它是缓存区分权限的唯一入口")
-    void dataScopeAppearsOnlyWhenGiven() {
-        String anonymous = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3, null);
-        String admin = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3, "fingerprint-a");
-        String guest = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3, "fingerprint-b");
+    @DisplayName("提示词里不再有数据范围段：权限指纹下线之后那一段没有内容可写")
+    void noDataScopeSection() {
+        String prompt = PromptComposition.compose(persona("你是销售助手。"), List.of(), NOV_3);
 
-        assertFalse(anonymous.contains("数据范围"), anonymous);
-        assertTrue(admin.contains("数据范围"), admin);
-        assertTrue(admin.contains("fingerprint-a"), admin);
-        assertNotEquals(admin, guest,
-                "权限不同 → 提示词不同 → contextHash 不同 → 缓存不互相命中");
+        assertFalse(prompt.contains("数据范围"), prompt);
+        assertFalse(prompt.contains("数据权限标识"), prompt);
     }
 
     @Test

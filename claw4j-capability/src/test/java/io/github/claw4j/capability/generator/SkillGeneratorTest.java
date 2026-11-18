@@ -281,7 +281,7 @@ class SkillGeneratorTest {
     }
 
     private static Principal principal(String userId) {
-        return Principal.of(userId, "engineer", Set.of(), Set.of("draft_script"));
+        return new Principal(userId);
     }
 
     private static ToolContext context(String userId) {

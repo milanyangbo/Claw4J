@@ -1,11 +1,9 @@
 package io.github.claw4j.agent.rag;
 
 import com.sun.net.httpserver.HttpServer;
-import io.github.claw4j.agent.PermissionFingerprint;
 import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -74,7 +72,7 @@ class KnowledgeRetrievalTest {
         Files.writeString(docs.resolve("a.md"), body);
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         when(jdbc.queryForList(contains("content_hash"), eq(String.class), any(), any()))
-                .thenReturn(List.of(PermissionFingerprint.sha256(body)));
+                .thenReturn(List.of(ContentHash.of(body)));
         // 切块身份也对得上，才轮到"比 hash"
         when(jdbc.queryForList(contains("index_meta"), eq(String.class), any()))
                 .thenReturn(List.of(KnowledgeIndexer.identityOf(200)));
@@ -235,8 +233,8 @@ class KnowledgeRetrievalTest {
     }
 
     @Test
-    @DisplayName("没有身份、或没有 doc 读权限：都不检索，也都不抛")
-    void nothingIsRetrievedWithoutIdentityOrDocPermission() {
+    @DisplayName("没有身份不检索：两路都不发起，也不抛")
+    void nothingIsRetrievedWithoutIdentity() {
         DocumentRetriever hybrid = new HybridDocumentRetriever(
                 q -> {
                     throw new AssertionError("不该调用向量那一路");
@@ -248,10 +246,22 @@ class KnowledgeRetrievalTest {
 
         assertThat(hybrid.retrieve(new Query("退货")))
                 .as("没有身份时不该检索").isEmpty();
+    }
 
-        Principal guest = Principal.of("u-1", "guest", Set.of("region"), Set.of(ToolPermission.READ));
-        assertThat(hybrid.retrieve(withPrincipal("退货", guest)))
-                .as("判据与工具时代同一个 ToolPermission：没有 doc 就不查").isEmpty();
+    @Test
+    @DisplayName("任何有身份的人都能检索：业务数据授权后移到第二步（票 04 的行为放宽）")
+    void anyPrincipalCanRetrieve() {
+        DocumentRetriever hybrid = new HybridDocumentRetriever(
+                q -> List.of(new Document("doc-1", "退货政策：七天无理由", Map.of())),
+                q -> List.of(),
+                joiner());
+
+        // 判据只剩"这一轮有没有身份"。知识库的细粒度 ACL 随业务数据授权一起后移到第二步
+        // （ADR-0030 缺口表、guardrails 偏差表）——这是行为放宽，显式立一条，别让它悄悄变化。
+        assertThat(hybrid.retrieve(withPrincipal("退货", new Principal("u-1"))))
+                .extracting(Document::getId)
+                .as("有身份就能拿到文档：不再问「能不能看 doc 这张伪表」")
+                .containsExactly("doc-1");
     }
 
     // ---- 全文那一路：通配符 ----
@@ -515,7 +525,7 @@ class KnowledgeRetrievalTest {
     }
 
     private static Query query(String text) {
-        return new Query(text, List.of(), Map.of(ContextKeys.PRINCIPAL, Principal.readOnly("u-1")));
+        return new Query(text, List.of(), Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
     }
 
     private static Query withPrincipal(String text, Principal principal) {

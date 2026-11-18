@@ -56,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link EvalApplication}，与 {@code Claw4jApplication} 等价的只有声明配置与打开自动配置
  * 两样，各模块的装配全在自动配置里，不靠组件扫描。
  *
- * <p>怎么跑：{@code ./scripts/eval.sh} 全跑，{@code ./scripts/eval.sh sales authz} 按类，
+ * <p>怎么跑：{@code ./scripts/eval.sh} 全跑，{@code ./scripts/eval.sh sales knowledge} 按类，
  * {@code ./scripts/eval.sh --case sales-weekly-east} 单条。
  */
 @SpringBootTest(classes = EvalRunTest.EvalApplication.class,
@@ -168,12 +168,13 @@ class EvalRunTest {
      */
     private CaseResult run(EvalCase testCase, Principal rosterEntry) {
         assertThat(rosterEntry).as("用例 %s 引用了不存在身份 %s", testCase.id(), testCase.principal()).isNotNull();
-        // 每条用例一个新 userId。会话 id 是 userId@权限指纹，刻意不含 chatId：chatId 是通道侧
+        // 每条用例一个新 userId。会话键按 userId 分段，刻意不含 chatId：chatId 是通道侧
         // 寻址键，换通道就会变，编进主键会让换通道等于换会话（见 SessionKeys 的类注释）。
         // 所以同一个 userId 跑五十条用例就是五十条共享一段历史：从第二条起模型直接从上下文
         // 念出上一条的数字，工具一次都不调，判出来是轨迹没命中。
-        Principal principal = new Principal("eval-" + testCase.id(), rosterEntry.role(),
-                rosterEntry.accessibleTables(), rosterEntry.allowedActions());
+        // ADR-0030 之后身份只剩一个 userId，原来还要带上 role / tables / actions——
+        // 那三样是"这一档能碰哪些业务表"，随权限登记表一起下线。
+        Principal principal = new Principal("eval-" + testCase.id());
         String chatId = "eval-" + testCase.id();
         long startedAt = System.currentTimeMillis();
         for (String line : testCase.setup()) {
@@ -275,6 +276,9 @@ class EvalRunTest {
         totals.put("cases", results.size());
         totals.put("answerHit", count(results, EvalVerdict::answerHit));
         totals.put("traceHit", count(results, EvalVerdict::traceHit));
+        // 拒绝类用例先数一遍：`authzHeld` 对"不期待拒绝"的用例恒为 true（它判的是"没违反"），
+        // 没有一条拒绝类用例时把它打成 41/41 就是在报一个没验过的满分。控制台按这个数决定说什么。
+        totals.put("refusals", (int) results.stream().filter(result -> result.testCase().expectRefusal()).count());
         totals.put("authzHeld", count(results, EvalVerdict::authzHeld));
         totals.put("passed", (int) results.stream().filter(result -> result.verdict().passed()).count());
         return totals;
@@ -368,14 +372,16 @@ class EvalRunTest {
 
     // ------------------------------------------------------------------ 控制台
 
-    /** 只打三行：总数、三类各中多少、不中的那几条。细节在 JSON 里。 */
+    /** 只打三行：总数、各类各中多少、不中的那几条。细节在 JSON 里。 */
     private static void print(List<CaseResult> results, Path report) {
         Map<String, Object> totals = totals(results);
         System.out.printf("评测 %s 条，通过 %s 条%n", totals.get("cases"), totals.get("passed"));
-        System.out.printf("答案命中 %s/%s，轨迹 %s/%s，越权 %s/%s%n",
+        System.out.printf("答案命中 %s/%s，轨迹 %s/%s，%s%n",
                 totals.get("answerHit"), totals.get("cases"),
                 totals.get("traceHit"), totals.get("cases"),
-                totals.get("authzHeld"), totals.get("cases"));
+                "0".equals(String.valueOf(totals.get("refusals")))
+                        ? "越权：本版没有拒绝类用例，不判"
+                        : "越权 " + totals.get("authzHeld") + "/" + totals.get("refusals") + " 条拒绝类");
         List<CaseResult> failed = results.stream().filter(result -> !result.verdict().passed()).toList();
         System.out.println(failed.isEmpty()
                 ? "没过的一条都没有"

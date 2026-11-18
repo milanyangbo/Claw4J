@@ -3,13 +3,12 @@ package io.github.claw4j.agent.subagent;
 import io.github.claw4j.agent.ToolCallBudget;
 import io.github.claw4j.agent.ToolSearch;
 import io.github.claw4j.agent.ToolSearchProperties;
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.micrometer.observation.ObservationRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
@@ -32,7 +31,7 @@ import java.util.function.Supplier;
  *       漏回去；脱敏在父链出站前还会做一次，子在中间打码只会让它认不出自己查到的值。
  * </ul>
  *
- * <p>委派不提权：子的工具调用照样过 {@link AuthorizationAdvisor}，用的就是父那个
+ * <p>委派不提权：子拿的是父筛过的那份清单再收窄一层（ADR-0030 裁决二），用的就是父那个
  * {@link Principal}——身份由委派时的入站请求给，不由 Subagent 定义给。父看不到的表，
  * 派个 Subagent 去看这条路从设计上不存在。
  *
@@ -60,13 +59,19 @@ public final class SubagentRunner {
     /** 子 Agent 没能给出任何结论时的回传文本：父至少要知道派出去但没拿到东西。 */
     private static final String EMPTY_CONCLUSION = "（这个 Subagent 没有给出结论）";
 
+    /**
+     * 子链会话键的前缀。
+     *
+     * <p>审批那一侧靠它认"这是子 Agent 的会话，拒绝不投递"（{@code ApprovalService#silent}）。
+     * 写成常量而不是在两处各拼一次：改了拼接方式却只改一处的后果，是拒绝开始往子会话里投。
+     */
+    static final String SESSION_PREFIX = "subagent:";
+
     private final ChatModel model;
 
     private final ObservationRegistry observations;
 
     private final Supplier<List<ToolCallback>> availableTools;
-
-    private final Advisor authorizationAdvisor;
 
     /** 工具检索索引：与父那条链共用同一个 bean，桶按会话 id 分开（见类注释）。 */
     private final ToolIndex toolIndex;
@@ -79,14 +84,12 @@ public final class SubagentRunner {
     public SubagentRunner(ChatModel model,
                           ObservationRegistry observations,
                           Supplier<List<ToolCallback>> availableTools,
-                          Advisor authorizationAdvisor,
                           ToolIndex toolIndex,
                           ToolSearchProperties toolSearch,
                           int toolCallLimit) {
         this.model = Objects.requireNonNull(model, "model");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.availableTools = Objects.requireNonNull(availableTools, "availableTools");
-        this.authorizationAdvisor = Objects.requireNonNull(authorizationAdvisor, "authorizationAdvisor");
         this.toolIndex = Objects.requireNonNull(toolIndex, "toolIndex");
         this.toolSearch = Objects.requireNonNull(toolSearch, "toolSearch");
         this.toolCallLimit = toolCallLimit;
@@ -114,19 +117,43 @@ public final class SubagentRunner {
                         ToolSearch.toolLoop(toolSearch, toolIndex, observations, toolCallLimit))
                 .defaultSystem(definition.systemPrompt())
                 .defaultToolCallbacks(tools)
-                // 只挂鉴权：记忆与脱敏都不进子链（理由见类注释）。
-                .defaultAdvisors(authorizationAdvisor)
+                // 记忆与脱敏都不进子链（理由见类注释）。原来还挂着一个鉴权 Advisor，它在
+                // ADR-0030 里随权限登记表一起下线：子链能调什么已经由上面那份 tools 决定，
+                // 多一道"再判一次权限"只会与清单说出两种话来。
                 .build();
 
         String conclusion = subagent.prompt(task)
+                .toolContext(subagentToolContext(definition, principal))
                 .advisors(spec -> spec
-                        .param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal)
+                        .param(ContextKeys.PRINCIPAL, principal)
                         // 工具循环按这个键取会话 id，缺了不是"退化成全塞"而是直接抛。
                         // 父那边由 ChatClientAgentPort 塞；子这边没有 AgentPort，只能自己补。
                         // 键用框架的 ChatMemory 常量，与父那边用的是同一个字符串。
-                        .param(ChatMemory.CONVERSATION_ID, "subagent:" + definition.name()))
+                        .param(ChatMemory.CONVERSATION_ID, SESSION_PREFIX + definition.name()))
                 .call()
                 .content();
         return (conclusion == null || conclusion.isBlank()) ? EMPTY_CONCLUSION : conclusion;
+    }
+
+    /**
+     * 交给子链工具的那份上下文：身份 + 会话。
+     *
+     * <p>不加这一步时，子链上的工具**拿不到身份**：它们只从 {@code ToolContext} 里取，而这里原来
+     * 只放了 Advisor 参数。后果不是报错，是那些工具按"没有身份"拒绝（委派里的再委派、
+     * exec 要审批时找人批，都读这个键）。
+     *
+     * <p>会话键与 Advisor 那一侧同一个值：两处各算一遍的话，审批行上的来处与工具读到的会话
+     * 迟早会差一段，而差的那一段表现是"批准之后回到的是一段空对话"。
+     *
+     * @param definition 派哪一个
+     * @param principal 父这一轮的身份
+     * @return 工具上下文
+     */
+    private static java.util.Map<String, Object> subagentToolContext(SubagentDefinition definition,
+                                                                     Principal principal) {
+        java.util.Map<String, Object> context = new java.util.HashMap<>();
+        context.put(ContextKeys.PRINCIPAL, principal);
+        context.put(ChatMemory.CONVERSATION_ID, SESSION_PREFIX + definition.name());
+        return context;
     }
 }

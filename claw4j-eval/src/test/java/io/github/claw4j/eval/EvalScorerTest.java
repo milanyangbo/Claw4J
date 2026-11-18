@@ -1,6 +1,6 @@
 package io.github.claw4j.eval;
 
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class EvalScorerTest {
 
-    private static final String DENIAL = AuthorizationAdvisor.DENIAL_PREFIX;
+    private static final String DENIAL = ApprovalRequiredToolCallback.DENIAL_PREFIX;
 
     // ------------------------------------------------------------------ 答案命中
 

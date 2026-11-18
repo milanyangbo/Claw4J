@@ -61,15 +61,15 @@ public class ScheduleStore {
                 for update skip locked
             )
             returning s.id, s.owner, s.channel, s.channel_ref, s.goal, s.cron, s.zone,
-                      s.notify_policy, s.owner_user_id, s.owner_role, s.required_tools,
+                      s.notify_policy, s.owner_user_id, s.required_tools,
                       s.next_run_at, s.failures
             """;
 
     private static final String INSERT_SQL = """
             insert into claw4j_run.agent_schedule
                 (id, owner, channel, channel_ref, goal, cron, zone, notify_policy,
-                 owner_user_id, owner_role, required_tools, next_run_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 owner_user_id, required_tools, next_run_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String SELECT_SQL = """
@@ -118,15 +118,14 @@ public class ScheduleStore {
     /**
      * 一条到点的任务：认领时读出来的全部内容，够跑一轮，也够解释为什么没跑成。
      *
-     * <p>带回来的是身份，不是权限（P05）：{@code userId} 与 {@code role} 交给
-     * {@link ScheduleAuthorization} 换一份此刻的权限。存权限快照的话，收权对定时任务无效，
-     * 而那条缝只有在有人拿这份快照直接去跑时才会露出来。
+     * <p>带回来的是身份（{@code owner_user_id}），不是权限（ADR-0030）：权限那一层已经不在，
+     * 而"任务是谁的"仍然要有一个答案——它决定会话键、审计里的 actor、审批里的 owner。
      *
-     * @param requiredTools 建的时候声明的工具名，到点之前按当前权限再核一遍；空表示不碰工具
+     * @param requiredTools 建的时候声明的工具名，到点之前再核一遍"有没有要人批的"；空表示不碰工具
      */
     public record Due(String id, String owner, String channel, String channelRef, String goal,
                       String cron, String zone, NotifyPolicy notifyPolicy,
-                      String userId, String role, List<String> requiredTools,
+                      String userId, List<String> requiredTools,
                       Instant nextRunAt, int failures) {
     }
 
@@ -140,8 +139,7 @@ public class ScheduleStore {
      * @param notifyPolicy 通知策略；null 按 {@link NotifyPolicy#SILENT} 落库
      * @param channel 结果推回的通道；null 表示不推
      * @param channelRef 通道内的收件地址
-     * @param principal 任务主人。只取 {@code userId} 与 {@code role} 落库，
-     *     tables 与 actions 一律不存，它们要到点那一刻按当时的角色表重算
+     * @param principal 任务主人。只取 {@code userId} 落库——它是到点起跑时唯一的身份事实
      * @param requiredTools 这条任务会用到的工具名，建的时候已经核过一遍
      */
     public record Request(String owner, String goal, String cron, String zone,
@@ -176,7 +174,7 @@ public class ScheduleStore {
             jdbc.update(INSERT_SQL, id, request.owner(), request.channel(), request.channelRef(),
                     request.goal(), request.cron(), request.zone(),
                     (request.notifyPolicy() == null ? NotifyPolicy.SILENT : request.notifyPolicy()).column(),
-                    owner.userId(), owner.role(),
+                    owner.userId(),
                     // 显式转成 Object：String[] 直接当变参会被当成一串参数，而不是一个 text[]
                     (Object) toolsOf(request.requiredTools()).toArray(new String[0]),
                     java.sql.Timestamp.from(next));
@@ -379,7 +377,7 @@ public class ScheduleStore {
         return new Due(row.getString("id"), row.getString("owner"), row.getString("channel"),
                 row.getString("channel_ref"), row.getString("goal"), row.getString("cron"),
                 row.getString("zone"), NotifyPolicy.fromColumn(row.getString("notify_policy")),
-                row.getString("owner_user_id"), row.getString("owner_role"),
+                row.getString("owner_user_id"),
                 toolsOf(row.getArray("required_tools")), instant(row, "next_run_at"),
                 row.getInt("failures"));
     }

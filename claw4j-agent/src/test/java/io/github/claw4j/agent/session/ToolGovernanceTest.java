@@ -14,7 +14,6 @@ import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -69,12 +68,11 @@ class ToolGovernanceTest {
 
     private static final String RUN = "run-1";
 
-    private static final String SESSION = "claw4j:user:u-analyst@fp-1:web:chat-a";
+    private static final String SESSION = "claw4j:user:u-analyst:web:chat-a";
 
     private static final String TOOL = "querySales";
 
-    private static final Principal CALLER =
-            Principal.of("u-analyst", "analyst", Set.of("sales_order"), Set.of("read"));
+    private static final Principal CALLER = new Principal("u-analyst");
 
     /** 真正落下来的事件。审计的形状变了（ADR-0027）：断言看事件，不看 step 行。 */
     private List<AuditEvent> events;
@@ -88,7 +86,7 @@ class ToolGovernanceTest {
     }
 
     private static AuditEvent.Scope scope() {
-        return new AuditEvent.Scope(RUN, SESSION, null, "u-analyst", "analyst", "web");
+        return new AuditEvent.Scope(RUN, SESSION, null, "u-analyst", "web");
     }
 
     @Test
@@ -106,7 +104,6 @@ class ToolGovernanceTest {
                 .isNotNull()
                 .isEqualTo(events.get(1).argsDigest());
         assertThat(events.get(1).scope().actor()).isEqualTo("u-analyst");
-        assertThat(events.get(1).scope().actorRole()).isEqualTo("analyst");
         assertThat(events.get(1).toolName()).isEqualTo(TOOL);
     }
 
@@ -151,7 +148,7 @@ class ToolGovernanceTest {
         audit.granted(RUN, "sendEmail", digest, "approval-7");
         audit.toolFinished(scope(), "sendEmail", args, null);
         audit.toolFinished(scope(), "sendEmail", args, null);
-        audit.toolFinished(new AuditEvent.Scope("run-2", SESSION, null, "u-analyst", "analyst", "web"),
+        audit.toolFinished(new AuditEvent.Scope("run-2", SESSION, null, "u-analyst", "web"),
                 "sendEmail", args, null);
 
         assertThat(events).hasSize(3);
@@ -175,7 +172,7 @@ class ToolGovernanceTest {
         assertThat(event.status()).isEqualTo(AuditStatus.BLOCKED);
         assertThat(event.errorCode()).isEqualTo(AuditErrorCode.TOOL_BLOCKED);
         assertThat(event.toolName()).isEqualTo(TOOL);
-        assertThat(event.scope().actorRole()).isEqualTo("analyst");
+        assertThat(event.scope().actor()).isEqualTo("u-analyst");
     }
 
     /**
@@ -254,7 +251,7 @@ class ToolGovernanceTest {
 
     /** 这个身份在一条通道的一个 chat 里。键一律由 {@link SessionKeys} 派生，不手拼。 */
     private static String sessionOf(String userId, String channel, String chatId) {
-        return SessionKeys.sessionIdOf(Principal.readOnly(userId), channel, chatId);
+        return SessionKeys.sessionIdOf(new Principal(userId), channel, chatId);
     }
 
     /**
@@ -265,7 +262,7 @@ class ToolGovernanceTest {
      * 下面几条召回用例里"换一个人就看不到"会先红——那正是把越权读变成报错的唯一办法。
      */
     private static final String CURRENT_SESSION = SessionKeys.sessionIdOf(
-            Principal.readOnly("u-1"), "web", "chat-a", "1762300000000-abcd");
+            new Principal("u-1"), "web", "chat-a", "1762300000000-abcd");
 
     /** 同一个人的另外两段对话：网页上的另一个 chat，以及一个项目群。 */
     private static final String PRIVATE_ELSEWHERE = sessionOf("u-1", "web", "chat-b");
@@ -302,7 +299,7 @@ class ToolGovernanceTest {
 
         RecallSessionTool self = tool(sessions, SessionVisibility.SELF);
         String recalled = self.call("{\"query\":\"华东\"}",
-                toolContext(Principal.readOnly("u-1"), CURRENT_SESSION));
+                toolContext(new Principal("u-1"), CURRENT_SESSION));
 
         assertThat(recalled).contains("按签约主体算");
         assertThat(recalled)
@@ -317,7 +314,7 @@ class ToolGovernanceTest {
                 .doesNotContain(CURRENT_SESSION);
 
         assertThat(self.call("{\"query\":\"先别外传\"}",
-                toolContext(Principal.readOnly("u-1"), CURRENT_SESSION)))
+                toolContext(new Principal("u-1"), CURRENT_SESSION)))
                 .as("「这一段没说过」与「整个部署都没说过」在模型那里都是「没说过」，"
                         + "在排查时是两件事——所以文案必须带范围")
                 .contains("没有找到")
@@ -327,7 +324,7 @@ class ToolGovernanceTest {
     @Test
     @DisplayName("默认 all：一个用户能召回另一个用户说过的那句，且结果带出处")
     void defaultVisibilityRecallsAcrossUsers() {
-        String otherUsers = SessionKeys.sessionIdOf(Principal.readOnly("u-2"), "web", "chat-z");
+        String otherUsers = SessionKeys.sessionIdOf(new Principal("u-2"), "web", "chat-z");
         FakeSessions sessions = new FakeSessions();
         open(sessions, CURRENT_SESSION);
         open(sessions, otherUsers);
@@ -339,7 +336,7 @@ class ToolGovernanceTest {
                 .isEqualTo(SessionVisibility.ALL);
 
         String recalled = tool(sessions).call("{\"query\":\"华东区口径\"}",
-                toolContext(Principal.readOnly("u-1"), CURRENT_SESSION));
+                toolContext(new Principal("u-1"), CURRENT_SESSION));
 
         assertThat(recalled)
                 .as("这就是默认 all 的代价：read-only 身份能召回别人的会话内容。这是它的默认，不是 bug")
@@ -352,13 +349,13 @@ class ToolGovernanceTest {
     @Test
     @DisplayName("四个值各归各位：agent 与 all 同结果、tree 等同 self，工具描述跟着生效范围走")
     void everyValueTakesItsOwnBranch() {
-        String otherUsers = SessionKeys.sessionIdOf(Principal.readOnly("u-2"), "web", "chat-z");
+        String otherUsers = SessionKeys.sessionIdOf(new Principal("u-2"), "web", "chat-z");
         FakeSessions sessions = new FakeSessions();
         open(sessions, CURRENT_SESSION);
         open(sessions, otherUsers);
         sessions.append(CURRENT_SESSION, "华东区的成交口径按签约主体算");
         sessions.append(otherUsers, "华东区口径按签约主体算——这条是 u-2 说的");
-        ToolContext context = toolContext(Principal.readOnly("u-1"), CURRENT_SESSION);
+        ToolContext context = toolContext(new Principal("u-1"), CURRENT_SESSION);
         String query = "{\"query\":\"华东区口径\"}";
 
         assertThat(tool(sessions, SessionVisibility.AGENT).call(query, context))
@@ -382,7 +379,7 @@ class ToolGovernanceTest {
     }
 
     @Test
-    @DisplayName("合不拢就不查：换人、降权、缺身份、缺会话都不退化成「先查了再说」（self 档）")
+    @DisplayName("合不拢就不查：换人、缺身份、缺会话都不退化成「先查了再说」（self 档）")
     void guardsRefuseInsteadOfWidening() {
         FakeSessions sessions = new FakeSessions();
         open(sessions, CURRENT_SESSION);
@@ -390,17 +387,14 @@ class ToolGovernanceTest {
         RecallSessionTool self = tool(sessions, SessionVisibility.SELF);
         String query = "{\"query\":\"华东\"}";
 
-        assertThat(self.call(query, toolContext(Principal.readOnly("u-2"), CURRENT_SESSION)))
+        assertThat(self.call(query, toolContext(new Principal("u-2"), CURRENT_SESSION)))
                 .as("u-2 拿到了 u-1 那一段的会话 id 也查不出东西")
                 .doesNotContain("签约主体")
                 .contains("不属于当前身份");
 
-        Principal downgraded = Principal.of("u-1", "guest",
-                Set.of("region"), Set.of(ToolPermission.READ));
-        assertThat(self.call(query, toolContext(downgraded, CURRENT_SESSION)))
-                .as("降权之后还念得出高权限时看到的数字，权限就等于没收回去")
-                .doesNotContain("99,999")
-                .contains("不属于当前身份");
+        // "降权之后不该再念出旧数字"那一条随权限指纹下线（ADR 代价第 3 条）：身份现在只有
+        // userId，没有第二种"权限版本"可掺，于是同一个人换了配置仍然是同一段会话。
+        // 这一步是明码标价的代价，不是回归——它记在 ADR-0030 的缺口表里。
 
         assertThat(self.call(query, new ToolContext(
                 Map.of(ChatMemory.CONVERSATION_ID, CURRENT_SESSION))))
@@ -411,7 +405,7 @@ class ToolGovernanceTest {
                 .as("单参入口没有 ToolContext，同样按没身份处理")
                 .contains("没有携带身份");
         assertThat(self.call(query,
-                new ToolContext(Map.of(ContextKeys.PRINCIPAL, Principal.readOnly("u-1")))))
+                new ToolContext(Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")))))
                 .as("按 principal 猜会话，就是改回按 user_id 查：那正是私聊漏进群聊的那条路")
                 .contains("没有携带会话标识")
                 .doesNotContain("签约主体");
@@ -425,7 +419,7 @@ class ToolGovernanceTest {
         sessions.append(CURRENT_SESSION, "华东区的成交口径按签约主体算");
         sessions.append(CURRENT_SESSION, "华南那边的口径还是按开票主体");
         RecallSessionTool tool = tool(sessions);
-        ToolContext context = toolContext(Principal.readOnly("u-1"), CURRENT_SESSION);
+        ToolContext context = toolContext(new Principal("u-1"), CURRENT_SESSION);
 
         assertThat(tool.call("{\"query\":\"华东,口径\",\"match_mode\":\"all\"}", context))
                 .as("all 只留同时命中全部关键词的那段")
@@ -452,31 +446,12 @@ class ToolGovernanceTest {
         }
 
         String recalled = tool(sessions).call("{\"query\":\"华东口径\"}",
-                toolContext(Principal.readOnly("u-1"), CURRENT_SESSION));
+                toolContext(new Principal("u-1"), CURRENT_SESSION));
 
         assertThat(recalled.length())
                 .as("条数封顶后仍可能是一条一万字，整段必须再按字符裁一次")
                 .isLessThan(RecallSessionTool.MAX_RESULT_CHARS + 200);
         assertThat(recalled).contains("已截断");
-    }
-
-    @Test
-    @DisplayName("权限是 recall_session，不带表；只读能用、guest 不能用")
-    void permissionIsItsOwnAction() {
-        ToolPermission permission = RecallSessionTool.permission();
-
-        assertThat(permission.action()).isEqualTo("recall_session");
-        assertThat(permission.tables()).as("它读的是会话，不是业务表").isEmpty();
-        assertThat(readOnlyWithRecall("u-1").canUse(permission))
-                .as("read-only 不给就等于只有管理员能回忆，这个能力等于没上")
-                .isTrue();
-        assertThat(Principal.readOnly("u-1").canUse(permission))
-                .as("内置的只读身份只有 read，它本来就不含这个能力——放行与否由角色配置里那一行决定")
-                .isFalse();
-        assertThat(Principal.of("u-3", "guest", Set.of("region"), Set.of(ToolPermission.READ))
-                .canUse(permission))
-                .as("guest 的 actions 里没有 recall_session：能读 region 与能回忆自己说过什么是两件事")
-                .isFalse();
     }
 
     // ---------------------------------------------------------------- 会话目标（ADR-0027）
@@ -720,13 +695,6 @@ class ToolGovernanceTest {
     }
 
     // ---------------------------------------------------------------- 假存储 / 假会话
-
-    /** 与 application.yml 里 read-only 那一行同形状：read 之外还给了 recall_session。 */
-    private static Principal readOnlyWithRecall(String userId) {
-        return Principal.of(userId, "read-only",
-                Set.of(Principal.WILDCARD),
-                Set.of(ToolPermission.READ, RecallSessionTool.ACTION));
-    }
 
     /** 默认档（{@code all}）：绝大多数用例问的是"能查到什么"，不是"哪一档"。 */
     private static RecallSessionTool tool(FakeSessions sessions) {

@@ -2,7 +2,6 @@ package io.github.claw4j.channel.dingtalk.client;
 
 import io.github.claw4j.channel.dingtalk.DingtalkOutboundDelivery;
 import io.github.claw4j.channel.dingtalk.DingtalkReplySender;
-import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.domain.question.QuestionGate;
@@ -39,7 +38,6 @@ import java.util.concurrent.Executor;
  * 容器里已经有三个（飞书、企微、Slack），再注册第四个，按类型注入的地方就没法用了。
  * 它也只服务这一个控制器。
  *
- * <p>这里同时绑定 {@link HttpChannelProperties}：各通道共用的授权表。
  *
  * <p>凭据是环境变量占位，不是 P08 的 {@code secret:} 句柄，与另外三个通道一致。
  * 这是记下来的偏差（见 {@link DingtalkProperties} 的类注释）：解析句柄的
@@ -48,7 +46,7 @@ import java.util.concurrent.Executor;
 @AutoConfiguration(afterName = "io.github.claw4j.agent.AgentAutoConfiguration")
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnProperty(prefix = "claw4j.channel.dingtalk", name = "enabled", havingValue = "true", matchIfMissing = true)
-@EnableConfigurationProperties({DingtalkProperties.class, HttpChannelProperties.class})
+@EnableConfigurationProperties(DingtalkProperties.class)
 public class DingtalkChannelAutoConfiguration {
 
     /** 钉钉回推专用的线程池名字：与 HTTP、飞书、企微、Slack 分开，日志里一眼看出是哪条通道在跑。 */
@@ -63,9 +61,8 @@ public class DingtalkChannelAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public DingtalkPrincipalResolver dingtalkPrincipalResolver(DingtalkProperties properties,
-                                                               HttpChannelProperties authz) {
-        return new DingtalkPrincipalResolver(properties, authz);
+    public DingtalkPrincipalResolver dingtalkPrincipalResolver(DingtalkProperties properties) {
+        return new DingtalkPrincipalResolver(properties);
     }
 
     @Configuration(proxyBeanMethods = false)

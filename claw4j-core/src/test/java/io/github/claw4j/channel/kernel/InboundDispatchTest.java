@@ -83,7 +83,7 @@ class InboundDispatchTest {
     private final Map<String, Principal> directory = new ConcurrentHashMap<>();
 
     {
-        directory.put(SENDER, Principal.readOnly("u-1"));
+        directory.put(SENDER, new Principal("u-1"));
     }
 
     // ---------------------------------------------------------------- ACK：回调线程不等 Agent

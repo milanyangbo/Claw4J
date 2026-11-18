@@ -134,17 +134,18 @@ public class ScheduleScanner {
             disable(task, "这条 cron 没有下一次了（" + task.cron() + "），不会再跑");
             return;
         }
-        Optional<Principal> owner = authorization.currentOwner(task.userId(), task.role());
-        if (owner.isEmpty()) {
-            disable(task, "任务主人的身份认不出来了（用户 " + task.userId() + "，角色 "
-                    + task.role() + "）：要么这个角色已经从授权表里删掉，要么这个部署没有角色表。"
-                    + "把角色加回来，再重新建一条任务");
-            return;
-        }
-        Optional<String> refusal = authorization.refusalFor(owner.get(), task.requiredTools());
+        Optional<String> refusal = authorization.refusalFor(task.requiredTools());
         if (refusal.isPresent()) {
             disable(task, "这条任务要用的工具现在不能用了：" + refusal.get()
-                    + "。权限改回来之后，重新建一条任务");
+                    + "。把它从任务要用的工具里去掉，重新建一条任务");
+            return;
+        }
+        // 身份只有一块事实：建任务时记下的 owner_user_id（ADR-0030）。没有它这条任务没法起跑，
+        // 也不该猜一个——猜出来的身份会让审计与审批都指向一个不存在的人。
+        Principal owner = ownerOf(task);
+        if (owner == null) {
+            disable(task, "这条任务没有记下主人（owner_user_id 为空），到点也不知道用谁的身份跑。"
+                    + "重新建一条任务");
             return;
         }
         if (launcher == null) {
@@ -152,7 +153,7 @@ public class ScheduleScanner {
             return;
         }
         try {
-            Optional<String> answer = launcher.launch(message(task, owner.get(), now));
+            Optional<String> answer = launcher.launch(message(task, owner, now));
             if (answer.isEmpty()) {
                 fail(task, next.get(), "这一轮没有跑成（没有 run 存储，或者根本没开跑）");
                 return;
@@ -195,6 +196,17 @@ public class ScheduleScanner {
      * @param now 本次触发时刻
      * @return 交给 {@link TaskLauncher} 的消息
      */
+    /**
+     * 这条任务的主人。库里那一列是唯一来源，读不出来就是读不出来——不回落到任何默认身份。
+     *
+     * @param task 本轮认领到的任务
+     * @return 主人身份；{@code owner_user_id} 为空时是 {@code null}
+     */
+    private static Principal ownerOf(ScheduleStore.Due task) {
+        String userId = task.userId();
+        return userId == null || userId.isBlank() ? null : new Principal(userId);
+    }
+
     private static InboundMessage message(ScheduleStore.Due task, Principal owner, Instant now) {
         String chatId = task.channelRef() == null ? task.id() : task.channelRef();
         // 对话身份：只到任务，不带触发时刻。它要跨触发稳定——目标是跨触发的一份状态，

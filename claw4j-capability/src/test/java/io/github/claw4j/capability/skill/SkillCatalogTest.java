@@ -102,13 +102,11 @@ class SkillCatalogTest {
     }
 
     @Test
-    @DisplayName("工具名与动作是这一层自己声明的那两个，业务表一张都不挂")
-    void toolNameAndPermissionAreDeclaredByThisLayer() {
+    @DisplayName("工具名是这一层自己声明的那个：清单、画像、审计都按它认领")
+    void toolNameIsDeclaredByThisLayer() {
         ToolCallback callback = AgentSkills.callback(skills, null, false);
 
         assertThat(callback.getToolDefinition().name()).isEqualTo(AgentSkills.TOOL_NAME).isEqualTo("Skill");
-        assertThat(AgentSkills.permission().action()).isEqualTo("use_skill");
-        assertThat(AgentSkills.permission().tables()).isEmpty();
     }
 
     private Path skill(String directory, String name, String description, String body) throws IOException {

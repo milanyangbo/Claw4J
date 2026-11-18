@@ -1,7 +1,7 @@
 package io.github.claw4j.capability.mcp;
 
 import io.github.claw4j.capability.untrusted.UntrustedDescriptionCallback;
-import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,12 +11,10 @@ import org.springframework.ai.tool.ToolCallbackProvider;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -33,11 +31,11 @@ import java.util.concurrent.TimeUnit;
  *   <li>会变（连不上、握手超时、连接断了、连上了但工具还没注册完）：后台退避重试。
  *       对端重启 40 秒不该换来一次全站不可用——在 K8s 上是 CrashLoopBackOff，
  *       连 HTTP 通道一起下线。</li>
- *   <li>不会变（点名了 server 没导出的工具、两个 server 导出同名工具）：启动失败。
- *       yml 写错了，重试只会把「配漏了」变成「过一会儿就好了」。</li>
+ *   <li>不会变（两个 server 导出同名工具）：启动失败。配置写错了，重试只会把「配漏了」
+ *       变成「过一会儿就好了」。</li>
  * </ul>
  *
- * <p>这一层是活视图：{@link #getToolCallbacks()} 与 {@link #permissionFor(String)} 读的是
+ * <p>这一层是活视图：{@link #getToolCallbacks()} 与 {@link #knowsTool(String)} 读的是
  * 当下状态，不是建的时候拍下的快照。恢复发生在后台线程，模型下一轮就看得见
  * （清单每轮解析，见 {@code ToolCatalog}）。掉线的 server 保留上次成功列出的工具：
  * 从清单里消失会让模型说「我没有这个能力」，而实情是「它刚断了一下」，调用它按普通工具失败处理
@@ -128,35 +126,19 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
                 .toList();
     }
 
-    /** 这些工具各自需要什么权限。由自动配置登记进容器，鉴权 Advisor 按名字认领。 */
-    public synchronized Map<String, ToolPermission> permissions() {
-        Map<String, ToolPermission> declared = new LinkedHashMap<>();
-        for (Server server : servers) {
-            declared.putAll(server.permissions);
-        }
-        return Map.copyOf(declared);
-    }
-
     /**
-     * 某个工具要什么权限。活视图：恢复之后才出现的工具也答得上来。
+     * 这个名字是不是这一层导出的工具。档位登记表靠它回答"该不该出现在这个部署里"。
      *
-     * <p>快照版本的代价很具体：{@code ToolPermissionRegistry} 是装配期拍的，恢复后出现的工具
-     * 在鉴权那一层是"未登记"，判定方向是拒绝——能力回来了却调不动，现象是模型拿到一个
-     * {@code denied}，而日志里没有一处说得出为什么。
+     * <p>判据是"装上的回调里有它"，不是某种权限声明：权限声明那一层在票 04 整块下线，
+     * 而"这个 provider 提供哪些工具"必须留着一个能问的地方——没有它，画像对每个名字都答不出。
      */
-    public synchronized Optional<ToolPermission> permissionFor(String toolName) {
+    public synchronized boolean knowsTool(String toolName) {
         for (Server server : servers) {
-            ToolPermission permission = server.permissions.get(toolName);
-            if (permission != null) {
-                return Optional.of(permission);
+            if (server.names.contains(toolName)) {
+                return true;
             }
         }
-        return Optional.empty();
-    }
-
-    /** 这个名字是不是这一层导出的工具。档位登记表靠它回答"该不该出现在这个部署里"。 */
-    public synchronized boolean knowsTool(String toolName) {
-        return permissionFor(toolName).isPresent();
+        return false;
     }
 
     /** 每个 server 的当下状况。启动日志那一行与断言读的是同一份。 */
@@ -227,25 +209,31 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     }
 
     /**
-     * 装上这一份工具清单。两个校验在这里，它们都算配置错误：
-     * 点名了 server 没导出的工具、与别的 server 导出同名工具。
+     * 装上这一份工具清单。重名算配置错误（两个 server 导出同名工具）。
+     *
+     * <p><b>存在性过滤在这里做</b>（票 07）：过滤之后的名单就是 {@code server.tools}，
+     * 于是 callbacks、画像与 {@code toolNames()} 三者自动一致。被排掉的工具从来没有变成工具，
+     * {@code allow} 也就加不回来——这是这一层的定义，不是副作用。
+     *
+     * <p>每次 {@link #contact} 成功都会走这里，所以重连之后拿到的是**重新筛过**的清单，
+     * 不是第一次列出来的快照：server 升级后多导出的工具只有配置允许的才进得来。
      */
     private void install(Server server, List<Tool> tools) {
-        Set<String> exported = new LinkedHashSet<>(tools.stream().map(Tool::name).toList());
-        // 点名了不导出的工具名＝配置写错了。静默沿用它背后的兜底权限，症状是
-        // "我明明给那个写动作加严了"，查起来要翻到 yml 里数冒号。
-        Set<String> unknown = new LinkedHashSet<>(server.connection.declaredToolNames());
-        unknown.removeAll(exported);
-        if (!unknown.isEmpty()) {
-            throw new McpConfigException("MCP server " + server.connection.name()
-                    + " 的 tools 里点名了它没有导出的工具：" + String.join("、", unknown.stream().sorted().toList())
-                    + "。它实际导出的是：" + String.join("、", exported.stream().sorted().toList())
-                    + "。按工具声明权限时名字必须是 server 里的原名，写错一个就等于那条加严没生效。");
+        ToolFilter filter = server.connection.toolFilter();
+        List<Tool> kept = filter.filtersNothing()
+                ? tools
+                : tools.stream().filter(tool -> filter.matches(tool.name())).toList();
+        if (kept.isEmpty()) {
+            // 过滤把整个 server 排空了：配置上可能是有意的，但更可能是 include 写错了一个字，
+            // 而它的表现是"这个 server 一个工具都没有"，与"连上了但没导出"难以区分。
+            log.warn("MCP server {} 导出的 {} 个工具全被 tool-filter 排除了（include={}、exclude={}）："
+                            + "这一轮它的清单是空的。include 非空时必须命中，检查一下名字或通配。",
+                    server.connection.name(), tools.size(), filter.include(), filter.exclude());
         }
         List<ToolCallback> callbacks = new ArrayList<>();
-        Map<String, ToolPermission> declared = new LinkedHashMap<>();
+        Set<String> names = new LinkedHashSet<>();
         synchronized (this) {
-            for (Tool tool : tools) {
+            for (Tool tool : kept) {
                 Server owner = ownerOf(tool.name(), server);
                 if (owner != null) {
                     throw new McpConfigException("MCP 工具重名：" + tool.name()
@@ -254,11 +242,11 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
                             + "所以按配置错误失败。");
                 }
                 callbacks.add(new McpToolCallback(server.connection, tool));
-                declared.put(tool.name(), server.connection.permissionFor(tool.name()));
+                names.add(tool.name());
             }
-            server.tools = List.copyOf(tools);
+            server.tools = List.copyOf(kept);
             server.callbacks = List.copyOf(callbacks);
-            server.permissions = Map.copyOf(declared);
+            server.names = Set.copyOf(names);
             server.status = McpServerStatus.UP;
             server.lastError = null;
             server.nextRetryAt = null;
@@ -270,7 +258,7 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
     /** 这个名字已经由哪个 server 提供（{@code self} 除外）。 */
     private Server ownerOf(String toolName, Server self) {
         for (Server other : servers) {
-            if (other != self && other.permissions.containsKey(toolName)) {
+            if (other != self && other.names.contains(toolName)) {
                 return other;
             }
         }
@@ -377,7 +365,7 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
 
         private List<ToolCallback> callbacks = List.of();
 
-        private Map<String, ToolPermission> permissions = Map.of();
+        private Set<String> names = Set.of();
 
         private int attempts;
 

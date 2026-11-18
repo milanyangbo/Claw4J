@@ -39,6 +39,22 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+          测试期唯一的 io.github.claw4j 依赖，而且只是 test：运行期仍然"只有协议，没有代码"，
+          上层怎么用这个 server 与它无关。
+
+          它换来的是 `ToolFilterIntegrationTest`：真的起一个子进程，用四种 tool-filter 配置各接一次，
+          验"被排掉的工具不在清单与权限登记里"。这条边界（配置 → 真的少了那个工具）在进程内
+          也能验，但"真的少了"要对着真的 HTTP 端点才算数——进程内的替身两边都是我们自己的代码，
+          筛错了它也照样通过。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-capability</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

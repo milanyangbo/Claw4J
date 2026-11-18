@@ -1,8 +1,7 @@
 package io.github.claw4j.agent.subagent;
 
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.untrusted.PromptData;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -21,14 +20,14 @@ import java.util.Objects;
  * 父靠这几行决定该派谁，至于那个 Subagent 具体怎么做（它定义里的正文），只在它自己的窗口里
  * 出现一次。于是「有十个专职 Agent」的代价是十行描述，不是十份流程说明。
  *
- * <p>它要过鉴权，而且不授予任何业务表：能不能委派由 Principal 决定（ADR-0007），登记的
- * 动作是 {@link #ACTION}，业务表一张都没有。表清单为空不是「没有约束」，而是明确声明委派
- * 这个动作本身不碰库；真正碰库的是子 Agent 要调的那个工具，那一步在子链上照样过鉴权、
- * 照样看表。
+ * <p>它不再登记权限（ADR-0030）：能不能看见这个工具由清单决定（{@code Task} 只在
+ * {@code coding} 档），子 Agent 能动手到什么程度由它自己那层清单决定。原来那条"委派这个
+ * 动作需要什么授权"的声明随权限登记表一起下线。
  *
  * <p>没带身份的委派一律拒绝：身份来自入站请求（{@code ChatClientAgentPort} 把它放进
  * {@link ToolContext}），工具回调拿到什么就是什么，不猜、不兜底。拿不到时返回一句明确的
- * 「没有权限」，而不是照常派出去——委派一旦脱离身份，子链上的鉴权就成了摆设。
+ * 「没有权限」，而不是照常派出去——委派一旦脱离身份，子链上的会话、审计与审批就都说不清
+ * 是谁做的。
  */
 public final class SubagentDelegation implements ToolCallback {
 
@@ -42,10 +41,13 @@ public final class SubagentDelegation implements ToolCallback {
     public static final String TOOL_NAME = "Task";
 
     /**
-     * 委派所需的动作名，与 {@code read} 是两个口径：派一个 Agent 出去跑一堆步骤，
-     * 与读一张表不是同一件事。分开之后"谁能委派"是一行配置能回答的问题。
+     * 没带身份时那句话的前缀。测试靠它区分「明确的拒绝」与「查出来是空的」。
+     *
+     * <p>它原来住在鉴权 Advisor 上：那条链上还有别的拒绝（业务表越权），
+     * 两处必须用同一句话。那个 Advisor 在 ADR-0030 里整块下线之后，委派是唯一还会因为
+     * 「没有身份」而拒绝的地方，于是这句话跟着它搬到这里。
      */
-    public static final String ACTION = "delegate_task";
+    public static final String DENIAL_PREFIX = "没有权限";
 
     private static final String INPUT_SCHEMA = """
             {
@@ -83,11 +85,6 @@ public final class SubagentDelegation implements ToolCallback {
                 .build();
     }
 
-    /** 委派所需的权限：{@link #ACTION} 动作，零张业务表。 */
-    public static ToolPermission permission() {
-        return ToolPermission.of(ACTION);
-    }
-
     @Override
     public ToolDefinition getToolDefinition() {
         return definition;
@@ -104,7 +101,7 @@ public final class SubagentDelegation implements ToolCallback {
         Principal principal = principalOf(toolContext);
         if (principal == null) {
             // 拒绝而不是照常派：没有身份的委派会绕过子链上那道鉴权。
-            return AuthorizationAdvisor.DENIAL_PREFIX + "：本次委派没有携带身份，一律不放行。";
+            return DENIAL_PREFIX + "：本次委派没有携带身份，一律不放行。";
         }
         String name = String.valueOf(arguments.getOrDefault(SUBAGENT, "")).trim();
         String task = String.valueOf(arguments.getOrDefault(TASK, "")).trim();
@@ -175,7 +172,7 @@ public final class SubagentDelegation implements ToolCallback {
         if (toolContext == null || toolContext.getContext() == null) {
             return null;
         }
-        Object value = toolContext.getContext().get(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY);
+        Object value = toolContext.getContext().get(ContextKeys.PRINCIPAL);
         return value instanceof Principal principal ? principal : null;
     }
 }

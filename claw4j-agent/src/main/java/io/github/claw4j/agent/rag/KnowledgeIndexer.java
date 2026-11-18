@@ -1,6 +1,5 @@
 package io.github.claw4j.agent.rag;
 
-import io.github.claw4j.agent.PermissionFingerprint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -177,7 +176,7 @@ public class KnowledgeIndexer {
             String path = pathOf(root, file);
             present.add(path);
             String content = read(file);
-            String hash = PermissionFingerprint.sha256(content);
+            String hash = ContentHash.of(content);
             // 身份不符时不看 hash：切块算法变了，内容没变也要按新边界重建。
             if (!rebuildAll && hash.equals(existingHash(path))) {
                 skipped++;

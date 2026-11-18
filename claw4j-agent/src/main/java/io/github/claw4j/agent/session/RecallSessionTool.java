@@ -2,7 +2,6 @@ package io.github.claw4j.agent.session;
 
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
@@ -402,8 +401,4 @@ public final class RecallSessionTool implements ToolCallback {
         return value == null ? null : value.toString();
     }
 
-    /** 权限登记：动作是"回忆"，一张业务表都不碰。 */
-    public static ToolPermission permission() {
-        return ToolPermission.of(ACTION);
-    }
 }

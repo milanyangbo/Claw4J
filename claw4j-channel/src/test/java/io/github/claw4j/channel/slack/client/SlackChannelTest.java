@@ -64,7 +64,7 @@ class SlackChannelTest {
     /** 一条频道消息的 ts：文档里的形状是"秒.微秒"。 */
     private static final String TS = "1515449522.000016";
 
-    private static final Principal PRINCIPAL = Principal.of(USER, "admin", Set.of("*"), Set.of("*"));
+    private static final Principal PRINCIPAL = new Principal(USER);
 
     /** 记下"推回哪儿、推了什么"。顺序有意义：回执在前、答案在后。 */
     private final List<String> sent = new ArrayList<>();
@@ -111,6 +111,18 @@ class SlackChannelTest {
         assertThat(asked)
                 .as("@ 的那串 id 要剥掉：它占 token，写进 SQL 注释里还像是被人动过")
                 .containsExactly(QUESTION);
+    }
+
+    @Test
+    @DisplayName("没登记的人：回一句“没有权限”，不经过模型、连回执都不发")
+    void anUnlistedUserIsRefusedWithoutCallingTheAgent() {
+        post(controller(), mentionBodyFrom("Ev-unlisted", "U0NOTLISTED"));
+
+        assertThat(asked).as("白名单外的人不该走到编排：删过头就是任何 Slack 成员都能触发 agent").isEmpty();
+        assertThat(sent).hasSize(1);
+        assertThat(sent.getFirst())
+                .as("拒绝理由要说清是哪个通道、找谁开通")
+                .contains("没有权限").contains("Slack");
     }
 
     @Test
@@ -352,18 +364,6 @@ class SlackChannelTest {
         });
     }
 
-    @Test
-    @DisplayName("同一个人登记了两个角色：启动失败并点名，而不是按书写顺序挑一个")
-    void duplicateRegistrationFailsAtStartup() {
-        runner().withPropertyValues(configuredProperties())
-                .withPropertyValues(
-                        "claw4j.channel.slack.roles.read-only.users[0]=" + USER,
-                        "claw4j.channel.slack.roles.guest.users[0]=" + USER)
-                .run(context -> assertThat(context).hasFailed()
-                        .getFailure().hasRootCauseMessage(
-                                "claw4j.channel.slack.roles 里同一个人登记了多个角色：" + USER
-                                        + "。一个人只能有一个身份，请删掉多余的那几处。"));
-    }
 
     // ---------------------------------------------------------------- 夹具
 
@@ -401,6 +401,14 @@ class SlackChannelTest {
         return "{\"type\":\"event_callback\",\"event_id\":\"" + eventId + "\",\"event_time\":1700000000,"
                 + "\"event\":{\"type\":\"app_mention\",\"user\":\"" + USER + "\","
                 + "\"text\":\"<@U0LAN0Z89> " + question + "\",\"ts\":\"" + TS + "\","
+                + "\"channel\":\"" + CHANNEL + "\"}}";
+    }
+
+    /** 换个人来 @ 一次：准入那一层要能把他挡在外面，用的是同一个事件体形状。 */
+    private static String mentionBodyFrom(String eventId, String user) {
+        return "{\"type\":\"event_callback\",\"event_id\":\"" + eventId + "\",\"event_time\":1700000000,"
+                + "\"event\":{\"type\":\"app_mention\",\"user\":\"" + user + "\","
+                + "\"text\":\"<@U0LAN0Z89> " + QUESTION + "\",\"ts\":\"" + TS + "\","
                 + "\"channel\":\"" + CHANNEL + "\"}}";
     }
 

@@ -1,12 +1,11 @@
 package io.github.claw4j.capability.script;
 
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
 import java.nio.file.Path;
@@ -17,16 +16,17 @@ import java.nio.file.Path;
  * <p>默认不启用。脚本层是三层里唯一能把"执行"这件事放开的一层，它的存在应该是一个决定，
  * 而不是"引了依赖就自动有"，于是开关是"有没有配目录"。
  *
- * <p>权限登记表不能用 {@code @ConditionalOnMissingBean(ToolPermissionRegistry.class)}：
- * 那条条件的语义是"容器里已经有了就让位"，于是三个来源各登记各的时，后处理的那一个会静默不注册，
- * 它的工具从此一律按未登记被拒（01 号票修过，02 号票又在 MCP 上重演）。鉴权 Advisor 消费的是
- * 一张表的列表，多个登记表本来就是设计上允许的。
+ * <p>这里不能用 {@code @ConditionalOnMissingBean} 卡这道：那条条件的语义是"容器里已经有了
+ * 就让位"，于是三个来源各出一个 provider 时，后注册的那一个会静默不出现，它的工具从此在
+ * 清单里消失（01 号票修过，02 号票又在 MCP 上重演）。多份来源本来就是设计上允许的：
+ * 收集方按列表收。
  *
  * <p>清单与执行入口分成两个 bean（06 号票）：人审通过的包在运行中被加进清单，而加进清单必须同时
  * 把执行后端建好。分开之后，生成器那层只要拿到 registry 就能完成这件事，不必知道后端怎么建。
  */
 @AutoConfiguration
 @ConditionalOnProperty(prefix = "claw4j.scripts", name = "directory")
+@EnableConfigurationProperties(ScriptPackageProperties.class)
 public class ScriptPackageAutoConfiguration {
 
     /**
@@ -36,9 +36,8 @@ public class ScriptPackageAutoConfiguration {
      * 配了却不存在是配置错误，不是"这一层不存在"。
      */
     @Bean
-    public ScriptPackageRegistry scriptPackageRegistry(
-            @Value("${claw4j.scripts.directory}") String directory) {
-        return new ScriptPackageRegistry(ScriptPackageCatalog.load(Path.of(directory)));
+    public ScriptPackageRegistry scriptPackageRegistry(ScriptPackageProperties properties) {
+        return new ScriptPackageRegistry(ScriptPackageCatalog.load(Path.of(properties.directory())));
     }
 
     /**
@@ -53,12 +52,18 @@ public class ScriptPackageAutoConfiguration {
         return new ScriptPackageRunner(registry.packages());
     }
 
-    /** 工具来源：按清单现取包，执行结果交给观察者容器。 */
+    /**
+     * 工具来源：按清单现取包，执行结果交给观察者容器。
+     *
+     * <p>{@code tool-filter} 在这里传进去（票 07）：过滤是"这个包存不存在"，与执行留痕是两件事，
+     * 但都归这一层决定。被排掉的包在 callbacks、权限登记、档位登记三处一起消失。
+     */
     @Bean
     public ScriptPackageToolProvider scriptPackageToolProvider(ScriptPackageRegistry registry,
                                                                ScriptPackageRunner runner,
-                                                               ExecutionListeners executionListeners) {
-        return new ScriptPackageToolProvider(registry, runner, executionListeners);
+                                                               ExecutionListeners executionListeners,
+                                                               ScriptPackageProperties properties) {
+        return new ScriptPackageToolProvider(registry, runner, executionListeners, properties.toolFilter());
     }
 
     /**
@@ -73,23 +78,18 @@ public class ScriptPackageAutoConfiguration {
         return new ExecutionListeners();
     }
 
-    /** 这一层的权限登记表：动作是跑脚本，业务表一张都没有（ADR-0003）。 */
-    @Bean
-    public ToolPermissionRegistry scriptPackagePermissionRegistry(ScriptPackageToolProvider provider) {
-        return ToolPermissionRegistry.of(provider.permissions());
-    }
-
     /**
      * 档位：{@link ToolTier#CODING}，与"跑脚本"这件事同一档。
      *
-     * <p>工具名清单取 {@code provider.permissions().keySet()}，不另抄一份：脚本包的名字是
+     * <p>工具名清单取 {@code provider.toolNames()}，不另抄一份：脚本包的名字是
      * {@code examples/scripts} 下的目录名，抄一份就会在加包时漂移，而漂移的表现是启动失败并点名。
+     * 它同时也是**过滤之后**的那份（票 07）：被 {@code tool-filter} 排掉的包不该有档位登记。
      *
      * <p>这是名字清单，不是"任何名字都算这一档"的兜底：后者会让别处的未声明校验永远通过，
      * 而这套机制的价值全在那条校验上。
      */
     @Bean
     public ToolTierRegistry scriptPackageTierRegistry(ScriptPackageToolProvider provider) {
-        return ToolTierRegistry.sameFor(provider.permissions().keySet(), ToolTier.CODING);
+        return ToolTierRegistry.sameFor(provider.toolNames(), ToolTier.CODING);
     }
 }

@@ -1,7 +1,7 @@
 package io.github.claw4j.capability.mcp.http;
 
 import io.github.claw4j.capability.mcp.McpServerEndpoint;
-import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.github.claw4j.secret.SecretResolver;
 import io.github.claw4j.secret.SecretValue;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
@@ -86,17 +86,14 @@ public final class HttpMcpEndpoint {
         return baseUri + path;
     }
 
-    /** 端点本身：带上这一层要什么权限。权限在这里声明，与 stdio 那一路同一个口径。 */
-    public McpServerEndpoint endpoint(ToolPermission permission) {
-        return McpServerEndpoint.of(name, permission, this::openTransport);
-    }
-
     /**
-     * 端点 + 按工具覆盖的那张表。第三方服务常把只读查询与写动作放在同一个端点上，
-     * 只按 server 声明时它们只能共用一个权限。
+     * 端点本身：带存在性过滤，不带权限声明（ADR-0030 裁决二、票 04）。
+     *
+     * @param toolFilter 哪些工具存在；被排掉的不会变成工具
+     * @return 可交给 {@code McpConnection} 的端点
      */
-    public McpServerEndpoint endpoint(ToolPermission permission, Map<String, ToolPermission> toolPermissions) {
-        return McpServerEndpoint.of(name, permission, toolPermissions, this::openTransport);
+    public McpServerEndpoint endpoint(ToolFilter toolFilter) {
+        return McpServerEndpoint.of(name, toolFilter, this::openTransport);
     }
 
     /**

@@ -62,7 +62,7 @@ class DingtalkChannelTest {
 
     private static final String QUESTION = "上周华东区成交额多少";
 
-    private static final Principal PRINCIPAL = Principal.of(USER, "admin", Set.of("*"), Set.of("*"));
+    private static final Principal PRINCIPAL = new Principal(USER);
 
     /** 记下"推回给谁、推了什么"。顺序有意义：回执在前、答案在后。 */
     private final List<String> sent = new ArrayList<>();
@@ -338,18 +338,6 @@ class DingtalkChannelTest {
         });
     }
 
-    @Test
-    @DisplayName("同一个人登记了两个角色：启动失败并点名，而不是按书写顺序挑一个")
-    void duplicateRegistrationFailsAtStartup() {
-        runner().withPropertyValues(configuredProperties())
-                .withPropertyValues(
-                        "claw4j.channel.dingtalk.roles.read-only.users[0]=" + USER,
-                        "claw4j.channel.dingtalk.roles.guest.users[0]=" + USER)
-                .run(context -> assertThat(context).hasFailed()
-                        .getFailure().hasRootCauseMessage(
-                                "claw4j.channel.dingtalk.roles 里同一个人登记了多个角色：" + USER
-                                        + "。一个人只能有一个身份，请删掉多余的那几处。"));
-    }
 
     // ---------------------------------------------------------------- 夹具
 

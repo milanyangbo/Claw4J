@@ -115,7 +115,7 @@ class TurnFlowTest {
     @Test
     @DisplayName("这一轮花掉的 token 记到目标上：撞上预算进 budget_limited，下一轮不再注入")
     void tokensOfATurnAreChargedToTheGoal() {
-        Principal principal = Principal.readOnly("u-1");
+        Principal principal = new Principal("u-1");
         SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         // 定位键是**节点键**（不含段，按 peer 分段算，ADR-0029），不是含段的对话键。
         // 手工建这一行，是为了"先有目标、再跑三轮记账"这个顺序；目标与段落在同一行这件事
@@ -162,7 +162,7 @@ class TurnFlowTest {
     @Test
     @DisplayName("段与目标挂在同一个会话节点上：/goal start 写的行就是段所在那行")
     void aGoalLandsOnTheNodeTheSegmentLivesOn() {
-        Principal principal = Principal.readOnly("u-1");
+        Principal principal = new Principal("u-1");
         SessionGoalStore goals = new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null);
         ChatClientAgentPort port = goalPort(new ArrayList<>(), realPointers());
 
@@ -435,7 +435,7 @@ class TurnFlowTest {
     // ---------------------------------------------------------------- 装配
 
     private static String owner(String userId) {
-        return SessionKeys.ownerOf(Principal.readOnly(userId));
+        return SessionKeys.ownerOf(new Principal(userId));
     }
 
     /**

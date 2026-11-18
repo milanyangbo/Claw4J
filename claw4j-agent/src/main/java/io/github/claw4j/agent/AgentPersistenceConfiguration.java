@@ -1,13 +1,18 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.approval.AgentExecApprovalPort;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalProperties;
 import io.github.claw4j.agent.approval.ApprovalService;
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
+import io.github.claw4j.agent.approval.JdbcExecAllowlist;
 import io.github.claw4j.agent.approval.ConversationApprovalGate;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.capability.exec.ExecApprovalPort;
+import io.github.claw4j.capability.exec.ExecProperties;
 import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.inbound.JdbcInboundStore;
 import io.github.claw4j.domain.inbound.InboundStore;
@@ -23,8 +28,6 @@ import io.github.claw4j.domain.port.ApprovalCards;
 import io.github.claw4j.domain.port.ApprovalDecider;
 import io.github.claw4j.domain.port.ApprovalLedger;
 import io.github.claw4j.domain.port.OutboundDelivery;
-import io.github.claw4j.domain.port.RoleDirectory;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -183,19 +186,60 @@ public class AgentPersistenceConfiguration {
      * 是「能不能批」这条判断唯一的落点。判定写在配置对象上的话，下一次改动会同时改到读配置与做判断
      * 两件事，而它们的测试完全不是一回事。
      *
+     * <p>{@code allow-always} 的落点一起传进去（票 05）：选了"以后都放行"时要按命令段往
+     * {@code exec_allowlist} 里落条目，那件事只有做决定的那一侧做得了——它手里有审批行上的冻结件。
+     *
      * @param jdbc 主连接池
      * @param agentPort agent 端口，可能不存在
      * @param properties 审批配置，取审批人名单
+     * @param allowlist exec 的持久放行表，可能不存在（没装 exec 的部署）
+     * @param exec exec 配置，可能不存在：{@code ask=always} 时要靠它拒收"以后都放行"
      * @return 审批决定者
      */
     @Bean
     @ConditionalOnMissingBean(ApprovalDecider.class)
     public ApprovalDecider approvalDecider(JdbcTemplate jdbc,
                                            ObjectProvider<AgentPort> agentPort,
-                                           ApprovalProperties properties) {
+                                           ApprovalProperties properties,
+                                           ObjectProvider<JdbcExecAllowlist> allowlist,
+                                           ObjectProvider<ExecProperties> exec) {
         return new ApprovalService(jdbc,
                 new ApproverRoster(new LinkedHashSet<>(properties.getApprovers())),
-                agentPort.getIfAvailable());
+                agentPort.getIfAvailable(),
+                allowlist.getIfAvailable(),
+                exec.getIfAvailable());
+    }
+
+    /**
+     * {@code allow-always} 的落点（票 05）：{@code exec_allowlist} 上的条目。
+     *
+     * <p>与审批表同一个 schema、同一批迁移（V11），所以跟着这一层进出。它缺席时 exec 的审批端口
+     * 也装配不起来，于是需要人批的命令一律按 {@code askFallback} 处置——默认拒。
+     *
+     * @param jdbc 主连接池
+     * @return 持久放行表
+     */
+    @Bean
+    @ConditionalOnMissingBean(JdbcExecAllowlist.class)
+    public JdbcExecAllowlist execAllowlist(JdbcTemplate jdbc) {
+        return new JdbcExecAllowlist(jdbc);
+    }
+
+    /**
+     * exec 那一侧的审批端口（票 05）：把"问人"交给审批门与持久放行表。
+     *
+     * <p>放在这一层而不是能力层：审批要落库、要推卡片、要在结论之后回那段对话——三样都在 agent。
+     * 能力层只认 {@link ExecApprovalPort} 这个接口。
+     *
+     * @param gate 审批门
+     * @param allowlist 持久放行表
+     * @return 审批端口
+     */
+    @Bean
+    @ConditionalOnMissingBean(ExecApprovalPort.class)
+    public ExecApprovalPort execApprovalPort(ApprovalGate gate, JdbcExecAllowlist allowlist,
+                                             ObjectProvider<ExecProperties> exec) {
+        return new AgentExecApprovalPort(gate, allowlist, exec.getIfAvailable());
     }
 
     /**
@@ -266,22 +310,17 @@ public class AgentPersistenceConfiguration {
     /**
      * 「这条任务现在还跑得起来吗」（P05）：建任务时与每次到点前问的是同一个对象。
      *
-     * <p>角色表从容器里取（{@link RoleDirectory} 在通道那一侧实现）。取不到时照常装配，
-     * 只是每次问都答「认不出来」——于是建任务会被当场拒，到点的任务会被停用并通知。
-     * 那比「没有角色表就跳过鉴权」安全：跳过的那一侧是永远跑着旧权限。
+     * <p>判据只剩一条——要人批的工具进不了定时任务（见 {@link ScheduleAuthorization} 的类注释）。
+     * 名单来自 {@link ApprovalRequiredTools}，那是 ADR-0030 之后"哪些工具要人批"唯一的落点：
+     * 业务权限登记表与角色表都下去了。
      *
-     * <p>工具登记表是一份列表，与鉴权 Advisor 消费的是同一批 bean：各来源各登记各的，
-     * 这里只负责挨个问。
-     *
-     * @param roles 角色表，可能不存在
-     * @param registries 各来源的工具权限登记表
+     * @param approvals 要人批的工具名单，必填（默认为空名单）
      * @return 调度鉴权
      */
     @Bean
     @ConditionalOnMissingBean(ScheduleAuthorization.class)
-    public ScheduleAuthorization scheduleAuthorization(ObjectProvider<RoleDirectory> roles,
-                                                       ObjectProvider<ToolPermissionRegistry> registries) {
-        return new ScheduleAuthorization(roles.getIfAvailable(), registries.orderedStream().toList());
+    public ScheduleAuthorization scheduleAuthorization(ApprovalRequiredTools approvals) {
+        return new ScheduleAuthorization(approvals);
     }
 
     /**
@@ -308,37 +347,23 @@ public class AgentPersistenceConfiguration {
     }
 
     /**
-     * 三个定时任务工具的权限登记。
+     * 三个定时任务工具的画像：只有 {@code coding}。
      *
-     * <p>与计划工具那条注释同一个理由：不用 {@code @ConditionalOnMissingBean}。这个 bean 跟着
-     * {@code claw4j.schedule.enabled} 走，与工具本身同进同出：工具不在场时登记表里多三条也无人问，
-     * 少了这三条却会让「模型调了它」变成越权。
-     *
-     * @return 三个工具的权限登记表
-     */
-    @Bean
-    @ConditionalOnProperty(prefix = "claw4j.schedule", name = "enabled",
-            havingValue = "true", matchIfMissing = true)
-    public ToolPermissionRegistry schedulePermissionRegistry() {
-        return ToolPermissionRegistry.of(ScheduleTools.permissions());
-    }
-
-    /**
-     * 三个定时任务工具的档位：{@link ToolTier#MESSAGING}。
-     *
-     * <p>定时任务属于「把一件事排到以后做」，不碰代码也不碰外部系统本身：它比 {@code MINIMAL}
-     * 多一层「这个部署允许自己安排事情」，但不需要跑脚本的能力。
+     * <p>定时任务是**自主行动**——到点没人在场，它替这个部署做一件事。OpenClaw 把 {@code cron}
+     * 只放进 {@code coding}，我们照抄。旧值 {@code MESSAGING} 会坏掉两件事：一是阶梯语义下它
+     * 顺带进了 coding（看起来对，其实是巧合）；二是改成集合之后，客服型部署会拿到"到点自己干活"
+     * 的能力，而那正是 {@code messaging} 承诺不碰的东西。
      *
      * <p>与工具本身同一个开关：{@code claw4j.schedule.enabled=false} 时三者一起不在场，
-     * 档位表里也不该留着它们。
+     * 画像表里也不该留着它们。
      *
-     * @return 三个工具的档位表
+     * @return 三个工具的画像登记表
      */
     @Bean
     @ConditionalOnProperty(prefix = "claw4j.schedule", name = "enabled",
             havingValue = "true", matchIfMissing = true)
     public ToolTierRegistry scheduleTierRegistry() {
-        return ToolTierRegistry.sameFor(ScheduleTools.permissions().keySet(), ToolTier.MESSAGING);
+        return ToolTierRegistry.sameFor(ScheduleTools.toolNames(), ToolTier.CODING);
     }
 
 }

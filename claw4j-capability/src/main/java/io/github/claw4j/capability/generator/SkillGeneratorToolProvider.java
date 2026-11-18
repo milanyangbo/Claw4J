@@ -1,7 +1,6 @@
 package io.github.claw4j.capability.generator;
 
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolFilter;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 
@@ -26,23 +25,36 @@ public final class SkillGeneratorToolProvider implements ToolCallbackProvider {
 
     private final ToolCallback callback;
 
+    /** 这一个工具**存不存在**（票 07）。被排掉时三个出口一起空，不留一个孤立的登记。 */
+    private final ToolFilter toolFilter;
+
     /**
-     * 只包一个工具，没有可配的项。
+     * 只包一个工具，不筛。
      *
      * @param generator 五步链路的实现
      */
     public SkillGeneratorToolProvider(SkillGenerator generator) {
+        this(generator, ToolFilter.none());
+    }
+
+    /**
+     * 只包一个工具，按配置决定它在不在。
+     *
+     * <p>一个工具也值得挂过滤：{@code tool-filter.exclude: [propose_script]} 表达的是
+     * "这个部署不要它自己长新能力"，而那是与能力档位不同的一件事——档位管"这一轮给不给看"，
+     * 过滤管"它到底存不存在"。
+     *
+     * @param generator 五步链路的实现
+     * @param toolFilter 存在性过滤
+     */
+    public SkillGeneratorToolProvider(SkillGenerator generator, ToolFilter toolFilter) {
         this.callback = new SkillGeneratorToolCallback(Objects.requireNonNull(generator, "generator"));
+        this.toolFilter = Objects.requireNonNull(toolFilter, "toolFilter");
     }
 
     @Override
     public ToolCallback[] getToolCallbacks() {
-        return new ToolCallback[]{callback};
-    }
-
-    /** 这一层登记的权限：动作是草稿，表一张都没有。 */
-    public Map<String, ToolPermission> permissions() {
-        return Map.of(SkillGeneratorToolCallback.TOOL_NAME, SkillGeneratorToolCallback.permission());
+        return exposed() ? new ToolCallback[]{callback} : new ToolCallback[0];
     }
 
     /** 给装配断言用：这一层导出的工具名。 */
@@ -52,13 +64,8 @@ public final class SkillGeneratorToolProvider implements ToolCallbackProvider {
                 .toList();
     }
 
-    /**
-     * 一张只登记 {@code propose_script} 的表。
-     *
-     * @param generator 五步链路的实现
-     * @return 可直接交给鉴权 Advisor 的登记表
-     */
-    public static ToolPermissionRegistry permissionRegistry(SkillGenerator generator) {
-        return ToolPermissionRegistry.of(new SkillGeneratorToolProvider(generator).permissions());
+    private boolean exposed() {
+        return toolFilter.matches(SkillGeneratorToolCallback.TOOL_NAME);
     }
+
 }

@@ -1,16 +1,17 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.agent.schedule.ScheduleTools;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
+import io.github.claw4j.agent.approval.ApprovalGate;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.subagent.SubagentAutoConfiguration;
 import io.github.claw4j.agent.subagent.SubagentCatalog;
 import io.github.claw4j.agent.subagent.SubagentDefinition;
 import io.github.claw4j.agent.subagent.SubagentDelegation;
 import io.github.claw4j.agent.subagent.SubagentRunner;
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -65,7 +66,7 @@ class SubagentDelegationTest {
                         new RecordingTool("querySales", "128400"))),
                 providerOf(List.of()),
                 null,
-                new ToolsProperties(ToolTier.MESSAGING, List.of(), List.of()),
+                new ToolsProperties(ToolTier.MESSAGING, List.of(), List.of(), List.of(), null, null, null),
                 List.of(ToolTierRegistry.sameFor(Set.of("run_script"), ToolTier.CODING),
                         ToolTierRegistry.sameFor(Set.of("querySales"), ToolTier.MESSAGING)));
 
@@ -73,6 +74,41 @@ class SubagentDelegationTest {
                 .extracting(callback -> callback.getToolDefinition().name())
                 .as("父子两处必须用同一份档位策略，否则派活就成了绕过档位的口子")
                 .containsExactly("querySales");
+    }
+
+    @Test
+    @DisplayName("子 Agent 拿不到定时任务：它是一次性执行体，任务表是全局的，谁认领不成立")
+    void subagentCannotSchedule() {
+        List<ToolCallback> tools = SubagentAutoConfiguration.subagentToolCallbacks(
+                providerOf(List.of(new RecordingTool("querySales", "128400"),
+                        new RecordingTool(ScheduleTools.CREATE, "ok"),
+                        new RecordingTool(ScheduleTools.LIST, "[]"))),
+                providerOf(List.of()),
+                null,
+                ToolsProperties.defaults(),
+                List.of(ToolTierRegistry.allProfilesFor(
+                        Set.of("querySales", ScheduleTools.CREATE, ScheduleTools.LIST))));
+
+        assertThat(tools)
+                .extracting(callback -> callback.getToolDefinition().name())
+                .as("角色清单是结构约束，不是配置问题：全默认配置下也必须减掉")
+                .containsExactly("querySales");
+    }
+
+    @Test
+    @DisplayName("显式白名单点名的定时任务工具能留下：配置比角色的默认更懂这个部署")
+    void explicitAllowOverridesSubagentRoleDeny() {
+        List<ToolCallback> tools = SubagentAutoConfiguration.subagentToolCallbacks(
+                providerOf(List.of(new RecordingTool(ScheduleTools.LIST, "[]"))),
+                providerOf(List.of()),
+                null,
+                new ToolsProperties(ToolTier.FULL, List.of(), List.of(), List.of(), null, null,
+                        new ToolsProperties.SubagentTools(List.of(ScheduleTools.LIST), List.of())),
+                List.of(ToolTierRegistry.allProfilesFor(Set.of(ScheduleTools.LIST))));
+
+        assertThat(tools)
+                .extracting(callback -> callback.getToolDefinition().name())
+                .containsExactly(ScheduleTools.LIST);
     }
 
     /**
@@ -208,12 +244,12 @@ class SubagentDelegationTest {
     @DisplayName("委派没带身份一律拒绝，子 Agent 一次都不启动")
     void delegationWithoutPrincipalIsDenied() {
         FixedChatModel model = new FixedChatModel("不该被调用");
-        SubagentRunner runner = runner(model, List.of(), emptyRegistry());
+        SubagentRunner runner = runner(model, List.of());
         SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")), runner);
 
         String answer = delegation.call("{\"subagent\":\"alpha\",\"task\":\"查数\"}");
 
-        assertThat(answer).startsWith(AuthorizationAdvisor.DENIAL_PREFIX);
+        assertThat(answer).startsWith(SubagentDelegation.DENIAL_PREFIX);
         assertThat(model.prompts()).isEmpty();
     }
 
@@ -223,9 +259,9 @@ class SubagentDelegationTest {
         FixedChatModel model = new FixedChatModel("不该被调用");
         SubagentDelegation delegation = delegation(
                 List.of(definitionObject("alpha", "lookup")),
-                runner(model, List.of(), emptyRegistry()));
+                runner(model, List.of()));
         ToolContext identity = new ToolContext(
-                Map.of(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, Principal.readOnly("u-1")));
+                Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
 
         String unknown = delegation.call("{\"subagent\":\"nobody\",\"task\":\"查数\"}", identity);
         String incomplete = delegation.call("{\"subagent\":\"alpha\"}", identity);
@@ -249,9 +285,9 @@ class SubagentDelegationTest {
                 },
                 List.of());
         SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")),
-                runner(child, List.of(lookup), readsEverything("lookup")));
+                runner(child, List.of(lookup)));
         ToolContext identity = new ToolContext(
-                Map.of(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, Principal.readOnly("u-1")));
+                Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
 
         String result = delegation.call("{\"subagent\":\"alpha\",\"task\":\"上周华东成交额\"}", identity);
 
@@ -275,35 +311,13 @@ class SubagentDelegationTest {
     }
 
     @Test
-    @DisplayName("委派不提权：子 Agent 调的工具仍按父身份鉴权，越权时工具不执行")
-    void delegatedToolStillUsesTheParentIdentity() {
-        RecordingTool lookup = new RecordingTool("lookup", "128400");
-        AtomicInteger turn = new AtomicInteger();
-        FixedChatModel child = new FixedChatModel(
-                prompt -> turn.getAndIncrement() == 0
-                        ? ChatPipelineTest.requestTool(ToolSearch.TOOL_NAME, "{\"query\":\"lookup\"}")
-                        : ChatPipelineTest.requestTool("lookup", "{}"), List.of());
-        Principal guest = Principal.of("guest-1", "guest", Set.of("region"), Set.of("read"));
-        SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")),
-                runner(child, List.of(lookup),
-                        ToolPermissionRegistry.of(Map.of("lookup", ToolPermission.read("sales_order")))));
-        ToolContext identity = new ToolContext(
-                Map.of(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, guest));
-
-        String result = delegation.call("{\"subagent\":\"alpha\",\"task\":\"查 sales_order\"}", identity);
-
-        assertThat(result).contains(AuthorizationAdvisor.DENIAL_PREFIX).contains("sales_order");
-        assertThat(lookup.calls()).isZero();
-    }
-
-    @Test
     @DisplayName("子 Agent 什么都没说时回一个明确的占位，不让父以为拿到了空结论")
     void emptyConclusionHasExplicitPlaceholder() {
         FixedChatModel child = new FixedChatModel("");
         SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")),
-                runner(child, List.of(new RecordingTool("lookup", "1")), readsEverything("lookup")));
+                runner(child, List.of(new RecordingTool("lookup", "1"))));
         ToolContext identity = new ToolContext(
-                Map.of(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, Principal.readOnly("u-1")));
+                Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
 
         String result = delegation.call("{\"subagent\":\"alpha\",\"task\":\"查数\"}", identity);
 
@@ -311,8 +325,8 @@ class SubagentDelegationTest {
     }
 
     @Test
-    @DisplayName("装配把 Task 交进工具清单，权限登记是「可委派、不碰业务表」")
-    void assemblyRegistersTheTaskToolAndItsPermission() throws IOException {
+    @DisplayName("装配把 Task 交进工具清单：它与别的工具走同一条收集路径")
+    void assemblyRegistersTheTaskTool() throws IOException {
         write("alpha.md", definition("alpha", "管销售", "lookup", ""));
         DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
         beans.registerSingleton("lookup", new RecordingTool("lookup", "128400"));
@@ -331,10 +345,11 @@ class SubagentDelegationTest {
                 beans.getBeanProvider(MeterRegistry.class),
                 beans.getBeanProvider(ToolTierRegistry.class),
                 ToolsProperties.defaults(),
-                new AuthorizationAdvisor(List.of()),
                 new ChineseToolIndex(),
                 ToolSearchProperties.defaults(),
-                AgentProperties.defaults());
+                AgentProperties.defaults(),
+                beans.getBeanProvider(ApprovalGate.class),
+                beans.getBeanProvider(ApprovalRequiredTools.class));
 
         assertThat(task.getToolDefinition().name()).isEqualTo(SubagentDelegation.TOOL_NAME);
         assertThat(task.getToolDefinition().description()).contains("alpha").doesNotContain("先查数");
@@ -354,13 +369,8 @@ class SubagentDelegationTest {
                 .extracting(callback -> callback.getToolDefinition().name())
                 .contains("lookup", SubagentDelegation.TOOL_NAME);
 
-        ToolPermission permission = configuration.subagentPermissionRegistry()
-                .permissionFor(SubagentDelegation.TOOL_NAME)
-                .orElseThrow();
-        assertThat(permission.action()).isEqualTo(SubagentDelegation.ACTION);
-        assertThat(permission.tables())
-                .as("替委派登记业务表，等于给它一张绕过子链鉴权的通行证")
-                .isEmpty();
+        // 权限登记那一层已经下线（票 04）：这个工具"能不能被看见"由画像表回答，
+        // "子 Agent 能做什么"由它自己那份清单回答，两者都不需要一张权限声明。
     }
 
     @Test
@@ -410,14 +420,8 @@ class SubagentDelegationTest {
                 .containsExactly("querySales");
     }
 
-    private SubagentRunner runner(ChatModel model, List<ToolCallback> tools, ToolPermissionRegistry registry) {
-        // 与装配里那条一致：检索工具自己按 read 放行（AgentAutoConfiguration.toolSearchPermission）。
-        // 少这一条时，子 Agent 的第一步"找工具"就会被自己的鉴权挡掉——
-        // 那不是鉴权在做该做的事，是登记表漏了一项。
-        ToolPermissionRegistry searchTool = ToolPermissionRegistry.of(
-                Map.of(ToolSearch.TOOL_NAME, ToolPermission.read()));
+    private SubagentRunner runner(ChatModel model, List<ToolCallback> tools) {
         return new SubagentRunner(model, ObservationRegistry.NOOP, () -> tools,
-                new AuthorizationAdvisor(List.of(registry, searchTool)),
                 new ChineseToolIndex(),
                 ToolSearchProperties.defaults(),
                 ToolCallBudget.MAX_TOTAL_CALLS);
@@ -429,17 +433,6 @@ class SubagentDelegationTest {
 
     private static SubagentDefinition definitionObject(String name, String tool) {
         return new SubagentDefinition(name, "管销售", BODY, List.of(tool), List.of());
-    }
-
-    private static ToolPermissionRegistry readsEverything(String... tools) {
-        Map<String, ToolPermission> permissions = java.util.Arrays.stream(tools)
-                .collect(java.util.stream.Collectors.toMap(tool -> tool,
-                        tool -> ToolPermission.read("sales_order")));
-        return ToolPermissionRegistry.of(permissions);
-    }
-
-    private static ToolPermissionRegistry emptyRegistry() {
-        return ToolPermissionRegistry.of(Map.of());
     }
 
     private Path write(String name, String content) throws IOException {

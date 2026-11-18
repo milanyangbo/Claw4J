@@ -75,7 +75,7 @@ class SlackFlowTest {
         // 不会真去连 Slack，但验签、解析、编排、回推这一整条链是真的。
         registry.add("claw4j.channel.slack.signing-secret", () -> SIGNING_SECRET);
         registry.add("claw4j.channel.slack.bot-token", () -> BOT_TOKEN);
-        registry.add("claw4j.channel.slack.roles.admin.users[0]", () -> USER);
+        registry.add("claw4j.channel.slack.users[0]", () -> USER);
         // 入站拦截的词表在仓库里，而 Maven 下工作目录是模块：换成绝对路径，读的还是同一份。
         registry.add("claw4j.guard.sensitive-words-file",
                 () -> ExamplesSubagentsTest.repositoryFile("examples/guard/sensitive-words.txt").toString());

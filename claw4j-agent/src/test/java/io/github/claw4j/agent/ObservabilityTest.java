@@ -1,6 +1,5 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredChatModel;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
@@ -8,6 +7,7 @@ import io.github.claw4j.agent.observability.ObservabilityAutoConfiguration;
 import io.github.claw4j.agent.observability.OtelSpanTracer;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.TaskLauncher;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
@@ -16,10 +16,7 @@ import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundDelivery;
-import io.github.claw4j.domain.port.RoleDirectory;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.StatusCode;
@@ -89,9 +86,8 @@ class ObservabilityTest {
     /** 任务声明会用到的工具。它的权限是"读 sales_order"，用来验"权限被收回"那一档。 */
     private static final String TOOL = "querySales";
 
-    /** 部署里的角色表：这个文件里一律是"什么都给"，除了那两条专门收权的用例。 */
-    private final RoleDirectory everything =
-            (userId, role) -> Optional.of(Principal.of(userId, role, Set.of("*"), Set.of("*")));
+    /** 要人批的工具名单：这个文件里一律为空，除了那条专门验"要人批就不能定时跑"的用例。 */
+    private final ApprovalRequiredTools noApprovals = ApprovalRequiredTools.none();
 
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
@@ -190,26 +186,6 @@ class ObservabilityTest {
         assertThat(counter("claw4j.tool.calls", "tool", "querySales", "outcome", "error")).isEqualTo(1);
     }
 
-    @Test
-    @DisplayName("被鉴权拒掉的那次也要记：工具没被执行，只有 Advisor 知道拒绝发生过")
-    void deniedCallsAreCountedByTheAuthorizationAdvisor() {
-        RecordingTool tool = new RecordingTool("querySales", "128400");
-        AuthorizationAdvisor advisor = new AuthorizationAdvisor(
-                List.of(ToolPermissionRegistry.of(Map.of("querySales", ToolPermission.read("sales_order")))),
-                registry);
-        ChatClient chat = ChatPipelineTest.clientBuilder(
-                        new FixedChatModel(prompt -> ChatPipelineTest.requestTool("querySales", "{}")))
-                .defaultAdvisors(advisor)
-                .defaultToolCallbacks(List.of(tool))
-                .build();
-
-        // 不带身份：鉴权一律拒绝，工具一次都不会被执行
-        chat.prompt("上周华东成交额").call().content();
-
-        assertThat(tool.calls()).as("被拒的那次不该真的碰到工具").isZero();
-        assertThat(counter("claw4j.tool.calls", "tool", "querySales", "outcome", "denied")).isEqualTo(1);
-    }
-
     // ---- trace：一条 run 连到它的每个 step（P14） ----
     //
     // 这一组用的是真的 OtelSpanTracer 加 SimpleSpanProcessor（同步导出），不是替身：
@@ -229,7 +205,7 @@ class ObservabilityTest {
                 : withUsage(12, 34));
 
         String runId = tracedPort(model, tracer, new RecordingTool("querySales", "128400"))
-                .reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "上周华东成交额"))
+                .reply(new InboundMessage(new Principal("u-1"), "chat-1", "上周华东成交额"))
                 .runId();
 
         SpanData run = spanOf("run");
@@ -276,7 +252,7 @@ class ObservabilityTest {
             throw new IllegalStateException("模型服务 503");
         });
         ChatClientAgentPort port = tracedPort(broken, tracer);
-        assertThatThrownBy(() -> port.reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "问")))
+        assertThatThrownBy(() -> port.reply(new InboundMessage(new Principal("u-1"), "chat-1", "问")))
                 .isInstanceOf(IllegalStateException.class);
 
         assertThat(spanOf("run").getStatus().getStatusCode())
@@ -482,40 +458,20 @@ class ObservabilityTest {
     }
 
     @Test
-    @DisplayName("身份认不出来当场停用：再试三次也不会变好，而且没人知道它在为谁干活")
-    void anUnknownIdentityDisablesTheTaskImmediately() {
-        ScheduleStore store = mock(ScheduleStore.class);
-        when(store.claim(anyInt(), any())).thenReturn(List.of(due(ObservabilityTest.DAILY_NINE)));
-        Recorder delivery = new Recorder();
-        AtomicInteger launched = new AtomicInteger();
-
-        scanner(store, message -> {
-            launched.incrementAndGet();
-            return Optional.of("不该跑到这里");
-        }, List.of(delivery), (userId, role) -> Optional.empty()).scan();
-
-        verify(store).disable(eq(DUE_ID), contains("身份认不出来"));
-        verify(store, never()).fail(anyString(), any(Instant.class), anyString(), anyInt());
-        assertThat(launched.get()).as("身份都没有，不该去问模型").isZero();
-        assertThat(delivery.sent).hasSize(1);
-    }
-
-    @Test
-    @DisplayName("工具权限被收回：同样当场停用，而且理由点名是哪个工具——不是「跑失败了」")
-    void losingAToolPermissionDisablesTheTaskImmediately() {
+    @DisplayName("任务要用的工具改成要人批：同样当场停用，而且理由点名是哪个工具——不是「跑失败了」")
+    void aTaskNeedingAnApprovalDisablesImmediately() {
         ScheduleStore store = mock(ScheduleStore.class);
         when(store.claim(anyInt(), any())).thenReturn(List.of(dueNeeding(ObservabilityTest.DAILY_NINE)));
         Recorder delivery = new Recorder();
 
-        // 角色还在，但只剩读 region：querySales 要读 sales_order
+        // 到点那一刻没人能点按钮：这类工具不属于"一次授权、多次执行"
         scanner(store, message -> Optional.of("不该跑到这里"), List.of(delivery),
-                (userId, role) -> Optional.of(Principal.of(userId, role,
-                        Set.of("region"), Set.of(ToolPermission.READ)))).scan();
+                new ApprovalRequiredTools(Set.of(TOOL))).scan();
 
-        verify(store).disable(eq(DUE_ID), contains("sales_order"));
+        verify(store).disable(eq(DUE_ID), contains(TOOL));
         verify(store, never()).fail(anyString(), any(Instant.class), anyString(), anyInt());
         assertThat(delivery.sent).hasSize(1);
-        assertThat(delivery.sent.getFirst()).contains("报一次成交额").contains("sales_order");
+        assertThat(delivery.sent.getFirst()).contains("报一次成交额").contains(TOOL);
     }
 
     @Test
@@ -553,30 +509,28 @@ class ObservabilityTest {
 
     private ScheduleScanner scanner(ScheduleStore store, TaskLauncher launcher,
                                     List<OutboundDelivery> deliveries) {
-        return scanner(store, launcher, deliveries, everything);
+        return scanner(store, launcher, deliveries, noApprovals);
     }
 
     private ScheduleScanner scanner(ScheduleStore store, TaskLauncher launcher,
-                                    List<OutboundDelivery> deliveries, RoleDirectory roles) {
-        return new ScheduleScanner(store, launcher, new ScheduleAuthorization(roles, List.of(
-                ToolPermissionRegistry.of(Map.of(TOOL, ToolPermission.read("sales_order"))))),
+                                    List<OutboundDelivery> deliveries, ApprovalRequiredTools approvals) {
+        return new ScheduleScanner(store, launcher, new ScheduleAuthorization(approvals),
                 deliveries, ScheduleProperties.defaults(), registry);
     }
 
-    /** 到点的那一条。身份是"谁 + 什么角色"，权限由 {@link ScheduleAuthorization} 现算。 */
+    /** 到点的那一条。身份只有 {@code owner_user_id}，审批名单由 {@link ScheduleAuthorization} 现查。 */
     private static ScheduleStore.Due due(String cron) {
         return due(cron, List.of());
     }
 
-    /** 声明了一个工具的任务：到点之前要按当前权限核一遍。 */
+    /** 声明了一个工具的任务：到点之前要再核一遍"它是不是要人批"。 */
     private static ScheduleStore.Due dueNeeding(String cron) {
         return due(cron, List.of(TOOL));
     }
 
     private static ScheduleStore.Due due(String cron, List<String> requiredTools) {
-        return new ScheduleStore.Due(DUE_ID, "u-1@fp", "feishu", "oc_1", "报一次成交额", cron,
-                "Asia/Shanghai", NotifyPolicy.SILENT, "u-1", "admin", requiredTools,
-                Instant.now(), 0);
+        return new ScheduleStore.Due(DUE_ID, "u-1", "feishu", "oc_1", "报一次成交额", cron,
+                "Asia/Shanghai", NotifyPolicy.SILENT, "u-1", requiredTools, Instant.now(), 0);
     }
 
     /** 没被记过的档位是 0，不是"没有这个计数器"。 */

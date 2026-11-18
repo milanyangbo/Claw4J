@@ -11,11 +11,14 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,7 +42,7 @@ class JavaMcpServerProcessTest {
     void serverRunsAsItsOwnProcess() throws Exception {
         int port = freePort();
         Path log = Files.createTempFile("claw4j-example-mcp-server", ".log");
-        Process server = new ProcessBuilder(javaBinary(), "-cp", System.getProperty("java.class.path"),
+        Process server = new ProcessBuilder(javaBinary(), "-cp", serverClasspath(),
                 McpServerApplication.class.getName(), "--server.port=" + port)
                 .redirectErrorStream(true)
                 .redirectOutput(log.toFile())
@@ -107,7 +110,7 @@ class JavaMcpServerProcessTest {
      * @param server 子进程，用它判断是不是已经挂了
      * @param log    子进程的输出，起不来时原样带进失败信息
      */
-    private static void awaitListening(int port, Process server, Path log) throws Exception {
+    static void awaitListening(int port, Process server, Path log) throws Exception {
         long deadline = System.nanoTime() + Duration.ofSeconds(90).toNanos();
         while (System.nanoTime() < deadline) {
             if (!server.isAlive()) {
@@ -123,7 +126,7 @@ class JavaMcpServerProcessTest {
         throw new IllegalStateException("server 在 90 秒内没有监听 " + port + "，输出：\n" + Files.readString(log));
     }
 
-    private static int freePort() throws IOException {
+    static int freePort() throws IOException {
         try (ServerSocket probe = new ServerSocket(0)) {
             return probe.getLocalPort();
         }
@@ -144,8 +147,39 @@ class JavaMcpServerProcessTest {
                 .orElseThrow(() -> new AssertionError("快照里没有 " + key + "：\n" + snapshot));
     }
 
+    /** 本模块自己的产物：{@code .../claw4j-example-mcp-server/target/classes}。 */
+    private static final String THIS_MODULE = "/claw4j-example-mcp-server/";
+
+    /**
+     * 子进程的 classpath：本模块的测试 classpath 去掉**其它** {@code claw4j-*} 条目。
+     *
+     * <p>不能直接用 {@code java.class.path}：{@code ToolFilterIntegrationTest} 为了拿到
+     * {@code McpToolProvider}，测试期依赖了 {@code claw4j-capability}，而子进程继承同一份 classpath 之后，
+     * Spring AI 的 MCP server 自动配置会把 Claw4J 的 {@code Read}/{@code Bash}/{@code Grep} 这些内置工具
+     * **也交出去**——这条用例第一次带依赖跑就红了，红的方式正是"清单里多出八个工具"。
+     *
+     * <p>过滤不是掩盖问题，而是还原部署形状：发布出去的 jar 里没有 Claw4J（见 pom 那段注释），
+     * 真部署里这个 server 也只能看见自己的三个工具。留下本模块那一条，其余 {@code /claw4j-*} 去掉——
+     * reactor 构建（{@code .../claw4j-capability/target/classes}）与本地仓库
+     * （{@code .../io/github/claw4j/claw4j-capability/...}）两种形状都覆盖。
+     */
+    static String serverClasspath() {
+        String filtered = Arrays.stream(System.getProperty("java.class.path").split(File.pathSeparator))
+                .filter(JavaMcpServerProcessTest::visibleToTheServer)
+                .collect(Collectors.joining(File.pathSeparator));
+        if (filtered.isBlank() || !filtered.contains("claw4j-example-mcp-server")) {
+            throw new IllegalStateException("过滤之后连本模块的类都没了，这条用例起不来 server：" + filtered);
+        }
+        return filtered;
+    }
+
+    private static boolean visibleToTheServer(String entry) {
+        String normalized = entry.replace('\\', '/');
+        return normalized.contains(THIS_MODULE) || !normalized.contains("/claw4j-");
+    }
+
     /** 用本 JVM 的那个 java，而不是 {@code $JAVA_HOME}（surefire 里可能是空的）。 */
-    private static String javaBinary() {
+    static String javaBinary() {
         return Path.of(System.getProperty("java.home"), "bin", "java").toString();
     }
 }

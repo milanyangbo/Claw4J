@@ -1,6 +1,5 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.domain.untrusted.InboundText;
 import io.github.claw4j.domain.untrusted.OutboundText;
@@ -27,7 +26,9 @@ import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
+import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.principal.ToolPolicyContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -128,6 +129,18 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     + "我再试一次。";
 
     private final ChatClient chatClient;
+
+    /**
+     * 这一轮该给模型看哪些工具。
+     *
+     * <p>它必须在这里而不是靠 {@code ChatClient} 的默认 provider：provider 展开时**拿不到**
+     * "这一轮谁在问、用的哪个模型"，而按发送者与按模型那几层正需要它（ADR-0030 裁决二）。
+     * 没有它时清单按"只有全局层"解析——安全但不精确，所以装配时一定会传。
+     */
+    private final ToolCatalog catalog;
+
+    /** 当前模型的供应商名，用于"按模型"那一层。降级到备模型时清单不重算，见 ADR 缺口。 */
+    private final String providerKey;
 
     /**
      * 压缩器。可以为 null：没装配会话存储就没有「历史」这回事，也就没有可压的。这不是配置错误，
@@ -289,7 +302,30 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                                ConversationDelivery delivery, SpanTracer tracer,
                                SessionEntries pointers, ConversationLane lane, ToolCallAudit audit,
                                SessionGoalStore goals) {
+        this(chatClient, compactor, delivery, tracer, pointers, lane, audit, goals, null, null);
+    }
+
+    /**
+     * 完整的一档：多一个工具清单与当前供应商。
+     *
+     * @param chatClient 对话客户端
+     * @param compactor 会话压缩，可为 null
+     * @param delivery 推送投递，可为 null
+     * @param tracer 埋点入口
+     * @param pointers 会话指针，可为 null
+     * @param lane 会话锁
+     * @param audit 审计接缝，可为 null
+     * @param goals 目标存储，可为 null
+     * @param catalog 工具清单；{@code null} 表示按"只有全局层"解析
+     * @param providerKey 当前供应商名；{@code null} 时"按模型"那层不生效
+     */
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery, SpanTracer tracer,
+                               SessionEntries pointers, ConversationLane lane, ToolCallAudit audit,
+                               SessionGoalStore goals, ToolCatalog catalog, String providerKey) {
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
+        this.catalog = catalog;
+        this.providerKey = providerKey;
         this.compactor = compactor;
         this.delivery = delivery;
         this.tracer = tracer == null ? SpanTracer.NONE : tracer;
@@ -898,7 +934,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /**
-     * 根 span 的属性：哪一轮、谁的（指纹）。
+     * 根 span 的属性：哪一轮、谁的。
      *
      * <p>为空时不写这一格：写一个空串会让「有编号」与「没有」在图上长得一样。
      *
@@ -912,7 +948,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             attributes.put(ATTR_RUN_ID, runId);
         }
         if (principal != null) {
-            attributes.put(ATTR_OWNER, PermissionFingerprint.shortOf(principal));
+            attributes.put(ATTR_OWNER, principal.userId());
         }
         return attributes;
     }
@@ -963,7 +999,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // 那里拿不到 Advisor 上下文，只能从 ToolContext 里取。
         // 子 Agent 要用父这个身份继续鉴权——委派不提权，
         // 而"子那边拿不到身份"的失败姿势必须是拒绝（见 SubagentDelegation）。
-        toolContext.put(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal);
+        toolContext.put(ContextKeys.PRINCIPAL, principal);
         // 这一轮的编号同理：工具在工具内部，它要知道"我这一轮属于哪一次回答"。
         // 不放这个键时，工具那边读不到就是空——比放一个空串让它去猜清楚。
         if (runId != null) {
@@ -986,15 +1022,21 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         if (message.chatId() != null && !message.chatId().isBlank()) {
             toolContext.put(ContextKeys.CHAT_REF, message.chatId());
         }
-        return chatClient.prompt(masked)
-                .toolContext(toolContext)
+        ChatClient.ChatClientRequestSpec request = chatClient.prompt(masked).toolContext(toolContext);
+        if (catalog != null) {
+            // 工具按这一轮的上下文现筛（ADR-0030 裁决二）：按模型 / 按发送者 / 子 Agent 角色那几层
+            // 要靠"这一轮是谁、用的哪个模型"，而上下文只有这里拿得到——provider 展开时不带上下文。
+            request = request.toolCallbacks(catalog.toolsFor(
+                    ToolPolicyContext.of(message.channel(), principal.userId()).withProvider(providerKey)));
+        }
+        return request
                 .advisors(spec -> {
-                    spec.param(AuthorizationAdvisor.PRINCIPAL_CONTEXT_KEY, principal)
+                    spec.param(ContextKeys.PRINCIPAL, principal)
                             .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY, sessionId)
                             // 外键用归属键而不是裸 userId：跨会话召回走 user_id 精确匹配，
                             // 传裸 userId 的话"换角色即换会话"在召回那条路上等于没做（见 SessionKeys）。
                             .param(SessionMemoryAdvisor.USER_ID_CONTEXT_KEY, owner);
-                    // 审批那一层（AuthorizationAdvisor）读的是这份上下文，不是 ToolContext：
+                    // 审批那一层读的是这份上下文，不是 ToolContext（README 的那条接缝）：
                     // 它要写"这条请求来自哪段对话"，于是这三个键两边都要有。
                     // 少了它们的表现是"批准之后说找不到来处"，而不是报错。
                     spec.param(ChatMemory.CONVERSATION_ID, sessionId);

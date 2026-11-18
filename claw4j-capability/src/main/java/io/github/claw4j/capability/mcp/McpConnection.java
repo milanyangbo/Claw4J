@@ -1,6 +1,6 @@
 package io.github.claw4j.capability.mcp;
 
-import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
@@ -14,7 +14,6 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -106,14 +105,14 @@ public final class McpConnection implements AutoCloseable {
         return endpoint.name();
     }
 
-    /** 某个工具实际要什么权限：端点按工具覆盖过就用覆盖，否则回落到 server 那一条。 */
-    public ToolPermission permissionFor(String toolName) {
-        return endpoint.permissionFor(toolName);
-    }
-
-    /** 端点上逐个点名过权限的工具名。用来判"点名了但 server 没导出"。 */
-    public Set<String> declaredToolNames() {
-        return endpoint.declaredToolPermissions().keySet();
+    /**
+     * 这个 server 的哪些工具存在（{@code tool-filter}）。
+     *
+     * <p>过滤在 {@link McpToolProvider} 装上工具清单那一刻做，所以**每次重连都会重新筛一遍**：
+     * server 升级后多导出的工具，只有配置允许的才进得来，而不是"第一次列出来的那份快照"。
+     */
+    public ToolFilter toolFilter() {
+        return endpoint.toolFilter();
     }
 
     /**

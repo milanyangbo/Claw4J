@@ -1,5 +1,6 @@
 package io.github.claw4j.channel.http;
 
+import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -42,7 +43,7 @@ class HttpEndpointsTest {
     @DisplayName("审批：读一条待批请求，编号、工具、摘要、发起人、状态与过期时间都在")
     void aPendingRequestIsReadable() {
         ResponseEntity<ApprovalController.ApprovalView> response =
-                approvalController(new FixedDecider()).view(APPROVAL_ID, "ethan", "read-only");
+                approvalController(new FixedDecider()).view(APPROVAL_ID, "ethan");
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         ApprovalController.ApprovalView body = response.getBody();
@@ -60,7 +61,7 @@ class HttpEndpointsTest {
     void approvingReportsTheVerdictAndWhoDidIt() {
         FixedDecider decider = new FixedDecider();
         ResponseEntity<ApprovalController.DecisionResponse> response = approvalController(decider)
-                .decide(APPROVAL_ID, new ApprovalController.DecisionRequest(true, null), "ethan", "read-only");
+                .decide(APPROVAL_ID, new ApprovalController.DecisionRequest(true, null), "ethan");
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals("granted", response.getBody().verdict());
@@ -70,13 +71,26 @@ class HttpEndpointsTest {
     }
 
     @Test
+    @DisplayName("审批：请求体里再带一个 always，传下去的就是「以后都放行」那一档")
+    void theAlwaysFlagTravelsAsThePersistentChoice() {
+        FixedDecider decider = new FixedDecider();
+        ResponseEntity<ApprovalController.DecisionResponse> response = approvalController(decider)
+                .decide(APPROVAL_ID, new ApprovalController.DecisionRequest(true, true, null),
+                        "ethan");
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(ApprovalChoice.ALLOW_ALWAYS, decider.seenChoice,
+                "两个入口传的必须是同一件事：否则同一张请求在飞书里批不了长期、在接口里能批");
+    }
+
+    @Test
     @DisplayName("审批：拒绝也走同一条路，理由带到决定里，结论是 denied")
     void denyingCarriesTheReasonIntoTheDecision() {
         FixedDecider decider = new FixedDecider();
         decider.verdict = ApprovalVerdict.DENIED;
 
         ResponseEntity<ApprovalController.DecisionResponse> response = approvalController(decider)
-                .decide(APPROVAL_ID, new ApprovalController.DecisionRequest(false, "这个客户不能发"), "ethan", "read-only");
+                .decide(APPROVAL_ID, new ApprovalController.DecisionRequest(false, "这个客户不能发"), "ethan");
 
         assertEquals("denied", response.getBody().verdict());
         assertEquals("这个客户不能发", decider.seenReason);
@@ -98,10 +112,10 @@ class HttpEndpointsTest {
     @DisplayName("审批：没装配审批时一律 404，控制器照样在（端点凭空消失更难查）")
     void withoutADeciderEverythingIs404() {
         assertEquals(HttpStatus.NOT_FOUND,
-                approvalController(null).view(APPROVAL_ID, "ethan", "read-only").getStatusCode());
+                approvalController(null).view(APPROVAL_ID, "ethan").getStatusCode());
         assertEquals(HttpStatus.NOT_FOUND,
                 approvalController(null).decide(APPROVAL_ID, new ApprovalController.DecisionRequest(true, null),
-                        "ethan", "read-only").getStatusCode());
+                        "ethan").getStatusCode());
     }
 
     @Test
@@ -111,7 +125,7 @@ class HttpEndpointsTest {
         decider.pending = Optional.empty();
 
         ResponseEntity<ApprovalController.ApprovalView> response =
-                approvalController(decider).view(APPROVAL_ID, "ethan", "read-only");
+                approvalController(decider).view(APPROVAL_ID, "ethan");
 
         assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
         assertNull(response.getBody());
@@ -140,7 +154,14 @@ class HttpEndpointsTest {
             beans.registerSingleton("approvalDecider", decider);
         }
         return new ApprovalController(beans.getBeanProvider(ApprovalDecider.class),
-                new HttpPrincipalResolver(new HttpChannelProperties()));
+                new HttpPrincipalResolver(allowlist()));
+    }
+
+    /** 这个文件用的那份通道配置：名单里只有 {@code ethan}。空的默认名单意味着谁都进不来。 */
+    private static HttpChannelProperties allowlist() {
+        HttpChannelProperties properties = new HttpChannelProperties();
+        properties.setUsers(java.util.Set.of("ethan"));
+        return properties;
     }
 
     /** 只回答"收到的是什么"，不判资格：资格在 {@code ApprovalService} 那一侧。 */
@@ -156,6 +177,16 @@ class HttpEndpointsTest {
         private String seenReason;
 
         private Boolean seenApproved;
+
+        @Override
+        public Result decide(String approvalId, String approver, ApprovalChoice choice,
+                             String reason) {
+            // 这一层验的是入口：请求体说"以后都放行"时，传下去的那一档必须是 ALLOW_ALWAYS。
+            seenChoice = choice;
+            return decide(approvalId, approver, choice != ApprovalChoice.DENY, reason);
+        }
+
+        private ApprovalChoice seenChoice;
 
         @Override
         public Result decide(String approvalId, String approver, boolean approved, String reason) {

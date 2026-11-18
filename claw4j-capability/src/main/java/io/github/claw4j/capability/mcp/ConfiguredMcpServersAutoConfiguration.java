@@ -1,8 +1,6 @@
 package io.github.claw4j.capability.mcp;
 
 import io.github.claw4j.capability.secret.SpringSecretResolver;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
-import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -19,10 +17,9 @@ import org.springframework.core.type.AnnotatedTypeMetadata;
 /**
  * 配置里的 MCP server：{@code claw4j.capability.mcp.servers} 下写一段，就接一个。
  *
- * <p>它和 {@link McpToolAutoConfiguration} 是两条并行的来源，各自出一个 {@code McpToolProvider}
- * 与一张登记表。多份是可以的：Agent 侧按 {@code ObjectProvider<ToolCallbackProvider>} 与
- * {@code List<ToolPermissionRegistry>} 收，从来只认"所有来源"。合在一个 bean 里做反而要写
- * "两个列表相加"，那属于调用方的编排。
+ * <p>它和 {@link McpToolAutoConfiguration} 是两条并行的来源，各自出一个 {@code McpToolProvider}。
+ * 多份是可以的：Agent 侧按 {@code ObjectProvider<ToolCallbackProvider>} 收，从来只认"所有来源"。
+ * 合在一个 bean 里做反而要写"两个列表相加"，那属于调用方的编排。
  *
  * <p>留两路而不是只留配置这一路：有些端点是算出来的——路径要拼、token 要从 vault 取、
  * 传输要包一层。那时写一个 {@code @Bean McpServerEndpoint} 更直接，配置表达不了
@@ -56,28 +53,16 @@ public class ConfiguredMcpServersAutoConfiguration {
     }
 
     /**
-     * 配置里那些 server 的权限登记表。登记的是端点声明的那一份（默认只读、不碰业务表）。
+     * 画像：{@code {CODING, MESSAGING}} 并按外部工具登记，与 {@link McpToolAutoConfiguration}
+     * 那条同一个判断（理由写在 {@link LiveMcpTiers}）。
      *
-     * @param provider 按名字限定：容器里可能还有 {@link McpToolAutoConfiguration} 那一份，
-     *                 不限定的话"注入了哪一份"取决于 bean 顺序
-     */
-    @Bean
-    public ToolPermissionRegistry configuredMcpToolPermissionRegistry(
-            @Qualifier("configuredMcpToolProvider") McpToolProvider provider) {
-        return ToolPermissionRegistry.of(provider.permissions());
-    }
-
-    /**
-     * 档位：{@link ToolTier#FULL}，与 {@link McpToolAutoConfiguration} 那条同一个判断
-     * （理由写在那里）：外部清单运行时才知道，整批归最宽的一档。
-     *
-     * <p>两条并行来源各出一张档位表，与各出一张权限表是同一件事——
-     * 装配侧收的是"所有登记表"，不认某一份。
+     * <p>**必须是活视图**：配置里的 server 启动那一刻可能连不上（本机很常见），重连之后它的
+     * 工具才出现。拍快照的话，那些工具在清单组装处查不到画像，整轮对话直接失败。
      */
     @Bean
     public ToolTierRegistry configuredMcpTierRegistry(
             @Qualifier("configuredMcpToolProvider") McpToolProvider provider) {
-        return ToolTierRegistry.sameFor(provider.permissions().keySet(), ToolTier.FULL);
+        return LiveMcpTiers.of(provider);
     }
 
     /**

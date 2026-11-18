@@ -2,7 +2,6 @@ package io.github.claw4j.capability.generator;
 
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.capability.script.ScriptPackageToolProvider;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -27,9 +26,6 @@ public final class SkillGeneratorToolCallback implements ToolCallback {
 
     /** 工具名。 */
     public static final String TOOL_NAME = "propose_script";
-
-    /** 这个动作名要写进角色的授权表才会被放行（ADR-0007）。 */
-    public static final String GENERATOR_ACTION = "draft_script";
 
     /**
      * 描述里刻意不写规则表：贴进去的话，每一个带工具的轮次都要付这份上下文，
@@ -142,8 +138,4 @@ public final class SkillGeneratorToolCallback implements ToolCallback {
         return value == null ? null : value.toString();
     }
 
-    /** 权限登记的形状：动作是草稿，业务表一张都没有（与 {@link ScriptPackageToolProvider#SCRIPT_ACTION} 同理）。 */
-    public static ToolPermission permission() {
-        return ToolPermission.of(GENERATOR_ACTION);
-    }
 }

@@ -30,10 +30,12 @@
              M1-06 在 groupId 上栽过一次。它传递引 mcp-core（MCP Java SDK 2.1.0）与
              mcp-json-jackson3；spring-webflux / spring-webmvc 在链路里是 optional，不会带进来。
 
-             为什么 client 与 server 两侧都用这一条：本票的 MCP server 是 Java 自实现的
-             进程内 stdio server（测试替身兼演示），server 侧用到的
-             StdioServerTransportProvider 与 McpServer 来自传递引的 mcp-core，
-             @McpTool 扫描来自 spring-ai-mcp-annotations，都不需要再引 server starter。 -->
+             为什么 client 与 server 两侧都用这一条：客户端走这条 starter；而测试里那个
+             进程内的 stdio server（{@code McpToolTest} 的替身，给客户端当真对端）用到的
+             StdioServerTransportProvider 与 McpServer 也来自传递引的 mcp-core，
+             @McpTool 扫描来自 spring-ai-mcp-annotations——两边都不需要再引 server starter。
+             出站暴露（把本进程的工具交给外部客户端）已由 ADR-0030 整块下线：这里没有
+             server 侧的运行时依赖，server starter 也仍然不需要。 -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-mcp-client</artifactId>

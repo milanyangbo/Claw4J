@@ -68,8 +68,8 @@ public class AuditLedger implements AuditSink {
     private static final String INSERT = """
             insert into claw4j_run.audit_event
                 (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
-                 actor, actor_role, channel, tool_name, args_digest, approval_id)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 actor, channel, tool_name, args_digest, approval_id)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String PURGE_AGE =
@@ -159,7 +159,6 @@ public class AuditLedger implements AuditSink {
                     scope.sessionKey(),
                     scope.agentId(),
                     scope.actor(),
-                    scope.actorRole(),
                     scope.channel(),
                     event.toolName(),
                     event.argsDigest(),

@@ -75,41 +75,18 @@ claw4j:
   # ---- 通道 ----
   # 每条通道都是"凭据齐了才装配，缺一样整份退让"（HTTP 照常跑）：只做演示的部署不该因为
   # 没配企业微信而起不来。凭据齐了却连不上，则是启动失败。
-  # 下面各通道的 roles 只登记"谁是谁"；能读哪些表、能做哪些动作只有 http 那一份授权表，
-  # 角色名必须与它同名，写错一个启动即失败。
+  # 五个通道各有一份准入白名单（ADR-0030 裁决三）。空 = 谁都不能，不是谁都能：
+  # "任何能往通道里发消息的人都能触发这个 agent"是这些通道唯一要守的东西。
+  # 角色、可读表、可执行动作那一层（原来是每个通道自己一张共用授权表）随权限登记表整块
+  # 下线——进来之后能看见什么由工具清单（claw4j.tools）决定，执行前要不要人点头由审批
+  # （claw4j.approval）决定。业务数据范围与按人的细粒度授权是第二步的事。
   channel:
     http:
       enabled: ${CLAW4J_HTTP_ENABLED:true}
-      # 请求没带角色头时用它。给最小权限而不是拒绝：本机 curl 演示不该先去配角色。
-      default-role: read-only
-      # 授权表只有这一份，四个通道共用。actions 与工具的动作名同口径：
-      #   read            读业务表，范围由 tables 决定（知识库的伪表名是 doc）
-      #   use_skill       加载一份做法；真正碰表那一步仍各自鉴权
-      #   delegate_task   委派子 Agent：用父的身份，不提权
-      #   read_system     看 JVM / 容器指标
-      #   recall_session  读自己的历史会话
-      #   get_goal / create_goal / update_goal   会话目标的读与写（暂停、清除归人）
-      #   schedule_task / list_schedules / cancel_schedule   自己的定时任务
-      #   draft_script    提交脚本草稿（只给 admin）；执行脚本是另一个动作 run_script
-      #   exec_command    跑通用 shell 命令（只给 admin）
-      #   "*"             全部
-      # 表里没有的角色一律拒绝，没有默认兜底。
-      roles:
-        # "*" 也包含知识库那个伪表 doc，所以 read-only 能检索知识库。
-        read-only:
-          tables: ["*"]
-          actions: ["read", "use_skill", "delegate_task", "read_system", "recall_session", "ask_user",
-                    "get_goal", "create_goal", "update_goal",
-                    "schedule_task", "list_schedules", "cancel_schedule"]
-        # 表级的例子：会读，但读不到 sales_order，问成交额拿到的是明确的"没权限"。
-        # 它只给了 region，于是也看不到知识库——想给就加 doc。
-        guest:
-          tables: ["region"]
-          actions: ["read", "use_skill", "delegate_task", "ask_user"]
-        admin:
-          tables: ["*"]
-          actions: ["*"]
-
+      # 网关在边缘认证之后写 X-Claw4j-User，这里是第二道：只有名单里的人能用这条通道。
+      # 本机演示要先把你自己填进来（或者整份写 ["*"] 表示不设准入），否则 curl 拿到 403
+      # 并被告知缺哪一样。默认为空是刻意的：忘了配的后果是"打不开"，不是"公网可调用"。
+      users: []
     # 飞书：长连接接消息，凭据是 app-id + app-secret。
     feishu:
       enabled: ${CLAW4J_FEISHU_ENABLED:true}
@@ -117,10 +94,8 @@ claw4j:
       app-secret: ${FEISHU_APP_SECRET:}
       # 等长连接就绪的上限。少了它，"还在连"与"连不上"在日志里长得一样。
       ready-timeout: 15s
-      roles:
-        read-only:
-          users: []          # 填 open_id
-
+      # 填 open_id；本机从那条"未登记"的 WARN 里抄 sender=ou_...
+      users: []
     # 企业微信：公网回调 /api/wecom/callback，五样齐了才装配。
     # 后台"接收消息"那页的 Token 与 EncodingAESKey 必须与这里一致，错一个的表现都是
     # 回调静默失败、用户永远等不到回答。
@@ -132,10 +107,8 @@ claw4j:
       agent-id: ${WECOM_AGENT_ID:0}
       token: ${WECOM_TOKEN:}
       encoding-aes-key: ${WECOM_ENCODING_AES_KEY:}
-      roles:
-        read-only:
-          users: []          # 填成员 UserID
-
+      # 填成员 UserID
+      users: []
     # 钉钉：公网回调 /api/dingtalk/callback，报文是明文 JSON、验签在 header 里。
     # client-secret 同时干两件事——换 token 与验签：配错它既有"发不出去"也有"所有回调被拒"。
     dingtalk:
@@ -144,11 +117,8 @@ claw4j:
       client-secret: ${DINGTALK_CLIENT_SECRET:}
       # 通常与 Client ID 同值，但独立配置：换机器人不必换应用凭据。
       robot-code: ${DINGTALK_ROBOT_CODE:}
-      # 没有默认角色：机器人没发布上线时钉钉不返回 senderStaffId，那种情况只记一条 WARN。
-      roles:
-        read-only:
-          users: []          # 填企业内 userId
-
+      # 填企业内 userId。机器人没发布上线时钉钉不返回 senderStaffId，那种情况只记一条 WARN。
+      users: []
     # Slack：Events API 回调 /api/slack/events，签名覆盖整个原始报文、时间戳单位是秒。
     # 后台要同时订阅 app_mention 与 message.im（私聊不走 app_mention）。
     # 两把凭据各管一头：signing-secret 只验签，bot-token（xoxb-）只发消息。
@@ -158,9 +128,8 @@ claw4j:
       bot-token: ${SLACK_BOT_TOKEN:}
       # 同频道两条消息的最小间隔（chat.postMessage 限流）。调小不会更快，只会撞 429。
       min-interval: 1s
-      roles:
-        read-only:
-          users: []          # 填 Slack user id（U 开头）
+      # 填 Slack user id（U 开头）
+      users: []
 
   # ---- 入站拦截 ----
   # 命中词表任意一条就整轮拒答：不调模型、也不进会话历史。匹配是子串 + 大小写不敏感。
@@ -222,7 +191,7 @@ claw4j:
     # 一条请求等人等多久。太短则审批人开个会回来卡片已作废；太长则三天前的上下文还能放行。
     ttl: 10m
     # 谁能批：飞书那边填 open_id，HTTP 那边填用户名（X-Claw4j-User）。
-    # 与 roles 是两张表：那个回答"能读哪些表"，这个回答"愿意为别人的操作负责"。
+    # 与准入白名单是两张表：那个回答"能不能用这条通道"，这个回答"愿意为别人的操作负责"。
     # 空 = 没人能批（请求会挂到过期，启动日志有一条 WARN）。
     approvers: []
 
@@ -254,33 +223,84 @@ claw4j:
     # 一次检索返回几个候选（框架约定 1–10）。给多了等于把省下来的 token 又还回去。
     max-results: 5
 
-  # ---- 工具档位 ----
-  # 四档累进：minimal < messaging < coding < full。工具声明它最低需要哪一档，
-  # 声明档位高于 profile 的工具不进清单，检索也检索不到。默认 full = 升级前后一样。
+  # ---- 工具画像（ADR-0030）----
+  # 四档是**四个互不包含的集合**，不是阶梯。每个工具声明它在哪几档里：
+  #   minimal    地基：检索、问人、读自己状态、回忆本会话、记计划、目标
+  #   messaging  能问能查、碰不到机器：地基 + 外部工具（业务模块、MCP）
+  #   coding     开发助手：碰机器（shell / 文件 / 出网）+ 自主行动（定时任务、子 Agent）+ 技能
+  #   full       不限制（allow: ["*"] 的等价物，不是"最全的画像"）
+  # 默认 full = 升级前后清单一样。
   tools:
     profile: ${CLAW4J_TOOLS_PROFILE:full}
-    # 白名单，只能收窄、不能越过 profile（否则它就是绕过档位的口子）。
+    # 白名单：**只能在画像之内收窄**。写了画像里没有的工具不生效，启动日志会告警
+    # （要放宽得用 alsoAllow，别指望 allow）。
+    # 接受 group:* 简写：group:fs / group:runtime / group:web / group:agents /
+    # group:plugins（业务模块 + MCP）/ group:openclaw（其余内置工具）。
     allow: []
-    # 黑名单，在档位与白名单之后生效。同一个名字写进 allow 与 deny 会启动失败；
-    # 写了不存在的名字不报错，但启动日志会列出来（拼错也长这样）。
+    # 显式放宽：**能突破画像**。"messaging 画像但要一个脚本"写 [run_script] 就够，
+    # 不必把整个部署调成 coding 再 deny 一大串。
+    # 注意：只配这一项、不配 allow 时，那一层等于不设限（照 OpenClaw 的语义）——
+    # 空 allow 本来是"不收窄"，加上 alsoAllow 若变成"只放这几个"就与 writer 的意图相反。
+    alsoAllow: []
+    # 黑名单：在画像与白名单之后生效，压过 allow 与 alsoAllow。
+    # 同一个名字同时写进 allow 与 deny 会启动失败；写了不存在的名字不报错，
+    # 但启动日志会列出来（部署裁剪与拼错长得一样）。
     deny: []
 
-    # ---- 通用 shell ----
+    # ---- 按维度的那几层（ADR-0030 裁决二）----
+    # 它们是**每轮**按"这一轮谁在问、用的哪个模型"现算的，且只能在上面四样的结果上继续收窄。
+    # 没配就是没有这一层——不配的部署行为与没有这些能力时完全一样。
+    #
+    # 按模型：键可以是 provider，也可以是 provider/model（后者更精确，先命中）。
+    #   byProvider:
+    #     deepseek:                 # 这个供应商的所有模型
+    #       profile: messaging      # 换画像（连同它自己的成员表）
+    #       deny: [group:runtime]
+    #     deepseek/deepseek-chat:   # 只对这一个模型
+    #       allow: [querySales]
+    byProvider: {}
+    #
+    # 按发送者：键是 "channel:<通道>:<userId>" 或 "id:<userId>"，或 "*" 兜底。
+    # 命中即用（不是把三条合并）——写了一条 * 的兜底 deny 之后，给某个人单独写 allow 仍然放得开。
+    # yaml 里含冒号的键必须加引号，否则会被解析成嵌套映射。
+    #   toolsBySender:
+    #     "channel:feishu:alice": { allow: [querySales] }
+    #     "id:bob":               { deny: [group:runtime] }
+    #     "*":                    { deny: [group:runtime] }
+    toolsBySender: {}
+    #
+    # 子 Agent 那一层：配置的收窄，叠在内建角色清单之上。
+    # 内建清单（所有子 Agent）：定时任务三件——一次性执行体不该往全局任务表里写。
+    # 显式 allow 点名的那几个不受内建清单约束（配置比角色的默认更懂这个部署）。
+    #   subagents:
+    #     allow: []
+    #     deny: []
+    subagents:
+      allow: []
+      deny: []
+
+    # ---- 通用 shell（ADR-0030 裁决四：三段式）----
     # 工具是 Spring AI 的 Bash / BashOutput / KillShell，边界在后端里。
-    #   deny       不装配
-    #   allowlist  只跑白名单里的命令
-    #   ask        白名单命中也要人先批
-    #   full       不判白名单、不批（默认）
-    # **安全位不在 mode 上，在授权表上**：exec_command 默认只给 admin。
+    # 审批**不是装配期声明**，是执行那一刻按下面三段算的：security × ask × 命令分析。
+    #   mode  是预设，一次给三段赋值；写了显式字段就按字段覆盖（按字段，不是整份替换）
+    #         deny      不装配
+    #         allowlist 只跑白名单，未命中直接拒（不给人点按钮的机会）
+    #         ask       白名单命中就跑，未命中问人
+    #         auto      同 ask，但未命中先问复核器；没有复核器时等同 ask
+    #         full      不判白名单、不批（默认）
     # 参数只有 command / timeout / description / runInBackground，没有 workdir 与 env：
     # 目录固定是下面的 workspace（要换就 cd），要临时改变量就写 FOO=bar cmd。
     exec:
       mode: ${CLAW4J_EXEC_MODE:full}
+      # 三段式的显式字段：不写就取 mode 预设，写了就覆盖那一段。
+      # security: allowlist
+      # ask: on-miss            # off / on-miss / always
+      # autoReview: false
       # 默认是**启动时的**工作目录（`claw4j.launch-directory`，启动钩子写下）。
       # 不能写 `.`：内嵌 Tomcat 起来时会把 user.dir 改成它的 docbase，`.` 就成了临时目录。
       workspace: ${CLAW4J_EXEC_WORKSPACE:${claw4j.launch-directory:.}}
-      # 白名单：整条命令等于某一项、或以"某一项 + 空格"开头，且命令里不许有
-      # shell 控制符（; | & > < ` $( 换行）。要管道就用 ask 或 full。
+      # 白名单：整条命令等于某一项、或以"某一项 + 空格"开头。批过 allow-always 的命令
+      # 会进 exec_allowlist 表，与这一份按同一规则合并匹配（表里的是运维批出来的）。
       allow: []
 
     # ---- 文件工具：Read / Grep / Glob（+ 可选 Write / Edit）----
@@ -314,18 +334,6 @@ claw4j:
     # 写错词（everybody）启动失败并点名四个合法值。
     sessions:
       visibility: ${CLAW4J_SESSION_VISIBILITY:all}
-
-  # ---- 把自己当 MCP server 交出去 ----
-  # 默认关。开了之后在标准输入输出上说 MCP，Claude Code 这类客户端可以把这里的工具当自己的用。
-  # stdio 的硬约束：stdout 是协议通道，一个字节的日志都不能往那去——用 application-mcp-stdio.yml 起。
-  mcp:
-    server:
-      # 开着却一个都不交是启动失败：客户端连得上、握手成功、拿到空清单，看起来像 server 坏了。
-      enabled: ${CLAW4J_MCP_SERVER_ENABLED:false}
-      # 交出去哪几个工具（只能是模型能用的那一份里的，档位与 allow/deny 照常生效）。
-      expose: []
-      # 外部客户端能读的表，与 channel.http.roles 无关：客户端没有 IM 身份。
-      tables: ["*"]
 
   # ---- 语义缓存：只在配了通义 key 时装配 ----
   # 命中即返回上次的回答，这一轮不调模型。它默认是强依赖：索引在启动时建，连不上就启动失败。

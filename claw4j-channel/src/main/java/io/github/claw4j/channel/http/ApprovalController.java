@@ -1,5 +1,6 @@
 package io.github.claw4j.channel.http;
 
+import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.principal.Principal;
@@ -58,17 +59,14 @@ public class ApprovalController {
      *
      * @param id 审批编号
      * @param user 请求头里的用户标识，允许缺失
-     * @param role 请求头里的角色名，允许缺失
      * @return 200 加这条请求；编号不存在时 404
      */
     @GetMapping(path = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<ApprovalView> view(@PathVariable("id") String id,
                                              @RequestHeader(value = HttpPrincipalResolver.USER_HEADER,
-                                                     required = false) String user,
-                                             @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER,
-                                                     required = false) String role) {
+                                                     required = false) String user) {
         // 认人放在最前面：未认人的请求不该知道某个编号存不存在。
-        principalResolver.resolve(user, role);
+        principalResolver.resolve(user);
         ApprovalDecider decider = deciders.getIfAvailable();
         if (decider == null) {
             log.debug("没有装配审批，/api/approvals 一律 404：id={}", id);
@@ -88,7 +86,6 @@ public class ApprovalController {
      * @param id 审批编号
      * @param request 决定与理由
      * @param user 请求头里的用户标识，允许缺失
-     * @param role 请求头里的角色名，允许缺失
      * @return 状态码由 {@link #statusOf} 决定，body 是状态名与一句话
      */
     @PostMapping(path = "/{id}", consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -96,17 +93,15 @@ public class ApprovalController {
     public ResponseEntity<DecisionResponse> decide(@PathVariable("id") String id,
                                                    @RequestBody DecisionRequest request,
                                                    @RequestHeader(value = HttpPrincipalResolver.USER_HEADER,
-                                                           required = false) String user,
-                                                   @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER,
-                                                           required = false) String role) {
-        Principal approver = principalResolver.resolve(user, role);
+                                                           required = false) String user) {
+        Principal approver = principalResolver.resolve(user);
         ApprovalDecider decider = deciders.getIfAvailable();
         if (decider == null) {
             log.debug("没有装配审批，/api/approvals 一律 404：id={}", id);
             return ResponseEntity.notFound().build();
         }
         ApprovalDecider.Result result =
-                decider.decide(id, approver.userId(), request.approved(), request.reason());
+                decider.decide(id, approver.userId(), request.choice(), request.reason());
         return ResponseEntity.status(statusOf(result.verdict()))
                 .body(new DecisionResponse(result.verdict().name().toLowerCase(),
                         result.detail()));
@@ -119,6 +114,8 @@ public class ApprovalController {
             case NOT_FOUND -> HttpStatus.NOT_FOUND;
             case NOT_APPROVER, SELF_APPROVAL -> HttpStatus.FORBIDDEN;
             case EXPIRED, ALREADY_DECIDED -> HttpStatus.CONFLICT;
+            // 不适用也是"这个按钮别点"：那条请求仍然挂着，换一档再来。
+            case NOT_APPLICABLE -> HttpStatus.CONFLICT;
         };
     }
 
@@ -131,10 +128,37 @@ public class ApprovalController {
     /**
      * 一次决定的请求体。
      *
-     * @param approved true 批准，false 拒绝
+     * <p>三档：{@code approved} 是"批这一次"，{@code always} 是"以后都放行"（带上它时
+     * {@code approved} 也要为真），两者都假是拒绝。与卡片上的三个按钮一一对应——两个入口
+     * 传的是同一件事，否则"同一张请求在飞书里批不了长期、在接口里能批"这种差异没人查得出来。
+     *
+     * @param approved true 批准（至少这一次），false 拒绝
+     * @param always true 表示"以后都放行"，只在 {@code approved} 为真时有意义
      * @param reason 拒绝的理由，批准时可以不给
      */
-    public record DecisionRequest(boolean approved, String reason) {
+    public record DecisionRequest(boolean approved, boolean always, String reason) {
+
+        /**
+         * 两档那一版（兼容只有批/拒的调用方）。
+         *
+         * @param approved true 批准，false 拒绝
+         * @param reason 拒绝的理由
+         */
+        public DecisionRequest(boolean approved, String reason) {
+            this(approved, false, reason);
+        }
+
+        /**
+         * 这个请求体说的是哪一档。
+         *
+         * @return 结论档位
+         */
+        ApprovalChoice choice() {
+            if (!approved) {
+                return ApprovalChoice.DENY;
+            }
+            return always ? ApprovalChoice.ALLOW_ALWAYS : ApprovalChoice.ALLOW_ONCE;
+        }
     }
 
     /**
@@ -151,13 +175,17 @@ public class ApprovalController {
     /**
      * 一条请求对外露出的样子。字段与 {@link ApprovalDecider.Pending} 一一对应，
      * 只少 {@code argsDigest}：指纹是给机器比的，人要看 {@code argsSummary}。
+     *
+     * @param allowAlways 这一条接不接受"以后都放行"；为 false 时调用方不该给那个按钮
      */
     public record ApprovalView(String id, String runId, String owner, String toolName,
-                               String argsSummary, String status, boolean expired, Instant expiresAt) {
+                               String argsSummary, String status, boolean expired, Instant expiresAt,
+                               boolean allowAlways) {
 
         static ApprovalView of(ApprovalDecider.Pending pending) {
             return new ApprovalView(pending.id(), pending.runId(), pending.owner(), pending.toolName(),
-                    pending.argsSummary(), pending.status(), pending.expired(), pending.expiresAt());
+                    pending.argsSummary(), pending.status(), pending.expired(), pending.expiresAt(),
+                    pending.allowAlways());
         }
     }
 

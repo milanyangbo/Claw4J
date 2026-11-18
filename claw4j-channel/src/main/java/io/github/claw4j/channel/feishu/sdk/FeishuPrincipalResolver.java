@@ -1,68 +1,31 @@
 package io.github.claw4j.channel.feishu.sdk;
 
-import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.domain.principal.Principal;
 
-import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import java.util.TreeSet;
 import java.util.function.Function;
 
 /**
- * 把 {@code open_id} 映射成 {@link Principal}：把「谁是谁」（本通道的登记表）与
- * 「角色能看什么」（两个通道共用的那张授权表）拼起来。
+ * {@code open_id} → {@link Principal}：在飞书的白名单里就放进来。
  *
- * <p>单独一个类而不是 {@link FeishuChannelProperties} 上的方法：properties 只绑定自己那个前缀，
- * 看不到 {@code claw4j.channel.http.roles}。把两份塞进一个 properties 对象，
- * 等于让一个前缀去拥有另一个前缀的键，那正是要收掉的形状。
- *
- * <p>角色名对不上就在构造时失败。飞书登记了共享表里没有的角色，若只是查不到授权就当没权限，
- * 表现是那群人每次提问都收到「没有权限」，而配置看起来完全正常。这种错只能在装配期说清楚。
+ * <p>它现在只回答"这个人能不能用这条通道"（ADR-0030 裁决三）：{@code claw4j.channel.feishu.users}
+ * 里没有他就拒绝，有他就给一个只有 {@code userId} 的身份。原来还要按 {@code roles.<角色>} 去
+ * {@code claw4j.channel.http.roles} 取 {@code tables} / {@code actions}，并在装配期校验角色名
+ * 对得上——那两件事都随权限登记表整块下线。
  */
 public final class FeishuPrincipalResolver implements Function<String, Optional<Principal>> {
 
     private final FeishuChannelProperties feishu;
 
-    private final Map<String, HttpChannelProperties.RoleGrant> grants;
-
     /**
-     * 建一份解析器，同时校验飞书侧登记的角色名都能在共享表里找到。
-     *
-     * @param feishu 本通道的登记表
-     * @param authz 两个通道共用的授权表
-     * @throws IllegalStateException 有角色名在共享表里没有同名定义
+     * @param feishu 本通道的登记表（{@code users} 白名单）
      */
-    public FeishuPrincipalResolver(FeishuChannelProperties feishu, HttpChannelProperties authz) {
+    public FeishuPrincipalResolver(FeishuChannelProperties feishu) {
         this.feishu = feishu;
-        this.grants = authz.getRoles();
-        requireEveryRegisteredRoleExists();
     }
 
     @Override
     public Optional<Principal> apply(String openId) {
-        return feishu.roleOf(openId).map(role -> {
-            HttpChannelProperties.RoleGrant grant = grants.get(role);
-            return Principal.of(openId, role, grant.tables(), grant.actions());
-        });
-    }
-
-    /**
-     * 飞书里出现的每个角色名都必须在共享表里有同名定义。缺一个就启动失败，
-     * 并把那个角色下登记了几个人一起列出来，「哪个角色写错了」比「某个角色不存在」少一次排查。
-     */
-    private void requireEveryRegisteredRoleExists() {
-        Set<String> missing = new TreeSet<>();
-        for (Map.Entry<String, FeishuChannelProperties.RoleGrant> entry : feishu.getRoles().entrySet()) {
-            if (!grants.containsKey(entry.getKey())) {
-                missing.add(entry.getKey() + "（登记了 " + entry.getValue().users().size() + " 人）");
-            }
-        }
-        if (!missing.isEmpty()) {
-            throw new IllegalStateException(
-                    "claw4j.channel.feishu.roles 里的角色在 claw4j.channel.http.roles 里没有同名定义："
-                            + String.join("、", missing)
-                            + "。飞书只登记人，授权表共用 HTTP 那一份，角色名必须对得上。");
-        }
+        return feishu.allows(openId) ? Optional.of(new Principal(openId)) : Optional.empty();
     }
 }

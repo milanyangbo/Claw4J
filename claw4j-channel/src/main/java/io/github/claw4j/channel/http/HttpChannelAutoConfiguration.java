@@ -2,7 +2,6 @@ package io.github.claw4j.channel.http;
 
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalDecider;
-import io.github.claw4j.domain.port.RoleDirectory;
 import io.github.claw4j.domain.question.QuestionGate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -39,21 +38,6 @@ public class HttpChannelAutoConfiguration {
     @ConditionalOnMissingBean
     public HttpPrincipalResolver httpPrincipalResolver(HttpChannelProperties properties) {
         return new HttpPrincipalResolver(properties);
-    }
-
-    /**
-     * 角色表的另一个读者（P05）：给定"谁 + 什么角色"，回答此刻的权限。
-     *
-     * <p>定时任务到点那一刻没有人发消息，鉴权只能靠提前落库的身份；而权限不能跟着
-     * 一起落库（那是角色快照），于是每次要跑之前来这里换一份当前的。
-     *
-     * <p>注册成 {@link RoleDirectory} 而不是具体类型：agent 只认这个端口，
-     * 换一种配置源（库表、LDAP、外部授权服务）时这里换一个实现就够。
-     */
-    @Bean
-    @ConditionalOnMissingBean(RoleDirectory.class)
-    public RoleDirectory roleDirectory(HttpChannelProperties properties) {
-        return new ConfiguredRoleDirectory(properties);
     }
 
     /**

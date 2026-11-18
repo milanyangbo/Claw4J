@@ -1,8 +1,6 @@
 package io.github.claw4j.capability.builtin.agenttools;
 
 import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.github.claw4j.domain.untrusted.ExternalContent;
@@ -31,6 +29,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 默认工具：{@code Read} / {@code Grep} / {@code Glob} / {@code TodoWrite} / {@code WebSearch}
@@ -54,6 +53,9 @@ public class AgentToolsAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(AgentToolsAutoConfiguration.class);
 
+    /** 只进 {@code coding} 的那一批的共同画像。它含 {@code full} 与否由 {@link ToolProfile} 处理，不写在这里。 */
+    private static final Set<ToolTier> CODING_ONLY = Set.of(ToolTier.CODING);
+
     /**
      * 只读三件套。名字是库的 {@code @Tool(name = …)} 定的，改不了；写在这里是为了权限与档位
      * 两处登记共用一份清单——分开写两份字面量，改一处漏一处的表现是启动失败并点名。
@@ -68,18 +70,6 @@ public class AgentToolsAutoConfiguration {
 
     /** 联网搜索。没配 key 时不存在。 */
     public static final String SEARCH_TOOL_NAME = "WebSearch";
-
-    /** 读服务器上的文件。与 {@code read}（读业务表）是两个口径：拿 {@code read} 不该顺带能读磁盘。 */
-    public static final String ACTION_READ_FILES = "read_files";
-
-    /** 改服务器上的文件。比 {@link #ACTION_READ_FILES} 重一档，所以是独立动作。 */
-    public static final String ACTION_WRITE_FILES = "write_files";
-
-    /** 记一份计划。它不碰任何外部东西，只影响模型自己的步骤。 */
-    public static final String ACTION_PLAN = "plan";
-
-    /** 搜一次网页。出网，与 {@code read} 不是一个口径。 */
-    public static final String ACTION_WEB_SEARCH = "web_search";
 
     /**
      * 文件工具。一个对象上挂着三个 {@code @Tool}（Read / Write / Edit），拆不开——所以下面
@@ -196,56 +186,31 @@ public class AgentToolsAutoConfiguration {
     }
 
     /**
-     * 权限登记。
+     * 画像：文件与联网只有 {@code coding}，计划与检索这类地基是全部画像。
      *
-     * <p>只登记这次真的导出去了的名字：没导出的工具也登记一条，会让"授权表里有它"与"模型看得见它"
-     * 变成两件事，而排查的人只能靠猜。
+     * <p>文件与联网<b>只进 {@code coding}</b>（含 {@code full} 不筛）：{@code messaging} 的承诺是
+     * "能问能查、碰不到机器"，而读服务器磁盘、往互联网 GET 一个 URL 都是碰机器。放错画像的表现是
+     * "只想让它答消息的部署"忽然能读到部署目录里的 {@code .env}——这是这套划分里最贵的一条。
      *
-     * @param files 文件工具配置，决定写工具在不在
-     * @param web 联网配置，决定搜索在不在
-     * @return 这一层的权限表
-     */
-    @Bean
-    public ToolPermissionRegistry agentToolsPermissionRegistry(FileToolsProperties files,
-                                                              WebToolsProperties web) {
-        Map<String, ToolPermission> permissions = new LinkedHashMap<>();
-        READ_ONLY_TOOL_NAMES.forEach(name -> permissions.put(name, ToolPermission.of(ACTION_READ_FILES)));
-        permissions.put(TODO_TOOL_NAME, ToolPermission.of(ACTION_PLAN));
-        if (web.hasSearchApiKey()) {
-            permissions.put(SEARCH_TOOL_NAME, ToolPermission.of(ACTION_WEB_SEARCH));
-        }
-        if (files.writeEnabled()) {
-            WRITE_TOOL_NAMES.forEach(name -> permissions.put(name, ToolPermission.of(ACTION_WRITE_FILES)));
-        }
-        return ToolPermissionRegistry.of(permissions);
-    }
-
-    /**
-     * 档位：文件与联网都是 {@link ToolTier#CODING}，计划是 {@link ToolTier#MINIMAL}。
-     *
-     * <p>文件与联网不放 {@code MESSAGING}：那一档的承诺是"只做消息与业务只读"，而读服务器磁盘、
-     * 往互联网 GET 一个 URL 都不是这条线上的事。放错档的表现是"只想让它答消息的部署"忽然能读
-     * 到部署目录里的 `.env`。
-     *
-     * <p>{@code TodoWrite} 放 {@code MINIMAL}：它只影响模型自己怎么排步骤，不碰任何外部东西，
+     * <p>{@code TodoWrite} 进全部画像：它只影响模型自己怎么排步骤，不碰任何外部东西，
      * 连"只做聊天"的部署也用得上。
      *
      * @param files 文件工具配置，决定写工具在不在
      * @param web 联网配置，决定搜索在不在
-     * @return 这一层的档位表
+     * @return 这一层的画像登记表
      */
     @Bean
     public ToolTierRegistry agentToolsTierRegistry(FileToolsProperties files, WebToolsProperties web) {
-        Map<String, ToolTier> tiers = new LinkedHashMap<>();
-        READ_ONLY_TOOL_NAMES.forEach(name -> tiers.put(name, ToolTier.CODING));
-        tiers.put(TODO_TOOL_NAME, ToolTier.MINIMAL);
+        Map<String, Set<ToolTier>> profiles = new LinkedHashMap<>();
+        READ_ONLY_TOOL_NAMES.forEach(name -> profiles.put(name, CODING_ONLY));
+        profiles.put(TODO_TOOL_NAME, ToolTier.all());
         if (web.hasSearchApiKey()) {
-            tiers.put(SEARCH_TOOL_NAME, ToolTier.CODING);
+            profiles.put(SEARCH_TOOL_NAME, CODING_ONLY);
         }
         if (files.writeEnabled()) {
-            WRITE_TOOL_NAMES.forEach(name -> tiers.put(name, ToolTier.CODING));
+            WRITE_TOOL_NAMES.forEach(name -> profiles.put(name, CODING_ONLY));
         }
-        return ToolTierRegistry.of(tiers);
+        return ToolTierRegistry.of(profiles);
     }
 
     /**

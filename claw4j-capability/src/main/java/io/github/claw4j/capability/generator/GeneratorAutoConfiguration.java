@@ -2,17 +2,16 @@ package io.github.claw4j.capability.generator;
 
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.github.claw4j.capability.script.ExecutionListeners;
 import io.github.claw4j.capability.script.ScriptPackageAutoConfiguration;
 import io.github.claw4j.capability.script.ScriptPackageRegistry;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
 import java.nio.file.Path;
@@ -32,9 +31,8 @@ import java.time.Clock;
 @AutoConfiguration(after = ScriptPackageAutoConfiguration.class)
 @ConditionalOnProperty(prefix = "claw4j.generator", name = "staging-directory")
 @ConditionalOnBean(ScriptPackageRegistry.class)
+@EnableConfigurationProperties(GeneratorProperties.class)
 public class GeneratorAutoConfiguration {
-
-    private static final String STAGING = "${claw4j.generator.staging-directory}";
 
     /**
      * 五步链路。
@@ -44,20 +42,18 @@ public class GeneratorAutoConfiguration {
      * 变成一次需要重启、或者需要再来一轮对话才发生的事。
      */
     @Bean
-    public SkillGenerator skillGenerator(@Value(STAGING) String stagingDirectory,
-                                         @Value("${claw4j.generator.review-directory:}") String reviewDirectory,
-                                         @Value("${claw4j.generator.published-directory:}") String publishedDirectory,
+    public SkillGenerator skillGenerator(GeneratorProperties properties,
                                          ScriptPackageRegistry scriptPackageRegistry,
                                          GenerationAudit generationAudit,
                                          Clock claw4jClock) {
-        Path staging = Path.of(stagingDirectory).toAbsolutePath().normalize();
-        Path reviews = reviewDirectory == null || reviewDirectory.isBlank()
+        Path staging = Path.of(properties.stagingDirectory()).toAbsolutePath().normalize();
+        Path reviews = properties.reviewDirectory() == null || properties.reviewDirectory().isBlank()
                 ? staging.resolveSibling("reviews")
-                : Path.of(reviewDirectory).toAbsolutePath().normalize();
+                : Path.of(properties.reviewDirectory()).toAbsolutePath().normalize();
         // 发布目录也落在暂存区旁边：上线的那份是快照，不能住在一个模型还能重写的地方。
-        Path published = publishedDirectory == null || publishedDirectory.isBlank()
+        Path published = properties.publishedDirectory() == null || properties.publishedDirectory().isBlank()
                 ? staging.resolveSibling("published")
-                : Path.of(publishedDirectory).toAbsolutePath().normalize();
+                : Path.of(properties.publishedDirectory()).toAbsolutePath().normalize();
         SkillGenerator generator = new SkillGenerator(staging, reviews, published, scriptPackageRegistry,
                 generationAudit, IsolationSpec.local(), claw4jClock);
         generator.publishApproved();
@@ -71,12 +67,11 @@ public class GeneratorAutoConfiguration {
      * 而审计只能追加。放同一个目录里的话，"清一下暂存区"会顺手把审计删了。
      */
     @Bean
-    public GenerationAudit generationAudit(@Value(STAGING) String stagingDirectory,
-                                           @Value("${claw4j.generator.audit-file:}") String auditFile) {
-        Path file = auditFile == null || auditFile.isBlank()
-                ? Path.of(stagingDirectory).toAbsolutePath().normalize()
+    public GenerationAudit generationAudit(GeneratorProperties properties) {
+        Path file = properties.auditFile() == null || properties.auditFile().isBlank()
+                ? Path.of(properties.stagingDirectory()).toAbsolutePath().normalize()
                         .resolveSibling("generation-audit.tsv")
-                : Path.of(auditFile).toAbsolutePath().normalize();
+                : Path.of(properties.auditFile()).toAbsolutePath().normalize();
         return new GenerationAudit(file);
     }
 
@@ -86,21 +81,11 @@ public class GeneratorAutoConfiguration {
         return Clock.systemUTC();
     }
 
-    /** 生成器这个工具本身。 */
+    /** 生成器这个工具本身。{@code tool-filter} 排掉它时，这一层就没有任何工具。 */
     @Bean
-    public ToolCallbackProvider skillGeneratorToolProvider(SkillGenerator generator) {
-        return new SkillGeneratorToolProvider(generator);
-    }
-
-    /**
-     * 这一层的权限登记表：动作是 {@code draft_script}，表一张都没有。
-     *
-     * <p>不用 {@code @ConditionalOnMissingBean}：多个登记表本来就是设计上允许的，而
-     * "已经有表就让位"会让这一层静默不登记，于是这个工具一律按未登记被拒。
-     */
-    @Bean
-    public ToolPermissionRegistry skillGeneratorPermissionRegistry(SkillGenerator generator) {
-        return ToolPermissionRegistry.of(new SkillGeneratorToolProvider(generator).permissions());
+    public ToolCallbackProvider skillGeneratorToolProvider(SkillGenerator generator,
+                                                          GeneratorProperties properties) {
+        return new SkillGeneratorToolProvider(generator, properties.toolFilter());
     }
 
     /**
@@ -111,9 +96,11 @@ public class GeneratorAutoConfiguration {
      * 拆成两档的话，"能写不能跑"这个组合要么没人用，要么得再补一条 deny，得不偿失。
      */
     @Bean
-    public ToolTierRegistry skillGeneratorTierRegistry(SkillGenerator generator) {
+    public ToolTierRegistry skillGeneratorTierRegistry(SkillGenerator generator,
+                                                       GeneratorProperties properties) {
         return ToolTierRegistry.sameFor(
-                new SkillGeneratorToolProvider(generator).permissions().keySet(), ToolTier.CODING);
+                new SkillGeneratorToolProvider(generator, properties.toolFilter()).toolNames(),
+                ToolTier.CODING);
     }
 
     /**

@@ -40,31 +40,19 @@ public final class PromptComposition {
     }
 
     /**
-     * 不带数据范围：没有 {@code Principal} 的调用（子代理、回放、用例）走这里。
+     * 拼出这一轮的系统提示词。
      *
-     * <p>此时提示词里没有权限段，缓存键与"任何身份"都不同——这比复用一个带权限的键安全：
-     * 无身份的一轮不该命中任何人的答案。
+     * <p>曾经还有第四个参数（数据权限指纹），在提示词里写成"数据范围"一段。ADR-0030 之后
+     * 身份只有一个 {@code userId}、也不再携带可读表与动作，那一段没有内容可写——而给模型看一段
+     * 无关的十六进制，只会让它把这串东西当成某种约束去迎合。模型该知道的边界已经由工具清单
+     * 本身表达（看不见的工具就是没有），不需要第二份声明。
      *
-     * @param persona  人设
+     * @param persona  人设（正文就是它的 {@code systemPrompt}）
      * @param glossary 口径；空表示这个人设没有额外口径
      * @param now      这一轮的时间，必须带时区
      * @return 拼好的系统提示词
      */
     public static String compose(Persona persona, List<GlossarySection> glossary, ZonedDateTime now) {
-        return compose(persona, glossary, now, null);
-    }
-
-    /**
-     * 拼出带权限指纹的系统提示词。
-     *
-     * @param persona   人设（正文就是它的 {@code systemPrompt}）
-     * @param glossary  口径；空表示这个人设没有额外口径
-     * @param now       这一轮的时间，必须带时区
-     * @param dataScope 权限指纹；{@code null} 或空白表示不写这一段
-     * @return 拼好的系统提示词
-     */
-    public static String compose(Persona persona, List<GlossarySection> glossary, ZonedDateTime now,
-                                 String dataScope) {
         Objects.requireNonNull(persona, "persona");
         Objects.requireNonNull(glossary, "glossary");
         Objects.requireNonNull(now, "now");
@@ -80,13 +68,6 @@ public final class PromptComposition {
                         .append(section.text())
                         .append('\n');
             }
-        }
-
-        if (dataScope != null && !dataScope.isBlank()) {
-            prompt.append("\n\n## 数据范围\n\n")
-                    .append("本次会话的数据权限标识：").append(dataScope).append('\n')
-                    .append("只能使用工具允许你访问的数据；没有工具能拿到的数据，")
-                    .append("直接说明拿不到，不要凭猜测补。\n");
         }
 
         prompt.append("\n\n## 现在的时间\n\n")

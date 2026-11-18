@@ -1,6 +1,5 @@
 package io.github.claw4j.agent.session;
 
-import io.github.claw4j.agent.PermissionFingerprint;
 import io.github.claw4j.domain.principal.Principal;
 
 import java.nio.charset.StandardCharsets;
@@ -39,12 +38,10 @@ import java.util.Objects;
  * 它把跨通道共享做成显式配置 {@code session.identityLinks}
  * （{@code docs/concepts/session.md:172-176}），本仓库把"共享"做成了默认、"隔离"做成配置。
  *
- * <p>权限指纹仍然在对话键里：记忆是把上一次的答案原样带进下一次提示词。降权之后若历史里躺着
- * 降权前查出的数字，模型会直接从上下文里念出来——不查库、不鉴权、不报错，因为记忆读取早于
- * 工具调用。掺进指纹后，权限变了就是另一段会话。
- *
- * <p>不用角色名当指纹：角色名会改、会复用，两个角色也可能其实是同一份权限。按
- * {@code tables + actions} 算出的指纹只认"能看见什么"，与语义缓存的键同一口径。
+ * <p>权限指纹曾经在对话键里：记忆是把上一次的答案原样带进下一次提示词，而掺进指纹之后
+ * "权限变了就是另一段会话"，降权前查出的数字因此不会被念出来。ADR-0030 把权限指纹整块
+ * 下线（身份只剩 {@code userId}），这条保护也随之消失——**降权不重置会话**是它明码标价的
+ * 代价（ADR 代价第 3 条）。第二步重建细粒度权限时，得同时想清楚"记忆里的旧数字怎么办"。
  *
  * <p>前缀不是装饰：会话表里还可能存别的命名空间（按工具、按技能），裸 id 进去就分不清了。
  */
@@ -52,9 +49,6 @@ public final class SessionKeys {
 
     /** 会话 id 的命名空间。换会话维度时改这里加后缀，不要在这里去掉通道与会话 id。 */
     public static final String PREFIX = "claw4j:user:";
-
-    /** 权限指纹与 userId 之间的分隔。库里 {@code ai_session.user_id} 存的就是这个形状。 */
-    static final String OWNER_SEPARATOR = "@";
 
     /** 通道与 chatId 之间的分隔，以及缺 chatId 时的占位。 */
     static final String SESSION_SEPARATOR = ":";
@@ -94,15 +88,16 @@ public final class SessionKeys {
     }
 
     /**
-     * 归属键：{@code userId@权限指纹}。会话表的 {@code user_id} 列、run 的归属、审计、
+     * 归属键：就是 {@code userId}。会话表的 {@code user_id} 列、run 的归属、审计、
      * 定时任务都认它，召回不认——召回按会话查（见 {@link RecallSessionTool}）。
      *
-     * <p>它仍然要掺权限指纹：会话表的 {@code user_id} 存的就是它，而会话内容按权限隔离；
-     * 写裸 userId 会让"降权之后什么都想不起来"在存储这一层失效——两段会话落在同一个
-     * user_id 下，任何按 user_id 汇总的查询都会把它们混在一起。
+     * <p>它曾经是 {@code userId@权限指纹}：权限变了就换一把键，于是"降权之后什么都想不起来"。
+     * 那个机制随权限指纹在 ADR-0030 里一起下线——身份现在只有一个字段，没有第二种"权限版本"
+     * 可掺。代价是**降权不重置会话**（ADR 代价第 3 条）：历史里高权限时读到的内容还在上下文里。
+     * 第二步重建细粒度权限时，这一条要跟着一起解决。
      *
      * @param principal 当前身份，不能为 null
-     * @return 归属键，形状为 {@code userId@短指纹}
+     * @return 归属键
      * @throws IllegalArgumentException userId 为空时。空的后果不是"存不下"，
      *                                  而是所有人共用一个会话——它看起来是记得住的，
      *                                  只是记得是别人的
@@ -114,14 +109,14 @@ public final class SessionKeys {
             throw new IllegalArgumentException(
                     "Principal.userId 不能为空：会话 id 由它派生，空了等于所有人共享一个会话");
         }
-        return userId + OWNER_SEPARATOR + PermissionFingerprint.shortOf(principal);
+        return userId;
     }
 
     /**
      * 对话键：{@code claw4j:user:<owner>:<通道>:<chatId>}。
      *
-     * <p>拆出 {@link #ownerOf} 是为了让调用方只算一次指纹：一轮请求里会话 id 与
-     * {@code user_id} 都要用，各算一遍的话，指纹口径一改就可能只改到一半——
+     * <p>拆出 {@link #ownerOf} 是为了让调用方只算一次：一轮请求里会话 id 与
+     * {@code user_id} 都要用，各算一遍的话，口径一改就可能只改到一半——
      * 表现是"记得住，但召回查不到"。
      *
      * @param owner   必须来自 {@link #ownerOf}，不要自己拼 {@code userId@x}

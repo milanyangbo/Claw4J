@@ -5,7 +5,6 @@ import io.github.claw4j.agent.goal.GoalTools;
 import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
 import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.persona.AgentProperties;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -312,29 +311,16 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
-     * 召回工具的权限。动作名与工具名同值，不复用 {@code read}：能查销售单与能回忆自己说过什么
-     * 是两件事，合成一个动作名等于给所有能查数的人顺手开了历史回查
-     * （细节见 {@link RecallSessionTool#ACTION}）。
+     * 召回工具的画像：全部（{@link ToolTier#all()}）。
      *
-     * @return 只登记 {@code recall_session} 一个动作的权限表
-     */
-    @Bean
-    public ToolPermissionRegistry recallSessionPermission() {
-        return ToolPermissionRegistry.of(
-                Map.of(RecallSessionTool.TOOL_NAME, RecallSessionTool.permission()));
-    }
-
-    /**
-     * 召回工具的档位：{@link ToolTier#MINIMAL}。
+     * <p>它读的是"我自己刚才说过什么"，不出网、不碰业务表，与读进程状态同一类。任何画像里
+     * 少掉它都会让长对话丢掉连贯性，而那不是一项业务能力——是地基。
      *
-     * <p>它读的是"我自己刚才说过什么"，不出网、不碰业务表，与读进程状态同一类。归进更高的档会
-     * 让"只聊天"的部署丢掉长对话的连贯性，而那不是一项业务能力。
-     *
-     * @return 把 {@code recall_session} 归到 MINIMAL 的档位表
+     * @return 把 {@code recall_session} 归到全部画像的登记表
      */
     @Bean
     public ToolTierRegistry recallSessionTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(RecallSessionTool.TOOL_NAME), ToolTier.MINIMAL);
+        return ToolTierRegistry.allProfilesFor(List.of(RecallSessionTool.TOOL_NAME));
     }
 
     /**
@@ -428,28 +414,17 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
-     * 三个目标工具的权限。动作名与工具名同值，不复用 {@code read}：它们改的是这一段对话的走向，
-     * 不是业务表。
+     * 三个目标工具的画像：全部（{@link ToolTier#all()}）。
      *
-     * @return 目标工具的权限表
-     */
-    @Bean
-    public ToolPermissionRegistry goalPermissionRegistry() {
-        return ToolPermissionRegistry.of(GoalTools.permissions());
-    }
-
-    /**
-     * 三个目标工具的档位：{@link ToolTier#MINIMAL}。
+     * <p>它们不碰业务表、不出网，读写的都是"这一段对话自己的状态"，与召回同一类。任何画像里
+     * 少掉它们都会让长活丢掉目标，而目标恰恰是最需要它的场景（一段要做很多轮的活）。
      *
-     * <p>它们不碰业务表、不出网，读写的都是"这一段对话自己的状态"，与召回同一个档。归进更高的档
-     * 会让"只聊天"的部署丢掉目标，而目标恰恰是纯聊天场景最需要的东西（一段要做很多轮的活）。
-     *
-     * @return 把三个目标工具归到 MINIMAL 的档位表
+     * @return 把三个目标工具归到全部画像的登记表
      */
     @Bean
     public ToolTierRegistry goalTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(GoalTools.GET, GoalTools.CREATE, GoalTools.UPDATE),
-                ToolTier.MINIMAL);
+        return ToolTierRegistry.allProfilesFor(
+                List.of(GoalTools.GET, GoalTools.CREATE, GoalTools.UPDATE));
     }
 
     /**

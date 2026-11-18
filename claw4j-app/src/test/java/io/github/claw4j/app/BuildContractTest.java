@@ -25,6 +25,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -330,7 +331,7 @@ class BuildContractTest {
         // 编号不复用（与 ADR 编号同一个口径）。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "5", "6", "7", "8", "9", "10");
+                .containsExactly("1", "2", "3", "5", "6", "7", "8", "9", "10", "11", "12", "13");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -487,6 +488,54 @@ class BuildContractTest {
                 .getDeclaredMethod("pluginContractGate").getModifiers()))
                 .as("static 不是为了让闸生效（非静态也生效），是为了不让容器为拿到它而提前实例化配置类")
                 .isTrue();
+    }
+
+    /**
+     * 出站暴露是**删掉的功能**，不是关着的功能（票 08 / ADR-0030 裁决二）。
+     *
+     * <p>三条一起验，因为它们会以三种不同的方式回来：类被加回来（有人照着旧文档恢复实现）、
+     * 配置段被加回来（那份 yml 是最容易被复制粘贴的东西）、profile 文件被加回来（它只是资源，
+     * 编译期什么都不报）。只验其中一条的话，另外两条回来时没有任何东西会红。
+     *
+     * <p>不引那个类名做编译期断言：类已经不存在，引了这条用例自己也编不过——用
+     * {@link Class#forName} 换字符串，才能在"它真的没了"这件事上给出肯定答案。
+     */
+    @Test
+    @DisplayName("出站 MCP 暴露已经不存在：三个类、配置段、stdio profile 都不在")
+    void outboundExposureIsGone() throws IOException {
+        for (String name : List.of(
+                "io.github.claw4j.capability.mcp.expose.McpExposure",
+                "io.github.claw4j.capability.mcp.expose.McpExposureProperties",
+                "io.github.claw4j.capability.mcp.expose.McpServerExposureAutoConfiguration")) {
+            assertThatThrownBy(() -> Class.forName(name))
+                    .as("这个类被加回来了：%s", name)
+                    .isInstanceOf(ClassNotFoundException.class);
+        }
+
+        // 读源文件而不是 classpath：增量构建里 target/classes 会留着已经删掉的资源，
+        // 拿 classpath 判"文件不存在"会在本机绿、在 clean 构建下才红的那一边翻过来。
+        Path resources = Path.of("src/main/resources");
+        String application = Files.readString(resources.resolve("application.yml"), StandardCharsets.UTF_8);
+        assertThat(application)
+                .as("整段键都要没了，不是只删 tables 一行：留着键的人会以为它还生效")
+                .doesNotContain("mcp.server")
+                .doesNotContain("MCP_SERVER_ENABLED");
+
+        assertThat(resources.resolve("application-mcp-stdio.yml"))
+                .as("那个 profile 就是为了跑这条 server，功能没了它只剩误导")
+                .doesNotExist();
+
+        // 注册表这一层单看一个文件不行：每个模块各有一份 imports（app 自己那份只有插件闸）。
+        // 全 classpath 扫一遍，才能同时回答"出站没被注册回来"与"入站还在注册"。
+        StringBuilder registrations = new StringBuilder();
+        for (Resource file : new PathMatchingResourcePatternResolver().getResources(
+                "classpath*:META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports")) {
+            registrations.append(file.getContentAsString(StandardCharsets.UTF_8)).append('\n');
+        }
+        assertThat(registrations.toString())
+                .doesNotContain("mcp.expose.")
+                .as("入站那一侧必须还在：一个字母之差，删错就是把「连别人的 server」一起废了")
+                .contains("io.github.claw4j.capability.mcp.ConfiguredMcpServersAutoConfiguration");
     }
 
     private PluginContractGate gate(Path... roots) {

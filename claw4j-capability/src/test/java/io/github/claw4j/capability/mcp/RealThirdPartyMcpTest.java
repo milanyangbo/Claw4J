@@ -1,8 +1,8 @@
 package io.github.claw4j.capability.mcp;
 
-import io.github.claw4j.capability.mcp.McpServerProperties.Permission;
 import io.github.claw4j.capability.mcp.McpServerProperties.Server;
 import io.github.claw4j.capability.mcp.McpServerProperties.Transport;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.github.claw4j.secret.SecretResolver;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -55,7 +55,7 @@ class RealThirdPartyMcpTest {
         Server server = new Server(Transport.STDIO, "npx",
                 List.of("-y", "@modelcontextprotocol/server-everything"),
                 Map.of(), List.of("PATH", "HOME"), null, null, Map.of(),
-                new Permission("read", List.of()), Map.of(), true);
+                ToolFilter.none(), true);
 
         try (McpToolProvider provider = new McpToolProvider(
                 List.of(new McpConnection(McpEndpoints.of("everything", server, NO_SECRETS), TIMEOUT, TIMEOUT)))) {
@@ -79,7 +79,7 @@ class RealThirdPartyMcpTest {
     @DisplayName("http：公网上的第三方端点，不起进程也能拿到工具清单，且每个工具都按只读登记")
     void thirdPartyHttpEndpointWorks() {
         Server server = new Server(Transport.HTTP, null, List.of(), Map.of(), List.of("PATH"),
-                "https://mcp.deepwiki.com", null, Map.of(), new Permission("read", List.of()), Map.of(), true);
+                "https://mcp.deepwiki.com", null, Map.of(), ToolFilter.none(), true);
 
         try (McpToolProvider provider = new McpToolProvider(
                 List.of(new McpConnection(McpEndpoints.of("deepwiki", server, NO_SECRETS), TIMEOUT)))) {
@@ -87,9 +87,8 @@ class RealThirdPartyMcpTest {
             assertThat(provider.toolNames())
                     .as("DeepWiki 的工具都是「读某个仓库的文档」，不需要凭据就能列出来")
                     .contains("read_wiki_structure", "read_wiki_contents", "ask_wiki_question");
-            assertThat(provider.permissions().values())
-                    .as("整条端点声明成只读，于是它导出的每个工具都是只读")
-                    .allSatisfy(permission -> assertThat(permission.action()).isEqualTo("read"));
+            // 权限声明那一层已经下线（ADR-0030 票 04）：这条用例现在只证明"真能连上、
+            // 真能列出工具"，"它属于哪一档"由画像登记回答，与本连接无关。
         }
     }
 }

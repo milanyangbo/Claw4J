@@ -1,6 +1,5 @@
 package io.github.claw4j.capability.skill;
 
-import io.github.claw4j.domain.principal.ToolPermission;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springaicommunity.agent.common.workspace.Workspace;
@@ -49,7 +48,6 @@ public final class AgentSkills {
      * 共用同一个动作名等于把"能读表"和"能把一份流程指令放进上下文"绑在一起。
      * 分开之后，"谁能用什么做法"是一行配置能回答的问题。
      */
-    public static final String ACTION = "use_skill";
 
     /** 审批标记默认放在技能目录下的这个子目录：位置固定，好记也好忽略。 */
     public static final String DEFAULT_REVIEW_DIRECTORY = ".review";
@@ -133,19 +131,6 @@ public final class AgentSkills {
         catch (IllegalArgumentException noUsableSkill) {
             throw new IllegalStateException("技能目录里没有可用的 Skill：" + absolute, noUsableSkill);
         }
-    }
-
-    /**
-     * 加载一份 Skill 需要什么权限：{@link #ACTION} 动作，加上零张业务表。
-     *
-     * <p>零张表不是"没有约束"，它是一条明确的声明：Skill 这一层不碰库。于是表级受限的身份
-     * （例如只看得到 region 的 guest）照样能按 Skill 办事，它会在 Skill 让它去碰别的表的那一步
-     * 被挡住，而不是在"选中做法"这步就被挡住。
-     *
-     * @return 登记表里这一条的样子
-     */
-    public static ToolPermission permission() {
-        return ToolPermission.of(ACTION);
     }
 
     /** 目录里有哪些 Skill，供日志与断言使用。 */

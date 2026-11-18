@@ -1,8 +1,6 @@
 package io.github.claw4j.agent.question;
 
 import io.github.claw4j.domain.port.OutboundDelivery;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.github.claw4j.domain.question.QuestionGate;
@@ -79,27 +77,15 @@ public class AskUserAutoConfiguration {
     }
 
     /**
-     * 权限登记：动作 {@code ask_user}，业务表一张都没有。
+     * 画像：全部（{@link ToolTier#all()}）。
      *
-     * <p>没登记的表现是每次调用都被拒（{@code outcome:denied}），而不是静默放行。
+     * <p>提问不碰文件、不碰表、不出网，只决定这一轮要不要停一下。任何画像里少掉它都是一个坏的
+     * 部署：模型想确认一件事却问不出来，只能猜，而猜错比停下来问一句贵得多。
      *
-     * @return 这一层的权限表
-     */
-    @Bean
-    public ToolPermissionRegistry askUserPermissionRegistry() {
-        return ToolPermissionRegistry.of(Map.of(TOOL_NAME, ToolPermission.of(ACTION)));
-    }
-
-    /**
-     * 档位：{@link ToolTier#MINIMAL}。
-     *
-     * <p>提问不碰文件、不碰表、不出网，只决定这一轮要不要停一下。连"只想让它能聊天"的部署也用得上——
-     * 那正是它最常用的场合。
-     *
-     * @return 这一层的档位表
+     * @return 这一层的画像登记表
      */
     @Bean
     public ToolTierRegistry askUserTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(TOOL_NAME), ToolTier.MINIMAL);
+        return ToolTierRegistry.allProfilesFor(List.of(TOOL_NAME));
     }
 }

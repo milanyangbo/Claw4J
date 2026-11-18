@@ -1,6 +1,7 @@
 package io.github.claw4j.capability.tool;
 
 import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
+import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.domain.principal.ToolProfile;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -10,6 +11,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -39,7 +41,14 @@ public final class ToolCatalog implements ToolCallbackProvider {
 
     private final ToolProfile profile;
 
-    private final Supplier<List<ToolCallback>> source;
+    /**
+     * 按本轮上下文解析清单。
+     *
+     * <p>为什么是函数而不是 {@link Supplier}：清单不只是"来源变了要重算"，还随"谁在问、用哪个
+     * 模型"变（ADR-0030 裁决二的各层）。让 catalog 自己认那些维度的话，它就要认识配置、认识身份，
+     * 而它住在 capability，那边不该知道 agent 的配置形状。这里只把上下文透传出去。
+     */
+    private final Function<ToolPolicyContext, List<ToolCallback>> source;
 
     /**
      * 固定清单，用于工具来源在装配期就定死的场合（例子、用例、以及把自己暴露成 MCP server
@@ -50,7 +59,7 @@ public final class ToolCatalog implements ToolCallbackProvider {
      * @param tools 清单本体
      */
     public ToolCatalog(String agent, ToolProfile profile, List<ToolCallback> tools) {
-        this(agent, profile, () -> tools);
+        this(agent, profile, context -> tools);
     }
 
     /**
@@ -62,9 +71,21 @@ public final class ToolCatalog implements ToolCallbackProvider {
      *               在这里握手等于把对端的延迟灌进对话
      */
     public ToolCatalog(String agent, ToolProfile profile, Supplier<List<ToolCallback>> source) {
+        this(agent, profile, asFunction(source));
+    }
+
+    /**
+     * 按上下文解析的清单。
+     *
+     * @param agent    人设名
+     * @param profile  筛出这份清单用的画像与全局白/黑
+     * @param resolver 每次解析时调用，入参是本轮上下文。它必须只读状态、不发起连接
+     */
+    public ToolCatalog(String agent, ToolProfile profile,
+                       Function<ToolPolicyContext, List<ToolCallback>> resolver) {
         this.agent = Objects.requireNonNull(agent, "agent");
         this.profile = Objects.requireNonNull(profile, "profile");
-        this.source = Objects.requireNonNull(source, "source");
+        this.source = Objects.requireNonNull(resolver, "resolver");
     }
 
     /**
@@ -91,7 +112,21 @@ public final class ToolCatalog implements ToolCallbackProvider {
      * @return 工具清单的只读快照
      */
     public List<ToolCallback> tools() {
-        List<ToolCallback> tools = source.get();
+        return toolsFor(ToolPolicyContext.anonymous());
+    }
+
+    /**
+     * 这一轮该给模型看的清单。
+     *
+     * <p>上下文决定"按模型""按发送者""子 Agent 角色"那几层生不生效，所以它必须由**每轮的调用方**
+     * 传进来，而不是在这里从某个静态状态里读——后者在流式路径上会读错线程。
+     *
+     * @param context 本轮上下文；{@link ToolPolicyContext#anonymous()} 表示只有全局层
+     * @return 筛完、包过的清单
+     */
+    public List<ToolCallback> toolsFor(ToolPolicyContext context) {
+        ToolPolicyContext ctx = context == null ? ToolPolicyContext.anonymous() : context;
+        List<ToolCallback> tools = source.apply(ctx);
         if (tools == null || tools.isEmpty()) {
             return List.of();
         }
@@ -101,10 +136,23 @@ public final class ToolCatalog implements ToolCallbackProvider {
         return tools.stream().map(UntrustedToolCallback::sanitizing).toList();
     }
 
-    /** 给 {@code ChatClient} 用：框架在每次请求时调它，于是清单按轮解析。 */
+    /**
+     * 给 {@code ChatClient} 的 provider 机制用。
+     *
+     * <p>它拿不到上下文，所以按"只有全局层"解析——这是安全的默认（不会因为漏传就放宽）。
+     * 要按身份或模型收窄的路径走 {@link #toolsFor(ToolPolicyContext)}，由调用方每轮显式传。
+     *
+     * @return 清单
+     */
     @Override
     public ToolCallback[] getToolCallbacks() {
         return tools().toArray(new ToolCallback[0]);
+    }
+
+    private static Function<ToolPolicyContext, List<ToolCallback>> asFunction(
+            Supplier<List<ToolCallback>> source) {
+        Objects.requireNonNull(source, "source");
+        return context -> source.get();
     }
 
     /**

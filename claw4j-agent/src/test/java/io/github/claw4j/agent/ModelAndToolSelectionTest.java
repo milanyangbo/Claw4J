@@ -31,11 +31,8 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
@@ -512,26 +509,6 @@ class ModelAndToolSelectionTest {
         assertThat(text).isEqualTo("查到了 128400");
     }
 
-    @Test
-    @DisplayName("检索出来的工具不等于能调：没登记权限的照样在调用前被拦下")
-    void searchIsNotAuthorization() {
-        RecordingTool secret = new RecordingTool("secretTool", "机密数据", "查询机密档案");
-        List<ToolCallback> tools = withNoise(secret, 20);
-        AtomicInteger turn = new AtomicInteger();
-        FixedChatModel model = new FixedChatModel(prompt -> turn.getAndIncrement() == 0
-                ? ChatPipelineTest.requestTool(ToolSearch.TOOL_NAME, "{\"query\":\"机密\"}")
-                : ChatPipelineTest.requestTool("secretTool", "{}"));
-
-        String text = new ChatClientAgentPort(client(model, tools,
-                // 只登记检索工具自己。secretTool 谁也调不动——它能不能调由登记表决定，
-                // 跟"检索得到"没有关系。
-                ToolPermissionRegistry.of(Map.of(ToolSearch.TOOL_NAME, ToolPermission.read())),
-                ToolSearchProperties.defaults())).reply(message("机密档案")).text();
-
-        assertThat(secret.calls()).as("越权的工具一次都不能被执行").isZero();
-        assertThat(text).contains(AuthorizationAdvisor.DENIAL_PREFIX);
-    }
-
     /**
      * 会话 id 不在上下文里时，这条路没有"退化成全塞"的兜底——它直接抛。
      *
@@ -751,19 +728,15 @@ class ModelAndToolSelectionTest {
 
     private static ChatClientAgentPort port(FixedChatModel model, List<ToolCallback> tools,
                                             ToolSearchProperties properties) {
-        return new ChatClientAgentPort(client(model, tools, readsEverything(tools), properties));
+        return new ChatClientAgentPort(client(model, tools, properties));
     }
 
     private static ChatClient client(FixedChatModel model, List<ToolCallback> tools,
-                                     ToolPermissionRegistry registry, ToolSearchProperties properties) {
+                                     ToolSearchProperties properties) {
         ToolIndex index = new ChineseToolIndex();
-        List<ToolPermissionRegistry> registries = List.of(registry,
-                // 与装配里那个 bean 同一条：检索工具自己按 read 放行
-                ToolPermissionRegistry.of(Map.of(ToolSearch.TOOL_NAME, ToolPermission.read())));
         return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
                         ToolSearch.toolLoop(properties, index, ObservationRegistry.NOOP,
                                 ToolCallBudget.MAX_TOTAL_CALLS))
-                .defaultAdvisors(new AuthorizationAdvisor(registries))
                 .defaultToolCallbacks(tools)
                 .build();
     }
@@ -783,16 +756,7 @@ class ModelAndToolSelectionTest {
     }
 
     private static InboundMessage message(String text) {
-        return new InboundMessage(Principal.readOnly("u-1"), "chat-1", text);
-    }
-
-    /** 所有工具都能调，用来把"检索"与"鉴权"分开验。 */
-    private static ToolPermissionRegistry readsEverything(List<ToolCallback> tools) {
-        Map<String, ToolPermission> permissions = tools.stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        callback -> callback.getToolDefinition().name(),
-                        callback -> ToolPermission.read("sales_order")));
-        return ToolPermissionRegistry.of(permissions);
+        return new InboundMessage(new Principal("u-1"), "chat-1", text);
     }
 
     /** 占位工具：名字与描述都不含业务词，检索它们时不该命中。 */

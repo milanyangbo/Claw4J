@@ -1,13 +1,13 @@
 package io.github.claw4j.capability.exec;
 
 import io.github.claw4j.capability.process.ShellCommandRunner;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springaicommunity.agent.tools.ShellTools;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -19,6 +19,7 @@ import org.springframework.core.type.AnnotatedTypeMetadata;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,9 +53,6 @@ public class ExecAutoConfiguration {
      */
     public static final List<String> TOOL_NAMES = List.of("Bash", "BashOutput", "KillShell");
 
-    /** 动作名。角色配置里写的是它，默认只给 admin。 */
-    public static final String ACTION = "exec_command";
-
     /** 起进程的执行器，工作目录取配置里的 workspace；目录不存在就启动失败。 */
     @Bean
     @ConditionalOnMissingBean
@@ -67,32 +65,48 @@ public class ExecAutoConfiguration {
         return new ShellCommandRunner(workspace);
     }
 
-    /** 工具对象：库的 {@link ShellTools}，执行后端换成沙箱这一份。 */
+    /**
+     * 工具对象：库的 {@link ShellTools}，执行后端换成沙箱这一份。
+     *
+     * <p>审批端口与复核器从容器里取（票 05）：端口实现在 agent 侧（它要落库、要发卡片），
+     * 这里只认接口。取不到时后端退到 {@link ExecApprovalPort#denyAll()}——需要人批的命令
+     * 这一轮拿不到结论，按 {@code askFallback} 处置（默认拒）。
+     *
+     * @param properties {@code claw4j.tools.exec} 的配置
+     * @param shellCommandRunner 起进程的执行器
+     * @param approvals 审批端口，可能不存在
+     * @param reviewer 复核器，可能不存在
+     * @return 库的工具对象
+     */
     @Bean
     @ConditionalOnMissingBean
-    public ShellTools shellTools(ExecProperties properties, ShellCommandRunner shellCommandRunner) {
+    public ShellTools shellTools(ExecProperties properties, ShellCommandRunner shellCommandRunner,
+                                 ObjectProvider<ExecApprovalPort> approvals,
+                                 ObjectProvider<ExecReviewer> reviewer) {
         return ShellTools.builder()
-                .execBackend(new SandboxedExecBackend(properties, shellCommandRunner))
+                .execBackend(new SandboxedExecBackend(properties, shellCommandRunner,
+                        System.getenv(), System.getProperty("user.name", ""),
+                        approvals.getIfAvailable(ExecApprovalPort::denyAll),
+                        reviewer.getIfAvailable(ExecReviewer::fallback)))
                 .build();
     }
 
-    /** 把 {@link ShellTools} 的三个方法暴露成工具。 */
+    /**
+     * 把 {@link ShellTools} 的三个方法暴露成工具，并给每个工具绑一层调用上下文。
+     *
+     * <p>上下文（谁在问、哪段对话）只在框架的 {@code ToolContext} 上有，而审批要它来落一条请求；
+     * 判定发生在后端的 {@code run} 里，那里拿不到 {@code ToolContext}。所以包在这一层，
+     * 见 {@link ExecContextToolCallback}。
+     *
+     * @param shellTools 库的工具对象
+     * @return 绑了上下文的三个工具
+     */
     @Bean
     public ToolCallbackProvider execToolCallbackProvider(ShellTools shellTools) {
-        return MethodToolCallbackProvider.builder().toolObjects(shellTools).build();
-    }
-
-    /** 权限登记：动作 {@code exec_command}，{@code ask} 档附带"需要人批"。 */
-    @Bean
-    public ToolPermissionRegistry execPermissionRegistry(ExecProperties properties) {
-        ToolPermission permission = properties.mode() == ExecProperties.Mode.ASK
-                ? ToolPermission.requiringApproval(ACTION)
-                : ToolPermission.of(ACTION);
-        Map<String, ToolPermission> permissions = new LinkedHashMap<>();
-        for (String name : TOOL_NAMES) {
-            permissions.put(name, permission);
-        }
-        return ToolPermissionRegistry.of(permissions);
+        ToolCallbackProvider raw = MethodToolCallbackProvider.builder().toolObjects(shellTools).build();
+        return () -> Arrays.stream(raw.getToolCallbacks())
+                .map(ExecContextToolCallback::new)
+                .toArray(ToolCallback[]::new);
     }
 
     /**

@@ -1,17 +1,12 @@
 package io.github.claw4j.channel.dingtalk.client;
 
-import io.github.claw4j.channel.http.HttpChannelProperties;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
 
 /**
  * 钉钉通道的配置：企业内部应用的凭据、机器人编码、谁能进来。
@@ -73,13 +68,16 @@ public class DingtalkProperties {
     private String apiBase = "https://api.dingtalk.com";
 
     /**
-     * 角色 → 登记在这个角色下的人（企业内 userId）。
+     * 谁可以用这条通道：企业内 userId（{@code senderStaffId}）。
      *
-     * <p>默认空表＝谁都进不来，正是要的方向。凭据齐了却一个人都没登记时，
-     * 启动日志里会说一声（{@link #warnIfNobodyIsRegistered()}）：那种状态里通道完全正常、
-     * 日志干净，而每个人都收到"没有权限"。
+     * <p>空的含义是**谁都不能**，不是"谁都能"——这是"任何能往通道里发消息的人都能触发这个
+     * agent"的唯一一道门。默认写成空，忘了配的表现是所有人都收到「不在白名单里」，而反向的
+     * 默认（空＝全放）会让一次漏配变成对外裸奔。{@code ["*"]} 是显式写下的"谁都行"。
+     *
+     * <p>原来这里按角色分组（{@code roles.<角色>.users}），角色再指向一张共用授权表。那套授权
+     * 随权限登记表在 ADR-0030 里整块下线：进来之后能看见什么由工具清单与审批决定。
      */
-    private Map<String, RoleGrant> roles = new LinkedHashMap<>();
+    private Set<String> users = new LinkedHashSet<>();
 
     /** 三样齐了才算配好。半配（只给了 client-id）等同于没配：装配条件不成立。 */
     public boolean configured() {
@@ -87,56 +85,29 @@ public class DingtalkProperties {
     }
 
     /**
-     * {@code userId} → 角色名。认不出来返回 {@code Optional#empty()}，绝不回落到默认角色。
+     * 这个用户能不能用这条通道。
      *
-     * <p>只到角色名为止：表与动作要拿这个名字去共用的那张授权表里取
-     * （{@code DingtalkPrincipalResolver}）。
+     * <p>{@code ["*"]} 是显式写下的"谁都行"，与"忘了配"（空集合）在行为上必须能区分开。
+     *
+     * @param userId 通道侧的用户标识
+     * @return 在名单里时为 {@code true}
      */
-    public Optional<String> roleOf(String userId) {
+    public boolean allows(String userId) {
         if (isBlank(userId)) {
-            return Optional.empty();
+            return false;
         }
-        return roles.entrySet().stream()
-                .filter(entry -> entry.getValue().users().contains(userId))
-                .map(Map.Entry::getKey)
-                .findFirst();
+        return users.contains("*") || users.contains(userId);
     }
 
-    /**
-     * 同一个人登记在两个角色里 → 启动失败。
-     *
-     * <p>与另外两个通道同一条理由：不选"先匹配到的算"，
-     * 因为那等于把"他能看什么"变成配置的书写顺序。
-     */
-    @PostConstruct
-    void validate() {
-        Set<String> duplicated = new TreeSet<>();
-        Set<String> seen = new LinkedHashSet<>();
-        for (RoleGrant grant : roles.values()) {
-            for (String user : grant.users()) {
-                if (!seen.add(user)) {
-                    duplicated.add(user);
-                }
-            }
-        }
-        if (!duplicated.isEmpty()) {
-            throw new IllegalStateException(
-                    "claw4j.channel.dingtalk.roles 里同一个人登记了多个角色：" + String.join(", ", duplicated)
-                            + "。一个人只能有一个身份，请删掉多余的那几处。");
-        }
-        warnIfNobodyIsRegistered();
-    }
-
-    /** 凭据齐了、一个人都没登记 → 启动日志里必须有句话。同另外四份。 */
-    private void warnIfNobodyIsRegistered() {
+    /** 凭据齐了、一个人都没登记 → 启动日志里必须有句话。这种状态最难查：通道连得上、事件收得到。 */
+    private void warnIfNobodyIsAllowed() {
         if (!enabled || !configured()) {
             return;
         }
-        boolean anyoneRegistered = roles.values().stream().anyMatch(grant -> !grant.users().isEmpty());
-        if (!anyoneRegistered) {
-            log.warn("钉钉通道已启用、凭据齐全，但 claw4j.channel.dingtalk.roles.*.users 一个人都没登记："
-                    + "回调会正常收到，而任何人提问都只会收到“没有权限”。"
-                    + "把提问者的企业内 userId 填进 application-local.yml"
+        if (users.isEmpty()) {
+            log.warn("dingtalk通道已启用、凭据齐全，但 claw4j.channel.dingtalk.users 一个人都没登记："
+                    + "回调会正常收到，而任何人提问都只会收到“不在白名单里”。"
+                    + "把提问者的企业内 userId填进 claw4j.channel.dingtalk.users"
                     + "（那条“未登记”的 WARN 里带着 sender=...）。");
         }
     }
@@ -185,23 +156,11 @@ public class DingtalkProperties {
         this.apiBase = apiBase == null || apiBase.isBlank() ? "https://api.dingtalk.com" : apiBase.strip();
     }
 
-    public Map<String, RoleGrant> getRoles() {
-        return roles;
+    public Set<String> getUsers() {
+        return users;
     }
 
-    public void setRoles(Map<String, RoleGrant> roles) {
-        this.roles = roles == null ? new LinkedHashMap<>() : new LinkedHashMap<>(roles);
-    }
-
-    /**
-     * 一个角色下登记的人。
-     *
-     * @param users 企业内 userId。空集合意味着"这个角色暂时没人"
-     */
-    public record RoleGrant(Set<String> users) {
-
-        public RoleGrant {
-            users = users == null ? Set.of() : Set.copyOf(users);
-        }
+    public void setUsers(Set<String> users) {
+        this.users = users == null ? new LinkedHashSet<>() : new LinkedHashSet<>(users);
     }
 }

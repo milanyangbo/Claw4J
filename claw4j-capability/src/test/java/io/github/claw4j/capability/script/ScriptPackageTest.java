@@ -2,6 +2,7 @@ package io.github.claw4j.capability.script;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.github.claw4j.domain.untrusted.ExternalContent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -218,6 +219,39 @@ class ScriptPackageTest {
                 .contains("two")
                 .contains(ExternalContent.START)
                 .contains("Source: Script");
+    }
+
+    @Test
+    @DisplayName("被 tool-filter 排掉的包：不进清单、不进权限登记，toolNames 里也查不到它")
+    void filteredPackageLeavesNoToolName() throws IOException {
+        ScriptPackage kept = packageWith("kept", "#!/bin/sh\necho kept\n", 5_000);
+        ScriptPackage dropped = packageWith("dropped", "#!/bin/sh\necho dropped\n", 5_000);
+        ScriptPackageRegistry registry = new ScriptPackageRegistry(List.of(kept, dropped));
+        ScriptPackageRunner runner = new ScriptPackageRunner(List.of(kept, dropped));
+
+        ScriptPackageToolProvider provider = new ScriptPackageToolProvider(registry, runner,
+                ScriptExecutionListener.NO_OP, new ToolFilter(List.of(), List.of("dropped")));
+
+        assertThat(provider.toolNames())
+                .as("名字清单是档位与权限登记的来源：它还留着 dropped，allow 里写它就看起来像能加回来")
+                .containsExactly("kept");
+        assertThat(provider.toolNames()).containsExactly("kept");
+        assertThat(provider.getToolCallbacks())
+                .extracting(callback -> callback.getToolDefinition().name())
+                .containsExactly("kept");
+    }
+
+    @Test
+    @DisplayName("一个包都不排时：清单与加过滤之前逐个相同")
+    void noToolFilterChangesNothing() throws IOException {
+        ScriptPackage first = packageWith("first", "#!/bin/sh\necho one\n", 5_000);
+        ScriptPackage second = packageWith("second", "#!/bin/sh\necho two\n", 5_000);
+
+        ScriptPackageToolProvider provider = ScriptPackageToolProvider.of(
+                List.of(first, second), ToolFilter.none());
+
+        assertThat(provider.toolNames()).containsExactly("first", "second");
+        assertThat(provider.getToolCallbacks()).hasSize(2);
     }
 
     @Test

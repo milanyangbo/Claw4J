@@ -2,13 +2,13 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.ChatClientAgentPort;
 import io.github.claw4j.agent.ToolCallBudget;
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.schedule.Schedule;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
@@ -19,10 +19,7 @@ import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundDelivery;
-import io.github.claw4j.domain.port.RoleDirectory;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
@@ -55,6 +52,7 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -73,11 +71,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 删掉，一条用例都不会红。
  *
  * <p>模型是假的：这里验的是到点有没有开 run、开的是不是任务主人的、失败几次之后停没停、
- * 收权之后停不停，不是模型的判断力。真模型闭环在 {@code ApplicationAssemblyTest}。
+ * 配置改了之后停不停，不是模型的判断力。真模型闭环在 {@code ApplicationAssemblyTest}。
  *
- * <p>权限按当前的角色表重算（P05）：{@link #roleTable} 就是那张表，用例里删掉一个角色、或者
- * 把某个角色的表权限收窄，等价于运维改了配置。这一组同时守着收权对定时任务真的有效，
- * 那是这条链上唯一会持续越权的形状。
+ * <p>判据只剩"这条任务的工具要不要人批"（P05，ADR-0030）：{@link #approvals} 就是那份名单，
+ * 用例里把一个工具改成要人批，看下一次到点会不会停用。原来还有"角色表重算权限"那一条，
+ * 随角色目录与权限登记表整块下线；业务数据授权的核验属于第二步。
  *
  * <p>扫描器的决策分支（什么情况记失败、什么情况直接停用、通知里说什么）在 agent 的
  * {@code ObservabilityTest} 里用替身跑，那里不需要库；这里只管库上的那一半。
@@ -92,12 +90,11 @@ class ScheduleFlowTest {
 
     private static final String GOAL = "每天九点报一次华东成交额";
 
-    /** 任务声明会用到的那个工具。权限登记在 {@link #permissions()} 里。 */
+    /** 任务声明会用到的那个工具。它在 {@link #approvals} 里出现时就算"要人批"。 */
     private static final String TOOL = "query_sales";
 
-    /** 与 run 的归属键同一个口径（{@code SessionKeys.ownerOf}：userId@权限指纹）。 */
-    private static final Principal OWNER_PRINCIPAL =
-            Principal.of("u-owner", "admin", Set.of("*"), Set.of("*"));
+    /** 与 run 的归属键同一个口径：归属键就是 {@code userId}（ADR-0030 之后没有权限指纹）。 */
+    private static final Principal OWNER_PRINCIPAL = new Principal("u-owner");
 
     @Container
     private static final PostgreSQLContainer<?> POSTGRES =
@@ -106,13 +103,13 @@ class ScheduleFlowTest {
     private static JdbcTemplate jdbc;
 
     /**
-     * 部署里的那张角色表（{@code claw4j.channel.http.roles}）：角色 → 权限。
+     * 部署里那份"要人批的工具"名单（{@code claw4j.approval.required-tools}）。
      *
-     * <p>用例在它上面做两件事：删一个角色（收权）、把某个角色的表权限收窄。
-     * 用真的可变表而不是给每个用例造一个新的 {@link RoleDirectory}，
-     * 是因为"改配置之后下一次到点会怎样"正是这张票要验的那件事。
+     * <p>用例在它上面做一件事：把某个工具改成要人批。用真的可变集合而不是给每个用例造一份新的，
+     * 是因为"改配置之后下一次到点会怎样"正是要验的那件事——那是定时任务唯一的运行时判据
+     * （角色表与业务数据授权随 ADR-0030 整块下线）。
      */
-    private final Map<String, Principal> roleTable = new LinkedHashMap<>();
+    private final Set<String> approvals = new LinkedHashSet<>();
 
     @BeforeAll
     static void migrate() {
@@ -128,8 +125,7 @@ class ScheduleFlowTest {
     void freshTables() {
         jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("delete from claw4j_run.agent_schedule");
-        roleTable.clear();
-        roleTable.put("admin", OWNER_PRINCIPAL);
+        approvals.clear();
     }
 
     @Test
@@ -313,12 +309,11 @@ class ScheduleFlowTest {
         assertThat(reply).contains("已建好").contains("query_sales")
                 .as("回执要带上「下一次是什么时候」：模型自己算不出 cron 的日历语义")
                 .contains("下一次");
-        // 库里那一行：身份两列 + 工具清单，没有任何一份权限快照
+        // 库里那一行：一个身份列 + 工具清单，没有任何一份权限快照
         Map<String, Object> row = jdbc.queryForMap(
-                "select owner_user_id, owner_role, required_tools, notify_policy, channel,"
+                "select owner_user_id, required_tools, notify_policy, channel,"
                         + " channel_ref from claw4j_run.agent_schedule");
         assertThat(row.get("owner_user_id")).isEqualTo(OWNER_PRINCIPAL.userId());
-        assertThat(row.get("owner_role")).isEqualTo(OWNER_PRINCIPAL.role());
         assertThat((String[]) ((java.sql.Array) row.get("required_tools")).getArray())
                 .containsExactly(TOOL);
         assertThat(row.get("notify_policy")).as("定时任务默认静默").isEqualTo("silent");
@@ -327,36 +322,33 @@ class ScheduleFlowTest {
     }
 
     @Test
-    @DisplayName("建不成的不落库：没权限的工具当场拒，理由原样交给模型")
-    void aTaskOnAToolTheCreatorCannotUseIsRefusedOnTheSpot() {
-        // 角色还在，但读不到 sales_order（工具要的那张表）。调用者的身份也是这一份——
-        // 真实入口那里 principal 就是从这张表算出来的，测试里造两份不一致的身份等于造一个不存在的世界。
-        Principal weakened = Principal.of("u-owner", "admin", Set.of("region"), Set.of("*"));
-        roleTable.put("admin", weakened);
+    @DisplayName("建不成的不落库：工具改成要人批之后当场拒，理由原样交给模型")
+    void aTaskOnAToolThatNeedsApprovalIsRefusedOnTheSpot() {
+        approvals.add(TOOL);
 
         String reply = toolNamed(ScheduleTools.CREATE).call("""
                 {"goal":"每天九点报一次华东成交额","cron":"0 0 9 * * *","tools":["query_sales"]}""",
-                toolContext(weakened));
+                toolContext(OWNER_PRINCIPAL));
 
-        assertThat(reply).contains("没建成").contains("sales_order");
+        assertThat(reply).contains("没建成").contains(TOOL).contains("没有人能点");
         assertThat(count("select count(*) from claw4j_run.agent_schedule"))
                 .as("建不成的任务一条都不该留：留着它明天九点必然失败一次")
                 .isZero();
     }
 
     @Test
-    @DisplayName("把创建者的角色删掉：下一次到点就停用并通知主人，一次模型都不调")
-    void losingTheRoleStopsTheTaskAndTellsItsOwner() {
+    @DisplayName("工具后来改成要人批：下一次到点就停用并通知主人，一次模型都不调")
+    void aTaskWhoseToolNowNeedsApprovalStopsAndTellsItsOwner() {
         Recorder delivery = new Recorder();
         String id = dueTask(DAILY_NINE, NotifyPolicy.SILENT);
-        // 收权：这个角色从授权表里删掉（运维改了配置）
-        roleTable.clear();
+        // 运维改了配置：这个工具从此每次执行都要人批
+        approvals.add(TOOL);
 
         scannerWith(new ScriptedModel("不该跑"), delivery).scan();
 
         Schedule after = schedule(id);
         assertThat(after.enabled()).isFalse();
-        assertThat(after.disabledReason()).contains("身份认不出来");
+        assertThat(after.disabledReason()).contains(TOOL);
         assertThat(after.failures()).as("再试三次也不会变好，所以不攒次数").isZero();
         assertThat(count("select count(*) from claw4j_run.audit_event"
                 + " where action = 'agent.run.started'")).as("没跑就没有这一轮").isZero();
@@ -365,19 +357,24 @@ class ScheduleFlowTest {
     }
 
     @Test
-    @DisplayName("角色还在但那个工具不再给：同样当场停用，理由说清是哪张表")
-    void losingTheToolStopsTheTaskToo() {
+    @DisplayName("任务没记下主人：到点不知道用谁的身份跑，当场停用并说清")
+    void aTaskWithoutAnOwnerIsDisabled() {
         Recorder delivery = new Recorder();
-        String id = dueTask(DAILY_NINE, NotifyPolicy.SILENT);
-        roleTable.put("admin", Principal.of("x", "admin", Set.of("region"), Set.of("*")));
+        String id = "no-owner";
+        // 旧版本留下的行、或者被人手改过的行：owner_user_id 为空
+        jdbc.update("insert into claw4j_run.agent_schedule"
+                        + " (id, owner, channel, channel_ref, goal, cron, zone, notify_policy,"
+                        + "  owner_user_id, required_tools, next_run_at)"
+                        + " values (?, 'orphan', ?, 'oc_sched', ?, '0 0 9 * * *', ?, 'silent',"
+                        + "  null, '{}', now() - interval '1 second')",
+                id, Recorder.CHANNEL, GOAL, SHANGHAI.getId());
 
         scannerWith(new ScriptedModel("不该跑"), delivery).scan();
 
         Schedule after = schedule(id);
         assertThat(after.enabled()).isFalse();
-        assertThat(after.disabledReason()).contains("sales_order");
-        assertThat(count("select count(*) from claw4j_run.audit_event"
-                + " where action = 'agent.run.started'")).as("没跑就没有这一轮").isZero();
+        assertThat(after.disabledReason()).contains("主人");
+        assertThat(delivery.sent).hasSize(1);
     }
 
     @Test
@@ -473,11 +470,11 @@ class ScheduleFlowTest {
         String id = "broken-cron";
         jdbc.update("insert into claw4j_run.agent_schedule"
                         + " (id, owner, channel, channel_ref, goal, cron, zone, notify_policy,"
-                        + "  owner_user_id, owner_role, required_tools, next_run_at)"
-                        + " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now() - interval '1 second')",
+                        + "  owner_user_id, required_tools, next_run_at)"
+                        + " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now() - interval '1 second')",
                 id, SessionKeys.ownerOf(OWNER_PRINCIPAL), Recorder.CHANNEL, "oc_sched",
                 GOAL, cron, SHANGHAI.getId(), NotifyPolicy.SILENT.column(),
-                OWNER_PRINCIPAL.userId(), OWNER_PRINCIPAL.role(),
+                OWNER_PRINCIPAL.userId(),
                 // 转成 Object：String[] 是 Object[]，直接当变参会被摊成一串单个参数
                 (Object) new String[]{TOOL});
         return id;
@@ -493,24 +490,9 @@ class ScheduleFlowTest {
         return new ScheduleStore(jdbc);
     }
 
-    /** 部署里的角色表：问"这个角色现在还有什么权限"，答不上来就是空。 */
-    private RoleDirectory roleDirectory() {
-        return (userId, role) -> {
-            Principal grant = roleTable.get(role);
-            return grant == null ? Optional.empty()
-                    : Optional.of(Principal.of(userId, role, grant.accessibleTables(),
-                            grant.allowedActions()));
-        };
-    }
-
-    /** 工具登记表：与生产同一份形状，{@link #TOOL} 要读 {@code sales_order}。 */
-    private static List<ToolPermissionRegistry> permissions() {
-        return List.of(ToolPermissionRegistry.of(
-                Map.of(TOOL, ToolPermission.read("sales_order"))));
-    }
-
+    /** 生产那套判据：只查"这条任务的工具要不要人批"。 */
     private ScheduleAuthorization authorization() {
-        return new ScheduleAuthorization(roleDirectory(), permissions());
+        return new ScheduleAuthorization(new ApprovalRequiredTools(approvals));
     }
 
     private ScheduleScanner scannerWith(ChatModel model, Recorder delivery) {
@@ -519,9 +501,12 @@ class ScheduleFlowTest {
     }
 
     /**
-     * 一个"到点就真的调一次工具"的门：工具计数、鉴权链都是真的。
+     * 一个"到点就真的调一次工具"的门：工具计数是真的。
      *
-     * <p>用它验的是这张票里最容易只写在文档上的那句：任务跑在主人的身份上（工具真的被放行）。
+     * <p>原来这里还挂着鉴权 Advisor，用"工具被放行"来证明"这次调用用的是任务主人那份权限"。
+     * 那一层在 ADR-0030 里整块下线：权限只剩清单级，工具在清单里就能跑，与"谁的任务"无关。
+     * 剩下的判据是别的：到点那一轮用的是任务主人 {@code owner_user_id} 的身份（见
+     * {@code seenPrincipals}），而这句话由工具真的被执行来兑现。
      */
     private ChatClientAgentPort toolCallingPort() {
         ToolCallback metered = new MeteredToolCallback(new RecordingTool(seenPrincipals), null);
@@ -529,8 +514,6 @@ class ScheduleFlowTest {
                         ToolCallingAdvisor.builder()
                                 .toolCallingManager(ToolCallBudget.toolCallingManager(
                                         ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS)))
-                // 鉴权链是生产那条：工具能跑通，说明这一次调用用的是任务主人那份权限
-                .defaultAdvisors(new AuthorizationAdvisor(permissions()))
                 .defaultToolCallbacks(metered)
                 .build();
         return new ChatClientAgentPort(chat, null, null, null, null, null,

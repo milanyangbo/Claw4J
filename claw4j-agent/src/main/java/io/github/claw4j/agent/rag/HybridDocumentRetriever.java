@@ -2,7 +2,6 @@ package io.github.claw4j.agent.rag;
 
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -22,12 +21,12 @@ import java.util.Objects;
  * 字段，它交给 {@link DocumentJoiner} 的每个 query 只带一路结果，框架留的"多路"入口在 advisor
  * 这条路上用不到。融合仍走 {@link DocumentJoiner} 接口。
  *
- * <p>权限在这里判，不在工具层：换成 advisor 之后检索不是工具调用，{@code AuthorizationAdvisor}
- * 管不到它。但 {@code before()} 会把 {@code ChatClientRequest.context()} 复制进
- * {@link Query#context()}，而 {@code Principal} 本来就在那里（{@link ContextKeys#PRINCIPAL}），
- * 判据不变，只是位置从"工具被调之前"搬到"检索之前"。
+ * <p>判据只剩一条：**这一轮有没有身份**。原来还问"这个身份能不能看 {@code doc} 这张伪表"，
+ * 那是业务数据授权，随权限登记表在 ADR-0030 里整块下线；知识库的细粒度 ACL
+ * 属于第二步（记在 ADR 缺口表与 {@code guardrails.md}）。这是**行为放宽**，测试里显式立了一条
+ * （{@code RagTest#anyPrincipalCanRetrieve}），别让它悄悄变化。
  *
- * <p>没有身份就返回空，不抛：那是"不该看到资料"的一条请求，抛出去会让这一轮失败，
+ * <p>没有身份就返回空，不抛：那是"说不清是谁"的一条请求，抛出去会让这一轮失败，
  * 正确答案是"像没有知识库那样回答"。
  *
  * <p>一路挂了不影响另一路：向量超时、全文 SQL 报错，各自退化成空列表并 WARN，两路都挂才抛。
@@ -36,20 +35,6 @@ import java.util.Objects;
 public class HybridDocumentRetriever implements DocumentRetriever {
 
     private static final Logger log = LoggerFactory.getLogger(HybridDocumentRetriever.class);
-
-    /**
-     * 知识库在授权表里占的表名。
-     *
-     * <p>{@code doc} 是伪表名：它不是业务表，但鉴权问的是同一个问题——"这个身份能不能看这份
-     * 数据"。复用 {@code read} 动作加一个表名，好处是"能不能看知识库"与"能不能查销售单"用同一套
-     * 授权表表达，不必新增动作名（那意味着所有角色配置都要改一遍才能检索）。
-     *
-     * <p>代价：只给了 {@code region} 的角色（如 {@code guest}）默认看不到知识库。这是想要的默认，
-     * 但不写进 {@code application.yml} 就会变成"配了知识库，可某些人问什么都说没有"。
-     */
-    static final String DOC_TABLE = "doc";
-
-    private static final ToolPermission DOC_PERMISSION = ToolPermission.read(DOC_TABLE);
 
     private final DocumentRetriever vector;
 
@@ -120,21 +105,21 @@ public class HybridDocumentRetriever implements DocumentRetriever {
     }
 
     /**
-     * 这一轮能不能看知识库。
+     * 这一轮有没有身份。
      *
      * <p>读的是 {@link Query#context()}：advisor 在那里放了 {@code ChatClientRequest.context()} 的
-     * 副本。判据与工具时代同一个 {@link ToolPermission}，所以"谁能看知识库"的口径没有变。
+     * 副本。有身份就检索——"能看哪些资料"这一层现在没有判据，见类注释。
      *
      * @param query 本次检索
-     * @return 有身份且带 {@code doc} 的读权限时为 true
+     * @return 有身份时为 true
      */
     private static boolean permitted(Query query) {
         Map<String, Object> context = query.context();
         Object value = context == null ? null : context.get(ContextKeys.PRINCIPAL);
-        if (!(value instanceof Principal principal)) {
-            log.warn("这一轮没有身份（context 里没有 {}），跳过知识库检索", ContextKeys.PRINCIPAL);
-            return false;
+        if (value instanceof Principal) {
+            return true;
         }
-        return principal.canUse(DOC_PERMISSION);
+        log.warn("这一轮没有身份（context 里没有 {}），跳过知识库检索", ContextKeys.PRINCIPAL);
+        return false;
     }
 }

@@ -32,13 +32,15 @@ logging:
 
 claw4j:
   channel:
+    http:
+      # HTTP 通道的准入白名单（ADR-0030）：空 = 谁都不能。本机 curl 要能进来，就先把你自己
+      # （也就是 X-Claw4j-User 里那个名字）填进来；整份写 ["*"] 表示这条通道不设准入。
+      users: []
     feishu:
       # 谁能用飞书通道：把提问那个人的 open_id 填在这里。
-      # 只登记"谁是谁"——角色能看哪些表、能做哪些动作只有一份，在 application.yml 的 roles 里。
+      # 它只是一份准入白名单——角色、能读哪些表那一层随 ADR-0030 整块下线了。
       # 没填时通道照样连得上，但任何人提问都只收到"没有权限"（日志里有带 sender= 的 WARN）。
-      roles:
-        read-only:
-          users: ["ou_xxxxxxxxxxxxxxxx"]
+      users: ["ou_xxxxxxxxxxxxxxxx"]
 
   # 谁能点审批按钮：飞书那边写 open_id，HTTP 那边写用户名（X-Claw4j-User）。
   # 不写就是没人能批：待批请求会挂到过期，启动日志里有一条 WARN。
@@ -56,6 +58,18 @@ claw4j:
   # 这一层导出的是 Skill 工具：描述里只有名字与一句话，正文要按名字调一次才回来。
   skills:
     directory: examples/skills
+
+  # ---- 业务示例插件（claw4j-example-sales）----
+  # 默认就装着，导出 querySales。tool-filter 决定这个插件**提供哪些工具**：
+  # 排掉之后，工具清单、权限登记、画像登记三处一起没有它——策略层的 allow 加不回来，
+  # 因为过滤发生在"它变成工具"之前。
+  example:
+    sales:
+      tool-filter:
+        # include 非空则必须命中；exclude 命中即排除；条目支持 * 通配（按整串匹配）。
+        # 两个都空 = 不筛，也就是默认的样子。
+        include: []
+        exclude: []
 
   # ---- MCP：一段配置 = 一条连接 = 一个能力来源 ----
   # stdio 起一个子进程用它的 stdin/stdout 说协议，http 连一个别人已经跑着的端点；
@@ -79,8 +93,6 @@ claw4j:
           command: python3
           args:
             - examples/mcp/demo_mcp_server.py
-          permission:
-            action: read
 
         # Java 版走 HTTP，不是要被 fork 的文件，所以没有 command / args。
         # 先起它，再起本应用（另开一个终端，在仓库根目录）：
@@ -90,28 +102,26 @@ claw4j:
         java-http:
           transport: http
           url: http://127.0.0.1:8082
-          permission:
-            action: read
+          # 存在性过滤：排掉的工具不进清单、不进画像登记，allow 加不回来。
+          # 它导出 runtimeSnapshot / cronNext / simulateSlowCall 三个，下面这条只留前两个。
+          # tool-filter:
+          #   include: [runtimeSnapshot, cronNext]
+          #   # 等价写法：exclude: [simulateSlowCall]；通配写 "runtime*"（整串匹配）
 
         # 把 gh 包成只读能力：列表、CI 状态、API 查询。要本机装了 gh 且已登录。
         github:
           command: python3
           args:
             - examples/mcp/gh_mcp_server.py
-          permission:
-            action: read
 
-        # 混装的那一个：mail_list_unread 是读，mail_send 有副作用，所以按工具覆盖权限。
-        # 兜底 read，只有 mail_send 要 send_email。要本机装了 himalaya 且配好账户。
+        # 混装的那一个：mail_list_unread 是读，mail_send 有副作用。
+        # 权限声明那一层（permission / tools）已经整块下线（ADR-0030 票 04）：这里只回答
+        # "接谁、装哪些工具"。想只放读的那几个，用 tool-filter.exclude 把写工具排掉。
+        # 要本机装了 himalaya 且配好账户。
         mail:
           command: python3
           args:
             - examples/mcp/himalaya_mcp_server.py
-          permission:
-            action: read
-          tools:
-            mail_send:
-              action: send_email
 
         # ---- 别人写的两个：默认关着，因为要 Node 与出网 ----
         # 打开方法：把下面 `# everything:` 到文件末尾的行首 "# " 去掉，再把上面两行超时也解注释。
@@ -122,13 +132,9 @@ claw4j:
         #   command: npx
         #   args: ["-y", "@modelcontextprotocol/server-everything"]
         #   inherit-env: [PATH, HOME]   # npx 靠 PATH 找到自己、靠 HOME 放包缓存
-        #   permission:
-        #     action: read
         # deepwiki:
         #   transport: http
         #   url: https://mcp.deepwiki.com   # endpoint 不填就走 SDK 默认的 /mcp
-        #   permission:
-        #     action: read
         #   # 要连需要凭据的端点就解开下面两行。头里写句柄：secret:deepwiki_token 对应环境变量
         #   # DEEPWIKI_TOKEN，真值在每次请求时才换出来；裸写 "Bearer xxx" 启动就会被拒。
         #   # headers:

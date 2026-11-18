@@ -9,7 +9,6 @@ import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.persona.PersonaCatalog;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -112,28 +111,21 @@ class SemanticCacheTest {
     }
 
     @Test
-    @DisplayName("换一个角色问同一句话：miss，因为上下文哈希里带着权限")
-    void anotherRoleMisses() {
+    @DisplayName("换一个人问同一句话：命中——缓存不再按身份分区（票 04 的已知后果）")
+    void anotherUserSharesTheCache() {
         Fixture fixture = new Fixture();
         fixture.port.reply(message("u-1", EAST_LAST_WEEK));
-        // guest 读不到 sales_order，同一个问题的答案本来就不同
-        fixture.port.reply(new Message("u-2", "guest", Set.of("region"),
-                Set.of(ToolPermission.READ)).toInbound(EAST_LAST_WEEK));
+        fixture.port.reply(new InboundMessage(new Principal("u-2"), "chat-2", EAST_LAST_WEEK));
 
+        // 这一条记录的是一个**行为变化**，不是期望的行为：框架的缓存键由系统提示词算出来，
+        // 而"数据范围"那段随权限指纹下线（ADR-0030）之后，两个身份拼出的提示词一模一样，
+        // 于是同一条答案会被第二个身份复用。
+        //
+        // 后果只有在"两个人看到的工具不同"时才致命：A 有 querySales、B 没有，B 问同一句话
+        // 会拿到 A 那次查出来的数字。它记在 ADR-0030 的缺口表里（"语义缓存不再按身份分区"），
+        // 归第二步——重建细粒度权限时要同时决定缓存该怎么分区。
         assertThat(fixture.model.prompts())
-                .as("权限不同 → 系统提示词不同 → 框架算出的 contextHash 不同 → 查的是另一个分区")
-                .hasSize(2);
-    }
-
-    @Test
-    @DisplayName("上下文哈希只看 tables 与 actions：同角色换个人照样命中")
-    void fingerprintIgnoresUserId() {
-        Fixture fixture = new Fixture();
-        fixture.port.reply(message("u-1", EAST_LAST_WEEK));
-        fixture.port.reply(message("u-9", EAST_LAST_WEEK));
-
-        assertThat(fixture.model.prompts())
-                .as("按 userId 分指纹等于同角色的人互相命中不了，缓存就白做了")
+                .as("缓存键只看提示词与实体：身份不再进提示词，于是也不再进键")
                 .hasSize(1);
     }
 
@@ -214,26 +206,19 @@ class SemanticCacheTest {
     }
 
     @Test
-    @DisplayName("带身份时提示词里有数据范围：缓存的权限维度就靠这一个标识")
-    void agentContextCarriesPermissionFingerprint() {
+    @DisplayName("提示词里不再有数据范围段：权限指纹下线之后那一段没有内容可写")
+    void agentContextCarriesNoDataScopeSection() {
         AgentContextAdvisor advisor = contextAdvisor();
 
-        AtomicReference<String> admin = new AtomicReference<>();
+        AtomicReference<String> composed = new AtomicReference<>();
         advisor.adviseCall(
-                ChatRequest.of(Principal.readOnly("u-1"), "上周卖得怎么样").toRequest(),
-                capturingChain(admin));
+                ChatRequest.of(new Principal("u-1"), "上周卖得怎么样").toRequest(),
+                capturingChain(composed));
 
-        AtomicReference<String> guest = new AtomicReference<>();
-        advisor.adviseCall(
-                ChatRequest.of(Principal.of("u-2", "guest", Set.of("region"), Set.of(ToolPermission.READ)),
-                        "上周卖得怎么样").toRequest(),
-                capturingChain(guest));
-
-        assertThat(admin.get())
-                .as("权限不同 → 提示词不同 → 框架算出的 contextHash 不同 → 缓存不互相命中")
-                .contains("数据范围")
-                .isNotEqualTo(guest.get());
-        assertThat(guest.get()).contains("数据范围");
+        assertThat(composed.get())
+                .as("这一段随权限指纹下线（ADR-0030）：模型该知道的边界由工具清单本身表达")
+                .doesNotContain("数据范围")
+                .doesNotContain("数据权限标识");
     }
 
     @Test
@@ -276,7 +261,7 @@ class SemanticCacheTest {
     }
 
     private static InboundMessage message(String userId, String text) {
-        return new InboundMessage(Principal.readOnly(userId), "chat-1", text);
+        return new InboundMessage(new Principal(userId), "chat-1", text);
     }
 
     /** 带上身份的一轮请求；缓存键里的权限维度就是从 {@code ContextKeys.PRINCIPAL} 取的。 */
@@ -291,14 +276,6 @@ class SemanticCacheTest {
                     .prompt(new Prompt(text))
                     .context(Map.of(ContextKeys.PRINCIPAL, who))
                     .build();
-        }
-    }
-
-    /** 一条带身份的消息，用来构造"换角色"的那一轮。 */
-    private record Message(String userId, String role, Set<String> tables, Set<String> actions) {
-
-        InboundMessage toInbound(String text) {
-            return new InboundMessage(Principal.of(userId, role, tables, actions), "chat-1", text);
         }
     }
 

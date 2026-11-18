@@ -1,7 +1,6 @@
 package io.github.claw4j.capability.builtin.agenttools;
 
 import io.github.claw4j.capability.LaunchDirectoryEnvironmentPostProcessor;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -42,9 +41,6 @@ class AgentToolsTest {
                     .containsExactlyInAnyOrder("Read", "Grep", "Glob", "TodoWrite")
                     .doesNotContain("Write", "Edit", "WebSearch");
 
-            assertThat(context.getBean(ToolPermissionRegistry.class).permissionFor("Write"))
-                    .as("没导出的工具不该出现在授权表里：登记了它，排查的人会以为模型看得见")
-                    .isEmpty();
         });
     }
 
@@ -68,14 +64,10 @@ class AgentToolsTest {
     void everyExportedToolIsRegistered() {
         runner.withPropertyValues("claw4j.tools.files.write-enabled=true").run(context -> {
             ToolTierRegistry tiers = context.getBean(ToolTierRegistry.class);
-            ToolPermissionRegistry permissions = context.getBean(ToolPermissionRegistry.class);
 
             for (String name : names(context)) {
-                assertThat(tiers.tierFor(name))
-                        .as("%s 没登记档位：清单组装会在它身上直接失败", name)
-                        .isPresent();
-                assertThat(permissions.permissionFor(name))
-                        .as("%s 没登记权限：调用一律按未登记拒绝", name)
+                assertThat(tiers.profilesFor(name))
+                        .as("%s 没登记画像：清单组装会在它身上直接失败", name)
                         .isPresent();
             }
         });
@@ -124,8 +116,8 @@ class AgentToolsTest {
 
         runner.withPropertyValues("claw4j.tools.web.search-api-key=probe-token").run(context -> {
             assertThat(names(context)).contains("WebSearch");
-            assertThat(context.getBean(ToolPermissionRegistry.class).permissionFor("WebSearch"))
-                    .as("装了就必须登记，否则调一次就被拒")
+            assertThat(context.getBean(ToolTierRegistry.class).profilesFor("WebSearch"))
+                    .as("装了就必须登记画像，否则清单组装会在它身上直接失败")
                     .isPresent();
         });
     }

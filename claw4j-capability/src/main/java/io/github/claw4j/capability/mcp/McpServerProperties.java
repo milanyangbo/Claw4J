@@ -1,5 +1,6 @@
 package io.github.claw4j.capability.mcp;
 
+import io.github.claw4j.domain.principal.ToolFilter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -100,10 +101,10 @@ public class McpServerProperties {
      * @param headers   http / sse：每次请求都带的头，值是句柄，可以带前后缀
      *                  （{@code Authorization: "Bearer secret:deepwiki_token"}）；
      *                  真值在每次写头那一刻才换出来（P08）
-     * @param permission 这个 server 导出的工具默认需要什么权限。默认只读且不碰任何业务表
-     * @param tools      按工具覆盖 {@code permission}：键是工具名，值是它自己的权限。
-     *                   没点名的工具仍走 {@code permission}；点名了一个 server 不导出的工具名
-     *                   按配置错误在启动时失败（拼错一个名字而静默沿用兜底，等于让人以为加严了）
+     * @param toolFilter 这个 server 的哪些工具**存在**（ADR-0030 裁决二）：{@code include} 非空
+     *                   则必须命中，{@code exclude} 命中即排除，条目支持 {@code *}。过滤发生在
+     *                   "工具变成工具"之前，所以被排掉的工具不进清单、不进画像登记，
+     *                   也不在 {@code toolNames()} 里——{@code allow} 加不回来
      * @param enabled   单个 server 的开关。默认开——写了配置就是要接它，关掉是例外
      */
     public record Server(@DefaultValue("stdio") Transport transport,
@@ -114,19 +115,8 @@ public class McpServerProperties {
                          String url,
                          String endpoint,
                          @DefaultValue Map<String, String> headers,
-                         @DefaultValue Permission permission,
-                         @DefaultValue Map<String, Permission> tools,
+                         @DefaultValue ToolFilter toolFilter,
                          @DefaultValue("true") boolean enabled) {
-    }
-
-    /**
-     * 权限声明。默认 {@code read} 且不碰任何表，就是"只读的外部能力"：
-     * 表清单为空时 {@code Principal.canUse} 只看动作，于是只读身份能调它、但拿不到任何业务表。
-     *
-     * @param action 动作名，与角色配置里的 actions 同一个口径（{@code read} / {@code send_email}…）
-     * @param tables 它会碰到的业务表；全部都要在身份的可访问范围内才放行
-     */
-    public record Permission(@DefaultValue("read") String action, @DefaultValue List<String> tables) {
     }
 
     /**

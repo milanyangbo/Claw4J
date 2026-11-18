@@ -1,6 +1,5 @@
 package io.github.claw4j.capability.skill;
 
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springframework.ai.tool.ToolCallback;
@@ -22,9 +21,9 @@ import java.util.Map;
  * <p>这一层导出的是单个 {@code ToolCallback}，不是 {@code ToolCallbackProvider}：一个技能目录
  * 只产出一个工具（用名字取正文的那种），所以它是"两种形态都要收"里的第二种形态。
  *
- * <p>权限登记表不用 {@code @ConditionalOnMissingBean(ToolPermissionRegistry.class)}：那条条件
- * 的语义是"容器里已经有了就让位"，于是几个来源各登记各的时，后处理的那一个会静默不注册，
- * 它的工具从此一律按"未登记"被拒。鉴权 Advisor 消费的是一张表的列表。
+ * <p>这里不卡 {@code @ConditionalOnMissingBean}：那条条件的语义是"容器里已经有了就让位"，
+ * 于是几个来源各出一个 provider 时，后注册的那一个会静默不出现，它的工具从此在清单里消失。
+ * 收集方按列表收，多份来源本来就是设计上允许的。
  */
 @AutoConfiguration
 @ConditionalOnProperty(prefix = "claw4j.skills", name = "directory")
@@ -46,21 +45,16 @@ public class SkillToolAutoConfiguration {
         return AgentSkills.callback(Path.of(directory), review, requireApproval);
     }
 
-    /** 这一层的权限登记表：动作是加载 Skill，业务表一张都没有（ADR-0003）。 */
-    @Bean
-    public ToolPermissionRegistry skillPermissionRegistry() {
-        return ToolPermissionRegistry.of(Map.of(AgentSkills.TOOL_NAME, AgentSkills.permission()));
-    }
-
     /**
-     * 档位：{@link ToolTier#MESSAGING}。
+     * 画像：只有 {@code coding}。
      *
-     * <p>技能是"读一份写好的做法"，读的是本地 {@code SKILL.md}，不执行代码、不出网。
-     * 它比 {@code MINIMAL} 高一档是因为内容由部署自己提供——一个只做问答的部署要不要
-     * 让自己的业务话术进到模型手里，是一个决定，不是必然。
+     * <p>技能读的是本地 {@code SKILL.md}，看起来"不执行代码、不出网"，但它有两个性质让 OpenClaw
+     * 把 {@code skill_workshop} 只放进 {@code coding}：一是正文**当指令读进上下文**，等于临时扩权；
+     * 二是路径落在部署的文件系统上。前者是理由的主干——{@code messaging} 的承诺是碰不到机器，
+     * 而"读一个部署自己写的文件"就是碰机器。
      */
     @Bean
     public ToolTierRegistry skillTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(AgentSkills.TOOL_NAME), ToolTier.MESSAGING);
+        return ToolTierRegistry.sameFor(List.of(AgentSkills.TOOL_NAME), ToolTier.CODING);
     }
 }

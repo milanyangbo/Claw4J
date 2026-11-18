@@ -1,6 +1,5 @@
 package io.github.claw4j.channel.wecom.client;
 
-import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.domain.question.QuestionGate;
@@ -40,29 +39,26 @@ import java.util.concurrent.Executor;
  * 直接歧义，而飞书的通道 bean 正是按类型拿它的。它本来也只服务这一个控制器，
  * 露出去只是多一个能被别人注入的点。
  *
- * <p>这里同时绑定 {@link HttpChannelProperties}：它是两个通道共用的那张授权表。
  */
 @AutoConfiguration(afterName = "io.github.claw4j.agent.AgentAutoConfiguration")
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnProperty(prefix = "claw4j.channel.wecom", name = "enabled", havingValue = "true", matchIfMissing = true)
-@EnableConfigurationProperties({WecomProperties.class, HttpChannelProperties.class})
+@EnableConfigurationProperties(WecomProperties.class)
 public class WecomChannelAutoConfiguration {
 
     /** 企业微信回推专用的线程池名字：与 HTTP、飞书分开，日志里一眼看出是哪条通道在跑。 */
     public static final String WECOM_EXECUTOR = "claw4jWecomExecutor";
 
     /**
-     * 认人：本通道的登记表加两个通道共用的授权表。
+     * 认人：按 {@code claw4j.channel.wecom.users} 判准入。
      *
-     * <p>角色名对不上时它自己让启动失败，这里不加兜底——兜底等于把配置写错变成那群人没有权限。
-     * 放在 {@code CallbackConfiguration} 之外，理由与飞书那份相同：它不需要凭据，
-     * 而角色名写错在凭据配齐之前就该报出来。
+     * <p>放在 {@code CallbackConfiguration} 之外：它不需要凭据，而"名单是空的"这件事在凭据配齐
+     * 之前就该报出来（见 {@code WecomProperties#validate()}）。
      */
     @Bean
     @ConditionalOnMissingBean
-    public WecomPrincipalResolver wecomPrincipalResolver(WecomProperties properties,
-                                                         HttpChannelProperties authz) {
-        return new WecomPrincipalResolver(properties, authz);
+    public WecomPrincipalResolver wecomPrincipalResolver(WecomProperties properties) {
+        return new WecomPrincipalResolver(properties);
     }
 
     @Configuration(proxyBeanMethods = false)

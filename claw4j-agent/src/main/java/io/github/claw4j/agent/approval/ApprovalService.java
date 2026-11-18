@@ -1,11 +1,15 @@
 package io.github.claw4j.agent.approval;
 
 import io.github.claw4j.agent.approval.PrincipalSnapshot;
+import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.capability.exec.ExecProperties;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.ApprovalChoice;
+import io.github.claw4j.domain.port.ApprovalLedger;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import org.slf4j.Logger;
@@ -111,7 +115,7 @@ public class ApprovalService implements ApprovalDecider {
      */
     private static final String ROW_SQL =
             "select status, expires_at <= now() as expired, run_id, owner, tool_name,"
-                    + " session_key, channel, chat_ref, principal_snapshot"
+                    + " session_key, channel, chat_ref, principal_snapshot, frozen_plan"
                     + " from claw4j_run.approval_request where id = ?";
 
     private final JdbcTemplate jdbc;
@@ -128,17 +132,44 @@ public class ApprovalService implements ApprovalDecider {
     private final AgentPort agent;
 
     /**
+     * {@code allow-always} 的落点（票 05）。可以为 null：没装 exec 的部署里选不了那一档，
+     * 装配时也不会有人问它。
+     */
+    private final JdbcExecAllowlist allowlist;
+
+    /**
+     * exec 的配置（票 05）。只用来判"这条请求接不接受以后都放行"——{@code ask=always} 时不接受。
+     * 可以为 null：没有 exec 的部署里没有任何一条能长期放行。
+     */
+    private final ExecProperties exec;
+
+    /**
      * 审批决定的服务。
      *
      * @param jdbc 主连接池，必填
      * @param roster 审批人名单，必填
      * @param agent 批准之后续跑用的门，可为 null
      */
-
     public ApprovalService(JdbcTemplate jdbc, ApproverRoster roster, AgentPort agent) {
+        this(jdbc, roster, agent, null, null);
+    }
+
+    /**
+     * 审批决定的服务，带 {@code allow-always} 的落点。
+     *
+     * @param jdbc 主连接池，必填
+     * @param roster 审批人名单，必填
+     * @param agent 批准之后续跑用的门，可为 null
+     * @param allowlist 持久放行的落点，可为 null（没有 exec 的部署）
+     * @param exec exec 配置，可为 null
+     */
+    public ApprovalService(JdbcTemplate jdbc, ApproverRoster roster, AgentPort agent,
+                           JdbcExecAllowlist allowlist, ExecProperties exec) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.roster = Objects.requireNonNull(roster, "roster");
         this.agent = agent;
+        this.allowlist = allowlist;
+        this.exec = exec;
         if (roster.nobody()) {
             log.warn("claw4j.approval.approvers 一个人都没有：待批请求会一直挂着，直到过期。"
                     + "要么把审批人填进去（飞书填 open_id，HTTP 填用户名），要么别把任何动作标成“要审批”。");
@@ -146,21 +177,40 @@ public class ApprovalService implements ApprovalDecider {
     }
 
     /**
+     * 这条请求接不接受"以后都放行"。
+     *
+     * <p>两个条件都要满足：它是 exec 的命令（只有 exec 有持久放行的落点），且当前档位不是
+     * {@code ask=always}（那一档的含义是每条都要人看）。
+     *
+     * @param toolName 审批行上的工具名
+     * @return 接受时为 {@code true}
+     */
+    private boolean allowsAlways(String toolName) {
+        return AgentExecApprovalPort.TOOL_NAME.equals(toolName)
+                && AgentExecApprovalPort.allowsAlways(exec);
+    }
+
+    /**
      * 落一个审批结论，并把结论投回发起请求的那段对话。
      *
      * <p>顺序固定：读行、判资格、落结论、再叫醒。任何一步拒绝或落不下去，都不进入下一步。
      *
+     * <p>{@link Choice#ALLOW_ALWAYS} 要比 {@link Choice#ALLOW_ONCE} 多做一步：按命令段往
+     * {@code exec_allowlist} 里落条目（票 05）。落不进去只记日志——结论已经生效，缺的是"下次
+     * 不用再问"，不是"这次没放行"。
+     *
      * @param approvalId 审批编号
      * @param approver 点按钮的人的 {@code userId}
-     * @param approved 批准为真，拒绝为假
+     * @param choice 结论档位
      * @param reason 拒绝理由，可为 null
      * @return 结论与回给操作者的那句话
      */
     @Override
-    public Result decide(String approvalId, String approver, boolean approved, String reason) {
+    public Result decide(String approvalId, String approver, ApprovalChoice choice, String reason) {
         if (approvalId == null || approvalId.isBlank()) {
             return new Result(ApprovalVerdict.NOT_FOUND, "没有审批编号，不知道要批哪一条。");
         }
+        ApprovalChoice decision = choice == null ? ApprovalChoice.DENY : choice;
         Optional<Row> found = look(approvalId);
         if (found.isEmpty()) {
             return new Result(ApprovalVerdict.NOT_FOUND, "没有这个审批编号。");
@@ -171,7 +221,14 @@ public class ApprovalService implements ApprovalDecider {
         if (refused.isPresent()) {
             return new Result(refused.get(), refusalText(refused.get()));
         }
-        if (claim(approvalId, approver, approved, reason) == 0) {
+        if (decision == ApprovalChoice.ALLOW_ALWAYS && !allowsAlways(row.toolName())) {
+            // 这个请求不接受长期放行（ask=always，或不是 exec 的命令）。什么都不改：
+            // 那条请求仍然挂着，等他选"批准"或"拒绝"。
+            return new Result(ApprovalVerdict.NOT_APPLICABLE,
+                    "这一条不接受“以后都放行”：当前档位要求每次都由人看一眼，或者它没有可持久的地方。"
+                            + "点“批准”只放行这一次。");
+        }
+        if (claim(approvalId, approver, decision, reason) == 0) {
             // 读的时候还在等，写的时候落不下来：刚好过期 / 已经有结论 / 另一个人刚落完。
             // 先试图把它落成 expired：过期这件事本来就该当场有结论，不该等清扫。
             if (expireOne(approvalId)) {
@@ -180,14 +237,38 @@ public class ApprovalService implements ApprovalDecider {
             }
             return explanationOf(row);
         }
-        if (!approved) {
+        if (decision == ApprovalChoice.DENY) {
             // 拒绝：命令不执行（终态），但那一段对话要被告知——否则模型一直以为还在等。
+            if (silent(row.sessionKey())) {
+                return new Result(ApprovalVerdict.DENIED,
+                        deniedText(row.toolName(), reason) + denialTrailer(Reached.SILENT));
+            }
             Reached reached = wake(row, deniedNote(row.toolName(), reason));
             return new Result(ApprovalVerdict.DENIED,
                     deniedText(row.toolName(), reason) + denialTrailer(reached));
         }
-        Reached reached = wake(row, grantedNote(row.toolName(), approvalId));
-        return new Result(ApprovalVerdict.GRANTED, grantedTrailer(reached));
+        if (decision == ApprovalChoice.ALLOW_ALWAYS) {
+            remember(row);
+        }
+        Reached reached = wake(row, grantedNote(row.toolName(), approvalId, decision));
+        return new Result(ApprovalVerdict.GRANTED, grantedTrailer(reached, decision));
+    }
+
+    /**
+     * 把这一条批准变成一条持久放行。
+     *
+     * <p>从审批行上的冻结件重建，不从内存里的请求对象：结论可能是在另一个进程、另一天落的，
+     * 那时内存里没有"刚才那条命令"。行上那份是唯一权威的副本。
+     *
+     * @param row 审批行
+     */
+    private void remember(Row row) {
+        if (allowlist == null) {
+            log.warn("选了 allow-always，但这个部署没有装配 exec 的放行表：这一条只生效一次（tool={}）",
+                    row.toolName());
+            return;
+        }
+        allowlist.remember(FrozenPlanJson.decode(row.frozenPlan()));
     }
 
     /**
@@ -202,7 +283,28 @@ public class ApprovalService implements ApprovalDecider {
         /** 请求没留下完整的来处（哪段对话、发起人是谁）：猜一个地址比不说更糟。 */
         NO_ORIGIN,
         /** 那一轮没跑起来（模型侧报错）。结论已落库，但对话不知道。 */
-        FAILED
+        FAILED,
+        /** 那段会话是子 Agent 或定时任务：按它的约定不投递拒绝（票 05，照 OpenClaw 的抑制条件）。 */
+        SILENT
+    }
+
+    /**
+     * 这段会话要不要跳过投递。
+     *
+     * <p>照 OpenClaw 的 {@code isSubagentSessionKey || isCronSessionKey}，**只对拒绝生效**：
+     * 子 Agent 拿到的拒绝会变成它那一轮的工具结果，再投一条 follow-up 只会让它把同一件事再做一遍；
+     * 定时任务没有人正在读它，投进去等于往一个没人看的分支里写字。批准完成的结果照常投——那是
+     * "接着做"的入口。
+     *
+     * <p>按键形判而不是查表：会话键里就写着这是哪一类（{@code subagent:<名字>}、
+     * {@code cron:<任务>}），再维护一张表去说同一件事，两者迟早对不上。
+     *
+     * @param sessionKey 会话键，可以为 {@code null}
+     * @return 跳过投递时为 {@code true}
+     */
+    private static boolean silent(String sessionKey) {
+        return sessionKey != null
+                && (sessionKey.contains("subagent:") || sessionKey.contains(SessionKeys.CRON_PREFIX));
     }
 
     /**
@@ -256,17 +358,27 @@ public class ApprovalService implements ApprovalDecider {
     /**
      * 落结论。
      *
+     * <p>{@code allow-always} 也写在这一条语句里：表上的 {@code ck_approval_request_state} 要求
+     * {@code status=allowed} 时 {@code decision} 是 allow-once 或 allow-always，而
+     * {@code ck_approval_request_consumed} 要求只有 allow-once 才能被兑现——两处合起来正是
+     * "长期放行不靠这张表兑现，靠 exec_allowlist"。
+     *
      * @param approvalId 审批编号
      * @param approver 审批人
-     * @param approved 批准为真
+     * @param choice 结论档位
      * @param reason 拒绝理由，可为 null
      * @return 影响的行数，0 表示那一行已经不是「等着且没过期」了
      */
-    private int claim(String approvalId, String approver, boolean approved, String reason) {
+    private int claim(String approvalId, String approver, ApprovalChoice choice, String reason) {
+        boolean allowed = choice != ApprovalChoice.DENY;
         try {
             return jdbc.update(CLAIM_SQL,
-                    approved ? "allowed" : "denied",
-                    approved ? "allow-once" : "deny",
+                    allowed ? "allowed" : "denied",
+                    switch (choice) {
+                        case ALLOW_ONCE -> "allow-once";
+                        case ALLOW_ALWAYS -> "allow-always";
+                        case DENY -> "deny";
+                    },
                     RESOLVER_KIND_CHANNEL,
                     approver,
                     reason,
@@ -388,13 +500,24 @@ public class ApprovalService implements ApprovalDecider {
      * <p>要说「下一步就是执行它」：模型看不到审批系统，只看到上一轮被拦了。不点明这一句，它下一轮会
      * 再问一遍用户要不要做，而那个按钮已经有人按过了。
      *
+     * <p>{@code allow-always} 要多说一句"以后都放行"：只写"这一次批了"的话，模型下一次仍会先说
+     * "我要申请一个审批"，而那一刻它其实可以直接跑——人已经替它做了那个决定。
+     *
+     * <p>不写"已批准的异步命令完成"：我们没有"批准之后由系统替你跑"这条腿，命令仍然是模型重新
+     * 调起来执行的。照抄那一句会让它以为已经有输出，从而跳过执行直接汇报结果。
+     *
      * @param toolName 工具名
      * @param approvalId 审批编号
+     * @param choice 结论档位
      * @return 交给模型的文本
      */
-    private static String grantedNote(String toolName, String approvalId) {
-        return "[审批通过] 工具 " + toolName + " 的审批已经通过（编号 " + approvalId
-                + "）。下一步就是执行它，不要再问用户要不要做。";
+    private static String grantedNote(String toolName, String approvalId, ApprovalChoice choice) {
+        StringBuilder text = new StringBuilder("[审批通过] 工具 ").append(toolName)
+                .append(" 的审批已经通过（编号 ").append(approvalId).append("）。");
+        if (choice == ApprovalChoice.ALLOW_ALWAYS) {
+            text.append("这次选的是“以后都放行”：同一条命令段不再需要审批。");
+        }
+        return text.append("下一步就是执行它，不要再问用户要不要做；现在还没有任何输出。").toString();
     }
 
     /**
@@ -438,16 +561,22 @@ public class ApprovalService implements ApprovalDecider {
      * 批下来的尾巴：说清「接着做了」还是「没人接着做」。
      *
      * @param reached 说到了哪一步
+     * @param choice 结论档位，用来区分"这一次"与"以后都放行"
      * @return 追加在结论后面的那句
      */
-    private static String grantedTrailer(Reached reached) {
-        return switch (reached) {
+    private static String grantedTrailer(Reached reached, ApprovalChoice choice) {
+        String head = choice == ApprovalChoice.ALLOW_ALWAYS
+                ? "这条命令段已经持久放行，下次不再问。"
+                : "";
+        return head + switch (reached) {
             case DELIVERED -> "这件事已经接着往下做了。";
             case NO_AGENT -> "但这个部署没有 Agent 在跑，这件事不会自动接着做。";
             case NO_ORIGIN -> "但这条请求没有留下完整的来处（哪段对话、发起人是谁），没法自动接着做。"
                     + "让提这个请求的人再说一句“继续”。";
             case FAILED -> "但接着做的那一轮出错了（见日志），结果可能还没送到。"
                     + "让提这个请求的人再说一句“继续”。";
+            // 批准不会走到这一档：抑制只对拒绝生效，这里只为穷举。
+            case SILENT -> "但那一段是子 Agent 或定时任务，没有可接着做的对话。";
         };
     }
 
@@ -464,6 +593,7 @@ public class ApprovalService implements ApprovalDecider {
             case NO_ORIGIN -> "但这条请求没有留下完整的来处，那段对话不会被告知——"
                     + "让提这个请求的人知道这件事没做。";
             case FAILED -> "结论已经落库，但那段对话没被通知到（见日志）。";
+            case SILENT -> "那一段是子 Agent 或定时任务，按约定不把拒绝投回去。";
         };
     }
 
@@ -499,14 +629,14 @@ public class ApprovalService implements ApprovalDecider {
         return new Pending(row.getString("id"), row.getString("run_id"), row.getString("owner"),
                 row.getString("tool_name"), row.getString("args_summary"), row.getString("status"),
                 row.getBoolean("expired"), row.getObject("expires_at", java.time.OffsetDateTime.class)
-                .toInstant());
+                .toInstant(), allowsAlways(row.getString("tool_name")));
     }
 
     private Row rowOf(ResultSet row, int index) throws SQLException {
         return new Row(row.getString("status"), row.getBoolean("expired"),
                 row.getString("owner"), row.getString("tool_name"),
                 row.getString("session_key"), row.getString("channel"), row.getString("chat_ref"),
-                row.getString("principal_snapshot"));
+                row.getString("principal_snapshot"), row.getString("frozen_plan"));
     }
 
     private static boolean blank(String value) {
@@ -520,8 +650,10 @@ public class ApprovalService implements ApprovalDecider {
      * @param channel 卡片与结果的投递通道，可空
      * @param chatRef 通道内的会话地址
      * @param principalSnapshot 发起人的身份快照（JSON），可空
+     * @param frozenPlan 批准那一刻冻结的执行计划（JSON），可空；只有 exec 会写
      */
     private record Row(String status, boolean expired, String owner, String toolName,
-                       String sessionKey, String channel, String chatRef, String principalSnapshot) {
+                       String sessionKey, String channel, String chatRef, String principalSnapshot,
+                       String frozenPlan) {
     }
 }

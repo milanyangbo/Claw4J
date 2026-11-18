@@ -1,5 +1,6 @@
 package io.github.claw4j.channel.feishu.sdk;
 
+import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.channel.feishu.FeishuApprovalCard;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.principal.Principal;
@@ -73,11 +74,12 @@ class FeishuApprovalActions {
             return Outcome.of("error", "你还没有在飞书通道登记（claw4j.channel.feishu.roles），"
                     + "所以点不了任何一条。让管理员把你的 open_id 加进去。");
         }
-        Boolean approved = approvedOf(click.decision());
-        if (approved == null) {
-            return Outcome.of("error", "这个按钮我不认识（" + click.decision() + "），请用卡片上的批准/拒绝。");
+        ApprovalChoice choice = choiceOf(click.decision());
+        if (choice == null) {
+            return Outcome.of("error", "这个按钮我不认识（" + click.decision()
+                    + "），请用卡片上的批准 / 以后都放行 / 拒绝。");
         }
-        ApprovalDecider.Result result = decider.decide(click.approvalId(), who.get().userId(), approved, null);
+        ApprovalDecider.Result result = decider.decide(click.approvalId(), who.get().userId(), choice, null);
         log.info("飞书卡片审批：approval={} approver={} verdict={}",
                 click.approvalId(), who.get().userId(), result.verdict());
         return new Outcome(toastTypeOf(result), result.detail(),
@@ -93,7 +95,7 @@ class FeishuApprovalActions {
     private static boolean settles(ApprovalVerdict verdict) {
         return switch (verdict) {
             case GRANTED, DENIED, EXPIRED, ALREADY_DECIDED -> true;
-            case NOT_FOUND, NOT_APPROVER, SELF_APPROVAL -> false;
+            case NOT_FOUND, NOT_APPROVER, SELF_APPROVAL, NOT_APPLICABLE -> false;
         };
     }
 
@@ -107,12 +109,24 @@ class FeishuApprovalActions {
         }
     }
 
-    private static Boolean approvedOf(String decision) {
+    /**
+     * 按钮说的是哪一档。
+     *
+     * <p>认不出来返回 {@code null}：卡片会被转发、被截图复制，{@code value} 里的东西不可信，
+     * 也不该因为多了一个不认识的字段就当成"拒绝"——那等于把一次误点变成一次否掉。
+     *
+     * @param decision 按钮里的取值
+     * @return 结论档位；不认识时为 {@code null}
+     */
+    private static ApprovalChoice choiceOf(String decision) {
         if (FeishuApprovalCard.DECISION_APPROVE.equals(decision)) {
-            return Boolean.TRUE;
+            return ApprovalChoice.ALLOW_ONCE;
+        }
+        if (FeishuApprovalCard.DECISION_ALWAYS.equals(decision)) {
+            return ApprovalChoice.ALLOW_ALWAYS;
         }
         if (FeishuApprovalCard.DECISION_DENY.equals(decision)) {
-            return Boolean.FALSE;
+            return ApprovalChoice.DENY;
         }
         return null;
     }
@@ -122,6 +136,8 @@ class FeishuApprovalActions {
             case GRANTED -> "success";
             case DENIED -> "info";
             case EXPIRED, ALREADY_DECIDED -> "warning";
+            // 不适用是"换个按钮再来"，不是错误也不是拒绝：那条请求还挂着。
+            case NOT_APPLICABLE -> "warning";
             default -> "error";
         };
     }

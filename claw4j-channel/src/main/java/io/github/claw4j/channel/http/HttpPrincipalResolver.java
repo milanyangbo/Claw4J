@@ -1,9 +1,9 @@
 package io.github.claw4j.channel.http;
 
+import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.domain.principal.Principal;
 
 import java.util.Objects;
-import io.github.claw4j.channel.spi.PrincipalRejectedException;
 
 /**
  * 从 HTTP 请求头里认出「这是谁」。
@@ -13,16 +13,14 @@ import io.github.claw4j.channel.spi.PrincipalRejectedException;
  * 飞书是事件里的 {@code sender_id}，换通道时这段必然重写，不该让 Agent 去猜。
  *
  * <p>前置条件是网关已经在边缘做过认证、把结果写成请求头。本项目不做认证体系，
- * 这里只负责把头部翻译成 {@link Principal}；头部缺失或角色不在授权表里就拒绝，
- * 不放匿名请求进来。
+ * 这里负责把头部翻译成 {@link Principal}，并按 {@code claw4j.channel.http.users} 判准入：
+ * 缺失用户标识、或者人不在白名单里，都拒绝。**没有默认身份**——角色请求头
+ * 这个头随角色一起下线，认不出就是进不来。
  */
 public class HttpPrincipalResolver {
 
     /** 用户标识所在的头，由网关写入。 */
     public static final String USER_HEADER = "X-Claw4j-User";
-
-    /** 角色名所在的头。缺省时用 {@code defaultRole}。 */
-    public static final String ROLE_HEADER = "X-Claw4j-Role";
 
     /** 会话标识所在的头。缺省时回落到用户标识。 */
     public static final String CHAT_ID_HEADER = "X-Claw4j-Chat-Id";
@@ -34,24 +32,22 @@ public class HttpPrincipalResolver {
     }
 
     /**
-     * 把两个请求头翻译成一个身份。
+     * 把请求头里的用户标识翻译成一个身份。
      *
      * @param userId 网关写入的用户标识，缺失即拒绝
-     * @param role 角色头；留空按 {@code defaultRole} 处理，给了但表里没有则拒绝
-     * @return 身份与授权范围都取自 {@code claw4j.channel.http.roles} 的 {@link Principal}
-     * @throws PrincipalRejectedException 缺用户标识，或角色未登记
+     * @return 身份
+     * @throws PrincipalRejectedException 缺用户标识，或这个人不在 {@code claw4j.channel.http.users} 里
      */
-    public Principal resolve(String userId, String role) {
+    public Principal resolve(String userId) {
         if (userId == null || userId.isBlank()) {
             throw new PrincipalRejectedException("缺少 " + USER_HEADER + " 请求头");
         }
-        String effectiveRole = (role == null || role.isBlank()) ? properties.getDefaultRole() : role;
-
-        HttpChannelProperties.RoleGrant grant = properties.getRoles().get(effectiveRole);
-        if (grant == null) {
-            throw new PrincipalRejectedException("角色未在 claw4j.channel.http.roles 中登记：" + effectiveRole);
+        if (!properties.allows(userId)) {
+            throw new PrincipalRejectedException("用户不在 claw4j.channel.http.users 白名单里：" + userId
+                    + "。把网关认证出来的用户名填进去（本机演示就是你自己），或者整份名单写 [\"*\"]"
+                    + "表示这条通道不设准入。");
         }
-        return Principal.of(userId, effectiveRole, grant.tables(), grant.actions());
+        return new Principal(userId);
     }
 
     /**

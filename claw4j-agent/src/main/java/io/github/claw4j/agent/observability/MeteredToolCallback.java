@@ -37,9 +37,8 @@ import java.util.Objects;
  * <p>没有 registry 时照样包：计数与审计都与有没有装 actuator 无关，装不装只影响指标报不报得出去。
  * {@link SpanTracer#NONE} 是零开销的空实现，埋点代码只有一种写法。
  *
- * <p>这里看不到 {@code denied}：鉴权拒绝发生在 Advisor 那一层，工具根本没被执行，走不到这个
- * {@code call} 里。那个计数只能在鉴权 Advisor 上报（见 {@code AuthorizationAdvisor}）——两处各报
- * 一半，因为各自是唯一知道真相的地方。
+ * <p>这里看不到 {@code denied}：被拦下的调用根本没被执行，走不到这个 {@code call} 里——看不见的
+ * 工具进不了清单，要人批的工具在触发前就被审批闸拦下（ADR-0030 之后，拒绝只剩审批那一处）。
  *
  * <p>两个 {@code call} 重载都覆写：带 {@code ToolContext} 的那个在 Spring AI 里是 default 方法，
  * 但它未必转调单参那个（不同实现不一样）。只包一个的话，走另一个重载的调用就漏计了。

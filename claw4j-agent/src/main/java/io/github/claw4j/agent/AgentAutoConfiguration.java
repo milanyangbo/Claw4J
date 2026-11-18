@@ -1,9 +1,11 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.agent.approval.ApprovalGate;
+import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentContextAdvisor;
@@ -14,8 +16,7 @@ import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.port.AgentPort;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolPolicyPipeline;
 import io.github.claw4j.domain.principal.ToolProfile;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
@@ -49,6 +50,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import io.github.claw4j.agent.model.ModelConfiguration;
+import io.github.claw4j.agent.model.ModelProperties;
 
 /**
  * Agent 的最小装配：一个系统提示词加一条 Advisor 链。
@@ -123,6 +125,9 @@ public class AgentAutoConfiguration {
      * @param toolPolicy 全局档位策略；人设文件里的 {@code tier} 覆盖它（只覆盖档位，不覆盖
      *     allow / deny）
      * @param personas 人设目录，取选中人设的名字与档位
+     * @param agentProperties 时区与目录，只用于启动日志
+     * @param gates 审批门，可能不存在（没装配持久化那一层时）
+     * @param approvals 要人批的工具名单，可能不存在
      * @return 工具清单
      */
     @Bean
@@ -133,22 +138,46 @@ public class AgentAutoConfiguration {
                                    ObjectProvider<SpanTracer> tracer,
                                    ObjectProvider<ToolTierRegistry> tierRegistries,
                                    ToolsProperties toolPolicy,
-                                   PersonaCatalog.Catalog personas) {
+                                   PersonaCatalog.Catalog personas,
+                                   AgentProperties agentProperties,
+                                   ObjectProvider<ApprovalGate> gates,
+                                   ObjectProvider<ApprovalRequiredTools> approvals) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
-        // 结论变了才打日志（见 signatureOf）：清单现在是每轮解析的，每轮都打一行
-        // "挡掉 0 个"会把真正的告警淹掉，而"清单变了"本身是值得留一行的事件。
+        List<ToolTierRegistry> registries = tierRegistries.orderedStream().toList();
+        // "这次用的是哪份人设、画像来自哪一层"必须能从日志里读出来。内置默认尤其要说：
+        // 一份谁也没注意到的默认人设，比一份写错的配置更难查——前者没有任何报错，
+        // 只是说话的方式不对。
+        log.info("这个部署的 agent 是 {}（{}），人设来自 {}；时区 {}；工具画像 {}（来自 {}）",
+                personas.selected().name(), personas.selected().description(),
+                agentProperties.hasDirectory() ? agentProperties.directory()
+                        : "内置默认（未配 claw4j.agent.directory）",
+                agentProperties.zone(), profile.profile(),
+                personas.selected().tier().isPresent() ? "人设文件的 tier" : "claw4j.tools.profile");
+        // 结论变了才打日志（见 signatureOf）：清单每轮解析，每轮都打一行"挡掉 0 个"会把真正的
+        // 告警淹掉，而"清单变了"本身是值得留一行的事件。
         AtomicReference<String> reported = new AtomicReference<>();
-        return new ToolCatalog(personas.selected().name(), profile, () ->
-                collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                        meterRegistry.getIfAvailable(), audit.getIfAvailable(),
-                        tracer.getIfAvailable(() -> SpanTracer.NONE), profile,
-                        tierRegistries.orderedStream().toList(),
-                        selection -> {
-                            String signature = signatureOf(selection);
-                            if (!signature.equals(reported.getAndSet(signature))) {
-                                report(profile, selection);
-                            }
-                        }));
+        return new ToolCatalog(personas.selected().name(), profile, context -> {
+            // 每轮现算：按模型那层可能换画像，按发送者 / 子 Agent 那几层再加几条收窄
+            // （ADR-0030 裁决二）。全都在 select 之后，所以只能减不能加。
+            ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(toolPolicy, context);
+            ToolProfile effective = decision.profile() == profile.profile()
+                    ? profile
+                    : new ToolProfile(decision.profile(), profile.allow(), profile.deny(),
+                            profile.alsoAllow());
+            return withApprovalGate(
+                    collectToolCallbacks(toolCallbacks, toolCallbackProviders,
+                            meterRegistry.getIfAvailable(), audit.getIfAvailable(),
+                            tracer.getIfAvailable(() -> SpanTracer.NONE), effective, registries,
+                            new ToolPolicyPipeline(decision.layers()),
+                            selection -> {
+                                String signature = signatureOf(selection);
+                                if (!signature.equals(reported.getAndSet(signature))) {
+                                    report(effective, selection);
+                                }
+                            }),
+                    gates.getIfAvailable(), approvals.getIfAvailable(ApprovalRequiredTools::none),
+                    audit.getIfAvailable());
+        });
     }
 
     /**
@@ -175,11 +204,9 @@ public class AgentAutoConfiguration {
     public ChatClient chatClient(ChatModel chatModel,
                                  ObjectProvider<Advisor> advisors,
                                  ObjectProvider<ObservationRegistry> observationRegistry,
-                                 ToolCatalog catalog,
                                  ToolIndex toolIndex,
                                  ToolSearchProperties toolSearch,
-                                 AgentProperties agent,
-                                 PersonaCatalog.Catalog personas) {
+                                 AgentProperties agent) {
         ObservationRegistry observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
 
         // 工具循环的 manager 必须显式塞进来：走单参的 ChatClient.builder(chatModel)
@@ -191,30 +218,14 @@ public class AgentAutoConfiguration {
         var toolCallingAdvisor = ToolSearch.toolLoop(toolSearch, toolIndex, observations,
                 agent.toolCallLimit());
 
-        // "这次用的是哪份人设、档位来自哪一层"必须能从日志里读出来。
-        // 内置默认尤其要说：一份谁也没注意到的默认人设，比一份写错的配置更难查——
-        // 前者没有任何报错，只是说话的方式不对。
-        log.info("这个部署的 agent 是 {}（{}），人设来自 {}；时区 {}；工具档位 {}（来自 {}）",
-                personas.selected().name(), personas.selected().description(),
-                agent.hasDirectory() ? agent.directory() : "内置默认（未配 claw4j.agent.directory）",
-                agent.zone(), catalog.profile().tier(),
-                personas.selected().tier().isPresent() ? "人设文件的 tier" : "claw4j.tools.profile");
-
         return ChatClient.builder(chatModel, observations, null, null, toolCallingAdvisor)
                 // 没有 defaultSystem：系统提示词由 AgentContextAdvisor 每轮拼（人设 + 口径 + 现在的时间）。
                 // 放在这里的话，时间会在装配那一刻定死，进程跑一周还是启动那天。
                 .defaultAdvisors(advisors.orderedStream().toList())
-                // 工具同理：容器里所有来源都挂上，这里不点名任何工具类。
-                // 没有工具时是空数组，工具循环照常工作（只是无工具可检索）。
-                // 这份清单永远不会被整份塞进提示词：工具循环先把它们索引进 ToolIndex，
-                // 只把"找工具"那一个交给模型，查到谁再注入谁。
-                //
-                // 给它的是 provider，不是快照（票 03）：框架在每次请求时展开 provider
-                // （DefaultChatClientUtils.toChatClientRequest 里那个循环），于是这一轮模型
-                // 看得见哪些工具每轮重新算一次。写成 defaultToolCallbacks(catalog.tools())
-                // 的话，MCP server 恢复之后连接是新的、清单还是启动那天那份，
-                // 模型那边只会说「我没有这个能力」。
-                .defaultToolCallbacks(catalog)
+                // 工具**不在这里挂默认 provider**：默认 provider 展开时拿不到"这一轮谁在问、
+                // 用的哪个模型"，而按发送者与按模型那几层正需要它（ADR-0030 裁决二）。
+                // 每一轮由 {@code ChatClientAgentPort#promptOf} 显式传筛过的清单。
+                // 漏传的失败姿势是"一个工具都没有"——比"全开"安全，且立刻能看出来。
                 .build();
     }
 
@@ -233,7 +244,7 @@ public class AgentAutoConfiguration {
     private static ToolProfile profileOf(Persona persona, ToolsProperties tools) {
         ToolProfile global = tools.toProfile();
         return persona.tier()
-                .map(tier -> new ToolProfile(tier, global.allow(), global.deny()))
+                .map(tier -> new ToolProfile(tier, global.allow(), global.deny(), global.alsoAllow()))
                 .orElse(global);
     }
 
@@ -259,33 +270,34 @@ public class AgentAutoConfiguration {
     }
 
     /**
-     * 检索工具自己的权限。
+     * 检索工具的画像：全部（{@link ToolTier#all()}）。
      *
-     * <p>它是一层「找工具」的元工具：碰不到任何表、也不执行业务动作，所以只要有 {@code read}
-     * 动作就放行，不为此新增一个动作名（新增就意味着所有角色配置都要改一遍才能检索）。
-     *
-     * <p>检索不等于授权：它返回的只是工具名。模型拿到名字之后真调哪一个，仍然逐个过
-     * {@link AuthorizationAdvisor} 的登记表。查得到但调不动，是这条链上正确的姿势。
-     *
-     * @return 只含检索工具一项的权限登记表
-     */
-    @Bean
-    public ToolPermissionRegistry toolSearchPermission() {
-        return ToolPermissionRegistry.of(Map.of(ToolSearch.TOOL_NAME, ToolPermission.read()));
-    }
-
-    /**
-     * 检索工具的档位：{@link ToolTier#MINIMAL}。
-     *
-     * <p>它必须在每一档都出现：清单里其余工具都要检索才看得见，把检索工具自己挡掉之后，模型面前
-     * 就是一个空清单，表现出来是「它什么都不肯做」。这也是 {@link ToolProfile#select} 那条
+     * <p>它必须在每个画像里都出现：清单里其余工具都要检索才看得见，把检索工具自己挡掉之后，模型
+     * 面前就是一个空清单，表现出来是「它什么都不肯做」。这也是 {@link ToolProfile#select} 那条
      * 「筛空即失败」兜住的情况——但能从源头避免就不该靠兜底。
      *
-     * @return 检索工具的档位表
+     * @return 检索工具的画像登记表
      */
     @Bean
     public ToolTierRegistry toolSearchTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(ToolSearch.TOOL_NAME), ToolTier.MINIMAL);
+        return ToolTierRegistry.allProfilesFor(List.of(ToolSearch.TOOL_NAME));
+    }
+
+    /**
+     * 哪些工具要人先批（票 05）：默认一个都没有。
+     *
+     * <p>没有这一条时容器里没有这个 bean，工具清单那一侧按"空名单"处理——但"按空处理"与"配了空"
+     * 是两件事：前者在日志与断言里看不出来，后者能。声明要审批的模块覆盖这个 bean 即可。
+     *
+     * <p>不带 {@code @ConditionalOnMissingBean} 的话，第二个声明要审批的模块会与它冲突，
+     * 而冲突的表现是启动失败——那对使用者来说是"我多装了一个模块就起不来了"。
+     *
+     * @return 空名单
+     */
+    @Bean
+    @ConditionalOnMissingBean(ApprovalRequiredTools.class)
+    public ApprovalRequiredTools approvalRequiredTools() {
+        return ApprovalRequiredTools.none();
     }
 
     /**
@@ -324,9 +336,8 @@ public class AgentAutoConfiguration {
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries) {
         return collectToolCallbacks(callbacks, providers, registry, audit, tracer, profile, tierRegistries,
-                selection -> report(profile, selection));
+                ToolPolicyPipeline.none(), selection -> report(profile, selection));
     }
-
     /**
      * 同上，但把「这次筛完的结论」交给调用方处置。
      *
@@ -352,6 +363,37 @@ public class AgentAutoConfiguration {
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries,
                                                           Consumer<ToolProfile.Selection> onSelection) {
+        return collectToolCallbacks(callbacks, providers, registry, audit, tracer, profile, tierRegistries,
+                ToolPolicyPipeline.none(), onSelection);
+    }
+
+    /**
+     * 同上，但在画像与全局白/黑之后再跑一条管线（ADR-0030 裁决二）。
+     *
+     * <p>管线里的层是"按这一轮谁在问、用的哪个模型"筛出来的（{@code ToolPolicyAssembler}），
+     * 它们只能在画像的结果上继续减——这正是为什么它排在 {@code select} 之后、包装之前。
+     * 排在包装之前是要紧的：被某层挡掉的工具不该连 {@code MeteredToolCallback} 都造出来。
+     *
+     * @param callbacks 单个工具形态的来源
+     * @param providers 成组工具形态的来源
+     * @param registry 指标注册表，可以为 null
+     * @param audit 审计接缝，可以为 null
+     * @param tracer 埋点入口
+     * @param profile 画像与全局白/黑
+     * @param tierRegistries 各模块声明的画像登记表
+     * @param pipeline 在全局之后继续收窄的层；{@link ToolPolicyPipeline#none()} 表示没有
+     * @param onSelection 画像那一步的结论回调
+     * @return 筛过、包过的工具列表
+     */
+    public static List<ToolCallback> collectToolCallbacks(ObjectProvider<ToolCallback> callbacks,
+                                                          ObjectProvider<ToolCallbackProvider> providers,
+                                                          MeterRegistry registry,
+                                                          ToolCallAudit audit,
+                                                          SpanTracer tracer,
+                                                          ToolProfile profile,
+                                                          List<ToolTierRegistry> tierRegistries,
+                                                          ToolPolicyPipeline pipeline,
+                                                          Consumer<ToolProfile.Selection> onSelection) {
         List<ToolCallback> collected = new ArrayList<>();
         callbacks.orderedStream().forEach(collected::add);
         // provider 的 getToolCallbacks() 每次调用都重新问一次来源：MCP 那一层是活视图，
@@ -365,7 +407,14 @@ public class AgentAutoConfiguration {
                 collected.stream().map(callback -> callback.getToolDefinition().name()).toList(),
                 tierRegistries);
         onSelection.accept(selection);
-        Set<String> kept = Set.copyOf(selection.kept());
+
+        // 逐层收窄：每一层只能在前一层的结果上减。真的删了东西的层才留一条审计（见 ToolPolicyPipeline）。
+        ToolPolicyPipeline.Outcome narrowed = pipeline.apply(selection.kept());
+        for (ToolPolicyPipeline.Step step : narrowed.steps()) {
+            log.info("工具策略层 {}：排除 {}（deny {} / 不在 allow {}）",
+                    step.label(), step.count(), step.denied(), step.notAllowed());
+        }
+        Set<String> kept = Set.copyOf(narrowed.kept());
 
         // 一律包一层：没有 registry 时它只记"这一轮调过哪些工具"，不报指标。
         // 语义缓存判断副作用靠的就是这份记录，所以它不能跟着 actuator 一起缺席。
@@ -374,6 +423,35 @@ public class AgentAutoConfiguration {
                 // 显式转型，否则 stream 的元素类型被推断成 MeteredToolCallback，
                 // 与返回类型 List<ToolCallback> 对不上（它不是泛型类，推断不出父类型）。
                 .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, audit, tracer))
+                .toList();
+    }
+
+    /**
+     * 给声明了要人批的工具套一层闸（票 05）。
+     *
+     * <p>单独一个出口而不是塞进 {@code collectToolCallbacks} 的四个重载里：那四个重载有六个调用点，
+     * 每处都要多传两个参数，而其中三个（例子、用例、探针）根本没有审批设施。这里是"收集完之后
+     * 还要加什么"的位置，加别的东西也走同一处。
+     *
+     * <p>闸在 {@code MeteredToolCallback} 外层：被拦下的调用同样是一次"发生过的工具调用"，
+     * 计数与审计该照常记——它与"模型没调这个工具"是两件事。
+     *
+     * @param tools 收集好的工具
+     * @param gate 审批门，为 {@code null} 时原样返回
+     * @param required 要人批的名单，为 {@code null} 或空时原样返回
+     * @param audit 审计落点，可以为 {@code null}：带上它，执行那一行才会带 {@code approval_id}
+     * @return 套过闸的清单
+     */
+    public static List<ToolCallback> withApprovalGate(List<ToolCallback> tools, ApprovalGate gate,
+                                                      ApprovalRequiredTools required,
+                                                      ToolCallAudit audit) {
+        if (gate == null || required == null || required.names().isEmpty()) {
+            return tools;
+        }
+        return tools.stream()
+                .map(callback -> required.needsApproval(callback.getToolDefinition().name())
+                        ? (ToolCallback) new ApprovalRequiredToolCallback(callback, gate, audit)
+                        : callback)
                 .toList();
     }
 
@@ -392,13 +470,21 @@ public class AgentAutoConfiguration {
      */
     private static void report(ToolProfile profile, ToolProfile.Selection selection) {
         if (selection.droppedAnything()) {
-            log.info("工具档位 {}：清单 {} 个，挡掉 {} 个（档位 {} / allow {} / deny {}）",
-                    profile.tier(), selection.kept().size(),
+            log.info("工具画像 {}：清单 {} 个，挡掉 {} 个（画像 {} / allow {} / deny {}）",
+                    profile.profile(), selection.kept().size(),
                     selection.byTier().size() + selection.byAllow().size() + selection.byDeny().size(),
                     selection.byTier(), selection.byAllow(), selection.byDeny());
         }
+        if (!selection.widenBlocked().isEmpty()) {
+            // 这是"allow 不放宽画像"那句的唯一可见出口：写进 allow 却因为画像里没有它而不生效时，
+            // 不告警的话表现就是"我明明在 allow 里写了，它还是不在"——而下一步通常是去改 deny。
+            log.warn("claw4j.tools.allow 里的 {} 不在当前画像 {} 里，因此没有生效。"
+                    + "要让它们出现请写 claw4j.tools.alsoAllow（allow 只能在画像之内收窄），"
+                    + "或者把 claw4j.tools.profile 调到包含它们的画像。",
+                    selection.widenBlocked(), profile.profile());
+        }
         if (!selection.unused().isEmpty()) {
-            log.warn("claw4j.tools 的 allow / deny 里提到了清单里不存在的工具 {}："
+            log.warn("claw4j.tools 的 allow / deny / alsoAllow 里提到了清单里不存在的工具 {}："
                     + "要么这个部署没装提供它的模块（正常），要么名字拼错了（不正常）——"
                     + "拼错的话那一条永远不生效。", selection.unused());
         }
@@ -419,35 +505,6 @@ public class AgentAutoConfiguration {
                 + String.join(",", selection.unused().stream().sorted().toList());
     }
 
-
-    /**
-     * 鉴权 Advisor：容器里所有 {@link ToolPermissionRegistry} 都由它消费，也就是「工具需要什么
-     * 权限」由提供工具的模块自己声明，Agent 不认识任何具体工具。一个都没声明时它照样在链上，
-     * 只是每个工具都因「未登记权限」被拒——失败的姿势是拒绝而不是放行（ADR-0007）。
-     *
-     * <p>审批门走 {@code ObjectProvider}（P01、P02）：它跟着 run 存储一起装配（审批表与 run 在
-     * 同一个 schema 下），没有数据库的部署里它是缺席的。缺席时用 {@link ApprovalGate#denyAll()}，
-     * 标了要审批的动作照样被拦，而不是因为少一个 bean 悄悄变成普通动作。
-     *
-     * <p>审计同理（P07）：它也跟 run 存储装配。缺席时判定照常，只是事后查不到这一次——被拒与
-     * 等审批那两行没有落点。
-     *
-     * @param registries 各来源的工具权限登记表
-     * @param gates 审批门，缺席时按全拒处理
-     * @param meterRegistry 指标注册表，可能不存在
-     * @param audit 审计接缝，可能不存在
-     * @return 鉴权 Advisor
-     */
-    @Bean
-    @ConditionalOnMissingBean(AuthorizationAdvisor.class)
-    public AuthorizationAdvisor authorizationAdvisor(ObjectProvider<ToolPermissionRegistry> registries,
-                                                     ObjectProvider<ApprovalGate> gates,
-                                                     ObjectProvider<MeterRegistry> meterRegistry,
-                                                     ObjectProvider<ToolCallAudit> audit) {
-        return new AuthorizationAdvisor(registries.orderedStream().toList(),
-                gates.getIfAvailable(ApprovalGate::denyAll), meterRegistry.getIfAvailable(),
-                audit.getIfAvailable());
-    }
 
     /**
      * 出站脱敏：order 排在工具循环外面（见 {@link PiiRedactionAdvisor#ORDER}），整通对话只在出站前
@@ -506,7 +563,9 @@ public class AgentAutoConfiguration {
                                ObjectProvider<SessionEntries> pointers,
                                ObjectProvider<ToolCallAudit> audit,
                                ObjectProvider<io.github.claw4j.agent.goal.SessionGoalStore> goals,
-                               AgentProperties properties) {
+                               AgentProperties properties,
+                               ToolCatalog catalog,
+                               ModelProperties model) {
         // 投递走 ObjectProvider 而不是直接注入：没配推送实现时它是缺席而不是失败，
         // 门照常住着，只是结果只从请求里回去（ADR-0027：没有一个可推的地址就不推）。
         // 额度不在这条链上了——它是目标的属性（ADR-0027 决定五）。
@@ -523,6 +582,6 @@ public class AgentAutoConfiguration {
                 delivery.getIfAvailable(),
                 tracer.getIfAvailable(() -> SpanTracer.NONE), pointers.getIfAvailable(),
                 new ConversationLane(properties.laneWait()), audit.getIfAvailable(),
-                goals.getIfAvailable());
+                goals.getIfAvailable(), catalog, model.getPrimary());
     }
 }

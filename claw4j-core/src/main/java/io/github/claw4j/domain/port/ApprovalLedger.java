@@ -40,8 +40,22 @@ public interface ApprovalLedger {
      * @param id        审批记录的 id。拒绝话术与审计都要能指回具体那一条
      * @param expiresAt 批到什么时候。过期与否由实现判定（{@code expires_at > now()}），
      *                  调用方拿到的每一条都已经在有效期内
+     * @param frozenPlan 批准那一刻冻结下来的执行计划（JSON，形状由实现与应用侧约定），
+     *                  可以为 {@code null}：早期记录没有这一列，或者这条批准不是 exec 落下的。
+     *                  **它是"批的是哪一条命令"的唯一凭据**——执行前拿它和现在要跑的逐字符比，
+     *                  不一致就拒，而不是重算一遍参数再比指纹
      */
-    record Grant(String id, Instant expiresAt) {
+    record Grant(String id, Instant expiresAt, String frozenPlan) {
+
+        /**
+         * 没有冻结件的批准：除 exec 之外的审批（工具名 + 参数指纹）走这一档。
+         *
+         * @param id        审批记录的 id
+         * @param expiresAt 批到什么时候
+         */
+        public Grant(String id, Instant expiresAt) {
+            this(id, expiresAt, null);
+        }
     }
 
     /**
@@ -62,9 +76,45 @@ public interface ApprovalLedger {
      * @param origin      这条请求从哪段对话来的（ADR-0027）。批准之后就在那段对话里开新一轮，
      *                    而不用拿 {@code runId} 去唤醒一件"挂着的事"。为 null 表示这一层还没有
      *                    对话（子 Agent，A10）——那时结论落得下来，但没有"接着做"这回事
+     * @param frozenPlan  批准之后要跑的那份计划（JSON）：exec 用它，除 exec 之外的审批传 {@code null}。
+     *                    存下来才答得出"批准的是哪一条命令"，也才做得了 approval mismatch 的判断
+     * @param allowAlways 这个请求接不接受"以后都放行"（票 05）。为 {@code false} 时卡片上不给那一档，
+     *                    服务端也拒收。{@code ask=always} 下必须是 {@code false}——那一档的含义是
+     *                    每条都要人看
      */
     record Ask(String runId, String owner, String toolName, String argsDigest, String argsSummary,
-               Origin origin) {
+               Origin origin, String frozenPlan, boolean allowAlways) {
+
+        /**
+         * 不接受"以后都放行"的那一档：没有持久放行落点的审批都走它。
+         *
+         * @param runId       哪一轮发起的，可以为 {@code null}
+         * @param owner       发起人
+         * @param toolName    工具名
+         * @param argsDigest  参数指纹
+         * @param argsSummary 给人看的摘要
+         * @param origin      来处，可以为 {@code null}
+         * @param frozenPlan  冻结件，可以为 {@code null}
+         */
+        public Ask(String runId, String owner, String toolName, String argsDigest, String argsSummary,
+                   Origin origin, String frozenPlan) {
+            this(runId, owner, toolName, argsDigest, argsSummary, origin, frozenPlan, false);
+        }
+
+        /**
+         * 既没有冻结件、也不接受长期放行的那一档。
+         *
+         * @param runId       哪一轮发起的，可以为 {@code null}
+         * @param owner       发起人
+         * @param toolName    工具名
+         * @param argsDigest  参数指纹
+         * @param argsSummary 给人看的摘要
+         * @param origin      来处，可以为 {@code null}
+         */
+        public Ask(String runId, String owner, String toolName, String argsDigest, String argsSummary,
+                   Origin origin) {
+            this(runId, owner, toolName, argsDigest, argsSummary, origin, null, false);
+        }
     }
 
     /**

@@ -1,12 +1,16 @@
 package io.github.claw4j.agent.subagent;
 
+import io.github.claw4j.domain.principal.ToolProfile;
+import io.github.claw4j.domain.principal.ToolPolicyPipeline;
+import io.github.claw4j.domain.principal.ToolPolicyContext;
+import io.github.claw4j.agent.ToolPolicyAssembler;
 import io.github.claw4j.agent.AgentAutoConfiguration;
+import io.github.claw4j.agent.approval.ApprovalGate;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.ToolSearchProperties;
 import io.github.claw4j.agent.ToolsProperties;
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -34,7 +38,8 @@ import java.util.Map;
  * <p>导出的是单个 {@code ToolCallback}：委派本身就是一个工具，派给谁由参数决定。每加一个
  * Subagent 就多一个工具的话，模型面前会越来越挤，而「该派谁」本来就该由描述里那几行回答。
  *
- * <p>权限登记表不用 {@code @ConditionalOnMissingBean(ToolPermissionRegistry.class)}：那条条件
+ * <p>子链的清单收窄走 {@link ToolPolicyAssembler}（ADR-0030）；权限登记表那一层已在票 04 下线，
+ * 那条条件
  * 的语义是容器里已经有了就让位，几个来源各登记各的时，后处理的那一个会静默不注册，它的工具
  * 从此一律按「未登记」被拒。鉴权 Advisor 消费的是登记表的列表，不是单张表。
  */
@@ -76,19 +81,21 @@ public class SubagentAutoConfiguration {
                                              ObjectProvider<MeterRegistry> meterRegistry,
                                              ObjectProvider<ToolTierRegistry> tierRegistries,
                                              ToolsProperties toolPolicy,
-                                             AuthorizationAdvisor authorizationAdvisor,
                                              // 工具循环只有一种（检索），它要索引与检索参数；
                                              // 两个 bean 都由 AgentAutoConfiguration 提供。
                                              ToolIndex toolIndex,
                                              ToolSearchProperties toolSearch,
-                                             AgentProperties agent) {
+                                             AgentProperties agent,
+                                             ObjectProvider<ApprovalGate> gates,
+                                             ObjectProvider<ApprovalRequiredTools> approvals) {
         var definitions = SubagentCatalog.load(Path.of(directory));
         var observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         var runner = new SubagentRunner(chatModel, observations,
                 () -> subagentToolCallbacks(toolCallbacks, toolCallbackProviders,
                         meterRegistry.getIfAvailable(), toolPolicy,
-                        tierRegistries.orderedStream().toList()),
-                authorizationAdvisor,
+                        tierRegistries.orderedStream().toList(),
+                        gates.getIfAvailable(),
+                        approvals.getIfAvailable(ApprovalRequiredTools::none)),
                 toolIndex,
                 toolSearch,
                 agent.toolCallLimit());
@@ -122,20 +129,69 @@ public class SubagentAutoConfiguration {
      * @param tierRegistries 各来源的档位登记表
      * @return 子 Agent 的可用工具，已去掉委派工具自己
      */
+    /**
+     * 子 Agent 的角色。目前只有一个取值：它们都是叶子，不会再派一层。
+     *
+     * <p>留成字段而不是内联字符串，是因为策略层按角色名认领（{@code subagent:leaf}）——
+     * 将来真出现"能再派一层"的角色时，改的是这里与 {@code ToolPolicyAssembler} 的那张表。
+     */
+    private static final String SUBAGENT_ROLE = "leaf";
+
     public static List<ToolCallback> subagentToolCallbacks(ObjectProvider<ToolCallback> toolCallbacks,
                                                            ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                                            MeterRegistry meterRegistry,
                                                            ToolsProperties toolPolicy,
                                                            List<ToolTierRegistry> tierRegistries) {
+        return subagentToolCallbacks(toolCallbacks, toolCallbackProviders, meterRegistry, toolPolicy,
+                tierRegistries, null, ApprovalRequiredTools.none());
+    }
+
+    /**
+     * 同上，带审批闸。
+     *
+     * <p>子链也要这道闸：委派不提权，父那边要人批的工具，派给子 Agent 之后同样要人批——否则
+     * "先派一个子 Agent 再让它调"就是绕过审批的那条路。闸只对 {@code approvals} 里列出的工具生效，
+     * 而 exec 自己那一层闸在工具内部，两处不重叠。
+     *
+     * @param toolCallbacks 单回调形态的工具
+     * @param toolCallbackProviders provider 形态的工具
+     * @param meterRegistry 指标登记表，可为空
+     * @param toolPolicy 工具档位策略
+     * @param tierRegistries 各来源的档位登记表
+     * @param gate 审批门，可为 {@code null}
+     * @param approvals 要人批的名单，不可为 {@code null}（没有就是空）
+     * @return 子 Agent 的可用工具
+     */
+    public static List<ToolCallback> subagentToolCallbacks(ObjectProvider<ToolCallback> toolCallbacks,
+                                                           ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
+                                                           MeterRegistry meterRegistry,
+                                                           ToolsProperties toolPolicy,
+                                                           List<ToolTierRegistry> tierRegistries,
+                                                           ApprovalGate gate,
+                                                           ApprovalRequiredTools approvals) {
         // 与 Agent 装配用的是同一个收集方法：工具回调与 provider 两种形态都要收。
         // 只收单回调形态时，querySales（来自 provider）在子那一侧就「没有这个工具」，
         // 而它明明在父的清单里。
         //
         // 档位在这里同一个理由（P09）：子 Agent 拿到的必须是父被允许的那份清单里的一批。
         // 用另一份策略的话，一个 messaging 部署可以靠「派给子 Agent」把手跑脚本的口子打开。
-        return AgentAutoConfiguration.collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                        meterRegistry, null, SpanTracer.NONE,
-                        toolPolicy.toProfile(), tierRegistries)
+        // 子 Agent 那一层（ADR-0030 裁决二的第 10 层）：角色带来的固定拒绝清单 + 配置的
+        // tools.subagents.allow/deny。角色目前只有一个取值——我们的子 Agent 都是叶子，
+        // 不会再派一层（那件事由下面的 Task 过滤与 SubagentDefinition 各自兜一次）。
+        ToolPolicyContext ctx = ToolPolicyContext.anonymous().withSubagentRole(SUBAGENT_ROLE);
+        ToolPolicyAssembler.Decision decision = ToolPolicyAssembler.decide(toolPolicy, ctx);
+        ToolProfile profile = toolPolicy.toProfile();
+        ToolProfile effective = decision.profile() == profile.profile()
+                ? profile
+                : new ToolProfile(decision.profile(), profile.allow(), profile.deny(), profile.alsoAllow());
+        List<ToolCallback> collected = AgentAutoConfiguration.collectToolCallbacks(
+                toolCallbacks, toolCallbackProviders,
+                meterRegistry, null, SpanTracer.NONE,
+                effective, tierRegistries,
+                new ToolPolicyPipeline(decision.layers()),
+                selection -> { });
+        // 审计这一路子 Agent 不接（与上面 collect 时传 null 是同一个决定）：它的调用记在父那一轮里。
+        return AgentAutoConfiguration.withApprovalGate(collected, gate, approvals, null)
                 .stream()
                 .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(
                         callback.getToolDefinition().name()))
@@ -143,29 +199,16 @@ public class SubagentAutoConfiguration {
     }
 
     /**
-     * 这一层的权限登记表：动作是委派，业务表一张都没有（ADR-0003）。
+     * 委派工具的画像：只有 {@code coding}。
      *
-     * <p>委派这个动作确实会碰到表，但不是它自己碰：是子 Agent 调的那个工具碰，而那一步在子链上
-     * 按自己的登记表鉴权。这里如果替它登记了表，委派就会变成一张能绕过子链鉴权的通行证。
+     * <p>子 Agent 是**再开一个能动手的执行体**，与 OpenClaw 的 {@code subagents} 同一条：
+     * 那个工具只在 {@code coding} 里。子 Agent 拿的是父筛过的那份清单（所以不会越权），
+     * 但"这个部署允不允许自己派活"与"派出去之后能做什么"是两件事——前者就是这里的画像。
      *
-     * @return 只登记委派这一个动作的登记表
-     */
-    @Bean
-    public ToolPermissionRegistry subagentPermissionRegistry() {
-        return ToolPermissionRegistry.of(Map.of(
-                SubagentDelegation.TOOL_NAME, SubagentDelegation.permission()));
-    }
-
-    /**
-     * 委派工具的档位：{@link ToolTier#MESSAGING}。
-     *
-     * <p>派活本身不碰外部世界，但它把「能干什么」交给子 Agent，而子 Agent 拿的是同一份筛过的
-     * 清单，所以它不该比直接用工具更受限。{@code MINIMAL} 那种只聊天的部署里没有它。
-     *
-     * @return 只给委派工具定档的登记表
+     * @return 只给委派工具定画像的登记表
      */
     @Bean
     public ToolTierRegistry subagentTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(SubagentDelegation.TOOL_NAME), ToolTier.MESSAGING);
+        return ToolTierRegistry.sameFor(List.of(SubagentDelegation.TOOL_NAME), ToolTier.CODING);
     }
 }

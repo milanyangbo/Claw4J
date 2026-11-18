@@ -70,13 +70,6 @@ class FeishuChannelWiringTest {
 
     private static final String APP_SECRET = "claw4j.channel.feishu.app-secret";
 
-    private static final String DUPLICATE_MESSAGE =
-            "claw4j.channel.feishu.roles 里同一个人登记了多个角色：ou_zhang。一个人只能有一个身份，请删掉多余的那几处。";
-
-    private static final String UNKNOWN_ROLE_MESSAGE =
-            "claw4j.channel.feishu.roles 里的角色在 claw4j.channel.http.roles 里没有同名定义："
-                    + "operator（登记了 1 人）。飞书只登记人，授权表共用 HTTP 那一份，角色名必须对得上。";
-
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(FeishuChannelAutoConfiguration.class))
             .withBean(AgentPort.class, NoopAgent::new);
@@ -122,59 +115,35 @@ class FeishuChannelWiringTest {
     }
 
     @Test
-    @DisplayName("认人只看登记表：登记的人按角色拿到表与动作，没登记的人什么都没有（不回落默认角色）")
-    void onlyRegisteredUsersResolveToAPrincipal() {
+    @DisplayName("认人只看白名单：名单里的人进来（只带 userId），名单外的人什么都没有，不回落默认身份")
+    void onlyListedUsersResolveToAPrincipal() {
         runner.withPropertyValues(
-                        // 授权只有一份：写在这张两个通道共用的表里
-                        "claw4j.channel.http.roles.read-only.tables[0]=*",
-                        "claw4j.channel.http.roles.read-only.actions[0]=read",
-                        "claw4j.channel.http.roles.guest.tables[0]=region",
-                        "claw4j.channel.http.roles.guest.actions[0]=read",
-                        // 飞书这边只回答"这个人是谁"
-                        "claw4j.channel.feishu.roles.read-only.users[0]=ou_zhang",
-                        "claw4j.channel.feishu.roles.guest.users[0]=ou_li")
+                        "claw4j.channel.feishu.users[0]=ou_zhang",
+                        "claw4j.channel.feishu.users[1]=ou_li")
                 .run(context -> {
                     FeishuPrincipalResolver resolver = context.getBean(FeishuPrincipalResolver.class);
 
                     assertThat(resolver.apply("ou_zhang")).get()
-                            .satisfies(principal -> {
-                                assertThat(principal.role()).isEqualTo("read-only");
-                                assertThat(principal.accessibleTables())
-                                        .as("表与动作不是飞书那边配的，是从共用的授权表里按角色名取的")
-                                        .containsExactly("*");
-                            });
-                    assertThat(resolver.apply("ou_li")).get()
-                            .satisfies(principal -> {
-                                assertThat(principal.role()).isEqualTo("guest");
-                                assertThat(principal.accessibleTables()).containsExactly("region");
-                            });
-                    assertThat(resolver.apply("ou_stranger")).isEmpty();
+                            .satisfies(principal -> assertThat(principal.userId()).isEqualTo("ou_zhang"));
+                    assertThat(resolver.apply("ou_stranger"))
+                            .as("不在白名单里就是进不来：角色与授权表那一层已经下线，准入只剩这一条")
+                            .isEmpty();
                 });
     }
 
     @Test
-    @DisplayName("飞书登记的角色在共用授权表里没有同名定义：启动失败并点名，别让那群人天天收到「没有权限」")
-    void unknownRoleFailsAtStartup() {
-        runner.withPropertyValues(
-                        "claw4j.channel.http.roles.read-only.tables[0]=*",
-                        "claw4j.channel.http.roles.read-only.actions[0]=read",
-                        "claw4j.channel.feishu.roles.operator.users[0]=ou_wang")
-                .run(context -> assertThat(context).hasFailed()
-                        .getFailure().hasRootCauseMessage(UNKNOWN_ROLE_MESSAGE));
+    @DisplayName("白名单是空的：谁都不进。默认空表不是「谁都能」")
+    void anEmptyAllowlistLetsNobodyIn() {
+        FeishuChannelProperties properties = new FeishuChannelProperties();
+        FeishuPrincipalResolver resolver = new FeishuPrincipalResolver(properties);
+
+        assertThat(resolver.apply("ou_zhang")).isEmpty();
+        assertThat(resolver.apply("")).isEmpty();
+        assertThat(resolver.apply(null)).isEmpty();
     }
 
     @Test
-    @DisplayName("同一个人登记了两个角色：启动失败并点名是谁，而不是按书写顺序挑一个")
-    void duplicateRegistrationFailsAtStartup() {
-        runner.withPropertyValues(
-                        "claw4j.channel.feishu.roles.read-only.users[0]=ou_zhang",
-                        "claw4j.channel.feishu.roles.guest.users[0]=ou_zhang")
-                .run(context -> assertThat(context).hasFailed()
-                        .getFailure().hasRootCauseMessage(DUPLICATE_MESSAGE));
-    }
-
-    @Test
-    @DisplayName("凭据齐了、roles 里一个人都没登记：启动日志里就要说，别让“全员没有权限”看起来像服务没起来")
+    @DisplayName("凭据齐了、users 里一个人都没登记：启动日志里就要说，别让“全员进不来”看起来像服务没起来")
     void nobodyRegisteredIsCalledOutAtStartup(CapturedOutput output) {
         FeishuChannelProperties properties = new FeishuChannelProperties();
         properties.setAppId("cli_x");
@@ -359,7 +328,7 @@ class FeishuChannelWiringTest {
         FeishuReplySender sender = (chatId, text) -> {
         };
         InboundDispatcher dispatcher = new InboundDispatcher(new NoopAgent(), Runnable::run,
-                senderId -> Optional.of(Principal.readOnly("u-1")), sender, "飞书", "feishu", null, store);
+                senderId -> Optional.of(new Principal("u-1")), sender, "飞书", "feishu", null, store);
         // 建连工厂给一个"一开就炸"的：这两条用例都不调 start()，它是必填参数而已。
         FeishuConnectionFactory factory = events -> {
             throw new IllegalStateException("这条用例不建连");

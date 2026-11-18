@@ -1,6 +1,5 @@
 package io.github.claw4j.agent.question;
 
-import io.github.claw4j.agent.PermissionFingerprint;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.question.QuestionGate;
@@ -83,7 +82,7 @@ public final class PendingQuestions implements QuestionGate {
             log.info("通道 {} 没有提问面，这个问题不等人：{}", ask.channel(), ask.chatRef());
             return Outcome.unsupported();
         }
-        Pending pending = new Pending(ask, PermissionFingerprint.of(ask.creator()));
+        Pending pending = new Pending(ask, ask.creator().userId());
         if (byChat.putIfAbsent(key(ask.channel(), ask.chatRef()), pending) != null) {
             count("busy", ask.channel());
             log.warn("这段对话已经有一个待答问题，这次不再开第二个：channel={} chat={}",
@@ -112,9 +111,11 @@ public final class PendingQuestions implements QuestionGate {
         if (pending == null) {
             return false;
         }
-        if (!pending.creatorFingerprint.equals(PermissionFingerprint.of(who))) {
+        if (who == null || !pending.creator.equals(who.userId())) {
             // 不吞掉：这句照常走一轮，提问人手里那个决定不该被别人代答。
-            log.warn("答复的人与提问的人权限不一致，这句不当答案：channel={} chat={} asker={} answerer={}",
+            // 判据是"谁问的"（userId），不是权限指纹：同一个人换了配置仍然能答自己的问题，
+            // 而换一个人来答，哪怕他的权限一模一样，也不该替他点这个。
+            log.warn("答复的人不是提问的人，这句不当答案：channel={} chat={} asker={} answerer={}",
                     channel, chatRef, pending.ask.creator().userId(), who == null ? null : who.userId());
             count("rejected", channel);
             return false;
@@ -320,14 +321,14 @@ public final class PendingQuestions implements QuestionGate {
 
         private final Ask ask;
 
-        /** 提问人的权限指纹：答复的人要和它一致（OpenClaw 同一条。 */
-        private final String creatorFingerprint;
+        /** 提问人的 {@code userId}：答复的必须是同一个人（OpenClaw 同一条）。 */
+        private final String creator;
 
         private final CompletableFuture<Outcome> outcome = new CompletableFuture<>();
 
-        private Pending(Ask ask, String creatorFingerprint) {
+        private Pending(Ask ask, String creator) {
             this.ask = ask;
-            this.creatorFingerprint = creatorFingerprint;
+            this.creator = creator;
         }
 
         private void settle(Outcome settled) {

@@ -3,62 +3,62 @@ package io.github.claw4j.channel.http;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * HTTP 通道的配置：谁能进来、进来之后是什么身份、一次流式最长多久。
+ * HTTP 通道的配置：谁能进来、一次流式最长多久。
  *
- * <p>角色到授权的映射放在这里而不是代码里，是因为"谁能看哪张表"是运营口径，
- * 改一次不该重新发版。ADR-0007 的分工是：通道认人、配置授权、Agent 只执行。
+ * <p>这里**没有角色、也没有授权表**（ADR-0030 裁决三）。原来 {@code roles.<角色>} 里写着
+ * "能读哪些表、能跑哪些动作"，那套授权随权限登记表整块下线：权限现在只有
+ * 大模型这一层——看得见什么由工具清单决定，执行前要不要人点头由审批决定。业务数据范围与
+ * 按人的细粒度授权属于第二步。
+ *
+ * <p>留下来的是准入：{@code users} 是一份白名单，请求头里的用户标识必须在里面。它守的是
+ * "任何人知道地址就能触发这个 agent"，与"这个人能看哪张表"不是同一个问题——前者是通道的职责，
+ * 后者已经不在这一层。
  */
 @ConfigurationProperties(prefix = "claw4j.channel.http")
 public class HttpChannelProperties {
 
     /**
-     * 角色到授权表的映射。默认三个角色够跑演示，生产上按需扩展。
-     * 表里没有的角色一律拒绝，不做「找不到就给个默认权限」这种兜底。
+     * 谁能用这条通道。空的含义是**谁都不能**，不是"谁都能"：这条通道的前置条件是网关在边缘
+     * 做过认证并把结果写成 {@code X-Claw4j-User}，而这台服务无从判断那个头是不是网关写的。
+     * 默认拒绝至少保证"忘了配"表现为 403 而不是"公网可调用"。
      *
-     * <p>{@code read-only} 拿到的是读动作而不是空集：空集意味着连"上周成交额多少"都问不了，
-     * 默认角色就成了废角色。{@code guest} 演示的是表级——它会读，但读不到
-     * {@code sales_order}，于是同一个问题在它这里是明确的"没权限"（ADR-0007）。
-     *
-     * <p>这两个能读的角色也都给了 {@code use_skill}：加载一份做法（M2-04）本身不读表、
-     * 不写东西，Skill 只是把"先用哪个工具、再输出什么"写出来，真正碰表的那一步
-     * 仍按表级与动作级各自鉴权。把 {@code use_skill} 与 {@code read} 分开列，
-     * 是为了让"谁能用什么做法"成为一行配置能回答的问题，而不是"能读就顺便能用"。
-     * {@code guest} 的受限仍然纯粹是表级——这是它要演示的那一件事。
+     * <p>本机演示因此要先把自己填进来（{@code claw4j.channel.http.users: [你的名字]}），
+     * 否则 {@code curl} 拿到 403 并被告知缺哪一样。这个代价是刻意的：一份默认为空的名单，
+     * 与 {@code claw4j.approval.approvers} 空名单=没人能批是同一个取向。
      */
-    private Map<String, RoleGrant> roles = new LinkedHashMap<>(Map.of(
-            "read-only", new RoleGrant(Set.of("*"), Set.of("read", "use_skill")),
-            "guest", new RoleGrant(Set.of("region"), Set.of("read", "use_skill")),
-            "admin", new RoleGrant(Set.of("*"), Set.of("*"))));
-
-    /**
-     * 请求没带角色头时使用的角色。取最小权限而不是拒绝：本机 curl 演示不该先去配角色。
-     */
-    private String defaultRole = "read-only";
+    private Set<String> users = new LinkedHashSet<>();
 
     /**
      * 一次 SSE 连接的最长存活时间。超时即断开，避免客户端半途消失后连接吊着。
      */
     private Duration streamTimeout = Duration.ofSeconds(60);
 
-    public Map<String, RoleGrant> getRoles() {
-        return roles;
+    public Set<String> getUsers() {
+        return users;
     }
 
-    public void setRoles(Map<String, RoleGrant> roles) {
-        this.roles = roles == null ? new LinkedHashMap<>() : new LinkedHashMap<>(roles);
+    public void setUsers(Set<String> users) {
+        this.users = users == null ? new LinkedHashSet<>() : new LinkedHashSet<>(users);
     }
 
-    public String getDefaultRole() {
-        return defaultRole;
-    }
-
-    public void setDefaultRole(String defaultRole) {
-        this.defaultRole = defaultRole;
+    /**
+     * 这个用户标识在不在白名单里。
+     *
+     * <p>通配只认一个字符 {@code *}（整条白名单就是 {@code ["*"]}）：那是显式写下的"谁都行"，
+     * 与"忘了配"（空集合）在行为上必须能区分开。
+     *
+     * @param userId 请求头里的用户标识
+     * @return 在名单里时为 {@code true}
+     */
+    public boolean allows(String userId) {
+        if (userId == null || userId.isBlank()) {
+            return false;
+        }
+        return users.contains("*") || users.contains(userId);
     }
 
     public Duration getStreamTimeout() {
@@ -67,15 +67,5 @@ public class HttpChannelProperties {
 
     public void setStreamTimeout(Duration streamTimeout) {
         this.streamTimeout = streamTimeout;
-    }
-
-    /**
-     * 一个角色的授权范围。
-     *
-     * @param tables  可访问的表，"*" 表示全部
-     * @param actions 可执行的动作名，"*" 表示全部。取值与工具登记的动作名同一个口径
-     *                （读动作是 {@code read}，有副作用的动作用自己的名字，例如 {@code send_email}）
-     */
-    public record RoleGrant(Set<String> tables, Set<String> actions) {
     }
 }

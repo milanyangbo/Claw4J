@@ -2,7 +2,6 @@ package io.github.claw4j.channel.feishu.sdk;
 
 import io.github.claw4j.channel.feishu.FeishuOutboundDelivery;
 import io.github.claw4j.channel.feishu.FeishuReplySender;
-import io.github.claw4j.channel.http.HttpChannelProperties;
 import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.domain.question.QuestionGate;
@@ -41,13 +40,12 @@ import java.util.concurrent.Executor;
  *       状态是 {@code DISCONNECTED}。一次对端抖动不该让整个应用起不来。</li>
  * </ol>
  *
- * <p>这里同时绑定 {@link HttpChannelProperties}：它是两个通道共用的那张授权表。
  * 飞书侧只登记「谁是谁」，表与动作按角色名去那张表里取（{@link FeishuPrincipalResolver}）。
  */
 @AutoConfiguration(afterName = "io.github.claw4j.agent.AgentAutoConfiguration")
 @ConditionalOnClass(name = "com.lark.oapi.ws.Client")
 @ConditionalOnProperty(prefix = "claw4j.channel.feishu", name = "enabled", havingValue = "true", matchIfMissing = true)
-@EnableConfigurationProperties({FeishuChannelProperties.class, HttpChannelProperties.class})
+@EnableConfigurationProperties(FeishuChannelProperties.class)
 public class FeishuChannelAutoConfiguration {
 
     /** 飞书回推专用的线程池名字：与 HTTP 的流式池分开，日志里一眼能看出是哪条通道在跑。 */
@@ -62,9 +60,8 @@ public class FeishuChannelAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public FeishuPrincipalResolver feishuPrincipalResolver(FeishuChannelProperties properties,
-                                                           HttpChannelProperties authz) {
-        return new FeishuPrincipalResolver(properties, authz);
+    public FeishuPrincipalResolver feishuPrincipalResolver(FeishuChannelProperties properties) {
+        return new FeishuPrincipalResolver(properties);
     }
 
     @Configuration(proxyBeanMethods = false)

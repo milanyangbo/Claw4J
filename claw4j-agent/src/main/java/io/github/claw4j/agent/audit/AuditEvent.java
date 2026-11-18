@@ -33,11 +33,11 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      * {@code AuditEventSchema.runId} 同样是必填
      * （{@code packages/gateway-protocol/src/schema/audit.ts:56}）。
      *
-     * <p>其余五个字段可空：审计不能因为取不到身份就不写——「有个工具跑了」本身就是事实，只是那一格
+     * <p>其余四个字段可空：审计不能因为取不到身份就不写——「有个工具跑了」本身就是事实，只是那一格
      * 没人。为一行缺字段的审计去拒绝整个工具调用，是把记账当成了前置条件。
      */
     public record Scope(String runId, String sessionKey, String agentId,
-                        String actor, String actorRole, String channel) {
+                        String actor, String channel) {
 
         /**
          * 从身份与位置组一份。{@code principal} 为空时只留位置。
@@ -50,9 +50,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
          */
         public static Scope of(String runId, String sessionKey, Principal principal, String channel) {
             return new Scope(runId, sessionKey, null,
-                    principal == null ? null : principal.userId(),
-                    principal == null ? null : principal.role(),
-                    channel);
+                    principal == null ? null : principal.userId(), channel);
         }
 
         /**
@@ -61,7 +59,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
          * @return 全空的作用域
          */
         public static Scope empty() {
-            return new Scope(null, null, null, null, null, null);
+            return new Scope(null, null, null, null, null);
         }
     }
 

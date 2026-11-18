@@ -1,38 +1,19 @@
-# 评测用的四档身份。用例只写名字引用，不内联权限表。
+# 评测用的身份。用例只写名字引用，不内联身份细节。
 #
-# 为什么不内联：越权用例的价值在于"同一个问题换个身份，结论必须相反"。
-# 身份散在 50 条用例里之后，guest 到底能看什么表要读 50 处，
-# 而任何一处写错都会让那条用例变成"验证了一个不存在的身份"。
-# 集中一份，改一次全对。
+# 为什么不内联：身份散在 40 条用例里之后，改一次要读 40 处，而任何一处写错都会让那条用例
+# 变成"验证了一个不存在的身份"。集中一份，改一次全对。
 #
-# 它与 application.yml 里 claw4j.channel.http.roles 那张表**是两张表**，不要试图对齐：
-# 那张表是"通道解析出入站身份之后查什么"，这张是"评测直接交给 AgentPort 的身份"。
-# 评测不经过通道（InboundMessage.principal 就是它），所以这里可以造出
-# 应用配置里没登记、但语义清楚的档位——比如 tables 全空的 guest。
+# **ADR-0030 之后身份只剩一个 userId**：原来每档写着 role / tables / actions，
+# 那是"这个身份能碰哪些业务表"，随权限登记表整块下线。看得见什么由工具清单决定，
+# 执行前要不要人点头由审批决定，两者都与"哪一档"无关。所以这里的分档**不代表不同的可见范围**，
+# 只是不同的 userId。
 #
-# actions 的取值与 ToolPermission 的动作名同口径（read / use_skill / delegate_task / ...）；
-# "*" 表示全部。tables 里的 "*" 表示全部表。
+# 名单只留被用例真正引用的：`guest` 与 `admin` 随越权那一类用例一起删了——留着没人引用的档，
+# 读的人会以为"这个身份验过了"。加一档的规矩是同时有用例引用它，
+# `EvalCaseSetTest#everyRosterEntryIsUsed` 盯着这条。
 
 analyst:
-  role: analyst
-  # 能查数，但只限业务四张表。知识库那张伪表 doc 不在这里——分开是可判的：
-  # "能看销售单"不等于"能看制度文档"。
-  tables: ["sales_order", "order_item", "customer", "region"]
-  actions: ["read", "use_skill", "delegate_task"]
-
-guest:
-  role: guest
-  # 空表清单：问任何业务数据都该收到一句明确的"没有权限"。
-  # 判据里写的就是这一档——越权用例全引用它，改这里，所有引用一致受影响。
-  tables: []
-  actions: ["read"]
+  note: 正常问业务问题的那个人，多轮记忆用例也从它起
 
 read-only:
-  role: read-only
-  tables: ["*"]
-  actions: ["read", "use_skill", "delegate_task"]
-
-admin:
-  role: admin
-  tables: ["*"]
-  actions: ["*"]
+  note: 只读场景的那个人；知识库与工具选择两类用例用它

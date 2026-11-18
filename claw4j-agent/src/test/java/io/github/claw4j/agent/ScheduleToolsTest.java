@@ -2,16 +2,14 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.schedule.Schedule;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleStore;
 import io.github.claw4j.agent.schedule.ScheduleTools;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
-import io.github.claw4j.domain.port.RoleDirectory;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -38,8 +36,8 @@ import static org.mockito.Mockito.when;
 /**
  * 定时任务三件工具（建、列、取消）与「这条任务现在还跑不跑得起来」的判据（P05）。
  *
- * <p>守的是「一次授权、多次执行」那句承诺的前半：建的时候把 cron 解析、工具权限、是否需要
- * 审批三件事核完，理由原样交给模型。任何一条被放宽，症状都是任务建成了却永远跑不起来，而要
+ * <p>守的是「一次授权、多次执行」那句承诺的前半：建的时候把 cron 解析、是否需要审批两件事
+ * 核完，理由原样交给模型。（"工具权限"那一条随角色表在 ADR-0030 里下线。）任何一条被放宽，症状都是任务建成了却永远跑不起来，而要
  * 到点那一刻（没人看着）才发现。
  *
  * <p>库上的那一半不在这里：建出来的行长什么样、收权之后会不会停用，由 app 的
@@ -48,14 +46,12 @@ import static org.mockito.Mockito.when;
  */
 class ScheduleToolsTest {
 
-    /** 建得起来的那个工具：要读一张业务表。 */
+    /** 建得起来的那个工具。 */
     private static final String SAFE = "query_sales";
 
-    /** 每次执行都要人点头的那个工具：定时任务里它没有意义（到点没人能点）。 */
+    /** 每次执行都要人点头的那个工具：定时任务里它没有意义（到点没人能点）。它由
+     * {@code claw4j.approval.required-tools} 点名，见 {@link #tools(ScheduleStore)}。 */
     private static final String NEEDS_APPROVAL = "send_email";
-
-    /** 名字写错、或者没登记过权限：一律按"评估不了"处理。 */
-    private static final String UNREGISTERED = "querySale";
 
     private static final String GOAL = "每天九点报一次华东成交额";
 
@@ -63,13 +59,8 @@ class ScheduleToolsTest {
 
     private static final String CHANNEL_REF = "oc_sched";
 
-    /** 任务主人：读得到 sales_order，也有三个定时任务动作。 */
-    private static final Principal OWNER = Principal.of("u-1", "read-only", Set.of("*"),
-            Set.of(ToolPermission.READ, ScheduleTools.CREATE, ScheduleTools.LIST, ScheduleTools.CANCEL));
-
-    /** 读不到 sales_order 的那个身份：同一个角色，权限收窄。 */
-    private static final Principal NARROW = Principal.of("u-2", "guest", Set.of("region"),
-            Set.of(ToolPermission.READ, ScheduleTools.CREATE));
+    /** 任务主人：身份只有一个 userId，能做什么由清单决定。 */
+    private static final Principal OWNER = new Principal("u-1");
 
     @Test
     @DisplayName("建一条：落库的是身份与工具名，回执里说清编号、下一次、用哪些工具")
@@ -95,9 +86,8 @@ class ScheduleToolsTest {
         assertThat(request.notifyPolicy()).isEqualTo(NotifyPolicy.SILENT);
         assertThat(request.channel()).as("送到这件事登记过的那个会话").isEqualTo(CHANNEL);
         assertThat(request.channelRef()).isEqualTo(CHANNEL_REF);
-        // 身份是"谁 + 什么角色"，两份权限一个字都不落库
+        // 身份只有 userId：角色与两份权限都不存在了（ADR-0030）
         assertThat(request.principal().userId()).isEqualTo(OWNER.userId());
-        assertThat(request.principal().role()).isEqualTo(OWNER.role());
     }
 
     @Test
@@ -139,18 +129,6 @@ class ScheduleToolsTest {
     }
 
     @Test
-    @DisplayName("要用的工具现在没有：当场拒，理由点名是动作还是表")
-    void aToolTheCreatorCannotUseIsRefused() {
-        ScheduleStore store = mock(ScheduleStore.class);
-
-        String reply = create(store, NARROW, """
-                {"goal":"%s","cron":"0 0 9 * * *","tools":["%s"]}""".formatted(GOAL, SAFE));
-
-        assertThat(reply).contains("没建成").contains("sales_order").contains("guest");
-        verify(store, never()).create(any());
-    }
-
-    @Test
     @DisplayName("要审批的工具进不了定时任务：到点那一刻没人能点那个按钮")
     void aToolThatAlwaysNeedsApprovalIsRefused() {
         ScheduleStore store = mock(ScheduleStore.class);
@@ -161,33 +139,6 @@ class ScheduleToolsTest {
         assertThat(reply).contains("没建成").contains(NEEDS_APPROVAL)
                 .as("要说出原因，不然模型只会换个名字再试一次")
                 .contains("没有人能点");
-        verify(store, never()).create(any());
-    }
-
-    @Test
-    @DisplayName("工具名拼错 / 没登记权限：同样当场拒，不假装它会跑")
-    void anUnregisteredToolIsRefused() {
-        ScheduleStore store = mock(ScheduleStore.class);
-
-        String reply = create(store, OWNER, """
-                {"goal":"%s","cron":"0 0 9 * * *","tools":["%s"]}""".formatted(GOAL, UNREGISTERED));
-
-        assertThat(reply).contains("没建成").contains("没登记权限");
-        verify(store, never()).create(any());
-    }
-
-    @Test
-    @DisplayName("角色认不出来就不建：建出来也是一条永远跑不起来的任务")
-    void anUnknownRoleIsRefused() {
-        ScheduleStore store = mock(ScheduleStore.class);
-        ScheduleTools tools = new ScheduleTools(store,
-                new ScheduleAuthorization((userId, role) -> Optional.empty(), registries()));
-
-        String reply = call(tools, ScheduleTools.CREATE, """
-                {"goal":"%s","cron":"0 0 9 * * *","tools":[]}""".formatted(GOAL),
-                context(OWNER));
-
-        assertThat(reply).contains("没建成").contains("认不出你的角色");
         verify(store, never()).create(any());
     }
 
@@ -277,17 +228,10 @@ class ScheduleToolsTest {
 
     // ---- 零件 ----
 
-    private static List<ToolPermissionRegistry> registries() {
-        return List.of(ToolPermissionRegistry.of(Map.of(
-                SAFE, ToolPermission.read("sales_order"),
-                NEEDS_APPROVAL, ToolPermission.requiringApproval("send_email"))));
-    }
-
     /** 生产那套装配：真 store、真判据、收件地址来自这一轮的工具上下文。 */
     private static ScheduleTools tools(ScheduleStore store) {
         return new ScheduleTools(store,
-                new ScheduleAuthorization((userId, role) -> Optional.of(Principal.of(userId, role,
-                        Set.of("*"), Set.of(ToolPermission.READ, ScheduleTools.CREATE))), registries()));
+                new ScheduleAuthorization(new ApprovalRequiredTools(Set.of(NEEDS_APPROVAL))));
     }
 
     private static String create(ScheduleStore store, Principal principal, String args) {

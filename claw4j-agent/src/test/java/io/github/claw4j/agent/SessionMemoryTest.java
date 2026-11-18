@@ -22,7 +22,6 @@ import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -288,7 +287,7 @@ class SessionMemoryTest {
         // 时钟钉在同一天：跨天与空闲都不会触发，所以下面每一段的"换没换"只由 /new 决定。
         ChatClientAgentPort port = port(model, sessions, null, pointersAt(new MemoryPointers(),
                 Instant.parse("2026-11-05T02:00:00Z"), ZoneId.of("Asia/Shanghai")));
-        Principal principal = Principal.readOnly("u-1");
+        Principal principal = new Principal("u-1");
 
         port.reply(new InboundMessage(principal, "web-chat", "我叫 Ethan"));
         port.reply(new InboundMessage(principal, "web-chat", "我叫什么"));
@@ -337,49 +336,51 @@ class SessionMemoryTest {
         MapSessionService sessions = new MapSessionService();
         ChatClientAgentPort port = port(new FixedChatModel("好"), sessions);
 
-        port.reply(new InboundMessage(Principal.readOnly("u-1"), "chat", "甲说的话"));
-        port.reply(new InboundMessage(Principal.readOnly("u-2"), "chat", "乙说的话"));
+        port.reply(new InboundMessage(new Principal("u-1"), "chat", "甲说的话"));
+        port.reply(new InboundMessage(new Principal("u-2"), "chat", "乙说的话"));
 
         assertThat(sessions.createdIds()).hasSize(2).doesNotHaveDuplicates();
     }
 
     @Test
-    @DisplayName("会话表的 user_id 存归属键而非裸 userId：召回按它精确匹配，裸的会让降权失效")
-    void sessionUserIdCarriesThePermissionFingerprint() {
+    @DisplayName("会话表的 user_id 存归属键：召回按它精确匹配，写别的会让匹配对象错位")
+    void sessionUserIdCarriesTheOwnerKey() {
         MapSessionService sessions = new MapSessionService();
         ChatClientAgentPort port = port(new FixedChatModel("好"), sessions);
 
-        Principal who = Principal.readOnly("u-1");
+        Principal who = new Principal("u-1");
         port.reply(new InboundMessage(who, "chat", "问一句"));
 
         assertThat(sessions.createdUserIds())
-                .as("写裸 userId 的话，换角色之后 recall_session 照样能查回他高权限时的会话")
+                .as("归属键与 userId 现在是同一个值（ADR-0030 代价：降权不重置会话），但这一列"
+                        + "要存的是 ownerOf 的输出，不是随手取的 userId——将来真要按配置分区只改一处")
                 .containsExactly(SessionKeys.ownerOf(who));
     }
 
     @Test
     @DisplayName("userId 为空的身份不许开会话：否则所有人共用一个，还记得是别人的")
     void blankUserIdIsRejected() {
-        assertThatThrownBy(() -> SessionKeys.sessionIdOf(Principal.readOnly(" "), "web", "c-1"))
+        assertThatThrownBy(() -> SessionKeys.sessionIdOf(new Principal(" "), "web", "c-1"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("userId");
     }
 
     @Test
-    @DisplayName("会话 id 跟着「人 + 权限 + 这一段对话 + 段」走：前四样稳定，段按时间换")
-    void sessionIdFollowsIdentityAndPermissions() {
-        Principal who = Principal.readOnly("u-1");
+    @DisplayName("会话 id 跟着「人 + 这一段对话 + 段」走：前三样稳定，段按时间换")
+    void sessionIdFollowsIdentity() {
+        Principal who = new Principal("u-1");
 
         assertThat(SessionKeys.sessionIdOf(who, "web", "c-1"))
                 .as("每次都不一样的话，这个人永远记不住上一轮，而且没有任何报错")
-                .isEqualTo(SessionKeys.sessionIdOf(Principal.readOnly("u-1"), "web", "c-1"))
-                .startsWith(SessionKeys.PREFIX + "u-1@");
+                .isEqualTo(SessionKeys.sessionIdOf(new Principal("u-1"), "web", "c-1"))
+                .startsWith(SessionKeys.PREFIX + "u-1:");
 
-        Principal downgraded = Principal.of("u-1", "guest",
-                Set.of("region"), Set.of(ToolPermission.READ));
-        assertThat(SessionKeys.sessionIdOf(downgraded, "web", "c-1"))
-                .as("权限变了却还是同一段会话，历史里那些高权限数字会被原样念出来")
-                .isNotEqualTo(SessionKeys.sessionIdOf(who, "web", "c-1"));
+        // 权限指纹从键里下线（ADR-0030）：同一个 userId 换配置不换会话。这是明码标价的代价
+        // ——降权之后历史里那些旧数字还在上下文里（ADR 代价第 3 条），这里显式钉住"确实不换"，
+        // 免得以后有人以为它还会换。
+        assertThat(SessionKeys.sessionIdOf(who, "web", "c-1"))
+                .as("换配置不换会话：身份现在只有 userId，没有第二种权限版本")
+                .isEqualTo(SessionKeys.sessionIdOf(new Principal("u-1"), "web", "c-1"));
 
         assertThat(SessionKeys.sessionIdOf(who, "feishu", "oc_group"))
                 .as("私聊与群聊必须是两段：同一份权限下听众可以完全不同，"
@@ -394,7 +395,7 @@ class SessionMemoryTest {
         String segmented = SessionKeys.sessionIdOf(who, "web", "c-1", "1762300000000-abcd");
         assertThat(segmented)
                 .as("段拼在最后。拼在 owner 前面会让召回的身份校验（startsWith）对别人成立")
-                .startsWith(SessionKeys.PREFIX + "u-1@")
+                .startsWith(SessionKeys.PREFIX + "u-1:")
                 .endsWith(":web:c-1:1762300000000-abcd")
                 .isNotEqualTo(SessionKeys.sessionIdOf(who, "web", "c-1"));
         assertThat(SessionKeys.sessionIdOf(who, "web", "c-1", ""))
@@ -548,25 +549,10 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("权限集合的迭代顺序不影响指纹")
-    void fingerprintIgnoresSetOrder() {
-        Principal a = Principal.of("u-1", "read-only",
-                new LinkedHashSet<>(Set.of("sales_order", "order_item", "region")),
-                new LinkedHashSet<>(Set.of("read", "recall_session")));
-        Principal b = Principal.of("u-1", "read-only",
-                new LinkedHashSet<>(Set.of("region", "sales_order", "order_item")),
-                new LinkedHashSet<>(Set.of("recall_session", "read")));
-
-        assertThat(PermissionFingerprint.of(a))
-                .as("不排序的话同一份权限能算出两个指纹：缓存永不命中，会话每轮都是新的")
-                .isEqualTo(PermissionFingerprint.of(b));
-    }
-
-    @Test
     @DisplayName("聊得久了历史被压成摘要：事件不再线性增长，省下的 token 记在指标里")
     void longConversationGetsCompacted() {
         MapSessionService sessions = new MapSessionService();
-        String sessionId = SessionKeys.sessionIdOf(Principal.readOnly("u-1"), "web", "c-1");
+        String sessionId = SessionKeys.sessionIdOf(new Principal("u-1"), "web", "c-1");
         sessions.create(CreateSessionRequest.builder().id(sessionId).userId("u-1").build());
         for (int i = 0; i < 200; i++) {
             sessions.appendEvent(event(sessionId, i));
@@ -788,12 +774,12 @@ class SessionMemoryTest {
     }
 
     private static InboundMessage message(String chatId, String text) {
-        return new InboundMessage(Principal.readOnly("u-1"), chatId, text);
+        return new InboundMessage(new Principal("u-1"), chatId, text);
     }
 
     /** 带通道的一条私聊：用来验「同一把锁跟的是会话，不是通道」。 */
     private static InboundMessage channelMessage(String channel, String chatId) {
-        return new InboundMessage(Principal.readOnly("u-1"), chatId, "上周华东成交额",
+        return new InboundMessage(new Principal("u-1"), chatId, "上周华东成交额",
                 Instant.now(), null, channel, NotifyPolicy.DEFAULT, null, null, true);
     }
 

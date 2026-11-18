@@ -1,10 +1,9 @@
 package io.github.claw4j.capability.mcp;
 
-import io.github.claw4j.capability.mcp.McpServerProperties.Permission;
 import io.github.claw4j.capability.mcp.McpServerProperties.Server;
 import io.github.claw4j.capability.mcp.McpServerProperties.Transport;
 import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
-import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.github.claw4j.secret.MissingSecretException;
 import io.github.claw4j.secret.SecretResolver;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
@@ -151,29 +150,6 @@ class McpServersConfigTest {
     }
 
     @Test
-    @DisplayName("权限默认只读且不带任何表：外部能力碰不到业务库")
-    void defaultPermissionIsReadWithoutTables() {
-        McpServerEndpoint endpoint =
-                McpEndpoints.of("deepwiki", http("https://mcp.deepwiki.com", null, Map.of()), SECRETS);
-
-        assertThat(endpoint.name()).isEqualTo("deepwiki");
-        assertThat(endpoint.permission())
-                .as("表清单为空时鉴权只看动作，于是只读身份能调它、但拿不到任何业务表")
-                .isEqualTo(ToolPermission.read());
-    }
-
-    @Test
-    @DisplayName("声明了 send_email 的 server 就按 send_email 鉴权，不会退化成只读")
-    void declaredActionReachesTheDomainPermission() {
-        Server server = new Server(Transport.STDIO, "python3", List.of("mail.py"), Map.of(),
-                List.of("PATH"), null, null, Map.of(), new Permission("send_email", List.of("customer")),
-                Map.of(), true);
-
-        assertThat(McpEndpoints.of("mail", server, SECRETS).permission())
-                .isEqualTo(ToolPermission.of("send_email", "customer"));
-    }
-
-    @Test
     @DisplayName("stdio 没写 command：启动就失败，消息里带 server 名")
     void stdioWithoutCommandFailsOnTheSpot() {
         Server server = stdio("  ", List.of(), List.of("PATH"), Map.of());
@@ -210,7 +186,7 @@ class McpServersConfigTest {
         McpServerProperties properties = new McpServerProperties();
         properties.getServers().put("on", http("https://mcp.deepwiki.com", null, Map.of()));
         properties.getServers().put("off", new Server(Transport.HTTP, null, List.of(), Map.of(), List.of("PATH"),
-                "https://mcp.example.com", null, Map.of(), new Permission("read", List.of()), Map.of(), false));
+                "https://mcp.example.com", null, Map.of(), ToolFilter.none(), false));
 
         assertThat(McpEndpoints.from(properties, SECRETS))
                 .extracting(McpServerEndpoint::name).containsExactly("on");
@@ -255,58 +231,19 @@ class McpServersConfigTest {
     }
 
     @Test
-    @DisplayName("按工具覆盖：点名的用覆盖，没点名的仍走 server 那一条")
-    void perToolPermissionOverridesOnlyTheNamedTool() {
-        Server server = new Server(Transport.HTTP, null, List.of(), Map.of(), List.of("PATH"),
-                "https://mcp.example.com", null, Map.of(),
-                new Permission("read", List.of()),
-                Map.of("send_email", new Permission("send_email", List.of("customer"))), true);
-
-        McpServerEndpoint endpoint = McpEndpoints.of("mail", server, SECRETS);
-
-        assertThat(endpoint.permissionFor("list_inbox"))
-                .as("没点名的工具不能被旁边的覆盖带跑")
-                .isEqualTo(ToolPermission.read());
-        assertThat(endpoint.permissionFor("send_email"))
-                .as("混装的 server 只有这一层能让写动作与读动作各用各的权限")
-                .isEqualTo(ToolPermission.of("send_email", "customer"));
-        assertThat(endpoint.permission()).isEqualTo(ToolPermission.read());
-    }
-
-    @Test
-    @DisplayName("覆盖表里写了空的工具名：启动就失败，多半是 YAML 缩进错了")
-    void blankToolNameInOverridesIsRejected() {
-        Server server = new Server(Transport.HTTP, null, List.of(), Map.of(), List.of("PATH"),
-                "https://mcp.example.com", null, Map.of(), new Permission("read", List.of()),
-                Map.of(" ", new Permission("send_email", List.of())), true);
-
-        assertThatThrownBy(() -> McpEndpoints.of("mail", server, SECRETS))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("MCP server mail")
-                .hasMessageContaining("空的工具名");
-    }
-
-    @Test
-    @DisplayName("YAML 里那三行真的绑得进 tools：嵌套的 map-of-record 不是靠“看着对”")
-    void perToolPermissionsBindFromProperties() {
+    @DisplayName("握手超时能改：接了慢启动的 server 时不用重新打包")
+    void initializationTimeoutBindsFromProperties() {
         StandardEnvironment environment = new StandardEnvironment();
         environment.getPropertySources().addFirst(new MapPropertySource("test", Map.of(
-                "claw4j.capability.mcp.servers.mail.permission.action", "read",
-                "claw4j.capability.mcp.servers.mail.tools.send_email.action", "send_email",
-                "claw4j.capability.mcp.servers.mail.tools.send_email.tables[0]", "customer",
+                "claw4j.capability.mcp.servers.mail.transport", "http",
+                "claw4j.capability.mcp.servers.mail.url", "https://mcp.example.com",
                 "claw4j.capability.mcp.initialization-timeout", "90s")));
 
         McpServerProperties properties = Binder.get(environment)
                 .bind("claw4j.capability.mcp", Bindable.of(McpServerProperties.class))
                 .get();
 
-        Server mail = properties.getServers().get("mail");
-        assertThat(mail.tools()).containsOnlyKeys("send_email");
-        assertThat(mail.tools().get("send_email"))
-                .isEqualTo(new Permission("send_email", List.of("customer")));
-        assertThat(mail.permission())
-                .as("没写 permission 时默认只读且不碰表——覆盖表只动被点名的那个工具")
-                .isEqualTo(new Permission("read", List.of()));
+        assertThat(properties.getServers()).containsOnlyKeys("mail");
         assertThat(properties.getInitializationTimeout())
                 .as("接了慢启动的 server 时，这一项要能改，不必重新打包")
                 .isEqualTo(Duration.ofSeconds(90));
@@ -338,11 +275,11 @@ class McpServersConfigTest {
 
     private static Server stdio(String command, List<String> args, List<String> inheritEnv, Map<String, String> env) {
         return new Server(Transport.STDIO, command, args, new LinkedHashMap<>(env), inheritEnv,
-                null, null, Map.of(), new Permission("read", List.of()), Map.of(), true);
+                null, null, Map.of(), ToolFilter.none(), true);
     }
 
     private static Server http(String url, String path, Map<String, String> headers) {
         return new Server(Transport.HTTP, null, List.of(), Map.of(), List.of("PATH"),
-                url, path, headers, new Permission("read", List.of()), Map.of(), true);
+                url, path, headers, ToolFilter.none(), true);
     }
 }

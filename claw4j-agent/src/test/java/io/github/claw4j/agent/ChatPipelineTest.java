@@ -1,6 +1,5 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
 import io.github.claw4j.agent.approval.ConversationApprovalGate;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditEvent;
@@ -23,8 +22,6 @@ import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.capability.tool.ToolCatalog;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolProfile;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
@@ -72,9 +69,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 那条另有一条真模型用例。
  */
 class ChatPipelineTest {
-
-    private static final ToolPermissionRegistry READS_EVERYTHING =
-            ToolPermissionRegistry.of(Map.of("lookup", ToolPermission.read("sales_order")));
 
     @Test
     @DisplayName("reply 把回答和 chatId 一起交回通道")
@@ -166,46 +160,13 @@ class ChatPipelineTest {
                 },
                 List.of());
 
-        ToolPermissionRegistry registry = ToolPermissionRegistry.of(Map.of(
-                "first", ToolPermission.read("sales_order"),
-                "second", ToolPermission.read("sales_order"),
-                "third", ToolPermission.read("sales_order")));
-
-        port(model, List.of(first, second, third), registry).reply(message("chat-5", "轮着查"));
+        port(model, List.of(first, second, third)).reply(message("chat-5", "轮着查"));
 
         int executed = first.calls() + second.calls() + third.calls();
         assertThat(executed).isEqualTo(ToolCallBudget.MAX_TOTAL_CALLS);
         assertThat(first.calls()).isLessThanOrEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
         assertThat(second.calls()).isLessThanOrEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
         assertThat(third.calls()).isLessThanOrEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
-    }
-
-    /**
-     * 跨层的权限登记：三层工具共用一份「谁登记过」的口径。
-     *
-     * <p>某一层的工具不在表里，它就该像不存在一样被拒，而不是少了一层、检查也跟着省了。
-     * 判据是「没有登记就是没有这条能力」，所以拒绝发生在执行之前。
-     */
-    @Test
-    @DisplayName("某一层没登记这个工具：当场按「没有权限」拒掉，工具一次都没执行")
-    void aToolWithoutItsRegistryEntryIsRefused() {
-        RecordingTool builtin = new RecordingTool("lookup", "128400");
-        RecordingTool fromMcp = new RecordingTool("mcp_echo", "回声");
-        FixedChatModel model = new FixedChatModel(prompt -> requestTool("mcp_echo", "{}"), List.of());
-
-        // 只登记了第一层那一个工具：第二层这个在表里没有名字。
-        ToolPermissionRegistry onlyFirstLayer = ToolPermissionRegistry.of(Map.of(
-                "lookup", ToolPermission.read("sales_order")));
-
-        String text = port(model, List.of(builtin, fromMcp), onlyFirstLayer)
-                .reply(message("chat-layer", "回声一下")).text();
-
-        assertThat(fromMcp.calls())
-                .as("没有登记就是没有这条能力：连执行都不该开始")
-                .isZero();
-        assertThat(text)
-                .as("给用户的是一句能照着办的话，不是 500、也不是空回答")
-                .startsWith(AuthorizationAdvisor.DENIAL_PREFIX);
     }
 
     /**
@@ -225,7 +186,7 @@ class ChatPipelineTest {
         RecordingTool tool = new RecordingTool("lookup", "还是不对");
         FixedChatModel model = new FixedChatModel(prompt -> requestTool("lookup", "{}"), List.of());
         ChatClientAgentPort port = new ChatClientAgentPort(
-                client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))),
+                client(model, List.of(),
                         List.of(tool)),
                 null, null, null, null, null, null, goals);
 
@@ -252,7 +213,7 @@ class ChatPipelineTest {
                         ? requestTool("lookup", "{}")
                         : answer("查询结果：" + "128400"),
                 List.of());
-        String text = port(model, List.of(tool), READS_EVERYTHING)
+        String text = port(model, List.of(tool))
                 .reply(message("chat-6", "查成交额")).text();
 
         assertThat(tool.calls()).isEqualTo(1);
@@ -287,15 +248,12 @@ class ChatPipelineTest {
 
         ChatClient chat = clientBuilder(model)
                 .defaultSystem("你是业务助手。回答业务问题前必须先调用 querySales 查数，不要凭空作答。")
-                .defaultAdvisors(new AuthorizationAdvisor(List.of(
-                        ToolPermissionRegistry.of(Map.of("querySales",
-                                ToolPermission.read("sales_order", "order_item", "customer", "region"))))))
                 .defaultToolCallbacks(querySales)
                 .build();
 
         String answer = new ChatClientAgentPort(chat)
                 .reply(new InboundMessage(
-                        Principal.of("u-real", "admin", Set.of("*"), Set.of("*")),
+                        new Principal("u-1"),
                         "chat-real",
                         "上周华东区成交额是多少？请调用 querySales 查一下，按 sum(order_item.amount) 算，"
                                 + "只算未取消的订单。"))
@@ -428,7 +386,7 @@ class ChatPipelineTest {
         ConversationApprovalGate gate = new ConversationApprovalGate(ledger, List.of(cards, new BrokenCards("feishu")));
         String digest = "a".repeat(64);
         ApprovalLedger.Origin origin = new ApprovalLedger.Origin("claw4j:u-1@fp:feishu:oc_1",
-                "feishu", "oc_1", Principal.readOnly("u-1"));
+                "feishu", "oc_1", new Principal("u-1"));
 
         assertThat(gate.redeem("u-1", "sendEmail", digest)).as("没批过就是没有").isEmpty();
 
@@ -470,14 +428,14 @@ class ChatPipelineTest {
     /** 一台把审计写进内存的门：这一层要验"记了哪几条"，不是"SQL 对不对"。 */
     private static ChatClientAgentPort port(FixedChatModel model, ToolCallAudit audit) {
         return new ChatClientAgentPort(
-                client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))), List.of()),
+                client(model, List.of(), List.of()),
                 null, null, null, null, null, audit, null);
     }
 
     private static ChatClientAgentPort port(FixedChatModel model, ToolCallAudit audit,
                                             SessionGoalStore goals) {
         return new ChatClientAgentPort(
-                client(model, List.of(new AuthorizationAdvisor(List.of(READS_EVERYTHING))), List.of()),
+                client(model, List.of(), List.of()),
                 null, null, null, null, null, audit, goals);
     }
 
@@ -602,7 +560,7 @@ class ChatPipelineTest {
         RecordingAudit audit = new RecordingAudit();
         ChatClientAgentPort port = port(new FixedChatModel("好"), audit.toolCallAudit());
 
-        port.reply(new InboundMessage(Principal.readOnly("u-1"), "chat-1", "接着说",
+        port.reply(new InboundMessage(new Principal("u-1"), "chat-1", "接着说",
                 Instant.now(), null, "feishu", NotifyPolicy.DEFAULT, null,
                 "claw4j:u-1@fp-1:feishu:chat-1:seg-fixed", true));
 
@@ -822,13 +780,7 @@ class ChatPipelineTest {
     }
 
     private static ChatClientAgentPort port(ChatModel model, List<ToolCallback> tools) {
-        return port(model, tools, READS_EVERYTHING);
-    }
-
-    private static ChatClientAgentPort port(ChatModel model,
-                                            List<ToolCallback> tools,
-                                            ToolPermissionRegistry registry) {
-        return new ChatClientAgentPort(client(model, List.of(new AuthorizationAdvisor(List.of(registry))), tools));
+        return new ChatClientAgentPort(client(model, List.of(), tools));
     }
 
     private static ChatClient client(ChatModel model, List<Advisor> advisors, List<ToolCallback> tools) {
@@ -902,7 +854,7 @@ class ChatPipelineTest {
     }
 
     private static InboundMessage message(String chatId, String text) {
-        return new InboundMessage(Principal.readOnly("u-1"), chatId, text);
+        return new InboundMessage(new Principal("u-1"), chatId, text);
     }
 
     /**
@@ -914,7 +866,7 @@ class ChatPipelineTest {
      * "目标落在另一个节点上"能藏住的原因。
      */
     private static String nodeKey(String chatId) {
-        return SessionKeys.conversationKeyOf(SessionKeys.ownerOf(Principal.readOnly("u-1")),
+        return SessionKeys.conversationKeyOf(SessionKeys.ownerOf(new Principal("u-1")),
                 true, null, chatId, SessionScopeProperties.defaults());
     }
 
@@ -933,7 +885,7 @@ class ChatPipelineTest {
 
     /** 带着 runId 再说一句：客户端把上一轮回答里的 runId 带回来（A02 的 resume 入口）。 */
     private static InboundMessage continuation(String chatId, String text, String runId) {
-        return new InboundMessage(Principal.readOnly("u-1"), chatId, text, Instant.now(), null, runId);
+        return new InboundMessage(new Principal("u-1"), chatId, text, Instant.now(), null, runId);
     }
 
     static ChatResponse answer(String text) {

@@ -1,5 +1,6 @@
 package io.github.claw4j.channel.feishu.sdk;
 
+import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.channel.feishu.FeishuApprovalCard;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.principal.Principal;
@@ -89,6 +90,34 @@ class FeishuApprovalTest {
     }
 
     @Test
+    @DisplayName("能长期放行的那条：卡片多一个「以后都放行」，点它传的是 ALLOW_ALWAYS")
+    void aPersistableRequestOffersTheThirdButton() {
+        ApprovalDecider.Pending persistable = new ApprovalDecider.Pending(APPROVAL_ID, "run-7", "u-9",
+                "Bash", "命令：rg -n TODO", "pending", false,
+                Instant.parse("2026-11-02T13:00:00Z"), true);
+
+        String json = JSON.writeValueAsString(FeishuApprovalCard.of(persistable));
+        assertTrue(json.contains(FeishuApprovalCard.DECISION_ALWAYS), json);
+        assertTrue(json.contains("以后都放行"), json);
+
+        FixedDecider decider = new FixedDecider();
+        actions(decider).on(new FeishuApprovalActions.Click("ou_ethan", APPROVAL_ID,
+                FeishuApprovalCard.DECISION_ALWAYS));
+
+        assertEquals(ApprovalChoice.ALLOW_ALWAYS, decider.seenChoice,
+                "卡片与接口传的必须是同一档：否则「批一次」与「以后都放行」在两条入口上是两件事");
+    }
+
+    @Test
+    @DisplayName("ask=always 那条不给「以后都放行」：不是点了没用，是按钮根本不在")
+    void aNonPersistableRequestHasNoThirdButton() {
+        String json = JSON.writeValueAsString(FeishuApprovalCard.of(pending(false)));
+
+        assertFalse(json.contains(FeishuApprovalCard.DECISION_ALWAYS), json);
+        assertFalse(json.contains("以后都放行"), json);
+    }
+
+    @Test
     @DisplayName("登记过的人点批准：成功提示，卡片换成「已经批准」，决定里带的是他的 userId")
     void aRegisteredApproverGrantsAndTheCardTurnsGreen() {
         FixedDecider decider = new FixedDecider();
@@ -170,8 +199,7 @@ class FeishuApprovalTest {
 
     private static FeishuApprovalActions actions(ApprovalDecider decider) {
         return new FeishuApprovalActions(decider, openId -> "ou_ethan".equals(openId)
-                ? Optional.of(Principal.of("ou_ethan", "admin", Set.of("*"), Set.of("*")))
-                : Optional.empty());
+                ? Optional.of(new Principal("ou_ethan")) : Optional.empty());
     }
 
     private static ApprovalDecider.Pending pending(boolean expired) {
@@ -191,6 +219,16 @@ class FeishuApprovalTest {
         private boolean seenApproved;
 
         private String seenReason;
+
+        /** 卡片按钮传下来的是哪一档；{@code null} 表示没走到 decide。 */
+        private ApprovalChoice seenChoice;
+
+        @Override
+        public Result decide(String approvalId, String approver, ApprovalChoice choice, String reason) {
+            // 入口传进来的是哪一档记下来；结论本身由这条用例固定成 verdict，不在这里判。
+            seenChoice = choice;
+            return decide(approvalId, approver, choice != ApprovalChoice.DENY, reason);
+        }
 
         @Override
         public Result decide(String approvalId, String approver, boolean approved, String reason) {

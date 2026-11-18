@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class MessageContractTest {
 
-    private static final Principal READER = Principal.readOnly("u-1");
+    private static final Principal READER = new Principal("u-1");
 
     private static final String CHAT_ID = "http:u-1";
 

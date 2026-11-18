@@ -77,16 +77,14 @@ public class HttpChatController {
      *
      * @param request 这一轮说的话与通知策略
      * @param user 请求头里的用户标识，允许缺失（缺失即 401）
-     * @param role 请求头里的角色名，允许缺失
      * @param chatId 请求头里的会话标识，允许缺失
      * @return 这一轮的编号、会话标识与整段回答
      */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public AskResponse ask(@RequestBody AskRequest request,
                            @RequestHeader(value = HttpPrincipalResolver.USER_HEADER, required = false) String user,
-                           @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
                            @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
-        OutboundMessage answer = channel.ask(inbound(request, user, role, chatId));
+        OutboundMessage answer = channel.ask(inbound(request, user, chatId));
         // runId 跟着回答一起出去：它是这一轮的编号，用来串日志（ADR-0027）。
         // 它不是续跑令牌：拿它回来接不上任何东西，连续性靠会话，不靠这个 id。
         // 命令类回执没有编号，那是 null。
@@ -106,16 +104,14 @@ public class HttpChatController {
      *
      * @param request 这一轮说的话与通知策略
      * @param user 请求头里的用户标识，允许缺失（缺失即 401）
-     * @param role 请求头里的角色名，允许缺失
      * @param chatId 请求头里的会话标识，允许缺失
      * @return 已挂上超时与取消回调的 emitter
      */
     @PostMapping(path = "/stream", consumes = MediaType.APPLICATION_JSON_VALUE)
     public SseEmitter stream(@RequestBody AskRequest request,
                               @RequestHeader(value = HttpPrincipalResolver.USER_HEADER, required = false) String user,
-                              @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
                               @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
-        InboundMessage inbound = inbound(request, user, role, chatId);
+        InboundMessage inbound = inbound(request, user, chatId);
 
         SseEmitter emitter = new SseEmitter(properties.getStreamTimeout().toMillis());
         CompletableFuture<Void> agent;
@@ -153,16 +149,14 @@ public class HttpChatController {
      * 连接上问「有没有要我问的」，拿到之后再 {@code POST /answer}。
      *
      * @param user 请求头里的用户标识
-     * @param role 请求头里的角色名
      * @param chatId 请求头里的会话标识
      * @return 正在等的问题；一条都没有时是空表
      */
     @GetMapping(path = "/questions", produces = MediaType.APPLICATION_JSON_VALUE)
     public PendingQuestionsResponse pendingQuestions(
             @RequestHeader(value = HttpPrincipalResolver.USER_HEADER, required = false) String user,
-            @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
             @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
-        var principal = principalResolver.resolve(user, role);
+        var principal = principalResolver.resolve(user);
         String chatRef = principalResolver.chatId(principal.userId(), chatId);
         List<PendingQuestion> pending = gate().pending(CHANNEL, chatRef).stream()
                 .flatMap(ask -> ask.questions().stream())
@@ -180,19 +174,17 @@ public class HttpChatController {
      *
      * @param request 说了什么
      * @param user 请求头里的用户标识
-     * @param role 请求头里的角色名
      * @param chatId 请求头里的会话标识
      * @return 204：这个答复已被那一轮收下。409：这段对话没有在等答案的问题
      */
     @PostMapping(path = "/answer", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Void> answer(@RequestBody AnswerRequest request,
                                        @RequestHeader(value = HttpPrincipalResolver.USER_HEADER, required = false) String user,
-                                       @RequestHeader(value = HttpPrincipalResolver.ROLE_HEADER, required = false) String role,
                                        @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
         if (request == null || request.text() == null || request.text().isBlank()) {
             throw new InvalidRequestException("text 不能为空");
         }
-        var principal = principalResolver.resolve(user, role);
+        var principal = principalResolver.resolve(user);
         String chatRef = principalResolver.chatId(principal.userId(), chatId);
         boolean consumed = gate().answer(CHANNEL, chatRef, principal, request.text());
         return consumed ? ResponseEntity.noContent().build() : ResponseEntity.status(HttpStatus.CONFLICT).build();
@@ -240,11 +232,11 @@ public class HttpChatController {
                 .body(new ErrorResponse(exception.getMessage()));
     }
 
-    private InboundMessage inbound(AskRequest request, String user, String role, String chatId) {
+    private InboundMessage inbound(AskRequest request, String user, String chatId) {
         if (request == null || request.text() == null || request.text().isBlank()) {
             throw new InvalidRequestException("text 不能为空");
         }
-        var principal = principalResolver.resolve(user, role);
+        var principal = principalResolver.resolve(user);
         return new InboundMessage(
                 principal,
                 principalResolver.chatId(principal.userId(), chatId),

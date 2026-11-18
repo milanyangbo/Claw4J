@@ -84,7 +84,7 @@ public class ConversationApprovalGate implements ApprovalGate {
             return;
         }
         ApprovalDecider.Pending card = new ApprovalDecider.Pending(approvalId, ask.runId(), ask.owner(),
-                ask.toolName(), ask.argsSummary(), "pending", false, null);
+                ask.toolName(), ask.argsSummary(), "pending", false, null, ask.allowAlways());
         for (ApprovalCards sender : cards) {
             if (!sender.channel().equals(origin.channel())) {
                 continue;

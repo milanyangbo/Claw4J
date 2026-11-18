@@ -187,10 +187,10 @@ class AskUserQuestionTest {
     }
 
     private static Principal asker() {
-        return new Principal("u1", "admin", Set.of("*"), Set.of("*"));
+        return new Principal("u1");
     }
 
     private static Principal other() {
-        return new Principal("u2", "read-only", Set.of("*"), Set.of("read"));
+        return new Principal("u2");
     }
 }

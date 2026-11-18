@@ -37,6 +37,15 @@ public final class FeishuApprovalCard {
     /** 决定的取值：拒绝。 */
     public static final String DECISION_DENY = "deny";
 
+    /**
+     * 决定的取值：以后都放行（票 05）。
+     *
+     * <p>只在 {@link ApprovalDecider.Pending#allowAlways()} 为真时出现。{@code ask=always} 下
+     * 不该有它：那一档要求每条都由人看一眼，而"以后都放行"会把档位悄悄改成 {@code on-miss}。
+     * 不是"点了没用"，是按钮根本不在。
+     */
+    public static final String DECISION_ALWAYS = "always";
+
     /** 库里 {@code approval_request.status} 的三个取值之一：这条还没人定结论。 */
     private static final String PENDING = "pending";
 
@@ -61,9 +70,13 @@ public final class FeishuApprovalCard {
         elements.add(Map.of("tag", "div",
                 "text", Map.of("tag", "lark_md", "content", bodyOf(card))));
         if (actionable(card)) {
-            elements.add(Map.of("tag", "action", "actions", List.of(
-                    button("批准", "primary", card.id(), DECISION_APPROVE),
-                    button("拒绝", "danger", card.id(), DECISION_DENY))));
+            List<Map<String, Object>> actions = new ArrayList<>();
+            actions.add(button("批准", "primary", card.id(), DECISION_APPROVE));
+            if (card.allowAlways()) {
+                actions.add(button("以后都放行", "default", card.id(), DECISION_ALWAYS));
+            }
+            actions.add(button("拒绝", "danger", card.id(), DECISION_DENY));
+            elements.add(Map.of("tag", "action", "actions", actions));
         }
         elements.add(Map.of("tag", "note", "elements", List.of(
                 Map.of("tag", "plain_text", "content", footerOf(card)))));
@@ -133,6 +146,9 @@ public final class FeishuApprovalCard {
             return "过期的批准不能补点：这不是点错了，是这条请求已经不作数";
         }
         if (actionable(card)) {
+            if (card.allowAlways()) {
+                return "批准只放这一次；「以后都放行」按命令段记住，同一个可执行文件不再问。两种都记账";
+            }
             return "批准与拒绝都记账：谁点的、什么时候点的，事后查得到";
         }
         return "这条请求已经有结论，按钮不再出现";

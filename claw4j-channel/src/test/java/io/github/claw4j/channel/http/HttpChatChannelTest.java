@@ -5,7 +5,6 @@ import io.github.claw4j.channel.http.HttpChatController.AskResponse;
 import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.channel.spi.TooBusyException;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
@@ -15,6 +14,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class HttpChatChannelTest {
 
-    private static final Principal CALLER = Principal.readOnly("u-1");
+    private static final Principal CALLER = new Principal("u-1");
 
     private static final String CHAT_ID = "http:u-1";
 
@@ -182,34 +182,45 @@ class HttpChatChannelTest {
         HttpChatController controller = controller(agent, Runnable::run);
 
         assertThrows(PrincipalRejectedException.class,
-                () -> controller.ask(new AskRequest("问题"), null, "read-only", null));
+                () -> controller.ask(new AskRequest("问题"), null, null));
         assertThrows(PrincipalRejectedException.class,
-                () -> controller.ask(new AskRequest("问题"), "   ", "read-only", null));
+                () -> controller.ask(new AskRequest("问题"), "   ", null));
 
         assertTrue(agent.received.isEmpty());
     }
 
     @Test
-    @DisplayName("角色没登记就拒：不能悄悄退回默认角色")
-    void unregisteredRoleIsRejected() {
+    @DisplayName("不在白名单就拒：默认空名单意味着谁都不进，而不是谁都能进")
+    void unlistedUserIsRejected() {
         TestAgent agent = new TestAgent();
 
         assertThrows(PrincipalRejectedException.class,
-                () -> controller(agent, Runnable::run).ask(new AskRequest("问题"), "u-1", "superuser", null));
+                () -> controller(agent, Runnable::run).ask(new AskRequest("问题"), "u-2", null));
 
         assertTrue(agent.received.isEmpty());
     }
 
     @Test
-    @DisplayName("没带角色用默认身份：能读，但不能做有副作用的事")
-    void blankRoleFallsBackToTheLeastPrivilegedIdentity() {
+    @DisplayName("只带用户头就够：名单里有他就进来，不需要任何角色头")
+    void userHeaderAloneIsEnough() {
         TestAgent agent = new TestAgent();
 
-        controller(agent, Runnable::run).ask(new AskRequest("问题"), "u-1", "  ", null);
+        controller(agent, Runnable::run).ask(new AskRequest("问题"), "u-1", null);
 
-        Principal resolved = agent.received.get(0).principal();
-        assertTrue(resolved.canUse(ToolPermission.read("sales_order")));
-        assertFalse(resolved.canUse(ToolPermission.of("send_email")));
+        assertEquals("u-1", agent.received.get(0).principal().userId());
+        assertEquals(1, agent.received.size());
+    }
+
+    @Test
+    @DisplayName("名单写成 [\"*\"] 就是不设准入：谁都进得来（与忘了配区分开）")
+    void wildcardAllowlistLetsEveryoneIn() {
+        TestAgent agent = new TestAgent();
+        HttpChannelProperties properties = new HttpChannelProperties();
+        properties.setUsers(Set.of("*"));
+
+        newHttpController(agent, Runnable::run, properties).ask(new AskRequest("问题"), "u-anything", null);
+
+        assertEquals("u-anything", agent.received.get(0).principal().userId());
     }
 
     @Test
@@ -218,8 +229,8 @@ class HttpChatChannelTest {
         TestAgent agent = new TestAgent();
         HttpChatController controller = controller(agent, Runnable::run);
 
-        controller.ask(new AskRequest("问题"), "u-1", "read-only", "room-42");
-        controller.ask(new AskRequest("问题"), "u-1", "read-only", "   ");
+        controller.ask(new AskRequest("问题"), "u-1", "room-42");
+        controller.ask(new AskRequest("问题"), "u-1", "   ");
 
         assertEquals("http:room-42", agent.received.get(0).chatId());
         assertEquals("u-1", agent.received.get(0).principal().userId());
@@ -235,9 +246,9 @@ class HttpChatChannelTest {
         HttpChatController controller = controller(agent, Runnable::run);
 
         assertThrows(HttpChatController.InvalidRequestException.class,
-                () -> controller.ask(new AskRequest("   "), "u-1", "read-only", null));
+                () -> controller.ask(new AskRequest("   "), "u-1", null));
         assertThrows(HttpChatController.InvalidRequestException.class,
-                () -> controller.ask(new AskRequest(null), "u-1", "read-only", null));
+                () -> controller.ask(new AskRequest(null), "u-1", null));
 
         assertTrue(agent.received.isEmpty());
     }
@@ -248,7 +259,7 @@ class HttpChatChannelTest {
         QueuedExecutor executor = new QueuedExecutor();
         TestAgent agent = new TestAgent().failingWith(new IllegalStateException("模型挂了"));
         SseEmitter emitter = controller(agent, executor)
-                .stream(new AskRequest("问题"), "u-1", "read-only", null);
+                .stream(new AskRequest("问题"), "u-1", null);
 
         executor.runAll();
 
@@ -266,12 +277,24 @@ class HttpChatChannelTest {
         HttpChatController controller = controller(agent, full);
 
         assertThrows(TooBusyException.class,
-                () -> controller.stream(new AskRequest("问题"), "u-1", "read-only", null));
+                () -> controller.stream(new AskRequest("问题"), "u-1", null));
         assertTrue(agent.received.isEmpty());
     }
 
+    /**
+     * 默认装配：白名单里放上测试用的那个人。
+     *
+     * <p>白名单默认是空（谁都不进），所以每一条"能进来"的用例都必须显式把人放进去——
+     * 这本身就是那条默认值在起作用。
+     */
     private static HttpChatController controller(AgentPort agent, Executor executor) {
         HttpChannelProperties properties = new HttpChannelProperties();
+        properties.setUsers(Set.of("u-1"));
+        return newHttpController(agent, executor, properties);
+    }
+
+    private static HttpChatController newHttpController(AgentPort agent, Executor executor,
+                                                        HttpChannelProperties properties) {
         return new HttpChatController(
                 new HttpChatChannel(agent, executor),
                 new HttpPrincipalResolver(properties),

@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.subagent;
 
+import io.github.claw4j.agent.ToolPolicyAssembler;
 import io.github.claw4j.markdown.FrontMatter;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -134,8 +135,14 @@ public record SubagentDefinition(String name,
                 : tools.stream()
                         .map(name -> require(available, name))
                         .toList();
+        // 角色带来的固定拒绝（ADR-0030 裁决二的第 10 层）：定时任务对子 Agent 没有意义——
+        // 它是一次性的执行体，而任务表是全局的，"一个子 Agent 建出来的任务谁认领"不成立。
+        // 显式白名单点名的那几个不算（配置比角色的默认更懂这个部署），所以先减掉白名单。
+        Set<String> roleDenied = new LinkedHashSet<>(ToolPolicyAssembler.subagentAlwaysDenied());
+        roleDenied.removeAll(tools);
         List<ToolCallback> filtered = selected.stream()
                 .filter(callback -> !disallowedTools.contains(callback.getToolDefinition().name()))
+                .filter(callback -> !roleDenied.contains(callback.getToolDefinition().name()))
                 .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(callback.getToolDefinition().name()))
                 .toList();
         if (filtered.isEmpty()) {

@@ -96,19 +96,38 @@ class PersistenceSchemaTest {
         jdbc.update("delete from claw4j_run.approval_request");
         // 审计也要清：上限那条用例会插十万行，留着会让"30 天只留一条"的断言看到别人的行。
         jdbc.update("delete from claw4j_run.audit_event");
+        // allow-always 的条目是部署级配置，跨用例串起来会让"第一次要问"的断言直接绿掉。
+        jdbc.update("delete from claw4j_run.exec_allowlist");
     }
 
     @Test
-    @DisplayName("V24 之后 claw4j_run 里只剩三张表：run 与 step 都不在了")
+    @DisplayName("V24 之后 claw4j_run 里只剩四张表：run 与 step 都不在了")
     void migrationLeavesOnlyTheTablesThatSurvived() {
         // 审计视图长在 step 上，随 step 一起删（V24）；agent_session_budget 在 V22 已经删了。
         // 这条断言存在的理由是"兼容层"那个诱惑：留一张空表"以防有人要查历史"，
         // 下一个人就会往里加一列。历史在 audit_event 上，不在 step 上。
+        // exec_allowlist 是 V11 新增的：它不属于"某一轮"，是部署级的 allow-always 条目
+        // （ADR-0030），所以留在这个 schema 里而不是跟 run 一起走。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'claw4j_run'"
                         + " order by table_name", String.class))
                 .as("run 只是一轮的句柄（ADR-0027），不落表")
-                .containsExactly("agent_schedule", "approval_request", "audit_event");
+                .containsExactly("agent_schedule", "approval_request", "audit_event", "exec_allowlist");
+    }
+
+    @Test
+    @DisplayName("V12：审批行上有一列冻结计划，jsonb 且允许为空")
+    void approvalRowCarriesAFrozenPlan() {
+        // 允许为空是必须的：除 exec 之外的审批（工具名 + 参数指纹）没有"一条命令"可冻结，
+        // 而 V12 之前落下的行也没有。为空时按"说不清批的是哪条命令"处理——不放行。
+        assertThat(jdbc.queryForObject("select data_type from information_schema.columns"
+                + " where table_schema = 'claw4j_run' and table_name = 'approval_request'"
+                + " and column_name = 'frozen_plan'", String.class))
+                .isEqualTo("jsonb");
+        assertThat(jdbc.queryForObject("select is_nullable from information_schema.columns"
+                + " where table_schema = 'claw4j_run' and table_name = 'approval_request'"
+                + " and column_name = 'frozen_plan'", String.class))
+                .isEqualTo("YES");
     }
 
     @Test

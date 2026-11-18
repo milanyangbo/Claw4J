@@ -5,7 +5,6 @@ import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -18,6 +17,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
@@ -25,17 +25,17 @@ import java.util.function.Function;
 /**
  * 定时任务的三件工具：建一条、看看有哪些、取消掉（P05）。
  *
- * <p>三个工具而不是一个带 {@code action} 参数的：动作名进的是角色的授权表
- * （{@code claw4j.channel.http.roles} 里那一行），而「能不能新建」与「能不能取消」
- * 是两种授权。合成一个的话，给了「能看自己有哪些任务」就等于给了「能取消」。
+ * <p>三个工具而不是一个带 {@code action} 参数的：工具名就是模型与清单认领它的依据，而
+ * 「能不能新建」与「能不能取消」在清单那一层可以分别挡（{@code claw4j.tools.deny}）。
+ * 合成一个的话，给了「能看自己有哪些任务」就等于给了「能取消」。
  *
- * <p>建的时候就把话说死：一次授权、多次执行，那次授权指的是建这一下。所以建的时候核三件事
- * ——cron 解析得了、要用的工具主人现在都有、这些工具里没有每次都要人批准的。核不过当场拒，
- * 理由原样交给模型，让它换个说法再来，比明天九点才发现跑不了好。
+ * <p>建的时候就把话说死：一次授权、多次执行，那次授权指的是建这一下。所以建的时候核两件事
+ * ——cron 解析得了、这些工具里没有每次都要人批准的。核不过当场拒，理由原样交给模型，
+ * 让它换个说法再来，比明天九点才发现跑不了好。
  *
- * <p>到点不再问人：任务用主人的身份跑，但权限按那一刻的角色表重算
- * （{@link ScheduleAuthorization}）。要审批的工具因此进不了定时任务，到点没人能点按钮，
- * 结果是每天挂一条没人看见的待批请求，而不是每天办成一件事。
+ * <p>到点不再问人：要审批的工具因此进不了定时任务，到点没人能点按钮，结果是每天挂一条没人
+ * 看见的待批请求，而不是每天办成一件事（{@link ScheduleAuthorization}）。
+ * 业务数据授权（"这个人还能不能看 sales_order"）随角色目录一起下线，见 ADR-0030 的缺口表。
  *
  * <p>归属只看身份，不看这个工具实例：{@code owner} 由 {@link SessionKeys#ownerOf} 算，
  * 与 run 同一把键，「我的任务」与「我的 run」因此是同一种东西。取消也按这把键判——
@@ -83,18 +83,15 @@ public final class ScheduleTools implements ToolCallbackProvider {
     }
 
     /**
-     * 三个工具各自的权限登记。
+     * 这一层导出的工具名。
      *
-     * <p>三张表都不碰（{@link ToolPermission#tables()} 为空）：它们改的是「以后什么时候做什么」，
-     * 不是业务数据。真正的越权风险在任务跑起来之后，那一步由鉴权 Advisor 按那时候的
-     * 工具权限判。
+     * <p>它是"这个 provider 提供哪些工具"的唯一答案：画像登记、外部工具清单都读它。
+     * 权限登记表在票 04 整块下线，这个名字清单不能跟着消失。
      *
-     * @return 工具名到权限登记的映射
+     * @return 三个工具名
      */
-    public static Map<String, ToolPermission> permissions() {
-        return Map.of(CREATE, ToolPermission.of(CREATE),
-                LIST, ToolPermission.of(LIST),
-                CANCEL, ToolPermission.of(CANCEL));
+    public static Set<String> toolNames() {
+        return Set.of(CREATE, LIST, CANCEL);
     }
 
     // ---- 三个工具 ----
@@ -155,20 +152,14 @@ public final class ScheduleTools implements ToolCallbackProvider {
                 return "没建成：" + broken.getMessage() + "。换一个再试。";
             }
 
-            // ② 权限：任务到点只能按主人的权限跑，现在没有的，明天也没有。
-            Optional<String> refusal = authorization.refusalFor(principal, requiredTools);
+            // ② 走到点那一刻没人能点的东西：要人批的工具进不了定时任务。
+            Optional<String> refusal = authorization.refusalFor(requiredTools);
             if (refusal.isPresent()) {
-                return "没建成：" + refusal.get() + "。这条任务到点只能按你的权限跑，"
-                        + "现在跑不了的东西，明天也不会自己变得跑得了。";
+                return "没建成：" + refusal.get() + "。换一个不需要审批的做法，"
+                        + "或者改成现在就让用户自己做这件事。";
             }
 
-            // ③ 角色表：到点要靠它重算权限。认不出来就等于建一条永远跑不起来的任务。
-            if (authorization.currentOwner(principal.userId(), principal.role()).isEmpty()) {
-                return "没建成：认不出你的角色（" + principal.role() + "）现在的权限，"
-                        + "到点那一刻也就没法用你的身份跑。先让这个角色回到授权表里，再建。";
-            }
-
-            // ④ 落到哪儿：用这一轮所在的通道与会话作为出址。没有地址也能建，
+            // ③ 落到哪儿：用这一轮所在的通道与会话作为出址。没有地址也能建，
             //    只是结果只能按 id 取。
             Optional<DeliveryTarget> address = addressOf(toolContext);
             Optional<Schedule> created = store.create(new ScheduleStore.Request(

@@ -11,6 +11,7 @@ import org.springaicommunity.agent.common.exec.ExecSpec;
 import org.springframework.beans.factory.DisposableBean;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,6 +45,12 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
 
     private final String accountName;
 
+    /** 问人这一层的端口。没有实现时是 {@link ExecApprovalPort#denyAll()}：需要批的直接拒。 */
+    private final ExecApprovalPort approvals;
+
+    /** 未命中时的复核器。没有实现时恒回落人工，所以 {@code AUTO} 与 {@code ASK} 行为一致。 */
+    private final ExecReviewer reviewer;
+
     /** 后台 shell 由这里持有：{@code ShellTools} 只管自己的那份 id → handle，回收这件事在 {@link #destroy()}。 */
     private final Map<String, ShellProcess> background = new ConcurrentHashMap<>();
 
@@ -67,10 +74,44 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
      */
     public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
                                 Map<String, String> inheritedEnvironment, String accountName) {
+        this(properties, runner, inheritedEnvironment, accountName,
+                ExecApprovalPort.denyAll(), ExecReviewer.fallback());
+    }
+
+    /**
+     * 完整的一档：接上审批端口。
+     *
+     * @param properties  {@code claw4j.tools.exec} 的配置
+     * @param runner      起进程的执行器
+     * @param inheritedEnvironment 继承给命令的环境
+     * @param accountName          当前执行账号
+     * @param approvals            审批端口；{@code null} 按"没有设施"处理，需要批的命令直接拒
+     */
+    public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
+                                Map<String, String> inheritedEnvironment, String accountName,
+                                ExecApprovalPort approvals) {
+        this(properties, runner, inheritedEnvironment, accountName, approvals, ExecReviewer.fallback());
+    }
+
+    /**
+     * 完整的一档：审批端口 + 复核器。
+     *
+     * @param properties           {@code claw4j.tools.exec} 的配置
+     * @param runner               起进程的执行器
+     * @param inheritedEnvironment 继承给命令的环境
+     * @param accountName          当前执行账号
+     * @param approvals            审批端口；{@code null} 按"没有设施"处理
+     * @param reviewer             复核器；{@code null} 按"恒回落"处理
+     */
+    public SandboxedExecBackend(ExecProperties properties, ShellCommandRunner runner,
+                                Map<String, String> inheritedEnvironment, String accountName,
+                                ExecApprovalPort approvals, ExecReviewer reviewer) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.runner = Objects.requireNonNull(runner, "runner");
         this.inheritedEnvironment = Map.copyOf(Objects.requireNonNull(inheritedEnvironment, "inheritedEnvironment"));
         this.accountName = accountName;
+        this.approvals = approvals == null ? ExecApprovalPort.denyAll() : approvals;
+        this.reviewer = reviewer == null ? ExecReviewer.fallback() : reviewer;
     }
 
     /**
@@ -132,12 +173,155 @@ public final class SandboxedExecBackend implements ExecBackend, DisposableBean {
     private void authorize(ExecSpec spec) {
         Objects.requireNonNull(spec, "spec");
         ExecPolicy.requireNonRoot(accountName);
-        if (properties.mode() != ExecProperties.Mode.FULL
-                && !ExecPolicy.permits(properties.allow(), spec.command())) {
-            throw new ExecViolationException("这条命令没有执行："
-                    + (properties.mode() == ExecProperties.Mode.ALLOWLIST ? "allowlist" : "ask")
-                    + " 模式下只放开白名单里的命令（白名单：" + allowText() + "）");
+
+        ExecPolicy.Settings settings = properties.settings();
+        List<String> segments = ExecPolicy.segments(spec.command());
+        boolean allowlisted = ExecPolicy.permits(properties.allow(), spec.command());
+        boolean durable = approvals.alreadyApproved(segments);
+
+        // heredoc 与内联求值会把"白名单直接放行"抬成"问人"（票 01 的追加项，照它的 requiresAsk）。
+        // 只在 RUN 上叠加：已经 DENY 的不该因为"要问人"变得更容易过。
+        ExecPolicy.Verdict verdict = ExecPolicy.verdict(settings, allowlisted, durable);
+        if (verdict == ExecPolicy.Verdict.RUN && ExecPolicy.forceAsk(settings, spec.command())) {
+            verdict = ExecPolicy.Verdict.ASK;
         }
+
+        switch (verdict) {
+            case RUN -> {
+                // 放行，不打扰人
+            }
+            case DENY -> throw new ExecViolationException("这条命令没有执行：" + denyReason(settings, allowlisted));
+            case ASK -> {
+                if (reviewAllows(settings, allowlisted, durable, spec)) {
+                    return;
+                }
+                settle(spec, segments, settings);
+            }
+        }
+    }
+
+    /**
+     * 问一次人，按结论处置这一次执行（票 05）。
+     *
+     * <p>四档分开处置，因为下一步完全不同：批了就按<strong>冻结件</strong>跑；明确拒了就是拒；
+     * 这一轮拿不到结论时交回 {@code askFallback}（默认拒）。
+     *
+     * <p><b>冻结件比对是这一段的要点</b>：批准的对象是那一条命令，不是"这个工具"。拿它和现在要跑的
+     * 逐字符比，不一致就拒，而不是"差不多就跑"——批准之后改一个字还能跑，等于批准的是某个时间点的
+     * 意图，那正是这条机制要挡的。
+     *
+     * @param spec     要跑的命令
+     * @param segments 拆好的段
+     * @param settings 生效策略，兜底档从它取
+     * @throws ExecViolationException 明确拒绝、冻结件不一致，或兜底档不放行
+     */
+    private void settle(ExecSpec spec, List<String> segments, ExecPolicy.Settings settings) {
+        ExecApprovalPort.Request request = new ExecApprovalPort.Request(
+                spec.command(), runner.workingDirectory(), segments, askReason());
+        ExecApprovalPort.Decision decision = approvals.decide(request);
+        switch (decision.kind()) {
+            case ALLOW_ONCE -> requireFrozenPlan(decision, request);
+            case ALLOW_ALWAYS -> {
+                requireFrozenPlan(decision, request);
+                approvals.remember(request);
+            }
+            case DENY -> throw new ExecViolationException("这条命令没有执行：" + decision.detail());
+            case UNDECIDED -> {
+                if (ExecPolicy.fallbackAllows(settings)) {
+                    return;
+                }
+                throw new ExecViolationException(undecidedText(decision));
+            }
+        }
+    }
+
+    /**
+     * 批准的那份计划要和现在要跑的一致。
+     *
+     * <p>没有计划也算不一致：一份只有"批了"、说不出批的是什么的批准，不该放行任何一条命令——
+     * 那与空串指纹同一个取向（升级之后要重批一次）。
+     *
+     * @param decision 结论
+     * @param request  现在这次请求
+     * @throws ExecViolationException 不一致
+     */
+    private static void requireFrozenPlan(ExecApprovalPort.Decision decision,
+                                         ExecApprovalPort.Request request) {
+        FrozenPlan approved = decision.plan();
+        FrozenPlan current = request.plan();
+        if (approved != null && approved.sameAs(current)) {
+            return;
+        }
+        String was = approved == null ? "（没有记下批的是哪条命令）" : approved.summary();
+        throw new ExecViolationException("这条命令没有执行：批准的是另一条命令（approval mismatch）。\n"
+                + "批准的那份：" + was + "\n现在这份：" + current.summary()
+                + "\n改了命令就要重新批一次——旧的批准不能用在新的命令上。");
+    }
+
+    /**
+     * 这一轮拿不到结论时那句话。
+     *
+     * <p>三句都要说清：没有执行、不要重试同一个调用、没有新的输出。少一句，模型就会把同一条命令
+     * 原样再发一遍，而那既不会变成批准，又会把真正的进展挤掉。
+     *
+     * @param decision 结论
+     * @return 回给模型的那段文本
+     */
+    private static String undecidedText(ExecApprovalPort.Decision decision) {
+        StringBuilder text = new StringBuilder("这条命令没有执行：");
+        text.append(decision.detail().isBlank() ? "拿不到审批结论" : decision.detail()).append('。');
+        if (decision.approvalId() != null) {
+            text.append("它已经登记成一条审批请求（编号 ").append(decision.approvalId())
+                    .append("），批准之后会自动接着做，不用重新说明背景。");
+        }
+        return text.append("这条命令没有跑，也没有新的输出；不要重试同一个调用——")
+                .append("再发一次既不会变成批准，也不会生成新的审批。").toString();
+    }
+
+    /**
+     * 复核器放不放行这一次。只有 {@code autoReview=true} 且真的是"未命中"时才问它。
+     *
+     * <p>{@code ask=always} 不走复核器：那一档的含义是"每条都要人看"，让复核器代劳就等于把它变成
+     * {@code on-miss}。
+     */
+    private boolean reviewAllows(ExecPolicy.Settings settings, boolean allowlisted, boolean durable,
+                                 ExecSpec spec) {
+        if (!settings.autoReview()
+                || settings.ask() != ExecProperties.Ask.ON_MISS
+                || allowlisted
+                || durable) {
+            return false;
+        }
+        return reviewer.review(reviewRequest(spec)).decision() == ExecReviewer.Decision.ALLOW;
+    }
+
+    /**
+     * 给复核器的入参。
+     *
+     * <p>两处如实标出"没做到"：{@code argv} 是朴素按空白切的（本层没有 shell 词法），
+     * {@code resolvedPath} 恒为 {@code null}（没有 PATH 查找与软链接解析）。接真的复核器之前要先补这两样，
+     * 否则它会拿到一份"看起来解析过、其实没有"的输入——那比不给更危险。
+     */
+    private ExecReviewer.Request reviewRequest(ExecSpec spec) {
+        List<String> segments = ExecPolicy.segments(spec.command());
+        List<String> argv = segments.isEmpty()
+                ? List.of()
+                : List.of(segments.getFirst().split("\\s+"));
+        return new ExecReviewer.Request(spec.command(), argv, null, runner.workingDirectory(),
+                inheritedEnvironment.keySet(), properties.settings().host().name(),
+                askReason(), "", null);
+    }
+
+    private String denyReason(ExecPolicy.Settings settings, boolean allowlisted) {
+        if (settings.security() == ExecProperties.Security.DENY) {
+            return "security=deny，exec 一条都不放";
+        }
+        return "allowlist + ask=off 只放开白名单里的命令（白名单：" + allowText() + "），"
+                + "这条没有命中，且该档不给人批准的机会";
+    }
+
+    private String askReason() {
+        return "这条命令没有命中白名单，当前档位要求人先批（白名单：" + allowText() + "）";
     }
 
     private Map<String, String> environment(ExecSpec spec) {

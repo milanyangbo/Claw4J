@@ -1,7 +1,6 @@
 package io.github.claw4j.agent.goal;
 
 import io.github.claw4j.domain.ContextKeys;
-import io.github.claw4j.domain.principal.ToolPermission;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -59,20 +58,6 @@ public final class GoalTools implements ToolCallbackProvider {
     @Override
     public ToolCallback[] getToolCallbacks() {
         return tools.toArray(new ToolCallback[0]);
-    }
-
-    /**
-     * 三个工具各自的权限登记。
-     *
-     * <p>一张业务表都不碰：它们改的是这一段对话在往哪儿走，不是业务数据。真正的越权风险
-     * 在这一轮调用的业务工具上，那一步由鉴权 Advisor 按表权限判。
-     *
-     * @return 工具名到权限登记的映射
-     */
-    public static Map<String, ToolPermission> permissions() {
-        return Map.of(GET, ToolPermission.of(GET),
-                CREATE, ToolPermission.of(CREATE),
-                UPDATE, ToolPermission.of(UPDATE));
     }
 
     // ---- 三个工具 ----

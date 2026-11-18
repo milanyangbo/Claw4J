@@ -29,7 +29,9 @@ import java.util.regex.Pattern;
  * @param mustNotMention 回答里一个都不许出现的数字或标识符，比如别的区的数、明文手机号
  * @param expectTools 该调的工具，按集合包含比：多调不算错，少调才错
  * @param expectRefusal 这条用例期待明确的拒绝：回答里要有
- *     {@code AuthorizationAdvisor.DENIAL_PREFIX}，且不许漏数
+ *     {@code ApprovalRequiredToolCallback.DENIAL_PREFIX}，且不许漏数。**当前没有用例打开它**：
+ *     越权那一类随 ADR-0030 退场（不再有"调了才被拒"的路径），判据留着是因为审批被拒
+ *     仍然是真实存在的一条路，将来配了会拒绝的审批人就能直接写
  * @param note 给人看的备注，不参与判分
  */
 public record EvalCase(String id,

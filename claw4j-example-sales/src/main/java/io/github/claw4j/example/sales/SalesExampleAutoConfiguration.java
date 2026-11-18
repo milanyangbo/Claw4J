@@ -1,30 +1,34 @@
 package io.github.claw4j.example.sales;
 
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 示例插件的装配。这个类就是第三方工具插件长什么样，可以整份照抄。
  *
- * <p>它做四件事，与框架之间只通过三个契约打交道：把 {@link SalesTools} 暴露成
- * {@code ToolCallbackProvider}，Agent 侧只认这个类型，不认识 {@code querySales}；登记工具会碰到
- * 哪些表，鉴权 Advisor 只认 {@link ToolPermissionRegistry}；登记工具属于哪个能力档，清单组装处
- * 只认 {@link ToolTierRegistry}（P09）；这三样都不让位，容器里可以有来自好几个来源的 provider
- * 与两张表，收集方按列表收。
+ * <p>它做三件事，与框架之间只通过两个契约打交道：把 {@link SalesTools} 暴露成
+ * {@code ToolCallbackProvider}，Agent 侧只认这个类型，不认识 {@code querySales}；登记工具属于哪个
+ * 能力档，清单组装处只认 {@link ToolTierRegistry}（P09）。两者都不让位，容器里可以有来自好几个
+ * 来源的 provider 与画像表，收集方按列表收。
+ *
+ * <p>它曾经还登记"这个工具会碰哪些表、需要什么动作"，那张表随权限登记表在
+ * ADR-0030 里整块下线：这个插件现在只回答"我提供哪个工具、它属于哪一档"，业务数据范围是
+ * 第二步的事。
  *
  * <p>不在 {@code claw4j-capability} 里：它是一份业务示例，不是框架能力。框架模块里放业务的结果
  * 是装了框架就等于装了业务表，而这个类证明的是相反的路径：一个只依赖 {@code claw4j-core} 与
@@ -36,6 +40,7 @@ import java.util.Map;
 @AutoConfiguration(afterName = "org.springframework.boot.jdbc.autoconfigure.JdbcClientAutoConfiguration")
 @ConditionalOnProperty(prefix = "claw4j.example.sales", name = "enabled",
         havingValue = "true", matchIfMissing = true)
+@EnableConfigurationProperties(SalesProperties.class)
 public class SalesExampleAutoConfiguration {
 
     /** 工具名。权限表与档位表都按它登记，写两份字面量迟早会漂。 */
@@ -74,52 +79,60 @@ public class SalesExampleAutoConfiguration {
      *
      * <p>条件改成本层能不能成立，即有没有可用的执行器，多个来源各交各的。
      *
+     * <p>{@code tool-filter} 排掉它时（票 07），这里交出一个空清单：过滤发生在"工具变成工具"
+     * 之前，所以它不进权限与画像登记，{@code allow} 也加不回来。
+     *
      * @param executor 本层用的只读执行器
-     * @return 只含 {@code querySales} 的来源
+     * @param properties 插件配置，取 {@code tool-filter}
+     * @return 只含存活工具的来源
      */
     @Bean
     @ConditionalOnBean(ReadOnlySqlExecutor.class)
-    public ToolCallbackProvider salesToolCallbackProvider(ReadOnlySqlExecutor executor) {
-        return MethodToolCallbackProvider.builder().toolObjects(new SalesTools(executor)).build();
+    public ToolCallbackProvider salesToolCallbackProvider(ReadOnlySqlExecutor executor,
+                                                          SalesProperties properties) {
+        ToolCallbackProvider all = MethodToolCallbackProvider.builder()
+                .toolObjects(new SalesTools(executor))
+                .build();
+        if (properties.toolFilter().filtersNothing()) {
+            // 不筛时原样交出去：包一层 lambda 会让"这条路径与没加过滤之前完全一样"多一个需要证明的点。
+            return all;
+        }
+        return () -> Arrays.stream(all.getToolCallbacks())
+                .filter(callback -> properties.toolFilter().matches(callback.getToolDefinition().name()))
+                .toArray(ToolCallback[]::new);
     }
 
     /**
-     * 这些工具各自需要什么权限。与工具放在同一个模块里是刻意的：只有写工具的人知道它要去碰
-     * 哪张表（ADR-0007）。
+     * 画像：{@code {CODING, MESSAGING}}，并按**外部工具**登记（ADR-0030 裁决一）。
      *
-     * <p>登记的是工具会碰到什么，结构事实，不是谁能用它，后者在角色的授权表里，改那个不用发版。
+     * <p>业务工具与 OpenClaw 的 {@code bundle-mcp} 同等待遇：{@code coding} 与 {@code messaging}
+     * 都含它、{@code minimal} 不含。查数既不是"碰机器"也不是"自主行动"，所以它不该被关在
+     * coding 里；但它也不是地基，所以 minimal 看不见它。
      *
-     * <p>表清单跟着 SQL 走：工具接的是模型生成的 SQL，可能 join 到四张表里的任意一张，所以登记
-     * 全部四张，而不是只写主要那张。少登记一张的后果是鉴权放行了本该拒绝的调用。
+     * <p>登记成 {@code external} 而不是 {@code sameFor}：`group:plugins` 要靠它把业务工具一次点名，
+     * 否则 {@code deny: [group:plugins]} 关不掉业务工具，而"装了模块就有、要关得逐个写名字"
+     * 正是这套机制要避免的事。
      *
-     * <p>同样不写 {@code @ConditionalOnMissingBean(ToolPermissionRegistry.class)}：两个来源
-     * 互相让位的结果是只有一张表被注册，让出去那一方的工具从此一律按未登记权限被拒。
+     * <p>这一段也是给第三方模块作者的示范：新增工具必须同时登记权限与画像。少了画像不是默认
+     * 最宽，是启动失败并点名这个工具，因为工具出现在哪个画像应当是一个被人做过的决定。
      *
-     * @return 工具到表权限的登记表
+     * @param properties 插件配置，取 {@code tool-filter}
+     * @return 把 {@code querySales} 登记成外部工具的画像表；工具被排掉时是空表
      */
     @Bean
     @ConditionalOnBean(ReadOnlySqlExecutor.class)
-    public ToolPermissionRegistry salesToolPermissionRegistry() {
-        return ToolPermissionRegistry.of(Map.of(
-                TOOL_NAME, ToolPermission.read(
-                        "sales_order", "order_item", "customer", "region")));
+    public ToolTierRegistry salesToolTierRegistry(SalesProperties properties) {
+        return ToolTierRegistry.external(exposed(properties) ? List.of(TOOL_NAME) : List.of(),
+                ToolTier.CODING, ToolTier.MESSAGING);
     }
 
     /**
-     * 档位：{@link ToolTier#MESSAGING}。
+     * 这个工具在不在。
      *
-     * <p>查表必须留在 messaging 档里，ADR-0020 的原话是「把工具策略切到 messaging 档，
-     * run_script 与 draft_script 不在工具清单里，读消息与查表都不受影响」。把业务只读工具推到
-     * coding 或 full，等于让只做消息与问答的部署连数据都查不了，而它恰恰是最常见的落地形态。
-     *
-     * <p>这一段也是给第三方插件作者的示范：新增工具必须同时登记权限与档位。少了档位不是默认
-     * 最宽，是启动失败并点名这个工具，因为工具出现在哪个档应当是一个被人做过的决定。
-     *
-     * @return 把 {@code querySales} 归到 messaging 档的登记
+     * <p>三处（工具来源、权限、画像）都问它，而不是各写一遍 {@code toolFilter.matches(...)}：
+     * 三处的判据必须相同，否则会出现"清单里有它但权限表没有"这种最难查的组合。
      */
-    @Bean
-    @ConditionalOnBean(ReadOnlySqlExecutor.class)
-    public ToolTierRegistry salesToolTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(TOOL_NAME), ToolTier.MESSAGING);
+    private static boolean exposed(SalesProperties properties) {
+        return properties.toolFilter().matches(TOOL_NAME);
     }
 }

@@ -1,12 +1,9 @@
 package io.github.claw4j.capability.mcp;
 
-import io.github.claw4j.capability.mcp.McpServerProperties.Permission;
 import io.github.claw4j.capability.mcp.McpServerProperties.Server;
-import io.github.claw4j.capability.mcp.McpServerProperties.Transport;
 import io.github.claw4j.capability.mcp.http.HttpMcpEndpoint;
 import io.github.claw4j.capability.mcp.stdio.ProcessStdioMcpEndpoint;
-import io.github.claw4j.domain.principal.Approval;
-import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.github.claw4j.secret.SecretResolver;
 import io.github.claw4j.secret.SecretValue;
 import org.slf4j.Logger;
@@ -16,7 +13,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 把"配置里那一小段 YAML"翻成一个 {@link McpServerEndpoint}。
@@ -54,12 +50,13 @@ final class McpEndpoints {
     /** 一个 server 的配置 → 一个端点。传输不同，构造出来的东西不同，但类型是同一个。 */
     static McpServerEndpoint of(String name, Server server, SecretResolver resolver) {
         requireName(name);
-        ToolPermission permission = permission(server.permission());
-        Map<String, ToolPermission> tools = toolPermissions(name, server.tools());
+        // 没写 tool-filter 时是"不筛"，不是 null：下游一条 filter.matches(...) 就够，
+        // 不必每处先判空——判空漏一处，那一处的过滤就静默失效。
+        ToolFilter filter = server.toolFilter() == null ? ToolFilter.none() : server.toolFilter();
         return switch (server.transport()) {
-            case STDIO -> stdio(name, server, resolver).endpoint(permission, tools);
-            case HTTP -> http(name, server, false, resolver).endpoint(permission, tools);
-            case SSE -> http(name, server, true, resolver).endpoint(permission, tools);
+            case STDIO -> stdio(name, server, resolver).endpoint(filter);
+            case HTTP -> http(name, server, false, resolver).endpoint(filter);
+            case SSE -> http(name, server, true, resolver).endpoint(filter);
         };
     }
 
@@ -125,33 +122,4 @@ final class McpEndpoints {
         }
     }
 
-    /**
-     * 配置里那一段 → 一个权限。
-     *
-     * <p><b>审批这一档不从 yml 读</b>（P01）：配出来的第三方工具一律 {@link Approval#NONE}。
-     * 加一个 {@code approval: required} 的键很便宜，但"哪个外部动作必须有批"是个部署决定，
-     * 而它的落点更该是有名单、有卡片的审批策略（P09），不是"谁记得在 yml 里补一行"。
-     * 这一处只把第三个分量显式写出来，好让"接进来的 MCP 工具默认不需要审批"是一句可读的代码。
-     */
-    private static ToolPermission permission(Permission declared) {
-        return new ToolPermission(declared.action(), Set.copyOf(declared.tables()), Approval.NONE);
-    }
-
-    /**
-     * 按工具覆盖的那张表。空表是合法且默认的（＝整条 server 一个权限）。
-     *
-     * <p>这里只拦"键是空的"这一种形状错误——它一定是 YAML 里多写了一个冒号或者缩进错了。
-     * "点名了 server 并不导出的工具"要等拿到工具清单才能判，那一步在 {@link McpToolProvider}。
-     */
-    private static Map<String, ToolPermission> toolPermissions(String serverName, Map<String, Permission> declared) {
-        Map<String, ToolPermission> converted = new LinkedHashMap<>();
-        declared.forEach((tool, permission) -> {
-            if (tool == null || tool.isBlank()) {
-                throw new IllegalArgumentException("MCP server " + serverName + " 的 tools 里有一个空的工具名："
-                        + "多半是 YAML 的缩进或冒号写错了。按工具声明的权限，键必须是那个工具在 server 里的原名。");
-            }
-            converted.put(tool, permission(permission));
-        });
-        return converted;
-    }
 }

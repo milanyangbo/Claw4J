@@ -1,6 +1,6 @@
 package io.github.claw4j.capability.mcp.stdio;
 
-import io.github.claw4j.domain.principal.ToolPermission;
+import io.github.claw4j.domain.principal.ToolFilter;
 import io.github.claw4j.capability.mcp.McpServerEndpoint;
 import io.github.claw4j.secret.SecretResolver;
 import io.github.claw4j.secret.SecretValue;
@@ -125,29 +125,16 @@ public final class ProcessStdioMcpEndpoint {
     }
 
     /**
-     * 端点本身：带上这一层要什么权限。
+     * 端点本身：带存在性过滤，不带权限声明（ADR-0030 裁决二、票 04）。
      *
-     * <p>权限在这里声明，因为"这个 server 能干什么"是接它进来的人才知道的事：
-     * 同一个 {@code gh} 包，只读地查 issue 与能开 PR 是两种边界。
-     * 声明成 {@link ToolPermission#read()} 不带表即"没有业务表权限"。
+     * <p>"这个 server 能干什么"不再写在这里：看得见什么由工具清单决定，执行前要不要人点头
+     * 由审批决定，两件事都不在端点上。
      *
-     * @param permission 整条 server 的权限，没有按工具覆盖时所有工具都用它
+     * @param toolFilter 哪些工具存在；被排掉的不会变成工具
      * @return 可交给 {@code McpConnection} 的端点
      */
-    public McpServerEndpoint endpoint(ToolPermission permission) {
-        return McpServerEndpoint.of(name, permission, this::openTransport);
-    }
-
-    /**
-     * 端点 + 按工具覆盖的那张表。一个 server 同时导出"查"与"改"时，
-     * 整条只给一个权限只能得到两种坏结果：权限放大，或者整条不可用。
-     *
-     * @param permission 没被逐个点名的工具用的权限
-     * @param toolPermissions 键是工具名，值是它自己的权限
-     * @return 可交给 {@code McpConnection} 的端点
-     */
-    public McpServerEndpoint endpoint(ToolPermission permission, Map<String, ToolPermission> toolPermissions) {
-        return McpServerEndpoint.of(name, permission, toolPermissions, this::openTransport);
+    public McpServerEndpoint endpoint(ToolFilter toolFilter) {
+        return McpServerEndpoint.of(name, toolFilter, this::openTransport);
     }
 
     /**

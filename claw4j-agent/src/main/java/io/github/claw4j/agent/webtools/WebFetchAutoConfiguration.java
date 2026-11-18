@@ -1,8 +1,6 @@
 package io.github.claw4j.agent.webtools;
 
 import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.github.claw4j.domain.untrusted.ExternalContent;
@@ -78,16 +76,6 @@ public class WebFetchAutoConfiguration {
                 .map(callback -> WebFetchGuard.guarding(
                         UntrustedToolCallback.wrapping(callback, ExternalContent.Source.WEB_FETCH, true)))
                 .toList());
-    }
-
-    /**
-     * 权限登记：动作 {@code web_fetch}，业务表一张都没有。
-     *
-     * @return 这一层的权限表
-     */
-    @Bean
-    public ToolPermissionRegistry webFetchPermissionRegistry() {
-        return ToolPermissionRegistry.of(Map.of(TOOL_NAME, ToolPermission.of(ACTION)));
     }
 
     /**

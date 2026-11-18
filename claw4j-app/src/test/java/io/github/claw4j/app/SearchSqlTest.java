@@ -301,7 +301,7 @@ class SearchSqlTest {
 
     private static Query question(String text) {
         return new Query(text, List.of(),
-                Map.of(ContextKeys.PRINCIPAL, Principal.readOnly("u-1")));
+                Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
     }
 
     private static List<String> citations(List<Document> documents) {

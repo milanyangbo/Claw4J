@@ -1,13 +1,15 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.ChatClientAgentPort;
-import io.github.claw4j.agent.PermissionFingerprint;
 import io.github.claw4j.agent.ToolCallBudget;
-import io.github.claw4j.agent.advisor.AuthorizationAdvisor;
+import io.github.claw4j.agent.AgentAutoConfiguration;
+import io.github.claw4j.agent.approval.ApprovalGate;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.approval.ApprovalService;
 import io.github.claw4j.agent.approval.CallFingerprint;
 import io.github.claw4j.agent.approval.JdbcApprovalLedger;
 import io.github.claw4j.agent.approval.ConversationApprovalGate;
+import io.github.claw4j.agent.approval.PrincipalSnapshot;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
@@ -17,9 +19,6 @@ import io.github.claw4j.domain.port.ApprovalDecider;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.principal.ToolPermission;
-import io.github.claw4j.domain.principal.ToolPermissionRegistry;
-import io.micrometer.core.instrument.Metrics;
 import io.micrometer.observation.ObservationRegistry;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
@@ -45,12 +44,17 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.publisher.Flux;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -111,14 +115,18 @@ class ApprovalFlowTest {
     }
 
     /**
-     * 验收 1：没有批准时这一轮照样收尾，审批行留痕，编号回到用户手里，工具一次都没执行。
+     * 验收 1：没有批准时这一轮照样收尾，审批行留痕，工具一次都没执行。
      *
      * <p>判据落在库里：{@code audit_event} 里这一轮收在 {@code succeeded}，
      * {@code approval_request} 多一行 pending。只断言回话里"提到要审批"是不够的——
      * 那样的话，"回一句话然后照常把工具跑了"也会绿。
+     *
+     * <p>回话里那句"审批编号 xxx"不在这里判：ADR-0030 之后闸挂在工具回调上，拦住时返回的是一条
+     * 工具结果，模型在同一回合里拿到它再转述给人——转述成什么样是模型的自由，用假模型断言它
+     * 等于断言脚本。那句话本身由 {@code ApprovalRequiredToolCallbackTest} 钉着。
      */
     @Test
-    @DisplayName("没有批准：这一轮以 done 收尾、审批行带上来处、编号回到用户手里、工具一次没执行")
+    @DisplayName("没有批准：这一轮以 done 收尾、审批行带上来处、工具一次没执行")
     void anApprovalRequiredToolEndsTheTurnAndHandsBackAnId() {
         Harness harness = new Harness(requestTool(ARGS), answer("已发送"));
         RecordingTool tool = harness.withApprovalRequiredTool();
@@ -126,15 +134,11 @@ class ApprovalFlowTest {
         OutboundMessage reply = harness.port().reply(harness.mailer("发一封给张三的周报"));
 
         assertThat(tool.calls()).as("没有批准，工具一次都不该执行").isZero();
-        assertThat(reply.text())
-                .startsWith(AuthorizationAdvisor.APPROVAL_PREFIX)
-                .as("用户要拿着编号去问「批了吗」；没有编号他只能再发一遍同一句话")
-                .contains("审批编号");
 
         assertThat(finishStatusOf(reply.runId()))
                 .as("这一轮确实结束了：它回给用户的是「我需要你批准」。等审批不是一种能跨请求的状态")
                 .isEqualTo("succeeded");
-        assertThat(pendingApprovals()).hasSize(1);
+        assertThat(pendingApprovals()).as("这一轮登记了一条待批请求，工具一次没跑").hasSize(1);
 
         // 来处与请求一起落（V21）：批准之后要回到那段对话开新一轮
         assertThat(jdbc.queryForMap("select session_key, channel, chat_ref, principal_snapshot"
@@ -159,7 +163,7 @@ class ApprovalFlowTest {
     @Test
     @DisplayName("批准之后在同一段对话里开新一轮：工具终于执行，旧的那一轮仍是 done")
     void approvingStartsTheNextTurnInTheSameConversation() {
-        Harness harness = new Harness(requestTool(ARGS), requestTool(ARGS), answer("已发给张三"));
+        Harness harness = new Harness(requestTool(ARGS), answer("好的，等审批"), requestTool(ARGS), answer("已发给张三"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
         OutboundMessage first = harness.port().reply(harness.mailer("发一封给张三的周报"));
@@ -217,7 +221,9 @@ class ApprovalFlowTest {
         assertThat(jdbc.queryForObject("select reason from claw4j_run.approval_request where id = ?",
                 String.class, approvalId)).isEqualTo(reason);
 
-        assertThat(harness.prompts()).as("拒绝也要回灌一句：模型不能一直以为还在等").hasSize(2);
+        // 三次：被拦那一轮里问了两次模型（第一次它要调工具，闸拦下后它接着把话说完），
+        // 拒绝之后又开了一轮去向用户解释。
+        assertThat(harness.prompts()).as("拒绝也要回灌一句：模型不能一直以为还在等").hasSize(3);
         assertThat(harness.prompts().getLast())
                 .as("照 OpenClaw 的三句：没有执行、不要重试、没有新输出")
                 .contains("[审批被拒]")
@@ -284,7 +290,7 @@ class ApprovalFlowTest {
     @Test
     @DisplayName("提问人批不了自己的请求：不落结论，换个人点照样能通过")
     void theRequesterCannotApproveTheirOwnRequest() {
-        Harness harness = new Harness(requestTool(ARGS), requestTool(ARGS), answer("已发给张三"));
+        Harness harness = new Harness(requestTool(ARGS), answer("好的，等审批"), requestTool(ARGS), answer("已发给张三"));
         RecordingTool tool = harness.withApprovalRequiredTool();
         Set<String> roster = Set.of("u-mailer", "approver-1");
 
@@ -313,8 +319,8 @@ class ApprovalFlowTest {
     /**
      * 验收 4（P03）：<b>名单外的人批不了任何一条</b>，而且那一行也不会被点废。
      *
-     * <p>名单与业务角色是两张表：这个人在 {@code claw4j.channel.http.roles} 里可能是 admin，
-     * 但只要不在 {@code claw4j.approval.approvers} 里，他就批不了——这正是
+     * <p>名单与通道准入是两张表：这个人在通道白名单里能进来，但只要不在
+     * {@code claw4j.approval.approvers} 里，他就批不了——这正是
      * "任何一次提权都静默扩大审批面"要挡住的那条路。
      */
     @Test
@@ -349,7 +355,7 @@ class ApprovalFlowTest {
     @Test
     @DisplayName("批准后改参数仍被拦：换参数不能搭上一条批过的批准")
     void aChangedArgumentDoesNotRideOnAnEarlierGrant() {
-        Harness harness = new Harness(requestTool(ARGS), requestTool(WIDER_ARGS), answer("不该走到这里"));
+        Harness harness = new Harness(requestTool(ARGS), answer("好的，等审批"), requestTool(WIDER_ARGS), answer("又卡住了一轮"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
         OutboundMessage first = harness.port().reply(harness.mailer("发一封给张三的周报"));
@@ -434,7 +440,7 @@ class ApprovalFlowTest {
     @DisplayName("一条批准能跨 run 复用，但用过一次就废")
     void aGrantIsReusedAcrossRunsButOnlyOnce() {
         // 第一件事：被拦 → 批准 → 续跑时模型没再调工具，于是那条批准没被用掉
-        Harness first = new Harness(requestTool(ARGS), answer("好的，我等你批"));
+        Harness first = new Harness(requestTool(ARGS), answer("好的，我等你批"), answer("批了，但我没再调工具"));
         first.withApprovalRequiredTool();
         first.port().reply(first.mailer("发一封给张三的周报"));
         first.decider().decide(onlyPendingId(), "approver-1", true, null);
@@ -447,7 +453,7 @@ class ApprovalFlowTest {
         assertThat(secondTool.calls())
                 .as("指纹不含 runId：上一件事里批过的这一类操作，这一件事不用再批一次")
                 .isEqualTo(1);
-        assertThat(reply.text()).doesNotContain(AuthorizationAdvisor.APPROVAL_PREFIX);
+        assertThat(pendingApprovals()).as("直接放行，没有登记新的待批请求").isEmpty();
 
         // 第三件事：同样参数再来一次 —— 那条批准已经被第二件事用掉了
         Harness third = new Harness(requestTool(ARGS), answer("不该走到这里"));
@@ -467,7 +473,7 @@ class ApprovalFlowTest {
     @Test
     @DisplayName("同一条审批点两次：第二次是「已经有结论了」，不会再开一轮")
     void decidingTheSameRequestTwiceDoesNotStartAnotherTurn() {
-        Harness harness = new Harness(requestTool(ARGS), requestTool(ARGS), answer("已发送"));
+        Harness harness = new Harness(requestTool(ARGS), answer("好的，等审批"), requestTool(ARGS), answer("已发送"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
         harness.port().reply(harness.mailer("发一封给张三的周报"));
@@ -496,7 +502,7 @@ class ApprovalFlowTest {
     @Test
     @DisplayName("批准之后执行的那一次：审计行带着审批编号，视图里查得到谁批的")
     void theExecutedCallCarriesTheApprovalItWasLetThroughBy() {
-        Harness harness = new Harness(requestTool(ARGS), requestTool(ARGS), answer("已发给张三"));
+        Harness harness = new Harness(requestTool(ARGS), answer("好的，等审批"), requestTool(ARGS), answer("已发给张三"));
         RecordingTool tool = harness.withApprovalRequiredTool();
 
         OutboundMessage first = harness.port().reply(harness.mailer("发一封给张三的周报"));
@@ -513,7 +519,6 @@ class ApprovalFlowTest {
         Map<String, Object> executed = onlyAuditRow(executedRunId, "succeeded");
         assertThat(executed.get("tool_name")).isEqualTo(TOOL);
         assertThat(executed.get("actor")).isEqualTo("u-mailer");
-        assertThat(executed.get("actor_role")).isEqualTo("mailer");
         assertThat(executed.get("approval_id")).isEqualTo(approvalId);
         assertThat(executed.get("args_digest"))
                 .as("指纹与审批那条同一个函数，于是「这次执行是哪次批准的」能直接对上")
@@ -536,34 +541,29 @@ class ApprovalFlowTest {
     }
 
     /**
-     * 验收 2（P07）：一次越权落一行，带工具名与角色。
+     * 旧审批记录仍能续跑：收窄之前写进去的快照带着 {@code role} / {@code tables} /
+     * {@code actions}，读的时候忽略多出来的键，只要 {@code userId} 在。
      *
-     * <p>越权的判定发生在工具执行之前，{@code MeteredToolCallback} 看不到它——
-     * 所以这一行只能由鉴权 Advisor 落。只断言"回话里说了没有权限"是不行的：
-     * 那样的话，"拒绝照说了、审计里什么都没有"也会绿。
+     * <p>库里已经有这种行，而"一次收窄把历史记录整批作废"是最没必要的事故形状：
+     * 它不报错，只是那些待批请求全都续不上了。
      */
     @Test
-    @DisplayName("一次越权落一行：工具名与角色都在，理由是那句「没有权限」")
-    void aRefusedCallLandsAsOneRowWithToolAndRole() {
-        Harness harness = new Harness(requestTool(ARGS), answer("好的，我换个说法"));
-        // 工具要读 sales_order，而这个人有 read 动作、却一张表都碰不到：
-        // 挡住他的确实是表那一格，不是动作那一格（两种拒绝话术不同，用例要挑得清）
-        RecordingTool tool = harness.withTool(TOOL, ToolPermission.read("sales_order"));
+    @DisplayName("旧审批记录带 role / tables / actions 也读得出来：只要 userId 在就还能续跑")
+    void legacyApprovalRecordStillParses() {
+        String legacy = "{\"userId\":\"u-mailer\",\"role\":\"mailer\","
+                + "\"tables\":[\"sales_order\"],\"actions\":[\"read\",\"send_email\"]}";
 
-        OutboundMessage reply = harness.port().reply(harness.reader("查一下上周华东区成交额"));
+        Optional<Principal> parsed = PrincipalSnapshot.decode(legacy);
 
-        assertThat(tool.calls()).as("工具一次都不该执行").isZero();
-        Map<String, Object> refused = onlyAuditRow(reply.runId(), "blocked");
-        assertThat(refused.get("tool_name")).isEqualTo(TOOL);
-        assertThat(refused.get("actor")).isEqualTo("u-analyst");
-        assertThat(refused.get("actor_role")).isEqualTo("analyst");
-        assertThat(refused.get("approval_id")).as("被拒绝的调用没有批准可指").isNull();
-        assertThat(refused.get("error_code"))
-                .as("归一化错误码而不是文案：文案改了统计就废")
-                .isEqualTo("tool_blocked");
-        assertThat(refused.toString())
-                .as("理由原文不进库；要查拒在哪条权限上看 trace")
-                .doesNotContain("sales_order");
+        assertThat(parsed).as("多出来的三个键是收窄之前的形状，不是坏数据").isPresent();
+        assertThat(parsed.orElseThrow().userId()).isEqualTo("u-mailer");
+
+        // 反过来：收了窄也照样读得出来，而缺 userId 才算读不出来（不补默认身份）
+        assertThat(PrincipalSnapshot.decode(PrincipalSnapshot.encode(new Principal("u-1"))))
+                .map(Principal::userId)
+                .contains("u-1");
+        assertThat(PrincipalSnapshot.decode("{\"role\":\"mailer\"}"))
+                .as("补一个猜出来的身份，续跑就会以没人授予过的身份发生").isEmpty();
     }
 
     // ---------------------------------------------------------------- 脚手架
@@ -584,7 +584,14 @@ class ApprovalFlowTest {
 
         private final List<ToolCallback> tools = new ArrayList<>();
 
-        private final Map<String, ToolPermission> declared = new HashMap<>();
+        /**
+         * 要人批的工具名。
+         *
+         * <p>这是票 05 之后"哪些工具要人批"唯一的落点：闸挂在工具回调上
+         * （{@link io.github.claw4j.agent.approval.ApprovalRequiredToolCallback}），不看权限登记表
+         * ——那张表在 ADR-0030 里整块删掉了。
+         */
+        private final Set<String> approvalRequired = new LinkedHashSet<>();
 
         /** 审计落点（P07）：与生产同一条路——工具外面包一层计量/审计的 callback。 */
         private final ToolCallAudit audit = new ToolCallAudit(new AuditLedger(jdbc, null));
@@ -596,33 +603,40 @@ class ApprovalFlowTest {
         }
 
         private RecordingTool withApprovalRequiredTool() {
-            return withTool(TOOL, ToolPermission.requiringApproval("send_email"));
+            return withTool(TOOL, true);
         }
 
-        private RecordingTool withTool(String name, ToolPermission permission) {
+        private RecordingTool withTool(String name, boolean needsApproval) {
             RecordingTool tool = new RecordingTool(name);
-            declared.put(name, permission);
+            if (needsApproval) {
+                approvalRequired.add(name);
+            }
             tools.add(new MeteredToolCallback(tool, null, audit));
             return tool;
         }
 
         private ChatClientAgentPort port() {
             if (port == null) {
+                // 闸套在计量 callback 外层（与生产同一条路）：被拦下的调用照常记一次"发生过的调用"。
+                List<ToolCallback> gated = AgentAutoConfiguration.withApprovalGate(
+                        List.copyOf(tools), gate(), new ApprovalRequiredTools(approvalRequired), audit);
                 ChatClient chat = ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
                                 ToolCallingAdvisor.builder()
                                         .toolCallingManager(ToolCallBudget.toolCallingManager(
                                                 ObservationRegistry.NOOP,
                                                 ToolCallBudget.MAX_TOTAL_CALLS)))
-                        .defaultAdvisors(new AuthorizationAdvisor(
-                                List.of(ToolPermissionRegistry.of(declared)),
-                                new ConversationApprovalGate(new JdbcApprovalLedger(jdbc, TTL.toMillis()), List.of()),
-                                Metrics.globalRegistry, audit))
-                        .defaultToolCallbacks(List.copyOf(tools))
+                        .defaultToolCallbacks(gated)
                         .build();
                 // 带上审计：这一层的断言读 audit_event 里的两条事件（ADR-0027）。
                 port = new ChatClientAgentPort(chat, null, null, null, null, null, audit, null);
             }
             return port;
+        }
+
+        /** 审批门：真账本 + 真门。每次现造，它只装着两份引用与几条 SQL。 */
+        private ApprovalGate gate() {
+            return new ConversationApprovalGate(
+                    new JdbcApprovalLedger(jdbc, TTL.toMillis()), List.of());
         }
 
         /** 每次现造：它只装着几份引用和两条 SQL，没有需要留住的状态。 */
@@ -644,13 +658,13 @@ class ApprovalFlowTest {
 
         private InboundMessage mailer(String text) {
             // 有 send_email 动作、没有表权限：第一道门已经过了，挡住的确实是第二道门。
-            return new InboundMessage(Principal.of("u-mailer", "mailer", Set.of(), Set.of("send_email")),
+            return new InboundMessage(new Principal("u-mailer"),
                     "chat-ap", text, Instant.now(), null, CHANNEL);
         }
 
         /** 有 {@code read} 动作、一张表都没有：用来验"表那一格挡住了他"。 */
         private InboundMessage reader(String text) {
-            return new InboundMessage(Principal.of("u-analyst", "analyst", Set.of(), Set.of("read")),
+            return new InboundMessage(new Principal("u-analyst"),
                     "chat-ap", text, Instant.now(), null, CHANNEL);
         }
     }
@@ -743,7 +757,24 @@ class ApprovalFlowTest {
      */
     private static String idempotencyKey(String runId, int stepSeq, String toolName, String args) {
         String canonical = CallFingerprint.canonicalArgs(args).orElseThrow();
-        return PermissionFingerprint.sha256(runId + '|' + stepSeq + '|' + toolName + '|' + canonical);
+        return sha256(runId + '|' + stepSeq + '|' + toolName + '|' + canonical);
+    }
+
+    /**
+     * 这里自带一份 SHA-256，不去借生产代码里的任何一个。
+     *
+     * <p>它只是"幂等键长什么样"的对照物（ADR-0017 那条还没落代码）。借一个生产类的话，
+     * 两边会一起漂——而这条用例要证的正是"两个口径不能混成一个"。
+     */
+    private static String sha256(String text) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        }
+        catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("JDK 缺少 SHA-256", impossible);
+        }
     }
 
     private static ChatResponse answer(String text) {

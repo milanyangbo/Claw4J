@@ -1,7 +1,6 @@
 package io.github.claw4j.capability.mcp;
 
 import io.github.claw4j.capability.mcp.McpToolTest.InProcessStdioMcpServer;
-import io.github.claw4j.domain.principal.ToolPermission;
 import io.modelcontextprotocol.json.TypeRef;
 import io.modelcontextprotocol.spec.McpClientTransport;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
@@ -96,7 +95,7 @@ class McpServerRetryTest {
         try (InProcessStdioMcpServer calc = InProcessStdioMcpServer.of("calc", new McpToolTest.CalcTools())) {
             RecordingScheduler scheduler = new RecordingScheduler();
             AtomicInteger opens = new AtomicInteger();
-            McpServerEndpoint flaky = McpServerEndpoint.of("calc", ToolPermission.read(), () -> {
+            McpServerEndpoint flaky = McpServerEndpoint.of("calc", () -> {
                 if (opens.getAndIncrement() == 0) {
                     throw new IllegalStateException("对端正在重启");
                 }
@@ -127,7 +126,7 @@ class McpServerRetryTest {
             RecordingScheduler scheduler = new RecordingScheduler();
             SessionDroppingTransport first = new SessionDroppingTransport(calc.openTransport());
             AtomicInteger opens = new AtomicInteger();
-            McpServerEndpoint endpoint = McpServerEndpoint.of("calc", ToolPermission.read(), () -> {
+            McpServerEndpoint endpoint = McpServerEndpoint.of("calc", () -> {
                 if (opens.getAndIncrement() == 0) {
                     return first;
                 }
@@ -157,34 +156,40 @@ class McpServerRetryTest {
     }
 
     @Test
-    @DisplayName("恢复时才发现配置错（点名了没导出的工具）：停手报 ERROR，不再空转重试")
+    @DisplayName("恢复时才发现配置错（两个 server 导出同名工具）：停手报 ERROR，不再空转重试")
     void misconfigurationFoundAtRecoveryStopsRetrying(CapturedOutput output) {
-        try (InProcessStdioMcpServer calc = InProcessStdioMcpServer.of("calc", new McpToolTest.CalcTools())) {
+        // 重名是现在唯一还会"重试一万次也不会变"的配置错误：点名工具的那一套随权限声明
+        // （permission / tools）在 ADR-0030 里下线了（票 04）。这个用例因此改成两个 server
+        // 导出同一个工具名——第一个先上，第二个恢复时撞上它。
+        try (InProcessStdioMcpServer first = InProcessStdioMcpServer.of("calc", new McpToolTest.CalcTools());
+             InProcessStdioMcpServer second = InProcessStdioMcpServer.of("calc", new McpToolTest.CalcTools())) {
             RecordingScheduler scheduler = new RecordingScheduler();
+            McpServerEndpoint healthy = McpServerEndpoint.of("calc", first::openTransport);
             AtomicInteger opens = new AtomicInteger();
-            McpServerEndpoint endpoint = McpServerEndpoint.of("calc", ToolPermission.read(),
-                    Map.of("send_mail", ToolPermission.of("send_email")), () -> {
-                        if (opens.getAndIncrement() == 0) {
-                            throw new IllegalStateException("对端正在重启");
-                        }
-                        return calc.openTransport();
-                    });
+            McpServerEndpoint recovering = McpServerEndpoint.of("calc-again", () -> {
+                if (opens.getAndIncrement() == 0) {
+                    throw new IllegalStateException("对端正在重启");
+                }
+                return second.openTransport();
+            });
 
             try (McpToolProvider provider = new McpToolProvider(
-                    List.of(new McpConnection(endpoint)), scheduler)) {
+                    List.of(new McpConnection(healthy), new McpConnection(recovering)), scheduler)) {
                 assertThat(scheduler.runNext()).isTrue();
 
-                assertThat(provider.status()).singleElement().satisfies(snapshot -> {
+                assertThat(provider.status()).hasSize(2).anySatisfy(snapshot -> {
                     assertThat(snapshot.status())
                             .as("这时候应用已经在跑了，「起不来」这个失败方式已经不可用，只能停下来报错")
                             .isEqualTo(McpServerStatus.MISCONFIGURED);
-                    assertThat(snapshot.lastError()).contains("send_mail");
+                    assertThat(snapshot.lastError()).contains("MCP 工具重名").contains("add");
                 });
-                assertThat(provider.toolNames()).isEmpty();
+                assertThat(provider.toolNames())
+                        .as("先连上的那一个的工具还在：一个 server 配错不该把另一个也拖下去")
+                        .contains("add");
                 assertThat(scheduler.delaysInMillis())
                         .as("配置错误重试一万次也不会变：再排任务就是空转")
                         .containsExactly(15_000L);
-                assertThat(output).contains("发现配置错误，停止重试").contains("send_mail");
+                assertThat(output).contains("发现配置错误，停止重试");
             }
         }
     }
@@ -211,13 +216,13 @@ class McpServerRetryTest {
 
     /** 一个连不上的端点：传输都建不起来（连命令都跑不起来的那一类）。 */
     private static McpServerEndpoint broken() {
-        return McpServerEndpoint.of("broken", ToolPermission.read(), () -> {
+        return McpServerEndpoint.of("broken", () -> {
             throw new IllegalStateException("连接被拒绝");
         });
     }
 
     private static McpServerEndpoint endpoint(String name, InProcessStdioMcpServer server) {
-        return McpServerEndpoint.of(name, ToolPermission.read(), server::openTransport);
+        return McpServerEndpoint.of(name, server::openTransport);
     }
 
     /**
@@ -225,14 +230,17 @@ class McpServerRetryTest {
      *
      * <p>不真的 {@code schedule} 是关键——真排一个 15 秒的任务，这条用例就得等 15 秒；
      * 而 {@code isShutdown} 仍然是真的，{@link #closeStopsTheRetryLoop} 那条验的就是它。
+     *
+     * <p>包内可见而不是私有：{@code McpToolFilterTest} 那条"恢复之后重新筛一遍"也要它——
+     * 重连只有一个触发点（退避重试），自己再抄一份等于让两处对着同一个时间轴各跑各的。
      */
-    private static final class RecordingScheduler extends ScheduledThreadPoolExecutor {
+    static final class RecordingScheduler extends ScheduledThreadPoolExecutor {
 
         private final List<Long> delays = new CopyOnWriteArrayList<>();
 
         private final ConcurrentLinkedDeque<Runnable> pending = new ConcurrentLinkedDeque<>();
 
-        private RecordingScheduler() {
+        RecordingScheduler() {
             super(1, runnable -> {
                 Thread thread = new Thread(runnable, "claw4j-mcp-retry-test");
                 thread.setDaemon(true);

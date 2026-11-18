@@ -1,8 +1,5 @@
 package io.github.claw4j.agent.persona;
 
-import io.github.claw4j.agent.PermissionFingerprint;
-import io.github.claw4j.domain.ContextKeys;
-import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.persona.GlossarySection;
 import io.github.claw4j.persona.Persona;
 import io.github.claw4j.persona.PromptComposition;
@@ -93,11 +90,7 @@ public class AgentContextAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     private ChatClientRequest withContext(ChatClientRequest request) {
-        Principal who = principalOf(request);
-        // 没有 Principal 时不写这一段：无身份的一轮不该与任何人的缓存键相同。
-        String dataScope = who == null ? null : PermissionFingerprint.of(who);
-        String composed = PromptComposition.compose(persona, glossary,
-                ZonedDateTime.now(clock), dataScope);
+        String composed = PromptComposition.compose(persona, glossary, ZonedDateTime.now(clock));
         Prompt prompt = request.prompt();
         List<Message> instructions = prompt.getInstructions();
 
@@ -111,19 +104,6 @@ public class AgentContextAdvisor implements CallAdvisor, StreamAdvisor {
         return request.mutate().prompt(new Prompt(replaced, prompt.getOptions())).build();
     }
 
-    /**
-     * 调用方把身份放在 {@code ContextKeys.PRINCIPAL} 里（与鉴权、缓存同一处）。
-     *
-     * <p>取不到就是没有，不拿默认权限兜底。兜底的代价是匿名调用与某个真实角色共用同一个缓存键，
-     * 而那条路上没有任何东西会报错。
-     *
-     * @param request 这一轮的请求
-     * @return 身份；请求上下文里没有时为 null
-     */
-    private static Principal principalOf(ChatClientRequest request) {
-        Object value = request.context() == null ? null : request.context().get(ContextKeys.PRINCIPAL);
-        return value instanceof Principal principal ? principal : null;
-    }
 
     @Override
     public int getOrder() {
