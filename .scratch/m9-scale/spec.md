@@ -12,7 +12,7 @@
 
 | 编号 | 一件事 | 状态 |
 | --- | --- | --- |
-| **P17** | 脚本沙箱加固（真正的隔离边界）：从"四条约束"到"容器级限额" | 拆成 `P17a` / `P17b` / `P17c`；`P17a` resolved（2026-11-18），`P17b` blocked（等上游，2026-11-18 裁决），`P17c` `ready-for-agent` |
+| **P17** | 脚本沙箱加固（真正的隔离边界）：从"四条约束"到"容器级限额" | 拆成 `P17a` / `P17b` / `P17c`；`P17a` **withdrawn**（2026-11-18 做完又整体回滚），`P17b` / `P17c` blocked（等上游加限额参数）。**P17 今天一行代码都没有** |
 | **P18** | `doctor` 自检 | 拆成 `P18a` / `P18b`；`P18a` resolved（2026-11-18），`P18b` `ready-for-agent` |
 | **P19** | WebSocket 传输 | **暂不需要**（2026-11-18 用户裁决），未拆票 |
 
@@ -20,9 +20,9 @@ P17 的三张：
 
 | 票 | 一件事 | Blocked by |
 | --- | --- | --- |
-| `P17a-sandbox-mode-and-docker-backend` | `tools.sandbox.*` 的键；命令真的跑进容器 | 无。**已 resolved** |
+| `P17a-sandbox-mode-and-docker-backend` | `tools.sandbox.*` 的键；命令真的跑进容器 | 无，但**已 withdrawn**（2026-11-18 回滚，见票面末节） |
 | `P17b-container-limits` | 断网、只读根、内存与 pid 上限、非 root；两条路径共用一份容器规格 | 上游 `spring-ai-agent-utils` 加限额参数（**blocked**，2026-11-18 裁决；理由与所需参数见票面 `## Answer`） |
-| `P17c-workspace-and-lifecycle` | 工作目录进出、容器复用、退出清理 | P17a（可与 b 并行） |
+| `P17c-workspace-and-lifecycle` | 工作目录进出、容器复用、退出清理 | 与 P17b 同一上游；P17a 已回滚，票面已按"容器只剩库那一条路"重估 |
 
 P18 的两张，按"要不要出去"切——这两类的测试策略完全不同：
 

@@ -32,7 +32,7 @@ PATH-only 环境、30 秒超时、非 root、工作目录不越界——脚本�
 
 **Type:** task
 
-**Status:** resolved（2026-11-18）
+**Status:** withdrawn（2026-11-18 裁决：去掉 docker 相关功能、代码回滚、继续等上游）
 
 **裁决来源：** ADR-0020 §M9 · P17（四条约束 → 容器级限额）；ADR-0030 §裁决六（`mode` / `backend` /
 `scope` / `workspaceAccess` 四个键与取值）；ADR-0021 §"追平 2：执行隔离"。
@@ -143,3 +143,23 @@ PATH-only 环境、30 秒超时、非 root、工作目录不越界——脚本�
 
 **门禁（2026-11-18）**：`./scripts/verify.sh` 四步全绿——806 条用例，失败 0 / 错误 0 / 跳过 0，
 capability 行覆盖率 81.5%，文件数 14 / 最大方法数 26 未越线。
+
+## Withdrawn（2026-11-18 晚）
+
+**这一票做完又整体回滚了。** 记录如下，别把它当成"已落地"。
+
+- 做完时：`claw4j.tools.sandbox.*` 五个键、`SandboxProperties` / `SandboxBackends` /
+  `SandboxAutoConfiguration` / `SandboxUnavailableException`、exec 侧的
+  `DockerCliExecBackend` 接线、`@Tag("docker")` 三条真隔离用例、`-Pdocker` profile。
+- 为什么回滚：库的 `DockerCliExecBackend.Builder` 只有 7 个入口，**没有任何限额参数**
+  （network / 只读根 / memory / pids / user / cpus 全无）。命令能送进容器，却关不住它——
+  "看起来有隔离、实际没有"比不隔离更坏。用户裁决：**去掉 docker 相关功能，回滚代码，继续等上游**。
+- 删掉的：`claw4j-capability/.../sandbox` 整包、`spring-ai-agent-utils-docker-cli` 依赖（父 pom 与
+  capability pom）、`SandboxedExecBackend` 的 `container` 字段与那个 7 参构造、
+  `ExecAutoConfiguration` 里的容器装配与 WARN、`application.yml` 的 `sandbox:` 段、
+  `SandboxTest`（7 条单测 + 3 条 `@Tag("docker")`）、`-Pdocker` profile 与 `excludedGroups` 里的 `docker`、
+  doctor 的 `ConfigSanityCheck`（它查的三个组合全在已删的键上）。
+- 没动的：`SandboxedExecBackend` 这个**判定装饰器**留着（名字里的 sandbox 指的是执行前的判定，
+  不是容器），`exec` 的其余行为逐字节不变。
+- 回来的前提：上游给 `Builder` 加限额参数。见 `P17b` 票面的 `## Answer`（七项）与
+  `docs/agents/alignment.md`「先找现成的实现」末段。

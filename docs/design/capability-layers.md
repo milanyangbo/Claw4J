@@ -109,18 +109,20 @@ examples/skills/summarize/
 **正文负责"路径"，工具负责"执行"**。模型看到的第一行是
 `Base directory for this skill: <技能目录>`，正文里写 `bash {baseDir}/scripts/run.sh sample.md`，
 `{baseDir}` 在交给模型之前就替换成那个目录（OpenClaw 的写法，抄一份过来能直接跑）。
-执行那一步是 `Bash`：宿主的 `LocalExecBackend`、容器里的 `DockerCliExecBackend`，都在
-`spring-ai-agent-utils` 里，本项目一行执行器都没有。
+执行那一步是 `Bash`：后端是库的 `LocalExecBackend`（在 `spring-ai-agent-utils` 里），
+本项目一行执行器都没有。**容器化没有落地**（2026-11-18 回滚，等上游给限额参数）——
+今天只有一个执行位置，就是宿主。
 
 | 这件事归谁 | 归谁 |
 | --- | --- |
 | 脚本在哪、要什么参数、输出算什么 | `SKILL.md`（人写的正文，会被审批） |
-| 怎么起进程、收流、超时、回收 | 库（`LocalExecBackend` / `DockerCliExecBackend`） |
+| 怎么起进程、收流、超时、回收 | 库（`LocalExecBackend`） |
 | 这条命令能不能跑 | exec 三段式：白名单 / 审批 / 复核（ADR-0023） |
 
 **代价要记账**：脚本包那层"入口必须在包目录内、参数只能是包内相对路径"的校验，随包一起删了。
 现在一条 `bash …/run.sh /etc/hosts` 能不能读到 `/etc/hosts`，取决于 exec 那一层的边界
-（`claw4j.tools.exec.workspace`、`security=allowlist`、审批、容器沙箱），不取决于技能目录。
+（`claw4j.tools.exec.workspace`、`security=allowlist`、审批），不取决于技能目录。
+**没有容器那一层**：容器化 2026-11-18 整体回滚，别把"进容器就好了"当成已有的边界。
 **这是变松的地方**，别在文档里写成"脚本只能读自己目录"。
 
 **审批比原来紧**：技能目录的摘要覆盖目录下所有文件（含 `scripts/`），改一个脚本字节，

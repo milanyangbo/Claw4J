@@ -98,8 +98,17 @@ try/catch 去维持"缓存不参与可用性"——那是拿自研代码给自�
 
 自己那版唯一"更对"的地方是脚本层的 argv 不被解释器再看一遍——但那不是它没能力，
 是**两层的请求形态不同**：`ExecSpec` 是一条命令字符串（exec 要的），脚本层的参数必须是数组。
-所以现在的分界是：**exec 用库的 `DockerCliExecBackend`，脚本层保留自己的 argv 实现**，
-理由写在 `DockerCli` 的类注释里，一句话说得完。
+当时的分界是：**exec 用库的 `DockerCliExecBackend`，脚本层保留自己的 argv 实现**。
+
+**第三次裁决（2026-11-18 晚）：容器化整体回滚，这一节的反例要往后读一层。** 换上库的后端之后，
+真正的问题暴露出来：`DockerCliExecBackend.Builder` 只有 7 个入口，**没有任何限额参数**——
+`network` / 只读根 / 内存 / pids / user / cpus 一个都没有。于是命令能送进容器、却关不住它，
+而"看起来有隔离、实际没有"比没有隔离更坏。用户裁决：**去掉 docker 相关功能、代码回滚、等上游加参数**。
+
+这条比"先找现成实现"更硬：**找到现成实现之后，还要问它能不能表达我们的约束**（`AGENTS.md`
+四道筛的第 4 题）。答不上来时正确的动作是**停下并把票标 blocked**，不是自己接一条替代路
+（拉一份 compose 再 `containerId(..)`、换 docker-java、自己拼 `docker run`）——
+那些都是新的架构决定，得人来拍。这一条已写进 `AGENTS.md`「卡住就停」。
 
 **这一条也顺带纠正了一个旧习惯**：本项目手写的 `ShellCommandRunner` / `LocalProcessRunner`
 同样早于库里的 `LocalExecBackend`。2026-11-18 已把这四个包（`process` / `sandbox` / `exec` /

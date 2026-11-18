@@ -137,6 +137,12 @@ javap -p  DockerCliExecBackend$Builder.class        # 它的 API 与默认值
 ## 与 P17b 的关系
 
 P17b 已裁决为"等上游给 `DockerCliExecBackend` 加限额参数"（票面 `## Answer` 里列了要补的七项）。
+
+**2026-11-18 晚的后续裁决：整个容器化回滚。** 结论是"换对了库、但库给不了我们的约束"——
+它能把命令送进容器，却没有任何限额入口，于是隔离关不住。已删掉 `claw4j.tools.sandbox.*`、
+`claw4j-capability/.../sandbox` 整包、`spring-ai-agent-utils-docker-cli` 依赖、`-Pdocker` profile
+与那条 `@Tag("docker")` 用例；P17a 票面改为 withdrawn。这份对照表本身仍然成立
+（它记的是"每个自研件有没有对等物"），只是**执行位置那一列的"容器"暂时不存在**。
 本文件只补一条信息：**上游长期不动时，docker-java 是唯一能同时满足 argv 与四条限额的高质量件**，
 那时要连 exec 侧一起换，避免两套 docker 访问方式。
 

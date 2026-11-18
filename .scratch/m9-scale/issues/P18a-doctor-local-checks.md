@@ -66,7 +66,7 @@
 | 库与 classpath 一致 → PASS | `#upToDateMigrationPasses` | ✅ |
 | 凭据句柄解析不出来 → FAIL，并说清是"句柄"不是"key" | `#unresolvableSecretHandleFails` | ✅ 报的是环境变量名（该改的是它） |
 | 凭据句柄能解析 → PASS（**不发任何请求**） | `#resolvableHandlePassesWithoutNetwork` | ✅ 断言结论里带"没发请求"；这一项没有 HTTP 客户端可调 |
-| `backend=ssh` → FAIL"未实现"，不是静默忽略 | `#unimplementedBackendIsReported` | ✅ |
+| ~~`backend=ssh` → FAIL"未实现"~~ | ~~`#unimplementedBackendIsReported`~~ | ❌ 已删：这个键随容器化回滚一起没了（2026-11-18 晚） |
 | 有 FAIL 时退出码非 0，且**其余项照跑**（不中途退出） | `#oneFailureDoesNotStopLaterChecks` | ✅ |
 | 跑 doctor 不启 web、不占端口 | `#doctorDoesNotStartWebServer` | ✅ 断言没有 `WebApplicationContext` / `ServletWebServerFactory` / `DataSource` bean，且 yml 里的键读得到 |
 
@@ -95,20 +95,23 @@
 （那是 Boot 的配置数据阶段，与自动装配无关）。代价写在类注释里：它查不了"属性绑定本身失败"。
 
 **一处与票面的偏离**：第 4 项原来要查"`mode=all` + `backend=docker` 但探测失败"。**探测做不了**——
-探 docker 要起一个容器，那是有副作用的动作，doctor 只读。所以这一项只查
-`backend=ssh`、`mode=non-main`、`mode≠off && access=ro` 三种"配了不生效"的组合；
-"docker 起不来"仍由启动期 fail-fast 说（库的 `build()` 抛，指名道姓）。
+探 docker 要起一个容器，那是有副作用的动作，doctor 只读。所以这一项当时只查
+`backend=ssh`、`mode=non-main`、`mode≠off && access=ro` 三种"配了不生效"的组合。
+
+**2026-11-18 晚：第 4 项整个删掉了。** 容器化整体回滚之后 `claw4j.tools.sandbox.*` 这五个键
+不存在了，`ConfigSanityCheck` 查的三条全落在死配置上——一条"报告配置写错"的检查，自己指着
+一套不存在的配置，比没有更坏。现在 doctor 只剩三项：迁移版本、能力目录、凭据句柄。
 
 **真跑过三次**（`java -jar … --doctor`）：
 
 | 场景 | 结果 |
 | --- | --- |
-| 不带 `.env` | 两条 FAIL（`DEEPSEEK_API_KEY` / `QWEN_API_KEY` 环境里没有）+ 四条 SKIP（四个目录都没配）+ 迁移 PASS（库里已到 V13）+ 配置组合 PASS，退出码 **1** |
-| 带 `.env` | 4 通过 / 0 不通过 / 4 没查，退出码 **0** |
-| 故意配错（`--claw4j.skills.directory=/nope --claw4j.tools.sandbox.mode=all`） | 两条 FAIL 各带一句修复动作，其余照常给出结论，退出码 **1** |
+| 不带 `.env` | 两条 FAIL（`DEEPSEEK_API_KEY` / `QWEN_API_KEY` 环境里没有）+ 四条 SKIP（四个目录都没配）+ 迁移 PASS（库里已到 V13），退出码 **1** |
+| 带 `.env` | 3 通过 / 0 不通过 / 3 没查，退出码 **0**（删掉配置组合那一项之后的数字） |
+| 故意配错（`--claw4j.skills.directory=/nope`） | 一条 FAIL 带修复动作，其余照常给出结论，退出码 **1** |
 
 代码：`claw4j-app/.../app/doctor/`（`Doctor` / `DoctorCheck` / `DoctorReport` /
-`MigrationCheck` / `DirectoryCheck` / `SecretHandleCheck` / `ConfigSanityCheck`）。
+`MigrationCheck` / `DirectoryCheck` / `SecretHandleCheck`）。
 `MigrationCheck` 的"已跑版本"抽成了接口，所以两种落后场景不必起真库就能断言。
 
 ## 缺口
