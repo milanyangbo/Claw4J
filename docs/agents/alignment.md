@@ -68,6 +68,39 @@ try/catch 去维持"缓存不参与可用性"——那是拿自研代码给自�
 判据 3 的答案就是**接口名**。答得出接口名，并且调用点是框架留的槽位，就是实现；
 答不出，就是自研。
 
+## 先找现成的实现（2026-11-18 容器沙箱）
+
+判据 1 与「接口实现不是自研」管的是"怎么写"。这一节管**更前面一步：要不要写**。
+
+**顺序是固定的**：本项目已引的库 → Spring AI / `spring-ai-community` 的官方模块 → OpenClaw
+的对应机制 → 其它成熟开源。找过之后才允许自己写，票面写清"找到什么、为什么不用"。
+
+**"找过"的判据是打开 jar**：`unzip -l` 看有没有这个类、`javap` 看它的 API 与默认值、
+读它的 caveat。不是"我记得它没有"，也不是"文档里没提"。
+
+### 反例：P17a 的 docker 沙箱
+
+我先写了三样：拼 `docker run` 的 argv、启动期探测、后台句柄。用户一句"看看 spring-ai 社区
+有没有相关的实现"，`spring-ai-agent-utils` 里就有
+`org.springaicommunity:spring-ai-agent-utils-docker-cli` 的 `DockerCliExecBackend`：
+
+| 我当时自己写的 | 库里已有的 |
+| --- | --- |
+| 拼 `docker run` 的 argv + `--volume` / `--workdir` / `--env` | `builder().image(..).mount(..).containerWorkingDirectory(..).environment(..)` |
+| 启动期探测（`docker info` + `image inspect`） | 托管容器在 `build()` 时**直接建起来**，起不来就 fail-fast，比探测更硬 |
+| 后台句柄（自己起进程、自己收流） | `ExecHandle` 在 `docker_` 命名空间，游标语义与本地一致 |
+| 超时=杀掉 docker 客户端 | **每条命令在容器内记 PID**，超时在容器里发 TERM 再 KILL —— 这一条我根本没处理（杀了客户端容器里的进程还活着），而它是 Docker 的已知限制 |
+| 容器回收 | `close()` + JVM shutdown hook + label（崩溃后 `docker rm -f $(docker ps -aq --filter label=..)`） |
+
+自己那版唯一"更对"的地方是脚本层的 argv 不被解释器再看一遍——但那不是它没能力，
+是**两层的请求形态不同**：`ExecSpec` 是一条命令字符串（exec 要的），脚本层的参数必须是数组。
+所以现在的分界是：**exec 用库的 `DockerCliExecBackend`，脚本层保留自己的 argv 实现**，
+理由写在 `DockerCli` 的类注释里，一句话说得完。
+
+**这一条也顺带纠正了一个旧习惯**：本项目手写的 `ShellCommandRunner` / `LocalProcessRunner`
+同样早于库里的 `LocalExecBackend`。要不要换是另一张票的事（换它等于重做票 01 那层的接缝），
+但它属于"该被找一遍"的清单，不属于"已经证明该自研"。
+
 ## 这条同样适用于 OpenClaw
 
 OpenClaw 不是"参考实现"，是**判据来源**。它的机制优先于"这样也说得通"；
