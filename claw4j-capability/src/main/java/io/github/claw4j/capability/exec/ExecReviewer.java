@@ -8,7 +8,7 @@ import java.util.Set;
  * 未命中白名单时先问一句"这条命令低不低风险"的那一层（OpenClaw 的 native auto-reviewer）。
  *
  * <p>只有 {@code autoReview=true} 的档（{@code mode: auto}）才用它，且只在
- * {@code ask=on-miss} 且真的未命中时用。它的三个结局里**没有"拒绝"**——复核器说不行等于
+ * {@code ask=on-miss} 且真的未命中时用。它的三个结局里<b>没有"拒绝"</b>——复核器说不行等于
  * "我判不了，交给人"，所以 {@link Decision#FALLBACK} 之后照常走审批，而不是直接拒。
  * 这条是它的原话：*Auto mode must never become a static allowlist*。
  *
@@ -28,13 +28,13 @@ public interface ExecReviewer {
 
     /**
      * 复核器看到的全部内容。入参照 OpenClaw 给复核器的那份——它需要 argv 与解析后的路径是因为
-     * "只看命令字符串"会被引号、别名、`env` 前缀绕过。
+     * "只看命令字符串"会被引号、别名、{@code env} 前缀绕过。
      *
      * @param command      原始命令
      * @param argv         拆好的参数（解析不出来时为空）
      * @param resolvedPath 解析后的可执行文件路径（解析不出来时为 {@code null}）
      * @param cwd          将在哪个目录里跑
-     * @param envKeys      继承环境的**键名**（值不给：值里可能有密钥）
+     * @param envKeys      继承环境的<b>键名</b>（值不给：值里可能有密钥）
      * @param host         在哪跑
      * @param reason       为什么要复核（给人看的理由）
      * @param analysis     本地的静态分析结论，可以为空

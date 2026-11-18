@@ -13,7 +13,7 @@ import java.util.function.Supplier;
  * 进程内、用 stdio 还是 HTTP，都由 {@link #openTransport()} 给出的传输决定，上层的连接
  * 生命周期代码不感知。换传输就是换这一个方法。
  *
- * <p>这里**不声明权限**（ADR-0030 裁决二、票 04）：{@code action} / {@code tables} 是业务系统的
+ * <p>这里<b>不声明权限</b>（ADR-0030 裁决二、票 04）：{@code action} / {@code tables} 是业务系统的
  * 授权问题，而这一层只回答"接谁、装哪些工具"。看得见什么由工具清单决定，执行前要不要人点头
  * 由审批决定，两件事都不在端点上。
  */
@@ -63,7 +63,7 @@ public final class McpServerEndpoint {
         return name;
     }
 
-    /** 哪些工具**存在**：过滤发生在建 callback 之前，所以排掉的名字不会有任何登记。 */
+    /** 哪些工具<b>存在</b>：过滤发生在建 callback 之前，所以排掉的名字不会有任何登记。 */
     public ToolFilter toolFilter() {
         return toolFilter;
     }

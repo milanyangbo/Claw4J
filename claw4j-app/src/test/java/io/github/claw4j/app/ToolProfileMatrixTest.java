@@ -18,7 +18,7 @@ import java.util.TreeSet;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 四档画像的成员表：拿**真实装配出来的清单**逐档筛一遍（ADR-0030 裁决一）。
+ * 四档画像的成员表：拿<b>真实装配出来的清单</b>逐档筛一遍（ADR-0030 裁决一）。
  *
  * <p>为什么不放在 {@code ApplicationAssemblyTest}：那份文件验的是装配结构，用例数已经贴着头；
  * 这里问的是另一件事——"这个部署换个画像之后，模型手上还剩哪些工具"。两件事的失败原因不同，
@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>断言用"必须含 / 必须不含"而不是整份清单相等：清单里有哪些工具取决于装了什么模块
  * （脚本包要目录、写工具要开关、MCP 要配置），钉死整份清单会让这条用例因为一次无关的装配
- * 变化而红。真正要钉的是**边界**：
+ * 变化而红。真正要钉的是<b>边界</b>：
  * <ul>
  *   <li>{@code messaging} 能查数、碰不到机器；</li>
  *   <li>{@code coding} 碰得到机器、能自主行动；</li>
@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ToolProfileMatrixTest {
 
     /**
-     * 起上下文要的那份敏感词表：路径按**仓库根**解析，不按测试进程的工作目录——后者随
+     * 起上下文要的那份敏感词表：路径按<b>仓库根</b>解析，不按测试进程的工作目录——后者随
      * 构建方式变，而它只是一个"必须存在"的启动前提。
      */
     @DynamicPropertySource

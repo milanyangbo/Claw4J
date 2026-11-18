@@ -204,7 +204,7 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
      * <p>{@code ignoreUnknown}: 端点是 OpenAI 兼容格式，除了 {@code results} 还会回
      * {@code object} / {@code id} / {@code model} / {@code usage}。只声明 {@code results} 的 record
      * 默认不容忍多余字段（Jackson 2 的 {@code FAIL_ON_UNKNOWN_PROPERTIES=true}），于是一次成功的重排
-     * 会被当成解析失败、静静退回原顺序——**功能从来没见过效果，而日志里只有一行 WARN**。
+     * 会被当成解析失败、静静退回原顺序——<b>功能从来没见过效果，而日志里只有一行 WARN</b>。
      * 容忍的是"我们不关心的字段"，不是"格式错"：缺 {@code results}、类型不对仍然走失败路径。
      *
      * @param results 每条候选的下标与相关性分

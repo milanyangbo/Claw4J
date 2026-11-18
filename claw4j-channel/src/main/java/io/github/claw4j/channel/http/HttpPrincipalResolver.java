@@ -14,7 +14,7 @@ import java.util.Objects;
  *
  * <p>前置条件是网关已经在边缘做过认证、把结果写成请求头。本项目不做认证体系，
  * 这里负责把头部翻译成 {@link Principal}，并按 {@code claw4j.channel.http.users} 判准入：
- * 缺失用户标识、或者人不在白名单里，都拒绝。**没有默认身份**——角色请求头
+ * 缺失用户标识、或者人不在白名单里，都拒绝。<b>没有默认身份</b>——角色请求头
  * 这个头随角色一起下线，认不出就是进不来。
  */
 public class HttpPrincipalResolver {

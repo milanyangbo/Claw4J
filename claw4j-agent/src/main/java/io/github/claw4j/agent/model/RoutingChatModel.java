@@ -68,8 +68,8 @@ public class RoutingChatModel implements ChatModel {
     /**
      * 依次试每个模型，第一次成功就返回。
      *
-     * <p>同一个模型最多调用**两次**，且只在"它这一轮生成的字节解析不出来"时重试
-     * （{@link ModelFailures#worthRetryingTheSameModel}）。理由：那是这一**次**生成的质量问题，
+     * <p>同一个模型最多调用<b>两次</b>，且只在"它这一轮生成的字节解析不出来"时重试
+     * （{@link ModelFailures#worthRetryingTheSameModel}）。理由：那是这一<b>次</b>生成的质量问题，
      * 重新生成一份大概率就好；而只有一个供应商的部署里，{@code worthTryingAnother} 为 true 也
      * 没有下一家可降，不重试就等于没人重试——一次抖动整个请求变 500（票 14）。
      * 限流与网络失败不走这条路：SDK 自己会重试，429 立刻重打同一家只会更糟。

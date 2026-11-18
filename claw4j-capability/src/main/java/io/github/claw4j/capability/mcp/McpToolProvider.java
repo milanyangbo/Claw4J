@@ -215,7 +215,7 @@ public final class McpToolProvider implements ToolCallbackProvider, AutoCloseabl
      * 于是 callbacks、画像与 {@code toolNames()} 三者自动一致。被排掉的工具从来没有变成工具，
      * {@code allow} 也就加不回来——这是这一层的定义，不是副作用。
      *
-     * <p>每次 {@link #contact} 成功都会走这里，所以重连之后拿到的是**重新筛过**的清单，
+     * <p>每次 {@link #contact} 成功都会走这里，所以重连之后拿到的是<b>重新筛过</b>的清单，
      * 不是第一次列出来的快照：server 升级后多导出的工具只有配置允许的才进得来。
      */
     private void install(Server server, List<Tool> tools) {

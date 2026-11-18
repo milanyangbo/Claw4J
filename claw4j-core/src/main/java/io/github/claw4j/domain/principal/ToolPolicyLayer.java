@@ -5,7 +5,7 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * 策略管线的**一层**：一个标签加三张表（allow / deny / alsoAllow）（ADR-0030 裁决二）。
+ * 策略管线的<b>一层</b>：一个标签加三张表（allow / deny / alsoAllow）（ADR-0030 裁决二）。
  *
  * <p>语义照 OpenClaw 的 {@code makeToolPolicyMatcher}，只有三条：
  * <ol>
@@ -20,7 +20,7 @@ import java.util.Set;
  * "allow 非空时哪些能进"，不改变"allow 为空则不收窄"这条。所以把 {@code alsoAllow} 单独写成
  * 一个层是错的——那样它会变成"只放这几个"，与 writer 的"再加几个"相反。
  *
- * <p><b>`applyPatch` 的别名不对称没有照抄</b>：它的规则是"allow 含 {@code write} 时
+ * <p><b>{@code applyPatch} 的别名不对称没有照抄</b>：它的规则是"allow 含 {@code write} 时
  * {@code apply_patch} 一并放行，但 {@code deny: ["write"]} 不拦 {@code apply_patch}"。我们没有
  * {@code apply_patch}（{@code Write} 与 {@code Edit} 本来就是两个独立的工具名，不需要别名），
  * 照抄会得到一条永远不生效的规则。见 ADR 缺口。

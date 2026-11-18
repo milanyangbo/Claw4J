@@ -25,7 +25,7 @@ import java.util.Set;
  *       覆盖。画像决定"这个工具属不属于这个部署"，它在 {@code ToolProfile#select} 里做，
  *       因为它还要顺带做"每个工具都必须声明画像"那条校验。</li>
  *   <li><b>跑管线</b>——{@code select} 已经把全局 allow / deny / alsoAllow 算完了，所以这里产出的
- *       层**不含全局那层**（含了就是算两遍，审计里会出现两条一样的记录）。</li>
+ *       层<b>不含全局那层</b>（含了就是算两遍，审计里会出现两条一样的记录）。</li>
  * </ol>
  *
  * <p><b>没有实现的三层，连同理由</b>（进 ADR 缺口，不在这里造空层）：
@@ -144,7 +144,7 @@ public final class ToolPolicyAssembler {
     /**
      * 按模型那一层的规则。
      *
-     * <p>两种键都合法：{@code provider} 与 {@code provider/model}。**精确的更优先**——同时配了
+     * <p>两种键都合法：{@code provider} 与 {@code provider/model}。<b>精确的更优先</b>——同时配了
      * {@code deepseek} 与 {@code deepseek/deepseek-chat} 时，用的是后者。反过来（先查短键）会让
      * "给某个模型单独收紧"这条配置永远不生效，而它看起来是生效的。
      */
@@ -168,7 +168,7 @@ public final class ToolPolicyAssembler {
      * 按发送者那一层。
      *
      * <p>候选顺序照它的 {@code resolveToolsBySender}：{@code channel:<ch>:<id>} → {@code id:} →
-     * {@code *}，**命中即用**——不是把三条合并。合并的话，写了一条 {@code *} 的兜底 deny 之后，
+     * {@code *}，<b>命中即用</b>——不是把三条合并。合并的话，写了一条 {@code *} 的兜底 deny 之后，
      * 给某个人单独写 allow 就再也放不开了，而那是这个功能最常见的用法。
      */
     private static ToolPolicyLayer senderLayer(ToolsProperties rules, ToolPolicyContext ctx) {
@@ -196,7 +196,7 @@ public final class ToolPolicyAssembler {
     /**
      * 子 Agent 那一层：内建角色清单 + 配置的收窄。
      *
-     * <p>**显式 {@code allow} 能压过内建清单**：写了 {@code subagents.allow: [Task]} 的部署，
+     * <p><b>显式 {@code allow} 能压过内建清单</b>：写了 {@code subagents.allow: [Task]} 的部署，
      * 就该拿到 {@code Task}，即使它的角色是 {@code leaf}。这条是照它的
      * {@code mergeConfiguredSubagentAllow}——那条规则的存在理由是"配置比角色的默认更懂这个部署"。
      * 做成硬拒的话，某些部署永远配不出想要的多层委派，而它们会以为是配置写错了。

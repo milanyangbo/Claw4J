@@ -15,7 +15,7 @@ import java.util.Optional;
  * 与有没有沙箱无关。
  *
  * <p>{@link #FULL} 是这条命令里唯一危险的一档，所以它的三重门在
- * {@code ElevatedCommand} 里：{@code enabled} 开着、发送者在上一次名单里、以及它只对**这一段会话**
+ * {@code ElevatedCommand} 里：{@code enabled} 开着、发送者在上一次名单里、以及它只对<b>这一段会话</b>
  * 生效。默认值 {@link #OFF} 与"读不出来"同义：解析失败不猜。
  */
 public enum Elevation {
@@ -23,10 +23,10 @@ public enum Elevation {
     /** 不提权：按部署配置跑（有沙箱进沙箱，审批照常问）。默认。 */
     OFF,
 
-    /** 跑到沙箱外，但**审批照旧**。OpenClaw 的 {@code ask} 是它的别名。 */
+    /** 跑到沙箱外，但<b>审批照旧</b>。OpenClaw 的 {@code ask} 是它的别名。 */
     ON,
 
-    /** 跑到沙箱外，且**跳过审批**。只有被点名的人、在开着的部署里能用。 */
+    /** 跑到沙箱外，且<b>跳过审批</b>。只有被点名的人、在开着的部署里能用。 */
     FULL;
 
     /**

@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * {@code claw4j.tools.exec.host} 的合法性：配了做不到的位置就起不来。
  *
- * <p>这条规则防的是一句假话。{@code host=sandbox} 而沙箱没开时，命令会**静默**跑在宿主上——
+ * <p>这条规则防的是一句假话。{@code host=sandbox} 而沙箱没开时，命令会<b>静默</b>跑在宿主上——
  * 配置看着是"进了容器"，实际没有；那种部署出的安全问题，第一反应会是去翻容器配置。
  * 所以它必须是启动失败，而不是回落。
  */

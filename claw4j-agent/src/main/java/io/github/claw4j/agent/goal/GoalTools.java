@@ -85,7 +85,7 @@ public final class GoalTools implements ToolCallbackProvider {
 
         private CreateTool() {
             super(CREATE,
-                    "给这个会话定一个目标。**只有用户或系统指令明确要求时才建**："
+                    "给这个会话定一个目标。<b>只有用户或系统指令明确要求时才建</b>："
                             + "这是「这一段对话要一起达成什么」的承诺，不是你顺手给自己加的待办。"
                             + "一个会话同时只能有一个目标；已有目标时这一步会失败，"
                             + "要换目标得让用户先 /goal clear。",
@@ -124,11 +124,11 @@ public final class GoalTools implements ToolCallbackProvider {
 
         private UpdateTool() {
             super(UPDATE,
-                    "把目标标记为 complete 或 blocked。**只有目标确实达成时才标 complete**；"
-                            + "**只有同一个阻塞条件至少连续三个目标轮次都出现**，才标 blocked——"
+                    "把目标标记为 complete 或 blocked。<b>只有目标确实达成时才标 complete</b>；"
+                            + "<b>只有同一个阻塞条件至少连续三个目标轮次都出现</b>，才标 blocked——"
                             + "一般性的困难、或者「还没打磨好」不算阻塞。"
-                            + "额度快用完**不是**把没做完的活标成达成的理由。"
-                            + "改目标状态**不会替你回一句话**：用户要的那个最终回答仍然要由你给出。"
+                            + "额度快用完<b>不是</b>把没做完的活标成达成的理由。"
+                            + "改目标状态<b>不会替你回一句话</b>：用户要的那个最终回答仍然要由你给出。"
                             + "暂停、恢复、清除、改写目标都不归你：那是用户用 /goal 按的按钮。",
                     """
                             {

@@ -404,7 +404,7 @@ class TurnFlowTest {
      * 一行节点：段、两个时间、空的 entry_json。目标留空（这条用例不关心目标）。
      *
      * <p>键用三参 {@code conversationKeyOf}，也就是"带 chatId"的旧形状：这一组用例要造出
-     * **多个桶**来验证"驱逐最久没动的那个"，而默认的 {@code dm-scope: main} 会把它们并成一个。
+     * <b>多个桶</b>来验证"驱逐最久没动的那个"，而默认的 {@code dm-scope: main} 会把它们并成一个。
      * 键的形状不影响被验证的判据——清理看的是 {@code last_interaction_at}。
      */
     private void pointer(String owner, String channel, String chatId, String segment, Instant touchedAt) {

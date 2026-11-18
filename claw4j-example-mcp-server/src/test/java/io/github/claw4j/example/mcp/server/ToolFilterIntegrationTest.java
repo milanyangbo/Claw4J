@@ -23,14 +23,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code tool-filter} 对着一个真的 MCP server 的四组配置（票 07）。
  *
  * <p>这个 server 导出三个工具：{@code runtimeSnapshot}、{@code cronNext}、{@code simulateSlowCall}。
- * 四组配置验的是同一件事的四种写法：被排掉的工具在 {@code toolNames()} 与权限登记里**都不存在**。
+ * 四组配置验的是同一件事的四种写法：被排掉的工具在 {@code toolNames()} 与权限登记里<b>都不存在</b>。
  *
  * <p>为什么非要真进程：进程内的替身里，server 与客户端都是我们自己的代码，筛选器写错了它也照样
  * 通过——"清单里少了那个工具"要对着别人写的端点才算数。这个 server 是独立程序、走真 HTTP，
  * 与部署里接第三方 server 是同一条路。
  *
  * <p>一个进程、四次连接：配置是客户端这一侧的，不必为每组配置各起一次 server；
- * 反过来每组的清单要对着**同一个**服务端，四组之间才有可比性。
+ * 反过来每组的清单要对着<b>同一个</b>服务端，四组之间才有可比性。
  */
 class ToolFilterIntegrationTest {
 

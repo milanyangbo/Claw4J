@@ -42,7 +42,7 @@ public interface ApprovalLedger {
      *                  调用方拿到的每一条都已经在有效期内
      * @param frozenPlan 批准那一刻冻结下来的执行计划（JSON，形状由实现与应用侧约定），
      *                  可以为 {@code null}：早期记录没有这一列，或者这条批准不是 exec 落下的。
-     *                  **它是"批的是哪一条命令"的唯一凭据**——执行前拿它和现在要跑的逐字符比，
+     *                  <b>它是"批的是哪一条命令"的唯一凭据</b>——执行前拿它和现在要跑的逐字符比，
      *                  不一致就拒，而不是重算一遍参数再比指纹
      */
     record Grant(String id, Instant expiresAt, String frozenPlan) {

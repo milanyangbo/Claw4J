@@ -135,7 +135,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /**
      * 这一轮该给模型看哪些工具。
      *
-     * <p>它必须在这里而不是靠 {@code ChatClient} 的默认 provider：provider 展开时**拿不到**
+     * <p>它必须在这里而不是靠 {@code ChatClient} 的默认 provider：provider 展开时<b>拿不到</b>
      * "这一轮谁在问、用的哪个模型"，而按发送者与按模型那几层正需要它（ADR-0030 裁决二）。
      * 没有它时清单按"只有全局层"解析——安全但不精确，所以装配时一定会传。
      */

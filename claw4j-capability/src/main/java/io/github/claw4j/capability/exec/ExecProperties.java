@@ -13,7 +13,7 @@ import java.util.List;
  * {@code resolveExecPolicyForMode} 展开——写成 {@code mode: ask} 与写成
  * {@code security: allowlist, ask: on-miss} 是同一件事，后者更清楚，前者更短。
  *
- * <p>两者同时出现时**逐字段覆盖**：{@code mode} 先整体展开，显式写了的 {@code security} /
+ * <p>两者同时出现时<b>逐字段覆盖</b>：{@code mode} 先整体展开，显式写了的 {@code security} /
  * {@code ask} 再盖上去。这样"用预设打底、只改一处"才写得出来——否则想从 {@code full} 收到
  * "每条都问"就得把三个字段全写一遍。
  *
@@ -48,7 +48,7 @@ public record ExecProperties(Mode mode,
                              List<String> allow) {
 
     /**
-     * 五档预设。照 OpenClaw 那一组，**不是阶梯**——它们各自是三个字段的一组取值，
+     * 五档预设。照 OpenClaw 那一组，<b>不是阶梯</b>——它们各自是三个字段的一组取值，
      * 彼此没有包含关系（{@code full} 不包含 {@code ask}，两者的 {@code security} 不同）。
      */
     public enum Mode {
@@ -66,7 +66,7 @@ public record ExecProperties(Mode mode,
          * 与 {@link #ASK} 展开完全相同，只多一个 {@code autoReview: true}：
          * 未命中先给复核器看一眼，复核器说"低风险"才放行一次。
          *
-         * <p>没有复核实现时它**与 {@code ASK} 行为完全一致**（回落人工），这是有意的——
+         * <p>没有复核实现时它<b>与 {@code ASK} 行为完全一致</b>（回落人工），这是有意的——
          * 它的默认复核器本来就直接返回 {@code ask}（*Auto mode must never become a static allowlist*）。
          */
         AUTO,
@@ -97,7 +97,7 @@ public record ExecProperties(Mode mode,
         /** 未命中白名单才问。{@code security=full} 时没有"未命中"，等于不问。 */
         ON_MISS,
 
-        /** 每条都问。**它盖过 {@code security=full}**：{@code full} + {@code always} 仍然逐条弹。 */
+        /** 每条都问。<b>它盖过 {@code security=full}</b>：{@code full} + {@code always} 仍然逐条弹。 */
         ALWAYS
     }
 
@@ -165,11 +165,11 @@ public record ExecProperties(Mode mode,
      * <p>判的是"写进去会不会照做"，不是"这个名字好不好"：
      *
      * <ul>
-     *   <li>{@link Host#AUTO} 与 {@link Host#GATEWAY}：这一层都落在**这台机器**上（这个应用既是
+     *   <li>{@link Host#AUTO} 与 {@link Host#GATEWAY}：这一层都落在<b>这台机器</b>上（这个应用既是
      *       控制面也是执行面）。沙箱开着时 {@code auto} 进容器、{@code gateway} 被拒——那一条在
      *       执行时判，见后端。</li>
      *   <li>{@link Host#SANDBOX}：要有容器后端。{@code claw4j.tools.sandbox.mode=off} 时它做不到，
-     *       配了**启动失败**，不静默回落宿主——"以为进了容器"比"知道没进"危险。</li>
+     *       配了<b>启动失败</b>，不静默回落宿主——"以为进了容器"比"知道没进"危险。</li>
      *   <li>{@link Host#NODE}：要多宿主与节点注册，本仓没有这个东西。</li>
      * </ul>
      *

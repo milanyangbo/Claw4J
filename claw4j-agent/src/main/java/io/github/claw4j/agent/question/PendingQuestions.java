@@ -25,7 +25,7 @@ import java.util.concurrent.TimeoutException;
  * 交互提问的登记表：进程内一张表，一条会话最多一个问题，谁把自己那句话答上来就放开那一轮。
  *
  * <p><b>为什么是进程内的表而不是一张库表</b>：照着 OpenClaw 的 {@code ask_user} 来——它写明用
- * "existing process-local question lifecycle, **not a durable recovery ledger**"，并且
+ * "existing process-local question lifecycle, <b>not a durable recovery ledger</b>"，并且
  * "A Gateway restart or an aborted/replaced run does not turn an unresolved step into success"。
  * 换成持久账本要多出状态机、清扫、跨实例汇合三样东西，而它们服务的是"重启之后接着等一个答案"，
  * 那件事没人要：等不到就按 {@code no_answer} 继续，比"重启之后忽然收到一个隔夜问题的答复"更清楚。

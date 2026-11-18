@@ -91,7 +91,7 @@ public record SessionScopeProperties(String dmScope, String groupScope) {
      * <p>不像 {@code session.maintenance.mode} 那样让拼错启动失败：那一档的两侧是"删数据"与
      * "不删数据"，错的方向必须选得出来；这一档的两侧只是"合并上下文"与"分开上下文"，
      * 而默认侧（合并）就是它的默认，照抄它不会更意外。代价是拼错不会被告知，所以启动日志
-     * 打的是**生效值**而不是配置值——写了 {@code per-channel-pee} 的人会看到日志里是
+     * 打的是<b>生效值</b>而不是配置值——写了 {@code per-channel-pee} 的人会看到日志里是
      * {@code main}。
      */
     private static String normalizeDmScope(String value) {

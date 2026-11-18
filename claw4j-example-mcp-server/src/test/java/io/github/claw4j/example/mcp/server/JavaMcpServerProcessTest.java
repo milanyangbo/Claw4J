@@ -151,12 +151,12 @@ class JavaMcpServerProcessTest {
     private static final String THIS_MODULE = "/claw4j-example-mcp-server/";
 
     /**
-     * 子进程的 classpath：本模块的测试 classpath 去掉**其它** {@code claw4j-*} 条目。
+     * 子进程的 classpath：本模块的测试 classpath 去掉<b>其它</b> {@code claw4j-*} 条目。
      *
      * <p>不能直接用 {@code java.class.path}：{@code ToolFilterIntegrationTest} 为了拿到
      * {@code McpToolProvider}，测试期依赖了 {@code claw4j-capability}，而子进程继承同一份 classpath 之后，
      * Spring AI 的 MCP server 自动配置会把 Claw4J 的 {@code Read}/{@code Bash}/{@code Grep} 这些内置工具
-     * **也交出去**——这条用例第一次带依赖跑就红了，红的方式正是"清单里多出八个工具"。
+     * <b>也交出去</b>——这条用例第一次带依赖跑就红了，红的方式正是"清单里多出八个工具"。
      *
      * <p>过滤不是掩盖问题，而是还原部署形状：发布出去的 jar 里没有 Claw4J（见 pom 那段注释），
      * 真部署里这个 server 也只能看见自己的三个工具。留下本模块那一条，其余 {@code /claw4j-*} 去掉——

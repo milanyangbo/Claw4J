@@ -6,18 +6,18 @@ import java.util.regex.Pattern;
 
 /**
  * 工具存不存在这一层的开关（ADR-0030 裁决二）：{@code include} 非空则必须命中，
- * {@code exclude} 命中即排除。条目支持 {@code *} 通配，按**整串**匹配。
+ * {@code exclude} 命中即排除。条目支持 {@code *} 通配，按<b>整串</b>匹配。
  *
  * <p>它回答的问题与另外两层不同，三层别混：
  *
  * <ul>
- *   <li>存在性（本类）：这个工具**有没有**。被排掉的工具不会变成 {@code ToolCallback}，
+ *   <li>存在性（本类）：这个工具<b>有没有</b>。被排掉的工具不会变成 {@code ToolCallback}，
  *       于是它不进清单、不进权限登记、也不在 {@code toolNames()} 里。</li>
- *   <li>画像（{@link ToolProfile}）：这**类**工具允不允许。换档或 {@code alsoAllow} 能把它要回来。</li>
- *   <li>策略（{@link ToolPolicyLayer}）：具体哪几个**可见**。改 {@code allow} / {@code deny} 能要回来。</li>
+ *   <li>画像（{@link ToolProfile}）：这<b>类</b>工具允不允许。换档或 {@code alsoAllow} 能把它要回来。</li>
+ *   <li>策略（{@link ToolPolicyLayer}）：具体哪几个<b>可见</b>。改 {@code allow} / {@code deny} 能要回来。</li>
  * </ul>
  *
- * <p>顺序决定了"能不能要回来"：存在性在第一层，所以**被它排掉的工具，{@code allow} 加不回来**。
+ * <p>顺序决定了"能不能要回来"：存在性在第一层，所以<b>被它排掉的工具，{@code allow} 加不回来</b>。
  * 这是刻意的——"这个 server 的这个工具我们根本不要它进模型的手里"与"这一轮先不给它看"是两件事，
  * 用同一个开关表达会让后者顺手变成前者。形状照 OpenClaw 的
  * {@code mcp.servers.<名字>.toolFilter}：*filter discovered MCP tools before they become OpenClaw tools*。
@@ -69,7 +69,7 @@ public record ToolFilter(List<String> include, List<String> exclude) {
     /**
      * 这一份过滤是不是什么都没做。
      *
-     * <p>启动日志与"过滤后一个都不剩"的判断要分开这两种情况：空 `tool-filter` 是常态，
+     * <p>启动日志与"过滤后一个都不剩"的判断要分开这两种情况：空 {@code tool-filter} 是常态，
      * 而排空了是配置写错，报同一句话会让人去查一个不存在的问题。
      *
      * @return true 表示两个清单都空

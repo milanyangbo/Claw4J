@@ -225,7 +225,7 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
             }
             else {
                 touchNode(key, rotation);
-                // 没换段就要回**旧的**那一个：回新的等于告诉调用方"换过了"，
+                // 没换段就要回<b>旧的</b>那一个：回新的等于告诉调用方"换过了"，
                 // 而下一轮它会拿一个库里不存在的段去查记忆与目标。
                 answer[0] = segmentOf(before.sessionId(), key.sessionKey());
             }

@@ -10,11 +10,11 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
- * MCP 工具的画像登记：**活视图**，每次问 provider「你现在有哪些工具」。
+ * MCP 工具的画像登记：<b>活视图</b>，每次问 provider「你现在有哪些工具」。
  *
  * <p>为什么不能拍快照：MCP server 是别的进程，启动那一刻它可能还没起来。启动时 DOWN、
  * 十几秒后重连成功是很常见的形状（{@code McpServerRetryTest} 就专测它）。快照的问题不是
- * "少登记了几个"，而是**重连成功之后整轮对话直接失败**：清单组装处查不到那些新工具的画像，
+ * "少登记了几个"，而是<b>重连成功之后整轮对话直接失败</b>：清单组装处查不到那些新工具的画像，
  * 抛的是 {@code 工具 X 没有声明能力画像}——一个外部 server 的迟到会把 agent 打挂，
  * 而启动日志里一切正常。
  *

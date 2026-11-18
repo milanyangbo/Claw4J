@@ -65,7 +65,7 @@ public class SubagentAutoConfiguration {
      * @param observationRegistry 观测登记表，没有就用 NOOP
      * @param meterRegistry 指标登记表，可为空
      * @param tierRegistries 各来源的档位登记表
-     * @param toolPolicy 工具档位策略
+     * @param toolPolicy 工具画像策略
      * @param authorizationAdvisor 子链上唯一的 Advisor
      * @param toolIndex 与父共用的工具检索索引
      * @param toolSearch 检索参数
@@ -125,7 +125,7 @@ public class SubagentAutoConfiguration {
      * @param toolCallbacks 单回调形态的工具
      * @param toolCallbackProviders provider 形态的工具
      * @param meterRegistry 指标登记表，可为空
-     * @param toolPolicy 工具档位策略
+     * @param toolPolicy 工具画像策略
      * @param tierRegistries 各来源的档位登记表
      * @return 子 Agent 的可用工具，已去掉委派工具自己
      */
@@ -156,7 +156,7 @@ public class SubagentAutoConfiguration {
      * @param toolCallbacks 单回调形态的工具
      * @param toolCallbackProviders provider 形态的工具
      * @param meterRegistry 指标登记表，可为空
-     * @param toolPolicy 工具档位策略
+     * @param toolPolicy 工具画像策略
      * @param tierRegistries 各来源的档位登记表
      * @param gate 审批门，可为 {@code null}
      * @param approvals 要人批的名单，不可为 {@code null}（没有就是空）
@@ -201,7 +201,7 @@ public class SubagentAutoConfiguration {
     /**
      * 委派工具的画像：只有 {@code coding}。
      *
-     * <p>子 Agent 是**再开一个能动手的执行体**，与 OpenClaw 的 {@code subagents} 同一条：
+     * <p>子 Agent 是<b>再开一个能动手的执行体</b>，与 OpenClaw 的 {@code subagents} 同一条：
      * 那个工具只在 {@code coding} 里。子 Agent 拿的是父筛过的那份清单（所以不会越权），
      * 但"这个部署允不允许自己派活"与"派出去之后能做什么"是两件事——前者就是这里的画像。
      *

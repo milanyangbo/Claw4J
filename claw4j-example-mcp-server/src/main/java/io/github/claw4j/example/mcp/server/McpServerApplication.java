@@ -22,7 +22,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   permission: { action: read }
  * }</pre>
  *
- * <p>启动顺序是**先起它、再起宿主**。反过来也能跑：宿主先起时这条连接记 DOWN，
+ * <p>启动顺序是<b>先起它、再起宿主</b>。反过来也能跑：宿主先起时这条连接记 DOWN，
  * 之后按 15 秒起、每次翻倍、封顶 10 分钟退避重连，起来之后不必重启宿主。
  * 这两种顺序在日志里都看得见，是测试手册里那一节的内容。
  */

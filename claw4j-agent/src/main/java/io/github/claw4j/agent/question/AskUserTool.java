@@ -21,7 +21,7 @@ import java.util.Map;
  * 把库里的 {@code AskUserQuestionTool} 接到本项目的提问登记表上。
  *
  * <p>为什么中间要垫一层：库的 {@code QuestionHandler} 是 {@code Map<String,String> handle(List<Question>)}，
- * 签名里**没有 {@code ToolContext}**。而"这段对话在哪、谁在问、哪一轮"恰好都在 {@code ToolContext} 里
+ * 签名里<b>没有 {@code ToolContext}</b>。而"这段对话在哪、谁在问、哪一轮"恰好都在 {@code ToolContext} 里
  * （{@link ContextKeys}），模型没有参数能改它们。于是这一层只干一件事：调用期间把这四样放进
  * {@link ThreadLocal}，handler 从那儿取，调完就清。库那一层不动——工具名、Schema、"一到四个问题"
  * 与"选项二到四个"的校验都还是它的。
@@ -97,7 +97,7 @@ final class AskUserTool {
     /**
      * 库的 handler：把问题交给登记表，等人答。
      *
-     * <p>返回的 map 是库要的形状——**按题目原文分组**、每题都要有键、值不能为 {@code null}
+     * <p>返回的 map 是库要的形状——<b>按题目原文分组</b>、每题都要有键、值不能为 {@code null}
      * （{@code AskUserQuestionTool#validateAnswers}）。没答上时给空串：库只校验形状，
      * 真正的结局由 {@link #render} 说。
      *

@@ -21,9 +21,9 @@ import java.util.Objects;
  * 字段，它交给 {@link DocumentJoiner} 的每个 query 只带一路结果，框架留的"多路"入口在 advisor
  * 这条路上用不到。融合仍走 {@link DocumentJoiner} 接口。
  *
- * <p>判据只剩一条：**这一轮有没有身份**。原来还问"这个身份能不能看 {@code doc} 这张伪表"，
+ * <p>判据只剩一条：<b>这一轮有没有身份</b>。原来还问"这个身份能不能看 {@code doc} 这张伪表"，
  * 那是业务数据授权，随权限登记表在 ADR-0030 里整块下线；知识库的细粒度 ACL
- * 属于第二步（记在 ADR 缺口表与 {@code guardrails.md}）。这是**行为放宽**，测试里显式立了一条
+ * 属于第二步（记在 ADR 缺口表与 {@code guardrails.md}）。这是<b>行为放宽</b>，测试里显式立了一条
  * （{@code RagTest#anyPrincipalCanRetrieve}），别让它悄悄变化。
  *
  * <p>没有身份就返回空，不抛：那是"说不清是谁"的一条请求，抛出去会让这一轮失败，

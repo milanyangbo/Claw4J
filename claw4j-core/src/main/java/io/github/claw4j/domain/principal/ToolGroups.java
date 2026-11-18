@@ -18,7 +18,7 @@ import java.util.Set;
  *       字面量。工具改名时要同步这里，漏改的表现是"组展开成一个不存在的名字"，进启动日志的
  *       {@code unused} 告警——刻意选的失败姿势，不是静默失效。</li>
  *   <li><b>动态组</b>（{@code plugins} / {@code openclaw}）：成员要到运行时才知道。
- *       {@code group:plugins} 是所有**外部来源**的工具（业务模块 + MCP），
+ *       {@code group:plugins} 是所有<b>外部来源</b>的工具（业务模块 + MCP），
  *       {@code group:openclaw} 是其余内置工具。两者互补，并集是全部工具。</li>
  * </ul>
  *

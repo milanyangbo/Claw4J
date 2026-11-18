@@ -65,7 +65,7 @@ public class HttpChannelAutoConfiguration {
     }
 
     /**
-     * 对话入口。{@code questions} 走 {@code ObjectProvider}：没有提问设施（`claw4j.tools.ask.enabled=false`）
+     * 对话入口。{@code questions} 走 {@code ObjectProvider}：没有提问设施（{@code claw4j.tools.ask.enabled=false}）
      * 时 {@code /questions} 与 {@code /answer} 仍在，只是永远"没人在等"——端点凭空消失比空表难查。
      *
      * @param channel 通道

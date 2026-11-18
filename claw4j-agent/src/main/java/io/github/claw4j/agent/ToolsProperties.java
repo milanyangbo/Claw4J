@@ -27,7 +27,7 @@ import java.util.Map;
  * {@code group:web} / {@code group:agents} / {@code group:plugins} / {@code group:openclaw}）。
  *
  * <p>按维度的那几层见 {@code ToolPolicyAssembler}：它们回答的是"这一轮谁在问、用的哪个模型"，
- * 每一层只能在上面的结果上继续收窄。**顺序有意义**，而顺序写在那个类里，不写在这里。
+ * 每一层只能在上面的结果上继续收窄。<b>顺序有意义</b>，而顺序写在那个类里，不写在这里。
  *
  * <p><b>键的形状</b>（yaml 里含 {@code :} 的键要加引号，否则解析成嵌套映射）：
  * <pre>{@code
@@ -117,7 +117,7 @@ public record ToolsProperties(ToolTier profile,
     /**
      * 子 Agent 那一层：配置的白/黑名单。
      *
-     * <p>角色带来的固定拒绝清单**不在这里**——它是内建的一条规则（见
+     * <p>角色带来的固定拒绝清单<b>不在这里</b>——它是内建的一条规则（见
      * {@code ToolPolicyAssembler}），配置只负责在上面加自己的收窄。
      *
      * @param allow 白名单；空表示不加这一层

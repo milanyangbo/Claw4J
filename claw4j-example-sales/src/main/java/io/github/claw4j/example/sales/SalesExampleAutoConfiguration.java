@@ -103,13 +103,13 @@ public class SalesExampleAutoConfiguration {
     }
 
     /**
-     * 画像：{@code {CODING, MESSAGING}}，并按**外部工具**登记（ADR-0030 裁决一）。
+     * 画像：{@code {CODING, MESSAGING}}，并按<b>外部工具</b>登记（ADR-0030 裁决一）。
      *
      * <p>业务工具与 OpenClaw 的 {@code bundle-mcp} 同等待遇：{@code coding} 与 {@code messaging}
      * 都含它、{@code minimal} 不含。查数既不是"碰机器"也不是"自主行动"，所以它不该被关在
      * coding 里；但它也不是地基，所以 minimal 看不见它。
      *
-     * <p>登记成 {@code external} 而不是 {@code sameFor}：`group:plugins` 要靠它把业务工具一次点名，
+     * <p>登记成 {@code external} 而不是 {@code sameFor}：{@code group:plugins} 要靠它把业务工具一次点名，
      * 否则 {@code deny: [group:plugins]} 关不掉业务工具，而"装了模块就有、要关得逐个写名字"
      * 正是这套机制要避免的事。
      *

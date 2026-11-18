@@ -36,7 +36,7 @@ public class McpToolAutoConfiguration {
     /**
      * 画像：{@code {CODING, MESSAGING}}，与业务模块同一档（ADR-0030 裁决一）。
      *
-     * <p>MCP 工具是**外部来源**：它可能查数据、可能调远端接口，但跑在别的进程里，不碰本机。
+     * <p>MCP 工具是<b>外部来源</b>：它可能查数据、可能调远端接口，但跑在别的进程里，不碰本机。
      * 所以它在 {@code coding} 与 {@code messaging} 都有、{@code minimal} 没有——这与 OpenClaw 把
      * {@code bundle-mcp} 同时放进那两个画像一致。旧的 {@code FULL} 是错的：那等于"只有把整个
      * 部署放开才看得见 MCP"，一个只想查数的客服型部署因此连只读 MCP 工具都拿不到。
@@ -45,7 +45,7 @@ public class McpToolAutoConfiguration {
      * 该不该出现"。拍快照的话，恢复之后出现的工具会因为查不到画像让整份清单收集失败——
      * 一个外部 server 的重启会把整轮对话打掉。
      *
-     * <p>实现 {@link ToolTierRegistry#externalToolNames()} 而不只是登记画像：`group:plugins`
+     * <p>实现 {@link ToolTierRegistry#externalToolNames()} 而不只是登记画像：{@code group:plugins}
      * 要靠它把"MCP 工具"一次点名，否则 {@code deny: [group:plugins]} 关不掉它们。
      */
     @Bean

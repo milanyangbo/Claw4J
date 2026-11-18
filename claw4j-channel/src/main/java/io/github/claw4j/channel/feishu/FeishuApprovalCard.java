@@ -126,13 +126,13 @@ public final class FeishuApprovalCard {
 
     private static Map<String, Object> field(String label, String value, boolean shortField) {
         return Map.of("is_short", shortField,
-                "text", Map.of("tag", "lark_md", "content", "**" + label + "**\n" + value));
+                "text", Map.of("tag", "lark_md", "content", "<b>" + label + "</b>\n" + value));
     }
 
     private static String bodyOf(ApprovalDecider.Pending card) {
         String id = "审批编号 `" + card.id() + "`。";
         if (card.expired()) {
-            return id + "它已经过了有效期，**按钮不再作数**——让提这个请求的人重新发起一次。";
+            return id + "它已经过了有效期，<b>按钮不再作数</b>——让提这个请求的人重新发起一次。";
         }
         return switch (card.status()) {
             case "granted" -> id + "这件事已经批过了，会（或者已经）接着往下做。";

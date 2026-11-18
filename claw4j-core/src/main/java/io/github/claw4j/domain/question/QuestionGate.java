@@ -8,10 +8,10 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 交互提问：模型在**同一轮里**问人一句，等人答，拿到答案再往下走（照 OpenClaw 的 {@code ask_user}）。
+ * 交互提问：模型在<b>同一轮里</b>问人一句，等人答，拿到答案再往下走（照 OpenClaw 的 {@code ask_user}）。
  *
  * <p>它与审批是两件事，别混。审批是「这件事太重，要人先批」，本项目照 ADR-0027 走「登记 + 唤醒会话」，
- * 不挂起运行；提问是「这个决定只有人能下」，OpenClaw 自己就是运行内等待，而且写明用**进程内**生命周期
+ * 不挂起运行；提问是「这个决定只有人能下」，OpenClaw 自己就是运行内等待，而且写明用<b>进程内</b>生命周期
  * 而不是持久账本（{@code docs/tools/ask-user.md}「The wait is attributed to the original run … uses the
  * existing process-local question lifecycle, not a durable recovery ledger」）。所以这里会阻塞、会超时、
  * 重启即丢——这三条都是有意的。
@@ -44,7 +44,7 @@ public interface QuestionGate {
      * 有人在某段对话里说了一句话：这是不是在回答那个待答问题？
      *
      * <p>不阻塞。回答的人必须与提问的人权限一致（OpenClaw："when your current permissions match the
-     * creator's"），不一致时**不当答案**、返回 {@code false}，那条消息照常走一轮——
+     * creator's"），不一致时<b>不当答案</b>、返回 {@code false}，那条消息照常走一轮——
      * 让别人的一句话把问题答掉，等于绕过提问人手里的那个决定。
      *
      * @param channel 通道标识
@@ -143,7 +143,7 @@ public interface QuestionGate {
      * 一次提问的结局。
      *
      * @param status 三种结局之一
-     * @param answers 按**题目原文**分组的答案；非 {@link Status#ANSWERED} 时为空表
+     * @param answers 按<b>题目原文</b>分组的答案；非 {@link Status#ANSWERED} 时为空表
      */
     record Outcome(Status status, Map<String, List<String>> answers) {
 

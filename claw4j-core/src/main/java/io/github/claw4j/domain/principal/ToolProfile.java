@@ -219,7 +219,7 @@ public record ToolProfile(ToolTier profile, Set<String> allow, Set<String> deny,
      * @param byTier       因为画像里没有它被挡的
      * @param byAllow      因为不在 allow 白名单里被挡的
      * @param byDeny       因为 deny 被排除的
-     * @param widenBlocked 写进了 allow、却因为画像里没有它而不生效的。**要放宽得用 alsoAllow**，
+     * @param widenBlocked 写进了 allow、却因为画像里没有它而不生效的。<b>要放宽得用 alsoAllow</b>，
      *                     这份清单存在的唯一目的就是把那句话打进启动日志
      * @param unused       配置里写了、但清单里不存在的名字。不一定错：部署裁剪掉某个模块时，针对它
      *                     的 deny 条目自然落空。但拼错也长这样，所以日志要把它列出来

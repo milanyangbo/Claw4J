@@ -198,7 +198,7 @@ public class RagAutoConfiguration {
      *
      * <p>取不到 key 不等于启动失败：重排是排序优化，不是检索的前提。
      *
-     * <p>JSON 编解码器在这里自己造，**不从容器里要**：Spring Boot 4 只为 Jackson 3
+     * <p>JSON 编解码器在这里自己造，<b>不从容器里要</b>：Spring Boot 4 只为 Jackson 3
      * （{@code tools.jackson}）提供 bean，Jackson 2 的 {@link ObjectMapper} 已经没有 bean 了
      * （它只在 classpath 上，随 spring-ai 传递进来）。写成 bean 方法参数的话，重排开着的部署
      * 一律启动失败并报「required a bean of type ObjectMapper that could not be found」。

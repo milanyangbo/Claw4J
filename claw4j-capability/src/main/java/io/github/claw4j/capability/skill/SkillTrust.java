@@ -29,8 +29,8 @@ import java.util.stream.Stream;
  *   <li>审完之后有没有被改：加载用<b>内存里那一份</b>，不再读盘（{@code AgentSkills} 逐份 addSkill）。</li>
  * </ul>
  *
- * <p>判据与当年生成器那份审批闸（`ReviewGate`，随生成器一起删掉）一致（`status=approved` 字面量、`by` 必填、
- * `sha256` 绑定版本），这套做法与生成器当年的审批标记是同一条口径：同一件事不该有两套标准。
+ * <p>判据与当年生成器那份审批闸（{@code ReviewGate}，随生成器一起删掉）一致（{@code status=approved} 字面量、{@code by} 必填、
+ * {@code sha256} 绑定版本），这套做法与生成器当年的审批标记是同一条口径：同一件事不该有两套标准。
  * （生成器整层 2026-11-18 删掉了，口径留在这里。）
  *
  * <p>摘要覆盖<b>目录里的所有文件</b>，不只 {@code SKILL.md}：只顾正文，等于让"改脚本不改正文"绕过去。

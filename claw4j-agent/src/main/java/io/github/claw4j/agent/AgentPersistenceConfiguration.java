@@ -349,7 +349,7 @@ public class AgentPersistenceConfiguration {
     /**
      * 三个定时任务工具的画像：只有 {@code coding}。
      *
-     * <p>定时任务是**自主行动**——到点没人在场，它替这个部署做一件事。OpenClaw 把 {@code cron}
+     * <p>定时任务是<b>自主行动</b>——到点没人在场，它替这个部署做一件事。OpenClaw 把 {@code cron}
      * 只放进 {@code coding}，我们照抄。旧值 {@code MESSAGING} 会坏掉两件事：一是阶梯语义下它
      * 顺带进了 coding（看起来对，其实是巧合）；二是改成集合之后，客服型部署会拿到"到点自己干活"
      * 的能力，而那正是 {@code messaging} 承诺不碰的东西。

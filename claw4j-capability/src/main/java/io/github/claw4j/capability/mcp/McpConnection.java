@@ -108,7 +108,7 @@ public final class McpConnection implements AutoCloseable {
     /**
      * 这个 server 的哪些工具存在（{@code tool-filter}）。
      *
-     * <p>过滤在 {@link McpToolProvider} 装上工具清单那一刻做，所以**每次重连都会重新筛一遍**：
+     * <p>过滤在 {@link McpToolProvider} 装上工具清单那一刻做，所以<b>每次重连都会重新筛一遍</b>：
      * server 升级后多导出的工具，只有配置允许的才进得来，而不是"第一次列出来的那份快照"。
      */
     public ToolFilter toolFilter() {

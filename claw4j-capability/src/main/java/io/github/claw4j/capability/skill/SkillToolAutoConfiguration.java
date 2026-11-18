@@ -49,7 +49,7 @@ public class SkillToolAutoConfiguration {
      * 画像：只有 {@code coding}。
      *
      * <p>技能读的是本地 {@code SKILL.md}，看起来"不执行代码、不出网"，但它有两个性质让 OpenClaw
-     * 把 {@code skill_workshop} 只放进 {@code coding}：一是正文**当指令读进上下文**，等于临时扩权；
+     * 把 {@code skill_workshop} 只放进 {@code coding}：一是正文<b>当指令读进上下文</b>，等于临时扩权；
      * 二是路径落在部署的文件系统上。前者是理由的主干——{@code messaging} 的承诺是碰不到机器，
      * 而"读一个部署自己写的文件"就是碰机器。
      */

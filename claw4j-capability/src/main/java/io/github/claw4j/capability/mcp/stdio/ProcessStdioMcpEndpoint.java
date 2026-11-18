@@ -36,7 +36,7 @@ import java.util.Optional;
  * 前者是 {@code env} / {@code inherit-env} 给的；后者是因为 SDK 的 {@link StdioClientTransport}
  * 用 {@code new ProcessBuilder()} 起进程，再把这份表 {@code putAll} 上去——它没有清空父环境
  * （{@code mcp-core 2.1.0} {@code StdioClientTransport.java:145-148}）。所以"给了什么看得见"
- * 这句话只对前者成立，**这里不承诺隔离**。
+ * 这句话只对前者成立，<b>这里不承诺隔离</b>。
  *
  * <p>真要隔离，得继承 {@code StdioClientTransport} 覆盖 {@code getProcessBuilder()} 里
  * {@code environment().clear()}（八行，同仓 {@code capability/process/LocalProcessRunner.java:72-75}

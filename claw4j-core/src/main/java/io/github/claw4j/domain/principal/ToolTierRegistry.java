@@ -91,7 +91,7 @@ public interface ToolTierRegistry {
     }
 
     /**
-     * 一组工具属于**全部**画像：地基工具走这个。
+     * 一组工具属于<b>全部</b>画像：地基工具走这个。
      *
      * <p>它等价于 {@code sameFor(names, ToolTier.all())}，单列一个名字是因为"这一组在哪个画像里
      * 都不该少"是登记时最常见的一句话，写成变长参数要点四次反而看不出意图。
@@ -107,7 +107,7 @@ public interface ToolTierRegistry {
     }
 
     /**
-     * 一组**外部**工具同属这几个画像，同时登记进 {@link #externalToolNames()}。
+     * 一组<b>外部</b>工具同属这几个画像，同时登记进 {@link #externalToolNames()}。
      *
      * <p>业务模块（{@code querySales}）与 MCP 工具走这个工厂：它们既要知道自己在哪几个画像里，
      * 也要能被 {@code group:plugins} 一次点名。两件事必须同源，否则"档里看得见、

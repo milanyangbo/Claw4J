@@ -232,7 +232,7 @@ class ToolProfileTest {
     @DisplayName("集合语义的表达力：一个工具可以\"在两头、不在中间\"，阶梯表达不了")
     void aToolCanLiveInBothEndsButNotTheMiddle() {
         // 生产数据里 messaging 碰巧是 coding 的子集，所以用一份专门的登记表验表达力。
-        // 这正是从阶梯改集合的**唯一**理由：外部工具要在 coding 与 messaging 都出现、
+        // 这正是从阶梯改集合的<b>唯一</b>理由：外部工具要在 coding 与 messaging 都出现、
         // 在 minimal 不出现；阶梯下"MESSAGING"标签会顺带进 coding，那只是巧合，不是声明。
         List<ToolTierRegistry> bothEnds = List.of(
                 ToolTierRegistry.allProfilesFor(Set.of("toolSearchTool")),

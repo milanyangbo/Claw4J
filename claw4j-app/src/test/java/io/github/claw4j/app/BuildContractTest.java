@@ -80,8 +80,8 @@ class BuildContractTest {
      * <p>脚本层的 argv 执行器（{@code LocalProcessRunner}）随脚本层一起删了——脚本退化成技能，
      * 由模型用 {@code Bash} 去跑；{@code exec} 的宿主后端是库的 {@code LocalExecBackend}、
      * 容器后端是库的 {@code DockerCliExecBackend}，两者都在 jar 里，这条规则看不见也不需要看见。
-     * 想再开一个例外之前，先读 `docs/reviews/2026-11-18-open-source-inventory.md` 与
-     * `.scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md`。
+     * 想再开一个例外之前，先读 {@code docs/reviews/2026-11-18-open-source-inventory.md} 与
+     * {@code .scratch/oss-alignment/issues/02-script-packages-degrade-to-skills.md}。
      */
     /**
      * 用 {@code callMethodWhere} 而不是 {@code callMethod(Runtime.class, "exec")}：
@@ -138,7 +138,7 @@ class BuildContractTest {
      * 会命令解释器的写法。shell 会把参数里的分号当成第二条命令，于是传一个参数变成了执行一段脚本。
      * 注释里也不许出现：扫的是整份文件，区分代码与注释要写解析器，那份代价比注释换个说法贵得多。
      *
-     * <p>唯一的豁免文件**不拼命令行**：它只是把解释器名字交给库的 builder
+     * <p>唯一的豁免文件<b>不拼命令行</b>：它只是把解释器名字交给库的 builder
      * （{@code LocalExecBackend.builder().shellCommand("/bin/sh", "-c")}），起进程发生在 jar 里。
      * （2026-11-18 之前这里有两个名额：{@code ShellCommandRunner} 与 {@code LocalProcessRunner}
      * 随后被删；生成器的自测沙箱也退出去了——整层删了。）
@@ -490,7 +490,7 @@ class BuildContractTest {
     }
 
     /**
-     * 出站暴露是**删掉的功能**，不是关着的功能（票 08 / ADR-0030 裁决二）。
+     * 出站暴露是<b>删掉的功能</b>，不是关着的功能（票 08 / ADR-0030 裁决二）。
      *
      * <p>三条一起验，因为它们会以三种不同的方式回来：类被加回来（有人照着旧文档恢复实现）、
      * 配置段被加回来（那份 yml 是最容易被复制粘贴的东西）、profile 文件被加回来（它只是资源，

@@ -56,7 +56,7 @@ public class ConfiguredMcpServersAutoConfiguration {
      * 画像：{@code {CODING, MESSAGING}} 并按外部工具登记，与 {@link McpToolAutoConfiguration}
      * 那条同一个判断（理由写在 {@link LiveMcpTiers}）。
      *
-     * <p>**必须是活视图**：配置里的 server 启动那一刻可能连不上（本机很常见），重连之后它的
+     * <p><b>必须是活视图</b>：配置里的 server 启动那一刻可能连不上（本机很常见），重连之后它的
      * 工具才出现。拍快照的话，那些工具在清单组装处查不到画像，整轮对话直接失败。
      */
     @Bean

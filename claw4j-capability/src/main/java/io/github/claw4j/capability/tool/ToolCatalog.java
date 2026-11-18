@@ -118,7 +118,7 @@ public final class ToolCatalog implements ToolCallbackProvider {
     /**
      * 这一轮该给模型看的清单。
      *
-     * <p>上下文决定"按模型""按发送者""子 Agent 角色"那几层生不生效，所以它必须由**每轮的调用方**
+     * <p>上下文决定"按模型""按发送者""子 Agent 角色"那几层生不生效，所以它必须由<b>每轮的调用方</b>
      * 传进来，而不是在这里从某个静态状态里读——后者在流式路径上会读错线程。
      *
      * @param context 本轮上下文；{@link ToolPolicyContext#anonymous()} 表示只有全局层
