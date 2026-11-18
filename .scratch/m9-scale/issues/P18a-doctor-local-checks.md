@@ -37,7 +37,7 @@
 
 **Type:** task
 
-**Status:** resolved（2026-11-18）
+**Status:** withdrawn（2026-11-18 二裁：看不出用途，代码删掉）
 
 **裁决来源：** ADR-0020 §M9 · P18（"照 OpenClaw `doctor` 的形状：检查 key 有效性、迁移是否最新、
 外部 server 是否连得上、目录是否存在"）。四项里"key 有效"与"外部 server"要出去，拆到 P18b；
@@ -122,3 +122,24 @@
   从"只读诊断"变成"会改东西的命令"，部署脚本里就不敢随便跑了。
 - **迁移版本只比"最大值"**：中间缺号（比如 V7 没跑、V8 跑了）不单独报——Flyway 自己会拦，
   doctor 不重复实现它的校验。
+
+## Withdrawn（2026-11-18 晚，第二次裁决）
+
+**代码删掉了。** 用户的原话是"不知道实现这个有什么用？如果没有用，就去掉这个分支的代码"。
+
+判据（也是我该在开工前就答的题）：**它换来了什么，代价是什么。**
+
+- 三项检查里两项（目录、凭据句柄）在启动期本来就 fail-fast，`--doctor` 多出来的只有
+  **"一次报全"**——一次看到全部问题，而不是修一个再撞下一个。
+- 第三项（迁移版本）只在 `flyway.enabled=false` 的部署里才有意义，而这类部署今天不存在。
+- 代价：主入口多一条分支（`Claw4jApplication` 里两种起法）、700 行代码与测试、
+  一份必须跟着配置走的检查清单——配置删了它就得跟着删（这次删 `claw4j.tools.sandbox.*`
+  时 `ConfigSanityCheck` 就是这个下场）。
+
+删掉的：`claw4j-app/.../app/doctor/` 整包（`Doctor` / `DoctorCheck` / `DoctorReport` /
+`DirectoryCheck` / `MigrationCheck` / `SecretHandleCheck` / `DoctorConfiguration`）、
+`DoctorLocalChecksTest`（9 条）、`Claw4jApplication` 的 `--doctor` 分支、README 里那段体检说明、
+CONTRIBUTING 验收表里那一行。
+
+**重开条件**：真的有一个"起不来、又没法看日志"的部署环境要拿它排障。到那时照 OpenClaw `doctor`
+的形状做（它检查 key 有效性 / 迁移 / 外部 server 连通性），别只做这半套。
