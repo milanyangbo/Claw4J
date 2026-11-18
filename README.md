@@ -22,7 +22,6 @@
 - **权限在模型之前** —— 角色到"可见表 × 可执行动作"的映射；越权与套提示词的消息不花 token、不进历史
 - **知识库检索带出处** —— 混合检索（向量 + 全文）加 `qwen3-rerank` 重排，每段都带「文档 + 第几段」
 - **一轮一个 trace** —— 配一个 OTLP 端点就导出整条链路，根 span 是 run，与审计靠 `claw4j.run.id` 对上
-- **也能反过来当 MCP server** —— 点名几个工具，Claude Code 这类客户端就能像用别的工具一样调它们
 
 ## 快速开始
 
@@ -100,20 +99,6 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
   记忆与额度从零开始。
 - **`claw4j.tools.sessions.visibility` 默认是 `all`**，也就是 `recall_session` 能召回别的会话、
   包括其他用户的。多用户、角色不同的部署必须显式配成 `self`——这是它的默认值，不是 bug。
-
-### 当 MCP server 用
-
-同一个 jar 换个 profile，就从"服务"变成"工具"：
-
-```bash
-java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
-     --spring.profiles.active=mcp-stdio --claw4j.mcp.server.expose=querySales
-```
-
-客户端的 `.mcp.json` 就是一条 `command`（把上面那串原样抄进 `args`）。三点要知道：
-交出去的只能是模型能用的那一份（档位与 allow / deny 照常生效，需要审批或动作为写的一律启动失败）；
-外部客户端是**另一个身份**，能读哪些表由 `claw4j.mcp.server.tables` 决定，与角色表无关；
-它**不落审计**、不扣 run 预算，只留一行日志。
 
 ## 扩展
 

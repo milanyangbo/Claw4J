@@ -10,7 +10,7 @@
 #
 # 用法：
 #   ./scripts/eval.sh                       # 全跑
-#   ./scripts/eval.sh sales knowledge       # 只跑某几类（sales / knowledge / tools / authz / memory）
+#   ./scripts/eval.sh sales knowledge       # 只跑某几类（sales / knowledge / tools / memory）
 #   ./scripts/eval.sh --case sales-weekly-east
 #
 # 退出码：0 = 全部用例判定通过；非 0 = 有用例没过、或者缺 key、或者构建失败。

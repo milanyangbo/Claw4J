@@ -258,10 +258,12 @@ OpenClaw 的七条企业属性里我们明确差的一条：**凭据有主**。�
 > （`0.7 × 0.43 ≈ 0.3`）。0.7/0.3 的用途是"编号类查询别被挤掉**召回**"，不是"让字面命中排第一"
 > ——召回不变（那些块仍在候选里），只是名次靠后。真要让它们靠前，改的是权重常量，不是别处。
 
-**P11 · 反向 MCP server（把自己暴露出去）**
+**P11 · 反向 MCP server（已下线）**
 
-`spring-ai-starter-mcp-server` 本地已有 2.0.2 可直接用。补齐的是 OpenClaw `mcp serve` 那种反向用法：
-让 Claude Code / Codex 把我们的能力当 MCP 工具用。
+原来补的是 OpenClaw `mcp serve` 那种反向用法：让 Claude Code / Codex 把我们的能力当 MCP 工具用。
+**2026-11-18 由 [ADR-0030](0030-permission-alignment-with-openclaw.md) 整块下线**（票 08）：
+那层"交哪几个"的挑选与入站的三层过滤争同一个问题，而它的 `mcp serve` 暴露的是会话通道、
+不是 agent 工具，没有对位可抄。**入站那一侧不受影响**——连别人的 MCP server 照常可用。
 
 **P12 / P13 · 钉钉 / Slack 通道**
 

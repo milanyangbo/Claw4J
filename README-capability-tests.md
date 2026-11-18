@@ -54,18 +54,18 @@ Redis 客户端 + `SemanticCache` + `SemanticCacheAdvisor`）。验能力时它�
 
 ### 发一轮对话：`curl` 原文
 
-后面每一节都是这种四行命令，直接复制就能跑。三个 `-H` 分别是身份、角色、请求体：
+后面每一节都是这种四行命令，直接复制就能跑。两个 `-H` 分别是身份与请求体：
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: t1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: t1' \
   -d '{"text":"上周华东区的成交额是多少"}'
 ```
 
 回答在返回 JSON 的 `text` 字段里。`X-Claw4j-User` 就是"我是谁"，**`t1` 只是个代号**：
 每节、每次复测都换一个（`t2`、`m1`…），否则模型会"记得"上一轮失败而拒绝重试。
-`X-Claw4j-Role` 取 `admin` / `read-only` / `guest`，默认三个角色见 `application.yml`。
+**它必须出现在 `claw4j.channel.http.users` 白名单里**：那份名单默认空，空的意思是谁都不能进。
 
 ### 查工具被执行了几次
 
@@ -109,13 +109,13 @@ docker exec -i claw4j-postgres psql -U claw4j -d claw4j \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: t1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: t1' \
   -d '{"text":"上周华东区的成交额是多少"}'
   
   
   curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: t1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: t1' \
   -d '{"text":"三周前华东区的成交额是多少"}'
 ```
 
@@ -143,14 +143,15 @@ curl -s --noproxy '*' \
   ```bash
   curl -s --noproxy '*' -X POST localhost:8080/api/chat \
     -H 'Content-Type: application/json' \
-    -H 'X-Claw4j-User: t4' -H 'X-Claw4j-Role: admin' \
+    -H 'X-Claw4j-User: t4' \
     -d '{"text":"你能查销售数据吗"}'
   ```
   再看 `tool:calls&tag=tool:toolSearchTool&tag=outcome:ok` 有没有涨。零计数 + 回答里却说
   "我查了" = 模型在编。
 - 计数涨了但数字错 → 问题在工具/口径（SQL、时区、`CANCELLED` 有没有排），不在装配。
-- 你新加的工具**连清单都没进**：`@Bean` 的三个件（工具、权限、档位）漏一个就跑不动，
-  档位漏了是**启动失败**，权限漏了是**每次都被拒**（`outcome:denied` 会涨）。
+- 你新加的工具**连清单都没进**：`@Bean` 的两个件（工具、档位）漏一个就不对，档位漏了是
+  **启动失败**，而工具的可见性由清单决定——它不在清单里，模型根本调不到，回答里会出现
+  "我没有这个工具"而不是"没有权限"。
 
 ### 默认就有的那几个：Read / Grep / Glob / TodoWrite / WebFetch
 
@@ -161,19 +162,19 @@ curl -s --noproxy '*' \
 # Glob：找到真实存在的文件
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: d1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: d1' \
   -d '{"text":"用 Glob 找 examples 目录下的 .md，path 传 examples，把返回原样贴出来"}'
 
 # Read：读出真实内容（路径要是绝对路径）
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: d2' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: d2' \
   -d '{"text":"用 Read 读 /绝对路径/examples/README.md 前 6 行，原文贴出来"}'
 
 # WebFetch：抓一个确定的网页
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: d3' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: d3' \
   -d '{"text":"用 WebFetch 抓 https://example.com，prompt 用「这一页在说什么」"}'
 ```
 
@@ -188,6 +189,18 @@ curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=too
 `CLAW4J_FILES_WRITE_ENABLED=true` 重启一次，启动日志会写「Write / Edit 已开」。
 
 **`WebSearch` 要 key**：没配 `BRAVE_API_KEY` 时它根本不装配（启动日志同一行里写着「WebSearch 未配 key，未装」）。
+
+**被 `tool-filter` 排掉的工具不在清单里**：在 `java-http` 那段下面加
+
+```yaml
+          tool-filter:
+            exclude: [simulateSlowCall]
+```
+
+重启之后启动日志从 `UP(工具 3 个)` 变成 `UP(工具 2 个)`。再问一句 `用 simulateSlowCall 睡 100 毫秒`，
+模型会说**自己没有这个能力**——注意这不是"被拒"：被拒只会发生在要人批的工具上（审批拒了那句
+才是"没有权限"），而这里那个工具根本没出现在它手上。写成 `include: [runtimeSnapshot, cronNext]` 结果一样；`"runtime*"` 这类通配
+按**整串**匹配。
 
 **不对时先看哪里**：启动日志那行「文件工具的边界目录：…」——它决定了模型能看哪里。
 读到「Path is outside the allowed directories」就是路径不在那个目录下（默认是**启动时**的目录，
@@ -204,7 +217,7 @@ curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=too
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: td1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: td1' \
   -d '{"text":"做三件事：1) 读 examples/README.md 前 5 行；2) 用 Glob 列 examples/subagents 下的 .md；3) 一句话总结。做之前先写待办清单，每完成一步更新状态。"}'
 ```
 
@@ -252,19 +265,19 @@ Total tool call limit (6) exceeded for this turn. No further tool calls are allo
 # ① 内网/本机地址要拒（这一条以前是通的，实测能抓 127.0.0.1）
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: s1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: s1' \
   -d '{"text":"用 WebFetch 抓 http://127.0.0.1:8123/ "}'
 
 # ② 公网照常通
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: s2' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: s2' \
   -d '{"text":"用 WebFetch 抓 https://example.com ，一句话说这页讲什么"}'
 
 # ③ 出站剥离：让它"把工具返回原样贴出来"
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: s3' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: s3' \
   -d '{"text":"用 WebFetch 抓 https://example.com ，把返回的原始字符串原样贴出来，包括任何标记"}'
 ```
 
@@ -286,17 +299,17 @@ HTTP 没有推送面，所以客户端要问两次——一次是挂着的那一
 # 终端 A：这一句会挂住，直到你回答（或超时）
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: q1' \
   -d '{"text":"用 AskUserQuestionTool 问我：部署到生产还是预发？两个选项，推荐预发。等我答完再往下说"}'
 
 # 终端 B：先看它问了什么（没在等时是空表）
 curl -s --noproxy '*' 'localhost:8080/api/chat/questions' \
-  -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Role: admin'
+  -H 'X-Claw4j-User: q1'
 
 # 再回答。204 = 那一轮收下了；409 = 这段对话没有在等答案的问题
 curl -s --noproxy '*' -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/api/chat/answer \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: q1' \
   -d '{"text":"2"}'
 ```
 
@@ -322,14 +335,14 @@ curl -s --noproxy '*' -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/ap
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: m1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: m1' \
   -d '{"text":"用 demo_now 报一次 pid 与时间戳，只给数字"}'
 
 sleep 2
 
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: m2' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: m2' \
   -d '{"text":"再用 demo_now 报一次 pid 与时间戳，只给数字"}'
 ```
 
@@ -351,7 +364,7 @@ curl -s --noproxy '*' \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: m3' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: m3' \
   -d '{"text":"用 demo_echo 把这句话原样带回来：跨进程往返不丢字-42"}'
 ```
 
@@ -373,7 +386,7 @@ java -jar claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPS
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: m4' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: m4' \
   -d '{"text":"用 runtimeSnapshot 报一下 pid、启动时刻与已处理调用数"}'
 ```
 
@@ -419,7 +432,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: s1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: s1' \
   -d '{"text":"用 summarize 处理 sample.md，把工具返回的原文原样贴给我，不要总结、不要改写"}'
 ```
 
@@ -450,8 +463,9 @@ curl -s --noproxy '*' \
   把文件放进包目录、用包内相对路径。
 - `weather-forecast` 要出网：本机 SSL 不通时 `outcome:error` 会涨，
   说明**脚本跑起来了**、缺的是网络，不是装配。
-- 权限：动作是 `run_script`，默认只有 `admin` 有。把 `-H 'X-Claw4j-Role: admin'` 换成
-  `read-only` 再问一次会被拒——这时 `outcome:denied` 涨、`ok` 不涨。
+- 看不见脚本工具：脚本包属于 `coding` 档，`MESSAGING` 档的部署清单里根本没有 `run_script`。
+  要验"看不见"，把档位调低再看清单——**不是"换个人然后被拒"**：执行前的鉴权那一层在
+  ADR-0030 里已经整块删掉，今天没有"调了才被拒"这回事。
 
 ---
 
@@ -470,7 +484,7 @@ curl -s --noproxy '*' \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: k1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: k1' \
   -d '{"text":"按 weekly-sales 的口径，给我上周各区成交额"}'
 ```
 
@@ -510,12 +524,12 @@ curl -s --noproxy '*' \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: a1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: a1' \
   -d '{"text":"派 capacity-triage 看一下这个服务的容量紧不紧"}'
 
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: a2' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: a2' \
   -d '{"text":"派 weekly-digest 写一份上周的周报"}'
 ```
 
@@ -566,7 +580,7 @@ curl -s --noproxy '*' \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: p1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: p1' \
   -d '{"text":"你能跑脚本吗？帮我跑个脚本算一下上周成交额"}'
 ```
 
@@ -591,7 +605,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: r1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: r1' \
   -d '{"text":"东西买了能退吗？华东和华南的期限分别是多少"}'
 ```
 
@@ -603,7 +617,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: r2' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: r2' \
   -d '{"text":"SKU-2024 这个商品现在还剩多少库存"}'
 ```
 
@@ -636,35 +650,31 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: c1' -H 'X-Claw4j-Role: admin' \
+  -H 'X-Claw4j-User: c1' \
   -d '{"text":"你好"}'
 ```
 
-**HTTP 通道 · 表级拒**（把角色换成 `guest`）：
+**HTTP 通道 · 不在白名单里的人被挡在门外**（把用户名换成名单外的一个）：
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-Claw4j-User: c2' -H 'X-Claw4j-Role: guest' \
+  -H 'X-Claw4j-User: nobody' \
   -d '{"text":"上周华东成交额是多少"}'
 ```
 
-回答应当是一句拒绝：
+回答是 `401` 加一句点名的话，`claw4j.tool.calls` 一次都不涨（模型没被调用）：
 
 ```
-没有权限：角色 guest 不允许访问表 customer、order_item、sales_order（工具 querySales）
+{"error":"用户不在 claw4j.channel.http.users 白名单里：nobody。…"}
 ```
 
-判据是**回答是这句拒绝**、并且下面这个查询 `denied` 涨、`ok` 不涨：
+判据是**状态码 401 + 工具计数没动**。
 
-```bash
-curl -s --noproxy '*' \
-  'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:querySales&tag=outcome:denied'
-```
-
-别用 `read-only` 验"被拒"——它的 `tables` 就是 `["*"]`，能正常查到数（实测 128400）；
-默认三个角色里"看不到业务表"的是 `guest`（它只有 `region`）。
-而 `read-only` 拒的是**动作**层（`run_script`），见 §3 最后一条。
+原本这里验的是"换成 `guest` 就被表级拒"。那条验法随 ADR-0030 整块作废：
+"被拒"现在只剩两处落点——**工具不在清单里**（模型看不见，回答里不会出现"我没有权限"这种话术），
+或者**要人批的工具被拒**（`outcome:denied` 才会涨）。业务数据范围（"这个人能读哪几张表"）
+今天没有判定，别把"能查到数"当成越权。
 
 **IM 通道（要自己的凭据）**：发一条消息应收到回答；再让平台**重投同一条事件**
 （钉钉 `msgId`、Slack `event_id`），回答**只出现一次**——幂等在 `channel.kernel` 里，
@@ -675,8 +685,8 @@ HTTP 通道**没有事件 id**，所以"重复事件"这条验不了它：往它
 
 **不对时先看哪里**：
 
-- 没人能提问但通道连上了：角色表白名单里没有这个人（`claw4j.channel.*.roles`），
-  日志里会有带 `sender=` 的 WARN。
+- 没人能提问但通道连上了：准入白名单里没有这个人（`claw4j.channel.http.users` /
+  `claw4j.channel.<通道>.users`），日志里会有带 `sender=` 的 WARN。默认空 = 谁都不能。
 - 重复投递答了两次：看事件 id 有没有被传进 `InboundEvent`；`channel.kernel` 只在有 id 时去重。
 
 ---
@@ -694,4 +704,17 @@ HTTP 通道**没有事件 id**，所以"重复事件"这条验不了它：往它
 | 子 Agent | 派 `weekly-digest` 写上周周报（§5） | 三区 + 185900 + `Task ok` 计数 | 白名单工具缺失 → **首次委派**才失败 |
 | 人设 | 看启动日志（§6） | `agent 是 sales…档位 MESSAGING（来自 人设文件的 tier）` | 多份没写 `default` → 启动失败 |
 | 知识库 | 能退吗 / `SKU-2024` 还剩多少（§7） | 7 天 / 5 天带出处；后者说查不到 | 不看重排那行 DEBUG 就不知道它有没有生效 |
-| 通道 | 你好 / 用 `guest` 问成交额（§8） | 有回答；后者是表级拒且 `denied` 涨 | HTTP 没有事件 id，验不了重复 |
+| 通道 | 你好 / 用名单外的人问成交额（§8） | 有回答；后者 `401` 且工具计数不动 | HTTP 没有事件 id，验不了重复 |
+
+## 2026-11-18 真跑记录（改完权限模型后的第一次）
+
+本机按 §0 起实例（`local` profile、`cache.enabled=false`、三个目录给全、人设 `ops`＝full 档），
+逐节跑了一遍。跑通的：§1 问答与 `querySales`（128400 + 计数涨）、§2 `demo_now`（pid 相同、时间戳递增）、
+§3 `summarize`（原文句子 + 越界被拒）、§4 Skill（185900 三区对）、§5 子 Agent（`Task ok` +1）、
+§7 知识库、§8 通道（不在名单的人拿 `401`、工具计数不动）。
+
+没跑的：§2 的 `github_*` 与 `mail_*`（本机没登录 `gh`、没装 `himalaya`，两条只到"链路通了、缺 CLI"）、
+`simulateSlowCall`（要等 30 秒超时）、IM 通道三条（要真凭据）。
+
+跑这一遍抓到一个真 bug 已修：**MCP 的画像登记原来是启动时快照**，`java-http` 迟到重连之后
+它的工具没有画像，清单组装处直接抛异常 → 每轮对话 500。现在改成活视图（`LiveMcpTiers`）。

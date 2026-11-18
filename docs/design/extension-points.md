@@ -13,7 +13,7 @@
 
 | 扩展点 | 你要提供 | 依赖 | 参照实现 |
 | --- | --- | --- | --- |
-| Java 工具 | `ToolCallbackProvider` + `ToolPermissionRegistry` + `ToolTierRegistry` | `claw4j-core`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
+| Java 工具 | `ToolCallbackProvider` + `ToolTierRegistry` | `claw4j-core`、`spring-ai-client-chat` | [`claw4j-example-sales`](../../claw4j-example-sales) |
 | MCP server | 一段配置（或一个 `McpServerEndpoint` bean）；server 本身可以是任何语言 | 宿主侧 `claw4j-capability`；server 侧什么都不要 | [`application-local.yml.example`](../../claw4j-app/src/main/resources/application-local.yml.example)、[`claw4j-example-mcp-server`](../../claw4j-example-mcp-server)、[`examples/mcp/`](../../examples/mcp) |
 | 脚本包 | 一个目录（`package.properties` + 入口脚本） | 无（子进程 + 沙箱） | [`examples/scripts/`](../../examples/scripts) |
 | Skill | 一个含 `SKILL.md` 的目录 | 无（纯文本） | [`examples/skills/weekly-sales`](../../examples/skills/weekly-sales) |
@@ -49,13 +49,6 @@ public class JiraToolsAutoConfiguration {
         return MethodToolCallbackProvider.builder().toolObjects(new JiraTools(jira)).build();
     }
 
-    @Bean
-    public ToolPermissionRegistry jiraPermissions() {
-        return ToolPermissionRegistry.of(Map.of(
-                "jiraSearchIssues", ToolPermission.read(),
-                "jiraCreateIssue", ToolPermission.of("create_issue")));
-    }
-
     // 档位：这些工具最低需要哪一档才出现（P09）。读工单不碰代码，所以是 messaging。
     @Bean
     public ToolTierRegistry jiraToolTiers() {
@@ -71,13 +64,15 @@ public class JiraToolsAutoConfiguration {
 com.acme.jira.JiraToolsAutoConfiguration
 ```
 
-### 谁收这三个 bean
+### 谁收这两个 bean
 
 `AgentAutoConfiguration` 收工具用的是 `ObjectProvider<ToolCallbackProvider>`（连同单个
-`ToolCallback` 一起），收权限用的是 `ObjectProvider<ToolPermissionRegistry>`，
-收档位用的是 `ObjectProvider<ToolTierRegistry>`；鉴权与语义缓存两条链路各自按**列表**
-消费权限表，清单组装处按**列表**消费档位表。所以**加一个来源只是加几个 bean**，
-没有任何一处需要点名你的工具类。
+`ToolCallback` 一起），收档位用的是 `ObjectProvider<ToolTierRegistry>`；清单组装处按**列表**
+消费档位表。所以**加一个来源只是加两个 bean**，没有任何一处需要点名你的工具类。
+
+工具"要不要人批"**不由插件声明**：那份名单是部署给的（容器里一个
+`ApprovalRequiredTools` bean，默认空）。因为"这个动作有多重"与"哪个插件提供了它"是两件事，
+而后者会随插件更换名字。
 
 ### 权限是必填项，漏了就是拒绝
 
@@ -127,15 +122,14 @@ public class JiraToolsAutoConfiguration { ... }
 
 ### 已经踩过的三种失效
 
-这三条不是风格问题，是**不报错**的失效，值得在写插件时逐条对照：
+这两条不是风格问题，是**不报错**的失效，值得在写插件时逐条对照：
 
 | 写法 | 会发生什么 | 为什么 |
 | --- | --- | --- |
 | `@ConditionalOnMissingBean(ToolCallbackProvider.class)` | 第二个来源进来时，第一个来源的工具**静默消失** | 那条条件的语义是"容器里已经有了就让位"，而容器里本来就该有多个来源。后果是模型手上没这个工具，然后开始编答案 |
-| `@ConditionalOnMissingBean(ToolPermissionRegistry.class)` | 只有一张表被注册，另一方的工具**从此一律被拒** | 同上，只是症状换成了"某个工具忽然谁都用不了" |
 | 自动配置里 `@ConditionalOnBean` 依赖同类 `@Bean` 方法的声明顺序 | 条件**永远为假**，整层工具不注册 | 同一个自动配置类内的条件按方法声明顺序求值；顺序反了就永远读不到那个 bean |
 
-`claw4j-example-sales` 里这三个坑各有一句注释——那份代码是可以整份照抄的模板。
+`claw4j-example-sales` 里这两个坑各有一句注释——那份代码是可以整份照抄的模板。
 
 ---
 
@@ -195,7 +189,7 @@ McpServerEndpoint internalDocsMcp(SecretResolver secrets) {
     String host = System.getenv().getOrDefault("DOCS_MCP_HOST", "docs.internal");
     return HttpMcpEndpoint
             .of("internal-docs", "https://" + host, "/mcp", Map.of(), false, secrets)
-            .endpoint(ToolPermission.read());   // 不带表 = 没有业务表权限
+            .endpoint(ToolFilter.none());   // 不按名字筛：这个端点导出的工具全要
 }
 ```
 
@@ -472,7 +466,7 @@ public class WecomChannelAutoConfiguration {
 
 "用 Python 写一个 tool"这句话在这个仓库里没有直接对应物，因为 Spring AI 让模型**动手**的
 官方通道只有两条：Java 方法（`@Tool` / `MethodToolCallbackProvider`，本项目再加一张
-`ToolPermissionRegistry`）与 MCP（`SyncMcpToolCallbackProvider`，来自 `spring-ai-mcp`）。
+档位表）与 MCP（`SyncMcpToolCallbackProvider`，来自 `spring-ai-mcp`）。
 非 Java 的代码要变成模型手上的能力，只有三种结局：
 
 | 你手上的东西 | 变成什么 | 语言无关来自哪儿 | 官方还是本项目 |
@@ -562,61 +556,18 @@ Claw4J 的扩展点不是这个形状，所以没有走 SPI：
 
 ---
 
-## 八、反向 MCP：把自己交出去
+## 八、反向 MCP：把自己交出去（已下线）
 
-前七章都是"加能力进来"。这一章反过来了：把这里的工具交出去，让 Claude Code / Codex
-这类客户端把它们当成自己的工具调。判据来自 ADR-0020——**把 claw4j 配成一个 MCP server，
-客户端能像用别的工具一样调业务工具。**
+这一章原来讲的是：把 Claw4J 的工具通过 MCP 交给 Claude Code 这类客户端，配
+`claw4j.mcp.server.*` 并用 `mcp-stdio` 那个 profile 起。**整块功能已下线**
+（ADR-0030 裁决二末尾，2026-11-18，票 08）。
 
-### 一段配置 + 一个 profile
+下线不是"加一层权限"，而是那层挑选本身又是一次可见性判定：交全部等于把 `Bash` 也默认交出去，
+交一部分就是第二份 `allow` 列表，与策略层争同一个问题，而默认值两难。它也没有对位可抄——
+OpenClaw 的 `mcp serve` 暴露的是会话通道，不是 agent 工具。
 
-```yaml
-claw4j:
-  mcp:
-    server:
-      enabled: true
-      expose: [querySales]   # 交出去哪几个；名字必须在工具清单里
-      tables: ["*"]          # 客户端能读的表（它没有 IM 身份）
-```
-
-```bash
-java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
-     --spring.profiles.active=mcp-stdio
-```
-
-客户端侧就是一条 `command`：`.mcp.json` 里把上面那串抄进 `args`。
-
-### 三条约束，位置各不相同
-
-1. **交出去的只能是模型能用的那一份**。工具清单是一个 bean（`ToolCatalog`），模型与 MCP 吃同一份；
-   档位与 allow / deny 已经在它上面生效，这边不再筛一次。另收一遍就是两份清单，而两份会漂——
-   漂了不报错，只是外部看到的东西绕过了档位、计量、权限登记三道门。
-2. **交不出去的工具在装配期就失败**：没有权限登记、需要人工批准、动作不是 `read`，三种都点名并起不来。
-   外部客户端没有人能点按钮，也没有 run 可以挂起；而"调用时再拒"会让一条永远用不了的工具看起来能用。
-   名字写了清单里没有的，只告警并跳过——与 `tools.allow` / `deny` 同一条语义（裁剪部署时它本该落空）。
-3. **能读哪些表在调用时判**。登记表说"这个工具碰哪些表"，身份说"能读哪些表"，两张一对，
-   对不上就返回一条 `isError`，且工具一次都不执行。位置与 IM 侧鉴权 Advisor 相同：
-   拒绝落在执行之前，不是执行完再过滤。
-
-### 为什么不引 `spring-ai-starter-mcp-server`
-
-它带进来的 `ToolCallbackConverterAutoConfiguration` 会收集容器里的 `ToolCallbackProvider`
-并原样暴露。仓库里有四个这样的 bean（`systemStatus` / `sales` / `generator` / `schedule`），
-于是 P09 的档位、`MeteredToolCallback` 的包装、权限登记会同时被绕过，与我们筛过的那一份同台。
-自己装配 `McpSyncServer`，工具来源只有一处。
-
-### stdio 的唯一代价：stdout 是协议通道
-
-日志、横幅、容器输出默认都往 stdout 走。一帧 JSON 中间插进一行日志，客户端报的是"连不上"，
-而 server 侧一切正常——`claw4j-example-mcp-server` 第一次跑就挂在这上面。
-`application-mcp-stdio.yml` 那一份 profile 只做一件事：横幅关掉、日志改走 stderr
-（`logback-mcp-stdio.xml`）、容器不起、四个通道与调度关掉。
-
-### 今天没有的
-
-- **HTTP / SSE 传输**：本地仓库里 `spring-ai-starter-mcp-server-webmvc` 只有 1.1.x，2.0.2 要联网拉。
-- **审计**：外部调用没有 run，而审计行就是 step（P07）。只留一行日志，不假装它是审计；也不扣 run 预算。
-- **多客户端**：stdio 天生只对一个客户端。
+**保留的是反方向**：连别人的 MCP server（`claw4j.capability.mcp.servers`，复数，见第六章）。
+一个字母之差，别删错。
 
 ---
 
@@ -733,7 +684,6 @@ requires-core=>=0.1.0 <0.2.0
 | --- | --- | --- |
 | 一个业务工具 | 新 jar：工具类 + 自动配置 + imports 文件 + 一条依赖 | 框架任何一处 |
 | 一个新的 MCP 能力 | 一段 `claw4j.capability.mcp.servers.<名字>` 配置；要算值时才写 bean | 连接的建立、重连、权限登记 |
-| **把自己的工具交出去** | 一段 `claw4j.mcp.server` 配置 + `mcp-stdio` 那个 profile | 清单、档位、权限登记（都复用同一份） |
 | 一个命令行能力 | 一个目录（`package.properties` + 入口脚本）+ `claw4j.scripts.directory` | 代码 |
 | 一套做事流程 | 一个目录 + `SKILL.md` + `claw4j.skills.directory` | 代码 |
 | 一个专职的子 Agent | 一份 `*.md` + `claw4j.subagents.directory` | 代码 |

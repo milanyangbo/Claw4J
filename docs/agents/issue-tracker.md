@@ -12,6 +12,10 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - 每张票面必须有两节：**裁决来源**（一行指到 ADR / `docs/design/`，不在这里重复论证）与
   **TDD 用例清单**（每条功能点一行：判什么行为 → 用例名 → 先红的样子）。一时补不上的判据，
   单列一节写"缺口"，不许勾进验收——勾了就是文档承诺比代码走得远
+- **TDD 的每一行都带标记**，它记录的是"这条到底过没过"，不是"我觉得应该过"：
+  `✅` = 跑了这条用例且绿；`❌` = 红、或这条用例不存在；`⏳` = 这一行已不在本票范围（必须搬进「缺口」，
+  并写清归哪张票或哪条 ADR 缺口）。表下面再补一行 `复核：<日期> <命令> 全绿`——批量复核一次就写一次，
+  不必每条重复。**`❌` 清零之前这张票不能写 `resolved`**；`⏳` 的行留在表里又不动缺口，等于把承诺藏起来
 - Planning text in a ticket is a **forecast until it is a fact**: write "预计落在 X" as 预计, and correct it when the work lands. A bare "落在 X" gets read as a requirement by the next reviewer — 票 05 的"门禁余量"一节预计落 `KnowledgeRetrievalTest` / `ChatPipelineTest`，实际落在另外三个文件，评审时就被报成了"文档没同步"
 
 ## When a skill says "publish to the issue tracker"

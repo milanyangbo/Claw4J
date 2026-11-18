@@ -117,11 +117,15 @@ RetrievalAugmentationAdvisor                     ← 官方编排器，装了就
 
 `before()` 的第一条指令是 `new HashMap<>(request.context())` —— `ChatClientRequest.context()`
 被整体复制进 `Query.context()`。我们的 `Principal` 本来就在那里（`ContextKeys.PRINCIPAL`，
-`AuthorizationAdvisor` 与 `AgentContextAdvisor` 都从同一处读），所以
-`HybridDocumentRetriever` 能拿到身份，按 `read` + 伪表 `doc` 判一次，再决定检不检。
+`AgentContextAdvisor` 从同一处读），所以 `HybridDocumentRetriever` 能拿到身份。
 
-这也解决了原来"用 advisor 就绕过鉴权"的担心：**鉴权不在工具层，在 retriever 里**。
-没有权限时返回空列表，走 `allowEmptyContext` 那条路，模型照常回答（只是没有资料）。
+**它现在只判一件事：这一轮有没有身份。** 有身份就检索，没有就跳过并留一条 WARN。
+原来还问"这个身份能不能看伪表 `doc`"，那是业务数据授权，随权限登记表在 ADR-0030 里整块下线；
+知识库的细粒度 ACL 属于第二步，记在 ADR 的缺口表与 `guardrails.md` 里。这是**行为放宽**，
+`KnowledgeRetrievalTest` 里显式立了 `anyPrincipalCanRetrieve` 一条，别让它悄悄变化。
+
+这也解决了原来"用 advisor 就绕过鉴权"的担心：**判据不在工具层，在 retriever 里**。
+没有身份时返回空列表，走 `allowEmptyContext` 那条路，模型照常回答（只是没有资料）。
 
 ### 代价：每轮都检索
 
@@ -140,7 +144,7 @@ advisor 在 `before()` 里无条件跑，所以**每一轮提问都会检索一�
 | 删掉 | 去处 |
 | --- | --- |
 | `KnowledgeTools.searchDocs` 工具 | advisor 自动检索 |
-| 它的 `ToolPermissionRegistry`（`read` + `doc`） | retriever 内部判（同一个 `Principal.canRead`） |
+| 它的业务权限登记（`read` + 伪表 `doc`） | 无。那一层随 ADR-0030 整块下线，retriever 现在只看有没有身份 |
 | 它的 `ToolTierRegistry`（`MESSAGING` 档） | 不再受档位管：知识库是 advisor，不是工具 |
 | "库里 0 段" 与 "没匹配" 的区分 | 合并成一句；两种都在日志里分得开（WARN 带 `chunks=0`） |
 

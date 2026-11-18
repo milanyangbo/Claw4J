@@ -29,6 +29,8 @@ Drop the line entirely (or leave it empty) for an untriaged issue. `Status: clai
 - **`spec.md` 头部的 `Status:`** 用上面那张表的 triage 角色。四份 spec 现在都是 `ready-for-agent`。
 - **`issues/NN-*.md` 的 `**Status:**`** 走三个状态，够用就不要加第四个：
   新票发布时 `ready-for-agent` → 被领取后 `claimed` → 收票时 `resolved`。
+  **`resolved` 有个前置条件**：这张票的 TDD 表里没有 `❌`（每条都实测过），且 `⏳` 的行都已搬进「缺口」。
+  只把状态词从 `claimed` 改成 `resolved`、表里还留着 `❌`，就是把"没做完"写成了"做完了"。
   前两个之外的词（`open`、`todo`、`doing`）都不要用。（2026-10-26 起：新票发布即写 `ready-for-agent`，
   在此之前票只有 `claimed` / `resolved` 两个状态，已完成的 21 张全是 `resolved`。）
 

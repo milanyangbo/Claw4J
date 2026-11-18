@@ -31,14 +31,17 @@ MCP 这一层的连接生命周期由 `claw4j-capability` 的 `io.github.claw4j.
 
 ```java
 // 命令与参数分开给，交给 MCP SDK 起进程（不经任何命令解释器）
+// 第二个参数是「这个 server 的哪些工具存在」：排掉的工具根本不会变成工具，
+// 也就不进清单、不进档位、加不回来（ADR-0030 裁决二）
 ProcessStdioMcpEndpoint.of("claw4j-github", "python3",
         List.of("examples/mcp/gh_mcp_server.py"), Map.of("PATH", System.getenv("PATH")))
-    .endpoint(ToolPermission.read());
+    .endpoint(ToolFilter.none());
 ```
 
 `examples/mcp/` 下有三个零第三方依赖的 Python server：`gh_mcp_server.py` 包 `gh`、
-`himalaya_mcp_server.py` 包 `himalaya`（它导出会发邮件的 `mail_send`，所以接它的端点登记的是
-`send_email` 而不是只读）、`demo_mcp_server.py` 不依赖任何 CLI。
+`himalaya_mcp_server.py` 包 `himalaya`（它导出会发邮件的 `mail_send`，接它的端点要用
+`include` 点着名字放进来——**能发邮件是"这个工具存在"，不是"这个人有权限发"**，
+后者由清单与审批管）、`demo_mcp_server.py` 不依赖任何 CLI。
 同一个端点接一个 **Java** 版也是同样的写法：`claw4j-example-mcp-server` 是一个
 `java -jar` 就能跑的 Streamable HTTP server（`/mcp`），与那三个 Python 的对端完全平级——
 宿主只认协议，不认对端用什么语言写、用什么传输。它的工具刻意不与 Python 那份重名：
@@ -210,15 +213,15 @@ claw4j:
 
 两条安全口径值得单独说，因为它们都有测试指着：
 
-- **委派不提权**：子那一侧照样过 `AuthorizationAdvisor`，用的是**父那个身份本身**
-  （`PrincipalCapturingAdvisor` 断言是同一个对象）。guest 派出去的 Subagent 去查
-  `sales_order` 时被挡在**执行之前**——断言同时盯着"那个工具一次都没被调用"。
+- **委派不提权**：子用的是**父那个身份本身**（`PrincipalCapturingAdvisor` 断言是同一个对象），
+  能碰的工具是父清单的子集。父那一层已经把某个工具收掉了，子这边就看不见它——
+  判据落在清单上，不在"调了之后被拒"上。
 - **子也吃 3 / 6 预算**：子链的 `ToolCallingManager` 与父同一个构造入口。
   委派不能变成绕过预算的口子，否则一个坏掉的脚本在子里循环时父这边看起来毫无动静。
 
-`Task` 自己登记的权限是 **`delegate_task` 动作，业务表一张都没有**：
-委派这个动作不碰库，碰库的是子要调的那个工具，那一步按它自己的登记表鉴权。
-所以 `read-only` 与 `guest` 也都能委派——给不改变它们看得到什么。
+`Task` 这一层现在只回答"能不能把活派出去"，不再登记动作：动作那一栏随权限登记表在
+ADR-0030 里整块下线。委派不碰库，碰库的是子要调的那个工具，而子能碰哪些工具由它自己那层
+清单决定（父那份的子集）。
 
 启用这一层同样是显式配目录（目录下每个 `*.md` 是一个专职 Agent，配了却读不出来即启动失败）：
 
