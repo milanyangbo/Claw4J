@@ -17,6 +17,7 @@ import io.github.claw4j.agent.elevated.Elevations;
 import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.SessionGoal;
+import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
@@ -37,8 +38,13 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.model.tool.ToolCallLimitExceededException;
+import org.springaicommunity.agent.advisors.InterruptAdvisor;
+import org.springaicommunity.agent.advisors.TurnInterruptedException;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -98,6 +104,15 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
 
     /** 一轮动作的 span：包住 {@code call()} 与收尾。工具 span 都挂在它下面。 */
     private static final String TURN_SPAN = "model.turn";
+
+    /**
+     * 这一轮的结局。取值与 {@code MeteredToolCallback} 的 {@code outcome} 标签同一口径，
+     * 多一个 {@code timed-out}：它不是工具失败，也不是模型报错，图上要能一眼分开。
+     */
+    private static final String OUTCOME_ATTRIBUTE = "claw4j.outcome";
+
+    /** 到点被中止。见 {@link #turnTimedOut}。 */
+    private static final String OUTCOME_TIMED_OUT = "timed-out";
 
     /**
      * 这一轮是哪一轮。trace 与审计之间只有这一把键：拿它去 {@code audit_event.run_id} 查，
@@ -186,6 +201,18 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
 
     /** 这一段会话的提权档（票 06）；没有时为 {@code null}，等同于"这一族命令没开"。 */
     private final Elevations elevations;
+
+    /**
+     * 一轮最多跑多久；{@link Duration#ZERO} 表示不设墙钟。
+     *
+     * <p>它兜的是次数管不住的那种：单次工具调用卡住时，{@code tool-call-limit} 还没数到，
+     * 这一轮就永远不回来。判定在库的 {@code InterruptAdvisor} 里做（每次工具往返之后重查一遍），
+     * 这里只负责算截止时刻与收口。
+     */
+    private final Duration turnTimeout;
+
+    /** 算截止时刻的钟。测试注入固定值，跑起来是系统钟。 */
+    private final Clock clock;
 
     /**
      * 审计规则层（ADR-0027）：这一轮开始与结束各一条事件。
@@ -351,6 +378,37 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                                SessionEntries pointers, ConversationLane lane, ToolCallAudit audit,
                                SessionGoalStore goals, ToolCatalog catalog, String providerKey,
                                Elevations elevations) {
+        this(chatClient, compactor, delivery, tracer, pointers, lane, audit, goals, catalog,
+                providerKey, elevations, AgentProperties.DEFAULT_TURN_TIMEOUT, Clock.systemUTC());
+    }
+
+    /**
+     * 再加一档：整轮的墙钟与算它的钟。
+     *
+     * <p>钟是参数不是为了好看：截止时刻要能被用例按住，"跑到第几轮时到点"才是可断言的。
+     * 系统钟下这条用例只能靠 {@code sleep} 去撞，撞早了绿、撞晚了红。
+     *
+     * @param chatClient 对话客户端，必填
+     * @param compactor 压缩器，可以为 null
+     * @param delivery 结果投递，可以为 null
+     * @param tracer 埋点入口，为 null 时用 {@link SpanTracer#NONE}
+     * @param pointers 会话指针，可以为 null
+     * @param lane 通道串行器，可以为 null
+     * @param audit 工具调用审计，可以为 null
+     * @param goals 目标存储，可以为 null
+     * @param catalog 工具清单，可以为 null
+     * @param providerKey 当前 provider 键，可以为 null
+     * @param elevations 提权状态，可以为 null
+     * @param turnTimeout 一轮最多跑多久；{@link Duration#ZERO} 表示不设
+     * @param clock 算截止时刻的钟，为 null 时用系统钟
+     */
+    public ChatClientAgentPort(ChatClient chatClient, SessionCompactor compactor,
+                               ConversationDelivery delivery, SpanTracer tracer,
+                               SessionEntries pointers, ConversationLane lane, ToolCallAudit audit,
+                               SessionGoalStore goals, ToolCatalog catalog, String providerKey,
+                               Elevations elevations, Duration turnTimeout, Clock clock) {
+        this.turnTimeout = turnTimeout == null ? AgentProperties.DEFAULT_TURN_TIMEOUT : turnTimeout;
+        this.clock = clock == null ? Clock.systemUTC() : clock;
         this.elevations = elevations;
         this.chatClient = Objects.requireNonNull(chatClient, "chatClient");
         this.catalog = catalog;
@@ -585,18 +643,23 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                 // 含收尾那一次审计 INSERT（几十毫秒）。span 上不写账本行号：
                 // 与审计的关联键只有 claw4j.run.id 一个（见 ATTR_RUN_ID）。
                 try (SpanTracer.SpanScope turn = tracer.open(TURN_SPAN, Map.of())) {
-                    response = promptOf(message, owner, sessionId, conversationKey,
-                            promptText(conversationKey, masked), runId)
-                            .call()
-                            .chatResponse();
-                    text = cappedText(response);
-                    // 日志敢打全文，是因为脱敏已经在 Advisor 链上做完；哪天有人在链路之外打日志，
-                    // 这里会立刻出现原始值。
-                    log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
-                    closeTurn(auditScope, conversationKey, text,
-                            pushTargetOf(answeredAt, message), message.notifyPolicy(),
-                            tokensOf(response));
-                    stampTurn(turn, response);
+                    try {
+                        response = promptOf(message, owner, sessionId, conversationKey,
+                                promptText(conversationKey, masked), runId)
+                                .call()
+                                .chatResponse();
+                        text = cappedText(response);
+                        // 日志敢打全文，是因为脱敏已经在 Advisor 链上做完；哪天有人在链路之外打日志，
+                        // 这里会立刻出现原始值。
+                        log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
+                        closeTurn(auditScope, conversationKey, text,
+                                pushTargetOf(answeredAt, message), message.notifyPolicy(),
+                                tokensOf(response));
+                        stampTurn(turn, response);
+                    }
+                    catch (TurnInterruptedException timedOut) {
+                        return turnTimedOut(turn, auditScope, conversationKey, message, answeredAt, runId);
+                    }
                 }
                 return new Turn(runId, text);
             } catch (RuntimeException | Error failure) {
@@ -606,6 +669,94 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                 }
                 throw failure;
             }
+        }
+    }
+
+    /**
+     * 给这一轮挂上墙钟。
+     *
+     * <p><b>每轮一个新的实例</b>，不挂在 {@code defaultAdvisors} 上：库的 signal 是构建期固定的
+     * {@code BooleanSupplier}，而截止时刻是每一轮算的。单例只能表达「全部署停」。
+     *
+     * <p>order 用库的默认值（{@code HIGHEST_PRECEDENCE + 400}），排在工具循环（{@code +300}）
+     * 内层——于是每次工具往返之后、下一次模型请求之前都会重查一遍。这一条已核过框架：
+     * {@code DefaultAroundAdvisorChain.Builder#pushAll} 末尾的 {@code reOrder()} 会把
+     * default 与 per-request 的 advisor 一起按 order 排序，两者一视同仁。
+     *
+     * @param request 这一轮的请求
+     * @return 挂上墙钟的请求；不设墙钟时原样返回
+     */
+    private ChatClient.ChatClientRequestSpec withTurnDeadline(ChatClient.ChatClientRequestSpec request) {
+        if (turnTimeout.isZero() || turnTimeout.isNegative()) {
+            return request;
+        }
+        Instant deadline = clock.instant().plus(turnTimeout);
+        return request.advisors(InterruptAdvisor.builder()
+                .interruptSignal(() -> !clock.instant().isBefore(deadline))
+                .build());
+    }
+
+    /**
+     * 到点之后这一轮怎么结束：<b>有回复地结束</b>，不抛给上层。
+     *
+     * <p>抛上去的代价是真实的：{@code InboundDispatcher#failed} 对任何异常都「放回队列、30 秒后
+     * 再跑，最多三次」——一轮 10 分钟的超时被重试三次就是半小时，比没有超时更坏。
+     *
+     * <p>所以这里把三件事一次做完：审计落 {@link AuditErrorCode#RUN_TIMED_OUT}（不是
+     * {@code RUN_FAILED}，运维要能分开「跑飞」与「模型报错」）、会话照常收尾（下一轮该知道上一轮
+     * 是被中止的）、span 标成 {@code timed-out}。
+     *
+     * @param turn 这一轮的 span
+     * @param auditScope 审计作用域
+     * @param conversationKey 会话节点键
+     * @param message 入站消息
+     * @param answeredAt 已就地回答过的地址
+     * @param runId 这一轮的编号
+     * @return 一句说明，作为这一轮的回答
+     */
+    private Turn turnTimedOut(SpanTracer.SpanScope turn, AuditEvent.Scope auditScope,
+                              String conversationKey, InboundMessage message,
+                              DeliveryTarget answeredAt, String runId) {
+        String text = timeoutReply();
+        turn.attribute(OUTCOME_ATTRIBUTE, OUTCOME_TIMED_OUT);
+        turn.failed(new TurnInterruptedException(text));
+        closeTurn(auditScope, conversationKey, text, pushTargetOf(answeredAt, message),
+                message.notifyPolicy(), null, AuditStatus.FAILED, AuditErrorCode.RUN_TIMED_OUT);
+        log.warn("这一轮到点被中止：runId={} 上限={}", runId, turnTimeout);
+        return new Turn(runId, text);
+    }
+
+    /**
+     * 到点之后给用户的那句话：说清"停了"与"为什么可能停了"，而不是一句"出错了"。
+     *
+     * @return 回答正文
+     */
+    private String timeoutReply() {
+        long minutes = turnTimeout.toMinutes();
+        String limit = minutes >= 1 ? minutes + " 分钟" : turnTimeout.toSeconds() + " 秒";
+        return "这一轮跑到 " + limit + " 就被我停下了：要么某个工具卡住了，要么事情比预想的大。"
+                + "拆小一点再发一次试试。";
+    }
+
+    /**
+     * 把流里暂存的半句发出去。三种收尾（正常/异常/超时）都要 flush，否则最后半句永远发不出去。
+     *
+     * @param stripper 带状态的剥离器
+     * @param message 入站消息
+     * @param runId 这一轮的编号
+     * @param onChunk 出站回调
+     */
+    private static void flushTail(OutboundText.StreamStripper stripper, InboundMessage message,
+                                  String runId, Consumer<OutboundMessage> onChunk) {
+        try {
+            String tail = stripper.flush();
+            if (!tail.isEmpty()) {
+                onChunk.accept(OutboundMessage.chunk(message.chatId(), tail, runId));
+            }
+        }
+        catch (RuntimeException ignored) {
+            // 发不出去就算了：这一轮已经结束，别让收尾把原因盖掉。
+            log.debug("超时收尾时暂存的那截没发出去：chatId={} runId={}", message.chatId(), runId);
         }
     }
 
@@ -716,6 +867,20 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     closeTurn(auditScope, conversationKey, answer.toString(),
                             pushTargetOf(addressOf(message), message), message.notifyPolicy(),
                             null);
+                } catch (TurnInterruptedException timedOut) {
+                    // 到点：已经吐出去的分块收不回来，把暂存的那截先发完，再补一句说明——
+                    // 否则用户看到的是"话说到一半没了"。这一轮算结束，不往上抛（见 turnTimedOut）。
+                    String notice = timeoutReply();
+                    flushTail(stripper, message, runId, onChunk);
+                    onChunk.accept(OutboundMessage.chunk(message.chatId(), notice, runId));
+                    onChunk.accept(OutboundMessage.of(message.chatId(), "", runId));
+                    turn.attribute(OUTCOME_ATTRIBUTE, OUTCOME_TIMED_OUT);
+                    turn.failed(timedOut);
+                    closeTurn(auditScope, conversationKey, answer + notice,
+                            pushTargetOf(addressOf(message), message), message.notifyPolicy(), null,
+                            AuditStatus.FAILED, AuditErrorCode.RUN_TIMED_OUT);
+                    log.warn("这一轮到点被中止（流式）：chatId={} runId={} 上限={}",
+                            message.chatId(), runId, turnTimeout);
                 } catch (RuntimeException | Error failure) {
                     // 断流也要把暂存的那截吐出来，否则用户看到"话说到一半没了"。
                     // 发不出去就算了：原始失败更重要，别被它盖掉。
@@ -825,11 +990,34 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      */
     private void closeTurn(AuditEvent.Scope scope, String conversationKey, String answer,
                            DeliveryTarget pushTo, NotifyPolicy policy, Long tokens) {
+        closeTurn(scope, conversationKey, answer, pushTo, policy, tokens,
+                AuditStatus.SUCCEEDED, null);
+    }
+
+    /**
+     * 同上，但这一轮的结局由调用方给。
+     *
+     * <p>超时那一条走这里：它也是一次完整的收尾（会话要落、投递要发），只是审计上的
+     * 结局是 {@code TIMED_OUT} 而不是 {@code SUCCEEDED}。两处各写一遍收尾的话，
+     * 「超时那一轮到底算不算发出去过」会有两个答案。
+     *
+     * @param scope 审计作用域
+     * @param conversationKey 会话节点键
+     * @param answer 这一轮的回答
+     * @param pushTo 推送目标
+     * @param policy 通知策略
+     * @param tokens 这一轮用了多少 token；拿不到时传 null
+     * @param status 审计上的结局
+     * @param errorCode 结局的错误码；成功时为 null
+     */
+    private void closeTurn(AuditEvent.Scope scope, String conversationKey, String answer,
+                           DeliveryTarget pushTo, NotifyPolicy policy, Long tokens,
+                           AuditStatus status, AuditErrorCode errorCode) {
         chargeGoal(conversationKey, tokens);
         if (delivery != null && pushTo != null) {
             delivery.announce(pushTo, policy, answer);
         }
-        finishAudit(scope, AuditStatus.SUCCEEDED, null);
+        finishAudit(scope, status, errorCode);
     }
 
     /**
@@ -1088,7 +1276,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             request = request.toolCallbacks(catalog.toolsFor(
                     ToolPolicyContext.of(message.channel(), principal.userId()).withProvider(providerKey)));
         }
-        return request
+        return withTurnDeadline(request)
                 .advisors(spec -> {
                     spec.param(ContextKeys.PRINCIPAL, principal)
                             .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY, sessionId)

@@ -35,6 +35,8 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springaicommunity.agent.tools.ToolCallListener;
+import org.springaicommunity.agent.tools.ToolCallListeners;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
@@ -144,7 +146,8 @@ public class AgentAutoConfiguration {
                                    AgentProperties agentProperties,
                                    ObjectProvider<ApprovalGate> gates,
                                    ObjectProvider<ApprovalRequiredTools> approvals,
-                                   ObjectProvider<SandboxProperties> sandboxProperties) {
+                                   ObjectProvider<SandboxProperties> sandboxProperties,
+                                   ObjectProvider<ToolCallListener> listeners) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
         List<ToolTierRegistry> registries = tierRegistries.orderedStream().toList();
         // 沙箱是部署级的（mode=non-main 配了启动失败），所以这一轮的 sandboxed 就是它。
@@ -173,17 +176,17 @@ public class AgentAutoConfiguration {
                     ? profile
                     : new ToolProfile(decision.profile(), profile.allow(), profile.deny(),
                             profile.alsoAllow());
-            return withApprovalGate(
-                    collectToolCallbacks(toolCallbacks, toolCallbackProviders,
-                            meterRegistry.getIfAvailable(), audit.getIfAvailable(),
-                            tracer.getIfAvailable(() -> SpanTracer.NONE), effective, registries,
-                            new ToolPolicyPipeline(decision.layers()),
-                            selection -> {
-                                String signature = signatureOf(selection);
-                                if (!signature.equals(reported.getAndSet(signature))) {
-                                    report(effective, selection);
-                                }
-                            }),
+            List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
+                    meterRegistry.getIfAvailable(), audit.getIfAvailable(),
+                    tracer.getIfAvailable(() -> SpanTracer.NONE), effective, registries,
+                    new ToolPolicyPipeline(decision.layers()),
+                    selection -> {
+                        String signature = signatureOf(selection);
+                        if (!signature.equals(reported.getAndSet(signature))) {
+                            report(effective, selection);
+                        }
+                    });
+            return withApprovalGate(withListener(tools, listeners.getIfAvailable()),
                     gates.getIfAvailable(), approvals.getIfAvailable(ApprovalRequiredTools::none),
                     audit.getIfAvailable());
         });
@@ -451,6 +454,27 @@ public class AgentAutoConfiguration {
     }
 
     /**
+     * 给工具清单挂上部署方的观测器（票 02）。
+     *
+     * <p>套在<b>审批闸之内、计量之外</b>：被审批拒掉的调用不是「被调了」（审计里它是 {@code blocked}），
+     * 而 listener 量到的一次调用应当含计量与审计那点开销。
+     *
+     * <p>{@code listener} 为 null 时原样返回同一个实例——没有 bean 就不该多一层对象，
+     * 清单里还是原来那些东西（"零行为变化"这句话的判据就是这个 {@code isSameAs}）。
+     *
+     * <p>库的 listener 回调<b>不兜异常</b>：{@code beforeCall} 抛会阻止工具执行，{@code afterCall} 抛会
+     * 丢掉一个已经成功的结果。所以能挂上来的只能是"自己绝不抛"的观测——这一点写在
+     * {@code README-adding-capabilities.md} 那一节里。
+     *
+     * @param tools 收集好的工具
+     * @param listener 部署方的观测器；为 null 时不加这一层
+     * @return 套过观测器的清单
+     */
+    public static List<ToolCallback> withListener(List<ToolCallback> tools, ToolCallListener listener) {
+        return listener == null ? tools : ToolCallListeners.wrapAll(tools, listener);
+    }
+
+    /**
      * 给声明了要人批的工具套一层闸（票 05）。
      *
      * <p>单独一个出口而不是塞进 {@code collectToolCallbacks} 的四个重载里：那四个重载有六个调用点，
@@ -625,6 +649,9 @@ public class AgentAutoConfiguration {
                 delivery.getIfAvailable(),
                 tracer.getIfAvailable(() -> SpanTracer.NONE), pointers.getIfAvailable(),
                 new ConversationLane(properties.laneWait()), audit.getIfAvailable(),
-                goals.getIfAvailable(), catalog, model.getPrimary(), elevations);
+                goals.getIfAvailable(), catalog, model.getPrimary(), elevations,
+                // 墙钟：次数管不住的那一种（单次工具卡住）由它兜底。
+                // 0 = 不设，见 AgentProperties#turnTimeout 的那段论证。
+                properties.turnTimeout(), Clock.systemUTC());
     }
 }

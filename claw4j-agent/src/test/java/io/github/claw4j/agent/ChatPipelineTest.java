@@ -2,6 +2,7 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.approval.ConversationApprovalGate;
 import io.github.claw4j.agent.audit.AuditAction;
+import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditSink;
 import io.github.claw4j.agent.audit.AuditStatus;
@@ -59,8 +60,11 @@ import reactor.core.publisher.Flux;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -76,6 +80,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -938,6 +943,137 @@ class ChatPipelineTest {
                                 ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS)));
     }
 
+    // ---- 整轮的墙钟（票 01：库的 InterruptAdvisor）----
+
+    @Test
+    @DisplayName("到点就中止：这一轮有回复地说停，工具只跑了一次")
+    void turnStopsAtTheDeadlineWithAReason() {
+        MovableClock clock = new MovableClock();
+        RecordingTool slow = new RecordingTool("slow", "转完了",
+                () -> clock.advance(Duration.ofMinutes(11)));
+
+        String answer = timedPort(new FixedChatModel(oneToolThenAnswer("slow")), List.of(slow),
+                clock, Duration.ofMinutes(10))
+                .reply(message("chat-clock", "跑一下"))
+                .text();
+
+        assertThat(answer).contains("就被我停下了").contains("10 分钟");
+        assertThat(slow.calls()).as("第一次工具之后就超时了，不该再跑第二轮").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("超时不抛给上层：抛出去会被队列放回重试三次，每次都再跑满一个窗口")
+    void timeoutIsNotRethrownToTheQueue() {
+        MovableClock clock = new MovableClock();
+        RecordingTool slow = new RecordingTool("slow", "转完了",
+                () -> clock.advance(Duration.ofMinutes(11)));
+        ChatClientAgentPort port = timedPort(new FixedChatModel(oneToolThenAnswer("slow")),
+                List.of(slow), clock, Duration.ofMinutes(10));
+
+        assertThatCode(() -> port.reply(message("chat-clock", "跑一下")))
+                .as("抛出去就是一次可重试的失败，三次超时叠起来比没有超时更坏")
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("写 0 就是关掉：钟推得再远也照常答完")
+    void zeroTurnTimeoutKeepsTheOldBehaviour() {
+        MovableClock clock = new MovableClock();
+        RecordingTool slow = new RecordingTool("slow", "转完了",
+                () -> clock.advance(Duration.ofHours(2)));
+
+        String answer = timedPort(new FixedChatModel(oneToolThenAnswer("slow")), List.of(slow),
+                clock, Duration.ZERO)
+                .reply(message("chat-clock", "跑一下"))
+                .text();
+
+        assertThat(answer).isEqualTo("好");
+        assertThat(slow.calls()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("超时落 RUN_TIMED_OUT，不是 RUN_FAILED：运维要能分开跑飞与模型报错")
+    void timeoutIsAuditedAsTimedOut() {
+        MovableClock clock = new MovableClock();
+        RecordingTool slow = new RecordingTool("slow", "转完了",
+                () -> clock.advance(Duration.ofMinutes(11)));
+        RecordingAudit audit = new RecordingAudit();
+        ChatClientAgentPort port = new ChatClientAgentPort(
+                client(new FixedChatModel(oneToolThenAnswer("slow")), List.of(), List.of(slow)),
+                null, null, null, null, null, audit.toolCallAudit(), null, null, null, null,
+                Duration.ofMinutes(10), clock);
+
+        port.reply(message("chat-clock", "跑一下"));
+
+        assertThat(audit.events)
+                .filteredOn(event -> event.action() == AuditAction.AGENT_RUN_FINISHED)
+                .singleElement()
+                .extracting(AuditEvent::errorCode)
+                .isEqualTo(AuditErrorCode.RUN_TIMED_OUT);
+    }
+
+    @Test
+    @DisplayName("检查发生在每次工具往返之后：第一次不超时，第二次才停")
+    void deadlineIsRecheckedBetweenToolRounds() {
+        MovableClock clock = new MovableClock();
+        RecordingTool first = new RecordingTool("first", "一");
+        RecordingTool second = new RecordingTool("second", "二",
+                () -> clock.advance(Duration.ofMinutes(11)));
+        AtomicInteger round = new AtomicInteger();
+        FixedChatModel model = new FixedChatModel(prompt -> switch (round.incrementAndGet()) {
+            case 1 -> requestTool("first", "{}");
+            case 2 -> requestTool("second", "{}");
+            default -> answer("好");
+        });
+
+        String answer = timedPort(model, List.of(first, second), clock, Duration.ofMinutes(10))
+                .reply(message("chat-clock", "跑两下"))
+                .text();
+
+        assertThat(first.calls()).as("第一轮往返之后还没到点，该继续").isEqualTo(1);
+        assertThat(second.calls()).isEqualTo(1);
+        assertThat(answer).as("第二轮往返之后到点，第三轮请求前停下").contains("就被我停下了");
+    }
+
+    /** 第一次请求工具、之后正常回答的模型桩。 */
+    private static Function<Prompt, ChatResponse> oneToolThenAnswer(String tool) {
+        AtomicInteger round = new AtomicInteger();
+        return prompt -> round.incrementAndGet() == 1 ? requestTool(tool, "{}") : answer("好");
+    }
+
+    /** 带墙钟的门：钟可控，超时窗口由用例给。 */
+    private static ChatClientAgentPort timedPort(ChatModel model, List<ToolCallback> tools,
+                                                 MovableClock clock, Duration turnTimeout) {
+        return new ChatClientAgentPort(client(model, List.of(), tools),
+                null, null, null, null, null, new RecordingAudit().toolCallAudit(), null,
+                null, null, null, turnTimeout, clock);
+    }
+
+    /** 可推进的钟：截止时刻要能被按住，"跑到第几轮时到点"才是可断言的。 */
+    private static final class MovableClock extends Clock {
+
+        private Instant now = Instant.parse("2026-11-19T00:00:00Z");
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+    }
+
     private static InboundMessage message(String chatId, String text) {
         return new InboundMessage(new Principal("u-1"), chatId, text);
     }
@@ -1052,6 +1188,7 @@ class RecordingTool implements ToolCallback {
 
     private final ToolDefinition definition;
     private final String result;
+    private final Runnable onCall;
     private final AtomicInteger calls = new AtomicInteger();
 
     RecordingTool(String name, String result) {
@@ -1062,12 +1199,25 @@ class RecordingTool implements ToolCallback {
      * 描述由调用方给：工具检索就是按描述匹配的，描述一样的话"检索选中了谁"根本无从验证。
      */
     RecordingTool(String name, String result, String description) {
+        this(name, result, description, null);
+    }
+
+    /**
+     * 调用时顺手跑一个动作。墙钟那几条用例靠它把钟推过截止时刻——{@code sleep}
+     * 会让"跑到第几轮时到点"变成看运气。
+     */
+    RecordingTool(String name, String result, Runnable onCall) {
+        this(name, result, "测试工具 " + name, onCall);
+    }
+
+    RecordingTool(String name, String result, String description, Runnable onCall) {
         this.definition = ToolDefinition.builder()
                 .name(name)
                 .description(description)
                 .inputSchema("{\"type\":\"object\"}")
                 .build();
         this.result = result;
+        this.onCall = onCall;
     }
 
     @Override
@@ -1078,6 +1228,9 @@ class RecordingTool implements ToolCallback {
     @Override
     public String call(String toolInput) {
         calls.incrementAndGet();
+        if (onCall != null) {
+            onCall.run();
+        }
         return result;
     }
 

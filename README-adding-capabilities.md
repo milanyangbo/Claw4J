@@ -364,6 +364,41 @@ ACK 之后的去重 / 认人 / 异步 / 分段回推 / 失败也回一句，已�
 
 ---
 
+## 9. 工具观测器（一个 bean）
+
+想知道"模型这一轮调了哪些工具、各自花了多久、哪个失败了"，注册一个 `ToolCallListener` 就够了，
+不用改任何工具实现。装饰由库的 `ToolCallListeners.wrapAll` 做，我们只决定套在哪一层。
+
+```java
+@Bean
+ToolCallListener toolAudit() {
+    return new ToolCallListener() {
+        @Override
+        public void afterCall(Object context, String toolName, String toolInput, String result) {
+            // 每次真实执行之后：推给 UI、写外部审计、算耗时分布
+        }
+    };
+}
+```
+
+四个回调：`beforeCall`（执行前，可返回一个关联上下文）、`afterCall`（正常返回）、`onError`（工具抛了）、
+`afterCompletion`（无论成败，但 `beforeCall` 抛时不会来）。没有 bean 时这一层**不存在**——清单里还是
+原来那些对象，不多一层包装。
+
+**三条必须知道的**
+
+1. **回调里不许抛。** 库不兜异常：`beforeCall` 抛会阻止工具执行，`afterCall` 抛会丢掉一个**已经成功**
+   的结果（副作用已经发生，模型可能重试它）。自己的失败要在回调里吞掉。
+2. **它看不见被审批拒掉的调用。** 那一层套在审批闸之内——被拒的调用在审计里是 `blocked`，
+   与"调了但失败"是两件事。
+3. **它替代不了计量与审计。** 那两样要 `runId` / 身份 / 会话键，而 listener 的回调签名里没有
+   `ToolContext`；它们留在 `MeteredToolCallback` 里。listener 是给部署方的观测点，不是内部账本的落点。
+
+**怎么确认**：调一个工具，你的回调被调到了；把回调改成抛异常，工具照样跑完（也就是说你没有把
+它当成控制流）。
+
+---
+
 ## 最后：插件 jar 怎么进 classpath
 
 | 方式 | 命令 / 做法 | 代价 |

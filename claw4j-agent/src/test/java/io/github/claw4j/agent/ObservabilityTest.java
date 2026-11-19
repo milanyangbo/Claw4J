@@ -38,7 +38,9 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springaicommunity.agent.tools.ToolCallListener;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import reactor.core.publisher.Flux;
@@ -258,6 +260,93 @@ class ObservabilityTest {
         assertThat(spanOf("run").getStatus().getStatusCode())
                 .as("回答失败的那一轮，这件事本身要标失败；否则图上它是一次正常结束")
                 .isEqualTo(StatusCode.ERROR);
+    }
+
+    // ---- 工具观测接缝（票 02：库的 ToolCallListener）----
+
+    @Test
+    @DisplayName("有观测器时每次真实调用都过一遍：名字与入参原样到它手上")
+    void listenerSeesEveryExecutedToolCall() {
+        List<String> seen = new ArrayList<>();
+        ToolCallListener listener = new ToolCallListener() {
+            @Override
+            public Object beforeCall(String toolName, String toolInput) {
+                seen.add(toolName + " " + toolInput);
+                return null;
+            }
+        };
+
+        List<ToolCallback> observed = AgentAutoConfiguration.withListener(
+                List.of(new RecordingTool("querySales", "128400")), listener);
+        String result = observed.get(0).call("{\"region\":\"east\"}");
+
+        assertThat(result).isEqualTo("128400");
+        assertThat(seen).containsExactly("querySales {\"region\":\"east\"}");
+    }
+
+    @Test
+    @DisplayName("没有观测器时清单还是原来那些对象：多一层对象就是多一层要维护的东西")
+    void noListenerBeanLeavesTheToolListUntouched() {
+        List<ToolCallback> tools = List.of(new RecordingTool("querySales", "128400"));
+
+        assertThat(AgentAutoConfiguration.withListener(tools, null)).isSameAs(tools);
+    }
+
+    @Test
+    @DisplayName("套上之后工具定义一个字都不变：schema 变了模型就调不动它")
+    void listenerKeepsTheToolDefinitionIntact() {
+        ToolCallback original = new RecordingTool("querySales", "128400");
+        ToolCallback observed = AgentAutoConfiguration.withListener(
+                List.of(original), new ToolCallListener() {
+                }).get(0);
+
+        assertThat(observed.getToolDefinition().name())
+                .isEqualTo(original.getToolDefinition().name());
+        assertThat(observed.getToolDefinition().inputSchema())
+                .isEqualTo(original.getToolDefinition().inputSchema());
+        assertThat(observed.getToolMetadata().returnDirect())
+                .isEqualTo(original.getToolMetadata().returnDirect());
+    }
+
+    @Test
+    @DisplayName("失败时观测器看得见，但异常照旧抛给框架的处理器")
+    void listenerObservesFailureWithoutSwallowingIt() {
+        List<String> failures = new ArrayList<>();
+        ToolCallListener listener = new ToolCallListener() {
+            @Override
+            public String onError(Object context, String toolName, String toolInput,
+                                  RuntimeException exception) {
+                failures.add(toolName + " " + exception.getClass().getSimpleName());
+                // 返回 null = 不接管。返回一句话就成了第二处「错误策略」，
+                // 而框架的 DefaultToolExecutionExceptionProcessor 已经在做那件事。
+                return null;
+            }
+        };
+        ToolCallback failing = new ToolCallback() {
+
+            private final ToolDefinition definition = ToolDefinition.builder()
+                    .name("querySales")
+                    .description("会失败的工具")
+                    .inputSchema("{\"type\":\"object\"}")
+                    .build();
+
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return definition;
+            }
+
+            @Override
+            public String call(String toolInput) {
+                throw new IllegalStateException("库连不上");
+            }
+        };
+
+        ToolCallback observed = AgentAutoConfiguration.withListener(List.of(failing), listener).get(0);
+
+        assertThatThrownBy(() -> observed.call("{}"))
+                .as("观测不改变控制流：吞掉就等于在框架之外另开一处错误策略")
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(failures).containsExactly("querySales IllegalStateException");
     }
 
     @Test

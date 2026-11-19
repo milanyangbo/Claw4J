@@ -31,13 +31,15 @@ import java.time.ZoneId;
  * @param zone 业务时区
  * @param laneWait 同一段对话等上一位说完的最长时长
  * @param toolCallLimit 一轮的工具调用次数上限
+ * @param turnTimeout 一轮最多跑多久；{@code 0} 表示不设上限
  */
 @ConfigurationProperties("claw4j.agent")
 public record AgentProperties(String directory,
                               @Name("default") String defaultName,
                               ZoneId zone,
                               Duration laneWait,
-                              int toolCallLimit) {
+                              int toolCallLimit,
+                              Duration turnTimeout) {
 
     /** 业务所在时区。写成常量是为了让「默认值是什么」能被搜到，而不是藏在代码里。 */
     public static final String DEFAULT_ZONE = "Asia/Shanghai";
@@ -53,6 +55,19 @@ public record AgentProperties(String directory,
      */
     public static final Duration DEFAULT_LANE_WAIT = Duration.ofSeconds(60);
 
+    /**
+     * 一轮最多跑多久，默认 10 分钟。
+     *
+     * <p>OpenClaw 用 {@code agents.defaults.timeoutSeconds}（默认 48 小时）兜住跑飞，那个数是给
+     * "跑几十小时的长任务"的；我们的轮次是交互式的，通道那头有人在等，48 小时等于没有。
+     * 10 分钟覆盖"读大文件 + 六次工具往返"的现实上限（{@code tool-call-limit} 是 6 次），
+     * 同时让"跑飞"在一个可等的窗口里结束。
+     *
+     * <p>它兜的正是次数管不住的那一种：单次工具调用卡住（命令不返回、MCP 端点挂住）时，
+     * 次数还没数到，那一轮永远不回来。
+     */
+    public static final Duration DEFAULT_TURN_TIMEOUT = Duration.ofMinutes(10);
+
     public AgentProperties {
         directory = directory == null ? "" : directory.trim();
         defaultName = defaultName == null ? "" : defaultName.trim();
@@ -62,16 +77,19 @@ public record AgentProperties(String directory,
         // 0 与"没配"落到同一个默认值：0 在这里不是"不限"，那会让一轮可以无限绕。
         toolCallLimit = toolCallLimit <= 0
                 ? io.github.claw4j.agent.ToolCallBudget.MAX_TOTAL_CALLS : toolCallLimit;
+        // 这里 0 有意义（不设墙钟），所以只归一 null 与负数。
+        turnTimeout = turnTimeout == null || turnTimeout.isNegative() ? DEFAULT_TURN_TIMEOUT : turnTimeout;
     }
 
     /**
      * 造一份全默认的配置：没有人设目录、用内置的，时间是业务时区，lane 等 60 秒，
-     * 工具调用上限取 {@link io.github.claw4j.agent.ToolCallBudget#MAX_TOTAL_CALLS}。
+     * 工具调用上限取 {@link io.github.claw4j.agent.ToolCallBudget#MAX_TOTAL_CALLS}，
+     * 一轮最多跑 {@link #DEFAULT_TURN_TIMEOUT}。
      *
      * @return 全默认的配置
      */
     public static AgentProperties defaults() {
-        return new AgentProperties(null, null, null, null, 0);
+        return new AgentProperties(null, null, null, null, 0, null);
     }
 
     /**
