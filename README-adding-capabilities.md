@@ -317,9 +317,18 @@ claw4j:
 启动后同步一次，按文件内容哈希跳过没变的。默认混合检索（向量 + 全文）加 `qwen3-rerank` 重排：
 向量与重排都复用 `QWEN_API_KEY`，全文那一路用 PG 的 `pg_trgm`。**每段结果都带「文档 + 第几段」**，不写出处等于让模型自由发挥。
 
-**本地开发什么都不用配**：`application-local.yml.example` 里已经写着 `enabled: true` 与
-`directory: examples/knowledge`，起 `--spring.profiles.active=local` 就带着知识库（要 compose 的 pgvector
-与 `.env` 里的 qwen key）。上面那段 yaml 是**别的部署**要加的那几行。
+**本地开发什么都不用配**：`application-local.yml.example` 里把这些开关都写好了，起
+`--spring.profiles.active=local` 就带着它们（知识库要 compose 的 pgvector 与 `.env` 里的 qwen key）：
+
+| 开关 | 本地那份写了什么 |
+| --- | --- |
+| `claw4j.rag.directory` | `examples/knowledge`，`enabled: true` |
+| `claw4j.skills.directory` | `examples/skills` |
+| `claw4j.subagents.directory` | `examples/subagents` |
+| `claw4j.agent.memory.directory` | `${user.home}/.claw4j/memory`：跨会话的长期记忆，每人一层、明文 |
+| `claw4j.session.*` | schema / 私聊与群聊边界 / 上下文窗口 / 换段策略，本地值集中在那一段 |
+
+上面这几段 yaml 是**别的部署**要加的行。启动命令行不再需要 `--claw4j.skills.directory=...` 这类参数。
 
 **怎么确认**：问一个只有这份文档能答的问题，回答里应带出处；再问一句闲聊，不该被"资料里没有"劫持。
 重排有没有真跑，看 DEBUG 日志那一行 `重排完成：候选 N 条，服务返回 M 条，前三条 […] → […]`——

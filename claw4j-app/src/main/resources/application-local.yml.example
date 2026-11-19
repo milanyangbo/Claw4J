@@ -47,6 +47,19 @@ claw4j:
   approval:
     approvers: []
 
+  # ---- 短期记忆（会话）：完整清单与默认值在 application.yml 的 `session:` 段 ----
+  # 这里写成本地的值，方便一处看完。库是本机 compose 起的那个 Postgres，会话表同库不同 schema。
+  # 要验"换段 = 换对话"就把 reset.mode 改成 daily-and-idle（那时才用到分界点 4 点与
+  # 空闲 120 分钟）；换了主模型就改 context-window——压缩阈值是它的 0.5 倍。
+  session:
+    schema: claw4j_session
+    # 私聊边界。多人可及的部署必须改成 per-channel-peer（见 application.yml 那段注释）。
+    dm-scope: main
+    group-scope: per-group
+    context-window: 65536
+    reset:
+      mode: none
+
   # 知识库：默认关（别的部署没有 embedding 凭据、也没有 pgvector 那张表），本地两样都有。
   # 重排跟着默认值走（开），挂掉时只是不重排，不影响检索。
   # 相对路径按当前工作目录解析，所以要从仓库根目录起。
@@ -58,6 +71,22 @@ claw4j:
   # 这一层导出的是 Skill 工具：描述里只有名字与一句话，正文要按名字调一次才回来。
   skills:
     directory: examples/skills
+
+  # 子 Agent：目录里每份 *.md 是一个可派的对象，默认不配（别的部署没有这个目录）。
+  # 相对路径按当前工作目录解析，所以要从仓库根目录起。
+  subagents:
+    directory: examples/subagents
+
+  # ---- 长期记忆：每人一个子目录，模型自己判断该记什么 ----
+  # 与会话记忆是两条轴：那条只活在一段对话里，这条跨会话、跨重启。
+  # 放在仓库外：它是本机这个人的东西，不是项目产物（mvn clean 不该把它删掉）。
+  # 写进去的是明文 Markdown。整理（dream）默认开着：同一人距上次满 24 小时、且又过 5 轮
+  # 才在后台合并一次；关掉只是不整理，读写照旧。
+  agent:
+    memory:
+      directory: ${user.home}/.claw4j/memory
+      dream: true
+
 
   # ---- 业务示例插件（claw4j-example-sales）----
   # 默认就装着，导出 querySales。tool-filter 决定这个插件**提供哪些工具**：
