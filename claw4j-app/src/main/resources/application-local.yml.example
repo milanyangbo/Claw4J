@@ -1,28 +1,27 @@
-# 本地开发配置模板。复制一份改名为 application-local.yml 即生效：
+# 本地开发配置模板。复制一份改名即生效：
 #   cp application-local.yml.example application-local.yml
+# 之后起本地只要一个参数：--spring.profiles.active=local
 #
-# 真正的 application-local.yml 不入库（.gitignore）：它可能放真实 key、真实的人。
-#
-# 这一份替你做四件事：导入 .env、让 Boot 拉起 compose.yaml 里的 Postgres(pgvector) 并打开迁移、
-# 打开知识库与技能。MCP 那一层也在这里——接哪几个 server 是"这台机器"的事，不是框架的默认值。
+# 真正的 application-local.yml 不入库（会放真实 key 与真实的人）。
+# 这一份负责：读 .env、用 compose 起 Postgres(pgvector)、跑迁移，并把技能 / 子 Agent /
+# 知识库 / 长期记忆 / MCP 这几层打开。
 
 spring:
-  # Boot 不读 .env（那是 docker compose 的约定），这行按 properties 解析进来。
-  # 两个位置对应两种工作目录：仓库根目录（命令行）与 claw4j-app 模块（IDEA 默认）。
+  # Boot 不读 .env，这行把它当 properties 读进来。两个路径对应两种工作目录：
+  # 从仓库根起（命令行）与从 claw4j-app 模块起（IDEA 默认）。
   config:
     import: optional:file:./.env[.properties],optional:file:../.env[.properties]
 
-  # 让 Boot 拉起并回收 compose.yaml 里的 Postgres。工作目录要能找到 compose.yaml，
-  # 也就是从仓库根目录启动。
+  # 让 Boot 顺手拉起 compose.yaml 里的 Postgres，退出时收掉。要从仓库根目录启动才找得到它。
   docker:
     compose:
       enabled: true
       file: compose.yaml
       lifecycle-management: start-and-stop
 
-  # 库起来了才做迁移（默认 profile 里是关的，免得没 Docker 时启动失败）。
-  # 迁移脚本散在各模块的 classpath:db/migration 下，Flyway 会扫遍并按版本号排序，不用写 locations。
-  # 改 schema = 加一个版本号更大的新文件，不要回头改已提交的。
+  # 库起来了才迁移（默认 profile 关着，免得没 Docker 时起不来）。
+  # 脚本在各模块的 db/migration 下，按版本号自动排序，不用写 locations。
+  # 改表结构 = 加一个号更大的新文件，不要改已提交的。
   flyway:
     enabled: true
 
@@ -33,25 +32,21 @@ logging:
 claw4j:
   channel:
     http:
-      # HTTP 通道的准入白名单（ADR-0030）：空 = 谁都不能。本机 curl 要能进来，就先把你自己
-      # （也就是 X-Claw4j-User 里那个名字）填进来；整份写 ["*"] 表示这条通道不设准入。
+      # 准入白名单：空 = 谁都不能。本机 curl 要能进来，先把你自己（X-Claw4j-User 里那个名字）
+      # 填进来；写 ["*"] 表示这条通道不设准入。
       users: []
     feishu:
-      # 谁能用飞书通道：把提问那个人的 open_id 填在这里。
-      # 它只是一份准入白名单——角色、能读哪些表那一层随 ADR-0030 整块下线了。
-      # 没填时通道照样连得上，但任何人提问都只收到"没有权限"（日志里有带 sender= 的 WARN）。
+      # 填提问那个人的 open_id。没填时通道照样连得上，但谁问都只收到"没有权限"
+      # （日志里有带 sender= 的 WARN）。
       users: ["ou_xxxxxxxxxxxxxxxx"]
 
-  # 谁能点审批按钮：飞书那边写 open_id，HTTP 那边写用户名（X-Claw4j-User）。
-  # 不写就是没人能批：待批请求会挂到过期，启动日志里有一条 WARN。
+  # 谁能点审批按钮：飞书填 open_id，HTTP 填用户名。空 = 没人能批，请求会挂到过期。
   approval:
     approvers: []
 
-  # ---- 短期记忆（会话）：完整清单与默认值在 application.yml 的 `session:` 段 ----
-  # 长期记忆是另一个并列节点（`memory:`，在下面），两者不嵌套。
-  # 这里写成本地的值，方便一处看完。库是本机 compose 起的那个 Postgres，会话表同库不同 schema。
-  # 要验"换段 = 换对话"就把 reset.mode 改成 daily-and-idle（那时才用到分界点 4 点与
-  # 空闲 120 分钟）；换了主模型就改 context-window——压缩阈值是它的 0.5 倍。
+  # ---- 短期记忆（会话）：每一项的含义见 application.yml 的 `session:` 段 ----
+  # 这里只写本地会动到的几项；长期记忆是下面的 `memory:`。
+  # 要验"换段 = 换对话"就把 reset.mode 改成 daily-and-idle；换模型改 context-window。
   session:
     schema: claw4j_session
     # 私聊边界。多人可及的部署必须改成 per-channel-peer（见 application.yml 那段注释）。
@@ -61,37 +56,29 @@ claw4j:
     reset:
       mode: none
 
-  # 知识库：默认关（别的部署没有 embedding 凭据、也没有 pgvector 那张表），本地两样都有。
-  # 重排跟着默认值走（开），挂掉时只是不重排，不影响检索。
-  # 相对路径按当前工作目录解析，所以要从仓库根目录起。
+  # 知识库：本地有 pgvector 与 qwen key，所以打开。相对路径按启动目录解析，要从仓库根起。
   rag:
     enabled: true
     directory: examples/knowledge
 
-  # 技能：默认不配（别的部署没有这个目录，配了目录里没 SKILL.md 会启动失败）。
-  # 这一层导出的是 Skill 工具：描述里只有名字与一句话，正文要按名字调一次才回来。
+  # 技能：目录里每份 SKILL.md 是一个技能。模型先看到名字与一句话，需要时再取正文。
   skills:
     directory: examples/skills
 
-  # 子 Agent：目录里每份 *.md 是一个可派的对象，默认不配（别的部署没有这个目录）。
-  # 相对路径按当前工作目录解析，所以要从仓库根目录起。
+  # 子 Agent：目录里每份 *.md 是一个可派的对象，派活的工具叫 Task。
   subagents:
     directory: examples/subagents
 
-  # ---- 长期记忆：每人一个子目录，模型自己判断该记什么 ----
-  # 与会话记忆是两条轴：那条只活在一段对话里（上面的 `session:`），这条跨会话、跨重启。
-  # 放在仓库外：它是本机这个人的东西，不是项目产物（mvn clean 不该把它删掉）。
-  # 写进去的是明文 Markdown。整理（dream）默认开着：同一人距上次满 24 小时、且又过 5 轮
-  # 才在后台合并一次；关掉只是不整理，读写照旧。
+  # ---- 长期记忆：跨会话记住"你是谁、你偏好什么"，模型自己决定记什么 ----
+  # 放仓库外：这是本机这个人的数据，不是项目产物。写进去是明文 Markdown，每人一个子目录。
+  # dream 是后台整理（合并重复、删过时的），默认开；关掉只是不整理，读写照旧。
   memory:
     directory: ${user.home}/.claw4j/memory
     dream: true
 
 
-  # ---- 业务示例插件（claw4j-example-sales）----
-  # 默认就装着，导出 querySales。tool-filter 决定这个插件**提供哪些工具**：
-  # 排掉之后，工具清单、权限登记、画像登记三处一起没有它——策略层的 allow 加不回来，
-  # 因为过滤发生在"它变成工具"之前。
+  # ---- 业务示例插件（claw4j-example-sales）：导出 querySales ----
+  # tool-filter 决定它提供哪些工具：排掉的从清单里整条消失，后面的 allow 也加不回来。
   example:
     sales:
       tool-filter:
@@ -100,39 +87,33 @@ claw4j:
         include: []
         exclude: []
 
-  # ---- MCP：一段配置 = 一条连接 = 一个能力来源 ----
-  # stdio 起一个子进程用它的 stdin/stdout 说协议，http 连一个别人已经跑着的端点；
-  # 差别只在 transport 一个键，连接生命周期与鉴权不用改。
-  # 相对路径按**当前工作目录**解析（stdio 子进程继承宿主 CWD），所以从仓库根目录起才对。
-  # 子进程的环境只有 PATH；需要 HOME 之类的变量就在那个 server 的 inherit-env 里写。
-  # 要给子进程专用凭据就写 env，值是句柄 secret:<名字>（常量写 plain:<文本>），裸写会被拒并点名。
-  # 不接 MCP 就把整段注释掉：没有端点就没有工具，不影响启动。
+  # ---- MCP：一段配置 = 一条连接 = 一组外部工具 ----
+  # transport 两种写法：stdio 起一个子进程（用它的 stdin/stdout 说协议），http 连一个已跑着的端点。
+  # 相对路径按启动目录解析，所以要从仓库根起。子进程只继承 PATH；
+  # 要别的变量写 inherit-env，要专用凭据写 env（值写句柄 secret:<名字>）。
+  # 不接就整段注释掉：没有端点就没有工具，不影响启动。
   capability:
     mcp:
-      # npx 起的 server 每次启动约 36 秒（缓存热了也一样），而默认 request-timeout 是 30 秒——
-      # 它会在 server 就绪前超时，症状是 "Client failed to initialize by explicit API call"。
-      # 要打开下面注释着的那两个，先把这两行一起解注释，两个都得给。
+      # npx 起的 server 启动要约 36 秒，超过默认的 30 秒会超时（症状：
+      # "Client failed to initialize by explicit API call"）。要用下面 npx 那两个，
+      # 先解注释这两行，两个都要给。
       # request-timeout: 120s
       # initialization-timeout: 90s
 
       servers:
-        # 仓库自带的三个，只要 python3，都在 examples/mcp/ 下。
-        # demo_now 每次返回不同的 pid 与时间戳，"结果来自新起的进程"因此可判定。
+        # 仓库自带，只要 python3。demo_now 每次返回不同的 pid 与时间戳，用来验"结果来自新进程"。
         demo:
           command: python3
           args:
             - examples/mcp/demo_mcp_server.py
 
-        # Java 版走 HTTP，不是要被 fork 的文件，所以没有 command / args。
-        # 先起它，再起本应用（另开一个终端，在仓库根目录）：
-        #   java -jar claw4j-example-mcp-server/target/claw4j-example-mcp-server-0.1.0-SNAPSHOT.jar
-        # 反过来也能跑：本应用先起时这条连接记 DOWN，之后按 15 秒起、翻倍、封顶 10 分钟
-        # 退避重连；server 起来后自动 UP，不用重启本应用。
+        # Java 版走 HTTP，不需要 command / args。启动顺序随意：本应用先起时这条连接记 DOWN，
+        # 之后自动退避重连（15 秒起、封顶 10 分钟），server 一起来就 UP，不用重启本应用。
+        # 另开一个终端在仓库根目录：java -jar claw4j-example-mcp-server/target/*.jar
         java-http:
           transport: http
           url: http://127.0.0.1:8082
-          # 存在性过滤：排掉的工具不进清单、不进画像登记，allow 加不回来。
-          # 它导出 runtimeSnapshot / cronNext / simulateSlowCall 三个，下面这条只留前两个。
+          # 只留前两个工具（它一共导出三个）。排掉的从清单里消失，allow 也加不回来。
           # tool-filter:
           #   include: [runtimeSnapshot, cronNext]
           #   # 等价写法：exclude: [simulateSlowCall]；通配写 "runtime*"（整串匹配）
@@ -143,19 +124,16 @@ claw4j:
           args:
             - examples/mcp/gh_mcp_server.py
 
-        # 混装的那一个：mail_list_unread 是读，mail_send 有副作用。
-        # 权限声明那一层（permission / tools）已经整块下线（ADR-0030 票 04）：这里只回答
-        # "接谁、装哪些工具"。想只放读的那几个，用 tool-filter.exclude 把写工具排掉。
-        # 要本机装了 himalaya 且配好账户。
+        # 读和写混装：mail_list_unread 是读，mail_send 有副作用。
+        # 只想放读的，用 tool-filter.exclude 把写工具排掉。要本机装了 himalaya 且配好账户。
         mail:
           command: python3
           args:
             - examples/mcp/himalaya_mcp_server.py
 
         # ---- 别人写的两个：默认关着，因为要 Node 与出网 ----
-        # 打开方法：把下面 `# everything:` 到文件末尾的行首 "# " 去掉，再把上面两行超时也解注释。
-        # everything = 官方参考实现：零参数、零凭据，工具名与返回都是确定的，整条按只读声明准确。
-        # deepwiki  = 公开的 Streamable HTTP 端点：无需凭据、不起进程，工具都是"读某个仓库的文档"。
+        # 打开：去掉下面几行行首的 "# "，并把上面两行超时也解注释。
+        # everything 是官方参考实现（零参数、零凭据）；deepwiki 是公开的 HTTP 端点（不起进程）。
         #
         # everything:
         #   command: npx

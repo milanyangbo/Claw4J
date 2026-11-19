@@ -1,17 +1,16 @@
-# Claw4J 的默认配置：不起数据库、不连任何外部服务也能启动。
-# 要库与本地示例就用 local profile（从 application-local.yml.example 复制一份）。
+# Claw4J 默认配置：不装数据库也能启动。模型凭据必须配，一个都没有会启动失败。
+# 想本地带库、示例与全部能力，用 local profile（照着 application-local.yml.example 复制一份）。
 #
-# 三条约定：
-#   - 每个 claw4j.* 键都属于某个 @ConfigurationProperties 类；为什么这么设计在 docs/design 与类的 javadoc 里。
-#   - 模型与 MCP 的凭据写**句柄**：secret:<环境变量名的小写>，真值在发请求那一刻才解析，
-#     配置、日志、审计、模型上下文里都只有名字。裸写明文会在启动时失败并点名是哪一行。
-#   - 通道凭据（feishu / wecom / dingtalk / slack）用 ${VAR:} 占位，由 Spring 在绑定时替换。
+# 凭据两种写法：
+#   模型 / MCP  写句柄 secret:<环境变量名的小写>。真值在发请求那一刻才读，配置与日志里只有名字；
+#               裸写明文会在启动时被拒，并指出是哪一行。
+#   通道        用 ${VAR:} 占位，由 Spring 在启动时替换。
 
 spring:
   application:
     name: claw4j
 
-  # 默认不拉容器、不连库：没有 Docker 的机器也能启动（连接池懒建、迁移关着）。
+  # 默认不拉容器：没有 Docker 的机器也要能起。
   docker:
     compose:
       enabled: false
@@ -22,7 +21,7 @@ spring:
     password: ${CLAW4J_DB_PASSWORD:claw4j}
     driver-class-name: org.postgresql.Driver
 
-  # 迁移要真连库，所以默认关；local profile 打开。
+  # 迁移要真连库，默认关；local profile 打开。
   flyway:
     enabled: false
 
@@ -30,16 +29,16 @@ spring:
     session:
       repository:
         jdbc:
-          # 建表归 Flyway（claw4j-agent 的 V3），不用框架自带的初始化。
+          # 建表交给 Flyway，不用框架自带的初始化。
           initialize-schema: never
     mcp:
       client:
-        # MCP 客户端由本项目的 McpToolAutoConfiguration 装配：框架那份会再注册一份空清单。
+        # MCP 客户端由本项目装配；打开框架这份会多注册一个空清单。
         enabled: false
 
 claw4j:
   # ---- 模型 ----
-  # 两家都配时 primary 先上、另一家备用。一个 key 都没有就启动失败，没有 mock 兜底。
+  # primary 先用，另一个兜底。两家都配就自动容灾；一个 key 都没有则启动失败。
   model:
     primary: ${CLAW4J_MODEL_PRIMARY:deepseek}
     deepseek:
@@ -51,227 +50,207 @@ claw4j:
       api-key: secret:qwen_api_key
       model: ${QWEN_MODEL:qwen-plus}
 
-    # 向量模型：语义缓存与知识库共用这一份，只跟 qwen key 走，不受任何功能开关影响。
+    # 向量模型：语义缓存与知识库共用这一份，只跟 qwen key 走。
     embedding:
       model: ${QWEN_EMBEDDING_MODEL:text-embedding-v3}
-      # 必须与迁移里的 vector(1024) 一致；改这个数要同时改两处迁移。
+      # 必须与数据库里的 vector(1024) 一致；改它要同时改两处迁移。
       dimensions: 1024
 
-  # ---- 这个部署是哪个 agent ----
+  # ---- 这个部署是哪个 agent（人设）----
   agent:
-    # 人设目录：顶层每份 *.md 是一个 agent。不配就用内置的最小可用人设。
+    # 人设目录：顶层每份 *.md 是一个 agent。不配就用内置的最小人设。
     directory: ${CLAW4J_AGENT_DIRECTORY:}
-    # 目录里用哪一个。只有一份时可以不写；多份不写就启动失败并列出候选。
+    # 用目录里的哪一份。只有一份时可以不写；多份不写会启动失败并列出候选。
     default: ${CLAW4J_AGENT_DEFAULT:}
-    # "今天"按哪个时区算。容器里通常是 UTC，差八小时会让晚上八点之后的"今天"变成明天。
+    # "今天"按哪个时区算。容器默认 UTC，差八小时会让晚上八点后的"今天"变成明天。
     zone: ${CLAW4J_AGENT_ZONE:Asia/Shanghai}
-    # 同一段对话串行：等上一位说完最多这么久，超时回一句"现在有点忙"。
-    # 配 0 = 忙就立刻说话，不排队。
+    # 同一段对话排队：等上一位说完最多这么久，超时回一句"现在有点忙"。0 = 不排队。
     lane-wait: 60s
-    # 一轮最多调几次工具，到点就停（熔断，不改任何持久状态）。单工具 3 次不可配。
-    # 它不是 token 额度——额度在会话目标上。
+    # 一轮最多调几次工具，到点就停。它是熔断，不是 token 额度。
     tool-call-limit: 6
 
   # ---- 通道 ----
-  # 每条通道都是"凭据齐了才装配，缺一样整份退让"（HTTP 照常跑）：只做演示的部署不该因为
-  # 没配企业微信而起不来。凭据齐了却连不上，则是启动失败。
-  # 五个通道各有一份准入白名单（ADR-0030 裁决三）。空 = 谁都不能，不是谁都能：
-  # "任何能往通道里发消息的人都能触发这个 agent"是这些通道唯一要守的东西。
-  # 角色、可读表、可执行动作那一层（原来是每个通道自己一张共用授权表）随权限登记表整块
-  # 下线——进来之后能看见什么由工具清单（claw4j.tools）决定，执行前要不要人点头由审批
-  # （claw4j.approval）决定。业务数据范围与按人的细粒度授权是第二步的事。
+  # 凭据齐了才装配，缺一样整份跳过（HTTP 照常跑）；配了却连不上，启动失败。
+  # 每个通道都有一份准入名单：空 = 谁都不能。忘了配的后果是"打不开"，不是"公网可调"。
   channel:
     http:
       enabled: ${CLAW4J_HTTP_ENABLED:true}
-      # 网关在边缘认证之后写 X-Claw4j-User，这里是第二道：只有名单里的人能用这条通道。
-      # 本机演示要先把你自己填进来（或者整份写 ["*"] 表示不设准入），否则 curl 拿到 403
-      # 并被告知缺哪一样。默认为空是刻意的：忘了配的后果是"打不开"，不是"公网可调用"。
+      # 网关认证后会写 X-Claw4j-User，这里再筛一遍。本机 curl 演示先把自己填进来；
+      # 写 ["*"] 表示不设准入。
       users: []
-    # 飞书：长连接接消息，凭据是 app-id + app-secret。
+    # 飞书：长连接收消息，凭据是 app-id + app-secret。
     feishu:
       enabled: ${CLAW4J_FEISHU_ENABLED:true}
       app-id: ${FEISHU_APP_ID:}
       app-secret: ${FEISHU_APP_SECRET:}
-      # 等长连接就绪的上限。少了它，"还在连"与"连不上"在日志里长得一样。
+      # 等长连接就绪的上限。有了它，"还在连"与"连不上"才能区分开。
       ready-timeout: 15s
-      # 填 open_id；本机从那条"未登记"的 WARN 里抄 sender=ou_...
+      # 填 open_id：从那条"未登记"的 WARN 里抄 sender=ou_...
       users: []
     # 企业微信：公网回调 /api/wecom/callback，五样齐了才装配。
-    # 后台"接收消息"那页的 Token 与 EncodingAESKey 必须与这里一致，错一个的表现都是
-    # 回调静默失败、用户永远等不到回答。
+    # 后台"接收消息"页的 Token 与 EncodingAESKey 必须与这里一致，错一个都是回调静默失败。
     wecom:
       enabled: ${CLAW4J_WECOM_ENABLED:true}
       corp-id: ${WECOM_CORP_ID:}
       corp-secret: ${WECOM_CORP_SECRET:}
-      # 数字；缺省 0 表示没配（装配条件因此不成立，而不是拿 0 去发消息）
+      # 数字。0 = 没配（装配条件不成立，而不是拿 0 去发消息）。
       agent-id: ${WECOM_AGENT_ID:0}
       token: ${WECOM_TOKEN:}
       encoding-aes-key: ${WECOM_ENCODING_AES_KEY:}
       # 填成员 UserID
       users: []
-    # 钉钉：公网回调 /api/dingtalk/callback，报文是明文 JSON、验签在 header 里。
-    # client-secret 同时干两件事——换 token 与验签：配错它既有"发不出去"也有"所有回调被拒"。
+    # 钉钉：公网回调，报文是明文 JSON，验签在 header 里。
     dingtalk:
       enabled: ${CLAW4J_DINGTALK_ENABLED:true}
       client-id: ${DINGTALK_CLIENT_ID:}
+      # 一个值干两件事：换 token、验签。配错会同时"发不出去"和"回调全被拒"。
       client-secret: ${DINGTALK_CLIENT_SECRET:}
-      # 通常与 Client ID 同值，但独立配置：换机器人不必换应用凭据。
+      # 通常与 Client ID 同值；独立配置是为了换机器人不必换应用凭据。
       robot-code: ${DINGTALK_ROBOT_CODE:}
-      # 填企业内 userId。机器人没发布上线时钉钉不返回 senderStaffId，那种情况只记一条 WARN。
+      # 填企业内 userId。机器人没发布上线时钉钉不给 senderStaffId，那种情况只记一条 WARN。
       users: []
-    # Slack：Events API 回调 /api/slack/events，签名覆盖整个原始报文、时间戳单位是秒。
-    # 后台要同时订阅 app_mention 与 message.im（私聊不走 app_mention）。
-    # 两把凭据各管一头：signing-secret 只验签，bot-token（xoxb-）只发消息。
+    # Slack：Events API 回调。后台要同时订阅 app_mention 与 message.im（私聊不走前者）。
     slack:
       enabled: ${CLAW4J_SLACK_ENABLED:true}
+      # 只验签，不发送。
       signing-secret: ${SLACK_SIGNING_SECRET:}
+      # 只发送（xoxb-），不验签。
       bot-token: ${SLACK_BOT_TOKEN:}
-      # 同频道两条消息的最小间隔（chat.postMessage 限流）。调小不会更快，只会撞 429。
+      # 同频道两条消息的最小间隔。调小不会更快，只会撞限流 429。
       min-interval: 1s
       # 填 Slack user id（U 开头）
       users: []
 
   # ---- 入站拦截 ----
-  # 命中词表任意一条就整轮拒答：不调模型、也不进会话历史。匹配是子串 + 大小写不敏感。
-  # 词表在文件里：一行一个词，# 开头的行是注释。文件配了却不存在时启动失败——
-  # "什么都没拦"和"拦住了"在日志上长得一样，只能在这里拦住。
+  # 命中词表任意一条就整轮拒答：不调模型、也不写进会话历史。按子串匹配，忽略大小写。
   guard:
-    # 相对路径按启动时的工作目录解析；换到别的目录部署就把 CLAW4J_GUARD_WORDS_FILE 指到实际文件。
+    # 一行一个词，# 开头是注释。相对路径按启动目录解析。
+    # 配了文件却不存在会启动失败——"什么都没拦"和"拦住了"在日志上长得一样。
     sensitive-words-file: ${CLAW4J_GUARD_WORDS_FILE:examples/guard/sensitive-words.txt}
     # 命中时回给用户的话。别写命中了哪个词，那等于把词表告诉想绕过的人。
     # failure-response: 这条消息我没法处理，换个说法再试一次。
 
-  # ---- 记忆与一段对话的边界 ----
+  # ---- 一段对话的边界与长度 ----
   session:
-    # 私聊的边界。
-    #   main（默认）          一个人的所有私聊共用一个主会话。
-    #   per-peer              按对端身份分（同一个人跨通道共用）。
-    #   per-channel-peer      按通道 + 对端分，换一条通道就是另一段。
-    #   per-account-channel-peer  本仓库没有 account 这一维，等同 per-channel-peer。
-    # **多人可及的部署必须改成 per-channel-peer**：main 意味着网页里问到的数字，
-    # 飞书私聊里的模型也看得见。
+    # 私聊怎么分段：
+    #   main（默认）  一个人所有私聊共用一个主会话
+    #   per-peer      按对端分，同一个人跨通道共用
+    #   per-channel-peer  按通道 + 对端分，换通道就是另一段
+    # **多人可及的部署必须改成 per-channel-peer**：否则网页里问到的数字，飞书私聊里也看得见。
     dm-scope: main
-    # 群聊的边界：per-group（默认）按群隔离；main 把群并进主会话。
+    # 群聊：per-group（默认）按群隔离；main 把群并进主会话。
     group-scope: per-group
-    # 会话表落在哪个 schema，默认与业务数据的 business 分开。
-    # 改它会影响五处（框架那一路、会话指针、会话目标、清理、跨会话召回），都由这一个键取。
+    # 会话表放哪个 schema。五处都读这一个键（框架那一路、会话指针、会话目标、清理、召回），
+    # 所以改一处就够，但五处会一起变。
     # schema: claw4j_session
-    # 过期会话的清理间隔。这是"确实有一个每小时删东西的后台任务"的说明。
+    # 多久清一次过期会话（后台任务）。
     cleanup-interval: PT1H
-    # 主模型的上下文窗口（token）。压缩阈值是它的 0.5 倍，比例与保留条数不做配置。
-    # 换主模型就改这一行，不用翻代码。
+    # 主模型的上下文窗口（token）。用到一半就开始压缩。换模型只改这一行。
     context-window: 65536
     # 旧会话怎么清。
     maintenance:
-      # enforce（默认）真删；warn 只算不删，把"本来会删多少"打进日志与指标。
+      # enforce 真删；warn 只算不删，把"本来会删多少"打进日志与指标。
       mode: enforce
-      # 多久**没动**算陈旧（不是"建了多久"）。
+      # 多久没动算陈旧（不是建了多久）。
       prune-after: 30d
-      # 节点数上限。单用户形态的数：多租户要按"人数 × 通道数"调大，
-      # 否则到上限被驱逐的是"最久没动的那个"，与他做了什么无关。
+      # 会话节点数上限。多租户要按"人数 × 通道数"调大，否则到上限被赶走的是最久没动的那个。
       max-entries: 5000
     # 换段 = 换对话：记忆、预算、召回都从零开始。
     reset:
-      # none（默认）不自动结束，靠上下文压缩管长度；daily-and-idle 跨天或空闲；
+      # none（默认）不自动结束，靠压缩管长度；daily-and-idle 跨天或空闲；
       # idle 只看空闲。三档下 /new 都有效。
       mode: none
-      # 逻辑日的分界点：4 点的意思是"凌晨三点还在聊的那件事还是昨天那件"。
-      # 时区取 claw4j.agent.zone，不取容器时区。
+      # 一天从几点算起。4 点的意思是"凌晨三点还在聊的那件事还是昨天那件"。
+      # 时区取上面的 agent.zone。
       at-hour: 4
-      # 多久没动静算结束。OpenClaw 的 idleMinutes 默认也是 120。
+      # 多久没动静算这段结束（分钟）。
       idle-minutes: 120
 
-  # ---- 需要库的几样：审计、审批、投递配置、定时任务 ----
-  # 关掉之后判了不留痕、批了查不到、到点没人跑。迁移默认关着，所以这一层默认开。
+  # ---- 需要库的几样：审计、审批、投递、定时任务 ----
+  # 关掉之后：判了不留痕、批了查不到、到点没人跑。
   persistence:
     enabled: true
 
-  # ---- 审批 ----
+  # ---- 审批：执行前等人点头 ----
   approval:
-    # 一条请求等人等多久。太短则审批人开个会回来卡片已作废；太长则三天前的上下文还能放行。
+    # 一条请求等人等多久。太短，审批人开个会回来卡片已作废；太长，三天前的上下文还能放行。
     ttl: 10m
-    # 谁能批：飞书那边填 open_id，HTTP 那边填用户名（X-Claw4j-User）。
-    # 与准入白名单是两张表：那个回答"能不能用这条通道"，这个回答"愿意为别人的操作负责"。
-    # 空 = 没人能批（请求会挂到过期，启动日志有一条 WARN）。
+    # 谁能批：飞书填 open_id，HTTP 填用户名。
+    # 与准入名单是两回事：那个管"能不能用这条通道"，这个管"愿不愿意为别人的操作负责"。
+    # 空 = 没人能批，待批请求会挂到过期（启动日志有一条 WARN）。
     approvers: []
 
-  # ---- 定时任务：到点 = 创建一个 run ----
+  # ---- 定时任务：到点创建一个 run ----
   schedule:
-    # 关掉之后扫描与那三个工具一起不装配（已建的任务照旧保留，重新打开即恢复）。
+    # 关掉后扫描与那三个工具一起不装配；已建的任务保留，重新打开即恢复。
     enabled: true
-    # 扫表间隔。写 0 会让调度退化成热循环，所以非法值直接拒绝启动。
+    # 多久扫一次。写 0 会变成热循环，所以非法值直接拒绝启动。
     scan-interval: PT30S
-    # 一次扫描最多认领几条，逐条串行跑完再看下一轮。调大等于同一时刻有 N 个模型在烧不同人的额度。
+    # 一次最多认领几条，逐条串行跑完再看下一轮。调大等于同一时刻有 N 个模型在烧不同人的额度。
     max-per-scan: 5
-    # 连续几次没跑成就自动停用并推一条带最后错误的通知（成功一次清零）。
-    # 只对"可能是暂时的"失败计数：权限被收回那类当场停用。
+    # 连续几次跑不成就自动停用，并推一条带最后错误的通知（成功一次清零）。
+    # 只对"可能是暂时的"失败计数；权限被收回那类当场停用。
     failure-threshold: 3
-    # 一条被认领之后占多久：管的是"认领之后进程崩了"，否则它会一直躺在"已认领"里没人再跑。
+    # 一条被认领后占多久。管的是"认领之后进程崩了"，否则它会一直躺在"已认领"里没人再跑。
     lease: PT5M
-    # 一次定时运行留下的会话留多久。定时任务一次运行一个新段，按 30 天留会撑满会话表。
+    # 一次定时运行的会话留多久。每次运行一个新段，按 30 天留会撑满会话表。
     session-retention: PT24H
 
   # ---- 审计：一行 = 一次动作的开始或结束 ----
   audit:
-    # 记不记新事件。关掉之后不再写新的，已有记录照常可查。
+    # 关掉之后不再写新事件，已有记录照常可查。
     enabled: true
-    # 清理间隔（启动时也清一次，另外每 500 次写入清一次）。
+    # 清理间隔（启动时清一次，之后每 500 次写入再清一次）。
     prune-interval: PT1H
 
-  # ---- 工具检索：工具循环只有这一种，没有开关，也没有"少于几个就全塞"的阈值 ----
+  # ---- 工具检索：模型不是一次拿到全部工具，而是按关键词检索 ----
   tool-search:
-    # 一次检索返回几个候选（框架约定 1–10）。给多了等于把省下来的 token 又还回去。
+    # 一次返回几个候选（1–10）。给多了等于把省下的 token 又还回去。
     max-results: 5
 
-  # ---- 工具画像（ADR-0030）----
-  # 四档是**四个互不包含的集合**，不是阶梯。每个工具声明它在哪几档里：
-  #   minimal    地基：检索、问人、读自己状态、回忆本会话、记计划、目标
-  #   messaging  能问能查、碰不到机器：地基 + 外部工具（业务模块、MCP）
-  #   coding     开发助手：碰机器（shell / 文件 / 出网）+ 自主行动（定时任务、子 Agent）+ 技能
-  #   full       不限制（allow: ["*"] 的等价物，不是"最全的画像"）
-  # 默认 full = 升级前后清单一样。
+  # ---- 工具清单：这个部署让模型看见哪些工具 ----
+  # 四档是四个独立的集合，不是"一级比一级全"：
+  #   minimal    地基：检索、问人、读自己状态、回忆本会话、记计划
+  #   messaging  能问能查、碰不到机器：地基 + 业务模块与 MCP
+  #   coding     开发助手：能跑命令、改文件、出网，还有定时任务、子 Agent、技能
+  #   full       不限（默认；升级前后清单一样）
   tools:
     profile: ${CLAW4J_TOOLS_PROFILE:full}
-    # 白名单：**只能在画像之内收窄**。写了画像里没有的工具不生效，启动日志会告警
-    # （要放宽得用 alsoAllow，别指望 allow）。
-    # 接受 group:* 简写：group:fs / group:runtime / group:web / group:agents /
-    # group:plugins（业务模块 + MCP）/ group:openclaw（其余内置工具）。
+    # 白名单：只能在所选画像之内收窄（画像就是上面四档之一）。写了画像里没有的工具不生效，
+    # 启动日志会告警。
+    # 支持简写 group:*（group:fs / group:runtime / group:web / group:agents /
+    # group:plugins / group:openclaw）。
     allow: []
-    # 显式放宽：**能突破画像**。"messaging 画像但要跑条命令"写 [Bash] 就够，
+    # 显式放宽：可以突破画像。"messaging 画像但要跑一条命令"写 [Bash] 就够，
     # 不必把整个部署调成 coding 再 deny 一大串。
-    # 注意：只配这一项、不配 allow 时，那一层等于不设限（照 OpenClaw 的语义）——
-    # 空 allow 本来是"不收窄"，加上 alsoAllow 若变成"只放这几个"就与 writer 的意图相反。
     alsoAllow: []
-    # 黑名单：在画像与白名单之后生效，压过 allow 与 alsoAllow。
-    # 同一个名字同时写进 allow 与 deny 会启动失败；写了不存在的名字不报错，
-    # 但启动日志会列出来（部署裁剪与拼错长得一样）。
+    # 黑名单：最后生效，压过 allow 与 alsoAllow。
+    # 同一个名字既在 allow 又在 deny 会启动失败；写了不存在的名字不报错，但启动日志会列出来。
     deny: []
 
-    # ---- 按维度的那几层（ADR-0030 裁决二）----
-    # 它们是**每轮**按"这一轮谁在问、用的哪个模型"现算的，且只能在上面四样的结果上继续收窄。
-    # 没配就是没有这一层——不配的部署行为与没有这些能力时完全一样。
+    # ---- 按维度收窄（都可以不配，不配就没有这一层）----
+    # 每轮按"这一轮谁在问、用的哪个模型"现算，只能在上面的结果上继续减。
     #
     # 按模型：键可以是 provider，也可以是 provider/model（后者更精确，先命中）。
     #   byProvider:
     #     deepseek:                 # 这个供应商的所有模型
-    #       profile: messaging      # 换画像（连同它自己的成员表）
+    #       profile: messaging
     #       deny: [group:runtime]
     #     deepseek/deepseek-chat:   # 只对这一个模型
     #       allow: [querySales]
     byProvider: {}
     #
-    # 按发送者：键是 "channel:<通道>:<userId>" 或 "id:<userId>"，或 "*" 兜底。
-    # 命中即用（不是把三条合并）——写了一条 * 的兜底 deny 之后，给某个人单独写 allow 仍然放得开。
-    # yaml 里含冒号的键必须加引号，否则会被解析成嵌套映射。
+    # 按发送者：键是 "channel:<通道>:<userId>"、"id:<userId>"，或 "*" 兜底。
+    # 命中即用，不合并——写了一条 * 的兜底 deny 之后，给某个人单独 allow 仍然放得开。
+    # 含冒号的键必须加引号，否则 YAML 会当成嵌套。
     #   toolsBySender:
     #     "channel:feishu:alice": { allow: [querySales] }
     #     "id:bob":               { deny: [group:runtime] }
     #     "*":                    { deny: [group:runtime] }
     toolsBySender: {}
     #
-    # 子 Agent 那一层：配置的收窄，叠在内建角色清单之上。
-    # 内建清单（所有子 Agent）：定时任务三件——一次性执行体不该往全局任务表里写。
-    # 显式 allow 点名的那几个不受内建清单约束（配置比角色的默认更懂这个部署）。
+    # 子 Agent 能看到什么：在这里继续收窄。内建清单是"定时任务三件套不给子 Agent"；
+    # 被 allow 点名的工具不受内建清单限制。
     #   subagents:
     #     allow: []
     #     deny: []
@@ -279,81 +258,69 @@ claw4j:
       allow: []
       deny: []
 
-    # ---- 通用 shell（ADR-0030 裁决四：三段式）----
-    # 工具是 Spring AI 的 Bash / BashOutput / KillShell，边界在后端里。
-    # 审批**不是装配期声明**，是执行那一刻按下面三段算的：security × ask × 命令分析。
-    #   mode  是预设，一次给三段赋值；写了显式字段就按字段覆盖（按字段，不是整份替换）
-    #         deny      不装配
-    #         allowlist 只跑白名单，未命中直接拒（不给人点按钮的机会）
-    #         ask       白名单命中就跑，未命中问人
-    #         auto      同 ask，但未命中先问复核器；没有复核器时等同 ask
-    #         full      不判白名单、不批（默认）
-    # 参数只有 command / timeout / description / runInBackground，没有 workdir 与 env：
-    # 目录固定是下面的 workspace（要换就 cd），要临时改变量就写 FOO=bar cmd。
+    # ---- 跑命令（Bash）：安不安全、要不要人批 ----
+    # 审批不是装配时定的，是每次执行前按三段算：security × ask × 命令分析。
+    #   mode 是预设，一次给三段赋值；写了显式字段就覆盖那一段。
+    #     deny      不装配
+    #     allowlist 只跑白名单，未命中直接拒（不给人点按钮的机会）
+    #     ask       白名单命中就跑，未命中问人
+    #     auto      同上，但未命中先问复核器；没有复核器时等同 ask
+    #     full      不判白名单、不批（默认）
     exec:
       mode: ${CLAW4J_EXEC_MODE:full}
       # 在哪台机器上跑：auto / gateway / sandbox / node。
-      # 这个应用既是控制面也是执行面，所以 **auto 与 gateway 是同一件事**（都落本机）。
-      # sandbox 要容器（见下面的 sandbox 段；限额还没做，归 P17b）、node 要多宿主（没有），
-      # 做不到的那两档配了**启动失败**，不静默回落——"以为进了容器"比"知道没进"危险。
+      # 本应用既是控制面也是执行面，所以 auto 与 gateway 都是本机。
+      # sandbox 要容器，node 要多宿主（都没有）——配了会启动失败，不静默回落。
       # host: auto
-      # 三段式的显式字段：不写就取 mode 预设，写了就覆盖那一段。
+      # 三段式的显式字段：不写取 mode 预设，写了覆盖那一段。
       # security: allowlist
       # ask: on-miss            # off / on-miss / always
       # autoReview: false
-      # 默认是**启动时的**工作目录（`claw4j.launch-directory`，启动钩子写下）。
-      # 不能写 `.`：内嵌 Tomcat 起来时会把 user.dir 改成它的 docbase，`.` 就成了临时目录。
+      # 命令在哪个目录跑。默认是启动时的目录（记在 claw4j.launch-directory）。
+      # 别写 "."：内嵌 Tomcat 起来会把 user.dir 改成它的 docbase，"." 就指向别处了。
       workspace: ${CLAW4J_EXEC_WORKSPACE:${claw4j.launch-directory:.}}
-      # 白名单：整条命令等于某一项、或以"某一项 + 空格"开头。批过 allow-always 的命令
-      # 会进 exec_allowlist 表，与这一份按同一规则合并匹配（表里的是运维批出来的）。
+      # 白名单：整条命令等于某一项、或以"某一项 + 空格"开头。
+      # 批过"以后都放行"的命令会进数据库，与这份按同一规则合并匹配。
       allow: []
 
-    # ---- 提权：会话级的 /elevated（票 06 / ADR-0030 裁决六）----
-    # off（默认）：命令按 sandbox 与 exec 的配置跑，审批照常问。
-    # on | ask：这一段跑到沙箱外（容器开着才有区别），审批照旧。
-    # full：这一段跳过审批。它只在"这一段的对话"里生效，重启即失效。
-    # 默认关。名单为空时谁都不许——"没配"在权限这件事上只能是"不许"，不是"都行"。
+    # ---- 提权：会话里临时放宽（/elevated）----
+    # off（默认）按 sandbox 与 exec 的配置跑，审批照常。
+    # on / ask：这一段跑到沙箱外，审批照旧。
+    # full：这一段跳过审批。只在当前这段对话里有效，重启即失效。
+    # 名单空 = 谁都不许：权限这件事上"没配"只能是"不许"。
     elevated:
       enabled: ${CLAW4J_ELEVATED_ENABLED:false}
       allow-from: []
-      # 一次提权的有效期；到点自动回到 off，忘了关不会变成永久。
+      # 一次提权多久失效。到点自动回到 off，忘了关也不会变成永久。
       ttl: 30m
 
-    # ---- 沙箱：命令跑在宿主进程里，还是跑在另一台容器里（P17a / ADR-0030 裁决六）----
-    # 默认 off：与接入这一层之前逐字节一致。打开之后 exec 进容器。
-    # 探不通 docker **启动失败**，不会悄悄回落到宿主——那样你以为有隔离，其实没有。
-    #
-    # 只有一条执行路径：库的 `DockerCliExecBackend`（托管容器、后台句柄、超时在容器内杀 PID、
-    # 退出回收都在库里）。限额（网络、只读根、内存/pids、非 root）归 P17b，**等上游给
-    # `DockerCliExecBackend.Builder` 加参数**，我们不自己实现。
+    # ---- 沙箱：命令跑在宿主里，还是跑在容器里 ----
+    # 默认 off，与没有这一层时逐字节一致。打开后命令进容器。
+    # 探不通 docker 会启动失败，不会悄悄回落到宿主——那样你以为有隔离，其实没有。
+    # 执行完全交给库（托管容器、后台句柄、超时杀 PID、退出回收）。
     sandbox:
-      # off / all。non-main（"主对话留在宿主、其余进容器"）还没接上：它要按会话键判，
-      # 沙箱这一层拿不到，配了**启动失败**。
-      # 下面这些键要与 `claw4j.tools.exec.host` 对得上：host=sandbox 而这里 off，启动即失败。
+      # off / all。non-main（"主对话留宿主、其余进容器"）还没接上，配了启动失败。
+      # 要与 exec.host 对得上：host=sandbox 而这里 off，启动即失败。
       mode: ${CLAW4J_SANDBOX_MODE:off}
-      # docker；ssh 未实现，配了启动即失败（留一个配了不生效的取值比不支持更坏）。
+      # docker；ssh 还没实现，配了启动失败（留一个配了不生效的取值更坏）。
       backend: ${CLAW4J_SANDBOX_BACKEND:docker}
-      # ro / rw / none。**目前不生效**：exec 侧的挂载由库管理、只支持读写。
-      # 真正的只读根归 P17b（同上，等上游），这里配了会在启动日志里说清楚。
+      # ro / rw / none。目前不生效：挂载由库管理，只支持读写。配了会在启动日志里说明。
       workspace-access: ${CLAW4J_SANDBOX_WORKSPACE_ACCESS:ro}
-      # 镜像要带 POSIX shell；exec 侧还要 sleep（托管容器靠它保活）、可写的 /tmp（记 PID 用）。
-      # 国内网络下拉不到官方镜像时，换本机已有的那个（例如本地镜像站的前缀）。
+      # 镜像要带 POSIX shell；还要 sleep（托管容器靠它保活）与可写的 /tmp（记 PID）。
       image: ${CLAW4J_SANDBOX_IMAGE:alpine:3}
       docker-binary: ${CLAW4J_SANDBOX_DOCKER_BINARY:docker}
-      # 沙箱会话里的工具白/黑（第 9 层，票 06）：**只在 mode≠off 时生效**，非沙箱会话不看它。
-      # 语义与上面对 tools.* 那份一样（deny 先判、allow 空则全放）。
-      # `bundle-mcp` 是组名：**不写它，沙箱会话里看不见任何 MCP 工具**——外部工具的副作用
-      # 在沙箱里更难观察，所以默认关，要开就显式写进 allow 或 also-allow。
+      # 沙箱会话里给哪些工具：只在 mode≠off 时生效。
+      # bundle-mcp 是组名：不写它，沙箱会话里就看不见任何 MCP 工具（默认关）。
       tools:
         allow: []
         deny: []
         also-allow: []
 
-    # ---- 文件工具：Read / Grep / Glob（+ 可选 Write / Edit）----
-    # 读与搜默认就有，路径只能落在 directory 里（`..` 与软链接跳出去会被拒）。
-    # 写要单独开：读文件和改文件是两种能力，默认能改磁盘意味着一次误判就是一次脏工作区。
+    # ---- 读写文件（Read / Grep / Glob，可选 Write / Edit）----
+    # 读与搜默认就有，路径只能落在 directory 里（`..` 和软链接跳出去会被拒）。
+    # 写要单独开：能改磁盘意味着一次误判就是一次脏工作区。
     files:
-      # 同 exec：默认是启动时的目录，不是 `.`（`. ` 在这里已经被 Tomcat 改过）。
+      # 同 exec：默认是启动时的目录，别写 "."。
       directory: ${CLAW4J_FILES_DIRECTORY:${claw4j.launch-directory:.}}
       write-enabled: ${CLAW4J_FILES_WRITE_ENABLED:false}
 
@@ -362,101 +329,96 @@ claw4j:
     web:
       search-api-key: ${BRAVE_API_KEY:}
 
-    # ---- 交互提问：模型在**同一轮里**问一句、等人答，再往下走 ----
-    # 只有这个工具会挂起一轮（审批不挂起，见 ADR-0027 的修订记录）：
-    #   IM   把问题推到这段对话，用户回一句话就是答案
-    #   HTTP 请求挂着等，客户端轮询 GET /api/chat/questions 再 POST /api/chat/answer
-    # 等不到就按"没答"继续，不去重试同一个问题。超时照 OpenClaw 钳在 30–3600 秒。
+    # ---- 反问用户：同一轮里问一句、等人答，再往下走 ----
+    # IM 把问题推进这段对话；HTTP 挂起请求，客户端查 /api/chat/questions 再提交答案。
+    # 等不到就按"没答"继续，不重复问。超时秒数会被钳在 30–3600。
     ask:
       enabled: ${CLAW4J_ASK_ENABLED:true}
       timeout-seconds: ${CLAW4J_ASK_TIMEOUT_SECONDS:900}
 
-    # ---- 会话可见性：recall_session 能看见哪些会话 ----
+    # ---- 回忆会话：recall_session 能翻到哪些对话 ----
     #   self   只有当前这一段
-    #   tree   当前 + 它派生的子 Agent 会话
+    #   tree   当前 + 它派生的子 Agent
     #   agent  本 agent 的全部会话
-    #   all    全部会话，含其他用户的（默认）
-    # **多用户、角色不同的部署必须配 self**：默认 all 意味着 read-only 能召回别人的会话内容。
-    # 写错词（everybody）启动失败并点名四个合法值。
+    #   all    全部，含别人的（默认）
+    # **多用户部署必须配 self**：默认 all 意味着只读账号也能召回别人的会话内容。
     sessions:
       visibility: ${CLAW4J_SESSION_VISIBILITY:all}
 
-  # ---- 语义缓存：只在配了通义 key 时装配 ----
-  # 命中即返回上次的回答，这一轮不调模型。它默认是强依赖：索引在启动时建，连不上就启动失败。
+  # ---- 语义缓存：问过的问题不再花第二次钱 ----
+  # 命中就返回上次的回答，这一轮不调模型。配了通义 key 才装配。
+  # 它是强依赖：索引在启动时建，连不上就启动失败。
   cache:
     enabled: ${CLAW4J_CACHE_ENABLED:true}
-    # 0.93 取的是"宁漏不误"那一侧：换指标与同义改写的分数是交叠的，漏了只是没省到钱。
+    # 0.93 取的是"宁漏不误"：漏了只是没省到钱，误了会答错。
     similarity-threshold: ${CLAW4J_CACHE_THRESHOLD:0.93}
-    # 必须 Redis Stack（RediSearch + RedisJSON），普通 Redis 建不出向量索引。
+    # 必须 Redis Stack（带向量检索），普通 Redis 建不出索引。
     redis-uri: ${CLAW4J_CACHE_REDIS_URI:redis://127.0.0.1:6379}
 
-  # ---- 知识库检索：向量 + 关键词两路，结果带出处 ----
-  # 默认关：它要一份文档目录与一次 embedding 调用。开着就必须能用——缺目录、目录空、
-  # embedding 算不出来都是启动失败，不给你一个"每次都说没有相关资料"的空库。
+  # ---- 知识库：按文档回答问题，答案带出处 ----
+  # 默认关：它要一份文档目录和一次 embedding 调用。开着就必须能用——
+  # 缺目录、目录空、算不出向量都是启动失败，不给你一个"每次都说没有资料"的空库。
   rag:
     enabled: ${CLAW4J_RAG_ENABLED:false}
-    # 文档目录，递归找 .md / .txt。启动后同步一次，按内容哈希跳过没变的；文件删了块也跟着删。
+    # 文档目录，递归找 .md / .txt。启动后同步一次，按内容哈希跳过没变的；文件删了块跟着删。
     directory: ${CLAW4J_RAG_DIRECTORY:}
-    # 最终注入几段（在链路最后截断），与下面"每路召回多少"是两件事。
+    # 最终给模型几段（最后一步截断），与下面"每路召回多少"是两件事。
     top-k: ${CLAW4J_RAG_TOP_K:5}
-    # 相似度下限，只负责把明显不相关的挡掉。调它之前先攒一批真实问题。
+    # 相似度下限，只负责挡掉明显不相关的。调它之前先攒一批真实问题。
     min-similarity: ${CLAW4J_RAG_MIN_SIMILARITY:0.5}
-    # 一块文档多少 **token**（不是字符），切块交给框架的 TokenTextSplitter。
+    # 一块文档多少 token（不是字符）。
     chunk-size: 800
 
-    # 混合检索：向量 + 全文（`content ilike '%q%'`，GIN trgm 加速）加权 0.7 / 0.3。
+    # 混合检索：向量 + 关键词（0.7 / 0.3）。
     hybrid:
-      # 关掉只剩向量：`SKU-2024` 这类"字面精确、语义无关"的查询会退化。
+      # 关掉只剩向量：`SKU-2024` 这种"字面精确、语义无关"的查询会退化。
       enabled: ${CLAW4J_RAG_HYBRID_ENABLED:true}
-      # 每路各召回多少条。必须比 top-k 大，否则"两路都命中"根本发生不了。
+      # 每路各召回多少。必须比 top-k 大，否则"两路都命中"根本发生不了。
       candidates-per-route: ${CLAW4J_RAG_CANDIDATES_PER_ROUTE:15}
 
-    # 重排：通义 qwen3-rerank，走 OpenAI 兼容端点。
+    # 重排（qwen3-rerank）：只换顺序，不删结果。
     rerank:
       enabled: ${CLAW4J_RAG_RERANK_ENABLED:true}
-      # 送进重排的条数（输入上限）。重排只换顺序、不截断，"最终留几段"由上头的 top-k 决定。
+      # 送进重排的条数。最终留几段由上面的 top-k 决定。
       candidates: ${CLAW4J_RAG_RERANK_CANDIDATES:10}
-      # **是 compatible-api 不是 compatible-mode**：与 chat / embedding 不是同一个前缀，
+      # 注意是 compatible-api，与 chat / embedding 的 compatible-mode 不是同一个前缀，
       # 所以单独配，不从 qwen 的 base-url 拼。
       base-url: ${CLAW4J_RAG_RERANK_BASE_URL:https://dashscope.aliyuncs.com/compatible-api/v1}
       model: ${CLAW4J_RAG_RERANK_MODEL:qwen3-rerank}
-      # 挂在每轮检索路径上，用户等的是首字延迟。超时或 4xx/5xx 一律按候选原顺序继续。
+      # 它在每轮检索的路上，用户等的是首字。超时或报错一律按原顺序继续。
       timeout: 2s
-      # 凭据复用 claw4j.model.qwen.api-key，不引第二把钥匙。
+      # 凭据复用 claw4j.model.qwen.api-key，不另配一把。
 
-  # ---- 观测：trace 走 OTLP，默认一段都不导 ----
-  # 关着时容器里没有 provider、没有 exporter，也不起线程。
-  # 开了却没配 endpoint 时一条也不导，启动日志点名缺哪一项（不回落 localhost:4318）。
-  # 指标仍走下面 management 那套，trace 只走 OTLP。
+  # ---- 链路追踪：默认一段都不导 ----
+  # 关着时不起线程、不留 exporter。开了却没配 endpoint 也一条不导，启动日志会点名缺哪项。
   observability:
     enabled: ${CLAW4J_OBSERVABILITY_ENABLED:false}
-    # OTLP **HTTP** 的地址，例如 http://localhost:4318（带 /v1/traces 也认）。不走 gRPC。
+    # OTLP 的 HTTP 地址，例如 http://localhost:4318（带 /v1/traces 也认）。不走 gRPC。
     endpoint: ${OTLP_ENDPOINT:}
     service-name: ${OTEL_SERVICE_NAME:claw4j}
-    # 采样比例。实现是 ParentBased(TraceIdRatioBased)：裸比例会出现"有 run、没有 tool"。
+    # 采样比例。
     sample-ratio: 1.0
     # 单次导出超时。collector 不在同机时留一次重试的余量。
     timeout: PT10S
-    # batch 队列上限，满了会丢（丢的时候 OTel 自己打日志）。
+    # 队列上限，满了会丢（丢的时候 OTel 自己打日志）。
     max-queue-size: 2048
 
-  # ---- 能力层：配了目录才有，不配就没有 ----
-  # claw4j.skills.directory / claw4j.subagents.directory / claw4j.rag.directory
-  # 这里不给默认值：给一个默认目录就等于默认打开这一层。怎么开见 README-adding-capabilities.md。
+  # ---- 靠"配了目录"打开的几层，这里不写默认值 ----
+  # 给了默认目录就等于默认打开，所以只在这里列名字，怎么开见 README-adding-capabilities.md：
+  #   claw4j.skills.directory      技能
+  #   claw4j.subagents.directory   子 Agent
+  #   claw4j.rag.directory         知识库
+  #   claw4j.memory.directory      长期记忆（跨会话记住你；写进去是明文，每人一个子目录）
   #
-  # 记忆是两个并列的节点，不互相嵌套（理由：它们不是"同一个东西的两部分"）：
-  #   claw4j.session.*   一段对话的作用域与它的短期记忆——压缩、换段、清理都挂在这里。
-  #   claw4j.memory.*    跨会话留下的长期记忆——每人一个子目录，目录名由 userId 派生
-  #                      （安全化 + 哈希后缀，两个人撞不进同一层）。
-  # 长期记忆（claw4j.memory.directory）也走"配了目录才有"这一条。配了之后模型自己用
-  # Memory* 那几个工具读写，写进去的是**明文** Markdown——与会话表/审计的脱敏口径不同，
-  # 理由与缺口见 docs/design/long-term-memory.md。
-  # 整理（claw4j.memory.dream，默认 true）：库的 dream 周期，同一人距上次满 24 小时
-  # 且又过 5 轮才在后台跑一次，合并重复、删掉过时的。关掉只是不整理，读写记忆照旧。
+  # 记忆有两个并列节点，不互相嵌套：
+  #   claw4j.session.*   一段对话的范围与长度（压缩、换段、清理）
+  #   claw4j.memory.*    跨会话留下的东西：人设之外的"你是谁、你偏好什么"
+  # 长期记忆打开后模型会自己读写它；整理（claw4j.memory.dream，默认开）在后台合并重复、
+  # 删掉过时的：同一人距上次满 24 小时、且又过 5 轮才跑一次。
 
-# ---- 运维面：指标与服务端口分开 ----
-# 指标里有"谁被拒了几次""花了多少 token"，与业务端口混在一起的话，"能发消息"就等于"能看运营数据"。
-# 只绑本机；接 Prometheus 时再改地址并同时加鉴权。
+# ---- 运维面：指标单独一个端口 ----
+# 指标里有"谁被拒了几次""花了多少 token"，与业务端口混在一起，"能发消息"就等于"能看运营数据"。
+# 只绑本机；接 Prometheus 时再改地址，并同时加鉴权。
 management:
   server:
     port: 9090
