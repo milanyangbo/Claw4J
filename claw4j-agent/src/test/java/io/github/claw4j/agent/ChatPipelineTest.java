@@ -2,7 +2,6 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.approval.ConversationApprovalGate;
 import io.github.claw4j.agent.audit.AuditAction;
-import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditSink;
 import io.github.claw4j.agent.audit.AuditStatus;
@@ -35,6 +34,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.springaicommunity.agent.advisors.TurnInterruptedException;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
@@ -80,7 +80,6 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -946,70 +945,18 @@ class ChatPipelineTest {
     // ---- 整轮的墙钟（票 01：库的 InterruptAdvisor）----
 
     @Test
-    @DisplayName("到点就中止：这一轮有回复地说停，工具只跑了一次")
-    void turnStopsAtTheDeadlineWithAReason() {
-        MovableClock clock = new MovableClock();
-        RecordingTool slow = new RecordingTool("slow", "转完了",
-                () -> clock.advance(Duration.ofMinutes(11)));
-
-        String answer = timedPort(new FixedChatModel(oneToolThenAnswer("slow")), List.of(slow),
-                clock, Duration.ofMinutes(10))
-                .reply(message("chat-clock", "跑一下"))
-                .text();
-
-        assertThat(answer).contains("就被我停下了").contains("10 分钟");
-        assertThat(slow.calls()).as("第一次工具之后就超时了，不该再跑第二轮").isEqualTo(1);
-    }
-
-    @Test
-    @DisplayName("超时不抛给上层：抛出去会被队列放回重试三次，每次都再跑满一个窗口")
-    void timeoutIsNotRethrownToTheQueue() {
+    @DisplayName("到点：库的 InterruptAdvisor 抛出 TurnInterruptedException，这一轮结束")
+    void deadlineStopsTheTurnBeforeTheNextModelRequest() {
         MovableClock clock = new MovableClock();
         RecordingTool slow = new RecordingTool("slow", "转完了",
                 () -> clock.advance(Duration.ofMinutes(11)));
         ChatClientAgentPort port = timedPort(new FixedChatModel(oneToolThenAnswer("slow")),
                 List.of(slow), clock, Duration.ofMinutes(10));
 
-        assertThatCode(() -> port.reply(message("chat-clock", "跑一下")))
-                .as("抛出去就是一次可重试的失败，三次超时叠起来比没有超时更坏")
-                .doesNotThrowAnyException();
-    }
-
-    @Test
-    @DisplayName("写 0 就是关掉：钟推得再远也照常答完")
-    void zeroTurnTimeoutKeepsTheOldBehaviour() {
-        MovableClock clock = new MovableClock();
-        RecordingTool slow = new RecordingTool("slow", "转完了",
-                () -> clock.advance(Duration.ofHours(2)));
-
-        String answer = timedPort(new FixedChatModel(oneToolThenAnswer("slow")), List.of(slow),
-                clock, Duration.ZERO)
-                .reply(message("chat-clock", "跑一下"))
-                .text();
-
-        assertThat(answer).isEqualTo("好");
-        assertThat(slow.calls()).isEqualTo(1);
-    }
-
-    @Test
-    @DisplayName("超时落 RUN_TIMED_OUT，不是 RUN_FAILED：运维要能分开跑飞与模型报错")
-    void timeoutIsAuditedAsTimedOut() {
-        MovableClock clock = new MovableClock();
-        RecordingTool slow = new RecordingTool("slow", "转完了",
-                () -> clock.advance(Duration.ofMinutes(11)));
-        RecordingAudit audit = new RecordingAudit();
-        ChatClientAgentPort port = new ChatClientAgentPort(
-                client(new FixedChatModel(oneToolThenAnswer("slow")), List.of(), List.of(slow)),
-                null, null, null, null, null, audit.toolCallAudit(), null, null, null, null,
-                Duration.ofMinutes(10), clock);
-
-        port.reply(message("chat-clock", "跑一下"));
-
-        assertThat(audit.events)
-                .filteredOn(event -> event.action() == AuditAction.AGENT_RUN_FINISHED)
-                .singleElement()
-                .extracting(AuditEvent::errorCode)
-                .isEqualTo(AuditErrorCode.RUN_TIMED_OUT);
+        assertThatThrownBy(() -> port.reply(message("chat-clock", "跑一下")))
+                .as("库的约定就是抛这个异常结束这一轮，抛不抛由它的 signal 决定")
+                .isInstanceOf(TurnInterruptedException.class);
+        assertThat(slow.calls()).as("第一次工具之后就超时了，不该再发第二轮模型请求").isEqualTo(1);
     }
 
     @Test
@@ -1026,13 +973,30 @@ class ChatPipelineTest {
             default -> answer("好");
         });
 
-        String answer = timedPort(model, List.of(first, second), clock, Duration.ofMinutes(10))
-                .reply(message("chat-clock", "跑两下"))
-                .text();
+        ChatClientAgentPort port = timedPort(model, List.of(first, second), clock,
+                Duration.ofMinutes(10));
+        assertThatThrownBy(() -> port.reply(message("chat-clock", "跑两下")))
+                .isInstanceOf(TurnInterruptedException.class);
 
         assertThat(first.calls()).as("第一轮往返之后还没到点，该继续").isEqualTo(1);
         assertThat(second.calls()).isEqualTo(1);
-        assertThat(answer).as("第二轮往返之后到点，第三轮请求前停下").contains("就被我停下了");
+        assertThat(model.prompts()).as("停在第二次工具之后、第三次模型请求之前").hasSize(2);
+    }
+
+    @Test
+    @DisplayName("写 0 就是关掉：钟推得再远也照常答完")
+    void zeroTurnTimeoutKeepsTheOldBehaviour() {
+        MovableClock clock = new MovableClock();
+        RecordingTool slow = new RecordingTool("slow", "转完了",
+                () -> clock.advance(Duration.ofHours(2)));
+
+        String answer = timedPort(new FixedChatModel(oneToolThenAnswer("slow")), List.of(slow),
+                clock, Duration.ZERO)
+                .reply(message("chat-clock", "跑一下"))
+                .text();
+
+        assertThat(answer).isEqualTo("好");
+        assertThat(slow.calls()).isEqualTo(1);
     }
 
     /** 第一次请求工具、之后正常回答的模型桩。 */

@@ -22,62 +22,54 @@
 取 **10 分钟**：`tool-call-limit` 是 6 次往返，正常几十秒到几分钟；10 分钟覆盖"读大文件 + 六次往返"
 的现实上限，同时让"跑飞"在一个可等的窗口内结束。写 `0` 关掉。
 
-## 三处必须一起想清楚
+## 只接库的能力，不接管它之后发生的事
 
-### 1. signal 必须按轮，所以 advisor 每轮传一次
+`InterruptAdvisor` 本身只做一件事：每次模型请求之前问一次 signal，为真就抛
+`TurnInterruptedException` 结束这一轮。**抛出去之后怎么处理不归它管**，库的文档明写"由 `call()` 的
+调用方决定（丢弃 / 部分保存 / 安静结束）"。
 
-`InterruptAdvisor` 的 signal 是构建期固定的 `BooleanSupplier`，而截止时刻是**每一轮**算的。
-`ChatClient` 是单例、通过 `defaultAdvisors` 挂的，全局挂一个实例就只能表达"全部署停"。
+这一票只做到"能停"这一步，不改后续语义：
 
-所以走 **per-request**（`ChatClient.prompt().advisors(...)`）。已核实框架行为：
-`DefaultChatClient.buildAdvisorChain()` 把 default 与 request 的 advisor 一起交给
-`DefaultAroundAdvisorChain.Builder#pushAll`，而 `pushAll` 末尾调 `reOrder()`（`OrderComparator.sort`），
-**排序对两者一视同仁**。库的 `DEFAULT_ORDER` 是 `HIGHEST_PRECEDENCE + 400`，我们的工具循环是 `+300`
-——排在内层，于是**每次工具往返之后、下一次模型请求之前**都会重新 `before` 一次，正是它文档里写的形状。
+| 做了什么 | 没做什么（以及为什么） |
+| --- | --- |
+| 每轮传一个 `InterruptAdvisor`，signal 是这一轮的截止时刻 | 不改 `InboundDispatcher#failed` 的重试：超时对它是"一次普通失败"，三次重试是既有的失败语义 |
+| `claw4j.agent.turn-timeout` 一个键，`0` 关掉 | 不新增审计错误码落点、不加自定义收尾文案、不给流式补白——那些都是"接管" |
+| 到点由库抛异常结束这一轮 | 不做 `/stop`（ADR-0026 票 04 已判），不做按 runId 中止（ADR-0027） |
 
-### 2. 超时不能被当成可重试的失败
+**signal 必须按轮，所以 advisor 每轮传一次**：库的 signal 是构建期固定的 `BooleanSupplier`，
+而截止时刻是每一轮算的。`ChatClient` 是单例、走 `defaultAdvisors` 的话只能表达"全部署停"。
 
-`InboundDispatcher#failed` 对任何异常都「放回队列、30 秒后再跑，最多三次」。
-一轮 10 分钟的超时被重试三次就是半小时，**比没有超时更坏**。
-
-所以中断在 `ChatClientAgentPort` 里**就地收口**：捕获 `TurnInterruptedException`、审计落
-`RUN_TIMED_OUT`（这个错误码已有，不改 schema）、`closeTurn` 照常写、返回一句说明。
-不 rethrow 到队列层。
-
-### 3. 落审计要落对码
-
-`AuditErrorCode` 已经有 `RUN_TIMED_OUT`（运行超时）与 `RUN_CANCELLED`（运行被取消）。
-现在的 `catch (RuntimeException | Error)` 一律记 `RUN_FAILED`。要在 catch 里先判类型。
+per-request 传的 order 仍然生效——已核实框架：`DefaultChatClient.buildAdvisorChain()` 把 default 与
+request 的 advisor 一起交给 `DefaultAroundAdvisorChain.Builder#pushAll`，而 `pushAll` 末尾的
+`reOrder()`（`OrderComparator.sort`）对两者一视同仁。库的 `DEFAULT_ORDER` 是
+`HIGHEST_PRECEDENCE + 400`，我们的工具循环是 `+300`，排在内层，于是**每次工具往返之后、
+下一次模型请求之前**都会重新问一次。
 
 ## TDD 用例清单
 
 | 判什么行为 | 用例名 | 先红的样子 |
 | --- | --- | --- |
-| 到点就中止，且这一轮**有回复**（"已中止"），不是抛异常 | `ChatPipelineTest#turnStopsAtTheDeadlineWithAReason` ✅ | 现在没有墙钟：慢工具会一直跑到工具自己返回 |
-| 超时**不重试**：`reply()` 返回一个 Turn，不抛 | `ChatPipelineTest#timeoutIsNotRethrownToTheQueue` ✅ | 抛出去就会被 `failed()` 放回队列，三次 = 半小时 |
-| 写 `0` 关掉：慢工具照常跑完 | `ChatPipelineTest#zeroTurnTimeoutKeepsTheOldBehaviour` ✅ | —— |
-| 审计落 `RUN_TIMED_OUT`，不是 `RUN_FAILED` | `ChatPipelineTest#timeoutIsAuditedAsTimedOut` ✅ | 现在一律 `RUN_FAILED`，运维分不清"跑飞"和"模型报错" |
+| 到点由库抛 `TurnInterruptedException` 结束这一轮，不再发下一次模型请求 | `ChatPipelineTest#deadlineStopsTheTurnBeforeTheNextModelRequest` ✅ | 现在没有墙钟：慢工具会一直跑到工具自己返回 |
 | 检查发生在**每次工具往返之后**，不是只在开跑时 | `ChatPipelineTest#deadlineIsRecheckedBetweenToolRounds` ✅ | 挂在 tool loop 外面就只查一次，一次长工具循环照样跑完 |
+| 写 `0` 关掉：钟推得再远也照常答完 | `ChatPipelineTest#zeroTurnTimeoutKeepsTheOldBehaviour` ✅ | —— |
 
-**复核：2026-11-19 `./scripts/verify.sh` 全绿。** 五条都落在 `ChatPipelineTest`（26 条）里。
+**复核：2026-11-19 `./scripts/verify.sh` 全绿。** 三条都落在 `ChatPipelineTest` 里。
 
 ## 验收判据
 
 | 判什么 | 判据 |
 | --- | --- |
-| 默认值生效 | 不配任何键，10 分钟到点中止；日志里有一行说明 |
+| 默认值生效 | 不配任何键，10 分钟到点抛 `TurnInterruptedException` |
 | 关得掉 | `claw4j.agent.turn-timeout: 0` 之后慢工具跑完 |
-| 不重试 | 超时那一轮 `attempts` 不涨（日志里没有"处理失败（第 n / 3 次）"） |
 | 门禁 | `./scripts/verify.sh` 全绿 |
 
 ## 缺口
 
-- **用户主动停止（`/stop`、`chat.abort`）不做**：ADR-0026 票 04 与 ADR-0027 已判，本票不重开。
-  `interruptSignal` 的接法留着一个来源：本轮截止时刻。将来真要做，把 signal 改成
-  「截止时刻到了 **或** 这个 runId 被要求停止」即可，位置不变。
-- **流式的开头没有被"每轮重查"覆盖**：中断在流式里以 Flux 的 error signal 到达，
-  收口与非流式共用一处；但"流式里第二次模型请求之前会不会重查"没有单独用例（模型流式路径
-  只发一帧文本，造不出两轮往返）。
-- **流式没有独立验证**：中断在流式里以 Flux 的 error signal 到达，收口逻辑与非流式共用一处
-  （`catch (RuntimeException | Error)` 里那条判型分支），但"流式能不能立刻停"取决于模型 SDK
-  何时把信号读出来——本票只保证"停在两次模型请求之间"。
+- **超时之后走的是既有失败路径**：异常穿到 `InboundDispatcher#failed` → 放回队列、30 秒后再跑、
+  最多三次。也就是说一个必然超时的请求会被跑三遍。要做成"超时即终止、给用户一句说明"，
+  那是改失败语义，不属于"接库的能力"，另开票。
+- **流式没有独立用例**：中断在流式里以 Flux 的 error signal 到达，与非流式共用同一条
+  `catch (RuntimeException | Error)`；"停在两次模型请求之间"这件事两条路径都在，
+  但流式那条没有单独造出两轮往返。
+- **用户主动停止（`/stop`、`chat.abort`）不做**：ADR-0026 票 04 与 ADR-0027 已判。
+  signal 的接法留着位置：将来把「截止时刻到了」换成「截止到了 **或** 这个 runId 被要求停止」即可。

@@ -17,8 +17,9 @@
 
 1. **默认路径不变**：不配任何新键时，除了多一次 clock 调用，行为与今天逐字相同。
    —— 唯一的例外是超时有默认值（见票 01 的论证），这一条要在票面写清而不是含糊过去。
-2. **中断不重试**。`InboundDispatcher#failed` 对任何异常都会「放回队列、30 秒后再跑」，
-   一轮 10 分钟的超时被重试三次就是半小时——比没有超时更坏。
+2. **只接件，不改既有语义**。库的 advisor 抛 `TurnInterruptedException` 结束这一轮，
+   之后它走的就是既有的失败路径（`InboundDispatcher#failed` 会重试）。那是另一件事，
+   要改另开票——这一批的边界是"把库的能力接上"，不是"重新定义失败"。
 3. **配置键进 `application.yml` 的 `claw4j.agent` 段**（与 `tool-call-limit` 同处），
    两份 local 配置不重复写。
 4. 门禁三条照旧：`./scripts/verify.sh` 全绿、票面用例可 grep 到、`docs/capability-tests.md` 对应节跑通。
