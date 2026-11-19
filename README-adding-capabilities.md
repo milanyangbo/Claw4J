@@ -1,16 +1,15 @@
-# 加一个能力：八个照着抄的最小例子
+# 加一个能力：九个照着抄的最小例子
 
-> [README.md](README.md) 讲怎么把它跑起来；这一份讲**怎么往里面加东西**。八节，每节一个能直接抄的 demo。
+> [README.md](README.md) 讲怎么把它跑起来；这一份讲**怎么往里面加东西**。九节，每节一个能直接抄的 demo。
 
 这一份是**操作手册**：每节给一个最小可跑的 demo，再说怎么打开、怎么确认它生效。
-为什么这么设计、哪些写法会静默失效，在 [docs/design/extension-points.md](docs/design/extension-points.md)（同一件事的契约视角）。
 
 共同前提：能力来源都是**同进程的可信代码**，加它不用改 Claw4J 一行代码，也不用在父 POM 里登记。
-只有两条必须记住：**权限漏了 = 一律拒绝**，**档位漏了 = 起不来**。
+只有一条必须记住：**档位漏了 = 起不来**。
 
 | 你要加的东西 | 产出物 | 详细 |
 | --- | --- | --- |
-| Java 工具 | 3 个 bean + 一个注册文件 | [1](#1-java-工具4-个文件) |
+| Java 工具 | 两个 bean + 一个注册文件 | [1](#1-java-工具4-个文件) |
 | MCP server | 一段 YAML，或一个任何语言写的 server | [2](#2-mcp-server一段-yaml) |
 | 技能里的脚本 | 技能目录下的 `scripts/`，由模型用 `Bash` 跑 | [3](#3-技能里的脚本一个目录--skillmd) |
 | Skill | 一个含 `SKILL.md` 的目录 | [4](#4-skill一份做法) |
@@ -18,10 +17,7 @@
 | agent（人设） | 一份 `*.md` | [6](#6-agent人设这个部署是谁) |
 | 知识库 | 一个文档目录 | [7](#7-知识库一个目录) |
 | 通道 | 一个 `ChatChannel` 实现 + 你的端点 | [8](#8-通道收认人发) |
-
-每节末尾的「怎么确认」是最短版（一句话 + 一个计数）。**要一步步照着走的验收流程**
-（前提 → 一句触发话 → 期望看到什么 → 不对时先看哪里）在
-[README-capability-tests.md](README-capability-tests.md)，八节与这里一一对应。
+| 工具观测器 | 一个 `ToolCallListener` bean | [9](#9-工具观测器一个-bean) |
 
 ---
 
@@ -32,7 +28,7 @@
 ```text
 jira-plugin/
   src/main/java/com/acme/jira/JiraTools.java                       # 工具本体
-  src/main/java/com/acme/jira/JiraToolsAutoConfiguration.java      # 三个 bean
+  src/main/java/com/acme/jira/JiraToolsAutoConfiguration.java      # 两个 bean
   src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
   src/main/resources/META-INF/claw4j-plugin.properties              # 可选：报核心版本区间
 ```
@@ -51,7 +47,7 @@ public class JiraTools {
 }
 ```
 
-**② 自动配置**——工具、权限、档位三样，一个都不能少：
+**② 自动配置**——工具与档位两样，一个都不能少：
 
 ```java
 @AutoConfiguration
@@ -62,17 +58,12 @@ public class JiraToolsAutoConfiguration {
         return MethodToolCallbackProvider.builder().toolObjects(new JiraTools(jira)).build();
     }
 
-    // 这个工具会碰到什么。漏了 = 鉴权一律拒绝（方向是安全的，但你调不动它）
-    @Bean
-    public ToolPermissionRegistry jiraPermissions() {
-        return ToolPermissionRegistry.of(Map.of(
-                "jiraSearchIssues", ToolPermission.read()));
-    }
-
-    // 最低需要哪一档才出现。漏了 = 启动失败并点名
+    // 这个工具属于哪几档，同时登记成"外部工具"（group:plugins 与沙箱只认这一批）。
+    // 漏了 = 启动失败并点名；写 sameFor 而不是 external，group:plugins 就关不掉它。
     @Bean
     public ToolTierRegistry jiraToolTiers() {
-        return ToolTierRegistry.sameFor(List.of("jiraSearchIssues"), ToolTier.MESSAGING);
+        return ToolTierRegistry.external(List.of("jiraSearchIssues"),
+                ToolTier.MESSAGING, ToolTier.CODING);
     }
 }
 ```
@@ -95,8 +86,10 @@ curl -s "localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool=jiraSearchIs
 `工具画像 … 清单 N 个`**：那行只在真有工具被挡掉时才打印（默认画像 `full` 什么都不挡），
 刚加一个工具时它根本不会出现。
 
-**三条不要写**：三个 bean 上都不要 `@ConditionalOnMissingBean`（会让别的来源静默消失）；
-画像不要写成"任何名字都算"；不要在自动配置里用 `@ConditionalOnBean` 依赖同类里 `@Bean` 的声明顺序。
+**两条不要写**：两个 bean 上都不要 `@ConditionalOnMissingBean`（会让别的来源静默消失）；
+档位不要写成"任何名字都算"（`name -> Optional.of(...)` 那种）——那会让未声明的校验永远通过，
+新加的工具默默出现在不该出现的档里。也不要在自动配置里用 `@ConditionalOnBean` 依赖同类里
+`@Bean` 的声明顺序。
 
 ---
 
@@ -116,12 +109,13 @@ claw4j:
           command: npx
           args: ["-y", "@modelcontextprotocol/server-everything"]
           inherit-env: [PATH, HOME]                 # 子进程要能找得到 npx
-          permission:
-            action: read                            # 默认只读、不碰任何业务表
-          tools:                                    # 可选：按工具覆盖权限
-            send_email: { action: send_email }
+          tool-filter:
+            exclude: [send_email]                   # 可选：这个 server 的哪些工具进清单
 ```
 
+- **可见性和随包工具同一套**：接进来的工具声明为 `coding` 与 `messaging` 两档，
+  `claw4j.tools.profile` 收到 `minimal` 时它们不出现；要按 server 收窄就用 `tool-filter.include` /
+  `exclude`（`*` 通配，按整串匹配，滤掉的工具 `allow` 也加不回来）。
 - **超时要调大**：`request-timeout`（默认 30s）与 `initialization-timeout`（默认 60s）是两个键。
   `npx` 冷启动实测 36 秒，只调握手那个没用——30 秒的请求超时会先炸。
 - **凭据写句柄不写值**：`headers: { Authorization: "Bearer secret:mcp_token" }`，真值在每次请求时才换出来；
@@ -137,7 +131,6 @@ claw4j:
 java-http:
   transport: http
   url: http://127.0.0.1:8082
-  permission: { action: read }
 ```
 
 写 stdio server 时最容易撞的一条：**stdout 是协议通道**，日志一律走 stderr。HTTP 那份没这个约束，
@@ -152,11 +145,8 @@ java-http:
 
 ## 3. 技能里的脚本（一个目录 + `SKILL.md`）
 
-> **2026-11-18 改的**：原来是"脚本包"，一个目录就是一个工具（`package.properties` + 入口）。
-> 按 OpenClaw 的形态改成了**技能目录里的支撑文件**：技能不被执行，脚本由模型用 `Bash` 去跑。
-> 差别不是名字——原来那版是一种自建的执行入口，OpenClaw 只有一个 `exec`。
-
-产出：一个目录，`SKILL.md` 讲什么时候用、怎么跑，脚本与数据放在它下面。
+产出：一个目录，`SKILL.md` 讲什么时候用、怎么跑，脚本与数据放在它下面。技能本身不被执行，
+脚本由模型用 `Bash` 去跑。
 
 ```text
 examples/skills/weather-forecast/
@@ -191,11 +181,11 @@ exec env PYTHONIOENCODING=utf-8 python3 "$here/weather.py" "$@"
 **打开**：`--claw4j.skills.directory=examples/skills`，和 §4 是同一个目录——脚本没有单独那一层了。
 
 **路径**：模型看到的第一行是 `Base directory for this skill: <技能目录>`，正文里的 `{baseDir}`
-在交给模型之前就替换成它（这是 OpenClaw 正文里的写法，抄一份过来能直接跑）。所以脚本的路径要写全，
+在交给模型之前就替换成它（正文里这么写就能直接跑）。所以脚本的路径要写全，
 **不要写相对路径**：`Bash` 的工作目录是 `claw4j.tools.exec.workspace`，不是技能目录。
 
-**审批**：技能目录的摘要（所有文件，含脚本）绑在 `.review/<name>.properties` 的 `sha256` 上。
-改一个脚本字节，旧标记就作废——这条比"脚本单独一层"时更紧，那时审的是正文，脚本是另一个账本。
+**加载前的审批标记**：技能目录的摘要（所有文件，含脚本）绑在 `.review/<name>.properties` 的 `sha256` 上。
+改一个脚本字节，旧标记就作废——正文与脚本同一个账本，不存在"审了正文没审脚本"。
 
 **边界**：脚本本体**不进上下文**，进上下文的只有 `Bash` 的返回；子进程只拿得到声明的那几个环境变量
 （默认只有 `PATH`），**拿不到任何凭据**——需要 key 的能力该走 MCP。反过来要记住：**没有 locale
@@ -208,7 +198,7 @@ exec env PYTHONIOENCODING=utf-8 python3 "$here/weather.py" "$@"
 
 ## 4. Skill（一份做法）
 
-Skill 不是动作，是**做法**：它不读库、不调接口，只告诉模型"这件事按什么顺序做、什么算做完"。
+Skill 不是工具，也不是脚本，是**做法**：它不读库、不调接口，只告诉模型"这件事按什么顺序做、什么算做完"。
 
 ```text
 examples/skills/weekly-sales/SKILL.md
@@ -225,10 +215,10 @@ description: 出一份上周各区成交额周报。用户问“上周卖得怎�
 **没看到这段口径就先问一句"按哪个口径"，不要自己挑一个。**
 ```
 
-**打开**：`--claw4j.skills.directory=examples/skills`。工具名 `Skill`，动作 `use_skill`。
+**打开**：`--claw4j.skills.directory=examples/skills`。模型看到的工具名是 `Skill`。
 
 **渐进式披露**：启动时只把 `name` + `description` 放前面，命中之后正文作为一次工具调用的结果进来。
-所以二十份做法只花二十行描述。它**不新增能力**——真正碰表那一步照样过鉴权。
+所以二十份做法只花二十行描述。它**不新增能力**——真正碰表那一步照样受工具清单约束。
 
 **怎么确认**：问一句只有这份做法能答的话（比如"周报的成交额按什么口径算"），
 `claw4j.tool.calls?tag=tool=Skill&tag=outcome:ok` +1，且回答里出现 `SKILL.md` 正文的原话——
@@ -238,7 +228,8 @@ description: 出一份上周各区成交额周报。用户问“上周卖得怎�
 
 ## 5. 子 Agent（一份 md）
 
-产出：一份 `*.md`，front matter 四个键，正文是它自己的系统提示词。
+产出：一份 `*.md`，front matter 写 `name` 与 `description`（要限工具再加 `tools` / `disallowedTools`），
+正文是它自己的系统提示词。
 
 ```markdown
 ---
@@ -253,11 +244,11 @@ tools:
 - `tools` 是白名单；也可以改成 `disallowedTools`（继承全部再减）。
 - 白名单里写了 `Task` 自己 → **启动失败**（委派不嵌套）。写了容器里**没有的**工具 →
   **首次委派时**才失败并点名，不是启动时：工具集要等 `Task` 这个 bean 建好才能取，装配期取会撞循环依赖。
-- 用父的身份，过同一套鉴权——**委派不提权**。
+- 用父的身份，走同一套档位策略——**委派不提权**。
 
 **打开**：`--claw4j.subagents.directory=examples/subagents`。工具名 `Task`，入参是库的
 `TaskCall`——`subagent_type` 派谁、`prompt` 让它做什么；要后台跑就加 `run_in_background: true`，
-再用 `TaskOutput` 按 `task_id` 取结论。三个能直接抄的形状在
+再用 `TaskOutput` 按 `task_id` 取结论。几份能直接抄的形状在
 [`examples/subagents/`](examples/subagents)。
 
 **怎么确认**：`claw4j.tool.calls?tag=tool=Task&tag=outcome:ok` +1；把
@@ -320,7 +311,7 @@ claw4j:
 **本地开发什么都不用配**：`application-local.yml.example` 里把这些开关都写好了，起
 `--spring.profiles.active=local` 就带着它们（知识库要 compose 的 pgvector 与 `.env` 里的 qwen key）：
 
-| 开关 | 本地那份写了什么 |
+| 配置 | 本地那份写了什么 |
 | --- | --- |
 | `claw4j.rag.directory` | `examples/knowledge`，`enabled: true` |
 | `claw4j.skills.directory` | `examples/skills` |
@@ -328,7 +319,8 @@ claw4j:
 | `claw4j.memory.directory` | `${user.home}/.claw4j/memory`：跨会话的长期记忆，每人一层、明文 |
 | `claw4j.session.*` | schema / 私聊与群聊边界 / 上下文窗口 / 换段策略，本地值集中在那一段 |
 
-上面这几段 yaml 是**别的部署**要加的行。启动命令行不再需要 `--claw4j.skills.directory=...` 这类参数。
+上面这几段 yaml 是**别的部署**要加的行。用 local profile 时它们已经在文件里，启动命令行就不用再带
+`--claw4j.skills.directory=...` 这类参数。
 
 **怎么确认**：问一个只有这份文档能答的问题，回答里应带出处；再问一句闲聊，不该被"资料里没有"劫持。
 重排有没有真跑，看 DEBUG 日志那一行 `重排完成：候选 N 条，服务返回 M 条，前三条 […] → […]`——
@@ -389,8 +381,9 @@ ToolCallListener toolAudit() {
 
 1. **回调里不许抛。** 库不兜异常：`beforeCall` 抛会阻止工具执行，`afterCall` 抛会丢掉一个**已经成功**
    的结果（副作用已经发生，模型可能重试它）。自己的失败要在回调里吞掉。
-2. **它看不见被审批拒掉的调用。** 那一层套在审批闸之内——被拒的调用在审计里是 `blocked`，
-   与"调了但失败"是两件事。
+2. **它看不见被审批拦下的调用。** 它套在审批闸之内：需要人批的命令在进到这一层之前就停下了，
+   所以 listener 只会收到真正执行过的那些。被拦那一次在审计里是 `failed`、且没有 `approval_id`，
+   与"执行了但失败"分开看。
 3. **它替代不了计量与审计。** 那两样要 `runId` / 身份 / 会话键，而 listener 的回调签名里没有
    `ToolContext`；它们留在 `MeteredToolCallback` 里。listener 是给部署方的观测点，不是内部账本的落点。
 
