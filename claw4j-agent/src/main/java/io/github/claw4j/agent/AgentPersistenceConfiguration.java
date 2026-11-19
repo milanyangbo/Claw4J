@@ -118,7 +118,7 @@ public class AgentPersistenceConfiguration {
     /**
      * 审批账本（P01、P02）：鉴权 Advisor 拿它兑现「这个人这个工具的这一种用法有没有批准」。
      *
-     * <p>跟着 run 存储一起装：审批表与 run 在同一个 schema 下（V10、V11），迁移是同一批，开关也是
+     * <p>跟着 run 存储一起装：审批表与 run 在同一个 schema 下（基线），迁移是同一批，开关也是
      * 同一个。它缺席时 Advisor 退到 {@link ApprovalGate#denyAll()}，标了要审批的动作照样被拦，
      * 只是没人能批准——这正是「这个部署没开审批」应有的样子。
      *
@@ -213,7 +213,7 @@ public class AgentPersistenceConfiguration {
     /**
      * {@code allow-always} 的落点（票 05）：{@code exec_allowlist} 上的条目。
      *
-     * <p>与审批表同一个 schema、同一批迁移（V11），所以跟着这一层进出。它缺席时 exec 的审批端口
+     * <p>与审批表同一个 schema、同一批迁移（基线），所以跟着这一层进出。它缺席时 exec 的审批端口
      * 也装配不起来，于是需要人批的命令一律按 {@code askFallback} 处置——默认拒。
      *
      * @param jdbc 主连接池

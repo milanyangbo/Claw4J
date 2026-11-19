@@ -330,7 +330,7 @@ class BuildContractTest {
         // 编号不复用（与 ADR 编号同一个口径）。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "5", "6", "7", "8", "9", "10", "11", "12", "13");
+                .containsExactly("1", "2", "3", "4", "5", "6");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -347,14 +347,13 @@ class BuildContractTest {
                 .containsExactly("business", "claw4j_channel", "claw4j_rag",
                         "claw4j_run", "claw4j_session");
 
-        // 会话 schema 里是框架的两张加 V8 那六张。V9 把旧的 session_entry 删了，所以这里不再有它：
-        // 它要是回来了，说明有人绕过 V8 又摊了一张平表。
+        // 会话 schema 里是框架的两张加我们的四张。少了哪张说明有人把基线改坏了；多了哪张
+        // （比如一张平铺的 session_entry）说明有人在基线之外又摊了一张表。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables"
                         + " where table_schema = 'claw4j_session' order by table_name", String.class))
                 .containsExactly("ai_session", "ai_session_event", "conversations",
-                        "session_conversations", "session_entry_snapshots",
-                        "session_key_contract", "session_nodes", "session_windows");
+                        "session_conversations", "session_nodes", "session_windows");
 
         // V1 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
         assertThat(jdbc.queryForObject("select count(*) from business.sales_order", Integer.class))

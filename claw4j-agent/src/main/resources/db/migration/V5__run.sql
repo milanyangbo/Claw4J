@@ -1,47 +1,22 @@
--- 审批、定时任务与审计（三张表，都在 claw4j_run）。
+-- 审批、定时任务、审计流水与 exec 白名单（四张表，都在 claw4j_run）。
 --
--- 本文件是旧 V6..V14、V16、V18、V19、V21..V26 那一大段的合并结果。**那一大段里绝大多数
--- 内容已经不存在了**：`agent_run` / `agent_step` / `agent_run_delivery` 三张表与
--- `audit_trail` 视图都在 ADR-0027 落地时被删掉，`agent_session_budget` 也在改挂目标时删掉。
--- 现在一起写在这里的，是那轮重构之后**真正留下来的形状**：
--- 审批（P01/P02/P03）、定时任务（P04/P05）、审计事件流水（P07，ADR-0027 决定二）。
---
--- 一句话说清那轮重构：run 不是实体，是一轮的句柄——它答完就作废，跨请求不活。
--- 于是"某事做完了没有"这个概念被拆掉，审计改成**自己的事件流水**，目标挂到会话上，
--- 审批与投递按对话地址定位。这个文件是那个结论的库侧形状。
---
--- 后续改表结构请加新版本，不要动这里。
---
--- **与 OpenClaw 的偏差（2026-11-09 逐表核对之后）**：三张表都按它的持久层形状改过一遍，
--- 剩下这几处是**知道而不跟**的（理由在各自的列注释里）：
---   · 审批：它的 operator_approvals 按 device / client / audience 分发，支持 allow-always
---     与配套的长期授权表（operator_approval_standing_grants）。我们没有多端，也没有长期授权，
---     只写 allow-once。参数绑定用 args_digest——它没有这一列，它按 tool_call_id 绑单次调用。
---   · 调度：它是 cron_jobs（整个 job 存 job_json，支持 cron / every / at / on-exit / stream
---     五种 schedule）+ cron_run_receipts（每次执行的栅栏与历史）。我们是关系化的单表单形态
---     + 认领租约 + 覆盖写的连续失败计数。差别在"能不能回溯每一次执行"：我们不能，
---     只有 last_fired_at 与 failures 两个覆盖写的格子。
---   · 审计：它的身份列是 HMAC 假名（account_ref / conversation_ref / message_ref，密钥在
---     audit_identity_keys），actor 记执行者（agent / system）；我们 actor 直接存人、没有假名化，
---     也拿不到 tool_call_id（框架的 ToolContext 只是一个自由 Map）。补这两件是独立的两件事，
---     不是加两列：假名化要先有密钥表，调用 id 要先有能带 id 的工具回调通道。
+-- 一句话说清这几张表的共同前提：run 不是实体，是一轮的句柄——它答完就作废，跨请求不活。
+-- 于是"某事做完了没有"这个概念不存在，审计是**自己的事件流水**，目标挂到会话上，
+-- 审批与投递按对话地址定位。
 create schema if not exists claw4j_run;
 
 -- 审批（P01，ADR-0020）：权限从"能不能"变成"能不能 + 要不要批"。
 --
--- **审批不替代鉴权**：allowed 只回答"有人同意过"。同一次调用仍要先过动作与表那两道鉴权
--- （ToolPermission#grantedTo），两条都满足才执行。把两者合成一条，拒绝话术就再也说不清
--- "是没权限还是等你批"。
+-- **审批不替代鉴权**：allowed 只回答"有人同意过"。同一次调用仍要先过动作与表那两道鉴权，
+-- 两条都满足才执行。把两者合成一条，拒绝话术就再也说不清"是没权限还是等你批"。
 --
--- **形状照 OpenClaw 的 operator_approvals**（2026-11-09 对齐）：生命周期五态、
--- 结论单列 decision、终态原因单列 terminal_reason。三列分开的理由是它们答三个不同问题：
--- "这条走到哪一步了"、"人给的是什么"、"为什么结束"。合成一列时，"过期没批"和"人拒了"
--- 都会写成 denied，事后分不出是没人看还是有人不同意。
+-- 生命周期五态、结论单列 decision、终态原因单列 terminal_reason。三列分开是因为它们答三个
+-- 不同问题："这条走到哪一步了"、"人给的是什么"、"为什么结束"。合成一列时，"过期没批"与
+-- "人拒了"都会写成 denied，事后分不出是没人看还是有人不同意。
 --
--- **过期要落终态**（这是这次修掉的一处错）：原来只靠 expires_at 比较，于是过期的行
--- 永远停在 pending。那样答不了"这条最后怎么了"——查审计时它看起来还在等人批。
--- 现在由 ApprovalService 的清扫按分钟判一次，把过期写成
--- expired / deny / timeout / resolver_kind = system，与 OpenClaw 的 expireDue 同一个形状。
+-- 过期要**落终态**，不能只靠 expires_at 比较：那样过期的行永远停在 pending，答不了
+-- "这条最后怎么了"。ApprovalService 的清扫按分钟判一次，把过期写成
+-- expired / deny / timeout / resolver_kind = system。
 create table claw4j_run.approval_request (
     id           varchar(64)  not null,
     -- 发起这一轮时的编号（runId，与 OpenClaw 同名）。**不是外键、不指向任何表**：
@@ -52,18 +27,15 @@ create table claw4j_run.approval_request (
     owner        varchar(128) not null,
     -- 要执行的工具名（不是动作名）：动作是权限的口径，批准的对象是那一次会跑起来的工具。
     tool_name    varchar(128) not null,
-    -- 生命周期五态，与 operator_approvals 逐字相同：
+    -- 生命周期五态：
     -- pending 挂着 / allowed 批了 / denied 拒了 / expired 超时 / cancelled 运行时中断。
     -- 后两个不是"另一种拒绝"：它们记的是"没人做决定"这件事本身，而 denied 是有人做了决定。
     status       varchar(16)  not null,
-    -- 人给的是什么结论，与 status 分开：allow-once 一次性、allow-always 长期、deny 不许。
-    -- **当前只写 allow-once 与 deny**：allow-always 要配套的长期授权表
-    -- （operator_approval_standing_grants），我们没有做，所以不写这一档——
-    -- 写一个没有人兑现的 allow-always 比不写更糟：它看起来像永久批准。
+    -- 人给的结论：allow-once 一次性 / allow-always 长期（同时按命令段落 exec_allowlist）/ deny。
     decision     varchar(16),
-    -- 为什么结束。**当前只写 user 与 timeout**：其余五档（回执解析失败、找不到投递路由、
-    -- 运行时中止、网关重启、存储损坏）对应的入口我们还没有。词表照抄是为了将来接上时不用改表，
-    -- 不是为了现在能写出这些值。
+    -- 为什么结束。**当前只写 user（人点的）与 timeout（清扫判超时）**：其余五档（回执解析失败、
+    -- 找不到投递路由、运行时中止、网关重启、存储损坏）对应的入口还没有。词表照抄是为了
+    -- 将来接上时不用改表，不是为了现在能写出这些值。
     terminal_reason varchar(32),
     -- 拒绝的理由要回灌模型（P02），它得能存住一句话。
     reason       varchar(1024),
@@ -71,11 +43,10 @@ create table claw4j_run.approval_request (
     -- 没给默认值是有意的："默认十分钟"是策略，写在代码里（P02），不写在表上——
     -- 表上一个默认值会让"改了配置但库里还是十分钟"这种偏差看不见。
     expires_at   timestamptz  not null,
-    -- 定下结论的时刻（原名 decided_at）。改名的理由与 decision/status 一致：
-    -- 这三列合起来回答"谁在什么时候、把这条推到了哪个终态"。
+    -- 定下结论的时刻。它、decision、status 三列合起来回答"谁在什么时候、把这条推到了哪个终态"。
     resolved_at  timestamptz,
     -- 谁把结论送进来的：channel（人在卡片上点）/ system（清扫判定超时）。
-    -- 与 resolver_id 分开：device/channel/runtime/system 四档里，只有这两档在我们这里有入口。
+    -- device 与 runtime 我们还没有入口。
     resolver_kind varchar(16),
     -- 谁批的（人名/通道侧 id）。没有"谁"的记录事后没法追。
     resolver_id  varchar(128),
@@ -90,13 +61,9 @@ create table claw4j_run.approval_request (
     -- 我们拿不到 tool_call_id（框架的 ToolContext 里没有），于是用"同一工具同一参数"近似
     -- "同一次调用"。代价写在语义上：同参数连调两次，一次批准能兑现两次——所以兑现是
     -- 一次性的（consumed_at），不是"批准了就永久放行"。
-    --
-    -- 空串是"早期按工具名批的那条，没有指纹可比"。它永远不会被精确匹配到（真指纹是 64 位
-    -- 十六进制），也就是升级之后要重批一次——这是对的：一条不知道批的是什么的批准，
-    -- 不该在口径收紧之后继续生效。
     args_digest  varchar(64)  not null default '',
     -- 给人看的参数摘要（已脱敏、已截断）。审批人看不到自己批的是什么时，点下去等于盖章。
-    -- ADR-0016 说"step 不存参数原文"，这里存的是**摘要**不是原文，理由同上。
+    -- 存的是**摘要**不是原文。
     args_summary varchar(512),
     -- 一次性：兑现过的批准不再有效。列一个 consumed_at 而不是删行，
     -- 因为"这条批准被谁用过、什么时候用掉的"正是事后要追的东西（P07）。
@@ -116,6 +83,17 @@ create table claw4j_run.approval_request (
     -- 存 JSON 而不是拆成三列：它是快照，不是一个要 join 的实体；拆成列之后每加一个身份维度
     -- 就要加一列迁移，而它作为快照本来就不该参与查询。
     principal_snapshot text,
+    -- 批准那一刻冻结的执行计划（exec：command + cwd）。**一份 JSON 而不是拆成列**：
+    -- 它是一份快照，不参与查询、不 join、不需要索引；拆成 command / cwd 之后，每次计划里
+    -- 多一样（脚本类还要加被调文件的哈希）就要一次迁移，而这一列的读法只有"按 id 取出来整份比"。
+    --
+    -- 为什么要有它：批准的对象是**那一条具体命令**，不是"这个工具"。只存参数指纹时，
+    -- 改动之后命不中，表现出来的只是一句"没有批准"——人能做的只有再批一次，而看不出差别在哪。
+    -- 存下批准那一刻的原文，才答得出"批的是 `./run.sh a`，现在要跑的是 `./run.sh b`"。
+    --
+    -- 可以为空：除 exec 之外的审批（工具名 + 参数指纹就够定位"批的是什么"）不写它。
+    -- 为空时按"这条批准说不清批的是哪条命令"处理——不放行，要重批一次。
+    frozen_plan  jsonb,
     constraint pk_approval_request primary key (id),
     -- 五态写死在约束里：多一个拼错的拼法，查询按 status = 'allowed' 过滤时
     -- 会安静地把它当"没批准"，而那条记录看起来是批过的。
@@ -129,7 +107,7 @@ create table claw4j_run.approval_request (
         terminal_reason is null or terminal_reason in (
             'user', 'timeout', 'malformed-verdict', 'no-route',
             'run-aborted', 'gateway-restart', 'storage-corrupt')),
-    -- 五态与其余列的一致性，逐条照 operator_approvals 的 CHECK 搬过来。
+    -- 五态与其余列的一致性，逐条照 OpenClaw 的 operator_approvals 的 CHECK 搬过来。
     -- 它挡的是"批了但没批"这类自相矛盾：allowed 却没有结论时间、denied 却带着兑现时间、
     -- expired 却说得出是谁点的。
     constraint ck_approval_request_state check (
@@ -152,8 +130,8 @@ create table claw4j_run.approval_request (
             and resolved_at is not null and resolver_kind is not null
             and consumed_at is null and consumed_by is null)
     ),
-    -- 时间单调。openclaw 有四条（含 resolved_at <= updated_at）；我们只留能表达的三条：
-    -- 没有 updated_at 列，把它写成 resolved_at <= now() 又不行（CHECK 里不能有 now()）。
+    -- 时间单调。没有 updated_at 列，把它写成 resolved_at <= now() 又不行（CHECK 里不能有 now()），
+    -- 所以只留能表达的三条。
     constraint ck_approval_request_times check (
         expires_at >= requested_at
         and (resolved_at is null or resolved_at >= requested_at)
@@ -173,8 +151,7 @@ create index ix_approval_request_lookup
     on claw4j_run.approval_request (owner, tool_name, args_digest, status)
     where consumed_at is null;
 
--- 清扫要找的是"还挂着且已过点"的那些，索引跟着这个形状走（与 openclaw 的
--- idx_operator_approvals_status_expiry 同一个用途）。没有它，每分钟一次的清扫是全表扫。
+-- 清扫要找的是"还挂着且已过点"的那些，索引跟着这个形状走。没有它，每分钟一次的清扫是全表扫。
 create index ix_approval_request_due
     on claw4j_run.approval_request (status, expires_at)
     where status = 'pending';
@@ -188,7 +165,7 @@ comment on column claw4j_run.approval_request.run_id is
 comment on column claw4j_run.approval_request.status is
     '生命周期五态（照 operator_approvals）：pending/allowed/denied/expired/cancelled。后两个记的是「没人做决定」，denied 是「有人做了决定」';
 comment on column claw4j_run.approval_request.decision is
-    '人给的结论：allow-once/allow-always/deny。当前只写 allow-once 与 deny——allow-always 需要长期授权表，我们没有做';
+    '人给的是什么结论：allow-once 一次性 / allow-always 长期（同时落 exec_allowlist）/ deny 不许';
 comment on column claw4j_run.approval_request.terminal_reason is
     '为什么结束。当前只写 user（人点的）与 timeout（清扫判超时）；词表照抄 openclaw，其余五档对应的入口还没有';
 comment on column claw4j_run.approval_request.expires_at is
@@ -213,17 +190,18 @@ comment on column claw4j_run.approval_request.chat_ref is
     '通道内的会话地址。审批卡片落回这里，绝不回退到「最近用过的通道」';
 comment on column claw4j_run.approval_request.principal_snapshot is
     '发起人的身份快照（JSON）。批准后用它开新一轮：接着做的是当初那个人，不是批它的人';
+comment on column claw4j_run.approval_request.frozen_plan is
+    '批准那一刻冻结的执行计划（exec：command + cwd）。执行前与它逐字符比，不一致按 approval mismatch 拒；为空表示这条批准说不清批的是哪条命令';
 
 -- 定时任务（P04/P05）：助手自己到点醒来。
 --
 -- **为什么是一张表 + 每 30 秒扫一次，而不是引一个调度器**：Quartz 要一整套自己的表与线程池，
 -- Redis 要多一个组件，外部调度器要多一个部署单元。这个项目要的只是"到点开一次"，
 -- 而那条路已经有入口、鉴权、投递、审批。多引一个组件，换来的是"两套状态各自认为自己在跑"
--- ——那类事故排查起来要先对齐两个时钟。依据是 ADR-0020 里"不引新组件"的裁决，不是图省事。
+-- ——那类事故排查起来要先对齐两个时钟。
 --
--- **同一时刻两个实例不许跑同一条**：认领是一条带 `for update skip locked` 的 update
--- （见 ScheduleStore#claim）。第二个实例撞上被锁的行时**跳过**而不是等——
--- 等会让它的整轮扫描卡在第一个实例的一次模型调用上。
+-- **同一时刻两个实例不许跑同一条**：认领是一条带 `for update skip locked` 的 update。
+-- 第二个实例撞上被锁的行时**跳过**而不是等——等会让它的整轮扫描卡在第一个实例的一次模型调用上。
 --
 -- **不补跑**：错过的时间点（实例停了一夜）只跑一次，下一次从"现在"往后算。
 -- 补跑三次等于在重启后补三份账单，而人要看的是现在这一份。
@@ -240,14 +218,13 @@ create table claw4j_run.agent_schedule (
     -- 而这句话是每一次都一样的起点。
     goal               text         not null,
     -- 6 段 cron（秒 分 时 日 月 周），由 Spring 的 CronExpression 解析——它不接受 5 段，
-    -- 少写一段不会被"猜一个秒"，而是当场报错（P05 把这句话原样告诉模型）。
+    -- 少写一段不会被"猜一个秒"，而是当场报错。
     -- 存原文而不是存"每隔多少秒"：人说的是"每天早上九点"，那是日历上的一个点，不是一段间隔。
     cron               varchar(128) not null,
     -- 时区。为空表示用部署所在时区（JVM 的 systemDefault）——"九点"是哪个九点，
     -- 只能由部署环境回答。写进来是为了让跨时区（或测试里）有一个确定答案。
     zone               varchar(64),
-    -- 默认 silent：定时任务默认静默完成，结果随时能查到（spec 第 16 条）。
-    -- 说"发我"的那一类由创建者改成 done_only。
+    -- 默认 silent：定时任务默认静默完成，结果随时能查到。说"发我"的那一类由创建者改成 done_only。
     notify_policy      varchar(24)  not null default 'silent',
     -- 下一次该跑的时刻。它就是"已定好的时间点"，也是扫描的唯一入口条件；
     -- 存在库里而不是留在内存，这是"实例重启不丢已定好的时间点"的全部实现。
@@ -265,19 +242,14 @@ create table claw4j_run.agent_schedule (
     disabled_reason    varchar(1024),
     created_at         timestamptz  not null default now(),
     updated_at         timestamptz  not null default now(),
-    -- 任务主人在通道侧的标识（飞书是 open_id，HTTP 是 X-Claw4j-User）。
-    -- 到点按它 + owner_role **重新算**一次权限。
+    -- 任务主人在通道侧的标识（飞书是 open_id，HTTP 是 X-Claw4j-User）。到点只用它起跑。
     --
     -- **为什么不像早期那样存整份 Principal**：那实际上是一份角色快照，而快照不会跟着角色
-    -- 配置变——一个人的权限昨天被收回，今天那条任务照样按昨天的权限跑完，
-    -- "收权"对定时任务等于没有发生。现在只留"这是谁、他当时是什么角色"，
-    -- 到点那一刻按当前角色表重算；算不出来（角色被删了）就不跑。
-    -- 这一批之前建出来的行这两列为空，会被扫描器当成"读不到任务主人"停掉——那是对的。
+    -- 配置变——一个人的权限昨天被收回，今天那条任务照样按昨天的权限跑完，"收权"对定时任务
+    -- 等于没有发生。现在只留"这是谁"，到点那一刻按当前身份重算；读不出主人就停用并说明原因。
     owner_user_id      varchar(255),
-    owner_role         varchar(64),
     -- 这条任务预计要用到的工具名。建的时候核一遍（跑不了当场拒，不用等到明天九点），
     -- 到点之前再核一遍（权限被收回时，别开到一半才发现每个工具都被拦）。
-    -- 清单存的是**工具名**，不是权限：权限一律以到点那一刻的角色表为准。
     -- 空表示纯模型回答、不碰工具。
     required_tools     text[]       not null default '{}',
     -- 三档写死在约束里，与审批那一侧的路径同口径：
@@ -310,9 +282,7 @@ comment on column claw4j_run.agent_schedule.cron is
 comment on column claw4j_run.agent_schedule.zone is
     '时区；为空表示用部署所在时区。写进来是为了让"九点"有确定答案';
 comment on column claw4j_run.agent_schedule.owner_user_id is
-    '任务主人在通道侧的标识（飞书是 open_id，HTTP 是 X-Claw4j-User）。到点按它 + owner_role 重新算权限';
-comment on column claw4j_run.agent_schedule.owner_role is
-    '创建时的角色名。存角色名而不是存权限：权限要按到点那一刻的角色表现算，否则收权对定时任务无效';
+    '任务主人在通道侧的标识（飞书是 open_id，HTTP 是 X-Claw4j-User）。到点只用它起跑——角色那一层在 ADR-0030 里已下线';
 comment on column claw4j_run.agent_schedule.required_tools is
     '这条任务预计要用到的工具名。建的时候与每次到点之前都核一遍；空表示纯模型回答、不碰工具';
 comment on column claw4j_run.agent_schedule.next_run_at is
@@ -330,19 +300,14 @@ comment on column claw4j_run.agent_schedule.failures is
 --   · **不记**提示词、消息体、工具参数、工具结果、命令输出、原始错误文本
 --   · 30 天 + 10 万行，启动时 / 每小时 / 每次写之后各清一次
 --
--- **为什么不再是"某个 run 的第几步"**：那件事的载体（agent_step）在 ADR-0027 落地时被删了。
--- 审计要回答的是"谁在什么时候让谁做了什么、成没成"，那件事不需要一个父亲。
---
 -- **event_id 与 seq 是两个东西**：event_id 用来去重（同一条事件重复投递只留一行），
 -- seq 是账本序号（单调递增，翻页与"上限淘汰"都按它）。两者合成一个的话，
 -- 去重成功就必须重排序号，而那等于把已经发出去的分页游标全部作废。
 --
--- **主键就是 seq**（2026-11-09 对齐 openclaw 的表）：原来另有一个 uuid 主键，
--- 没有任何地方读它——翻页与淘汰都按 seq 走。多一个永远不被读的主键，代价是每行多 16 字节
--- 和一个索引，而它带来的"稳定 id"这件事 event_id 已经做了。
+-- **主键就是 seq**：翻页与淘汰都按它走，另起一个没人读的主键只是每行多 16 字节和一个索引；
+-- 而"稳定 id"这件事 event_id 已经做了。
 create table claw4j_run.audit_event (
-    -- 账本序号，同时是主键。与 OpenClaw 的 ledger sequence 同名同义：
-    -- 单调递增，只用于排序、翻页与上限淘汰。
+    -- 账本序号，同时是主键。单调递增，只用于排序、翻页与上限淘汰。
     seq              bigserial    not null primary key,
     event_id         varchar(64)  not null,
     -- agent_run | tool_action，与四类 action 一一对应（见下面的 check）。
@@ -363,8 +328,8 @@ create table claw4j_run.audit_event (
     agent_id         varchar(64),
     -- 谁让这件事发生的（提问的人）。**与 openclaw 的 actor 不是同一个东西**：
     -- 它的 actor 是执行者（agent / system），人的身份走 account_ref（HMAC 假名）。
-    -- 我们只做了一侧——记人，执行者就是本进程。要照抄它那一套，得先有假名化密钥表
-    -- （audit_identity_keys），那是另一件事，记在 docs/design/pitfalls 的偏差里。
+    -- 我们只做了一侧——记人，执行者就是本进程。要照抄它那一套，得先有假名化密钥表，
+    -- 那是另一件事，记在 docs/design/pitfalls 的偏差里。
     actor            varchar(128),
     -- 这个人当时的角色。openclaw 没有这一列（它的人身份在 account_ref 里）。
     -- 保留的理由：它的 actor 记执行者，我们的 actor 记人，而"谁"在人这一侧必须带上角色
@@ -379,7 +344,6 @@ create table claw4j_run.audit_event (
     -- **openclaw 这一列是 tool_call_id**（标识"这一次调用"）。我们拿不到：框架的 ToolContext
     -- 只是一个自由 Map，没有调用 id。所以这里只能放"这组参数"的指纹，代价是
     -- 同参数连调两次在审计里长得一样，数不出"调了几次"——要数就按 seq 数行。
-    -- 名字从 call_fingerprint 改成 args_digest，是为了让人一眼看出它是参数指纹而不是调用 id。
     args_digest      varchar(64),
     -- 放行这次调用的审批编号。openclaw 没有这一列（它用 execution_decision_facts 关联），
     -- 我们没做那张表，所以留在这里——它是"这次执行是哪次批准的"唯一的落点。
@@ -414,7 +378,7 @@ create table claw4j_run.audit_event (
 
 -- 索引照 openclaw 的形状：每个查询维度上都跟 **seq**，不是跟 at。
 -- 翻页游标是 seq，按 at 排序在"同一毫秒写了多条"时不稳定——两条事件的 at 相同，
--- 页码就会重复或漏行。时间维度单独一条（(at desc, seq desc)），与它的 idx_audit_events_time 一致。
+-- 页码就会重复或漏行。时间维度单独一条（(at desc, seq desc)）。
 create index ix_audit_event_time on claw4j_run.audit_event (at desc, seq desc);
 
 create index ix_audit_event_actor on claw4j_run.audit_event (actor, seq desc);
@@ -423,9 +387,7 @@ create index ix_audit_event_session on claw4j_run.audit_event (session_key, seq 
 
 create index ix_audit_event_run on claw4j_run.audit_event (run_id, seq desc);
 
--- kind 与 channel 是 openclaw 有、我们原来没有索引的两个维度（它的
--- idx_audit_events_kind_sequence / idx_audit_events_channel_sequence）：
--- "只看工具动作""只看某个通道来的"是排障时最先问的两句。
+-- kind 与 channel 是排障时最先问的两句："只看工具动作""只看某个通道来的"。
 create index ix_audit_event_kind on claw4j_run.audit_event (kind, seq desc);
 
 create index ix_audit_event_channel on claw4j_run.audit_event (channel, seq desc);
@@ -450,3 +412,47 @@ comment on column claw4j_run.audit_event.schema_version is
     '记录格式版本，恒为 1。存在的理由不是分类，是让将来加字段时旧行仍能按第 1 版解释';
 comment on column claw4j_run.audit_event.run_id is
     '这一轮的编号（runId，与 OpenClaw 同名，必填）。事件必须属于一次已准入的运行；与 span 上的 claw4j.run.id 同值，一轮答完即作废';
+
+-- exec 的"以后这个可执行文件都放行"（ADR-0030 裁决四的三态之一：allow-always）。
+--
+-- 一条记录对**一段**命令，不是对整条命令行：
+--     rg -n TODO            → pattern = 'rg'
+--     rg -n TODO && ls      → 两条记录：'rg' 与 'ls'
+-- 批一条复合命令等于把它的每一段都放开——这正是"按段落"的理由：只落整条命令的哈希，
+-- 下一次 `rg -n FIXME` 还要再问一遍，人会开始无脑点批准。
+--
+-- **没有 command_text 列**。OpenClaw 的记录里有 `commandText`，但那是旧字段、加载时会被
+-- stripAllowlistCommandText 剥掉：留着它等于把"用户跑过的一条完整命令"永久写进库，
+-- 而匹配一份都不用它。要看人话有 last_used_command，那是一次性的便于排查的记录。
+--
+-- `last_used_at` / `last_used_command` / `last_resolved_path` 都是**命中之后才补**的：
+-- 刚写进去时它们全是 null。不给默认值的理由：默认值会让"从没命中过"与"命中过但没记下来"
+-- 看起来一样。
+--
+-- 唯一键用 coalesce(arg_pattern, '') 而不是 (pattern, arg_pattern)：Postgres 里 NULL 互不相等，
+-- 直接建唯一索引时同一个 pattern 能插进无数条 arg_pattern 为 null 的记录，于是每次启动都多一批。
+create table claw4j_run.exec_allowlist
+(
+    id                 uuid        not null primary key,
+    pattern            text        not null,
+    arg_pattern        text,
+    source             text        not null,
+    last_used_at       timestamptz,
+    last_used_command  text,
+    last_resolved_path text,
+    created_at         timestamptz not null default now()
+);
+
+comment on table claw4j_run.exec_allowlist is
+    'exec 的 allow-always 条目：一条对一段命令（ADR-0030）。pattern 是可执行名，arg_pattern 预留参数级收窄';
+comment on column claw4j_run.exec_allowlist.pattern is
+    '可执行名（如 rg）。路径形态与赋值形态不落库——取 basename 会让 /tmp/evil/rg 与 rg 共用一条';
+comment on column claw4j_run.exec_allowlist.arg_pattern is
+    '参数级收窄，暂时恒为 null；有它时 pattern + arg_pattern 一起匹配';
+comment on column claw4j_run.exec_allowlist.source is
+    '谁写的这一条。目前只有 allow-always；留字面量是为了将来区分配置文件导入与人工批准';
+comment on column claw4j_run.exec_allowlist.last_resolved_path is
+    '上次命中时解析出的可执行文件绝对路径，事后排查用，不参与匹配';
+
+create unique index uq_exec_allowlist_pattern
+    on claw4j_run.exec_allowlist (pattern, coalesce(arg_pattern, ''));

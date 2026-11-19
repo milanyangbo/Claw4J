@@ -468,7 +468,7 @@ class TurnFlowTest {
                 new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null));
     }
 
-    /** 真的段解析器：走 V8 那两张表，与生产同一条路。 */
+    /** 真的段解析器：走会话身份那几张表，与生产同一条路。 */
     private SessionEntries realPointers() {
         return new SessionEntries(
                 new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA),

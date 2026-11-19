@@ -14,7 +14,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * {@code allow-always} 的落点：{@code claw4j_run.exec_allowlist}（V11）上的一条持久放行（票 05）。
+ * {@code allow-always} 的落点：{@code claw4j_run.exec_allowlist}（基线）上的一条持久放行（票 05）。
  *
  * <p>一条记录对<b>一段</b>命令，不是对整条命令行：批了 {@code rg -n TODO && ls} 会写成两行，
  * 于是下一次 {@code ls} 也在放行之内；而只落整条命令的哈希，下一次 {@code rg -n FIXME}
@@ -31,7 +31,7 @@ public class JdbcExecAllowlist {
 
     private static final Logger log = LoggerFactory.getLogger(JdbcExecAllowlist.class);
 
-    /** 这一档的取值与 V11 的注释一致：目前只有 {@code allow-always}。 */
+    /** 这一档的取值与迁移里那张表的注释一致：目前只有 {@code allow-always}。 */
     static final String SOURCE_ALLOW_ALWAYS = "allow-always";
 
     /**

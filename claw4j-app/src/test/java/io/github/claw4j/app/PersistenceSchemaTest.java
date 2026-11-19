@@ -68,7 +68,7 @@ class PersistenceSchemaTest {
     /**
      * 两个形状合法（64 位十六进制）但不同的指纹。
      *
-     * <p>用真形状而不是 {@code "d1"}：V11 给这一列定了 {@code varchar(64)}，
+     * <p>用真形状而不是 {@code "d1"}：基线给这一列定了 {@code varchar(64)}，
      * 拿短串测的话，"列宽够不够放一个真指纹"这件事永远测不到。
      */
     private static final String DIGEST = "a".repeat(64);
@@ -106,7 +106,7 @@ class PersistenceSchemaTest {
         // 审计视图长在 step 上，随 step 一起删（V24）；agent_session_budget 在 V22 已经删了。
         // 这条断言存在的理由是"兼容层"那个诱惑：留一张空表"以防有人要查历史"，
         // 下一个人就会往里加一列。历史在 audit_event 上，不在 step 上。
-        // exec_allowlist 是 V11 新增的：它不属于"某一轮"，是部署级的 allow-always 条目
+        // exec_allowlist：它不属于"某一轮"，是部署级的 allow-always 条目
         // （ADR-0030），所以留在这个 schema 里而不是跟 run 一起走。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'claw4j_run'"
@@ -116,10 +116,10 @@ class PersistenceSchemaTest {
     }
 
     @Test
-    @DisplayName("V12：审批行上有一列冻结计划，jsonb 且允许为空")
+    @DisplayName("审批行上有一列冻结计划，jsonb 且允许为空")
     void approvalRowCarriesAFrozenPlan() {
         // 允许为空是必须的：除 exec 之外的审批（工具名 + 参数指纹）没有"一条命令"可冻结，
-        // 而 V12 之前落下的行也没有。为空时按"说不清批的是哪条命令"处理——不放行。
+        // 非 exec 的审批不写它。为空时按"说不清批的是哪条命令"处理——不放行。
         assertThat(jdbc.queryForObject("select data_type from information_schema.columns"
                 + " where table_schema = 'claw4j_run' and table_name = 'approval_request'"
                 + " and column_name = 'frozen_plan'", String.class))
@@ -465,7 +465,7 @@ class PersistenceSchemaTest {
     /**
      * 提升列为空的行（{@code entry_valid = -1} 那一档）不该把整段对话打死。
      *
-     * <p>V8 给那一档的语义就是"行还在、{@code entry_json} 置空、提升列置空"，所以这两个时间
+     * <p>{@code entry_valid = -1} 那一档的语义就是"行还在、{@code entry_json} 置空、提升列置空"，所以这两个时间
      * 为空是<b>合法状态</b>，不是脏数据。读成 {@code toInstant()} 的话这里是一次 NPE，
      * 而它会被上一层兜底吞成"这一段没有段"：这个人的会话从此不再换段，日志只有第一条，
      * 指标上只是一个不痛不痒的计数。

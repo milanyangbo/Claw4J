@@ -1,21 +1,20 @@
 -- 会话的表（ADR-0005：一个 Postgres 多种存储，靠 schema 分开）。
 --
--- 本文件是旧 V3 / V16 / V17 / V20 / V22 与 V8 六段历史合并后的**基线**，写法与执行顺序都已定稿：
--- 后续改表结构请加新版本，不要再动这里——Flyway 的 checksum 会把"改过的历史"当成损坏。
+-- 两层。消息与事件那两张是**框架契约**：`ai_session` / `ai_session_event` 的表结构抄自
+-- spring-ai-session-jdbc 的 schema-postgresql.sql，列名不能改。其余四张是我们自己的会话
+-- 身份层（节点 / 段 / 通道身份 / 绑定），照 OpenClaw 的会话持久层形状。
 --
--- **为什么建表写全限定名、运行时查询却不写**：{@code ai_session} 与 {@code ai_session_event}
--- 的表结构抄自 spring-ai-session-jdbc 0.10.0 自带的 schema-postgresql.sql，表名保持原样；
--- 框架生成的 SQL 不带 schema 前缀，落点由连接的 {@code currentSchema} 决定
--- （见 SessionMemoryConfiguration 里那个独立的会话连接池）。而这段 SQL 由 Flyway 跑，
--- Flyway 连的是默认 search_path，不写前缀表就会落到 public。建的时候限定、查的时候不限定，
--- 两边的落点因此一致，且都不依赖"当前 schema 是什么"。
+-- **为什么建表写全限定名、运行时查询却不写**：框架生成的 SQL 不带 schema 前缀，落点由连接的
+-- `currentSchema` 决定（见 SessionMemoryConfiguration 里那个独立的会话连接池）。而这段 SQL 由
+-- Flyway 跑，Flyway 连的是默认 search_path，不写前缀表就会落到 public。建的时候限定、
+-- 查的时候不限定，两边的落点因此一致，且都不依赖"当前 schema 是什么"。
 -- 代价要记账：升级 spring-ai-session 时，如果官方改了表结构，这个文件要跟着改一次。
--- 换来的好处是建表只有 Flyway 一个入口——官方自动配置那个 initializer 默认只在嵌入式
--- 数据库上跑，在 Postgres 上它什么都不做，靠它就等于"以为建了其实没建"。
 --
--- **session_entry 的手写 SQL 一律写全限定名**（下同）：那些类跑在主连接池上
--- （搜索路径里没有 claw4j_session），schema 段从 {@code claw4j.session.schema} 取。
--- 这两件事的判据不同、落点相同，别把"运行时查询不带前缀"当成整层约定。
+-- 我们自己那四张走主连接池（搜索路径里没有 claw4j_session），手写 SQL 一律写全限定名，
+-- schema 段从 `claw4j.session.schema` 取。
+--
+-- **消息不在这里的第二份**：段只持有"这一代"这个身份，session_id 与 ai_session.id 同值。
+-- 所以不建 transcript_events / 归档表——那会是第二份真相。
 create schema if not exists claw4j_session;
 
 create table claw4j_session.ai_session (
@@ -47,7 +46,7 @@ create table claw4j_session.ai_session_event (
     -- 压缩把早期事件归档而不是删除：召回要能查到（EventFilter 的 excludeArchived 默认 false），
     -- 而"当前上下文"只看未归档的那些。
     archived        boolean      not null default false,
-    -- 0.10.0 起不再使用（分支功能已移除），留着是为了不让已经建好的库对不上框架的列清单。
+    -- 框架已不使用（分支功能移除），留着是为了不让已经建好的库对不上它的列清单。
     branch          varchar(500),
     metadata        text,
     constraint fk_ai_session_event_session
@@ -57,85 +56,239 @@ create table claw4j_session.ai_session_event (
 create index idx_ai_session_event_session_seq
     on claw4j_session.ai_session_event (session_id, seq);
 
--- 会话状态一张表（票 06，形状照 OpenClaw 的 SessionEntry）。
+-- 一个会话节点一行（形状照 OpenClaw 的 session entry）。
 --
--- 曾经是 conversation_pointer + conversation_goal 两张表，2026-11-09 合成这一张：
--- 它的 entry 就是"一条记录装着 sessionId、时间和 goal"，goal 换段时跟着那一条一起清掉。
--- 拆成两张表的代价已经发生过：`/new` 只换了段、没清目标，旧段的 goal 行永久留着，
--- 而 `where status = 'active'` 的部分索引把它们算进"现在有几个目标在推进"。
--- 合成一张之后，换段是同一条 update：改 segment、清 goal_*，两件事不可能只做一半。
-create table claw4j_session.session_entry (
-    -- 会话节点的键（不含段）：'claw4j:user:' || owner || ':' || channel || ':' || chat_id。
-    -- 与 OpenClaw 的 sessionKey 同义；段是下面的一列，不是主键的一部分。
-    session_key            text        primary key,
-    owner                  text        not null,
-    channel                text        not null,
-    chat_id                text        not null,
+-- 热事实在 entry_json：加一个会话字段不用改表，而它有一百多列的量级，绝大多数只被整份读写。
+-- 提升出来的列只是查询索引——列与 JSON 不一致时以 JSON 为准。
+create table claw4j_session.session_nodes (
+    -- 会话节点的键。段不在键里——一个节点恒有且只有一个"当前段"。
+    session_key             text        primary key,
 
-    -- = 它的 sessionId。换段 = 改这一列 + 清空下面的 goal_* 列（同一条 update）。
-    segment                text        not null,
-    -- = sessionStartedAt。存**时刻**而不是"算好的逻辑日"：daily 边界在读时算，
-    -- 改 at-hour 或改时区之后判定立刻跟着变。旧表存 day_started 是那次合并前的偏离。
-    session_started_at     timestamptz not null,
-    -- = lastInteractionAt。每轮入站刷新，idle 判定用它。
-    last_interaction_at    timestamptz not null,
-    -- 节点创建时间，跨段不变（它的 createdAt 就是这个语义）。
-    created_at             timestamptz not null,
-    -- = previousSessionId。换段时写旧段，回答"上一段是什么"。
-    previous_segment       text,
-    -- = totalTokens。**段级累计**，换段清零；目标的预算按 "total_tokens - goal_token_start" 算。
-    total_tokens           bigint      not null default 0,
+    -- 指向当前段（session_windows.session_id）。换段改这一列，不改键。
+    current_session_id      text        not null,
 
-    -- goal 平铺（关系库没有嵌套对象）。goal_id is null 表示这一段没有目标。
-    goal_schema_version    smallint,
-    -- 它的 id：所有变更请求都带它，防"旧按钮改到替换后的目标"。
-    goal_id                uuid,
-    goal_objective         text,
-    goal_status            varchar(24),
-    -- 预算窗口的起点（创建目标时会话的累计用量）。
-    goal_token_start       bigint,
-    -- 起点是不是真实快照。false = 创建那轮拿不到用量，等下一次真实用量到来才采纳。
-    goal_token_start_fresh boolean,
-    -- 从起点算起的用量（存下的"最后一次已知值"，account 用 max 自愈）。
-    goal_tokens_used       bigint,
-    goal_token_budget      bigint,
-    goal_continuation_turns integer,
-    goal_last_status_note  text,
-    -- 五个时刻分开存：合用一个 updated_at 就答不了"首次完成时间"。
-    goal_paused_at         timestamptz,
-    goal_blocked_at        timestamptz,
-    goal_completed_at      timestamptz,
-    goal_usage_limited_at  timestamptz,
-    goal_budget_limited_at timestamptz,
-    goal_created_at        timestamptz,
-    goal_updated_at        timestamptz,
+    -- 形状由 SessionEntry 定义，至少含 sessionId / updatedAt / totalTokens / goal。
+    entry_json              jsonb       not null,
 
-    -- 目标要么整份在、要么整份不在：三列里有一列非空就都得非空，且内容不能是空白。
-    constraint session_entry_goal_all_or_nothing check (
-        (goal_id is null and goal_objective is null and goal_status is null)
-        or (goal_id is not null and goal_objective is not null and goal_status is not null
-            and length(btrim(goal_objective)) > 0)
-    ),
-    -- 六态逐字照 SessionGoalStatus。
-    constraint session_entry_goal_status_allowed check (
-        goal_status is null or goal_status in
-        ('active', 'paused', 'blocked', 'budget_limited', 'usage_limited', 'complete')
-    ),
-    constraint session_entry_goal_budget_positive check (
-        goal_token_budget is null or goal_token_budget > 0
-    ),
-    constraint session_entry_goal_window_non_negative check (
-        (goal_token_start is null or goal_token_start >= 0)
-        and (goal_tokens_used is null or goal_tokens_used >= 0)
-    )
+    -- 当前段的开始时刻。判定跨天要用它，所以提升成列（JSON 里也有一份）。
+    session_started_at      timestamptz,
+
+    -- entry_json 的状态：1 已校验，0 待校验，-1 逻辑 entry 已被清空。
+    -- -1 不是删除：行还在、段还在，清空动作只把 entry_json 置成 {}、把提升列置空，
+    -- 让"这个节点存在过"与"它现在没有逻辑条目"能同时成立。
+    entry_valid             smallint    not null default 0
+        check (entry_valid in (-1, 0, 1)),
+
+    -- 节点最后更新时间（跨段不变）。清理与列表排序按它走。
+    updated_at              timestamptz not null,
+
+    -- 收尾状态，与 ended_at 配对写：跑完了是 done，崩了是 failed，被杀是 killed。
+    -- 它是"这一次跑得怎么样"，不是"这个会话还在不在"——后者看 archived_at。
+    status                  text check (status is null or status in
+        ('running', 'done', 'failed', 'killed', 'timeout')),
+
+    created_at              timestamptz,
+    -- 谁建的。channel 是"外部消息触发的"，spawn 是"子代理"，cron 是定时任务，
+    -- 这些区别在排查"这个会话怎么冒出来的"时是唯一线索。
+    created_via             text check (created_via is null or created_via in
+        ('operator', 'spawn', 'channel', 'cron', 'talk', 'run', 'plugin', 'internal')),
+    created_actor_type      text check (created_actor_type is null or created_actor_type in
+        ('human', 'agent', 'system')),
+    created_actor_id        text,
+
+    -- 归属与转让。分开存"谁现在拥有"与"谁转的、什么时候转的"：
+    -- 合用一个 updated_at 答不了"这次转让发生在什么时候"。
+    owner_actor_type        text,
+    owner_actor_id          text,
+    owner_assigned_by_type  text,
+    owner_assigned_by_id    text,
+    owner_assigned_at       timestamptz,
+
+    project_id              text,
+
+    -- 谱系。parent 是"我是谁起的"，fork_source 是"我从谁的哪一段分叉来的"。
+    -- 两者不是一件事：子代理有 parent 但没有 fork source，分叉会话反过来。
+    parent_session_key      text,
+    spawned_by              text,
+    fork_source_session_key text,
+    fork_source_session_id  text,
+    fork_source_entry_id    text,
+
+    label                   text,
+    display_name            text,
+    category                text,
+    icon                    text,
+    pinned_at               timestamptz,
+    archived_at             timestamptz,
+    -- 三个"什么时候"分开：读过 ≠ 交互过 ≠ 有活动。
+    -- 合成一个的话，"未读"这个状态就表达不出来。
+    last_read_at            timestamptz,
+    last_interaction_at     timestamptz,
+    last_activity_at        timestamptz
 );
 
--- "这个会话有没有活跃目标"每回合都问一次，走主键就够；
--- 按状态筛（"现在有几个目标在推进"）要能走索引。合并成一张表之后孤儿没了，这个数才会降。
-create index session_entry_active_goal_idx
-    on claw4j_session.session_entry (goal_status)
-    where goal_status = 'active';
+-- 列表按更新时间倒序翻页。
+create index session_nodes_updated_at_idx
+    on claw4j_session.session_nodes (updated_at desc, session_key);
 
--- 清理按最后交互时间扫。
-create index session_entry_last_interaction_idx
-    on claw4j_session.session_entry (last_interaction_at);
+create index session_nodes_label_idx
+    on claw4j_session.session_nodes (label, session_key)
+    where label is not null;
+
+create index session_nodes_parent_idx
+    on claw4j_session.session_nodes (parent_session_key, session_key);
+
+create index session_nodes_spawned_by_idx
+    on claw4j_session.session_nodes (spawned_by, session_key);
+
+create index session_nodes_status_idx
+    on claw4j_session.session_nodes (status, session_key)
+    where status is not null;
+
+create index session_nodes_archived_idx
+    on claw4j_session.session_nodes (archived_at, session_key)
+    where archived_at is not null;
+
+-- 活跃节点：清理与列表的默认范围。部分索引让"未归档"这半边不进索引。
+create index session_nodes_active_idx
+    on claw4j_session.session_nodes (session_key)
+    where archived_at is null;
+
+create index session_nodes_current_session_idx
+    on claw4j_session.session_nodes (current_session_id);
+
+-- "现在有几个目标在推进"要能走索引：它每轮问一次，全表扫 entry_json 撑不住。
+-- 表达式必须与查询写法逐字一致才走得到索引，改 query 时这里要跟着改。
+create index session_nodes_active_goal_idx
+    on claw4j_session.session_nodes ((entry_json -> 'goal' ->> 'status'))
+    where entry_json -> 'goal' ->> 'status' = 'active';
+
+-- 通道侧的会话身份：谁、在哪、怎么回。
+create table claw4j_session.conversations (
+    conversation_id        text        primary key,
+    -- 通道名（slack / feishu / wecom / http）。
+    channel                text        not null,
+    -- 同一种通道可以配多个机器人。没有这一维的话，两个机器人收到的私聊会算同一条对话。
+    account_id             text        not null,
+    -- 三档：私聊、群、频道。它是 dmScope 的判据——main 只作用于 direct。
+    kind                   text        not null check (kind in ('direct', 'group', 'channel')),
+    -- 对端身份：私聊是用户，群聊是群。
+    peer_id                text        not null,
+    -- 回消息往哪投。与 peer_id 分开：群里回消息要带 thread，而 peer 是群本身。
+    delivery_target        text        not null,
+    parent_conversation_id text,
+    thread_id              text,
+    -- 通道自己的 id。排查时拿它去平台上对照，比拿我们的内部 id 有用。
+    native_channel_id      text,
+    native_direct_user_id  text,
+    label                  text,
+    metadata_json          jsonb,
+    created_at             timestamptz not null,
+    updated_at             timestamptz not null
+);
+
+create index conversations_lookup_idx
+    on claw4j_session.conversations (channel, account_id, kind, peer_id, thread_id);
+
+-- 同一条通道会话只能有一行。空值在唯一索引里互不相等，所以显式消掉 null：
+-- 不处理的话，没有 thread 的私聊每轮都能插一行新的。
+create unique index conversations_identity_idx
+    on claw4j_session.conversations (
+        channel, account_id, kind, peer_id,
+        coalesce(parent_conversation_id, ''), coalesce(thread_id, ''));
+
+create index conversations_updated_idx
+    on claw4j_session.conversations (updated_at desc, conversation_id);
+
+-- 一段对话的"一世"，session_id 一词一代。
+create table claw4j_session.session_windows (
+    -- 一"世"对话的 id。等于 ai_session.id——消息在那边，身份在这边。
+    session_id              text        primary key,
+    -- 延迟校验：换段那条语句要在同一次往返里既插这一行、又插/更新 session_nodes，
+    -- 而立即校验的外键会在节点还没插进去时就拒绝。语义不变——事务提交时照样校验。
+    session_key             text        not null
+        references claw4j_session.session_nodes (session_key) on delete cascade
+        deferrable initially deferred,
+
+    -- 上一世的 id。只记一个，不是链——顺着它能走回去，但不需要在库里维护整条链。
+    previous_session_id     text,
+
+    -- 为什么换段。七档缺一不可：reset 是用户按 /new，rollover 是策略自动换，
+    -- compaction 是压缩触发的重写，recovery 是崩了之后接上。
+    -- 只记"换过段"的话，"为什么记忆没了"就只能靠猜。
+    reason                  text check (reason is null or reason in
+        ('initial', 'reset', 'rollover', 'fork', 'rewind', 'switch', 'recovery', 'compaction')),
+
+    -- 这一段被谁共享。shared-main 就是 dmScope: main 的落点（所有私聊共用主会话），
+    -- group 是按群隔离，channel 是整条通道一个段。它记的是"这一段的边界是什么"，
+    -- 不是"键长什么样"——键是节点的事。
+    session_scope           text        not null default 'conversation'
+        check (session_scope in ('conversation', 'shared-main', 'group', 'channel')),
+
+    created_at              timestamptz not null,
+    updated_at              timestamptz not null,
+    started_at              timestamptz,
+    ended_at                timestamptz,
+
+    status                  text check (status is null or status in
+        ('running', 'done', 'failed', 'killed', 'timeout')),
+
+    -- 这一段的源头是哪类会话。与 conversations.kind 同义，但留一份在这里：
+    -- 查"这个段的私聊还是群聊"不该再走一次 join。
+    chat_type               text check (chat_type is null or chat_type in
+        ('direct', 'group', 'channel')),
+    channel                 text,
+    account_id              text,
+    primary_conversation_id text
+        references claw4j_session.conversations (conversation_id) on delete set null,
+
+    -- 这一段用的模型。换模型不换段，所以它是"这段开始时的模型"，
+    -- 中途切模型会改它——它的语义是当前值，不是历史。
+    model_provider          text,
+    model                   text,
+
+    display_name            text
+);
+
+create index session_windows_updated_idx
+    on claw4j_session.session_windows (updated_at desc, session_id);
+
+-- 一个节点的段按时间倒序：取"当前段之前那一世"走这条。
+create index session_windows_session_key_idx
+    on claw4j_session.session_windows (session_key, updated_at desc, session_id);
+
+create index session_windows_created_idx
+    on claw4j_session.session_windows (created_at desc, session_id);
+
+create index session_windows_conversation_idx
+    on claw4j_session.session_windows (primary_conversation_id)
+    where primary_conversation_id is not null;
+
+-- 段与通道会话的多对多。
+create table claw4j_session.session_conversations (
+    session_id      text        not null
+        references claw4j_session.session_windows (session_id) on delete cascade,
+    conversation_id text        not null
+        references claw4j_session.conversations (conversation_id) on delete cascade,
+
+    -- 一个段可以有多个会话，但只有一个 primary。这就是"所有私聊共用主会话"的实现：
+    -- 不是把键拼成一个字符串，而是让多个 direct 会话都挂到同一个 session_id 上。
+    -- participant 是群里的其他人，related 是"顺带提过一句"的会话。
+    role            text        not null default 'primary'
+        check (role in ('primary', 'participant', 'related')),
+
+    -- 这条关联的路由现场（谁、从哪来、回哪去）。留 JSON 是因为它随通道变，
+    -- 摊成列等于把每个通道的字段都塞进这张表。
+    route_context_json jsonb,
+    first_seen_at   timestamptz not null,
+    last_seen_at    timestamptz not null,
+    primary key (session_id, conversation_id, role)
+);
+
+create index session_conversations_conversation_idx
+    on claw4j_session.session_conversations (conversation_id, last_seen_at desc, session_id);
+
+-- 一个段只能有一个 primary。挂第二个就是"这一段的主通道是哪条"没有答案。
+create unique index session_conversations_primary_idx
+    on claw4j_session.session_conversations (session_id)
+    where role = 'primary';

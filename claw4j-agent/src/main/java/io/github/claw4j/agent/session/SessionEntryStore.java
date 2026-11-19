@@ -6,7 +6,7 @@ import java.util.Optional;
 /**
  * 会话节点与段的状态（ADR-0026、ADR-0029）。
  *
- * <p>只有一个动作：把"这条对话被访问了"落下去，回一个段。落的是 V8 的两张表——
+ * <p>只有一个动作：把"这条对话被访问了"落下去，回一个段。落的是会话身份那几张表——
  * {@code session_nodes}（节点，热事实在 {@code entry_json}）与 {@code session_windows}
  * （段，一词一代）。换段 = 插一行 window + 改 {@code current_session_id}，两件事在同一个
  * 事务里，不会出现"段换了、window 没插"的中间态。

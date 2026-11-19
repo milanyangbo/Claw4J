@@ -66,6 +66,12 @@ V8 把 `session_entry` 那张单表换成它那套分层（`src/state/openclaw-a
 | `session_conversations` | 段与通道会话的多对多 | 原来靠键里拼 `channel:chatId` |
 | `session_key_contract` | 单行，记 main 会话的键 | 新增 |
 
+> **2026-11-19 修订：`session_entry_snapshots` 与 `session_key_contract` 已从库里删掉。**
+> 两张表建出来了但**没有任何代码读写它们**（`session_entry_snapshots` 快照的是已被删掉的
+> `session_entry`，触发器随表一起消失；`session_key_contract` 那行从写下之后再没被读过）。
+> 留着它们的代价是每个读 schema 的人都要问一次"这两张谁在用"。删表与 `snapshot_revision`
+> 列一起做，判定依据是 `grep` 零引用，不是"看起来没用"。上表其余四张仍在用。
+
 三处判断：
 
 1. **消息不搬**。`ai_session` / `ai_session_event` 是 `JdbcChatMemoryRepository` 写死的表名，

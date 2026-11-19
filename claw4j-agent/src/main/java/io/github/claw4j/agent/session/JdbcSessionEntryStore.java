@@ -25,7 +25,7 @@ import java.util.Optional;
  * <p>锁与读分成两条语句，不合并：同一个 {@code select} 里，join 与 select 列表的求值顺序
  * 没有保证，合起来写会出现"先读到旧值、后拿到锁"，而那正是要防的窗口。
  *
- * <p>为什么不是一条语句：V8 里 window 的 {@code session_key} 是延迟外键，本可以塞进一个
+ * <p>为什么不是一条语句：会话那一组表里 window 的 {@code session_key} 是延迟外键，本可以塞进一个
  * CTE，但"先插节点还是先插 window"在 CTE 里没有保证（{@code WITH} 的子语句并发执行），
  * 而分语句换来的可读性更值。会话状态行每轮只走一次，不在热循环里。
  *
@@ -338,7 +338,7 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
     /**
      * 可空的时间列，空就是"很久没动"。
      *
-     * <p>V8 允许这两列为空：{@code entry_valid = -1} 那一档（逻辑 entry 被清空、行还在）的语义
+     * <p>迁移允许这两列为空：{@code entry_valid = -1} 那一档（逻辑 entry 被清空、行还在）的语义
      * 就是"把 entry_json 置成空、把提升列置空"。直接 {@code toInstant()} 的话这里是一个 NPE，
      * 它会被 {@code SessionEntries} 的兜底吞成"这段没有段"——而这个人的会话从此再也不换段，
      * 日志只有第一条。读成纪元之后，判定把它当陈旧，下一轮换段时时间被写回去，那一行自己就好了。
@@ -355,7 +355,7 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
      * 插一行"这一世"。
      *
      * <p>{@code account_id} 恒为 {@code null}：本仓库没有 account 这一维（一个通道实例只配一台
-     * 机器人），而 V8 那列本来就是可空的——它记的是"这段来自哪台通道账号"，与
+     * 机器人），而那一列本来就是可空的——它记的是"这段来自哪台通道账号"，与
      * {@code channel} 是两件事。曾经这里两个参数都传了 {@code key.channel()}，
      * 于是库里每一段都声称自己属于一台名叫 {@code feishu} 的账号。
      */

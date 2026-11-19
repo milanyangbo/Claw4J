@@ -129,7 +129,7 @@ psql "$DATABASE_URL" -c "select pattern, arg_pattern, source from claw4j_run.exe
 **冻结计划**（ADR-0030 裁决四·性质 5）：批准的对象是**那一条命令**，不是"这个工具"。批准那一刻的
 `command + cwd` 存在 `frozen_plan` 上，执行前与它**逐字符**比；改一个字就不命中，按
 *approval mismatch* 拒。这比"执行前重算一遍参数指纹"强在**它比的是冻结件，不是重算件**。
-`frozen_plan` 为空（V12 之前的行、或非 exec 的审批）时同样不放行——一条说不清批的是什么的批准，
+`frozen_plan` 为空（非 exec 的审批）时同样不放行——一条说不清批的是什么的批准，
 不该生效。
 
 **三档决定**（`allow-once` / `allow-always` / `deny`）：`ask=always` 的档位**不接受**

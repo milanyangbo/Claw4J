@@ -64,7 +64,7 @@ public class JdbcApprovalLedger implements ApprovalLedger {
      * <p>过期点用 {@code now() + 毫秒} 算，不传一个 JVM 算好的绝对时刻：那样「十分钟」就变成了「应用
      * 时钟的十分钟」，而判定那个方向用的是库的时钟。
      *
-     * <p>冻结计划与请求一起落（V12）：批准的对象是那一条命令，执行前要拿它与现在要跑的逐字符比。
+     * <p>冻结计划与请求一起落（基线）：批准的对象是那一条命令，执行前要拿它与现在要跑的逐字符比。
      * 另外两种审批（工具名 + 参数指纹）不写它，为 {@code null}。
      */
     private static final String ASK_SQL =

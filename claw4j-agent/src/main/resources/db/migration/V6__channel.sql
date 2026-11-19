@@ -5,8 +5,6 @@
 -- 为什么需要它：平台收到我们的 ACK 之后就不会重投，而那条消息原来只在线程池的队列里——
 -- 进程一退就永久消失，日志里只留下"已提交到执行线程池"。留一份去重表在内存里解决的是
 -- "多实例之间不重复"，那件事在单实例形态下（ADR-0009 的长连接不支持广播）本来就不成立。
---
--- 本文件是从旧 V27 原样收敛的基线：那一版就是最终形态。后续改表结构请加新版本。
 create schema if not exists claw4j_channel;
 
 create table claw4j_channel.inbound_event (
@@ -58,7 +56,7 @@ create table claw4j_channel.inbound_event (
 -- （它的 bigint 来自 SQLite 只有整数）；只留 account_id，不留 channel_id
 -- （它的 channel_id 服务于"按通道列账号"那个查询，而我们 queue_name 本身就是通道名）。
 
--- 三条索引与它的三个同名同形（idx_channel_ingress_*）：认领扫描、车道判定、按到达顺序取。
+-- 三条索引：认领扫描、车道判定、按到达顺序取。
 create index ix_inbound_event_claims
     on claw4j_channel.inbound_event (queue_name, status, claimed_at);
 
