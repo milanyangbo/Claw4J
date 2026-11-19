@@ -18,8 +18,14 @@ import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.ApprovalCards;
 import io.github.claw4j.domain.port.ApprovalDecider;
 import io.github.claw4j.domain.port.ApprovalLedger;
+import io.github.claw4j.agent.memory.PrincipalDreamAdvisor;
+import org.springaicommunity.agent.dream.AutoDreamService;
+import org.springaicommunity.agent.dream.DreamResult;
+import org.springaicommunity.agent.dream.DreamTriggers;
+import org.springaicommunity.agent.tools.task.repository.TaskRepository;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.principal.ToolProfile;
@@ -27,10 +33,13 @@ import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -42,10 +51,15 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.mockito.ArgumentCaptor;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.StandardEnvironment;
 import reactor.core.publisher.Flux;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -57,9 +71,20 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -569,6 +594,66 @@ class ChatPipelineTest {
                 .isNotEmpty()
                 .allSatisfy(event -> assertThat(event.scope().sessionKey())
                         .isEqualTo("claw4j:u-1@fp-1:feishu:chat-1:seg-fixed"));
+    }
+
+    @Test
+    @DisplayName("记忆整理：攒够轮数才跑一次，而且跑的是这个人的目录")
+    void dreamRunsOnlyAfterEnoughTurns(@TempDir Path root) {
+        AutoDreamService dream = mock(AutoDreamService.class);
+        when(dream.runDreamCycle(anyString(), any())).thenReturn(DreamResult.completed("合并了两条"));
+        TaskRepository tasks = mock(TaskRepository.class);
+        PrincipalDreamAdvisor advisor = new PrincipalDreamAdvisor(root, dream, tasks,
+                DreamTriggers.hoursAndSessions(24, 5));
+        ChatClientResponse response = responseOf(new Principal("alice"));
+
+        for (int turn = 1; turn <= 4; turn++) {
+            advisor.after(response, null);
+        }
+
+        verify(tasks, never()).putTask(anyString(), any());
+
+        advisor.after(response, null);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Supplier<String>> task = ArgumentCaptor.forClass(Supplier.class);
+        verify(tasks).putTask(anyString(), task.capture());
+        task.getValue().get();
+
+        // 跑的是这个人自己的目录：不是根目录，也不是别人的那一层。
+        verify(dream).runDreamCycle(eq(advisor.directoryOf("alice").toString()), isNull());
+    }
+
+    @Test
+    @DisplayName("整理按人计：甲的轮数不算进乙的账")
+    void dreamStateIsPerPrincipal(@TempDir Path root) {
+        AutoDreamService dream = mock(AutoDreamService.class);
+        when(dream.runDreamCycle(anyString(), any())).thenReturn(DreamResult.completed("好"));
+        TaskRepository tasks = mock(TaskRepository.class);
+        PrincipalDreamAdvisor advisor = new PrincipalDreamAdvisor(root, dream, tasks,
+                DreamTriggers.hoursAndSessions(24, 5));
+
+        for (int turn = 1; turn <= 5; turn++) {
+            advisor.after(responseOf(new Principal("alice")), null);
+        }
+        verify(tasks, times(1)).putTask(anyString(), any());
+
+        for (int turn = 1; turn <= 4; turn++) {
+            advisor.after(responseOf(new Principal("bob")), null);
+        }
+
+        // 状态文件在各人的目录里：乙攒到第 4 轮，不该被甲的第 5 轮带着触发。
+        verify(tasks, times(1)).putTask(anyString(), any());
+
+        advisor.after(responseOf(new Principal("bob")), null);
+
+        verify(tasks, times(2)).putTask(anyString(), any());
+    }
+
+    /** 只有身份、没有回答的响应：整理只看上下文里的那个人。 */
+    private static ChatClientResponse responseOf(Principal principal) {
+        return ChatClientResponse.builder()
+                .context(Map.of(ContextKeys.PRINCIPAL, principal))
+                .build();
     }
 
     /**

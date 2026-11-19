@@ -58,6 +58,9 @@ advisor 注入）。那种状态比不登记更坏——它看起来像是策略
 | 请求里没有身份：不注入工具、不改系统提示 | `SessionMemoryTest#withoutAPrincipalNothingIsInjected` | 早返回写错就是"匿名用户读写公共目录" |
 | 目录名安全化：带 `/`、`:`、`@` 的 id 不会跑出根目录 | 同上（断言子目录数 = 1） | `Path.resolve` 收到绝对路径会整个替换掉根 |
 
+| 攒够轮数才跑整理，且跑的是这个人的目录 | `ChatPipelineTest#dreamRunsOnlyAfterEnoughTurns` | 没有整理这条路时一个任务都不派 |
+| 整理按人计：甲的轮数不算进乙的账 | `ChatPipelineTest#dreamStateIsPerPrincipal` | 状态若落在根目录，乙的第 4 轮会被甲的第 5 轮带着触发 |
+
 **复核：2026-11-19 `./scripts/verify.sh` 全绿。**
 
 ## 缺口
@@ -68,7 +71,35 @@ advisor 注入）。那种状态比不登记更坏——它看起来像是策略
 - **策略管线管不到这 6 个工具**：注入发生在 prompt 层，`toolsBySender` / 沙箱 `bundle-mcp` /
   画像过滤都拦不住它。"这个 sender 不许写记忆"现在表达不出来。要表达得给请求上下文加一个
   "本轮允许的工具名"的键，再把 advisor 改成求交集——那是改公开契约，单独开票。
-- **`memoryConsolidationTrigger` 没接**：库留的"什么时候提醒模型整理记忆"的钩子，默认恒 false，
-  也就是记忆只增不整理。等真的长到需要整理时再接。
 - **子 Agent 没有记忆**：子链一个 Advisor 都不挂（ADR-0012 修订），所以子 Agent 看不到也写不了
   长期记忆。这是有意的：让子 Agent 写记忆等于让一次性执行体改父的长期状态。
+
+## 二审（2026-11-19 晚）：整理不自己写，用库的 dream
+
+第一版我自己写了一个 `MemoryConsolidation`（按人记"上次检查时刻"，够 3 份文件就提醒一句）。
+用户驳回：**官方有没有类似功能，没有就不要实现**。核过之后官方有一整套，我那个类已删：
+
+| 库的件 | 管什么 | 依据 |
+| --- | --- | --- |
+| `DreamTriggers.hoursAndSessions(h, n)` | 距上次够久 **且** 又攒够 n 轮才整理 | 注释里写明照 Claude Code 的双条件启发式 |
+| `DreamState` | 计数落在 `<记忆目录>/.dream-state.json` | 按人一个目录 → 天然按人一份 |
+| `AutoDreamService` | 真去合并/精简/删过时（带着记忆工具，`DreamMode.AUTO_APPLY`） | 单独的 dreamer `ChatClient`，不挂任何 Advisor |
+| `AutoDreamAdvisor` | 挂在 `after`，判完派后台任务，请求一个字不改 | `before` 直接原样返回 |
+| `DreamLock` | 按目录加锁，15 分钟算过期 | 同一份记忆不会两个 dreamer 同时改 |
+
+**为什么必须是分发而不是直接挂一个**：`AutoDreamAdvisor` 同样把目录写在字段里
+（`memoriesRootDirectory`），一份只能服务一个人。所以 `PrincipalDreamAdvisor` 只做按人分发，
+`before` 空着、`after` 转给那个人的实例；身份从 `ChatClientResponse#context()` 取（框架的
+`ChatModelCallAdvisor` 会把请求上下文放进响应，流式由聚合器累积）。
+
+**两件踩出来的事**：
+
+1. **库不替我们建目录**：`DreamState.save` 直接往 `<记忆目录>/.dream-state.json` 写，第一个用户的
+   第一次收尾就抛 `UncheckedIOException`，把一轮正常的回答弄挂（用例先红出来的就是这个）。
+   现在在装 advisor 时建目录；建不出来就降级成"这个人本次进程不整理"并记一条 warn——
+   记忆是附加信息，不是可用性依赖。
+2. **`AutoDreamService` 要一个 `ChatClient.Builder`**：用主模型建，不挂任何 Advisor。
+   dreamer 看不到当前对话，也不该被会话记忆、脱敏、语义缓存影响。
+
+**默认参数** `hoursAndSessions(24, 5)`；关掉用 `claw4j.agent.memory.dream=false`（传库的
+`manualOnly`），不自己写空实现。

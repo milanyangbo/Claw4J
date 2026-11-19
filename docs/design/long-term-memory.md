@@ -42,7 +42,7 @@ claw4j.agent.memory.directory  ← 配了才有，不配就没有（不给默认
 在脱敏（`+200`）与缓存（`+250`）之前。**不能用库的默认值**：那份默认正好也是 `+200`，与
 `PiiRedactionAdvisor` 撞上，而两个 advisor 同 order 时谁先谁后由 bean 名字决定。
 
-## 明确不做的四件
+## 明确不做的三件
 
 - **落盘不脱敏**。记忆是模型挑过的"事实"，脱敏会把"API 基地址"这类本来就该原样记住的东西打坏；
   代价是磁盘上有一份明文，缓解只有"目录 0700、不进容器、不给子 Agent"。要脱敏得改写 6 个工具
@@ -52,5 +52,35 @@ claw4j.agent.memory.directory  ← 配了才有，不配就没有（不给默认
   再求交集，那是改公开契约，另开票。
 - **子 Agent 没有记忆**。子链一个 Advisor 都不挂（ADR-0012 修订），所以它也看不到、写不了。
   让一次性执行体改父的长期状态是另一种错。
-- **不整理**。`memoryConsolidationTrigger` 没接，默认恒 false——记忆只增不减。等它长到需要
-  整理时再接，现在接等于凭空多一个"什么时候整理"的策略要论证。
+
+## 整理：跑库的 dream 周期
+
+记忆只增不减是这套机制的默认状态：每段对话都可能新建一份文件、往 `MEMORY.md` 加一行，而
+`MEMORY.md` 每轮进上下文（库的提示词写着超过 200 行会被截断）。库为此带了整套
+`dream` 包，直接用，不自己写策略：
+
+| 库的件 | 管什么 |
+| --- | --- |
+| `DreamTriggers.hoursAndSessions(h, n)` | 什么时候整理：距上次够久 **且** 又攒够 n 轮，两个条件同时成立 |
+| `DreamState` | 计数落在 `<记忆目录>/.dream-state.json`——按人一个目录，于是天然按人一份 |
+| `AutoDreamService` | 跑一次 dream 周期：带着记忆工具进那个目录合并、精简、删过时的 |
+| `AutoDreamAdvisor` | 挂在收尾（`after`）上，判完就派一个后台任务，**请求本身一个字不改** |
+| `DreamLock` | 按目录的锁，同一份记忆不会有两个 dreamer 同时改（15 分钟算过期） |
+
+默认参数是 `hoursAndSessions(24, 5)`——照库注释里写的 Claude Code 那套双条件启发式。
+关掉用 `claw4j.agent.memory.dream=false`，传给库的是 `DreamTriggers.manualOnly()`；
+不自己写一个"永远返回 false"的空实现。
+
+三处与"照抄"不同的地方，都是因为我们自己按人分目录：
+
+- **每人一份 dream advisor**（`PrincipalDreamAdvisor` 做分发）。库那份把目录写在字段里，
+  一份只能服务一个人；`before` 空着，只挂 `after`。
+- **目录要先建出来**。库的 `.dream-state.json` 直接写进记忆目录、不替我们建；不建的话第一个
+  用户的第一次收尾就在 `after` 里抛，把一轮正常的回答弄挂。建不出来就**关掉这个人的整理**
+  并记一条 warn——记忆是附加信息，不是可用性依赖（与 `FaultTolerantSessionService` 同一个口径）。
+- **身份从响应里取**。`after` 只拿到 `ChatClientResponse`，好在框架的 `ChatModelCallAdvisor`
+  会把请求上下文原样放进响应（流式由聚合器累积）。读不到就什么都不做：不计数、不整理，不猜。
+
+**它仍然是"尽力而为"**：dreamer 是后台的一次独立调用，可能失败（模型错、token 用完、锁被占），
+失败只落一条日志与 `.dream-state.json` 里的状态，不影响用户的下一轮。能断言的只有"到点会派、
+不会每轮都派、派的是这个人自己的目录"——断言不了"整理质量如何"，那是提示词的事。
