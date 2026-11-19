@@ -65,7 +65,7 @@ public final class SubagentRunner implements SubagentExecutor {
     /**
      * 子链会话键的前缀。
      *
-     * <p>审批那一侧靠它认"这是子 Agent 的会话，拒绝不投递"（{@code ApprovalService#silent}）。
+     * <p>审批那一侧靠它认"这是子 Agent 的会话，拒绝不投递"（会话键里带 {@code subagent:} 的那一段）。
      * 写成常量而不是在两处各拼一次：改了拼接方式却只改一处的后果，是拒绝开始往子会话里投。
      */
     static final String SESSION_PREFIX = "subagent:";

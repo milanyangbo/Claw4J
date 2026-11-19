@@ -4,7 +4,7 @@ import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.channel.feishu.FeishuApprovalCard;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.Approvals;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,11 +32,11 @@ class FeishuApprovalActions {
 
     private static final Logger log = LoggerFactory.getLogger(FeishuApprovalActions.class);
 
-    private final ApprovalDecider decider;
+    private final Approvals decider;
 
     private final Function<String, Optional<Principal>> principals;
 
-    FeishuApprovalActions(ApprovalDecider decider, Function<String, Optional<Principal>> principals) {
+    FeishuApprovalActions(Approvals decider, Function<String, Optional<Principal>> principals) {
         this.decider = decider;
         this.principals = principals;
     }
@@ -79,7 +79,7 @@ class FeishuApprovalActions {
             return Outcome.of("error", "这个按钮我不认识（" + click.decision()
                     + "），请用卡片上的批准 / 以后都放行 / 拒绝。");
         }
-        ApprovalDecider.Result result = decider.decide(click.approvalId(), who.get().userId(), choice, null);
+        Approvals.Result result = decider.decide(click.approvalId(), who.get().userId(), choice, null);
         log.info("飞书卡片审批：approval={} approver={} verdict={}",
                 click.approvalId(), who.get().userId(), result.verdict());
         return new Outcome(toastTypeOf(result), result.detail(),
@@ -131,7 +131,7 @@ class FeishuApprovalActions {
         return null;
     }
 
-    private static String toastTypeOf(ApprovalDecider.Result result) {
+    private static String toastTypeOf(Approvals.Result result) {
         return switch (result.verdict()) {
             case GRANTED -> "success";
             case DENIED -> "info";

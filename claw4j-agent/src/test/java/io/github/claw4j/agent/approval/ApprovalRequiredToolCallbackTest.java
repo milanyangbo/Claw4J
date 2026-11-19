@@ -2,7 +2,9 @@ package io.github.claw4j.agent.approval;
 
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.port.ApprovalLedger;
+import io.github.claw4j.domain.ApprovalChoice;
+import io.github.claw4j.domain.ApprovalVerdict;
+import io.github.claw4j.domain.port.Approvals;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ToolContext;
@@ -156,26 +158,36 @@ class ApprovalRequiredToolCallbackTest {
     }
 
     /** 假审批门：记下被问了什么，按 {@code granted} 决定兑现与否。 */
-    private static final class RecordingGate implements ApprovalGate {
+    private static final class RecordingGate implements Approvals {
 
         private boolean granted;
 
         private int asked;
 
-        private ApprovalLedger.Ask lastAsk;
+        private Approvals.Ask lastAsk;
 
         @Override
-        public Optional<ApprovalLedger.Grant> redeem(String owner, String toolName, String argsDigest) {
+        public Optional<Approvals.Grant> redeem(String owner, String toolName, String argsDigest) {
             return granted
-                    ? Optional.of(new ApprovalLedger.Grant("ap-old", java.time.Instant.now()))
+                    ? Optional.of(new Approvals.Grant("ap-old", java.time.Instant.now()))
                     : Optional.empty();
         }
 
         @Override
-        public Optional<String> ask(ApprovalLedger.Ask ask) {
+        public Optional<String> ask(Approvals.Ask ask) {
             asked++;
             lastAsk = ask;
             return Optional.of("ap-1");
+        }
+
+        @Override
+        public Result decide(String approvalId, String approver, ApprovalChoice choice, String reason) {
+            return new Result(ApprovalVerdict.NOT_FOUND, "假审批不落结论");
+        }
+
+        @Override
+        public Optional<Pending> find(String approvalId) {
+            return Optional.empty();
         }
     }
 }

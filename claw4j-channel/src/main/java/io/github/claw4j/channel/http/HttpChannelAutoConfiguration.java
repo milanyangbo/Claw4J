@@ -1,7 +1,7 @@
 package io.github.claw4j.channel.http;
 
 import io.github.claw4j.domain.port.AgentPort;
-import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.question.QuestionGate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -86,7 +86,7 @@ public class HttpChannelAutoConfiguration {
     /**
      * {@code /api/approvals} 的读与批/拒入口（P03）。
      *
-     * <p>{@link ApprovalDecider} 走 {@code ObjectProvider}：没有装配审批的部署里端点仍在，
+     * <p>{@link Approvals} 走 {@code ObjectProvider}：没有装配审批的部署里端点仍在，
      * 只是全都 404。端点凭空消失比 404 难查，前者的症状是路由不存在，
      * 后者是这条路暂时没装能力。
      *
@@ -94,7 +94,7 @@ public class HttpChannelAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public ApprovalController approvalController(ObjectProvider<ApprovalDecider> deciders,
+    public ApprovalController approvalController(ObjectProvider<Approvals> deciders,
                                                  HttpPrincipalResolver principalResolver) {
         return new ApprovalController(deciders, principalResolver);
     }

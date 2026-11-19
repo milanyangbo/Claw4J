@@ -7,7 +7,7 @@ import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.domain.question.QuestionGate;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalCards;
-import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -166,7 +166,7 @@ public class FeishuChannelAutoConfiguration {
         }
 
         /**
-         * 通道本体。卡片回调在装配时定下来：没有 {@link ApprovalDecider}（没开 run 存储）
+         * 通道本体。卡片回调在装配时定下来：没有 {@link Approvals}（没开 run 存储）
          * 就不注册，那种部署里也没有卡片可点，注册一个「点了说没装审批」的回调只是噪音。
          */
         @Bean(initMethod = "start", destroyMethod = "stop")
@@ -177,8 +177,8 @@ public class FeishuChannelAutoConfiguration {
                                                          FeishuReplySender replySender,
                                                          FeishuPrincipalResolver principalResolver,
                                                          FeishuConnectionFactory connectionFactory,
-                                                         ObjectProvider<ApprovalDecider> deciders) {
-            ApprovalDecider decider = deciders.getIfAvailable();
+                                                         ObjectProvider<Approvals> deciders) {
+            Approvals decider = deciders.getIfAvailable();
             FeishuApprovalActions approvals =
                     decider == null ? null : new FeishuApprovalActions(decider, principalResolver);
             return new FeishuLongConnectionChannel(properties, dispatcher, translator, replySender,

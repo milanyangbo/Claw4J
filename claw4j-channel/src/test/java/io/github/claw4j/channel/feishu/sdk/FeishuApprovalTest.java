@@ -4,7 +4,7 @@ import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.channel.feishu.FeishuApprovalCard;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.Approvals;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
@@ -70,7 +70,7 @@ class FeishuApprovalTest {
     @Test
     @DisplayName("已经有结论的卡片：说清结论，也没有按钮")
     void aDecidedCardTellsTheOutcome() {
-        ApprovalDecider.Pending granted = new ApprovalDecider.Pending(APPROVAL_ID, "run-7", "u-9",
+        Approvals.Pending granted = new Approvals.Pending(APPROVAL_ID, "run-7", "u-9",
                 "sendEmail", "to=张三", "granted", false, Instant.parse("2026-11-02T13:00:00Z"));
 
         assertFalse(FeishuApprovalCard.actionable(granted));
@@ -83,7 +83,7 @@ class FeishuApprovalTest {
     @Test
     @DisplayName("没有参数的单据也写一行「（没有参数）」，不省掉那行：省掉之后读者会以为是漏渲染")
     void aCardWithoutArgumentsStillShowsTheRow() {
-        ApprovalDecider.Pending bare = new ApprovalDecider.Pending(APPROVAL_ID, "run-7", "u-9",
+        Approvals.Pending bare = new Approvals.Pending(APPROVAL_ID, "run-7", "u-9",
                 "systemStatus", null, "pending", false, Instant.parse("2026-11-02T13:00:00Z"));
 
         assertTrue(JSON.writeValueAsString(FeishuApprovalCard.of(bare)).contains("（没有参数）"));
@@ -92,7 +92,7 @@ class FeishuApprovalTest {
     @Test
     @DisplayName("能长期放行的那条：卡片多一个「以后都放行」，点它传的是 ALLOW_ALWAYS")
     void aPersistableRequestOffersTheThirdButton() {
-        ApprovalDecider.Pending persistable = new ApprovalDecider.Pending(APPROVAL_ID, "run-7", "u-9",
+        Approvals.Pending persistable = new Approvals.Pending(APPROVAL_ID, "run-7", "u-9",
                 "Bash", "命令：rg -n TODO", "pending", false,
                 Instant.parse("2026-11-02T13:00:00Z"), true);
 
@@ -197,18 +197,18 @@ class FeishuApprovalTest {
 
     // ---------------------------------------------------------------- 装配
 
-    private static FeishuApprovalActions actions(ApprovalDecider decider) {
+    private static FeishuApprovalActions actions(Approvals decider) {
         return new FeishuApprovalActions(decider, openId -> "ou_ethan".equals(openId)
                 ? Optional.of(new Principal("ou_ethan")) : Optional.empty());
     }
 
-    private static ApprovalDecider.Pending pending(boolean expired) {
-        return new ApprovalDecider.Pending(APPROVAL_ID, "run-7", "u-9", "sendEmail", "to=张三",
+    private static Approvals.Pending pending(boolean expired) {
+        return new Approvals.Pending(APPROVAL_ID, "run-7", "u-9", "sendEmail", "to=张三",
                 "pending", expired, Instant.parse("2026-11-02T13:00:00Z"));
     }
 
     /** 只回答"结论是什么、现在的样子是什么"；名单与自批在 {@code ApprovalService} 那里。 */
-    private static final class FixedDecider implements ApprovalDecider {
+    private static final class FixedDecider implements Approvals {
 
         private ApprovalVerdict verdict = ApprovalVerdict.GRANTED;
 
@@ -251,6 +251,16 @@ class FeishuApprovalTest {
             };
             return Optional.of(new Pending(APPROVAL_ID, "run-7", "u-9", "sendEmail", "to=张三",
                     status, false, Instant.parse("2026-11-02T13:00:00Z")));
+        }
+
+        @Override
+        public Optional<Grant> redeem(String owner, String toolName, String argsDigest) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<String> ask(Ask ask) {
+            return Optional.of(APPROVAL_ID);
         }
     }
 }

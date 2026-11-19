@@ -3,7 +3,7 @@ package io.github.claw4j.agent;
 import io.github.claw4j.agent.schedule.ScheduleTools;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
-import io.github.claw4j.agent.approval.ApprovalGate;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.subagent.SubagentAutoConfiguration;
 import io.github.claw4j.agent.subagent.SubagentCatalog;
@@ -403,7 +403,7 @@ class SubagentDelegationTest {
                 new ChineseToolIndex(),
                 ToolSearchProperties.defaults(),
                 AgentProperties.defaults(),
-                beans.getBeanProvider(ApprovalGate.class),
+                beans.getBeanProvider(Approvals.class),
                 beans.getBeanProvider(ApprovalRequiredTools.class),
                 new SubagentTaskRepository());
 

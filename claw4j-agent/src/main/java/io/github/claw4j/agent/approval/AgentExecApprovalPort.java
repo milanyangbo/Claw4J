@@ -1,10 +1,11 @@
 package io.github.claw4j.agent.approval;
 
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.capability.exec.ExecApprovalPort;
 import io.github.claw4j.capability.exec.ExecCallContext;
 import io.github.claw4j.capability.exec.ExecProperties;
 import io.github.claw4j.capability.exec.FrozenPlan;
-import io.github.claw4j.domain.port.ApprovalLedger;
+import io.github.claw4j.domain.port.Approvals;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,7 +14,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * exec 那一侧的审批端口实现在这里：把"问人"这件事交给审批账本与卡片（票 05）。
+ * exec 那一侧的审批端口：把"问人"交给 {@link Approvals}（票 05、10）。
  *
  * <p>为什么实现放在 agent：审批要落库（{@code approval_request}）、要推卡片、要在结论之后
  * 回那段对话开新一轮——三样都在这一侧。capability 只留接口，依赖方向才不倒。
@@ -24,20 +25,23 @@ import java.util.Optional;
  *
  * <p>兑现按"同人、同工具、同冻结计划"查（{@code args_digest} = {@link FrozenPlan#digest()}）：
  * 换了人、换了命令都要重新批。批准的对象是那一条命令，不是"这个工具"。
+ *
+ * <p>兑现成功之后往审计里递一次"这次执行是哪条批准放行的"。递的是审计自己那套指纹
+ * （{@link ToolCallAudit#digest}）——执行那一行是按它写的，用别的键配不上，而且不报错。
  */
 public class AgentExecApprovalPort implements ExecApprovalPort {
 
     private static final Logger log = LoggerFactory.getLogger(AgentExecApprovalPort.class);
 
     /**
-     * 审批行上记的工具名。
+     * 上下文里没有工具名时的兜底。
      *
-     * <p>用库的工具名 {@code Bash}，不是动作名 {@code exec_command}：动作是权限的口径，
-     * 批准的对象是"那一次会跑起来的那个工具"（V6 的列注释）。
+     * <p>正常路径由 {@code ExecContextToolCallback} 带上真实工具名（库给的 {@code Bash}）；
+     * 这个常量只服务"只带了身份"的调用方（单测、以及将来别的入口），不让审批行记一个空工具名。
      */
     public static final String TOOL_NAME = "Bash";
 
-    private final ApprovalGate gate;
+    private final Approvals approvals;
 
     private final JdbcExecAllowlist allowlist;
 
@@ -47,20 +51,25 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
      */
     private final ExecProperties properties;
 
+    /** 审计落点，可以为 null：不带审计的链路（单测）里只跳过那一次配对。 */
+    private final ToolCallAudit audit;
+
     /**
-     * @param gate 审批门（登记 + 兑现），必填
+     * @param approvals 审批（登记 + 兑现），必填
      * @param allowlist allow-always 的落点，必填
      * @param properties exec 配置，可为 null
+     * @param audit 审计落点，可为 null
      */
-    public AgentExecApprovalPort(ApprovalGate gate, JdbcExecAllowlist allowlist,
-                                 ExecProperties properties) {
-        this.gate = Objects.requireNonNull(gate, "gate");
+    public AgentExecApprovalPort(Approvals approvals, JdbcExecAllowlist allowlist,
+                                 ExecProperties properties, ToolCallAudit audit) {
+        this.approvals = Objects.requireNonNull(approvals, "approvals");
         this.allowlist = Objects.requireNonNull(allowlist, "allowlist");
         this.properties = properties;
+        this.audit = audit;
     }
 
     /**
-     * 这一条请求接不接受"以后都放行"。
+     * 这条请求接不接受"以后都放行"。
      *
      * <p>两个条件，逐条对着 OpenClaw 的 {@code resolveExecApprovalAllowedDecisions}：
      *
@@ -89,8 +98,10 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
     /**
      * 拿这一次的结论：先兑现一条已有的批准，没有就登记一条。
      *
-     * <p>顺序不能反：先登记再兑现的话，一次已经批过的调用会多出一条没人看的待批请求，
-     * 而审批人看到的是一个"已经在跑的命令还要不要批"的问题。
+     * <p>顺序不能反：先登记再兑现的话，一次已经批过的调用会多出一条没人看的待批请求。
+     *
+     * @param request 待批的这条命令
+     * @return 结论；拿不到结论时是 {@link Decision.Kind#UNDECIDED}
      */
     @Override
     public Decision decide(Request request) {
@@ -99,13 +110,15 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
             // 没有身份就没有"批给谁"，这条命令不该以任何形式被放行。
             return Decision.deny("这次调用没有携带身份（工具上下文里没有发起人），exec 一律不放行");
         }
+        String toolName = toolName(context);
         FrozenPlan plan = request.plan();
-        Optional<ApprovalLedger.Grant> granted = gate.redeem(context.owner(), TOOL_NAME, plan.digest());
+        Optional<Approvals.Grant> granted = approvals.redeem(context.owner(), toolName, plan.digest());
         if (granted.isPresent()) {
+            handoff(context, toolName, granted.get());
             return redeemed(granted.get(), plan);
         }
-        Optional<String> approvalId = gate.ask(new ApprovalLedger.Ask(
-                context.runId(), context.owner(), TOOL_NAME, plan.digest(), summaryOf(plan),
+        Optional<String> approvalId = approvals.ask(new Approvals.Ask(
+                context.runId(), context.owner(), toolName, plan.digest(), plan.summary(),
                 originOf(context), FrozenPlanJson.encode(plan), allowsAlways(properties, plan)));
         if (approvalId.isEmpty()) {
             return Decision.undecided(null,
@@ -120,19 +133,38 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
      * 兑现到一条批准之后，交回给后端。
      *
      * <p>冻结件不一致就拒：指纹本来就是计划算出来的，正常路径上这里永远相等，所以这一句是
-     * <b>断言</b>而不是判据——它挡的是将来有人改了指纹口径（比如只算命令名）之后，一条批准能跨命令
-     * 复用。那种改动不会让任何一条用例红，而后果是"批了 A 也等于批了 B"。
+     * <b>断言</b>而不是判据——它挡的是将来有人改了指纹口径之后，一条批准能跨命令复用。
      *
      * @param grant 兑现到的批准
      * @param plan  这次要跑的计划
      * @return 放行；不一致时为拒
      */
-    private static Decision redeemed(ApprovalLedger.Grant grant, FrozenPlan plan) {
+    private static Decision redeemed(Approvals.Grant grant, FrozenPlan plan) {
         FrozenPlan approved = FrozenPlanJson.decode(grant.frozenPlan());
         if (approved == null || !approved.sameAs(plan)) {
             return Decision.deny("批准的是另一条命令（approval mismatch），旧的批准不能用在新的命令上");
         }
         return Decision.allowOnce(plan);
+    }
+
+    /**
+     * 把"这次执行是哪条批准放行的"递给审计。
+     *
+     * <p>只在这一处合得上：兑现发生在端口里，写审计要的那一轮编号与参数原文在调用上下文里。
+     * 分开写就会有人只改一边，而结果是一行没有 {@code approval_id} 的审计——查的时候才发现。
+     *
+     * <p>缺任何一样就跳过：审计那一行退化成没有审批编号，比写一个配不上的编号好。
+     *
+     * @param context 这次调用的上下文
+     * @param toolName 工具名
+     * @param grant 刚兑现的批准
+     */
+    private void handoff(ExecCallContext context, String toolName, Approvals.Grant grant) {
+        if (audit == null || context.argsJson() == null || context.runId() == null) {
+            return;
+        }
+        ToolCallAudit.digest(toolName, context.argsJson())
+                .ifPresent(digest -> audit.granted(context.runId(), toolName, digest, grant.id()));
     }
 
     @Override
@@ -141,26 +173,21 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
     }
 
     /**
-     * 卡片上给人看的那句话：在哪个目录里跑什么，脱敏并截断（见 {@link ArgsSummary}）。
-     *
-     * @param plan 冻结件
-     * @return 摘要
-     */
-    private static String summaryOf(FrozenPlan plan) {
-        return ArgsSummary.of(plan.summary());
-    }
-
-    /**
      * 这条请求从哪段对话来。没有会话键时为 {@code null}——那时结论落得下来，但没有"接着做"。
      *
      * @param context 这次调用的上下文
      * @return 来处
      */
-    private static ApprovalLedger.Origin originOf(ExecCallContext context) {
+    private static Approvals.Origin originOf(ExecCallContext context) {
         if (context.sessionKey() == null) {
             return null;
         }
-        return new ApprovalLedger.Origin(context.sessionKey(), context.channel(),
+        return new Approvals.Origin(context.sessionKey(), context.channel(),
                 context.chatRef(), context.principal());
+    }
+
+    private static String toolName(ExecCallContext context) {
+        return context.toolName() == null || context.toolName().isBlank()
+                ? TOOL_NAME : context.toolName();
     }
 }

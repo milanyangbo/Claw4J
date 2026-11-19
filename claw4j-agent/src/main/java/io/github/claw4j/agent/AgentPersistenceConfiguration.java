@@ -2,12 +2,9 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.approval.AgentExecApprovalPort;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
-import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalProperties;
-import io.github.claw4j.agent.approval.ApprovalService;
-import io.github.claw4j.agent.approval.JdbcApprovalLedger;
+import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.approval.JdbcExecAllowlist;
-import io.github.claw4j.agent.approval.ConversationApprovalGate;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.ToolCallAudit;
@@ -25,8 +22,7 @@ import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalCards;
-import io.github.claw4j.domain.port.ApprovalDecider;
-import io.github.claw4j.domain.port.ApprovalLedger;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
@@ -116,26 +112,6 @@ public class AgentPersistenceConfiguration {
     }
 
     /**
-     * 审批账本（P01、P02）：鉴权 Advisor 拿它兑现「这个人这个工具的这一种用法有没有批准」。
-     *
-     * <p>跟着 run 存储一起装：审批表与 run 在同一个 schema 下（基线），迁移是同一批，开关也是
-     * 同一个。它缺席时 Advisor 退到 {@link ApprovalGate#denyAll()}，标了要审批的动作照样被拦，
-     * 只是没人能批准——这正是「这个部署没开审批」应有的样子。
-     *
-     * <p>有效期（默认十分钟）走 {@code claw4j.approval.ttl}，写在配置里而不写在表上：表上放默认值
-     * 会让「改了配置但库里还是十分钟」这种偏差看不见。
-     *
-     * @param jdbc 主连接池
-     * @param properties 审批配置，取 ttl
-     * @return 审批账本
-     */
-    @Bean
-    @ConditionalOnMissingBean(ApprovalLedger.class)
-    public ApprovalLedger approvalLedger(JdbcTemplate jdbc, ApprovalProperties properties) {
-        return new JdbcApprovalLedger(jdbc, properties.getTtl().toMillis());
-    }
-
-    /**
      * 入站事件的落点（票 04）：先落库、再 ACK，重启之后没跑完的那条有人接着跑。
      *
      * <p>它跟着这一层进出：没有 DataSource 就没有可写的表，入站退回内存实现
@@ -157,57 +133,42 @@ public class AgentPersistenceConfiguration {
     }
 
     /**
-     * 审批门：Advisor 只认这两个动作——兑现、登记。
+     * 审批：请求、裁决、记录三层都在 {@link JdbcApprovals} 一处（票 10）。
      *
-     * <p>它只做两件事：登记一条、把卡片推到那段对话里。它不停住任何东西——这一轮到此结束，
-     * 结论之后由 {@code ApprovalService} 在那段对话里接着说（ADR-0027）。
+     * <p>它原来分成四个 bean（审批门、账本、决定者、卡片门）加两个端口。合并的理由不是"少几个类"，
+     * 是那四件共享同一张表和同一个"还挂着且没过期"的判据，拆开之后出现过"卡片推出去了但登记失败"、
+     * "登记成功了但没人判能不能长期放行"这两类错，而它们都不报错。
      *
-     * <p>卡片能力从容器里取（P03）：哪个通道能推卡片是那个通道自己的事（飞书有交互卡片，
-     * HTTP 那边入口是接口）。取不到时 {@code cards} 为空，登记照旧，只是没有那张更方便的按钮。
-     *
-     * @param ledger 审批账本
-     * @param cards 容器里的卡片能力，可能为空
-     * @return 审批门
-     */
-    @Bean
-    @ConditionalOnMissingBean(ApprovalGate.class)
-    public ApprovalGate approvalGate(ApprovalLedger ledger, ObjectProvider<ApprovalCards> cards) {
-        return new ConversationApprovalGate(ledger, cards.orderedStream().toList());
-    }
-
-    /**
-     * 审批的人那一侧：有人点了批准或拒绝之后发生什么（P02），以及这个人有没有资格点（P03）。
-     *
-     * <p>接着做的那条腿就是 {@link AgentPort} 本身：批准之后组一条入站消息，走与普通消息同一条
-     * 路径，会话记忆、预算、投递都在那条路上。没有 Agent 的部署里批准照样落得下来，只是没人接着做，
-     * 那时会如实说出来。
+     * <p>接着做的那条腿是 {@link AgentPort} 本身：批准之后组一条入站消息，走与普通消息同一条路径，
+     * 会话记忆、预算、投递都在那条路上。没有 Agent 的部署里批准照样落得下来，只是没人接着做，
+     * 结论里会如实说出来。
      *
      * <p>名单在这里变成值对象：{@code claw4j.approval.approvers} 是配置，{@link ApproverRoster}
-     * 是「能不能批」这条判断唯一的落点。判定写在配置对象上的话，下一次改动会同时改到读配置与做判断
-     * 两件事，而它们的测试完全不是一回事。
-     *
-     * <p>{@code allow-always} 的落点一起传进去（票 05）：选了"以后都放行"时要按命令段往
-     * {@code exec_allowlist} 里落条目，那件事只有做决定的那一侧做得了——它手里有审批行上的冻结件。
+     * 是「能不能批」这条判断唯一的落点。
      *
      * @param jdbc 主连接池
      * @param agentPort agent 端口，可能不存在
-     * @param properties 审批配置，取审批人名单
+     * @param properties 审批配置（有效期、审批人）
      * @param allowlist exec 的持久放行表，可能不存在（没装 exec 的部署）
      * @param exec exec 配置，可能不存在：{@code ask=always} 时要靠它拒收"以后都放行"
-     * @return 审批决定者
+     * @param cards 容器里的卡片能力，可能为空
+     * @return 审批
      */
     @Bean
-    @ConditionalOnMissingBean(ApprovalDecider.class)
-    public ApprovalDecider approvalDecider(JdbcTemplate jdbc,
-                                           ObjectProvider<AgentPort> agentPort,
-                                           ApprovalProperties properties,
-                                           ObjectProvider<JdbcExecAllowlist> allowlist,
-                                           ObjectProvider<ExecProperties> exec) {
-        return new ApprovalService(jdbc,
+    @ConditionalOnMissingBean(Approvals.class)
+    public Approvals approvals(JdbcTemplate jdbc,
+                               ObjectProvider<AgentPort> agentPort,
+                               ApprovalProperties properties,
+                               ObjectProvider<JdbcExecAllowlist> allowlist,
+                               ObjectProvider<ExecProperties> exec,
+                               ObjectProvider<ApprovalCards> cards) {
+        return new JdbcApprovals(jdbc,
                 new ApproverRoster(new LinkedHashSet<>(properties.getApprovers())),
                 agentPort.getIfAvailable(),
                 allowlist.getIfAvailable(),
-                exec.getIfAvailable());
+                exec.getIfAvailable(),
+                cards.orderedStream().toList(),
+                properties.getTtl().toMillis());
     }
 
     /**
@@ -226,20 +187,24 @@ public class AgentPersistenceConfiguration {
     }
 
     /**
-     * exec 那一侧的审批端口（票 05）：把"问人"交给审批门与持久放行表。
+     * exec 那一侧的审批端口（票 05）：把"问人"交给审批与持久放行表。
      *
      * <p>放在这一层而不是能力层：审批要落库、要推卡片、要在结论之后回那段对话——三样都在 agent。
      * 能力层只认 {@link ExecApprovalPort} 这个接口。
      *
-     * @param gate 审批门
+     * @param approvals 审批
      * @param allowlist 持久放行表
+     * @param exec exec 配置，可能不存在
+     * @param audit 审计落点，可能不存在：带上它，exec 执行那一行才有审批编号
      * @return 审批端口
      */
     @Bean
     @ConditionalOnMissingBean(ExecApprovalPort.class)
-    public ExecApprovalPort execApprovalPort(ApprovalGate gate, JdbcExecAllowlist allowlist,
-                                             ObjectProvider<ExecProperties> exec) {
-        return new AgentExecApprovalPort(gate, allowlist, exec.getIfAvailable());
+    public ExecApprovalPort execApprovalPort(Approvals approvals, JdbcExecAllowlist allowlist,
+                                             ObjectProvider<ExecProperties> exec,
+                                             ObjectProvider<ToolCallAudit> audit) {
+        return new AgentExecApprovalPort(approvals, allowlist, exec.getIfAvailable(),
+                audit.getIfAvailable());
     }
 
     /**

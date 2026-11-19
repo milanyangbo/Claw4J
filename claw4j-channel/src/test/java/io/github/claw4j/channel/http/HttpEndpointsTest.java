@@ -4,7 +4,7 @@ import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.NotifyPolicy;
-import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -148,12 +148,12 @@ class HttpEndpointsTest {
     // ---------------------------------------------------------------- 夹具
 
     /** @param decider 为 null 表示容器里没有审批——那个 bean 缺席时端点仍要在。 */
-    private static ApprovalController approvalController(ApprovalDecider decider) {
+    private static ApprovalController approvalController(Approvals decider) {
         DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
         if (decider != null) {
             beans.registerSingleton("approvalDecider", decider);
         }
-        return new ApprovalController(beans.getBeanProvider(ApprovalDecider.class),
+        return new ApprovalController(beans.getBeanProvider(Approvals.class),
                 new HttpPrincipalResolver(allowlist()));
     }
 
@@ -165,7 +165,7 @@ class HttpEndpointsTest {
     }
 
     /** 只回答"收到的是什么"，不判资格：资格在 {@code ApprovalService} 那一侧。 */
-    private static final class FixedDecider implements ApprovalDecider {
+    private static final class FixedDecider implements Approvals {
 
         private Optional<Pending> pending = Optional.of(new Pending(APPROVAL_ID, "turn-7", "u-9",
                 "sendEmail", "to=张三", "pending", true, Instant.parse("2026-11-02T13:00:00Z")));
@@ -201,6 +201,16 @@ class HttpEndpointsTest {
         @Override
         public Optional<Pending> find(String approvalId) {
             return pending;
+        }
+
+        @Override
+        public Optional<Grant> redeem(String owner, String toolName, String argsDigest) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<String> ask(Ask ask) {
+            return Optional.of(APPROVAL_ID);
         }
     }
 }

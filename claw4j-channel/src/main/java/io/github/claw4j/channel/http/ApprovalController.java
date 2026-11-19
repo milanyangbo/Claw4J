@@ -1,10 +1,12 @@
 package io.github.claw4j.channel.http;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.Approvals;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -26,7 +28,7 @@ import java.time.Instant;
  * 审批的 HTTP 入口（P03）：读一条待批请求，以及替它下结论。
  *
  * <p>与飞书卡片走同一条服务端逻辑：两者都只负责认出谁在点，然后把事情交给
- * {@link ApprovalDecider#decide}。资格判定（名单、不能批自己）只在那边做一次；
+ * {@link Approvals#decide}。资格判定（名单、不能批自己）只在那边做一次；
  * 写在两个入口上，第二个必然漏，而漏掉的表现是同一个按钮换个通道就能自己批自己。
  *
  * <p>接口必须存在，不能只靠卡片：定时任务、CI、值班脚本都可能需要批一步，而它们不在飞书里；
@@ -42,11 +44,11 @@ public class ApprovalController {
 
     private static final Logger log = LoggerFactory.getLogger(ApprovalController.class);
 
-    private final ObjectProvider<ApprovalDecider> deciders;
+    private final ObjectProvider<Approvals> deciders;
 
     private final HttpPrincipalResolver principalResolver;
 
-    public ApprovalController(ObjectProvider<ApprovalDecider> deciders,
+    public ApprovalController(ObjectProvider<Approvals> deciders,
                               HttpPrincipalResolver principalResolver) {
         this.deciders = deciders;
         this.principalResolver = principalResolver;
@@ -67,7 +69,7 @@ public class ApprovalController {
                                                      required = false) String user) {
         // 认人放在最前面：未认人的请求不该知道某个编号存不存在。
         principalResolver.resolve(user);
-        ApprovalDecider decider = deciders.getIfAvailable();
+        Approvals decider = deciders.getIfAvailable();
         if (decider == null) {
             log.debug("没有装配审批，/api/approvals 一律 404：id={}", id);
             return ResponseEntity.notFound().build();
@@ -95,12 +97,12 @@ public class ApprovalController {
                                                    @RequestHeader(value = HttpPrincipalResolver.USER_HEADER,
                                                            required = false) String user) {
         Principal approver = principalResolver.resolve(user);
-        ApprovalDecider decider = deciders.getIfAvailable();
+        Approvals decider = deciders.getIfAvailable();
         if (decider == null) {
             log.debug("没有装配审批，/api/approvals 一律 404：id={}", id);
             return ResponseEntity.notFound().build();
         }
-        ApprovalDecider.Result result =
+        Approvals.Result result =
                 decider.decide(id, approver.userId(), request.choice(), request.reason());
         return ResponseEntity.status(statusOf(result.verdict()))
                 .body(new DecisionResponse(result.verdict().name().toLowerCase(),
@@ -139,6 +141,28 @@ public class ApprovalController {
     public record DecisionRequest(boolean approved, boolean always, String reason) {
 
         /**
+         * 反序列化的入口。缺的字段按"没有"处理。
+         *
+         * <p>三个组件都是原始类型，而 JSON 里完全可能只写 {@code {"approved": true}}：这时
+         * {@code always} 与 {@code reason} 都是缺的。直接让 Jackson 走规范构造器，缺的原始类型会被
+         * 当成 {@code null} 填进去，报的是 {@code Cannot map null into type boolean}——一条 400，
+         * 而调用方传的东西完全合法。
+         *
+         * <p>所以显式声明一个 creator，先用包装类型接住，再由这里收窄。
+         *
+         * @param approved true 批准，缺省为 false
+         * @param always true 表示"以后都放行"，缺省为 false
+         * @param reason 拒绝的理由，可以不给
+         * @return 一次决定的请求体
+         */
+        @JsonCreator
+        static DecisionRequest of(@JsonProperty("approved") Boolean approved,
+                                  @JsonProperty("always") Boolean always,
+                                  @JsonProperty("reason") String reason) {
+            return new DecisionRequest(Boolean.TRUE.equals(approved), Boolean.TRUE.equals(always), reason);
+        }
+
+        /**
          * 两档那一版（兼容只有批/拒的调用方）。
          *
          * @param approved true 批准，false 拒绝
@@ -173,7 +197,7 @@ public class ApprovalController {
     }
 
     /**
-     * 一条请求对外露出的样子。字段与 {@link ApprovalDecider.Pending} 一一对应，
+     * 一条请求对外露出的样子。字段与 {@link Approvals.Pending} 一一对应，
      * 只少 {@code argsDigest}：指纹是给机器比的，人要看 {@code argsSummary}。
      *
      * @param allowAlways 这一条接不接受"以后都放行"；为 false 时调用方不该给那个按钮
@@ -182,7 +206,7 @@ public class ApprovalController {
                                String argsSummary, String status, boolean expired, Instant expiresAt,
                                boolean allowAlways) {
 
-        static ApprovalView of(ApprovalDecider.Pending pending) {
+        static ApprovalView of(Approvals.Pending pending) {
             return new ApprovalView(pending.id(), pending.runId(), pending.owner(), pending.toolName(),
                     pending.argsSummary(), pending.status(), pending.expired(), pending.expiresAt(),
                     pending.allowAlways());

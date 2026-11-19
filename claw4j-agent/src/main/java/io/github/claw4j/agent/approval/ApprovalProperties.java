@@ -21,9 +21,9 @@ import java.util.List;
  * {@code claw4j.channel.http.roles} 写的是「谁能读哪些表」。挂到角色上的话，任何一次提权
  * （给某人加 {@code admin}）都会静默扩大审批面。
  *
- * <p>默认空等于没人能批，方向与 {@code ApprovalGate#denyAll()} 一致：忘配置时卡住，不是谁都能点
+ * <p>默认空等于没人能批，方向与"没有审批设施就没人能批"一致：忘配置时卡住，不是谁都能点
  * 头。代价是忘配置时所有待批请求都会过期，所以装配时会在日志里说一声（见
- * {@code ApprovalService} 的构造函数）。
+ * {@code JdbcApprovals} 的构造函数）。
  */
 @ConfigurationProperties(prefix = "claw4j.approval")
 public class ApprovalProperties {
@@ -37,6 +37,18 @@ public class ApprovalProperties {
      * <p>写 role 名是无效的：名单按人比，不按角色比——理由见类注释。
      */
     private List<String> approvers = new ArrayList<>();
+
+    /**
+     * 哪些工具要先经人批准（{@code Principal#userId()} 之外的维度：按工具名）。
+     *
+     * <p>默认空：随包发出的工具一个都不声明"要审批"。exec 不走这一条——它按
+     * {@code security × ask} 在执行那一刻算，一条命令一判，按工具名一刀切表达不了
+     * "白名单命中就放行"。MCP 工具或插件要人批时写在这里。
+     */
+    private List<String> requiredTools = new ArrayList<>();
+
+    /** 过期清扫多久跑一次。默认一分钟；写 0 会变成热循环，所以非法值由调度器自己拒绝。 */
+    private Duration sweepInterval = Duration.ofMinutes(1);
 
     /**
      * 一条请求等多长，默认十分钟。
@@ -72,5 +84,41 @@ public class ApprovalProperties {
      */
     public void setApprovers(List<String> approvers) {
         this.approvers = approvers == null ? new ArrayList<>() : new ArrayList<>(approvers);
+    }
+
+    /**
+     * 哪些工具要先经人批准。
+     *
+     * @return 工具名清单
+     */
+    public List<String> getRequiredTools() {
+        return requiredTools;
+    }
+
+    /**
+     * 设置要审批的工具名。传 null 等于清空。
+     *
+     * @param requiredTools 工具名清单
+     */
+    public void setRequiredTools(List<String> requiredTools) {
+        this.requiredTools = requiredTools == null ? new ArrayList<>() : new ArrayList<>(requiredTools);
+    }
+
+    /**
+     * 过期清扫间隔。
+     *
+     * @return 间隔
+     */
+    public Duration getSweepInterval() {
+        return sweepInterval;
+    }
+
+    /**
+     * 设置过期清扫间隔。
+     *
+     * @param sweepInterval 间隔
+     */
+    public void setSweepInterval(Duration sweepInterval) {
+        this.sweepInterval = sweepInterval == null ? Duration.ofMinutes(1) : sweepInterval;
     }
 }

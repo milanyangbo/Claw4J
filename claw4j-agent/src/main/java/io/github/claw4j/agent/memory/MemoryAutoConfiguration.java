@@ -15,6 +15,7 @@ import org.springaicommunity.agent.tools.task.repository.TaskRepository;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 
 import java.io.IOException;
@@ -82,6 +83,7 @@ public class MemoryAutoConfiguration {
     @ConditionalOnMissingBean(PrincipalDreamAdvisor.class)
     public PrincipalDreamAdvisor principalDreamAdvisor(MemoryProperties properties,
                                                        AutoDreamService dreamService,
+                                                       @Qualifier("dreamTaskRepository")
                                                        TaskRepository dreamTaskRepository) {
         DreamTrigger trigger = properties.dream()
                 ? DreamTriggers.hoursAndSessions(DREAM_AFTER_HOURS, DREAM_AFTER_SESSIONS)

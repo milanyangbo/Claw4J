@@ -4,6 +4,11 @@
 - Date: 2026-11-17
 - Supersedes: 本文件 2026-11-17 的前一稿（核到实际实现后有九处对不上，见「前一稿错在哪」）
 
+- 修订（2026-11-19，票 10）：审批的四个实现类（`ApprovalGate` / `ConversationApprovalGate` /
+  `ApprovalService` / `JdbcApprovalLedger`）与两个端口（`ApprovalLedger` / `ApprovalDecider`）
+  收成一个端口 `Approvals` 与一个实现 `JdbcApprovals`，按"请求 / 裁决 / 记录"三个概念排。
+  本文裁决四里"保留 `ApprovalGate`"那几句写的是当时的形状，落地以代码为准。
+
 - 修订（2026-11-18）：权限动作表里已经没有 `run_script`——脚本包退化成技能（目录 + `SKILL.md`
   + 支撑文件，由模型用 `Bash` 跑），那个专用执行入口删掉了。**同一天晚些，生成器整层也删了**
   （ADR-0013 标 superseded），所以 `draft_script` 与 `propose_script` 也不存在了：执行相关的动作
@@ -305,10 +310,10 @@ exec 工具内部：
 三条约束照抄：
 
 1. **`ask` 为 `always` 时，`allow-always` 既不抑制提示、也不出现在选项里**：`resolveExecApprovalAllowedDecisions` 在 `ask=always`（或本次只能一次性持久化）时只返回 `["allow-once", "deny"]`。不是"弹了但你选 always 没用"，是**卡片上根本没有这一项**。
-2. **inline-eval 不持久化**：`bash -c "任意命令"` 的可执行文件是 bash，按它放行等于放行一切。另有 `tools.exec.strictInlineEval`——开启后这些形态一律变成 approval-only，即使解释器本身在白名单里：`python/python2/python3/pypy`（`-c`）、`node/nodejs/bun/deno`（`-e`/`--eval`/`-p`/`--print`）、`awk/gawk/mawk/nawk`（`-e`/`--source`，含位置参数形态）、`ruby`（`-e`）、`perl`（`-e`/`-E`）、`php`（`-r`）、`lua`（`-e`）、`osascript`（`-e`）、`find`（`-exec`/`-execdir`/`-ok`/`-okdir`）、`make/gmake`（`-f`/`--eval`/`-E`）、`sed/gsed`（`-e`）。比"解释器 + 参数"更宽，照抄这张表，别只抄七个解释器。
+2. **inline-eval 不持久化**：`bash -c "任意命令"` 的可执行文件是 bash，按它放行等于放行一切。落法：`JdbcExecAllowlist` 里遇到内联求值（或 heredoc）的段，**整条不落库**——与"一段表达不出来就整条不记"同一处置。另有 `tools.exec.strictInlineEval`——开启后这些形态一律变成 approval-only，即使解释器本身在白名单里：`python/python2/python3/pypy`（`-c`）、`node/nodejs/bun/deno`（`-e`/`--eval`/`-p`/`--print`）、`awk/gawk/mawk/nawk`（`-e`/`--source`，含位置参数形态）、`ruby`（`-e`）、`perl`（`-e`/`-E`）、`php`（`-r`）、`lua`（`-e`）、`osascript`（`-e`）、`find`（`-exec`/`-execdir`/`-ok`/`-okdir`）、`make/gmake`（`-f`/`--eval`/`-E`）、`sed/gsed`（`-e`）。比"解释器 + 参数"更宽，照抄这张表，别只抄七个解释器。
 3. **`askFallback` 默认 `deny`**：需要提示但没有 UI 可达时默认阻断。我们已有等价物（`ApprovalGate.denyAll()`），但它是**可配的三档** `deny`/`allowlist`/`full`，照抄成配置项，不是写死。另有一条容易漏的夹取：它把 `askFallback` 与本次生效的 `security` 取更严（`minSecurity(effectiveSecurity, host.askFallback)`），所以兜底档不可能比生效的 `security` 更宽。
 
-落法：新增 `exec_allowlist` 表（`id / pattern / arg_pattern / source / last_used_at / last_used_command / last_resolved_path`，**不建 `command_text`**——那份它自己都在剥离），一条记录对一段；与配置里的 `claw4j.tools.exec.allow` 合并进 `ExecPolicy.permits`。配置是 owner 写的，表里是运行时批出来的，两者按同一个匹配规则。
+落法：新增 `exec_allowlist` 表（`id / pattern / arg_pattern / source / last_used_at / last_used_command / last_resolved_path`，**不建 `command_text`**——那份它自己都在剥离），一条记录对一段。**落地后的口径与这一行不同，以代码为准**：配置的 `claw4j.tools.exec.allow` 按整条命令匹配（前缀 + 拒绝控制符），表里的条目按命令段逐段匹配（每段取首个 token 作 `pattern`，复合命令要求每段都有条目），两者都用 `ExecPolicy.permits`。没做成"合并进同一个列表"是因为配置允许带参数的前缀（`ls -la`），表只存可执行名——硬合并会让其中一边的语义被另一边改写。
 
 **为什么这一阶段没有 agent 维度（阶段 6 补）**：它的条目挂在 `agents.<id>.allowlist` 下，并与 `agents["*"].allowlist`（wildcard 桶）**合并**（`[...wildcard, ...agent]`）——它永远有 agent 维度，即使只跑一个 agent 也写 `agents.main`。我们现在没有 agent 身份来源（`claw4j.agents.<id>` 是阶段 6 才出现的），所以表里不建 `agent_id`：现在建，运行时只能填一个假的固定值，那就是凭空造一个它靠"多 agent 真的存在"才成立的维度。**这一阶段的全局表语义上等于它的 wildcard 桶**，单 agent 下与"只对 main 生效"结果一致。阶段 6 随 agent 分层一起加 `agent_id`，唯一索引扩成 `(coalesce(agent_id,''), pattern, coalesce(arg_pattern,''))`，`ExecApprovalPort.Request` 加 `agentId`。
 
@@ -562,7 +567,9 @@ exec 工具内部：
 | **前置的按模型裁剪** | 它的三件事在这儿没有对位：没有"本地小模型"概念；`web_search` 也不存在"装了但按 provider 摘掉"这一档（搜索工具要么装配了要么没有） | 出现"同一个部署给小模型也配一份"的真实需求时 |
 | **`apply_patch` 的别名不对称没照抄** | 我们没有 `apply_patch`——`Write` 与 `Edit` 是两个独立工具名，不存在"允许 write 就顺带允许 apply_patch"这层关系；照抄会得到一条永不生效的规则 | 引入一个"合并式写工具"时 |
 | **降级到备模型时清单不重算** | `providerKey` 取配置里的 `primary`；路由在请求内降级时清单已经算完了 | 降级路径也要按备模型筛时，得把 provider 从 model 层透出来 |
+| **兜底档决定的是"这一轮跑不跑"，不是"这条请求被拒"** | `askFallback` 在"这一轮拿不到结论"时生效（默认拒），但审批行仍是 `pending`、卡片仍可点：人晚一点批了，那段对话照常开新一轮、命令照常执行。OpenClaw 的超时是把请求收口成终态，我们不是——因为我们的审批入口天生异步，若在这里落终态，卡片会永远批不了。要真"拒"，用拒绝按钮或让请求过期 | 出现"就地能回答"的入口时一起改（与下一条同一触发条件） |
 | **前台命令不在原地等审批**（票 05 落地时的形态差异） | 它的 `requestExecApprovalViaSocket` 原地等 15 秒，操作者可能就坐在控制台前。我们的审批入口只有卡片与 HTTP，都是异步的，原地等只是把一轮挂 15 秒再走同一条路。所以 `ExecApprovalPort#decide` 一律回"这一轮没有结论"，由 `askFallback` 处置（默认拒），批准之后走同一会话的下一轮 | 真出现"就地能回答"的入口（终端、控制台）时补：那时等的代价才换得回"同一回合继续" |
+| **`allow-always` 的 pattern 是命令名，不是解析后的路径** | 表里存首个 token（`rg`），不存 `/usr/local/bin/rg`；`arg_pattern` 列留着但恒为 `null`。取 basename 会让 `/tmp/evil/rg` 与 `rg` 共用一条，所以路径形态直接不落库 | 需要"同一可执行文件的不同路径分开批"或"按参数收窄"时补：那时解析软链接、写 `arg_pattern`，并加一条按参数的正则匹配 |
 | **冻结件里没有 session / agent / 被调文件哈希** | 只冻结 `command + cwd`：那两样才决定这条进程怎么起。session / agent 记在审批行自己的 `session_key` 上（它们决定结论投回哪里，不改执行），脚本哈希没有对应入口（脚本走 exec 时命令里只有一个路径）。`exec_allowlist` 的 `agent_id` 也归阶段 6 | 有多 agent 身份（阶段 6）与"脚本体审批"时补，那时 `FrozenPlan` 加字段、mismatch 判定跟着加一条 |
 | **批准完成的文案没照抄"已完成的异步命令"** | 我们没有"批准之后由系统替你跑"这条腿：命令是模型重新调起来执行的。照抄那句会让它以为已有输出、跳过执行直接汇报。所以写的是"批准了，现在还没有任何输出，去执行它" | 真做了"批准即由系统执行冻结件"那条路时，文案跟着换回去 |
 | **会话不可恢复时不直投，而是告诉点按钮的人** | 它降级成"直接投递一句简短拒绝"。我们唯一的外部出口是 `AgentPort` 与通道推送，直投要一份投递登记；而点按钮的人就在等回话，回给他最直接 | 出现"审批人是机器人/脚本、点按钮的人不等回话"的部署时补直投 |

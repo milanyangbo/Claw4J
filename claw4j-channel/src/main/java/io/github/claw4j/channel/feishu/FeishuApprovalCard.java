@@ -1,6 +1,6 @@
 package io.github.claw4j.channel.feishu;
 
-import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.Approvals;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -40,7 +40,7 @@ public final class FeishuApprovalCard {
     /**
      * 决定的取值：以后都放行（票 05）。
      *
-     * <p>只在 {@link ApprovalDecider.Pending#allowAlways()} 为真时出现。{@code ask=always} 下
+     * <p>只在 {@link Approvals.Pending#allowAlways()} 为真时出现。{@code ask=always} 下
      * 不该有它：那一档要求每条都由人看一眼，而"以后都放行"会把档位悄悄改成 {@code on-miss}。
      * 不是"点了没用"，是按钮根本不在。
      */
@@ -60,7 +60,7 @@ public final class FeishuApprovalCard {
      * @param card 这条请求现在的样子
      * @return 可以直接作为消息体发出的卡片 1.0 对象树
      */
-    public static Map<String, Object> of(ApprovalDecider.Pending card) {
+    public static Map<String, Object> of(Approvals.Pending card) {
         Map<String, Object> head = new LinkedHashMap<>();
         head.put("template", templateOf(card));
         head.put("title", Map.of("tag", "plain_text", "content", titleOf(card)));
@@ -89,11 +89,11 @@ public final class FeishuApprovalCard {
     }
 
     /** 是否还点得动：状态仍是 pending，并且没过期。别的组合一律只展示。 */
-    public static boolean actionable(ApprovalDecider.Pending card) {
+    public static boolean actionable(Approvals.Pending card) {
         return PENDING.equals(card.status()) && !card.expired();
     }
 
-    private static String templateOf(ApprovalDecider.Pending card) {
+    private static String templateOf(Approvals.Pending card) {
         if (card.expired()) {
             return "grey";
         }
@@ -104,7 +104,7 @@ public final class FeishuApprovalCard {
         };
     }
 
-    private static String titleOf(ApprovalDecider.Pending card) {
+    private static String titleOf(Approvals.Pending card) {
         if (card.expired()) {
             return "这条审批已经过期";
         }
@@ -115,7 +115,7 @@ public final class FeishuApprovalCard {
         };
     }
 
-    private static Map<String, Object> fieldsOf(ApprovalDecider.Pending card) {
+    private static Map<String, Object> fieldsOf(Approvals.Pending card) {
         List<Object> fields = new ArrayList<>();
         fields.add(field("工具", "`" + orNone(card.toolName()) + "`", true));
         fields.add(field("发起人", "`" + orNone(card.owner()) + "`", true));
@@ -129,7 +129,7 @@ public final class FeishuApprovalCard {
                 "text", Map.of("tag", "lark_md", "content", "<b>" + label + "</b>\n" + value));
     }
 
-    private static String bodyOf(ApprovalDecider.Pending card) {
+    private static String bodyOf(Approvals.Pending card) {
         String id = "审批编号 `" + card.id() + "`。";
         if (card.expired()) {
             return id + "它已经过了有效期，<b>按钮不再作数</b>——让提这个请求的人重新发起一次。";
@@ -141,7 +141,7 @@ public final class FeishuApprovalCard {
         };
     }
 
-    private static String footerOf(ApprovalDecider.Pending card) {
+    private static String footerOf(Approvals.Pending card) {
         if (card.expired()) {
             return "过期的批准不能补点：这不是点错了，是这条请求已经不作数";
         }

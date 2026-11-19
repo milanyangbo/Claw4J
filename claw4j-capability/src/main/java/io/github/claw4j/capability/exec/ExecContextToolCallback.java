@@ -55,7 +55,8 @@ public final class ExecContextToolCallback implements ToolCallback {
 
     @Override
     public String call(String toolInput, ToolContext toolContext) {
-        return ExecCallContext.with(contextOf(toolContext), () -> delegate.call(toolInput, toolContext));
+        return ExecCallContext.with(contextOf(toolContext, toolInput),
+                () -> delegate.call(toolInput, toolContext));
     }
 
     /**
@@ -64,10 +65,14 @@ public final class ExecContextToolCallback implements ToolCallback {
      * <p>身份取不到时整份上下文为 {@code null}，而不是拼一份只有会话的：审批要回答"批给谁"，
      * 没有答案时那条请求本来就不该存在。
      *
+     * <p>工具名与参数原文一起带上：审批行记的是工具名（不该由端口写死一个），而审计里那一行要拿
+     * 参数指纹与审批编号配对——指纹只有在看得见参数原文的地方才算得出来。
+     *
      * @param toolContext 框架给的上下文，可以为 {@code null}
+     * @param toolInput 模型给的参数原文，可以为 {@code null}
      * @return 这次调用的上下文；没有身份时为 {@code null}
      */
-    private static ExecCallContext contextOf(ToolContext toolContext) {
+    private ExecCallContext contextOf(ToolContext toolContext, String toolInput) {
         if (toolContext == null) {
             return null;
         }
@@ -82,7 +87,9 @@ public final class ExecContextToolCallback implements ToolCallback {
                 text(values, ContextKeys.CHAT_REF),
                 text(values, ContextKeys.RUN_ID),
                 // 提权档由对话那一层写进来（/elevated）；读不出来就是不提权，不猜。
-                Elevation.parse(text(values, ContextKeys.ELEVATION)).orElse(Elevation.OFF));
+                Elevation.parse(text(values, ContextKeys.ELEVATION)).orElse(Elevation.OFF),
+                getToolDefinition().name(),
+                toolInput);
     }
 
     private static String text(Map<String, Object> values, String key) {

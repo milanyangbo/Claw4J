@@ -58,7 +58,7 @@ public record FrozenPlan(String command, String cwd) {
     /**
      * 这份计划在审批行上的键（{@code approval_request.args_digest}）。
      *
-     * <p>与 {@code CallFingerprint} 分开：那一个是"工具名 + 规范化参数 JSON"，单位是一次工具调用；
+     * <p>与 {@code ToolCallAudit#digest} 分开：那一个是"工具名 + 规范化参数 JSON"，单位是一次工具调用；
      * 这一份的单位是"一条进程怎么起"。混用一个函数的话，哪天其中一边要加字段（比如脚本哈希），
      * 另一边会跟着变，而两边的批准不能互相替代。
      *

@@ -1,11 +1,11 @@
 package io.github.claw4j.agent.subagent;
 
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.principal.ToolProfile;
 import io.github.claw4j.domain.principal.ToolPolicyPipeline;
 import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.agent.ToolPolicyAssembler;
 import io.github.claw4j.agent.AgentAutoConfiguration;
-import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.ToolSearchProperties;
 import io.github.claw4j.agent.ToolsProperties;
@@ -24,6 +24,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -90,16 +91,17 @@ public class SubagentAutoConfiguration {
                                              ToolIndex toolIndex,
                                              ToolSearchProperties toolSearch,
                                              AgentProperties agent,
-                                             ObjectProvider<ApprovalGate> gates,
-                                             ObjectProvider<ApprovalRequiredTools> approvals,
+                                             ObjectProvider<Approvals> approvals,
+                                             ObjectProvider<ApprovalRequiredTools> required,
+                                             @Qualifier("subagentTaskRepository")
                                              TaskRepository taskRepository) {
         var observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         var runner = new SubagentRunner(chatModel, observations,
                 () -> subagentToolCallbacks(toolCallbacks, toolCallbackProviders,
                         meterRegistry.getIfAvailable(), toolPolicy,
                         tierRegistries.orderedStream().toList(),
-                        gates.getIfAvailable(),
-                        approvals.getIfAvailable(ApprovalRequiredTools::none)),
+                        approvals.getIfAvailable(),
+                        required.getIfAvailable(ApprovalRequiredTools::none)),
                 toolIndex,
                 toolSearch,
                 agent.toolCallLimit());
@@ -142,7 +144,8 @@ public class SubagentAutoConfiguration {
      * @return 名为 {@code TaskOutput} 的工具回调
      */
     @Bean
-    public ToolCallback subagentOutputToolCallback(TaskRepository taskRepository) {
+    public ToolCallback subagentOutputToolCallback(
+            @Qualifier("subagentTaskRepository") TaskRepository taskRepository) {
         return TaskOutputTool.builder().taskRepository(taskRepository).build();
     }
 
@@ -247,7 +250,8 @@ public class SubagentAutoConfiguration {
      * @param toolPolicy 工具画像策略
      * @param tierRegistries 各来源的档位登记表
      * @param gate 审批门，可为 {@code null}
-     * @param approvals 要人批的名单，不可为 {@code null}（没有就是空）
+     * @param approvals 审批，可为 {@code null}（没有就不套闸）
+     * @param required 要人批的名单，不可为 {@code null}（没有就是空）
      * @return 子 Agent 的可用工具
      */
     public static List<ToolCallback> subagentToolCallbacks(ObjectProvider<ToolCallback> toolCallbacks,
@@ -255,8 +259,8 @@ public class SubagentAutoConfiguration {
                                                            MeterRegistry meterRegistry,
                                                            ToolsProperties toolPolicy,
                                                            List<ToolTierRegistry> tierRegistries,
-                                                           ApprovalGate gate,
-                                                           ApprovalRequiredTools approvals) {
+                                                           Approvals approvals,
+                                                           ApprovalRequiredTools required) {
         // 与 Agent 装配用的是同一个收集方法：工具回调与 provider 两种形态都要收。
         // 只收单回调形态时，querySales（来自 provider）在子那一侧就「没有这个工具」，
         // 而它明明在父的清单里。
@@ -279,7 +283,7 @@ public class SubagentAutoConfiguration {
                 new ToolPolicyPipeline(decision.layers()),
                 selection -> { });
         // 审计这一路子 Agent 不接（与上面 collect 时传 null 是同一个决定）：它的调用记在父那一轮里。
-        return AgentAutoConfiguration.withApprovalGate(collected, gate, approvals, null)
+        return AgentAutoConfiguration.withApprovalGate(collected, approvals, required, null)
                 .stream()
                 .filter(callback -> !DELEGATION_TOOLS.contains(callback.getToolDefinition().name()))
                 .toList();

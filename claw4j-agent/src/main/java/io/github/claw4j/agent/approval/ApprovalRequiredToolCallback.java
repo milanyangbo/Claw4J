@@ -3,7 +3,7 @@ package io.github.claw4j.agent.approval;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.port.ApprovalLedger;
+import io.github.claw4j.domain.port.Approvals;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -42,7 +42,7 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
 
     private final ToolCallback delegate;
 
-    private final ApprovalGate gate;
+    private final Approvals approvals;
 
     private final ToolCallAudit audit;
 
@@ -50,10 +50,10 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
      * 包一层。
      *
      * @param delegate 被包的工具，必填
-     * @param gate 审批门（兑现 + 登记），必填
+     * @param approvals 审批（兑现 + 登记），必填
      */
-    public ApprovalRequiredToolCallback(ToolCallback delegate, ApprovalGate gate) {
-        this(delegate, gate, null);
+    public ApprovalRequiredToolCallback(ToolCallback delegate, Approvals approvals) {
+        this(delegate, approvals, null);
     }
 
     /**
@@ -65,12 +65,12 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
      * （"这次执行是哪次批准的"整条链断在中间，且不报错）。
      *
      * @param delegate 被包的工具，必填
-     * @param gate 审批门（兑现 + 登记），必填
+     * @param approvals 审批（兑现 + 登记），必填
      * @param audit 审计落点，可以为 {@code null}（不带审计的测试链路）
      */
-    public ApprovalRequiredToolCallback(ToolCallback delegate, ApprovalGate gate, ToolCallAudit audit) {
+    public ApprovalRequiredToolCallback(ToolCallback delegate, Approvals approvals, ToolCallAudit audit) {
         this.delegate = java.util.Objects.requireNonNull(delegate, "delegate");
-        this.gate = java.util.Objects.requireNonNull(gate, "gate");
+        this.approvals = java.util.Objects.requireNonNull(approvals, "approvals");
         this.audit = audit;
     }
 
@@ -107,13 +107,13 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
             return DENIAL_PREFIX
                     + "：这次调用没有携带身份，声明了要审批的工具一律不放行。";
         }
-        Optional<String> digest = CallFingerprint.of(toolName, toolInput);
+        Optional<String> digest = ToolCallAudit.digest(toolName, toolInput);
         if (digest.isEmpty()) {
             return "这个工具的参数不是一段完整的 JSON 对象，没有执行：" + toolName;
         }
         // 只兑现一次：redeem 会把那条批准标成用掉，第二次调用拿到的必然是空。
-        Optional<ApprovalLedger.Grant> redeemed =
-                gate.redeem(principal.userId(), toolName, digest.get());
+        Optional<Approvals.Grant> redeemed =
+                approvals.redeem(principal.userId(), toolName, digest.get());
         if (redeemed.isPresent()) {
             // 把"这条批准放行了这次执行"交给审计，紧挨着执行那一下。分开写就会有人只改一边。
             if (audit != null) {
@@ -122,9 +122,9 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
             }
             return delegate.call(toolInput, toolContext);
         }
-        Optional<String> approvalId = gate.ask(new ApprovalLedger.Ask(
+        Optional<String> approvalId = approvals.ask(new Approvals.Ask(
                 text(toolContext, ContextKeys.RUN_ID), principal.userId(), toolName, digest.get(),
-                summaryOf(toolInput), originOf(toolContext, principal)));
+                toolInput, originOf(toolContext, principal)));
         return denial(approvalId.orElse(null));
     }
 
@@ -152,28 +152,18 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
     }
 
     /**
-     * 给人看的参数摘要：脱敏之后截断（见 {@link ArgsSummary}）。
-     *
-     * @param toolInput 参数原文
-     * @return 摘要
-     */
-    private static String summaryOf(String toolInput) {
-        return ArgsSummary.of(toolInput);
-    }
-
-    /**
      * 这条请求从哪段对话来。没有会话键时为 {@code null}——那时结论落得下来，但没有"接着做"。
      *
      * @param toolContext 工具上下文，可以为 {@code null}
      * @param principal 发起人
      * @return 来处
      */
-    private static ApprovalLedger.Origin originOf(ToolContext toolContext, Principal principal) {
+    private static Approvals.Origin originOf(ToolContext toolContext, Principal principal) {
         String sessionKey = text(toolContext, ChatMemory.CONVERSATION_ID);
         if (sessionKey == null) {
             return null;
         }
-        return new ApprovalLedger.Origin(sessionKey, text(toolContext, ContextKeys.CHANNEL),
+        return new Approvals.Origin(sessionKey, text(toolContext, ContextKeys.CHANNEL),
                 text(toolContext, ContextKeys.CHAT_REF), principal);
     }
 

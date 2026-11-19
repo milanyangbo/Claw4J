@@ -1,7 +1,6 @@
 package io.github.claw4j.app;
 
-import io.github.claw4j.agent.approval.ApprovalService;
-import io.github.claw4j.agent.approval.JdbcApprovalLedger;
+import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
@@ -22,7 +21,8 @@ import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.ContextKeys;
-import io.github.claw4j.domain.port.ApprovalLedger;
+import io.github.claw4j.domain.ApproverRoster;
+import io.github.claw4j.domain.port.Approvals;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -588,7 +588,7 @@ class PersistenceSchemaTest {
                 + " now() - interval '11 minutes', now() - interval '10 minutes', 'channel',"
                 + " now() - interval '1 minute')");
 
-        int expired = new ApprovalService(jdbc, new ApproverRoster(Set.of()), null).expireDue();
+        int expired = ledger(Duration.ofMinutes(10)).expireDue();
 
         assertThat(expired).as("只有那一条到点的 pending").isEqualTo(1);
         assertThat(jdbc.queryForObject("select status from claw4j_run.approval_request where id = 'ap-due'",
@@ -615,10 +615,16 @@ class PersistenceSchemaTest {
      * <p>参数那一条是 P02 的核心：只按工具名批的话，批了发一封给张三的邮件同时放行了发给全公司。
      * 指纹变了就是另一次，必须重新批。
      */
+    /** 审批装配：这一层验的是 SQL 与约束，名单与卡片都不参与。 */
+    private static JdbcApprovals ledger(Duration ttl) {
+        return new JdbcApprovals(jdbc, new ApproverRoster(java.util.Set.of("approver-1")),
+                null, null, null, java.util.List.of(), ttl.toMillis());
+    }
+
     @Test
     @DisplayName("审批按人 + 工具 + 参数命中：过期、别人的、被拒的、已兑现的都不算")
     void onlyAnUnexpiredUnconsumedGrantOfThisPersonAndArgsCounts() {
-        ApprovalLedger ledger = new JdbcApprovalLedger(jdbc, Duration.ofMinutes(10).toMillis());
+        Approvals ledger = ledger(Duration.ofMinutes(10));
         granted("ap-ok", "u-1", "sendEmail", DIGEST, "10 minutes");
         granted("ap-expired", "u-1", "runScript", DIGEST, "-1 minute");
         granted("ap-other-person", "u-2", "sendEmail", DIGEST, "10 minutes");
@@ -631,9 +637,9 @@ class PersistenceSchemaTest {
 
         // 参数不同是另一次：那条只放行它自己那一种参数
         assertThat(ledger.redeem("u-1", "sendEmail", OTHER_DIGEST)).get()
-                .extracting(ApprovalLedger.Grant::id).isEqualTo("ap-other-args");
+                .extracting(Approvals.Grant::id).isEqualTo("ap-other-args");
         assertThat(ledger.redeem("u-1", "sendEmail", DIGEST)).get()
-                .extracting(ApprovalLedger.Grant::id).isEqualTo("ap-ok");
+                .extracting(Approvals.Grant::id).isEqualTo("ap-ok");
         assertThat(ledger.redeem("u-1", "sendEmail", DIGEST))
                 .as("一次用完即废：同一条批准不能放行第二次执行").isEmpty();
         assertThat(ledger.redeem("u-1", "runScript", DIGEST)).as("过期按没有批准处理").isEmpty();
@@ -651,9 +657,9 @@ class PersistenceSchemaTest {
     @Test
     @DisplayName("登记的待批请求带上参数摘要，过期点按配置算，不按表上的默认值")
     void anAskedApprovalCarriesArgsSummaryAndConfiguredExpiry() {
-        ApprovalLedger ledger = new JdbcApprovalLedger(jdbc, Duration.ofMinutes(3).toMillis());
+        Approvals ledger = ledger(Duration.ofMinutes(3));
 
-        String id = ledger.ask(new ApprovalLedger.Ask("run-x", "u-1", "sendEmail", DIGEST,
+        String id = ledger.ask(new Approvals.Ask("run-x", "u-1", "sendEmail", DIGEST,
                 "{\"to\":\"zhang@example.com\"}", null)).orElseThrow();
 
         Long minutes = jdbc.queryForObject("select round(extract(epoch from (expires_at - now())) / 60)"

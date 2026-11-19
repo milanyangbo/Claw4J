@@ -23,6 +23,10 @@
 
 **Status:** resolved
 
+**修订（2026-11-19，票 10）**：本票列的实现类已收成 `Approvals` + `JdbcApprovals`（请求 / 裁决 /
+记录三层），`ApprovalGate` / `ConversationApprovalGate` / `ApprovalService` / `JdbcApprovalLedger`
+四个名字在代码里不再存在；用例名不变。
+
 **进度（2026-11-18）**：两个落点、冻结件、`askFallback`、三档决定、拒绝不投递全部落地；
 `./mvnw clean verify` 九模块全绿；新增 `ExecApprovalTest` 10 条 + `ApprovalRequiredToolCallbackTest` 6 条，
 `ExecToolTest` 25 条 / `ExecPolicyTest` 15 条 / `PersistenceSchemaTest`（V12 那一列）跟着改。

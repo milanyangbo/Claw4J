@@ -1,10 +1,11 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.approval.AgentExecApprovalPort;
-import io.github.claw4j.agent.approval.ApprovalService;
-import io.github.claw4j.agent.approval.ConversationApprovalGate;
-import io.github.claw4j.agent.approval.JdbcApprovalLedger;
+import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.approval.JdbcExecAllowlist;
+import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.capability.exec.ExecApprovalPort;
 import io.github.claw4j.capability.exec.ExecCallContext;
 import io.github.claw4j.capability.exec.ExecProperties;
@@ -14,8 +15,7 @@ import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.port.AgentPort;
-import io.github.claw4j.domain.port.ApprovalDecider;
-import io.github.claw4j.domain.port.ApprovalLedger;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import org.flywaydb.core.Flyway;
@@ -96,9 +96,9 @@ class ExecApprovalTest {
     @Test
     @DisplayName("非 exec 的审批没有冻结件：那一列为空，登记照常")
     void anApprovalWithoutAFrozenPlanIsStillRegistered() {
-        ApprovalLedger ledger = new JdbcApprovalLedger(jdbc, TTL.toMillis());
+        Approvals approvals = approvals(null, null);
 
-        Optional<String> id = ledger.ask(new ApprovalLedger.Ask("run-1", OWNER, "sendEmail",
+        Optional<String> id = approvals.ask(new Approvals.Ask("run-1", OWNER, "sendEmail",
                 "digest-1", "to=张三", null));
 
         assertThat(id).isPresent();
@@ -207,7 +207,7 @@ class ExecApprovalTest {
                 ExecProperties.Ask.ALWAYS, null, null, null, null, WORKSPACE, List.of());
         String approvalId = asOwner(() -> port(always).decide(request("echo hi"))).approvalId();
 
-        ApprovalDecider.Result result = service(always)
+        Approvals.Result result = service(always)
                 .decide(approvalId, APPROVER, ApprovalChoice.ALLOW_ALWAYS, null);
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.NOT_APPLICABLE);
@@ -229,7 +229,7 @@ class ExecApprovalTest {
                 .as("卡片上就不该有这一项：点了写零条，却回一句「以后都放行」，下一次照旧弹")
                 .isFalse();
 
-        ApprovalDecider.Result result = service(ask)
+        Approvals.Result result = service(ask)
                 .decide(approvalId, APPROVER, ApprovalChoice.ALLOW_ALWAYS, null);
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.NOT_APPLICABLE);
@@ -245,8 +245,7 @@ class ExecApprovalTest {
                 ExecProperties.Mode.ASK, WORKSPACE, List.of()), agent).decide(request("echo hi")))
                 .approvalId();
 
-        ApprovalDecider.Result result = new ApprovalService(jdbc,
-                new ApproverRoster(Set.of(APPROVER)), agent, new JdbcExecAllowlist(jdbc), null)
+        Approvals.Result result = approvals(agent, null)
                 .decide(approvalId, APPROVER, ApprovalChoice.DENY, "不行");
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.DENIED);
@@ -262,9 +261,7 @@ class ExecApprovalTest {
                 ExecProperties.Mode.ASK, WORKSPACE, List.of()), agent).decide(request("echo hi")))
                 .approvalId();
 
-        new ApprovalService(jdbc, new ApproverRoster(Set.of(APPROVER)), agent,
-                new JdbcExecAllowlist(jdbc), null)
-                .decide(approvalId, APPROVER, ApprovalChoice.DENY, "不行");
+        approvals(agent, null).decide(approvalId, APPROVER, ApprovalChoice.DENY, "不行");
 
         assertThat(agent.replies()).isZero();
     }
@@ -277,12 +274,65 @@ class ExecApprovalTest {
                 ExecProperties.of(ExecProperties.Mode.ASK, WORKSPACE, List.of()), agent)
                 .decide(request("echo hi"))).approvalId();
 
-        new ApprovalService(jdbc, new ApproverRoster(Set.of(APPROVER)), agent,
-                new JdbcExecAllowlist(jdbc), null)
-                .decide(approvalId, APPROVER, ApprovalChoice.DENY, "不行");
+        approvals(agent, null).decide(approvalId, APPROVER, ApprovalChoice.DENY, "不行");
 
         assertThat(agent.replies()).isEqualTo(1);
         assertThat(agent.lastText()).contains("[审批被拒]").contains("没有执行");
+    }
+
+    @Test
+    @DisplayName("解释器内联求值不持久化：落下来的 pattern 是 bash，等于放行一切")
+    void inlineEvaluationIsNotPersisted() {
+        ExecProperties ask = ExecProperties.of(ExecProperties.Mode.ASK, WORKSPACE, List.of());
+        String approvalId = asOwner(() -> port(ask)
+                .decide(request("bash -c \"echo hi\""))).approvalId();
+
+        assertThat(service(ask).find(approvalId).orElseThrow().allowAlways())
+                .as("卡片上就不该有这一项：批一次 bash -c 等于批了任何命令")
+                .isFalse();
+        assertThat(service(ask).decide(approvalId, APPROVER, ApprovalChoice.ALLOW_ALWAYS, null).verdict())
+                .isEqualTo(ApprovalVerdict.NOT_APPLICABLE);
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.exec_allowlist", Integer.class))
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("heredoc 不持久化：<< 之后是任意内容，白名单里那条 cat 一个字符都没覆盖到")
+    void heredocIsNotPersisted() {
+        ExecProperties ask = ExecProperties.of(ExecProperties.Mode.ASK, WORKSPACE, List.of());
+        String approvalId = asOwner(() -> port(ask).decide(request("cat <<EOF"))).approvalId();
+
+        assertThat(service(ask).find(approvalId).orElseThrow().allowAlways()).isFalse();
+        assertThat(service(ask).decide(approvalId, APPROVER, ApprovalChoice.ALLOW_ALWAYS, null).verdict())
+                .isEqualTo(ApprovalVerdict.NOT_APPLICABLE);
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.exec_allowlist", Integer.class))
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("执行那一行的审计带审批编号：兑现之后由端口递给审计，不再是空")
+    void executedCommandCarriesTheApprovalIdInAudit() {
+        ToolCallAudit audit = new ToolCallAudit(new AuditLedger(jdbc, null));
+        ExecProperties ask = ExecProperties.of(ExecProperties.Mode.ASK, WORKSPACE, List.of());
+        String args = "{\"command\":\"echo hi\"}";
+        ExecCallContext context = new ExecCallContext(new Principal(OWNER),
+                "claw4j:user:u-runner:http:chat-ap", "http", "chat-ap", "run-audit", null,
+                "Bash", args);
+
+        String approvalId = ExecCallContext.with(context,
+                () -> port(ask, null, audit).decide(request("echo hi"))).approvalId();
+        decideAsApprover(approvalId, ApprovalChoice.ALLOW_ONCE, null);
+
+        ExecCallContext.with(context, () -> port(ask, null, audit).decide(request("echo hi")));
+        audit.toolFinished(AuditEvent.Scope.of("run-audit", context.sessionKey(),
+                new Principal(OWNER), "http"), "Bash", args, null);
+
+        assertThat(jdbc.queryForObject("select approval_id from claw4j_run.audit_event"
+                        + " where run_id = ? and tool_name = 'Bash'"
+                        + " and action = 'tool.action.finished'",
+                String.class, "run-audit"))
+                .as("这次执行是哪次批准的：审计那一行要答得出来")
+                .isEqualTo(approvalId);
     }
 
     // ------------------------------------------------------------------
@@ -294,12 +344,25 @@ class ExecApprovalTest {
     }
 
     private ExecApprovalPort port(ExecProperties properties, AgentPort agent) {
-        return new AgentExecApprovalPort(
-                new ConversationApprovalGate(new JdbcApprovalLedger(jdbc, TTL.toMillis()), List.of()),
-                new JdbcExecAllowlist(jdbc), properties);
+        return port(properties, agent, null);
     }
 
-    private ApprovalDecider.Result decideAsApprover(String approvalId, ApprovalChoice choice, String reason) {
+    private ExecApprovalPort port(ExecProperties properties, AgentPort agent, ToolCallAudit audit) {
+        return new AgentExecApprovalPort(approvals(agent, properties),
+                new JdbcExecAllowlist(jdbc), properties, audit);
+    }
+
+    /**
+     * 审批的装配：一个实现扮三个角色（请求、裁决、记录），名单固定成一个审批人。
+     *
+     * <p>agent 为 null 时只登记不续跑；exec 为 null 时"以后都放行"一律不收。
+     */
+    private Approvals approvals(AgentPort agent, ExecProperties exec) {
+        return new JdbcApprovals(jdbc, new ApproverRoster(Set.of(APPROVER)), agent,
+                new JdbcExecAllowlist(jdbc), exec, List.of(), TTL.toMillis());
+    }
+
+    private Approvals.Result decideAsApprover(String approvalId, ApprovalChoice choice, String reason) {
         return service(ExecProperties.of(ExecProperties.Mode.ASK, WORKSPACE, List.of()))
                 .decide(approvalId, APPROVER, choice, reason);
     }
@@ -310,9 +373,8 @@ class ExecApprovalTest {
      * <p>exec 配置要传：{@code allow-always} 的收不收由它判（{@code ask=always} 时不收）。
      * 传 null 的话"选以后都放行"一律被拒，而那种红会让人以为是卡片的问题。
      */
-    private ApprovalDecider service(ExecProperties exec) {
-        return new ApprovalService(jdbc, new ApproverRoster(Set.of(APPROVER)), new CountingAgent(),
-                new JdbcExecAllowlist(jdbc), exec);
+    private Approvals service(ExecProperties exec) {
+        return approvals(new CountingAgent(), exec);
     }
 
     private ExecApprovalPort.Request request(String command) {

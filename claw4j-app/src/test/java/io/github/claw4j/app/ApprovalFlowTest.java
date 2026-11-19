@@ -3,19 +3,15 @@ package io.github.claw4j.app;
 import io.github.claw4j.agent.ChatClientAgentPort;
 import io.github.claw4j.agent.ToolCallBudget;
 import io.github.claw4j.agent.AgentAutoConfiguration;
-import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
-import io.github.claw4j.agent.approval.ApprovalService;
-import io.github.claw4j.agent.approval.CallFingerprint;
-import io.github.claw4j.agent.approval.JdbcApprovalLedger;
-import io.github.claw4j.agent.approval.ConversationApprovalGate;
-import io.github.claw4j.agent.approval.PrincipalSnapshot;
+import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.ApproverRoster;
-import io.github.claw4j.domain.port.ApprovalDecider;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
@@ -167,7 +163,7 @@ class ApprovalFlowTest {
         RecordingTool tool = harness.withApprovalRequiredTool();
 
         OutboundMessage first = harness.port().reply(harness.mailer("发一封给张三的周报"));
-        ApprovalDecider.Result result = harness.decider().decide(onlyPendingId(), "approver-1", true, null);
+        Approvals.Result result = harness.decider().decide(onlyPendingId(), "approver-1", true, null);
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.GRANTED);
         assertThat(tool.calls()).as("批准之后那一次调用真的执行了").isEqualTo(1);
@@ -210,7 +206,7 @@ class ApprovalFlowTest {
         String approvalId = onlyPendingId();
         String reason = "收件人是外部邮箱，这批不走邮件";
 
-        ApprovalDecider.Result result = harness.decider().decide(approvalId, "approver-1", false, reason);
+        Approvals.Result result = harness.decider().decide(approvalId, "approver-1", false, reason);
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.DENIED);
         assertThat(result.detail()).as("给点按钮的人一句明确的话，带工具名与理由")
@@ -260,7 +256,7 @@ class ApprovalFlowTest {
                 + " set requested_at = now() - interval '11 minutes',"
                 + " expires_at = now() - interval '1 second' where id = ?", approvalId);
 
-        ApprovalDecider.Result result = harness.decider().decide(approvalId, "approver-1", true, null);
+        Approvals.Result result = harness.decider().decide(approvalId, "approver-1", true, null);
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.EXPIRED);
         assertThat(tool.calls()).isZero();
@@ -297,7 +293,7 @@ class ApprovalFlowTest {
         OutboundMessage first = harness.port().reply(harness.mailer("发一封给张三的周报"));
         String approvalId = onlyPendingId();
 
-        ApprovalDecider.Result self = harness.decider(roster).decide(approvalId, "u-mailer", true, null);
+        Approvals.Result self = harness.decider(roster).decide(approvalId, "u-mailer", true, null);
 
         assertThat(self.verdict())
                 .as("他就在名单里——所以这一档不能并进「不是审批人」")
@@ -310,7 +306,7 @@ class ApprovalFlowTest {
                 .isEqualTo("pending");
         assertThat(finishStatusOf(first.runId())).isEqualTo("succeeded");
 
-        ApprovalDecider.Result other = harness.decider(roster).decide(approvalId, "approver-1", true, null);
+        Approvals.Result other = harness.decider(roster).decide(approvalId, "approver-1", true, null);
 
         assertThat(other.verdict()).isEqualTo(ApprovalVerdict.GRANTED);
         assertThat(tool.calls()).as("同一条请求换个人点就能过，工具这才执行").isEqualTo(1);
@@ -332,7 +328,7 @@ class ApprovalFlowTest {
         OutboundMessage first = harness.port().reply(harness.mailer("发一封给张三的周报"));
         String approvalId = onlyPendingId();
 
-        ApprovalDecider.Result outsider = harness.decider().decide(approvalId, "admin-9", true, null);
+        Approvals.Result outsider = harness.decider().decide(approvalId, "admin-9", true, null);
 
         assertThat(outsider.verdict()).isEqualTo(ApprovalVerdict.NOT_APPROVER);
         assertThat(outsider.detail()).contains("claw4j.approval.approvers");
@@ -386,12 +382,12 @@ class ApprovalFlowTest {
     @Test
     @DisplayName("审批指纹不含 runId 与序号：与幂等键口径相反，混用会双向出事")
     void theApprovalFingerprintIsNotAnIdempotencyKey() {
-        String fingerprint = CallFingerprint.of(TOOL, ARGS).orElseThrow();
+        String fingerprint = ToolCallAudit.digest(TOOL, ARGS).orElseThrow();
 
-        assertThat(CallFingerprint.of(TOOL, ARGS)).contains(fingerprint);
-        assertThat(CallFingerprint.of(TOOL, WIDER_ARGS).orElseThrow())
+        assertThat(ToolCallAudit.digest(TOOL, ARGS)).contains(fingerprint);
+        assertThat(ToolCallAudit.digest(TOOL, WIDER_ARGS).orElseThrow())
                 .as("参数变了就是另一个指纹").isNotEqualTo(fingerprint);
-        assertThat(CallFingerprint.of("querySales", ARGS).orElseThrow())
+        assertThat(ToolCallAudit.digest("querySales", ARGS).orElseThrow())
                 .as("换工具也是另一个指纹").isNotEqualTo(fingerprint);
 
         String idempotencyKey = idempotencyKey("run-1", 3, TOOL, ARGS);
@@ -413,16 +409,16 @@ class ApprovalFlowTest {
     @Test
     @DisplayName("指纹按 key 递归排序、数字归一：顺序无关，值有关")
     void theFingerprintIgnoresOrderButNotValues() {
-        String ordered = CallFingerprint.of(TOOL,
+        String ordered = ToolCallAudit.digest(TOOL,
                 "{\"to\":\"a@example.com\",\"meta\":{\"b\":2,\"a\":1}}").orElseThrow();
 
-        assertThat(CallFingerprint.of(TOOL,
+        assertThat(ToolCallAudit.digest(TOOL,
                 "{\"meta\":{\"a\":1,\"b\":2},\"to\":\"a@example.com\"}").orElseThrow())
                 .as("同一次调用换个字段顺序，还是同一次").isEqualTo(ordered);
-        assertThat(CallFingerprint.of(TOOL,
+        assertThat(ToolCallAudit.digest(TOOL,
                 "{\"to\":\"a@example.com\",\"meta\":{\"b\":2.0,\"a\":1.00}}").orElseThrow())
                 .as("1 与 1.00 在 JSON 里是同一个数").isEqualTo(ordered);
-        assertThat(CallFingerprint.of(TOOL,
+        assertThat(ToolCallAudit.digest(TOOL,
                 "{\"to\":\"b@example.com\",\"meta\":{\"b\":2,\"a\":1}}").orElseThrow())
                 .isNotEqualTo(ordered);
     }
@@ -481,7 +477,7 @@ class ApprovalFlowTest {
         harness.decider().decide(approvalId, "approver-1", true, null);
         int callsAfterFirst = harness.prompts().size();
 
-        ApprovalDecider.Result again = harness.decider().decide(approvalId, "approver-1", true, null);
+        Approvals.Result again = harness.decider().decide(approvalId, "approver-1", true, null);
 
         assertThat(again.verdict()).isEqualTo(ApprovalVerdict.ALREADY_DECIDED);
         assertThat(harness.prompts()).as("第二次点击不该再调一次模型").hasSize(callsAfterFirst);
@@ -522,7 +518,7 @@ class ApprovalFlowTest {
         assertThat(executed.get("approval_id")).isEqualTo(approvalId);
         assertThat(executed.get("args_digest"))
                 .as("指纹与审批那条同一个函数，于是「这次执行是哪次批准的」能直接对上")
-                .isEqualTo(CallFingerprint.of(TOOL, ARGS).orElseThrow());
+                .isEqualTo(ToolCallAudit.digest(TOOL, ARGS).orElseThrow());
         assertThat(executed.toString())
                 .as("审计不存参数原文，也不存摘要：那是业务数据的第二份副本")
                 .doesNotContain("zhang@example.com");
@@ -552,18 +548,21 @@ class ApprovalFlowTest {
     void legacyApprovalRecordStillParses() {
         String legacy = "{\"userId\":\"u-mailer\",\"role\":\"mailer\","
                 + "\"tables\":[\"sales_order\"],\"actions\":[\"read\",\"send_email\"]}";
+        String digest = ToolCallAudit.digest("sendEmail", "{}").orElseThrow();
+        jdbc.update("insert into claw4j_run.approval_request"
+                + " (id, run_id, owner, tool_name, args_digest, args_summary, status, session_key,"
+                + " channel, chat_ref, principal_snapshot, requested_at, expires_at)"
+                + " values ('ap-legacy', 'run-legacy', 'u-mailer', 'sendEmail', ?, 'to=张三', 'pending',"
+                + " 'claw4j:user:u-mailer:http:chat-ap', 'http', 'chat-ap', ?::jsonb, now(),"
+                + " now() + interval '10 minutes')", digest, legacy);
 
-        Optional<Principal> parsed = PrincipalSnapshot.decode(legacy);
+        Approvals.Result result = new Harness().decider()
+                .decide("ap-legacy", "approver-1", ApprovalChoice.ALLOW_ONCE, null);
 
-        assertThat(parsed).as("多出来的三个键是收窄之前的形状，不是坏数据").isPresent();
-        assertThat(parsed.orElseThrow().userId()).isEqualTo("u-mailer");
-
-        // 反过来：收了窄也照样读得出来，而缺 userId 才算读不出来（不补默认身份）
-        assertThat(PrincipalSnapshot.decode(PrincipalSnapshot.encode(new Principal("u-1"))))
-                .map(Principal::userId)
-                .contains("u-1");
-        assertThat(PrincipalSnapshot.decode("{\"role\":\"mailer\"}"))
-                .as("补一个猜出来的身份，续跑就会以没人授予过的身份发生").isEmpty();
+        assertThat(result.verdict()).isEqualTo(ApprovalVerdict.GRANTED);
+        assertThat(result.detail())
+                .as("多出来的三个键被忽略；读不出 userId 才叫续不上")
+                .contains("已经接着往下做");
     }
 
     // ---------------------------------------------------------------- 脚手架
@@ -633,14 +632,14 @@ class ApprovalFlowTest {
             return port;
         }
 
-        /** 审批门：真账本 + 真门。每次现造，它只装着两份引用与几条 SQL。 */
-        private ApprovalGate gate() {
-            return new ConversationApprovalGate(
-                    new JdbcApprovalLedger(jdbc, TTL.toMillis()), List.of());
+        /** 审批（请求 + 记录）：只登记，不续跑。每次现造，它只装着几份引用与几条 SQL。 */
+        private Approvals gate() {
+            return new JdbcApprovals(jdbc, new ApproverRoster(APPROVERS), null, null, null,
+                    List.of(), TTL.toMillis());
         }
 
         /** 每次现造：它只装着几份引用和两条 SQL，没有需要留住的状态。 */
-        private ApprovalDecider decider() {
+        private Approvals decider() {
             return decider(APPROVERS);
         }
 
@@ -648,8 +647,9 @@ class ApprovalFlowTest {
          * @param approvers 谁能批（P03）。用例各自决定——"名单外的人批不了"与
          *                  "提问人批不了自己的"要的是不同的名单
          */
-        private ApprovalDecider decider(Set<String> approvers) {
-            return new ApprovalService(jdbc, new ApproverRoster(approvers), port());
+        private Approvals decider(Set<String> approvers) {
+            return new JdbcApprovals(jdbc, new ApproverRoster(approvers), port(), null, null,
+                    List.of(), TTL.toMillis());
         }
 
         private List<String> prompts() {
@@ -756,7 +756,7 @@ class ApprovalFlowTest {
      * 写在这里是为了让"两个哈希口径相反"被一条断言钉住，而不是靠读者记住。
      */
     private static String idempotencyKey(String runId, int stepSeq, String toolName, String args) {
-        String canonical = CallFingerprint.canonicalArgs(args).orElseThrow();
+        String canonical = ToolCallAudit.canonicalArgs(args).orElseThrow();
         return sha256(runId + '|' + stepSeq + '|' + toolName + '|' + canonical);
     }
 

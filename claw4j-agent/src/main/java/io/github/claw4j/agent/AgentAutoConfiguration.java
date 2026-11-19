@@ -1,8 +1,8 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
-import io.github.claw4j.agent.approval.ApprovalGate;
 import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
+import io.github.claw4j.agent.approval.ApprovalProperties;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.ConversationDelivery;
@@ -20,6 +20,7 @@ import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.domain.principal.ToolPolicyPipeline;
 import io.github.claw4j.domain.principal.ToolProfile;
@@ -49,6 +50,7 @@ import org.springframework.context.annotation.Bean;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -144,8 +146,8 @@ public class AgentAutoConfiguration {
                                    ToolsProperties toolPolicy,
                                    PersonaCatalog.Catalog personas,
                                    AgentProperties agentProperties,
-                                   ObjectProvider<ApprovalGate> gates,
-                                   ObjectProvider<ApprovalRequiredTools> approvals,
+                                   ObjectProvider<Approvals> approvals,
+                                   ObjectProvider<ApprovalRequiredTools> required,
                                    ObjectProvider<SandboxProperties> sandboxProperties,
                                    ObjectProvider<ToolCallListener> listeners) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
@@ -187,7 +189,7 @@ public class AgentAutoConfiguration {
                         }
                     });
             return withApprovalGate(withListener(tools, listeners.getIfAvailable()),
-                    gates.getIfAvailable(), approvals.getIfAvailable(ApprovalRequiredTools::none),
+                    approvals.getIfAvailable(), required.getIfAvailable(ApprovalRequiredTools::none),
                     audit.getIfAvailable());
         });
     }
@@ -311,20 +313,21 @@ public class AgentAutoConfiguration {
     }
 
     /**
-     * 哪些工具要人先批（票 05）：默认一个都没有。
+     * 哪些工具要人先批（票 05、10）：名单来自 {@code claw4j.approval.required-tools}，默认空。
      *
-     * <p>没有这一条时容器里没有这个 bean，工具清单那一侧按"空名单"处理——但"按空处理"与"配了空"
-     * 是两件事：前者在日志与断言里看不出来，后者能。声明要审批的模块覆盖这个 bean 即可。
+     * <p>配在配置里而不是只靠模块自己注册 bean：MCP 工具是配置装进来的，"这个要人批"也该能
+     * 在同一个地方写。声明要审批的模块仍可覆盖这个 bean——{@code @ConditionalOnMissingBean}
+     * 让"多装一个模块就起不来"这件事不发生。
      *
-     * <p>不带 {@code @ConditionalOnMissingBean} 的话，第二个声明要审批的模块会与它冲突，
-     * 而冲突的表现是启动失败——那对使用者来说是"我多装了一个模块就起不来了"。
+     * <p>校验放在 {@link ApprovalRequiredTools} 的紧凑构造器里：空白项被丢掉，重复项被合并。
      *
-     * @return 空名单
+     * @param properties 审批配置
+     * @return 要人批的工具名
      */
     @Bean
     @ConditionalOnMissingBean(ApprovalRequiredTools.class)
-    public ApprovalRequiredTools approvalRequiredTools() {
-        return ApprovalRequiredTools.none();
+    public ApprovalRequiredTools approvalRequiredTools(ApprovalProperties properties) {
+        return new ApprovalRequiredTools(new LinkedHashSet<>(properties.getRequiredTools()));
     }
 
     /**
@@ -485,20 +488,20 @@ public class AgentAutoConfiguration {
      * 计数与审计该照常记——它与"模型没调这个工具"是两件事。
      *
      * @param tools 收集好的工具
-     * @param gate 审批门，为 {@code null} 时原样返回
+     * @param approvals 审批，为 {@code null} 时原样返回
      * @param required 要人批的名单，为 {@code null} 或空时原样返回
      * @param audit 审计落点，可以为 {@code null}：带上它，执行那一行才会带 {@code approval_id}
      * @return 套过闸的清单
      */
-    public static List<ToolCallback> withApprovalGate(List<ToolCallback> tools, ApprovalGate gate,
+    public static List<ToolCallback> withApprovalGate(List<ToolCallback> tools, Approvals approvals,
                                                       ApprovalRequiredTools required,
                                                       ToolCallAudit audit) {
-        if (gate == null || required == null || required.names().isEmpty()) {
+        if (approvals == null || required == null || required.names().isEmpty()) {
             return tools;
         }
         return tools.stream()
                 .map(callback -> required.needsApproval(callback.getToolDefinition().name())
-                        ? (ToolCallback) new ApprovalRequiredToolCallback(callback, gate, audit)
+                        ? (ToolCallback) new ApprovalRequiredToolCallback(callback, approvals, audit)
                         : callback)
                 .toList();
     }

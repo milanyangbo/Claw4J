@@ -1,6 +1,6 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.approval.ConversationApprovalGate;
+import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditSink;
@@ -16,8 +16,8 @@ import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.ApprovalCards;
-import io.github.claw4j.domain.port.ApprovalDecider;
-import io.github.claw4j.domain.port.ApprovalLedger;
+import io.github.claw4j.domain.ApproverRoster;
+import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.agent.memory.PrincipalDreamAdvisor;
 import org.springaicommunity.agent.dream.AutoDreamService;
 import org.springaicommunity.agent.dream.DreamResult;
@@ -48,6 +48,7 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -398,39 +399,88 @@ class ChatPipelineTest {
         assertThat(answer.runId()).as("编号本地生成，不依赖任何存储").isNotNull();
     }
 
-    // ---------------------------------------------------------------- 审批门（P02）
+    // ---------------------------------------------------------------- 审批（P02）
 
     /**
-     * 审批门只做两件事：登记一条请求，把卡片推到它自己那段对话（ADR-0027）。
+     * 登记一条请求，把卡片推到它自己那段对话；推失败不影响登记（ADR-0027）。
      *
-     * <p>它不挂起 run，也不写一条 awaiting 步骤：那一轮以 done 收尾，它回给用户的是「我需要你
-     * 批准」，而等审批不是一种能跨请求的状态。这里同时钉住推了（带编号与摘要、按通道匹配）
-     * 与推失败不影响登记。
+     * <p>合并之后"登记 + 推卡片"是 {@code JdbcApprovals#ask} 的最后一步。这里用 mock 的
+     * {@code JdbcTemplate} 只验这一段的编排：该推的推了、推不出去的只记日志、没有来处就不推。
      */
     @Test
-    @DisplayName("审批门只登记与推卡片：不挂起 run、不写 awaiting 步骤，卡片落在请求自己那段对话")
-    void theGateRegistersAndAnnouncesWithoutSuspendingAnything() {
-        FakeLedger ledger = new FakeLedger("ap-1");
+    @DisplayName("审批只登记与推卡片：不挂起 run、不写 awaiting 步骤，卡片落在请求自己那段对话")
+    void theAskRegistersAndAnnouncesWithoutSuspendingAnything() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
         RecordingCards cards = new RecordingCards("feishu");
-        ConversationApprovalGate gate = new ConversationApprovalGate(ledger, List.of(cards, new BrokenCards("feishu")));
+        JdbcApprovals approvals = new JdbcApprovals(jdbc,
+                new ApproverRoster(Set.of("approver-1")), null, null, null,
+                List.of(cards, new BrokenCards("feishu")), Duration.ofMinutes(10).toMillis());
         String digest = "a".repeat(64);
-        ApprovalLedger.Origin origin = new ApprovalLedger.Origin("claw4j:u-1@fp:feishu:oc_1",
+        Approvals.Origin origin = new Approvals.Origin("claw4j:u-1@fp:feishu:oc_1",
                 "feishu", "oc_1", new Principal("u-1"));
 
-        assertThat(gate.redeem("u-1", "sendEmail", digest)).as("没批过就是没有").isEmpty();
+        assertThat(approvals.redeem("u-1", "sendEmail", digest)).as("没批过就是没有").isEmpty();
 
-        Optional<String> asked = gate.ask(new ApprovalLedger.Ask("run-1", "u-1", "sendEmail",
+        Optional<String> asked = approvals.ask(new Approvals.Ask("run-1", "u-1", "sendEmail",
                 digest, "to=张三", origin));
 
-        assertThat(asked).contains("ap-1");
+        assertThat(asked).isPresent();
         assertThat(cards.announced)
                 .as("卡片落在请求自己那段对话上；推失败的那个只记日志，不影响登记")
-                .containsExactly("oc_1|sendEmail|to=张三|ap-1|pending");
+                .hasSize(1);
+        assertThat(cards.announced.get(0))
+                .startsWith("oc_1|sendEmail|to=张三|")
+                .endsWith("|pending");
 
-        assertThat(gate.ask(new ApprovalLedger.Ask(null, "u-1", "sendEmail", digest, "to=张三", null)))
-                .contains("ap-1");
+        assertThat(approvals.ask(new Approvals.Ask(null, "u-1", "sendEmail", digest, "to=张三", null)))
+                .isPresent();
         assertThat(cards.announced).as("没有来处就没有对话可推").hasSize(1);
     }
+
+    /** 卡片能力的替身：这一层验的是"推到没推、推给谁"，不是卡片长什么样（那是通道的事）。 */
+    private static final class RecordingCards implements ApprovalCards {
+
+        private final String channel;
+
+        final List<String> announced = new ArrayList<>();
+
+        RecordingCards(String channel) {
+            this.channel = channel;
+        }
+
+        @Override
+        public String channel() {
+            return channel;
+        }
+
+        @Override
+        public void announce(String channelRef, Approvals.Pending card) {
+            announced.add(String.join("|", channelRef, card.toolName(), card.argsSummary(),
+                    card.id(), card.status()));
+        }
+    }
+
+    /** 推不出去的卡片：飞书限频、网络断、凭据过期都会走到这里，而那一轮不该因此变成 500。 */
+    private static final class BrokenCards implements ApprovalCards {
+
+        private final String channel;
+
+        BrokenCards(String channel) {
+            this.channel = channel;
+        }
+
+        @Override
+        public String channel() {
+            return channel;
+        }
+
+        @Override
+        public void announce(String channelRef, Approvals.Pending card) {
+            throw new IllegalStateException("飞书拒绝发送");
+        }
+    }
+
     /**
      * 把审计事件收进内存：这一层要验记了哪几条、带没带编号，不是 SQL 对不对。
      *
@@ -800,73 +850,6 @@ class ChatPipelineTest {
         }
     }
 
-
-    /**
-     * 审批账本的内存替身：这一层验的是"挂不挂起"，不是 SQL 里那条
-     * {@code update ... for update skip locked}（那是 {@code RunSchemaSqlTest} 的事）。
-     * 所以它只做两件事：登记时给个编号，兑现时永远说"没有"。
-     */
-    private static final class FakeLedger implements ApprovalLedger {
-
-        private final String id;
-
-        FakeLedger(String id) {
-            this.id = id;
-        }
-
-        @Override
-        public Optional<Grant> redeem(String owner, String toolName, String argsDigest) {
-            return Optional.empty();
-        }
-
-        @Override
-        public Optional<String> ask(Ask ask) {
-            return Optional.of(id);
-        }
-    }
-
-    /** 卡片能力的替身：这一层验的是"推到没推、推给谁"，不是卡片长什么样（那是通道的事）。 */
-    private static final class RecordingCards implements ApprovalCards {
-
-        private final String channel;
-
-        final List<String> announced = new ArrayList<>();
-
-        RecordingCards(String channel) {
-            this.channel = channel;
-        }
-
-        @Override
-        public String channel() {
-            return channel;
-        }
-
-        @Override
-        public void announce(String channelRef, ApprovalDecider.Pending card) {
-            announced.add(String.join("|", channelRef, card.toolName(), card.argsSummary(),
-                    card.id(), card.status()));
-        }
-    }
-
-    /** 推不出去的卡片：飞书限频、网络断、凭据过期都会走到这里，而那一轮不该因此变成 500。 */
-    private static final class BrokenCards implements ApprovalCards {
-
-        private final String channel;
-
-        BrokenCards(String channel) {
-            this.channel = channel;
-        }
-
-        @Override
-        public String channel() {
-            return channel;
-        }
-
-        @Override
-        public void announce(String channelRef, ApprovalDecider.Pending card) {
-            throw new IllegalStateException("飞书拒绝发送");
-        }
-    }
 
     private static ChatClientAgentPort port(ChatModel model, List<ToolCallback> tools) {
         return new ChatClientAgentPort(client(model, List.of(), tools));

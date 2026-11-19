@@ -111,7 +111,7 @@ principal_snapshot text           -- 发起人身份快照（JSON），从 agent
       证据：同一条用例（`[审批被拒]`、`不要重试`、`agent_run` 两行）。
 - [x] **审批卡片落在原对话**：卡片按请求自己的 `channel + chat_ref` 推，没有登记表。
       反例：`announce` 回到"最近用过的通道"——这里没有那个概念，替代的反例是
-      `origin == null` 时不推（子 Agent 那一层），`ChatPipelineTest#theGateRegistersAndAnnouncesWithoutSuspendingAnything`
+      `origin == null` 时不推（子 Agent 那一层），`ChatPipelineTest#theAskRegistersAndAnnouncesWithoutSuspendingAnything`
       断言那一支不产生任何推。
       证据：同一条用例（`oc_1|sendEmail|to=张三|ap-1|pending`）。
 - [x] **principal 是发起人不是审批人**：A（u-mailer）发起、approver-1 批准，

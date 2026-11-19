@@ -106,6 +106,12 @@ public class JdbcExecAllowlist {
         }
         Set<String> patterns = new LinkedHashSet<>();
         for (String segment : ExecPolicy.segments(plan.command())) {
+            // 解释器内联求值与 heredoc 不持久化（照 OpenClaw 三态约束 2）：内联求值落下来的
+            // pattern 是解释器名本身，heredoc 落下来的是 `cat`——下一次换个内容同样命中，
+            // 那是"放行一切"，不是"放行这一条"。
+            if (ExecPolicy.inlineEval(segment) || ExecPolicy.heredoc(segment)) {
+                return Optional.empty();
+            }
             Optional<String> pattern = ExecPolicy.patternOf(segment);
             if (pattern.isEmpty()) {
                 return Optional.empty();

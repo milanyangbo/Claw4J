@@ -202,8 +202,8 @@ public class RagAutoConfiguration {
      * （{@code tools.jackson}）提供 bean，Jackson 2 的 {@link ObjectMapper} 已经没有 bean 了
      * （它只在 classpath 上，随 spring-ai 传递进来）。写成 bean 方法参数的话，重排开着的部署
      * 一律启动失败并报「required a bean of type ObjectMapper that could not be found」。
-     * 本模块另外四处用 Jackson 2 的地方（{@code SessionGoalJson}、{@code CallFingerprint}、
-     * {@code PrincipalSnapshot}、{@code JdbcInboundStore}）都是各自 {@code new}，跟着它们走，
+     * 本模块另外四处用 Jackson 2 的地方（{@code SessionGoalJson}、{@code ToolCallAudit} 的参数指纹、
+     * {@code JdbcApprovals}、{@code JdbcInboundStore}）都是各自 {@code new}，跟着它们走，
      * 而不是给框架已经不再提供的东西在我们这边复活一颗 bean（票 01）。
      *
      * @param model       模型配置，取通义的凭据

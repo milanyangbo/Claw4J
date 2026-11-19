@@ -1,12 +1,21 @@
 package io.github.claw4j.agent.audit;
 
-import io.github.claw4j.agent.approval.CallFingerprint;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -22,14 +31,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * 什么时候）。同一个事实写两遍，第一个代价是「今天有几条被拒」要 union 两张表，第二个代价是两张表
  * 迟早对不上。
  *
- * <p>只写元数据：参数原文、结果、异常消息都不进来。指纹用 {@link CallFingerprint}，与审批那一侧
- * 同一个函数，于是「这次执行是哪次批准的」能直接对上，而参数本身不进库。
+ * <p>只写元数据：参数原文、结果、异常消息都不进来。指纹用 {@link #digest}——审批那一侧算的也是
+ * 这个函数，于是「这次执行是哪次批准的」能直接对上，而参数本身不进库。
  *
  * <p>唯一一处靠进程内状态的地方：{@link #granted} 把刚兑现的那条批准记下来，等执行那一下取走。
- * 兑现发生在 Advisor 里、执行发生在工具回调里，两处拿不到同一份上下文。代价写在字段上：只在单进程内
+ * 兑现发生在工具回调里、执行也在同一次调用里，但两处拿不到同一份上下文。代价写在字段上：只在单进程内
  * 成立、兑现了没执行会留下一个不会被取走的条目、键里带 runId + 工具名 + 指纹三样。
  */
 public class ToolCallAudit {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /**
      * 兑现与执行之间的那条线能活多久。取十分钟，与默认的审批有效期同一个量级。
@@ -197,11 +208,134 @@ public class ToolCallAudit {
     }
 
     /**
-     * 参数指纹，与审批那条同一个函数。参数还没收全（流式下被拦在授权那一道）时为空——
+     * 参数指纹：{@code sha256(工具名 + 规范化参数)}。
+     *
+     * <p>它是<b>唯一</b>一份：审批拿它当"一次具体调用"的键，审计拿它当"本次执行是哪次批准"的配对键。
+     * 两处各写一份的话，键长得一样但算出来不同，配不上而且不报错——那正是这条链最坏的失败形态。
+     *
+     * <p>规范化是必需的：模型每次生成的参数顺序不保证一样（{@code {"a":1,"b":2}} 与
+     * {@code {"b":2,"a":1}} 是同一次调用）。不排序的话，换个字段顺序就得到新指纹，等于让人重新批
+     * 一遍同一件事。递归排序而不只顶层，因为嵌套对象才是常态。数字按
+     * {@link java.math.BigDecimal#stripTrailingZeros()} 归一：{@code 1} / {@code 1.0} / {@code 1.00}
+     * 在 JSON 里是同一个数。
+     *
+     * <p>不含 {@code runId}、不含序号：批准要跨执行复用（与幂等键口径相反）。把 {@code runId}
+     * 混进来，跨任务复用批准就悄悄没了。
+     *
+     * @param toolName 工具名
+     * @param argsJson 模型给的参数原文
+     * @return 空表示参数还不成一个 JSON 对象（流式下参数分片到达，半截指纹不能用来比对）
+     */
+    public static Optional<String> digest(String toolName, String argsJson) {
+        if (toolName == null || toolName.isBlank()) {
+            return Optional.empty();
+        }
+        return canonicalArgs(argsJson).map(args -> sha256(toolName + '\n' + args));
+    }
+
+    /**
+     * 参数指纹，与审批那条同一个函数。参数还没收全时为空——
      * 那时连"这一次是什么"都还说不清，记一个算出来的半截指纹比留空更糟。
      */
     static String fingerprint(String toolName, String argsJson) {
-        return CallFingerprint.of(toolName, argsJson).orElse(null);
+        return digest(toolName, argsJson).orElse(null);
+    }
+
+    /**
+     * 规范化参数：对象按 key 递归排序、数字归一、空白去掉。
+     *
+     * <p>空参数与 null 参数都归一成 {@code {}}：模型不给参数时写哪一种都不该影响指纹。
+     *
+     * @param argumentsJson 参数原文，可为 null
+     * @return 空表示参数不是一段完整的 JSON 对象
+     */
+    public static Optional<String> canonicalArgs(String argumentsJson) {
+        String text = argumentsJson == null ? "" : argumentsJson.strip();
+        if (text.isEmpty()) {
+            return Optional.of("{}");
+        }
+        JsonNode parsed;
+        try {
+            parsed = MAPPER.readTree(text);
+        }
+        catch (Exception notJsonYet) {
+            // 流式下的常态：参数还在路上。不是错误，所以不抛、不打日志。
+            return Optional.empty();
+        }
+        if (parsed == null || parsed.isMissingNode()) {
+            return Optional.empty();
+        }
+        return Optional.of(canonical(parsed));
+    }
+
+    private static String canonical(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return "null";
+        }
+        if (node.isObject()) {
+            List<String> names = new ArrayList<>();
+            node.fieldNames().forEachRemaining(names::add);
+            Collections.sort(names);
+            StringBuilder text = new StringBuilder("{");
+            for (String name : names) {
+                if (text.length() > 1) {
+                    text.append(',');
+                }
+                text.append(quoted(name)).append(':').append(canonical(node.get(name)));
+            }
+            return text.append('}').toString();
+        }
+        if (node.isArray()) {
+            StringBuilder text = new StringBuilder("[");
+            for (JsonNode child : node) {
+                if (text.length() > 1) {
+                    text.append(',');
+                }
+                text.append(canonical(child));
+            }
+            return text.append(']').toString();
+        }
+        if (node.isNumber()) {
+            return node.decimalValue().stripTrailingZeros().toPlainString();
+        }
+        if (node.isTextual()) {
+            return quoted(node.textValue());
+        }
+        return node.toString();
+    }
+
+    /** JSON 字符串的引号与转义。手写而不是再过一次 Jackson：过一遍会把 key 顺序又交回给它。 */
+    private static String quoted(String value) {
+        StringBuilder text = new StringBuilder("\"");
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            switch (ch) {
+                case '"' -> text.append("\\\"");
+                case '\\' -> text.append("\\\\");
+                case '\n' -> text.append("\\n");
+                case '\r' -> text.append("\\r");
+                case '\t' -> text.append("\\t");
+                default -> {
+                    if (ch < 0x20) {
+                        text.append(String.format("\\u%04x", (int) ch));
+                    } else {
+                        text.append(ch);
+                    }
+                }
+            }
+        }
+        return text.append('"').toString();
+    }
+
+    private static String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        }
+        catch (NoSuchAlgorithmException impossible) {
+            // 每个 JRE 都必须有 SHA-256；没有的话整个审批链都不该继续。
+            throw new IllegalStateException("JRE 不支持 SHA-256", impossible);
+        }
     }
 
     private static boolean isBlank(String value) {

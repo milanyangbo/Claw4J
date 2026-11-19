@@ -9,10 +9,10 @@ import java.util.Objects;
  *
  * <p><b>为什么是一个端口而不是直接调审批服务</b>：审批设施住在 agent 模块（它要落库、要发卡片），
  * exec 在能力模块，依赖方向是 agent → capability，反过来引就是环。所以这里只留三个动作，
- * agent 侧实现它、把活转给 {@code ApprovalGate}。
+ * agent 侧实现它、把活转给 agent 侧的 {@code Approvals}。
  *
  * <p><b>没有实现时用 {@link #denyAll()}</b>：需要人批的命令这一轮拿不到结论，于是按
- * {@code askFallback} 处置（默认拒）。这与 {@code ApprovalGate#denyAll()} 同一个取向——
+ * {@code askFallback} 处置（默认拒）。这与审批那边"没有设施就没人能批"同一个取向——
  * "这个部署没开审批"的后果必须是卡住。
  *
  * <p>每个动作都拿 {@link Request}：判定需要命令、目录与拆好的段，三者缺一样，"记住这条"就落不准。

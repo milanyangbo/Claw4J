@@ -1,6 +1,6 @@
 package io.github.claw4j.agent.session;
 
-import io.github.claw4j.agent.approval.CallFingerprint;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.GoalTools;
@@ -143,7 +143,7 @@ class ToolGovernanceTest {
     @DisplayName("兑现过的批准只落在它自己那一轮的执行事件上，而且只落一次")
     void aGrantLandsOnlyOnItsOwnExecution() {
         String args = "{\"to\":\"zhang@example.com\"}";
-        String digest = CallFingerprint.of("sendEmail", args).orElseThrow();
+        String digest = ToolCallAudit.digest("sendEmail", args).orElseThrow();
 
         audit.granted(RUN, "sendEmail", digest, "approval-7");
         audit.toolFinished(scope(), "sendEmail", args, null);
