@@ -35,13 +35,20 @@ Subagent 的 name + description，十份流程说明不会常驻在父的提示�
 "父越不过的界，派个专职 Agent 就过去了"正是这条路。
 而且它的 `ChatClient.Builder` 由外部传入，用 Spring 注入那份就等于把调用预算退回 40/150
 （ADR-0008 那条"换了 builder 会静默退回默认值"的坑）。
-只借它的 `MarkdownParser` 与 front matter 字段名，执行器自己写。
+只借它的 front matter **字段名**（`name` / `description` / `tools` / `disallowedTools`），
+解析与执行器都自己写。**2026-11-19 更正**：这一句原来写的是"借它的 `MarkdownParser`"，
+实际没借——它逐行找 `key: value`，表达不了我们要的那几种写法（理由在
+`io.github.claw4j.markdown.FrontMatter` 的类注释里）。同日核过 0.13.0 的 `SubagentExecutor`：
+签名仍是 `execute(TaskCall, SubagentDefinition)`、**没有 `ToolContext`**，
+所以上面否掉它的那条理由没有过期。
 
 **子链上挂整条父链（含记忆与脱敏）**
 否决。记忆 Advisor 会把子的中间过程写进会话——刚从正门隔离掉的东西从侧门漏回去，
 而且落库的是"子问了什么"这种没人会去看的内容。脱敏在父链出站前还会做一次，
 子在中间打码只会让它认不出自己查到的值（模型要靠原始值判断是哪一单）。
-子链只挂 `AuthorizationAdvisor`。
+子链只挂那道鉴权。**2026-11-19 补记**：`AuthorizationAdvisor` 已在 ADR-0030 阶段 4（票 04）整条删掉，
+子链现在**一个 Advisor 都不挂**——身份经 prompt 的 `ToolContext` 传下去，收窄与审批都在被调到的那一层判
+（`SubagentRunner` 的类注释与此处同源）。
 
 **把身份放进 ThreadLocal 传下去**
 否决。`ChatClientAgentPort` 那条注释已经记过一次：ThreadLocal 在"流式 + 换线程"下会掉，
