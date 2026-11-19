@@ -164,7 +164,7 @@ _Avoid_: conversationId、userId、sessionId（它是另一个东西）
 存在 `<claw4j.memory.directory>/<每人一层>/` 下的 Markdown 里，换会话、重启都还在。
 与会话记忆是两条轴，不能互替：会话记忆记的是"这一段对话发生了什么"（经历，会压缩、会随段结束），
 长期记忆记的是"这个人是谁"（事实，压缩碰不到它）。它落盘是明文，而且不受工具清单管——
-注入发生在提示词那一层（缺口记在 `.scratch/m8-agent-quality/issues/A09-long-term-memory.md`）。
+注入发生在提示词那一层（缺口记在 `.scratch/m8-agent-quality/issues/A13-long-term-memory.md`）。
 _Avoid_: 用户画像（那是部署侧的工具档位）、知识库（那是 RAG，按文档检索，不是按人积累）
 
 **Principal**:

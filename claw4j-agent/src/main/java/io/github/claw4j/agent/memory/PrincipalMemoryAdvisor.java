@@ -35,7 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p><b>它不在策略管线里</b>：注入发生在 prompt 层（库的机制就是这样），所以
  * {@code toolsBySender}、沙箱 {@code bundle-mcp}、画像过滤都管不到这 6 个工具。这不是疏忽，
- * 是本票记下的缺口（见 {@code .scratch/m8-agent-quality/issues/A09-long-term-memory.md}）：
+ * 是本票记下的缺口（见 {@code .scratch/m8-agent-quality/issues/A13-long-term-memory.md}）：
  * 要管得住，得先让请求上下文带上"本轮允许的工具名"，再改成求交集，那是改公开契约。
  */
 public final class PrincipalMemoryAdvisor implements BaseAdvisor {

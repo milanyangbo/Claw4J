@@ -1,4 +1,8 @@
-# A09 · 长期记忆：接库的 `AutoMemoryToolsAdvisor`，按人一个目录
+# A13 · 长期记忆：接库的 `AutoMemoryToolsAdvisor`，按人一个目录
+
+**编号说明：** 这张票原先是 `A09`，与 `m8-agent-quality/spec.md` 里给失败诊断预留的
+`A09-diagnosable-failure.md` 撞了号（ADR-0019 的 A06–A12 已各有所指，A11/A12 在 M9）。
+2026-11-19 改成 A13——跨批次唯一、不复用，见 `AGENTS.md` 的编号口径。
 
 **Status:** resolved（2026-11-19）
 **Blocked by:** 无。

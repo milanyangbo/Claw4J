@@ -148,7 +148,7 @@ public class MemoryAutoConfiguration {
         catch (IOException failure) {
             throw new UncheckedIOException("建不出长期记忆目录：" + root, failure);
         }
-        log.info("长期记忆已启用：{}（每人一个子目录，模型自己决定读写；落盘是明文，见 A09 的缺口）",
+        log.info("长期记忆已启用：{}（每人一个子目录，模型自己决定读写；落盘是明文，见 A13 的缺口）",
                 root);
         return root;
     }
