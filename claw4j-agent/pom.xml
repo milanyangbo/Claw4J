@@ -98,6 +98,20 @@
             <artifactId>spring-ai-tool-search-advisor</artifactId>
         </dependency>
         <!--
+          工具检索的 lucene 那一档（claw4j.advisor.tool-search.index=lucene）。
+          spring-ai-tool-search-tool 把 lucene 声明成 optional，所以它不传递；不写这两条时
+          LuceneToolIndex 能编译通过、一跑就 NoClassDefFoundError。
+          analysis-common 提供它构造里写死的 StandardAnalyzer，core 是倒排索引本体。
+        -->
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-analysis-common</artifactId>
+        </dependency>
+        <!--
           主模型供应商（ADR-0006）。故意用纯模型包而不是 starter：
           starter 带来的自动配置条件是 spring.ai.model.chat=deepseek 且 matchIfMissing=true，
           跟 api key 无关，缺 key 时照样激活并抛异常。这里由 ModelConfiguration 自己按

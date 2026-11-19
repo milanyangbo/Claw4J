@@ -35,10 +35,10 @@ public class SessionCleanup {
      *
      * <p>{@code mode: warn} 下这一趟一行都不删，只算并记日志与指标。这是本仓库的默认档位，
      * 比 OpenClaw 的 {@code enforce} 保守，原因见 {@link SessionMaintenanceProperties}。
-     * 要确认删没删看 {@code claw4j.session.maintenance.pruned}，
+     * 要确认删没删看 {@code claw4j.advisor.session.maintenance.pruned}，
      * 要确认跑没跑看 {@code …prunable} 与 {@code …failures}。
      */
-    @Scheduled(fixedDelayString = "${claw4j.session.cleanup-interval:PT1H}")
+    @Scheduled(fixedDelayString = "${claw4j.advisor.session.cleanup-interval:PT1H}")
     public void sweep() {
         maintenance.sweep(Instant.now());
     }

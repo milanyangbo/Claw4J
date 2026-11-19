@@ -33,7 +33,7 @@ import java.time.Duration;
  *                      {@code PT0S} 会让 {@code fixedDelay} 变成 0，清理任务退化成热循环打库。
  *                      同 {@code CacheProperties#cleanupInterval}
  */
-@ConfigurationProperties("claw4j.session")
+@ConfigurationProperties("claw4j.advisor.session")
 public record SessionMemoryProperties(String schema, int poolSize,
                                       int contextWindow, double triggerRatio, int eventsToKeep,
                                       Duration cleanupInterval) {
@@ -51,7 +51,7 @@ public record SessionMemoryProperties(String schema, int poolSize,
     /**
      * 保留窗口的下限。{@code RecursiveSummarizationCompactionStrategy} 的 {@code overlapSize}
      * 默认 2 且必须小于保留条数，所以配成 1 或 2 会让 {@code build()} 抛异常。
-     * 在这里兜住，报错说的是"claw4j.session.events-to-keep 太小"，而不是框架那句
+     * 在这里兜住，报错说的是"claw4j.advisor.session.events-to-keep 太小"，而不是框架那句
      * "overlapSize (2) must be less than maxEventsToKeep (2)"。
      */
     public static final int MIN_EVENTS_TO_KEEP = 3;
@@ -72,7 +72,7 @@ public record SessionMemoryProperties(String schema, int poolSize,
             cleanupInterval = DEFAULT_CLEANUP_INTERVAL;
         } else if (cleanupInterval.isNegative() || cleanupInterval.isZero()) {
             throw new IllegalArgumentException(
-                    "claw4j.session.cleanup-interval 必须为正：" + cleanupInterval
+                    "claw4j.advisor.session.cleanup-interval 必须为正：" + cleanupInterval
                             + "。它由 @Scheduled 直接读取原文，归一回默认只会让调度器与配置对不上");
         }
     }

@@ -3,6 +3,9 @@ package io.github.claw4j.agent;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.tool.toolsearch.index.lucene.LuceneToolIndex;
+import org.springframework.ai.tool.toolsearch.index.vectorstore.VectorToolIndex;
+import org.springframework.ai.vectorstore.VectorStore;
 
 import java.util.Objects;
 
@@ -64,6 +67,42 @@ public final class ToolSearch {
             + "也可以先检索（两件事不冲突，先看清手上有什么再问更准）。\n"
             + "检索时**用一句自然语言说清你要什么能力**（例如「帮我找之前聊过的内容」「查上周的销售成交额」），"
             + "不用自己拆关键词——中文和英文它都认。\n";
+
+    /**
+     * 按配置建索引。三种实现的差别只在"怎么把 query 变成候选"，见 {@link ToolSearchProperties.Index}。
+     *
+     * <p>选 {@code vector} 而容器里没有 {@code VectorStore} 时**在这里就失败**，不悄悄回落到正则：
+     * 回落之后日志上一切正常，而"我明明配了向量检索"这个判断会一直错下去，错到有人拿它做线上决定。
+     *
+     * @param properties 检索配置，必填
+     * @param vectorStore 容器里的向量库，可能为 {@code null}
+     * @return 索引
+     * @throws IllegalStateException {@code index=vector} 但没有 {@code VectorStore}
+     */
+    public static ToolIndex index(ToolSearchProperties properties, VectorStore vectorStore) {
+        Objects.requireNonNull(properties, "properties");
+        return switch (properties.index()) {
+            case REGEX -> new ChineseToolIndex();
+            case LUCENE -> new LuceneToolIndex(properties.lucene().minScore());
+            case VECTOR -> new VectorToolIndex(requireVectorStore(vectorStore));
+        };
+    }
+
+    /**
+     * 向量索引要的那份依赖。缺它时把"缺什么、怎么补"写进异常：这句话是排查的唯一线索。
+     *
+     * @param vectorStore 容器里的向量库，可能为 {@code null}
+     * @return 同一个向量库
+     * @throws IllegalStateException 为 {@code null}
+     */
+    private static VectorStore requireVectorStore(VectorStore vectorStore) {
+        if (vectorStore == null) {
+            throw new IllegalStateException("claw4j.advisor.tool-search.index=vector，但容器里没有"
+                    + " VectorStore。要么配 spring.ai.vectorstore.pgvector（还需要 EmbeddingModel 与向量表），"
+                    + "要么自己提供一个 VectorStore bean，要么把 index 改回 regex。");
+        }
+        return vectorStore;
+    }
 
     private ToolSearch() {
     }

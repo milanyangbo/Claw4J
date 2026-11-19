@@ -43,7 +43,7 @@ public final class JdbcCrossSessionEvents implements CrossSessionEvents {
      * 列清单与框架 {@code SELECT_EVENTS_BASE} 一字不差：行映射靠这些名字取值。
      *
      * <p>表名是拼出来的（{@code %s} 来自 {@link SessionSchema#qualifier}）：schema 可配
-     * （{@code claw4j.session.schema}），写死 {@code claw4j_session} 的话，改配之后这条 SQL
+     * （{@code claw4j.advisor.session.schema}），写死 {@code claw4j_session} 的话，改配之后这条 SQL
      * 会报 {@code BadSqlGrammarException}，而那一档的异常被降级成"没找到"。
      */
     private static final String SELECT = """
@@ -95,7 +95,7 @@ public final class JdbcCrossSessionEvents implements CrossSessionEvents {
      * 只有真 Postgres 能判，替身判不了。
      *
      * @param jdbc   JDBC 句柄，走主连接池
-     * @param schema 会话表所在的 schema（{@code claw4j.session.schema}）。非法标识符在构造时
+     * @param schema 会话表所在的 schema（{@code claw4j.advisor.session.schema}）。非法标识符在构造时
      *               就抛，不留到第一条 SQL——那时候它会被降级成"没找到"
      */
     public JdbcCrossSessionEvents(JdbcTemplate jdbc, String schema) {

@@ -107,6 +107,11 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 还可以按模型（`byProvider`）与发送者（`toolsBySender`）继续往下减。
 **看不见的工具不在清单里**，模型不会"先计划再撞墙"，也不会出现"我没有权限"这种话术。
 
+模型默认只看得见 `toolSearchTool` 一个工具，先搜一次才拿得到具体工具。搜得准不准由
+`claw4j.advisor.tool-search.index` 决定：`regex`（默认，中文整句能命中）、`lucene`（全文打分，
+中文按字切）、`vector`（语义召回，要求容器里有 `VectorStore`，没有就启动失败）。三档只影响
+"搜到什么"，**不放宽任何一层可见性**——索引里只有本来就在清单里的工具。
+
 **③ 哪些要人批。** 两类，互相独立：
 
 - **命令**：`claw4j.tools.exec.security` × `ask`。默认 `full` + `off`，一条都不问；
@@ -124,7 +129,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 - `claw4j.tools.sessions.visibility` 默认是 `all`，也就是 `recall_session` 能翻到别人的会话；
   改成 `self`。这是它的默认值，不是 bug。
 - 会话按「人 + 通道 + 对话 + 段」落库：同一个人换通道、换对话就是另一段记忆。
-  段**默认不会自己结束**（`claw4j.session.reset.mode: none`，靠上下文压缩管长度）；要按天或空闲切段，
+  段**默认不会自己结束**（`claw4j.advisor.session.reset.mode: none`，靠上下文压缩管长度）；要按天或空闲切段，
   配成 `daily-and-idle`（默认 4 点换天、空闲 120 分钟），切了之后记忆与额度从零开始。
 
 ## 扩展

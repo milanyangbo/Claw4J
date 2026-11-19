@@ -25,7 +25,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 
 /**
- * 长期记忆的装配：配了 {@code claw4j.memory.directory} 才有这一层，没配就没有。
+ * 长期记忆的装配：配了 {@code claw4j.advisor.memory.directory} 才有这一层，没配就没有。
  *
  * <p>与 {@code claw4j.skills.directory} / {@code claw4j.subagents.directory} 同一个口径——
  * <b>不给默认目录</b>。给一个默认值等于默认打开这一层：记忆会落盘、会跨会话累积，而"我没想到它会
@@ -40,7 +40,7 @@ import java.nio.file.attribute.PosixFilePermissions;
  */
 @AutoConfiguration(afterName = "io.github.claw4j.agent.AgentAutoConfiguration")
 @ConditionalOnClass(AutoMemoryToolsAdvisor.class)
-@ConditionalOnProperty(prefix = "claw4j.memory", name = "directory")
+@ConditionalOnProperty(prefix = "claw4j.advisor.memory", name = "directory")
 @EnableConfigurationProperties(MemoryProperties.class)
 public class MemoryAutoConfiguration {
 
@@ -71,7 +71,7 @@ public class MemoryAutoConfiguration {
      * 记忆整理 Advisor：到点整理那半边。
      *
      * <p>与上面那份同一个根目录、同一个 order 段：{@code before} 空着，只挂 {@code after}。
-     * 关掉整理（{@code claw4j.memory.dream=false}）时给库的 {@code manualOnly}——
+     * 关掉整理（{@code claw4j.advisor.memory.dream=false}）时给库的 {@code manualOnly}——
      * 也就是这条路上什么都不发生，而不是"我们自己写一个空实现"。
      *
      * @param properties 记忆的可调项

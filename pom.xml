@@ -42,6 +42,11 @@
         <spring-ai.version>2.0.2</spring-ai.version>
         <spring-ai-agent-utils.version>0.13.0</spring-ai-agent-utils.version>
         <spring-ai-session.version>0.10.0</spring-ai-session.version>
+        <!-- 工具检索的 lucene 那一档（claw4j.advisor.tool-search.index=lucene）。
+             spring-ai-tool-search-tool 的 pom 把 lucene 声明成 optional，所以它不传递，
+             要自己写版本。9.12.3 就是该包编译时用的那一版，升它要先确认
+             LuceneToolIndex 仍然认 StandardAnalyzer 的构造。 -->
+        <lucene.version>9.12.3</lucene.version>
 
         <!-- Boot 4.1.2 的 BOM 指向 testcontainers 2.0.5，但当前镜像源里这个 artifactId
              只同步到 1.21.4，2.x 拉不下来（构建会红）。这里覆盖成 1.21.4，等源同步后
@@ -152,6 +157,19 @@
                 <groupId>com.tngtech.archunit</groupId>
                 <artifactId>archunit-junit5</artifactId>
                 <version>${archunit.version}</version>
+            </dependency>
+            <!-- 工具检索的 lucene 那一档：LuceneToolIndex 本身在 spring-ai-tool-search-tool 里，
+                 但它依赖的 lucene 是 optional、不传递。analysis-common 提供它写死的
+                 StandardAnalyzer，core 提供倒排索引本体。 -->
+            <dependency>
+                <groupId>org.apache.lucene</groupId>
+                <artifactId>lucene-core</artifactId>
+                <version>${lucene.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.lucene</groupId>
+                <artifactId>lucene-analysis-common</artifactId>
+                <version>${lucene.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

@@ -106,20 +106,20 @@ public final class SessionMaintenance {
     private static final String CRON_MARKER = "%:cron:%";
 
     /** 本来会被清掉的数量。它是 {@code warn} 档位唯一能看得见的东西。 */
-    public static final String PRUNABLE = "claw4j.session.maintenance.prunable";
+    public static final String PRUNABLE = "claw4j.advisor.session.maintenance.prunable";
 
     /** 真删掉的累计数量。 */
-    public static final String PRUNED = "claw4j.session.maintenance.pruned";
+    public static final String PRUNED = "claw4j.advisor.session.maintenance.pruned";
 
     /** 清理跑不成（库连不上、表没迁）的次数。它不为 0 就说明这些天一行都没清。 */
-    public static final String FAILURES = "claw4j.session.maintenance.failures";
+    public static final String FAILURES = "claw4j.advisor.session.maintenance.failures";
 
     private final JdbcTemplate jdbc;
     private final SessionMaintenanceProperties properties;
     private final ScheduleProperties schedule;
     private final MeterRegistry registry;
 
-    /** 八条语句的 schema 前缀已在构造时展开：{@code claw4j.session.schema} 改了它们跟着改。 */
+    /** 八条语句的 schema 前缀已在构造时展开：{@code claw4j.advisor.session.schema} 改了它们跟着改。 */
     private final String staleSegments;
     private final String deleteStaleSegments;
     private final String staleConversations;
@@ -143,7 +143,7 @@ public final class SessionMaintenance {
      * @param registry   Micrometer 注册表，不能为 null
      * @param schema     会话表所在的 schema。本类在主连接池上跑（{@code search_path} 里没有会话
      *                   schema），只能写全限定名，所以落哪个 schema 必须由这个参数决定。
-     *                   与框架那一路同源，两边都读 {@code claw4j.session.schema}，
+     *                   与框架那一路同源，两边都读 {@code claw4j.advisor.session.schema}，
      *                   否则改配之后框架往新 schema 写、这里清旧的，看起来全绿而一行都没清对
      */
     public SessionMaintenance(JdbcTemplate jdbc, SessionMaintenanceProperties properties,
@@ -193,7 +193,7 @@ public final class SessionMaintenance {
             if (!properties.enforces()) {
                 if (segments + conversations + overLimitRows + cron > 0) {
                     log.info("会话清理（warn，未执行）：段 {} / 桶 {} / 超限 {} / cron {}。"
-                            + "设 claw4j.session.maintenance.mode=enforce 才会真删", segments, conversations,
+                            + "设 claw4j.advisor.session.maintenance.mode=enforce 才会真删", segments, conversations,
                             overLimitRows, cron);
                 }
                 return new Report(segments, conversations, overLimitRows, cron, false);

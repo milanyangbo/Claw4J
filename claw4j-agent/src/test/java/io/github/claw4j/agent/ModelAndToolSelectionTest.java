@@ -9,6 +9,7 @@ import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
@@ -20,6 +21,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.document.Document;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.retry.NonTransientAiException;
 import org.springframework.ai.retry.TransientAiException;
@@ -38,6 +40,11 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.tool.toolsearch.index.vectorstore.VectorToolIndex;
+import org.springframework.ai.tool.toolsearch.index.lucene.LuceneToolIndex;
 import org.springframework.ai.tool.toolsearch.ToolReference;
 import org.springframework.ai.tool.toolsearch.ToolSearchRequest;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -555,9 +562,53 @@ class ModelAndToolSelectionTest {
 
         new ApplicationContextRunner()
                 .withUserConfiguration(BindingOnly.class)
-                .withPropertyValues("claw4j.tool-search.max-results=3")
+                .withPropertyValues("claw4j.advisor.tool-search.max-results=3")
                 .run(context -> assertThat(context.getBean(ToolSearchProperties.class).maxResults())
                         .isEqualTo(3));
+    }
+
+    /**
+     * 索引三档：配了哪个就真的用哪个。
+     *
+     * <p>验的是"选谁"，不是"搜得准不准"——后者要真语料，属于评测。
+     */
+    @Test
+    @DisplayName("index 三档各建各的索引；vector 缺 VectorStore 时启动就失败，不回落")
+    void indexChoiceIsHonoured() {
+        assertThat(ToolSearch.index(ToolSearchProperties.defaults(), null))
+                .as("不写 index 时是中文那一版")
+                .isInstanceOf(ChineseToolIndex.class);
+
+        ToolSearchProperties lucene = new ToolSearchProperties(
+                ToolSearchProperties.Index.LUCENE, 5, new ToolSearchProperties.Lucene(0.6f));
+        assertThat(ToolSearch.index(lucene, null))
+                .as("lucene 那一档不再需要容器里有什么")
+                .isInstanceOf(LuceneToolIndex.class);
+
+        ToolSearchProperties vector = new ToolSearchProperties(
+                ToolSearchProperties.Index.VECTOR, 5, null);
+        assertThatThrownBy(() -> ToolSearch.index(vector, null))
+                .isInstanceOf(IllegalStateException.class)
+                .as("回落成 regex 会让\"我明明配了向量\"变成一个查不出来的谎")
+                .hasMessageContaining("VectorStore")
+                .hasMessageContaining("index 改回 regex");
+        assertThat(ToolSearch.index(vector, new FakeVectorStore()))
+                .isInstanceOf(VectorToolIndex.class);
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues("claw4j.advisor.tool-search.index=lucene",
+                        "claw4j.advisor.tool-search.lucene.min-score=0.6")
+                .run(context -> {
+                    ToolSearchProperties bound = context.getBean(ToolSearchProperties.class);
+                    assertThat(bound.index()).isEqualTo(ToolSearchProperties.Index.LUCENE);
+                    assertThat(bound.lucene().minScore()).isEqualTo(0.6f);
+                });
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues("claw4j.advisor.tool-search.index=bogus")
+                .run(context -> assertThat(context).as("非法取值不让它悄悄落回默认").hasFailed());
     }
 
     /**
@@ -658,7 +709,10 @@ class ModelAndToolSelectionTest {
                 .contains("不代表没有这个能力");
 
         // 七、默认 bean 真的换掉了。只改测试构造等于测的还是旧实现。
-        assertThat(new AgentAutoConfiguration().toolIndex())
+        //     "容器里没有 VectorStore" 用空工厂的 provider 表示：默认那一档不读它。
+        var noVectorStore = new DefaultListableBeanFactory()
+                .getBeanProvider(org.springframework.ai.vectorstore.VectorStore.class);
+        assertThat(new AgentAutoConfiguration().toolIndex(ToolSearchProperties.defaults(), noVectorStore))
                 .as("装配出来的索引必须是新实现")
                 .isInstanceOf(ChineseToolIndex.class);
 
@@ -813,6 +867,30 @@ class ModelAndToolSelectionTest {
     /** 两条规则看的是同一批类，导入一次就够。 */
     private static JavaClasses agentClasses() {
         return AgentClasses.IMPORTED;
+    }
+
+    /** 向量库的替身：这三档验的是"选了谁"，不碰写入与检索。 */
+    private static final class FakeVectorStore implements VectorStore {
+
+        @Override
+        public void add(List<Document> documents) {
+            // 不落任何东西
+        }
+
+        @Override
+        public void delete(List<String> idList) {
+            // 同上
+        }
+
+        @Override
+        public void delete(Filter.Expression filterExpression) {
+            // 同上
+        }
+
+        @Override
+        public List<Document> similaritySearch(SearchRequest request) {
+            return List.of();
+        }
     }
 
     /**

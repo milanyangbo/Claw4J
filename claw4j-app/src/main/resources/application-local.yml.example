@@ -44,17 +44,25 @@ claw4j:
   approval:
     approvers: []
 
-  # ---- 短期记忆（会话）：每一项的含义见 application.yml 的 `session:` 段 ----
-  # 这里只写本地会动到的几项；长期记忆是下面的 `memory:`。
+  # ---- 链上跑的东西：短期记忆（会话）与长期记忆 ----
+  # 键的含义见 application.yml 的 advisor: 段；这里只写本地会动到的几项。
   # 要验"换段 = 换对话"就把 reset.mode 改成 daily-and-idle；换模型改 context-window。
-  session:
-    schema: claw4j_session
-    # 私聊边界。多人可及的部署必须改成 per-channel-peer（见 application.yml 那段注释）。
-    dm-scope: main
-    group-scope: per-group
-    context-window: 65536
-    reset:
-      mode: none
+  advisor:
+    session:
+      schema: claw4j_session
+      # 私聊边界。多人可及的部署必须改成 per-channel-peer（见 application.yml 那段注释）。
+      dm-scope: main
+      group-scope: per-group
+      context-window: 65536
+      reset:
+        mode: none
+
+    # ---- 长期记忆：跨会话记住"你是谁、你偏好什么"，模型自己决定记什么 ----
+    # 放仓库外：这是本机这个人的数据，不是项目产物。写进去是明文 Markdown，每人一个子目录。
+    # dream 是后台整理（合并重复、删过时的），默认开；关掉只是不整理，读写照旧。
+    memory:
+      directory: ${user.home}/.claw4j/memory
+      dream: true
 
   # 知识库：本地有 pgvector 与 qwen key，所以打开。相对路径按启动目录解析，要从仓库根起。
   rag:
@@ -68,13 +76,6 @@ claw4j:
   # 子 Agent：目录里每份 *.md 是一个可派的对象，派活的工具叫 Task。
   subagents:
     directory: examples/subagents
-
-  # ---- 长期记忆：跨会话记住"你是谁、你偏好什么"，模型自己决定记什么 ----
-  # 放仓库外：这是本机这个人的数据，不是项目产物。写进去是明文 Markdown，每人一个子目录。
-  # dream 是后台整理（合并重复、删过时的），默认开；关掉只是不整理，读写照旧。
-  memory:
-    directory: ${user.home}/.claw4j/memory
-    dream: true
 
 
   # ---- 业务示例插件（claw4j-example-sales）：导出 querySales ----

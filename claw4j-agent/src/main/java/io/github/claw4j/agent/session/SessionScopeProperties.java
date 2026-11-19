@@ -19,7 +19,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param dmScope    私聊的分段方式，见 {@link #DM_MAIN} 等四档
  * @param groupScope 群聊的分段方式，见 {@link #GROUP_PER_GROUP} 与 {@link #DM_MAIN}
  */
-@ConfigurationProperties("claw4j.session")
+@ConfigurationProperties("claw4j.advisor.session")
 public record SessionScopeProperties(String dmScope, String groupScope) {
 
     /** 一个人的所有私聊共用一个主会话。默认，与它同值。 */

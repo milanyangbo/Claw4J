@@ -12,7 +12,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param directory 记忆根目录，每个人在它下面一个子目录
  * @param dream 要不要在后台整理记忆（库的 dream 周期）。关掉只是不整理，读写记忆照旧
  */
-@ConfigurationProperties("claw4j.memory")
+@ConfigurationProperties("claw4j.advisor.memory")
 public record MemoryProperties(String directory, @DefaultValue("true") boolean dream) {
 
     public MemoryProperties {

@@ -95,7 +95,7 @@ public final class JdbcSessionGoalStore implements SessionGoalStore {
      * 构造。
      *
      * @param jdbc 主连接池
-     * @param schema 会话表所在的 schema。从 {@code claw4j.session.schema} 取，与框架那一路同源：
+     * @param schema 会话表所在的 schema。从 {@code claw4j.advisor.session.schema} 取，与框架那一路同源：
      *     本类在主连接池上跑（{@code search_path} 里没有会话 schema），只能写全限定名，
      *     于是"落在哪个 schema"必须由构造参数决定，不能由字面量决定
      * @param registry 指标登记表；null 表示不报错次数

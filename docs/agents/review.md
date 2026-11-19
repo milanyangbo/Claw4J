@@ -28,7 +28,7 @@
 
 **同形状的还有一类：配置键。** 新增或引用一个键时，Grep 它在 `src/main` 里的读取点，数一遍
 有几个人读它。**只有一处读的键**要么是刚加还没接上，要么是其余几处写死了默认值——两种都要报。
-真事：`claw4j.session.schema` 有四个类手写全限定表名，票 05 只改了其中一处，
+真事：`claw4j.advisor.session.schema` 有四个类手写全限定表名，票 05 只改了其中一处，
 另外三处（17 个表名）仍写死 `claw4j_session`。改配之后框架往新 schema 写、它们读旧表，
 症状是"功能悄悄失效"而不是报错——**这比"全都写死"更难发现，因为它看起来已经修过了**。
 现在由 `BuildContractTest#sessionSchemaLiteralLivesInOnePlace` 自动拦着；

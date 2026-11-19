@@ -133,41 +133,58 @@ claw4j:
     # 命中时回给用户的话。别写命中了哪个词，那等于把词表告诉想绕过的人。
     # failure-response: 这条消息我没法处理，换个说法再试一次。
 
-  # ---- 一段对话的边界与长度 ----
-  session:
-    # 私聊怎么分段：
-    #   main（默认）  一个人所有私聊共用一个主会话
-    #   per-peer      按对端分，同一个人跨通道共用
-    #   per-channel-peer  按通道 + 对端分，换通道就是另一段
-    # **多人可及的部署必须改成 per-channel-peer**：否则网页里问到的数字，飞书私聊里也看得见。
-    dm-scope: main
-    # 群聊：per-group（默认）按群隔离；main 把群并进主会话。
-    group-scope: per-group
-    # 会话表放哪个 schema。五处都读这一个键（框架那一路、会话指针、会话目标、清理、召回），
-    # 所以改一处就够，但五处会一起变。
-    # schema: claw4j_session
-    # 多久清一次过期会话（后台任务）。
-    cleanup-interval: PT1H
-    # 主模型的上下文窗口（token）。用到一半就开始压缩。换模型只改这一行。
-    context-window: 65536
-    # 旧会话怎么清。
-    maintenance:
-      # enforce 真删；warn 只算不删，把"本来会删多少"打进日志与指标。
-      mode: enforce
-      # 多久没动算陈旧（不是建了多久）。
-      prune-after: 30d
-      # 会话节点数上限。多租户要按"人数 × 通道数"调大，否则到上限被赶走的是最久没动的那个。
-      max-entries: 5000
-    # 换段 = 换对话：记忆、预算、召回都从零开始。
-    reset:
-      # none（默认）不自动结束，靠压缩管长度；daily-and-idle 跨天或空闲；
-      # idle 只看空闲。三档下 /new 都有效。
-      mode: none
-      # 一天从几点算起。4 点的意思是"凌晨三点还在聊的那件事还是昨天那件"。
-      # 时区取上面的 agent.zone。
-      at-hour: 4
-      # 多久没动静算这段结束（分钟）。
-      idle-minutes: 120
+  # ---- 链上跑的东西：会话记忆、长期记忆、工具检索 ----
+  # 三个都挂在 Advisor 链上（会话记忆、长期记忆、工具循环），配置放一处便于一起调。
+  advisor:
+    session:
+      # 私聊怎么分段：
+      #   main（默认）  一个人所有私聊共用一个主会话
+      #   per-peer      按对端分，同一个人跨通道共用
+      #   per-channel-peer  按通道 + 对端分，换通道就是另一段
+      # **多人可及的部署必须改成 per-channel-peer**：否则网页里问到的数字，飞书私聊里也看得见。
+      dm-scope: main
+      # 群聊：per-group（默认）按群隔离；main 把群并进主会话。
+      group-scope: per-group
+      # 会话表放哪个 schema。五处都读这一个键（框架那一路、会话指针、会话目标、清理、召回），
+      # 所以改一处就够，但五处会一起变。
+      # schema: claw4j_session
+      # 多久清一次过期会话（后台任务）。
+      cleanup-interval: PT1H
+      # 主模型的上下文窗口（token）。用到一半就开始压缩。换模型只改这一行。
+      context-window: 65536
+      # 旧会话怎么清。
+      maintenance:
+        # enforce 真删；warn 只算不删，把"本来会删多少"打进日志与指标。
+        mode: enforce
+        # 多久没动算陈旧（不是建了多久）。
+        prune-after: 30d
+        # 会话节点数上限。多租户要按"人数 × 通道数"调大，否则到上限被赶走的是最久没动的那个。
+        max-entries: 5000
+      # 换段 = 换对话：记忆、预算、召回都从零开始。
+      reset:
+        # none（默认）不自动结束，靠压缩管长度；daily-and-idle 跨天或空闲；
+        # idle 只看空闲。三档下 /new 都有效。
+        mode: none
+        # 一天从几点算起。4 点的意思是"凌晨三点还在聊的那件事还是昨天那件"。
+        # 时区取上面的 agent.zone。
+        at-hour: 4
+        # 多久没动静算这段结束（分钟）。
+        idle-minutes: 120
+
+    # ---- 长期记忆没有默认值：`claw4j.advisor.memory.directory` 配了才打开这一层 ----
+    # 给了默认目录就等于默认打开，所以这里不写。本地那几行见 application-local.yml。
+
+    tool-search:
+      # 用哪种索引（见 README.md 的「身份与权限」，第 ② 条后面那段）：
+      #   regex   中文二元组 + 同义词表（默认）。整句不用空格也能命中
+      #   lucene  全文检索打分，中文按字切分；需要 lucene 依赖，已随包
+      #   vector  语义召回；要求容器里有 VectorStore，没有就启动失败并说缺什么
+      index: regex
+      # 一次返回几个候选（1–10）。给多了等于把省下的 token 又还回去。
+      max-results: 5
+      lucene:
+        # 命中分下限（0–1），只在 index=lucene 时生效。低于它的候选不返回。
+        min-score: 0.25
 
   # ---- 需要库的几样：审计、审批、投递、定时任务 ----
   # 关掉之后：判了不留痕、批了查不到、到点没人跑。
@@ -210,11 +227,6 @@ claw4j:
     enabled: true
     # 清理间隔（启动时清一次，之后每 500 次写入再清一次）。
     prune-interval: PT1H
-
-  # ---- 工具检索：模型不是一次拿到全部工具，而是按关键词检索 ----
-  tool-search:
-    # 一次返回几个候选（1–10）。给多了等于把省下的 token 又还回去。
-    max-results: 5
 
   # ---- 工具清单：这个部署让模型看见哪些工具 ----
   # 四档是四个独立的集合，不是"一级比一级全"：
@@ -414,15 +426,15 @@ claw4j:
 
   # ---- 靠"配了目录"打开的几层，这里不写默认值 ----
   # 给了默认目录就等于默认打开，所以只在这里列名字，怎么开见 README-adding-capabilities.md：
-  #   claw4j.skills.directory      技能
-  #   claw4j.subagents.directory   子 Agent
-  #   claw4j.rag.directory         知识库
-  #   claw4j.memory.directory      长期记忆（跨会话记住你；写进去是明文，每人一个子目录）
+  #   claw4j.skills.directory             技能
+  #   claw4j.subagents.directory          子 Agent
+  #   claw4j.rag.directory                知识库
+  #   claw4j.advisor.memory.directory     长期记忆（跨会话记住你；写进去是明文，每人一个子目录）
   #
-  # 记忆有两个并列节点，不互相嵌套：
-  #   claw4j.session.*   一段对话的范围与长度（压缩、换段、清理）
-  #   claw4j.memory.*    跨会话留下的东西：人设之外的"你是谁、你偏好什么"
-  # 长期记忆打开后模型会自己读写它；整理（claw4j.memory.dream，默认开）在后台合并重复、
+  # 两个记忆节点并列在 advisor 下，不互相嵌套：
+  #   claw4j.advisor.session.*   一段对话的范围与长度（压缩、换段、清理）
+  #   claw4j.advisor.memory.*    跨会话留下的东西：人设之外的"你是谁、你偏好什么"
+  # 长期记忆打开后模型会自己读写它；整理（claw4j.advisor.memory.dream，默认开）在后台合并重复、
   # 删掉过时的：同一人距上次满 24 小时、且又过 5 轮才跑一次。
 
 # ---- 运维面：指标单独一个端口 ----

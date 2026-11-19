@@ -214,7 +214,7 @@ class SessionMemoryTest {
         assertThatThrownBy(() -> SessionSchema.qualifier("claw4j_session; drop table ai_session"))
                 .as("分号与空格都不是标识符的一部分：这条要是放过去，拼出来的 SQL 是两条语句")
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("claw4j.session.schema");
+                .hasMessageContaining("claw4j.advisor.session.schema");
         assertThatThrownBy(() -> SessionSchema.qualifier("会话"))
                 .as("非 ASCII 标识符在 Postgres 里要加引号才能用，本仓库不给这个口子")
                 .isInstanceOf(IllegalArgumentException.class);
@@ -580,7 +580,7 @@ class SessionMemoryTest {
         assertThat(sessions.getEvents(sessionId, EventFilter.active()))
                 .as("压完事件条数必须下降，否则等于什么都没做")
                 .hasSizeLessThan(before);
-        assertThat(registry.get("claw4j.session.compaction.archived").counter().count())
+        assertThat(registry.get("claw4j.advisor.session.compaction.archived").counter().count())
                 .as("压掉几条要能看见")
                 .isGreaterThan(0);
     }
@@ -591,7 +591,7 @@ class SessionMemoryTest {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
         compactor(new MapSessionService(), registry).compactIfNeeded("http:u-never-asked");
-        assertThat(registry.find("claw4j.session.compaction.failures").counter())
+        assertThat(registry.find("claw4j.advisor.session.compaction.failures").counter())
                 .as("把时序问题记成故障，这个数从第一天起就不是 0，从此没人看它")
                 .isNull();
 
@@ -601,7 +601,7 @@ class SessionMemoryTest {
         assertThatCode(() -> compactor(broken, registry).compactIfNeeded("s-1"))
                 .as("压不成是成本问题，不是可用性问题")
                 .doesNotThrowAnyException();
-        assertThat(registry.get("claw4j.session.compaction.failures").counter().count()).isEqualTo(1);
+        assertThat(registry.get("claw4j.advisor.session.compaction.failures").counter().count()).isEqualTo(1);
     }
 
     @Test
@@ -612,7 +612,7 @@ class SessionMemoryTest {
         new ApplicationContextRunner()
                 .withUserConfiguration(MemoryOnly.class)
                 // 故意不给默认值 65536：只有真的从这一层绑上来，阈值才会是 65536
-                .withPropertyValues("claw4j.session.context-window=131072")
+                .withPropertyValues("claw4j.advisor.session.context-window=131072")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     bound.set(context.getBean(SessionMemoryProperties.class));

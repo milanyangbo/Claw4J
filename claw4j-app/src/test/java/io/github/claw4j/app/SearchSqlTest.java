@@ -625,12 +625,12 @@ class SearchSqlTest {
 
         assertThat(hits).extracting(SessionEvent::getId)
                 .as("表名写死成 claw4j_session 的话这里一条都没有，而那个空结果会被降级成「没找到」——"
-                        + "配了 claw4j.session.schema 却不生效，是本仓库最讨厌的那种「配了看起来生效」")
+                        + "配了 claw4j.advisor.session.schema 却不生效，是本仓库最讨厌的那种「配了看起来生效」")
                 .containsExactly("alt-1");
     }
 
     /**
-     * 会话指针也读 {@code claw4j.session.schema}，不是只让召回那一条读。
+     * 会话指针也读 {@code claw4j.advisor.session.schema}，不是只让召回那一条读。
      *
      * <p>防的是修了一半：只改召回而不改指针、目标、清理，比全都写死更难发现，因为它看起来
      * 已经修过了。
@@ -640,7 +640,7 @@ class SearchSqlTest {
      * 的行数，那一行才证明配了哪个 schema 就写哪个。
      */
     @Test
-    @DisplayName("会话指针跟着 claw4j.session.schema 走：写死的话它悄悄写进另一张表")
+    @DisplayName("会话指针跟着 claw4j.advisor.session.schema 走：写死的话它悄悄写进另一张表")
     void conversationPointersHonourTheConfiguredSchema() {
         jdbc.execute("drop schema if exists claw4j_alt cascade");
         jdbc.execute("create schema claw4j_alt");

@@ -27,9 +27,9 @@ public class SessionCompactor {
 
     private static final Logger log = LoggerFactory.getLogger(SessionCompactor.class);
 
-    public static final String ARCHIVED = "claw4j.session.compaction.archived";
-    public static final String TOKENS_SAVED = "claw4j.session.compaction.tokens_saved";
-    public static final String FAILURES = "claw4j.session.compaction.failures";
+    public static final String ARCHIVED = "claw4j.advisor.session.compaction.archived";
+    public static final String TOKENS_SAVED = "claw4j.advisor.session.compaction.tokens_saved";
+    public static final String FAILURES = "claw4j.advisor.session.compaction.failures";
 
     private final SessionService sessions;
     private final CompactionTrigger trigger;

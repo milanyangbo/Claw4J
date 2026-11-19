@@ -67,7 +67,7 @@ public final class SessionSchema {
         String trimmed = schema.trim();
         if (!trimmed.matches("[A-Za-z_][A-Za-z0-9_$]{0,62}")) {
             throw new IllegalArgumentException(
-                    "claw4j.session.schema 必须是合法的 Postgres 标识符（字母或下划线开头，"
+                    "claw4j.advisor.session.schema 必须是合法的 Postgres 标识符（字母或下划线开头，"
                             + "其余字母数字下划线美元符，最长 63），收到的是「" + schema + "」");
         }
         return trimmed + '.';

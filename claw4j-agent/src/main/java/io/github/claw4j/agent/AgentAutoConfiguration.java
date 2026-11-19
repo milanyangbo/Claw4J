@@ -41,6 +41,7 @@ import org.springaicommunity.agent.tools.ToolCallListeners;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -278,24 +279,27 @@ public class AgentAutoConfiguration {
     }
 
     /**
-     * 工具检索用的索引：把查询切成关键词，在工具名与描述里匹配。
+     * 工具检索用的索引：按 {@code claw4j.advisor.tool-search.index} 三选一。
      *
-     * <p>用中文那一版而不是框架的 {@code RegexToolIndex}：后者只按空白与标点切词，中文整句进去
+     * <p>默认那一档是中文版而不是框架的 {@code RegexToolIndex}：后者只按空白与标点切词，中文整句进去
      * 是一个 token，当子串匹配等于什么都不匹配。代价不止命中率——用它就得反过来要求模型自己用
      * 空格分词，等于把实现的缺陷教给模型。{@link ChineseToolIndex} 让那段提示词没有必要存在
      * （见 {@link ToolSearch#SYSTEM_SUFFIX}）。
      *
-     * <p>选它而不是向量索引 {@code VectorToolIndex}：这一版的判据是「提示词里的工具定义 token
-     * 降下来、选工具还不选错」，词面匹配已经够回答这个问题，而且不需要 embedding 调用、
-     * 不新增一张表。工具数到几百、需要 TF-IDF 与倒排索引时，要换的也只有这一个 bean，装配那边
-     * 只认 {@link ToolIndex}。
+     * <p>{@code lucene} 与 {@code vector} 是另外两条路：前者靠词频打分，后者靠语义相似度。三条路
+     * 的取舍写在 {@link ToolSearchProperties.Index} 上；这里只做选择，不替使用者猜。
      *
-     * @return 中文工具索引
+     * <p>容器里已有 {@code ToolIndex} 时整个让位：自定义实现比这三个开关更具体，
+     * 硬塞一个只会让两边的清单各说各话。
+     *
+     * @param toolSearch 检索配置
+     * @param vectorStore 向量库，只在 {@code index=vector} 时用到
+     * @return 索引
      */
     @Bean
     @ConditionalOnMissingBean(ToolIndex.class)
-    public ToolIndex toolIndex() {
-        return new ChineseToolIndex();
+    public ToolIndex toolIndex(ToolSearchProperties toolSearch, ObjectProvider<VectorStore> vectorStore) {
+        return ToolSearch.index(toolSearch, vectorStore.getIfAvailable());
     }
 
     /**

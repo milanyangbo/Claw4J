@@ -316,8 +316,8 @@ claw4j:
 | `claw4j.rag.directory` | `examples/knowledge`，`enabled: true` |
 | `claw4j.skills.directory` | `examples/skills` |
 | `claw4j.subagents.directory` | `examples/subagents` |
-| `claw4j.memory.directory` | `${user.home}/.claw4j/memory`：跨会话的长期记忆，每人一层、明文 |
-| `claw4j.session.*` | schema / 私聊与群聊边界 / 上下文窗口 / 换段策略，本地值集中在那一段 |
+| `claw4j.advisor.memory.directory` | `${user.home}/.claw4j/memory`：跨会话的长期记忆，每人一层、明文 |
+| `claw4j.advisor.session.*` | schema / 私聊与群聊边界 / 上下文窗口 / 换段策略，本地值集中在那一段 |
 
 上面这几段 yaml 是**别的部署**要加的行。用 local profile 时它们已经在文件里，启动命令行就不用再带
 `--claw4j.skills.directory=...` 这类参数。

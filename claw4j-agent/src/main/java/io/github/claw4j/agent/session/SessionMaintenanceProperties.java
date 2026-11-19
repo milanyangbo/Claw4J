@@ -6,7 +6,7 @@ import java.time.Duration;
 import java.util.Locale;
 
 /**
- * 旧会话怎么清（ADR-0026 的收尾）。键在 {@code claw4j.session.maintenance} 下。
+ * 旧会话怎么清（ADR-0026 的收尾）。键在 {@code claw4j.advisor.session.maintenance} 下。
  *
  * <p>不用 TTL：框架的 {@code spring.ai.session.time-to-live} 在建行时写死 {@code expires_at}，
  * 之后不随活动刷新，「每天都在用」与「三天前用过一次」到期一起删。判据只有一条：多久没动。
@@ -28,7 +28,7 @@ import java.util.Locale;
  * @param maxEntries   会话行数上限。默认 5000，与 OpenClaw 同值（{@code sessions.md:131}）；
  *                     单机个人助手用不到这么多，多租户按「人数 × 通道数」估
  */
-@ConfigurationProperties("claw4j.session.maintenance")
+@ConfigurationProperties("claw4j.advisor.session.maintenance")
 public record SessionMaintenanceProperties(String mode, Duration pruneAfter, Integer maxEntries) {
 
     /** 只算不删，把将要删的数量打进日志与指标。 */
@@ -47,13 +47,13 @@ public record SessionMaintenanceProperties(String mode, Duration pruneAfter, Int
             pruneAfter = DEFAULT_PRUNE_AFTER;
         } else if (pruneAfter.isNegative() || pruneAfter.isZero()) {
             throw new IllegalArgumentException(
-                    "claw4j.session.maintenance.prune-after 必须为正：" + pruneAfter
+                    "claw4j.advisor.session.maintenance.prune-after 必须为正：" + pruneAfter
                             + "。0 的意思是“所有段都过期”，第一次清理就会把会话表清空");
         }
         maxEntries = maxEntries == null ? DEFAULT_MAX_ENTRIES : maxEntries;
         if (maxEntries <= 0) {
             throw new IllegalArgumentException(
-                    "claw4j.session.maintenance.max-entries 必须为正：" + maxEntries
+                    "claw4j.advisor.session.maintenance.max-entries 必须为正：" + maxEntries
                             + "。0 的意思是“一个会话都不留”");
         }
     }
@@ -76,7 +76,7 @@ public record SessionMaintenanceProperties(String mode, Duration pruneAfter, Int
             return trimmed;
         }
         throw new IllegalArgumentException(
-                "claw4j.session.maintenance.mode 只能是 " + MODE_ENFORCE + " 或 " + MODE_WARN
+                "claw4j.advisor.session.maintenance.mode 只能是 " + MODE_ENFORCE + " 或 " + MODE_WARN
                         + "：" + mode + "。拼错不能落回任何一档——落回 warn 是一条都不删，"
                         + "落回 enforce 是拼错反而开始删数据");
     }

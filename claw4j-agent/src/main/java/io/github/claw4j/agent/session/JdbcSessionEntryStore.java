@@ -32,7 +32,7 @@ import java.util.Optional;
  * <p>表名写全限定，schema 段来自配置：本类走主连接池，它的 {@code search_path} 里没有会话
  * schema。会话那一路另开池是因为框架生成的 SQL 不带前缀；这里 SQL 全在自己手里，多开一个池
  * 不划算，而且容器里出现第二个 {@code DataSource} 会打掉一整套自动配置。schema 名必须与
- * 框架那一路同源，两边都读 {@code claw4j.session.schema}。
+ * 框架那一路同源，两边都读 {@code claw4j.advisor.session.schema}。
  */
 public final class JdbcSessionEntryStore implements SessionEntryStore {
 
@@ -162,7 +162,7 @@ public final class JdbcSessionEntryStore implements SessionEntryStore {
 
     /**
      * @param jdbc   JDBC 句柄，走主连接池
-     * @param schema 会话表所在的 schema，与框架那一路同源（{@code claw4j.session.schema}）。
+     * @param schema 会话表所在的 schema，与框架那一路同源（{@code claw4j.advisor.session.schema}）。
      *               本类在主连接池上跑，只能写全限定名，所以它必须由参数决定
      */
     public JdbcSessionEntryStore(JdbcTemplate jdbc, String schema) {

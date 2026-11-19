@@ -194,7 +194,7 @@ class BuildContractTest {
     /**
      * 会话 schema 的字面量只许出现在 {@link io.github.claw4j.agent.session.SessionSchema} 里。
      *
-     * <p>{@code claw4j.session.schema} 是可配的，而跑在主连接池上的手写 SQL（会话指针、会话目标、
+     * <p>{@code claw4j.advisor.session.schema} 是可配的，而跑在主连接池上的手写 SQL（会话指针、会话目标、
      * 清理任务、跨会话召回）不能靠连接的 {@code search_path}，只能写全限定表名。每写死一处，
      * 改配之后就是框架往新 schema 写、这一处读旧的，而症状不是报错，是指针永远换不出来、
      * 目标读不到、一行都没清出去。
@@ -252,32 +252,32 @@ class BuildContractTest {
     }
 
     @Test
-    @DisplayName("窗口写在 application.yml 的 claw4j.session 下：换主模型的人改这一行，不是去翻代码")
+    @DisplayName("窗口写在 application.yml 的 claw4j.advisor.session 下：换主模型的人改这一行，不是去翻代码")
     void applicationYmlDeclaresTheContextWindow() throws IOException {
         var sources = new YamlPropertySourceLoader()
                 .load("application.yml", new ClassPathResource("application.yml"));
 
         assertThat(sources).as("application.yml 得能解析出来").isNotEmpty();
-        // 键的层级也在断言里：写到 claw4j.session 之外就绑不到 SessionMemoryProperties，
+        // 键的层级也在断言里：写到 claw4j.advisor.session 之外就绑不到 SessionMemoryProperties，
         // 而那种错在运行期只表现为"配置写了、看起来配过了、其实没生效"。
-        assertThat(sources.getFirst().getProperty("claw4j.session.context-window"))
+        assertThat(sources.getFirst().getProperty("claw4j.advisor.session.context-window"))
                 .as("这一行是换模型时唯一能被搜到的地方；删掉它不会有别的用例变红，"
                         + "而窗口会悄悄退回代码默认值")
                 .isEqualTo(SessionMemoryProperties.DEFAULT_CONTEXT_WINDOW);
     }
 
     @Test
-    @DisplayName("两个 scope 写在 application.yml 的 claw4j.session 下：多人部署要改这里")
+    @DisplayName("两个 scope 写在 application.yml 的 claw4j.advisor.session 下：多人部署要改这里")
     void applicationYmlDeclaresTheSessionScopes() throws IOException {
         var sources = new YamlPropertySourceLoader()
                 .load("application.yml", new ClassPathResource("application.yml"));
 
         assertThat(sources).as("application.yml 得能解析出来").isNotEmpty();
-        assertThat(sources.getFirst().getProperty("claw4j.session.dm-scope"))
+        assertThat(sources.getFirst().getProperty("claw4j.advisor.session.dm-scope"))
                 .as("这一行决定私聊共不共用一段上下文。删掉它默认值仍是 main，"
                         + "但读配置的人就看不到「多人可及必须改成 per-channel-peer」（ADR-0029）")
                 .isEqualTo(SessionScopeProperties.DM_MAIN);
-        assertThat(sources.getFirst().getProperty("claw4j.session.group-scope"))
+        assertThat(sources.getFirst().getProperty("claw4j.advisor.session.group-scope"))
                 .as("群聊按群隔离是默认；写出来是为了让「群为什么不共享」有地方可查")
                 .isEqualTo(SessionScopeProperties.GROUP_PER_GROUP);
     }
@@ -285,7 +285,7 @@ class BuildContractTest {
     /**
      * 两个键真能绑到 {@link SessionScopeProperties} 上。
      *
-     * <p>上一条只查文本：文本对了但前缀写错（比如写成 {@code claw4j.session.scope}）、
+     * <p>上一条只查文本：文本对了但前缀写错（比如写成 {@code claw4j.advisor.session.scope}）、
      * 或分量名与 kebab 名对不上，逐字比对一样是绿的，而运行时两个分量都落默认值——
      * 默认值恰好就是 {@code main} / {@code per-group}，于是"绑上了"与"没绑上"在日志里
      * 长得一模一样。这里用一组<b>非默认值</b>绑一遍，绑上了才可能得到非默认结果。
@@ -294,16 +294,16 @@ class BuildContractTest {
      * 不该被当作这两个分量，也不该把绑定带崩。
      */
     @Test
-    @DisplayName("claw4j.session 的两个分量真能绑上：前缀或分量名写错时，逐字比对不会红")
+    @DisplayName("claw4j.advisor.session 的两个分量真能绑上：前缀或分量名写错时，逐字比对不会红")
     void theSessionScopesBindToThePropertiesClass() {
         SessionScopeProperties bound = new Binder(new MapConfigurationPropertySource(Map.of(
-                "claw4j.session.dm-scope", SessionScopeProperties.DM_PER_CHANNEL_PEER,
-                "claw4j.session.group-scope", SessionScopeProperties.DM_MAIN,
-                "claw4j.session.schema", "claw4j_session",
-                "claw4j.session.reset.mode", "daily-and-idle")))
-                .bind("claw4j.session", SessionScopeProperties.class)
+                "claw4j.advisor.session.dm-scope", SessionScopeProperties.DM_PER_CHANNEL_PEER,
+                "claw4j.advisor.session.group-scope", SessionScopeProperties.DM_MAIN,
+                "claw4j.advisor.session.schema", "claw4j_session",
+                "claw4j.advisor.session.reset.mode", "daily-and-idle")))
+                .bind("claw4j.advisor.session", SessionScopeProperties.class)
                 .orElseThrow(() -> new AssertionError(
-                        "claw4j.session 绑不上 SessionScopeProperties：前缀或分量名对不上"));
+                        "claw4j.advisor.session 绑不上 SessionScopeProperties：前缀或分量名对不上"));
 
         assertThat(bound.dmScope())
                 .as("拿到默认值就说明没绑上，而这两种情况在运行时看起来一样")

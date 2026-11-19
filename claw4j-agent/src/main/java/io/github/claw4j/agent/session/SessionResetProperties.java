@@ -6,7 +6,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 
 /**
- * 一段对话什么时候结束（ADR-0026 决定一）。键在 {@code claw4j.session.reset} 下。
+ * 一段对话什么时候结束（ADR-0026 决定一）。键在 {@code claw4j.advisor.session.reset} 下。
  *
  * <p>这条规则要单独存在，是因为在此之前"会话什么时候结束"有四个答案，各有各的使用者——
  * 记忆认为永不结束、预算按 120 分钟空闲自己判、存储按 30 天删行、定时任务借用创建者那一份。
@@ -36,7 +36,7 @@ import java.time.ZoneId;
  *                    "配了 0 点"无法区分，默认值 4 永远用不上
  * @param idleMinutes 多久没动静算结束
  */
-@ConfigurationProperties("claw4j.session.reset")
+@ConfigurationProperties("claw4j.advisor.session.reset")
 public record SessionResetProperties(String mode, Integer atHour, long idleMinutes) {
 
     /** 跨天或空闲，谁先到算谁。 */
@@ -56,7 +56,7 @@ public record SessionResetProperties(String mode, Integer atHour, long idleMinut
         // 缺省是"不自动结束"：与 OpenClaw 同默认。显式配了别的值就按它来，认不出就起不来。
         mode = mode == null || mode.isBlank() ? MODE_NONE : mode.trim();
         if (!MODE_IDLE.equals(mode) && !MODE_NONE.equals(mode) && !MODE_DAILY_AND_IDLE.equals(mode)) {
-            throw new IllegalArgumentException("claw4j.session.reset.mode 只认 "
+            throw new IllegalArgumentException("claw4j.advisor.session.reset.mode 只认 "
                     + MODE_NONE + " / " + MODE_DAILY_AND_IDLE + " / " + MODE_IDLE
                     + "，收到的是：" + mode);
         }

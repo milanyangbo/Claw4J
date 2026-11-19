@@ -253,7 +253,7 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * schema 就不依赖连接的 {@code search_path}。
      *
      * <p>schema 从 {@link SessionMemoryProperties#schema()} 取，不写字面量：
-     * {@code claw4j.session.schema} 可配，写死的话改配之后这条 SQL 会报
+     * {@code claw4j.advisor.session.schema} 可配，写死的话改配之后这条 SQL 会报
      * {@code BadSqlGrammarException}，而那一档的异常被降级成"没找到"。
      * 会话状态行、会话目标、清理任务三处都从同一个键取。
      *
