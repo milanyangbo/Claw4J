@@ -1,13 +1,14 @@
 # 03: Task 换成社区包的 TaskTool + TaskOutputTool
 
-**What to build:** 待定。用户 2026-11-16 选的是「换成社区包的 TaskTool + TaskOutputTool」，
-但核过 jar 之后发现那条路上有一处会直接让子链鉴权失效。先记事实，形态由用户裁决。
+**What to build:** `Task` 与 `TaskOutput` 换成社区包的 `TaskTool` + `TaskOutputTool`，
+`SubagentExecutor` 由我们实现（库的扩展点），身份靠包一层 `ToolCallback` 在 `call()` 期间放好。
 
-**Blocked by:** 身份如何过到子链（下面三选一）。
+**Blocked by:** 无。用户 2026-11-19 裁决：**"用官方标准库"是本项目的要求**，按形态 B 做，
+并且 B 列的那条代价（后台丢身份）要一并解决。
 
 **Type:** 替换现有工具实现（会动 `Task` 工具、子 Agent 执行链、可能的 pom）
 
-**Status:** open
+**Status:** resolved（2026-11-19，形态 B + 身份随任务搬进后台线程）
 
 ## 现场一：用户列的那个类不存在
 
@@ -50,11 +51,48 @@ public interface SubagentExecutor {
 | B | 换 `TaskTool`，`SubagentExecutor` 由我们实现，身份靠包一层 `ToolCallback` 在 `call()` 期间塞 `ThreadLocal` | 同步路径成立；**后台路径必丢身份**，除非另做一套"在 TaskCall 里带 token 再换回 Principal"的机制 |
 | C | 换，并且接受子链不带身份（子 Agent 用部署级身份跑） | 与 ADR-0007 相反，不建议 |
 
+## TDD 用例清单
+
+| 判什么行为 | 用例名 | 先红的样子 | 过没过 |
+| --- | --- | --- | --- |
+| 工具形状来自库：参数是 `TaskCall` 那一组（`subagent_type` / `prompt` / `run_in_background`），我们那套 `subagent` / `task` 不再有 | `SubagentDelegationTest#toolShapeComesFromTheLibrary` | 现在 schema 是 `{subagent, task}` | ✅ |
+| 后台派出立刻回 `task_id`，`TaskOutput` 之后拿得到结论 | `SubagentDelegationTest#backgroundTaskKeepsTheParentIdentity` | 现在没有后台 | ✅ |
+| 后台线程里也带着父的身份（`ThreadLocal` 在那里是空的） | 同上（丢了就回"没有权限"，这条红） | 形态 B 原样落地就是这条红 | ✅ |
+| 派给不存在的 `subagent_type`：报错点名那个名字 | `SubagentDelegationTest#malformedOrUnknownDelegationIsRejectedWithGuidance` | —— | ✅ |
+| 没写 `prompt`：拒收而不是派一个空任务 | 同上 | 库的 `TaskCall` 每个字段都可空 | ✅ |
+| 没带身份的委派一律拒绝，子 Agent 一次都不启动 | `SubagentDelegationTest#delegationWithoutPrincipalIsDenied` | —— | ✅ |
+| 成功委派只回传结论，且包成数据块 | `SubagentDelegationTest#delegationReturnsOnlyTheConclusion` | 库回来的是 JSON 字符串，`<prompt-data>` 会丢 | ✅ |
+| 定义目录空 / 定义写坏 / 白名单点名不存在的工具：语义不变 | `SubagentDelegationTest#configuredDirectoryWithoutDefinitionsFails` 等 | —— | ✅ |
+| 子 Agent 的清单仍按父的画像过滤，且 `Task` / `TaskOutput` 都不给它 | `SubagentDelegationTest#subagentToolsRespectTheDeploymentProfile` | 漏一个就等于给子 Agent 开了"再派一层" | ✅ |
+
+**复核：2026-11-19 `./scripts/verify.sh` 全绿。** 上面九条逐条对到 `SubagentDelegationTest`（22 条）里。
+
+## Answer（2026-11-19 收票）
+
+**形态 B，并且把 B 那条代价补掉。**
+
+- 工具：`TaskTool.builder().subagentTypes(new SubagentType(resolver, executor)).subagentReferences(...)
+  .taskRepository(repo).taskDescriptionTemplate(...)`，kind 用我们自己的 `CLAW4J`
+  ——库里四份内置 Claude 定义因此不会被塞进来。
+- 定义：`SubagentDefinition` 实现库的 `SubagentDefinition` 接口；`SubagentReferenceResolver`
+  按 kind 认领、读 md。**文件格式不变**，`examples/subagents/*.md` 不用改。
+- 执行：`SubagentRunner implements SubagentExecutor`，里面还是原来那条"独立窗口 + 预算 + 父的清单"。
+- 身份：`SubagentDelegation` 从"自己解析参数"缩成一层装饰器，在一次 `call` 的进出之间把
+  `ToolContext` 里的身份放进 `ThreadLocal`。作用域是一次调用，不跨流式分段。
+- **B 的那条代价**：后台任务在别的线程上跑，`ThreadLocal` 必丢。`SubagentTaskRepository`
+  在 `putTask` 那一刻把身份取出来，进后台线程前再装回去——身份是**提交时**的，不是执行时线程碰巧有的。
+- 结论文本：库的 `FunctionToolCallback` 会把返回值 JSON 化，所以装饰器把那段引号还原回纯文本；
+  数据块的包装（`PromptData`）搬进执行器，形状与换库之前一致。
+
 ## 缺口
 
-- 换成库的 `Task` 之后，工具参数从 `{subagent, task}` 变成
+- ~~换成库的 `Task` 之后，工具参数从 `{subagent, task}` 变成~~（**已交付**：改的是文档与提示词；
   `{description, prompt, subagent_type, model, resume, run_in_background}`：
   `examples/subagents/*.md` 的 `tools` / `disallowedTools` 里点名的 `Task` 不受影响，
-  但**提示词与 Skill 正文里写的调用方式会全部过期**，要一并改。
-- 库里 `TaskTool` 的描述模板把四个 Claude 内置子 Agent 写死在文本里（只在 kind 是
-  `CLAUDE` 时注入），换过来之后模型会看到两套"可用 agent"说法，需要重写 `taskDescriptionTemplate`。
+  提示词与 Skill 正文里写的调用方式随后一起改了，见 `README-adding-capabilities.md` §5 与
+  `docs/capability-tests.md` §6。）
+- **`resume` / `model` 两个参数现在是"接了但不生效"**：库的 schema 里有，我们的执行器不用它们
+  （续跑要把子窗口历史存下来，换模型要另一套 key 与配额）。它们不会报错，只是照常从头跑——
+  这与本仓库"配了不生效比不支持更坏"的口径冲突，等真要做续跑时一起处理。
+- 库里 `TaskTool` 的描述模板是给 Claude 那套写的（讲 resume、讲并行、举例 code-reviewer）。
+  已换成我们自己的模板，只借它的 `%s` 位置放注册表。

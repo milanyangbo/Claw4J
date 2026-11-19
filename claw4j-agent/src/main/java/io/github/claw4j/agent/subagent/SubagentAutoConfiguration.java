@@ -15,6 +15,10 @@ import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
+import org.springaicommunity.agent.common.task.subagent.SubagentType;
+import org.springaicommunity.agent.tools.task.TaskOutputTool;
+import org.springaicommunity.agent.tools.task.TaskTool;
+import org.springaicommunity.agent.tools.task.repository.TaskRepository;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -87,8 +91,8 @@ public class SubagentAutoConfiguration {
                                              ToolSearchProperties toolSearch,
                                              AgentProperties agent,
                                              ObjectProvider<ApprovalGate> gates,
-                                             ObjectProvider<ApprovalRequiredTools> approvals) {
-        var definitions = SubagentCatalog.load(Path.of(directory));
+                                             ObjectProvider<ApprovalRequiredTools> approvals,
+                                             TaskRepository taskRepository) {
         var observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
         var runner = new SubagentRunner(chatModel, observations,
                 () -> subagentToolCallbacks(toolCallbacks, toolCallbackProviders,
@@ -99,7 +103,60 @@ public class SubagentAutoConfiguration {
                 toolIndex,
                 toolSearch,
                 agent.toolCallLimit());
-        return new SubagentDelegation(definitions, runner);
+        // 工具的形状（名字、TaskCall 的 schema、描述模板、按 subagent_type 分派、后台任务）
+        // 全部来自库的 TaskTool；这里只填它留的两个扩展点：怎么按引用读定义、怎么执行一次委派。
+        // kind 用我们自己的，于是库里那四份内置 Claude 定义不会被塞进来。
+        return delegationTool(Path.of(directory), runner, taskRepository);
+    }
+
+    /**
+     * 按库的形状装出 {@code Task}：一份定义目录 + 一个执行器 + 一张后台任务表。
+     *
+     * <p>抽成静态方法是为了让"装配怎么装"只有一份：用例要验工具形状、后台任务、身份传递，
+     * 都得走这条真实的装配路径；另搭一条只会验出一个和线上不一样的形状。
+     *
+     * @param directory 定义目录
+     * @param runner 委派的执行器
+     * @param taskRepository 后台任务表（{@code Task} 与 {@code TaskOutput} 必须共用同一张）
+     * @return 委派工具
+     */
+    public static ToolCallback delegationTool(Path directory, SubagentRunner runner,
+                                              TaskRepository taskRepository) {
+        ToolCallback task = TaskTool.builder()
+                .subagentTypes(new SubagentType(new SubagentReferenceResolver(), runner))
+                .subagentReferences(SubagentCatalog.references(directory))
+                .taskRepository(taskRepository)
+                .taskDescriptionTemplate(DESCRIPTION_TEMPLATE)
+                .build();
+        // 身份要穿过库那一层（它拿不到 ToolContext），所以外面套一层——只做这一件事。
+        return new SubagentDelegation(task);
+    }
+
+    /**
+     * 后台任务的取结论工具：{@code Task} 用 {@code run_in_background} 派出去之后，模型靠它拿结果。
+     *
+     * <p>与 {@code Task} 共用同一个 {@link TaskRepository}：库靠 task_id 在表里找，两个工具各拿
+     * 一份表的话，任务会"派出去了但查不到"。
+     *
+     * @param taskRepository 与委派工具共用的任务表
+     * @return 名为 {@code TaskOutput} 的工具回调
+     */
+    @Bean
+    public ToolCallback subagentOutputToolCallback(TaskRepository taskRepository) {
+        return TaskOutputTool.builder().taskRepository(taskRepository).build();
+    }
+
+    /**
+     * 后台任务表：外面包一层"把身份带进那个线程"。
+     *
+     * <p>库默认那个在别的线程上跑，而身份在 {@link SubagentDelegation} 的 {@link ThreadLocal}
+     * 里——不包这一层，后台派出去的子 Agent 会被判成"没有携带身份"并拒绝，而同步路径好好的。
+     *
+     * @return 与两个工具共用的任务表
+     */
+    @Bean(destroyMethod = "shutdown")
+    public TaskRepository subagentTaskRepository() {
+        return new SubagentTaskRepository();
     }
 
     /**
@@ -136,6 +193,37 @@ public class SubagentAutoConfiguration {
      * 将来真出现"能再派一层"的角色时，改的是这里与 {@code ToolPolicyAssembler} 的那张表。
      */
     private static final String SUBAGENT_ROLE = "leaf";
+
+    /**
+     * 委派这一对工具的名字：{@code Task} 派活、{@code TaskOutput} 取后台结论。
+     *
+     * <p>子 Agent 两个都拿不到：它是一次性执行体，让它再派一层会让预算与隔离变成递归，
+     * 让它查父的后台任务则会看见另一条分支的中间产物。
+     */
+    private static final List<String> DELEGATION_TOOLS =
+            List.of(SubagentDelegation.TOOL_NAME, "TaskOutput");
+
+    /**
+     * 委派工具的描述模板。
+     *
+     * <p>库自带一份，但那份是给 Claude 那套用的（讲 resume、讲"一次消息里发多个 Task"、
+     * 举的例子是 code-reviewer）。我们保留自己的说法，只把库的 {@code %s} 那个位置用来
+     * 放注册表——它由 {@code TaskTool.Builder#build()} 填成每条定义的
+     * {@code -名字: /一句说明}。
+     */
+    private static final String DESCRIPTION_TEMPLATE = """
+            把一个需要好几步的任务交给专职 Subagent 去做。
+            它在独立上下文里自己跑，只把结论回传给你——中间调了什么工具、拿到什么，你看不到。
+            需要"自己查、自己核对、再给结论"这类事情时派它，别自己一步步做。
+
+            可用的 Subagent：
+            %s
+
+            参数：subagent_type 用上面清单里的名字；prompt 把要它做的事写完整，
+            包括口径与"最后给我什么形式"，因为它看不到我们的对话。
+            要并行，就在同一条消息里发多个 Task；要后台跑，写 run_in_background=true，
+            之后用 TaskOutput 拿结论。
+            """;
 
     public static List<ToolCallback> subagentToolCallbacks(ObjectProvider<ToolCallback> toolCallbacks,
                                                            ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
@@ -193,8 +281,7 @@ public class SubagentAutoConfiguration {
         // 审计这一路子 Agent 不接（与上面 collect 时传 null 是同一个决定）：它的调用记在父那一轮里。
         return AgentAutoConfiguration.withApprovalGate(collected, gate, approvals, null)
                 .stream()
-                .filter(callback -> !SubagentDelegation.TOOL_NAME.equals(
-                        callback.getToolDefinition().name()))
+                .filter(callback -> !DELEGATION_TOOLS.contains(callback.getToolDefinition().name()))
                 .toList();
     }
 
@@ -209,6 +296,6 @@ public class SubagentAutoConfiguration {
      */
     @Bean
     public ToolTierRegistry subagentTierRegistry() {
-        return ToolTierRegistry.sameFor(List.of(SubagentDelegation.TOOL_NAME), ToolTier.CODING);
+        return ToolTierRegistry.sameFor(DELEGATION_TOOLS, ToolTier.CODING);
     }
 }

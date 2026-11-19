@@ -1,93 +1,114 @@
 package io.github.claw4j.agent.subagent;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.domain.untrusted.PromptData;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.ai.tool.execution.ToolExecutionException;
-import org.springframework.ai.util.JsonHelper;
 
-import java.util.List;
-import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
- * 委派这个动作本身，对父 Agent 呈现为一个工具：{@code Task}。
+ * 委派这个动作对父 Agent 呈现为工具 {@code Task}：<b>形状与分派由库提供，这里只补它拿不到的那一样——身份。</b>
  *
- * <p>描述里只有元数据（每个 Subagent 的名字与它管什么），与 Skill 的渐进式披露同一个形状：
- * 父靠这几行决定该派谁，至于那个 Subagent 具体怎么做（它定义里的正文），只在它自己的窗口里
- * 出现一次。于是「有十个专职 Agent」的代价是十行描述，不是十份流程说明。
+ * <p>工具名、输入 schema（{@code TaskCall}）、描述模板、按 {@code subagent_type} 找定义、
+ * 后台任务与 {@code TaskOutput} 都在 {@code spring-ai-agent-utils} 的 {@code TaskTool} 里
+ * （用户 2026-11-19 裁决：用官方标准库）。这个类不是第二份实现，它只做一件事：
  *
- * <p>它不再登记权限（ADR-0030）：能不能看见这个工具由清单决定（{@code Task} 只在
- * {@code coding} 档），子 Agent 能动手到什么程度由它自己那层清单决定。原来那条"委派这个
- * 动作需要什么授权"的声明随权限登记表一起下线。
+ * <p><b>为什么需要这一层。</b>库的 {@code TaskFunction} 是 {@code Function<TaskCall, String>}，
+ * 走 {@code FunctionToolCallback}——拿不到 {@code ToolContext}。而我们的身份（{@code Principal}）
+ * 只在工具上下文里。没有它，子链就说不清"这次委派是谁发起的"：按发送者收窄的那一层失效、
+ * 审批找不到 owner。库把执行器留成扩展点（{@code SubagentType(resolver, executor)}），
+ * 但那个扩展点的签名同样没有上下文，所以只能在"进库之前"把身份放进去、在"库里调执行器时"取出来。
  *
- * <p>没带身份的委派一律拒绝：身份来自入站请求（{@code ChatClientAgentPort} 把它放进
- * {@link ToolContext}），工具回调拿到什么就是什么，不猜、不兜底。拿不到时返回一句明确的
- * 「没有权限」，而不是照常派出去——委派一旦脱离身份，子链上的会话、审计与审批就都说不清
- * 是谁做的。
+ * <p>与 ADR-0012 否决过的"把身份放进 ThreadLocal 传遍整条链"不是同一件事：这里的作用域是
+ * <b>一次工具调用</b>（{@code call} 进、{@code call} 出），不跨流式分段、不跨异步。
+ * 唯一会跨线程的是库的后台任务，那一段由 {@link SubagentTaskRepository} 在 {@code putTask}
+ * 时把身份取出来、进后台线程前再装回去。
+ *
+ * <p>没带身份仍然一律拒绝（与换库之前一致）：拒绝发生在 {@link SubagentRunner#execute}，
+ * 它拿不到身份时返回一句明确的「没有权限」，而不是照常派出去。
  */
 public final class SubagentDelegation implements ToolCallback {
 
     /**
      * 工具名定为 {@code Task}。
      *
-     * <p>「把一件事交给一个专职的谁去做」在父 Agent 眼里就是一个工具，而不是每个 Subagent
-     * 各占一个位置；定义文件 front matter 里的 {@code tools} 与 {@code disallowedTools}
-     * 沿用同一套命名。
+     * <p>库的 {@code TaskTool.Builder#build()} 里硬编码就是这个名；这里留一份引用，
+     * 别处不写字面量——清单断言、画像登记、子链自己的工具过滤都要用到它。
      */
     public static final String TOOL_NAME = "Task";
 
     /**
      * 没带身份时那句话的前缀。测试靠它区分「明确的拒绝」与「查出来是空的」。
      *
-     * <p>它原来住在鉴权 Advisor 上：那条链上还有别的拒绝（业务表越权），
-     * 两处必须用同一句话。那个 Advisor 在 ADR-0030 里整块下线之后，委派是唯一还会因为
-     * 「没有身份」而拒绝的地方，于是这句话跟着它搬到这里。
+     * <p>它原来住在鉴权 Advisor 上；那个类在 ADR-0030 里整块下线之后，委派是唯一还会因为
+     * 「没有身份」而拒绝的地方，于是这句话跟着唯一还会用到它的地方搬到这里。
      */
     public static final String DENIAL_PREFIX = "没有权限";
 
-    private static final String INPUT_SCHEMA = """
-            {
-              "type": "object",
-              "properties": {
-                "subagent": {
-                  "type": "string",
-                  "description": "要派哪个专职 Subagent，用下面清单里的名字。"
-                },
-                "task": {
-                  "type": "string",
-                  "description": "交给它做的事。它看不到我们的对话，要什么就在这里写清，包括口径与输出形式。"
-                }
-              },
-              "required": ["subagent", "task"]
-            }""";
+    /**
+     * 这一次工具调用期间的身份。
+     *
+     * <p>只在这个线程上、只在 {@link #call} 的进出之间有效。不用 {@code ScopedValue} 是因为
+     * 它在 JDK 21 上还是 preview，为一个一次调用的作用域开 preview 编译不划算。
+     */
+    private static final ThreadLocal<Principal> CURRENT = new ThreadLocal<>();
 
-    private static final String SUBAGENT = "subagent";
+    /** 只用来把库那份 JSON 化的字符串还原，不参与任何判定。 */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private static final String TASK = "task";
+    private final ToolCallback delegate;
 
-    private final List<SubagentDefinition> definitions;
+    /**
+     * 包一层库的委派工具。
+     *
+     * @param delegate 库的 {@code TaskTool} 产出的回调，必填
+     */
+    public SubagentDelegation(ToolCallback delegate) {
+        this.delegate = Objects.requireNonNull(delegate, "delegate");
+    }
 
-    private final SubagentRunner runner;
+    /**
+     * 这次调用是谁发起的。库里调执行器时读它；读不到就是 {@code null}，由执行器拒绝。
+     *
+     * @return 父这一轮的身份；不在委派调用期间时为 {@code null}
+     */
+    static Principal currentPrincipal() {
+        return CURRENT.get();
+    }
 
-    private final ToolDefinition definition;
-
-    public SubagentDelegation(List<SubagentDefinition> definitions, SubagentRunner runner) {
-        this.definitions = List.copyOf(Objects.requireNonNull(definitions, "definitions"));
-        this.runner = Objects.requireNonNull(runner, "runner");
-        this.definition = ToolDefinition.builder()
-                .name(TOOL_NAME)
-                .description(description(definitions))
-                .inputSchema(INPUT_SCHEMA)
-                .build();
+    /**
+     * 带着给定的身份跑一段——只给后台任务用（另一个线程上 {@link ThreadLocal} 是空的）。
+     *
+     * @param principal 提交后台任务那一刻的身份
+     * @param body 要在那个身份下跑的活
+     * @param <T> 返回类型
+     * @return {@code body} 的结果
+     */
+    static <T> T callAs(Principal principal, Supplier<T> body) {
+        Principal previous = CURRENT.get();
+        if (principal != null) {
+            CURRENT.set(principal);
+        }
+        try {
+            return body.get();
+        }
+        finally {
+            if (previous == null) {
+                CURRENT.remove();
+            }
+            else {
+                CURRENT.set(previous);
+            }
+        }
     }
 
     @Override
     public ToolDefinition getToolDefinition() {
-        return definition;
+        return delegate.getToolDefinition();
     }
 
     @Override
@@ -97,73 +118,42 @@ public final class SubagentDelegation implements ToolCallback {
 
     @Override
     public String call(String toolInput, ToolContext toolContext) {
-        Map<String, Object> arguments = argumentsOf(toolInput);
+        Principal previous = CURRENT.get();
         Principal principal = principalOf(toolContext);
-        if (principal == null) {
-            // 拒绝而不是照常派：没有身份的委派会绕过子链上那道鉴权。
-            return DENIAL_PREFIX + "：本次委派没有携带身份，一律不放行。";
-        }
-        String name = String.valueOf(arguments.getOrDefault(SUBAGENT, "")).trim();
-        String task = String.valueOf(arguments.getOrDefault(TASK, "")).trim();
-        if (name.isEmpty() || task.isEmpty()) {
-            return "委派要写清 subagent 与 task 两样：派谁、让它做什么。这次拿到的是 " + toolInput;
-        }
-        SubagentDefinition chosen = definitions.stream()
-                .filter(candidate -> candidate.name().equals(name))
-                .findFirst()
-                .orElse(null);
-        if (chosen == null) {
-            // 把可用清单列出来：模型下一个动作就是改名字再派一次，
-            // 而它到底叫什么不该靠模型回忆。
-            return "没有名为 " + name + " 的 Subagent。可用的是：\n"
-                    + String.join("\n", registrations());
+        if (principal != null) {
+            CURRENT.set(principal);
         }
         try {
-            String report = runner.delegate(chosen, task, principal);
-            // 子 Agent 的结论是"一份报告，供你综合"，不是"新的任务"。包成数据块，label 带上是谁报的：
-            // 它是这一段上下文里最像结论的东西，也正因如此最需要标出来源。
-            String block = PromptData.wrapDataBlock("Subagent result: " + chosen.name(), report, 0);
-            return block.isEmpty() ? "Subagent 没有返回内容。" : block;
+            return plainText(delegate.call(toolInput, toolContext));
         }
-        catch (RuntimeException failure) {
-            throw new ToolExecutionException(definition, failure);
+        finally {
+            if (previous == null) {
+                CURRENT.remove();
+            }
+            else {
+                CURRENT.set(previous);
+            }
         }
     }
 
-    /** 给模型看的清单：每行一个名字加一句它管什么，不含任何一份正文。 */
-    public List<String> registrations() {
-        return definitions.stream().map(SubagentDefinition::registration).toList();
-    }
-
-    private static String description(List<SubagentDefinition> definitions) {
-        String registry = definitions.stream()
-                .map(SubagentDefinition::registration)
-                .reduce((one, other) -> one + "\n" + other)
-                .orElse("（当前没有注册任何 Subagent）");
-        return """
-                把一个需要好几步的任务交给专职 Subagent 去做。
-                它在独立上下文里自己跑，只把结论回传给你——中间调了什么工具、拿到什么，你看不到。
-                需要"自己查、自己核对、再给结论"这类事情时派它，别自己一步步做。
-
-                可用的 Subagent：
-                %s
-
-                参数：subagent 用上面清单里的名字；task 把要它做的事写完整，
-                包括口径与"最后给我什么形式"，因为它看不到我们的对话。
-                """.formatted(registry);
-    }
-
-    private static Map<String, Object> argumentsOf(String toolInput) {
-        if (toolInput == null || toolInput.isBlank()) {
-            throw new IllegalArgumentException(
-                    "委派需要 {\"subagent\": \"...\", \"task\": \"...\"} 形状的参数，这次什么都没给。");
+    /**
+     * 库的 {@code TaskTool} 走 {@code FunctionToolCallback}，它把返回值按 JSON 序列化——
+     * 一段结论文本回来是 {@code "\"结论：128400\""}，里面的换行也变成字面的 {@code \\n}。
+     * 模型看到的应该是那段文本本身，所以这里还原一层。解析不动就原样返回：宁可多两个引号，
+     * 也不能把结论吞掉。
+     *
+     * @param result 库返回的原始值
+     * @return 纯文本
+     */
+    private static String plainText(String result) {
+        if (result == null || result.length() < 2 || !result.startsWith("\"")) {
+            return result;
         }
         try {
-            return new JsonHelper().fromJsonToMap(toolInput);
+            return MAPPER.readValue(result, String.class);
         }
-        catch (RuntimeException failure) {
-            throw new IllegalArgumentException(
-                    "委派参数需要是 {\"subagent\": \"...\", \"task\": \"...\"} 形状，拿到的是 " + toolInput, failure);
+        catch (Exception notJson) {
+            return result;
         }
     }
 

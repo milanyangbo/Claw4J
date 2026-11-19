@@ -5,9 +5,12 @@ import io.github.claw4j.agent.ToolSearch;
 import io.github.claw4j.agent.ToolSearchProperties;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.untrusted.PromptData;
 import io.micrometer.observation.ObservationRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springaicommunity.agent.common.task.subagent.SubagentExecutor;
+import org.springaicommunity.agent.common.task.subagent.TaskCall;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
@@ -52,7 +55,7 @@ import java.util.function.Supplier;
  * {@code ObjectProvider} 在装配期展开就把自己也卷了进去。代价是白名单点名了一个没装上的工具
  * 时，失败发生在首次委派而不是启动时（见 {@link SubagentDefinition#selectTools}）。
  */
-public final class SubagentRunner {
+public final class SubagentRunner implements SubagentExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(SubagentRunner.class);
 
@@ -93,6 +96,51 @@ public final class SubagentRunner {
         this.toolIndex = Objects.requireNonNull(toolIndex, "toolIndex");
         this.toolSearch = Objects.requireNonNull(toolSearch, "toolSearch");
         this.toolCallLimit = toolCallLimit;
+    }
+
+    /**
+     * 这一种执行器对应哪一类定义。库按它把定义分给执行器，我们只有一类。
+     *
+     * @return {@link SubagentDefinition#KIND}
+     */
+    @Override
+    public String getKind() {
+        return SubagentDefinition.KIND;
+    }
+
+    /**
+     * 库的入口：它不认识我们的 {@code delegate}，只认识这个。
+     *
+     * <p>身份从 {@link SubagentDelegation#currentPrincipal()} 取——它由外层那层装饰器在一次
+     * 工具调用期间放好。取不到就返回一句明确的拒绝而不是照常派：委派一旦脱离身份，子链上的
+     * 会话、审计与审批就都说不清是谁做的。
+     *
+     * @param call 库解析好的参数（{@code prompt} 是正文，其余字段我们不用）
+     * @param definition 由 {@link SubagentReferenceResolver} 解析出来的那一份
+     * @return 子的结论，或一句拒收
+     */
+    @Override
+    public String execute(TaskCall call, org.springaicommunity.agent.common.task.subagent.SubagentDefinition definition) {
+        Principal principal = SubagentDelegation.currentPrincipal();
+        if (principal == null) {
+            return SubagentDelegation.DENIAL_PREFIX + "：本次委派没有携带身份，一律不放行。";
+        }
+        String prompt = call.prompt() == null ? "" : call.prompt().trim();
+        if (prompt.isEmpty()) {
+            // 库的 TaskCall 每个字段都可空：缺 prompt 时不能当成"派一个空任务"照跑，
+            // 子 Agent 看不到父的对话，空的 prompt 等于让它猜。
+            return "委派要写清 prompt：让那个 Subagent 做什么，包括口径与「最后给我什么形式」。";
+        }
+        if (!(definition instanceof SubagentDefinition ours)) {
+            throw new IllegalStateException("这个执行器只认 " + SubagentDefinition.KIND
+                    + " 那一类定义，拿到的是 " + (definition == null ? "null" : definition.getKind())
+                    + "。");
+        }
+        // 子 Agent 的结论是"一份报告，供你综合"，不是"新的任务"。包成数据块、label 带上是谁报的：
+        // 它是这一段上下文里最像结论的东西，也正因如此最需要标出来源（与换库之前的形状一致）。
+        String report = delegate(ours, prompt, principal);
+        String block = PromptData.wrapDataBlock("Subagent result: " + ours.name(), report, 0);
+        return block.isEmpty() ? "Subagent 没有返回内容。" : block;
     }
 
     /**

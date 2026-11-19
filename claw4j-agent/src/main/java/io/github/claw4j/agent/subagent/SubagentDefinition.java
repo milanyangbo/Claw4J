@@ -2,6 +2,7 @@ package io.github.claw4j.agent.subagent;
 
 import io.github.claw4j.agent.ToolPolicyAssembler;
 import io.github.claw4j.markdown.FrontMatter;
+import org.springaicommunity.agent.common.task.subagent.SubagentReference;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.io.IOException;
@@ -41,12 +42,38 @@ public record SubagentDefinition(String name,
                                  String description,
                                  String systemPrompt,
                                  List<String> tools,
-                                 List<String> disallowedTools) {
+                                 List<String> disallowedTools,
+                                 SubagentReference reference)
+        implements org.springaicommunity.agent.common.task.subagent.SubagentDefinition {
+
+    /**
+     * 这一种定义的 kind。
+     *
+     * <p>它决定两件事，都在库那一侧：{@code TaskTool.Builder#build()} 只在 kind 是
+     * {@code CLAUDE} 时才把四份内置参考定义（general-purpose / explore / plan / bash）
+     * 塞进清单；{@code SubagentResolver#canResolve} 也按它认领。我们用自己的 kind，
+     * 于是"库里有哪些 Subagent"完全由这个目录决定，不多不少。
+     */
+    public static final String KIND = "CLAW4J";
 
     /** front matter 里允许逐行写列表项的两个键；其余键只认同行值。 */
     private static final String TOOLS = "tools";
     private static final String DISALLOWED_TOOLS = "disallowedTools";
     private static final Set<String> LIST_KEYS = Set.of(TOOLS, DISALLOWED_TOOLS);
+
+    /**
+     * 不带出处的一份定义——给测试与"手上只有内容"的场合。
+     *
+     * @param name 名字
+     * @param description 一行说明
+     * @param systemPrompt 正文
+     * @param tools 白名单
+     * @param disallowedTools 黑名单
+     */
+    public SubagentDefinition(String name, String description, String systemPrompt,
+                              List<String> tools, List<String> disallowedTools) {
+        this(name, description, systemPrompt, tools, disallowedTools, null);
+    }
 
     public SubagentDefinition {
         Objects.requireNonNull(name, "name");
@@ -104,12 +131,15 @@ public record SubagentDefinition(String name,
         }
         FrontMatter frontMatter = FrontMatter.parse(markdown, file, LIST_KEYS);
         String name = text(frontMatter, "name", file);
+        SubagentReference reference = new SubagentReference(
+                file.toAbsolutePath().normalize().toString(), KIND);
         return new SubagentDefinition(
                 name,
                 text(frontMatter, "description", file),
                 frontMatter.body(),
                 names(frontMatter, TOOLS, file),
-                names(frontMatter, DISALLOWED_TOOLS, file));
+                names(frontMatter, DISALLOWED_TOOLS, file),
+                reference);
     }
 
     /**
@@ -151,6 +181,46 @@ public record SubagentDefinition(String name,
                     + "没有工具的 Subagent 只能靠猜作答——委派不该是这个样子。");
         }
         return filtered;
+    }
+
+    /**
+     * 库眼里的名字。见 {@code SubagentDefinition} 接口：分派、注册表都用它。
+     *
+     * @return 定义文件里写的那一个名字
+     */
+    @Override
+    public String getName() {
+        return name;
+    }
+
+    /**
+     * 库眼里的说明。
+     *
+     * @return 给模型看的一行
+     */
+    @Override
+    public String getDescription() {
+        return description;
+    }
+
+    /**
+     * 这一份定义属于哪一类执行器。
+     *
+     * @return {@link #KIND}
+     */
+    @Override
+    public String getKind() {
+        return KIND;
+    }
+
+    /**
+     * 它从哪来。库拿它做注册与排错，不用它做事。
+     *
+     * @return 定义文件的引用；手工构造的那一份是 {@code null}
+     */
+    @Override
+    public SubagentReference getReference() {
+        return reference;
     }
 
     /**

@@ -465,7 +465,9 @@ claw4j:
 
 ## 6. Subagent（5 个）
 
-工具名 `Task`，入参 `{subagent, task}`。每个子 Agent 的白名单（它能用哪些工具）不同，要逐个派。
+工具名 `Task`，入参是库的 `TaskCall`：`subagent_type`（派谁）+ `prompt`（让它做什么），
+要后台跑再加 `run_in_background: true`，之后用 `TaskOutput` 拿结论。每个子 Agent 的白名单
+（它能用哪些工具）不同，要逐个派。
 **这一节要 `full` 档**（`--claw4j.agent.default=ops`）：`Task` 属 `coding`，`sales` 那个人设看不到它。
 
 | # | 子 Agent | 测什么功能 | 接口调用 | 通过标准 |

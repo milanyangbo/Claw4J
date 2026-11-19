@@ -10,6 +10,7 @@ import io.github.claw4j.agent.subagent.SubagentCatalog;
 import io.github.claw4j.agent.subagent.SubagentDefinition;
 import io.github.claw4j.agent.subagent.SubagentDelegation;
 import io.github.claw4j.agent.subagent.SubagentRunner;
+import io.github.claw4j.agent.subagent.SubagentTaskRepository;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolTier;
@@ -23,10 +24,12 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springaicommunity.agent.tools.task.TaskOutputTool;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -50,6 +53,9 @@ class SubagentDelegationTest {
 
     @TempDir
     Path directory;
+
+    /** 每一份夹具单独一个子目录：同一个 @TempDir 里重名会被后写的覆盖。 */
+    private final AtomicInteger fixtureCounter = new AtomicInteger();
 
     /**
      * P09 的父子一致性：子 Agent 的工具集来自与父同一个收集方法、同一份档位策略。
@@ -247,7 +253,7 @@ class SubagentDelegationTest {
         SubagentRunner runner = runner(model, List.of());
         SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")), runner);
 
-        String answer = delegation.call("{\"subagent\":\"alpha\",\"task\":\"查数\"}");
+        String answer = delegation.call("{\"subagent_type\":\"alpha\",\"prompt\":\"查数\"}");
 
         assertThat(answer).startsWith(SubagentDelegation.DENIAL_PREFIX);
         assertThat(model.prompts()).isEmpty();
@@ -263,11 +269,13 @@ class SubagentDelegationTest {
         ToolContext identity = new ToolContext(
                 Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
 
-        String unknown = delegation.call("{\"subagent\":\"nobody\",\"task\":\"查数\"}", identity);
-        String incomplete = delegation.call("{\"subagent\":\"alpha\"}", identity);
-
-        assertThat(unknown).contains("没有名为 nobody").contains("alpha");
-        assertThat(incomplete).contains("subagent").contains("task");
+        // 名字不在清单里：这句话现在由库说（它按 subagent_type 找定义），要点名那个名字。
+        assertThatThrownBy(() -> delegation.call(
+                "{\"subagent_type\":\"nobody\",\"prompt\":\"查数\"}", identity))
+                .hasMessageContaining("nobody");
+        // 没写 prompt：库的结构允许可空，所以要在这里挡住——子 Agent 看不到父的对话，空 prompt 等于让它猜。
+        assertThat(delegation.call("{\"subagent_type\":\"alpha\"}", identity))
+                .contains("prompt");
         assertThat(model.prompts()).isEmpty();
     }
 
@@ -289,7 +297,7 @@ class SubagentDelegationTest {
         ToolContext identity = new ToolContext(
                 Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
 
-        String result = delegation.call("{\"subagent\":\"alpha\",\"task\":\"上周华东成交额\"}", identity);
+        String result = delegation.call("{\"subagent_type\":\"alpha\",\"prompt\":\"上周华东成交额\"}", identity);
 
         // 结论按"数据块"回来：它是供父综合的报告，不是新的任务（票 01 的子 Agent 出口）。
         assertThat(result)
@@ -311,6 +319,53 @@ class SubagentDelegationTest {
     }
 
     @Test
+    @DisplayName("工具形状来自库：参数是 TaskCall 那一组，描述里的注册表由库拼")
+    void toolShapeComesFromTheLibrary() {
+        SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")),
+                runner(new FixedChatModel("好"), List.of()));
+
+        String schema = delegation.getToolDefinition().inputSchema();
+        assertThat(schema)
+                .as("库的 TaskCall：subagent_type / prompt / run_in_background 都在")
+                .contains("subagent_type")
+                .contains("prompt")
+                .contains("run_in_background")
+                .as("我们原来那套 subagent / task 参数不该还在")
+                .doesNotContain("\"subagent\"");
+        assertThat(delegation.getToolDefinition().description())
+                .contains("alpha")
+                .contains("管销售")
+                .doesNotContain("先查数");
+    }
+
+    @Test
+    @DisplayName("后台派出去也带着父的身份：身份在提交那一刻被搬进后台线程")
+    void backgroundTaskKeepsTheParentIdentity() {
+        FixedChatModel child = new FixedChatModel("结论：后台跑完了");
+        SubagentTaskRepository repository = new SubagentTaskRepository();
+        SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")),
+                runner(child, List.of(new RecordingTool("lookup", "1"))), repository);
+        ToolCallback output = TaskOutputTool.builder().taskRepository(repository).build();
+        ToolContext identity = new ToolContext(
+                Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
+
+        String dispatched = delegation.call(
+                "{\"subagent_type\":\"alpha\",\"prompt\":\"查数\",\"run_in_background\":true}",
+                identity);
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?m)^task_id: (\\S+)").matcher(dispatched);
+        assertThat(matcher.find()).as("库回的第一行就是 task_id：%s", dispatched).isTrue();
+        String taskId = matcher.group(1);
+        String result = output.call("{\"task_id\":\"" + taskId + "\",\"block\":true}", identity);
+
+        assertThat(dispatched).as("立刻回一个 id，不等人").contains("TaskOutput");
+        assertThat(result)
+                .as("身份在后台线程里丢了的话，执行器会回「没有权限」，这条就红")
+                .contains("后台跑完了");
+        repository.shutdown();
+    }
+
+    @Test
     @DisplayName("子 Agent 什么都没说时回一个明确的占位，不让父以为拿到了空结论")
     void emptyConclusionHasExplicitPlaceholder() {
         FixedChatModel child = new FixedChatModel("");
@@ -319,7 +374,7 @@ class SubagentDelegationTest {
         ToolContext identity = new ToolContext(
                 Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
 
-        String result = delegation.call("{\"subagent\":\"alpha\",\"task\":\"查数\"}", identity);
+        String result = delegation.call("{\"subagent_type\":\"alpha\",\"prompt\":\"查数\"}", identity);
 
         assertThat(result).contains("没有给出结论");
     }
@@ -349,7 +404,8 @@ class SubagentDelegationTest {
                 ToolSearchProperties.defaults(),
                 AgentProperties.defaults(),
                 beans.getBeanProvider(ApprovalGate.class),
-                beans.getBeanProvider(ApprovalRequiredTools.class));
+                beans.getBeanProvider(ApprovalRequiredTools.class),
+                new SubagentTaskRepository());
 
         assertThat(task.getToolDefinition().name()).isEqualTo(SubagentDelegation.TOOL_NAME);
         assertThat(task.getToolDefinition().description()).contains("alpha").doesNotContain("先查数");
@@ -427,8 +483,44 @@ class SubagentDelegationTest {
                 ToolCallBudget.MAX_TOTAL_CALLS);
     }
 
-    private static SubagentDelegation delegation(List<SubagentDefinition> definitions, SubagentRunner runner) {
-        return new SubagentDelegation(definitions, runner);
+    /**
+     * 按线上的装配路径建出委派工具：定义先落成文件，再由库的 {@code TaskTool} 从引用读回来。
+     *
+     * <p>不直接 new 一份定义列表塞进去——那验的是"我要它长什么样"，不是"库里长什么样"。
+     */
+    private SubagentDelegation delegation(List<SubagentDefinition> definitions, SubagentRunner runner) {
+        return delegation(definitions, runner, new SubagentTaskRepository());
+    }
+
+    private SubagentDelegation delegation(List<SubagentDefinition> definitions, SubagentRunner runner,
+                                         SubagentTaskRepository repository) {
+        Path fixtures = directory.resolve("fixtures-" + fixtureCounter.incrementAndGet());
+        try {
+            Files.createDirectories(fixtures);
+            for (SubagentDefinition definition : definitions) {
+                Files.writeString(fixtures.resolve(definition.name() + ".md"), markdownOf(definition));
+            }
+        }
+        catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
+        return (SubagentDelegation) SubagentAutoConfiguration.delegationTool(
+                fixtures, runner, repository);
+    }
+
+    /** 一份内存里的定义写回成定义文件，好让库去解析它。 */
+    private static String markdownOf(SubagentDefinition definition) {
+        StringBuilder front = new StringBuilder("---\n")
+                .append("name: ").append(definition.name()).append('\n')
+                .append("description: ").append(definition.description()).append('\n');
+        if (!definition.tools().isEmpty()) {
+            front.append("tools: ").append(String.join(", ", definition.tools())).append('\n');
+        }
+        if (!definition.disallowedTools().isEmpty()) {
+            front.append("disallowedTools: ")
+                    .append(String.join(", ", definition.disallowedTools())).append('\n');
+        }
+        return front.append("---\n\n").append(definition.systemPrompt()).append('\n').toString();
     }
 
     private static SubagentDefinition definitionObject(String name, String tool) {

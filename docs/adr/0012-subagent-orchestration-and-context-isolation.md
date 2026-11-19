@@ -3,6 +3,15 @@
 ---
 status: accepted
 date: 2026-10-24
+> **修订（2026-11-19）：委派工具改用库的 `TaskTool`，本 ADR「Considered Options」里那一条否决作废。**
+> 冲突点：原文以"库的 `SubagentExecutor` 拿不到 `ToolContext`"为由**否决了库**，于是自己写了
+> 整个工具与执行器。改成什么：**编排与工具形状用库**（`TaskTool` / `TaskOutputTool` /
+> `SubagentType`），我们只实现库留的扩展点（`SubagentResolver` / `SubagentExecutor`）；
+> 身份由一层装饰器在一次调用期间放进 `ThreadLocal`，后台任务由 `TaskRepository` 包装在提交时
+> 捕获、在后台线程里装回。**"拿不到 `ToolContext`"这个事实没变**（0.13.0 的签名仍是两参，
+> 2026-11-19 复核），变的是结论：它不是"所以自己写"，而是"用它的编排、把它缺的那一个参数补给它"。
+> 用户裁决原话：**"用官方标准库，是我们的要求"**。落在 `.scratch/default-agent-tools/issues/03-task-tool-switch.md`。
+
 ---
 
 委派（把一个多步骤任务交给专职 Subagent）实现为**父 Agent 的一个工具**（`Task`），

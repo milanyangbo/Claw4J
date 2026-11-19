@@ -255,8 +255,10 @@ tools:
   **首次委派时**才失败并点名，不是启动时：工具集要等 `Task` 这个 bean 建好才能取，装配期取会撞循环依赖。
 - 用父的身份，过同一套鉴权——**委派不提权**。
 
-**打开**：`--claw4j.subagents.directory=examples/subagents`。工具名 `Task`，动作 `delegate_task`。
-三个能直接抄的形状在 [`examples/subagents/`](examples/subagents)。
+**打开**：`--claw4j.subagents.directory=examples/subagents`。工具名 `Task`，入参是库的
+`TaskCall`——`subagent_type` 派谁、`prompt` 让它做什么；要后台跑就加 `run_in_background: true`，
+再用 `TaskOutput` 按 `task_id` 取结论。三个能直接抄的形状在
+[`examples/subagents/`](examples/subagents)。
 
 **怎么确认**：`claw4j.tool.calls?tag=tool=Task&tag=outcome:ok` +1；把
 `--logging.level.org.springframework.ai=DEBUG` 打开还能看到
