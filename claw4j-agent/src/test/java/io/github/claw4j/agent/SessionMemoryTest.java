@@ -1,5 +1,6 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.memory.PrincipalMemoryAdvisor;
 import io.github.claw4j.agent.session.SessionEntryStore;
 import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.FaultTolerantSessionService;
@@ -21,6 +22,7 @@ import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.session.SessionVisibility;
 import io.github.claw4j.agent.session.SessionVisibilityProperties;
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
@@ -31,16 +33,22 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.session.CreateSessionRequest;
 import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.Session;
 import org.springframework.ai.session.SessionEvent;
 import org.springframework.ai.session.SessionService;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.session.compaction.CompactionRequest;
 import org.springframework.ai.session.compaction.CompactionResult;
 import org.springframework.ai.session.compaction.CompactionStrategy;
@@ -59,6 +67,9 @@ import org.springframework.jdbc.core.RowMapper;
 import org.mockito.InOrder;
 import org.springframework.transaction.CannotCreateTransactionException;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -78,6 +89,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -973,5 +985,101 @@ class SessionMemoryTest {
         assertThat(elevations.level("conversation-3"))
                 .as("30 分钟之后还在 full，等于把审批永久关掉了")
                 .isEqualTo(io.github.claw4j.domain.principal.Elevation.OFF);
+    }
+
+    @Test
+    @DisplayName("长期记忆按人分目录：甲写下的事实，乙那边看不见")
+    void eachPrincipalGetsItsOwnMemoryDirectory(@TempDir Path root) throws IOException {
+        PrincipalMemoryAdvisor advisor = new PrincipalMemoryAdvisor(root);
+
+        memoryCallback(advisor.before(memoryRequest(new Principal("alice")), null), "MemoryCreate")
+                .call("{\"path\":\"prefs.md\",\"fileText\":\"---\\nname: prefs\\n---\\n用 static final\"}");
+
+        try (Stream<Path> entries = Files.list(root)) {
+            assertThat(entries.filter(Files::isDirectory))
+                    .as("只该有甲那一层：目录按 userId 派生，不是所有人堆在根下")
+                    .hasSize(1);
+        }
+
+        assertThat(memoryCallback(
+                advisor.before(memoryRequest(new Principal("bob")), null), "MemoryView")
+                .call("{\"path\":\"prefs.md\"}"))
+                .as("乙的根是另一个目录，甲写过的文件名在那边不存在")
+                .contains("does not exist");
+
+        memoryCallback(advisor.before(memoryRequest(new Principal("../../etc/passwd")), null),
+                "MemoryCreate")
+                .call("{\"path\":\"escape.md\",\"fileText\":\"x\"}");
+        try (Stream<Path> entries = Files.list(root)) {
+            assertThat(entries.filter(Files::isDirectory))
+                    .as("三个人三层，且都在根下：身份里的 / 与 .. 不会把路径带出去")
+                    .hasSize(3)
+                    .allMatch(directory -> root.equals(directory.getParent()))
+                    .anyMatch(directory -> directory.getFileName().toString()
+                            .startsWith(".._.._etc_passwd-"));
+        }
+    }
+
+    @Test
+    @DisplayName("注入的是库那六个记忆工具，系统提示拼在人设后面")
+    void memoryToolsComeFromTheLibrary(@TempDir Path root) {
+        PrincipalMemoryAdvisor advisor = new PrincipalMemoryAdvisor(root);
+
+        ChatClientRequest request = advisor.before(memoryRequest(new Principal("alice")), null);
+
+        assertThat(memoryCallbacks(request))
+                .as("六个都是 AutoMemoryTools 的，没有一个是我们自己写的")
+                .contains("MemoryView", "MemoryCreate", "MemoryStrReplace",
+                        "MemoryInsert", "MemoryDelete", "MemoryRename");
+        assertThat(request.prompt().getSystemMessage().getText())
+                .as("人设还是开头，记忆那一段接在后面（order 必须大于 persona）")
+                .startsWith("人设")
+                .contains("persistent, file-based memory system");
+    }
+
+    @Test
+    @DisplayName("请求里没有身份：一个记忆工具都不注入，系统提示一个字不改")
+    void withoutAPrincipalNothingIsInjected(@TempDir Path root) throws IOException {
+        PrincipalMemoryAdvisor advisor = new PrincipalMemoryAdvisor(root);
+        ChatClientRequest original = memoryRequest(null);
+
+        ChatClientRequest result = advisor.before(original, null);
+
+        assertThat(result).as("没有身份就原样返回，不 fallback 到公共目录").isSameAs(original);
+        assertThat(memoryCallbacks(result)).isEmpty();
+        assertThat(result.prompt().getSystemMessage().getText()).isEqualTo("人设");
+        try (Stream<Path> entries = Files.list(root)) {
+            assertThat(entries).as("没有身份就不该在盘上留任何东西").isEmpty();
+        }
+    }
+
+    /** 一份带人设的最小请求；身份放在 context 里，与线上那条 {@code toolContext} 是同一个 map。 */
+    private static ChatClientRequest memoryRequest(Principal principal) {
+        Map<String, Object> context = principal == null
+                ? Map.of() : Map.of(ContextKeys.PRINCIPAL, principal);
+        return ChatClientRequest.builder()
+                .prompt(new Prompt(List.of(new SystemMessage("人设"), new UserMessage("问一句")),
+                        ToolCallingChatOptions.builder().build()))
+                .context(context)
+                .build();
+    }
+
+    private static List<String> memoryCallbacks(ChatClientRequest request) {
+        return toolCallbacks(request).stream()
+                .map(callback -> callback.getToolDefinition().name())
+                .toList();
+    }
+
+    private static ToolCallback memoryCallback(ChatClientRequest request, String name) {
+        return toolCallbacks(request).stream()
+                .filter(callback -> name.equals(callback.getToolDefinition().name()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("注入的工具里没有 " + name));
+    }
+
+    private static List<ToolCallback> toolCallbacks(ChatClientRequest request) {
+        List<ToolCallback> callbacks =
+                ((ToolCallingChatOptions) request.prompt().getOptions()).getToolCallbacks();
+        return callbacks == null ? List.of() : callbacks;
     }
 }

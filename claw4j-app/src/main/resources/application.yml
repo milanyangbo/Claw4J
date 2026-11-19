@@ -443,6 +443,11 @@ claw4j:
   # ---- 能力层：配了目录才有，不配就没有 ----
   # claw4j.skills.directory / claw4j.subagents.directory / claw4j.rag.directory
   # 这里不给默认值：给一个默认目录就等于默认打开这一层。怎么开见 README-adding-capabilities.md。
+  #
+  # 长期记忆（claw4j.agent.memory.directory）也走这一条：它下面**每人一个子目录**，
+  # 目录名由 userId 派生（安全化 + 哈希后缀，两个人撞不进同一层）。配了之后模型会自己
+  # 用 Memory* 那几个工具读写它，写进去的是**明文** Markdown——与会话表/审计的脱敏口径不同，
+  # 理由与缺口见 docs/design/long-term-memory.md。
 
 # ---- 运维面：指标与服务端口分开 ----
 # 指标里有"谁被拒了几次""花了多少 token"，与业务端口混在一起的话，"能发消息"就等于"能看运营数据"。
