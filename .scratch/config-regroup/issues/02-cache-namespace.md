@@ -1,5 +1,7 @@
 # 02: 语义缓存的配置也收到 `claw4j.advisor` 下
 
+裁决见 [ADR-0031](../../../docs/adr/0031-config-namespace-and-provider-table.md)。
+
 **What to build:** `claw4j.cache.*` → `claw4j.advisor.cache.*`。01 把 session / memory / tool-search
 三块归到 `advisor` 下时漏了它，配置仍散在两处。
 

@@ -137,3 +137,50 @@ echo "票面引用 ${total} 条，全部对得上仓库里的测试。"
 if [ "$total" -eq 0 ]; then
     echo "注意：一条引用都没提出来。多半是票面写法变了（用例名没放进反引号），这一步现在什么也没验。"
 fi
+
+# 4. 新增的票必须交代两件事：裁决在哪（ADR）、以及「TDD 用例清单」（2026-11-20 起）。历史票不追。
+#
+# 为什么只看新增：仓库里 126 张 resolved 的票有 101 张没有这张表、也没有 ADR 指针
+# （07 之前是"验收"小节，不是这三列）。要求全仓合规就是 101 张红，红完没人补。
+# 用户 2026-11-20 裁决："缺 ADR 和票里没 TDD 表，历史就不管了，新的必须有 tdd"。
+#
+# 判据是 git 里的"还没进 HEAD"：未跟踪 `??` 或已暂存的 `A`。所以**这道闸在提交前跑才有意义**，
+# 提交之后就查不到了——与"另一个人 clone 下来"的那种漂移无关，这里只管"我这次新写的票"。
+#
+# ADR 那一半认三种写法，写不出就说明还没想：`docs/adr/00xx`（链接或路径）、`ADR-00xx`（编号），
+# 或 `无需 ADR：<理由>`（改文案、挑实现这类自己定的事，写清为什么不需要）。
+NEW_TICKETS=$(git status --porcelain -uall -- .scratch 2>/dev/null \
+    | grep -E '^(A[A-Z]? |\?\?)' \
+    | cut -c4- \
+    | grep -E '(^|/)issues/[^/]+\.md$')
+
+ticket_missing=0
+if [ -n "$NEW_TICKETS" ]; then
+    while IFS= read -r ticket; do
+        [ -f "$ticket" ] || continue
+        if ! grep -qE '(docs/adr/00[0-9]{2}|ADR-00[0-9]{2}|无需 ADR)' "$ticket"; then
+            echo "红：新增的票没交代裁决在哪（写 docs/adr/00xx 或 ADR-00xx；确实不需要就写「无需 ADR：<理由>」）：$ticket"
+            ticket_missing=$((ticket_missing + 1))
+        fi
+        if ! grep -q '^## TDD 用例清单' "$ticket"; then
+            echo "红：新增的票没有「TDD 用例清单」一节：$ticket"
+            ticket_missing=$((ticket_missing + 1))
+            continue
+        fi
+        # resolved 的票还要求一条复核记录（"只写 ✅ 不写依据也算没验证"）。
+        if grep -q '^\*\*Status:\*\* *\(resolved\|done\)' "$ticket" \
+            && ! grep -q '复核：' "$ticket"; then
+            echo "红：新增的票标了 resolved，却没有「复核：<日期> <命令>」记录：$ticket"
+            ticket_missing=$((ticket_missing + 1))
+        fi
+    done <<< "$NEW_TICKETS"
+fi
+
+if [ "$ticket_missing" -ne 0 ]; then
+    echo
+    echo "新票要交代两件事，都是动代码之前就该有的（AGENTS.md「ADR → 票 → 代码，顺序不能换」）："
+    echo "  1. 裁决在哪：docs/adr/00xx 或 ADR-00xx；确实不需要就写「无需 ADR：<理由>」。"
+    echo "  2. 「TDD 用例清单」：判什么行为 + 用例名（放反引号里）+ 先红的样子，收票时标 ✅ / ❌ / ⏳，"
+    echo "     下面补一行「复核：<日期> <命令>」。写不出「先红的样子」，说明还没想清要改什么。"
+    exit 1
+fi

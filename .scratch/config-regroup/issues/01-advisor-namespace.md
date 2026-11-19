@@ -1,5 +1,7 @@
 # 01: 配置收到 `claw4j.advisor` 下，工具检索支持三种索引
 
+裁决见 [ADR-0031](../../../docs/adr/0031-config-namespace-and-provider-table.md)。
+
 **What to build:** 把三块"链上/记忆"的配置收到同一个前缀下，并把工具检索从"只有一种索引"改成可选的三种。
 
 ## 一、前缀归并
