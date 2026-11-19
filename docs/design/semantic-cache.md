@@ -102,13 +102,15 @@
 
 这两条不由我们再包一层去抹平——抹平就是自研，而"缓存不参与可用性"这条承诺本身
 是跟着旧实现长出来的，现在改成"缓存与数据库同级"。要保住可用性只有一个办法：
-`claw4j.cache.enabled=false`，整套不装。
+`claw4j.advisor.cache.enabled=false`，整套不装。
 
 ## 装配与配置
 
-- `claw4j.cache.enabled`（默认 true）+ `QwenModelCondition`：没有向量能力就不装。
-- `claw4j.cache.similarity-threshold`：默认 0.93。
-- `claw4j.cache.redis-uri`：默认 `redis://127.0.0.1:6379`。
+- 键在 `claw4j.advisor.cache`：它挂的是链上的一个 advisor（命中就直接返回），与
+  `advisor.session` / `advisor.memory` / `advisor.tool-search` 并列。
+- `claw4j.advisor.cache.enabled`（默认 true）+ `QwenModelCondition`：没有向量能力就不装。
+- `claw4j.advisor.cache.similarity-threshold`：默认 0.93。
+- `claw4j.advisor.cache.redis-uri`：默认 `redis://127.0.0.1:6379`。
 - 镜像必须是 **Redis Stack**（`redis/redis-stack-server`）：普通 Redis 没有 RediSearch，
   向量索引建不出来。compose 里已经加好。
 

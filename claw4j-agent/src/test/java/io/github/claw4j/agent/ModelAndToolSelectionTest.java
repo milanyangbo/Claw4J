@@ -1,6 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.model.ModelFailures;
+import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.agent.model.ModelRoutingException;
 import io.github.claw4j.agent.model.RoutingChatModel;
 
@@ -612,6 +613,53 @@ class ModelAndToolSelectionTest {
     }
 
     /**
+     * 供应商写成一张表之后，绑定与查找这一层怎么保证不出错。
+     *
+     * <p>三件事：{@code name} 在 yaml 里写在第几行都不影响绑定（表里一项的字段顺序是自由的，
+     * 而 {@code name} 恰恰是别人写配置时最容易放到最后的那个）；读的一方拿不到空指针；
+     * 装配的一方拿不到的是异常而不是空壳——这两种取法混用会把"没配这一家"变成"配了但字段是空"。
+     */
+    @Test
+    @DisplayName("providers 是一张表：按 name 找得到，缺了 require 抛、provider 给空壳；重名起不来")
+    void providerTableBindsByName() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues(
+                        // name 故意写在 api-key / model 之后：绑定不能依赖 yaml 里的书写顺序
+                        "claw4j.model.providers[0].base-url=https://api.deepseek.com",
+                        "claw4j.model.providers[0].api-key=secret:deepseek_api_key",
+                        "claw4j.model.providers[0].model=deepseek-chat",
+                        "claw4j.model.providers[0].name=deepseek",
+                        "claw4j.model.providers[1].name=qwen",
+                        "claw4j.model.providers[1].model=qwen-plus")
+                .run(context -> {
+                    ModelProperties bound = context.getBean(ModelProperties.class);
+                    assertThat(bound.names()).containsExactly("deepseek", "qwen");
+                    assertThat(bound.provider("deepseek").getModel()).isEqualTo("deepseek-chat");
+                    assertThat(bound.provider("qwen").apiKey().isAbsent())
+                            .as("那一条没写 api-key：这一家就是没配")
+                            .isTrue();
+                    assertThat(bound.provider("nope").name())
+                            .as("读的一方不该为缺失写空判断")
+                            .isEqualTo("nope");
+                    assertThatThrownBy(() -> bound.require("nope"))
+                            .isInstanceOf(IllegalStateException.class)
+                            .as("装配的一方必须失败，并且说清现在配了哪几家")
+                            .hasMessageContaining("deepseek")
+                            .hasMessageContaining("qwen");
+                });
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues(
+                        "claw4j.model.providers[0].name=deepseek",
+                        "claw4j.model.providers[1].name=deepseek")
+                .run(context -> assertThat(context)
+                        .as("两家同名时哪一条生效取决于绑定顺序，这种不确定性不该存在于配置里")
+                        .hasFailed());
+    }
+
+    /**
      * 流式路径走的是另一对钩子（{@code doInitializeLoopStream} / {@code doBeforeStream}）。
      *
      * <p>生产上真正的入口是 SSE：只给检索工具、追加那段提示词这两件事都发生在流式钩子上，
@@ -776,7 +824,7 @@ class ModelAndToolSelectionTest {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @EnableConfigurationProperties(ToolSearchProperties.class)
+    @EnableConfigurationProperties({ToolSearchProperties.class, ModelProperties.class})
     static class BindingOnly {
     }
 

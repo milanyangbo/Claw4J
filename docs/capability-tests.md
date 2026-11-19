@@ -485,7 +485,7 @@ claw4j:
 
 - **派活是两步**。模型一开始只看得见 `toolSearchTool`（`ToolSearch.SYSTEM_SUFFIX`），要先检索出
   `Task` 才调得到它。所以"零计数"要先看检索有没有把 `Task` 交出去，再看调用。
-- **复测时关掉语义缓存**：`--claw4j.cache.enabled=false`。缓存会把上一轮的回答（包括"派不出去"
+- **复测时关掉语义缓存**：`--claw4j.advisor.cache.enabled=false`。缓存会把上一轮的回答（包括"派不出去"
   这种失败回执）按相似度复用，`0.93` 阈值下换个说法照样命中——实测同一个问题换个用户、换个实例，
   拿到的是一字不差的旧回答。不关缓存，测出来的是缓存，不是能力。
 - 同理，同一个 `X-Claw4j-User` 连测多轮会累积对话记忆，模型可能"记得"上次失败而拒绝重试；
@@ -640,12 +640,12 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 1. `hit toolSearchTool` 涨没涨：没涨是工具循环没装上；涨了但目标工具没涨，是**检索没找到**（那句话没带关键词）；
 2. `hit <工具>` 没涨、回答里说"没有这个工具" = 它不在清单里（档位 / `deny` / `tool-filter` 排掉了）；
    `hit <工具> denied` 涨了 = 要人批的工具被拒了（审批那张表上有对应的一行）；
-3. 语义缓存：命中时**工具与模型都不会被调用**（框架的命中不再打标记、也不报 `hit` 指标，判据是日志里没有这一轮模型调用）——换个人、换说法，或加 `--claw4j.cache.enabled=false` 对比；
+3. 语义缓存：命中时**工具与模型都不会被调用**（框架的命中不再打标记、也不报 `hit` 指标，判据是日志里没有这一轮模型调用）——换个人、换说法，或加 `--claw4j.advisor.cache.enabled=false` 对比；
 4. 最后才看模型措辞。
 
 ## 2026-11-18 全量真跑记录（ADR-0030 改完后的第一次）
 
-跑法：`--spring.profiles.active=local --claw4j.cache.enabled=false`，三个目录给全，
+跑法：`--spring.profiles.active=local --claw4j.advisor.cache.enabled=false`，三个目录给全，
 人设 `--claw4j.agent.default=ops`（full 档）。每条换一个用户，避免会话记忆把上一轮结论带进来。
 
 | 节 | 结果 | 备注 |

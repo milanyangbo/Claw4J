@@ -55,7 +55,7 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 CLAW4J_POSTGRES_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16   # 国内拉不到官方镜像时
 ```
 
-**配置里写的是句柄，不是 key**（P08）：`claw4j.model.deepseek.api-key: secret:deepseek_api_key`
+**配置里写的是句柄，不是 key**（P08）：`claw4j.model.providers[0].api-key: secret:deepseek_api_key`
 ——句柄名是环境变量名的小写写法，真值在发请求那一刻才被换出来，于是配置、日志、审计、
 模型上下文里只有名字。写了句柄却没有对应变量，启动就失败，报错只说名字。
 `env` / `headers` 里也一样；非凭据常量用 `plain:` 前缀。

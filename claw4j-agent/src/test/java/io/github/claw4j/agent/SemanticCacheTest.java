@@ -149,23 +149,27 @@ class SemanticCacheTest {
                 .withConfiguration(AutoConfigurations.of(CacheAutoConfiguration.class))
                 .withBean(SemanticCache.class, () -> mock(SemanticCache.class))
                 .withBean(ModelProperties.class, () -> {
+                    ModelProperties.Provider qwen = new ModelProperties.Provider();
+                    qwen.setName(ModelProperties.QWEN);
+                    qwen.setApiKey("secret:qwen_api_key");
+                    qwen.setBaseUrl("http://127.0.0.1:9/v1");
                     ModelProperties properties = new ModelProperties();
-                    properties.getQwen().setApiKey("secret:qwen_api_key");
-                    properties.getQwen().setBaseUrl("http://127.0.0.1:9/v1");
+                    properties.setProviders(List.of(qwen));
                     return properties;
                 })
                 // 句柄在属性里、真值在环境里（P08）：两处都写，走的才是生产那条路。
                 .withPropertyValues(
-                        "claw4j.model.qwen.api-key=secret:qwen_api_key",
+                        "claw4j.model.providers[0].name=qwen",
+                        "claw4j.model.providers[0].api-key=secret:qwen_api_key",
                         "QWEN_API_KEY=test-key",
-                        "claw4j.model.qwen.base-url=http://127.0.0.1:9/v1");
+                        "claw4j.model.providers[0].base-url=http://127.0.0.1:9/v1");
 
         // 先证明"开着时确实装了"。没有这一半，条件写错成"永不匹配"时，下半条照样绿
         runner.run(context -> assertThat(context)
                 .as("默认开着：不配这个键就等于开着")
                 .hasSingleBean(SemanticCacheAdvisor.class));
 
-        runner.withPropertyValues("claw4j.cache.enabled=false").run(context -> assertThat(context)
+        runner.withPropertyValues("claw4j.advisor.cache.enabled=false").run(context -> assertThat(context)
                 .as("关掉就该一个都不剩，包括 Advisor")
                 .doesNotHaveBean(SemanticCacheAdvisor.class));
     }

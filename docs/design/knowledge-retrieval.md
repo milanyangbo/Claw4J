@@ -412,7 +412,7 @@ claw4j:
       base-url: https://dashscope.aliyuncs.com/compatible-api/v1
       model: qwen3-rerank
       timeout: 2s
-      # key 不在这里：复用 claw4j.model.qwen.api-key（secret:qwen_api_key），不引第二把钥匙
+      # key 不在这里：复用 providers 里 name=qwen 那一条的 api-key（secret:qwen_api_key），不引第二把钥匙
 ```
 
 `rrf-k` 不做成配置：60 是论文默认值，调它没有可依据的目标，多一个旋钮只会让

@@ -217,7 +217,9 @@ public class RagAutoConfiguration {
     public RerankDocumentPostProcessor knowledgeReranker(ModelProperties model, RagProperties properties,
                                                          Environment environment) {
         ObjectMapper json = new ObjectMapper();
-        ModelProperties.Qwen qwen = model.getQwen();
+        // 用宽容的那个取法（provider 而不是 require）：重排不是启动前提，没有 qwen 那一条时
+        // 拿到的是一份空壳，key 为空，重排请求会失败——与"配了句柄但没有真值"今天的样子一致。
+        ModelProperties.Provider qwen = model.provider(ModelProperties.QWEN);
         SecretResolver secrets = SpringSecretResolver.of(environment);
         HttpClient http = HttpClient.newBuilder()
                 .connectTimeout(properties.rerank().timeout())

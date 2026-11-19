@@ -60,11 +60,12 @@ public class RoutingModelConfiguration {
         putIfPresent(available, context, ModelProperties.DEEPSEEK, ModelConfiguration.DEEPSEEK_BEAN);
         putIfPresent(available, context, ModelProperties.QWEN, ModelConfiguration.QWEN_BEAN);
 
+        requireAdapter(properties);
         String primary = properties.getPrimary();
-        if (!primary.equals(ModelProperties.DEEPSEEK) && !primary.equals(ModelProperties.QWEN)) {
+        if (!properties.names().contains(primary)) {
             // 拼错的 supplier 名字与"名字对但没给 key"是两种不同的错，分开说才不用猜。
-            throw new IllegalStateException("claw4j.model.primary=" + primary + " 不是已知的供应商，"
-                    + "可选值为 " + ModelProperties.DEEPSEEK + " / " + ModelProperties.QWEN + "。");
+            throw new IllegalStateException("claw4j.model.primary=" + primary + " 不在 claw4j.model.providers 里，"
+                    + "表里配的是 " + properties.names() + "。");
         }
         if (!available.containsKey(primary)) {
             // 主模型那家没配 key 就启动失败，而不是悄悄拿备用的顶上：
@@ -91,6 +92,27 @@ public class RoutingModelConfiguration {
                         : List.of());
 
         return new RoutingChatModel(routes);
+    }
+
+    /**
+     * 表里每一条都得有适配器。没有的话，那一行配置会静默不生效——"我明明加了一家供应商"与
+     * "它到底在不在链上"从此对不上，所以在这里直接拒掉。
+     *
+     * <p>适配器和供应商不是一回事：供应商是配置，适配器是 Java 类（DeepSeek 官方 API 一种、
+     * OpenAI 兼容端点一种）。加一家走 OpenAI 兼容端点的供应商要同时加一个 bean，
+     * 见 {@link ModelConfiguration}。
+     *
+     * @param properties 模型配置
+     * @throws IllegalStateException 表里有一个没有适配器的名字
+     */
+    private static void requireAdapter(ModelProperties properties) {
+        for (String name : properties.names()) {
+            if (!ModelProperties.DEEPSEEK.equals(name) && !ModelProperties.QWEN.equals(name)) {
+                throw new IllegalStateException("claw4j.model.providers 里有一条 name=" + name
+                        + "，但没有对应的适配器。现在只认 " + ModelProperties.DEEPSEEK + "（DeepSeek 官方 API）与 "
+                        + ModelProperties.QWEN + "（OpenAI 兼容端点）；加一家要同时加一个 ChatModel bean。");
+            }
+        }
     }
 
     /**

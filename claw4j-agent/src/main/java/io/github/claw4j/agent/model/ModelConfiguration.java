@@ -55,21 +55,22 @@ public class ModelConfiguration {
     public static final String QWEN_BEAN = "qwenChatModel";
 
     /**
-     * DeepSeek 的模型 bean（主）。只在 {@code claw4j.model.deepseek.api-key} 有值时装。
+     * DeepSeek 的模型 bean（主）。只在 {@code claw4j.model.providers} 里 name=deepseek 那条的
+     * {@code api-key} 有真值时装。
      *
      * <p>超时是必须项：不设的话，同步调用会在 Tomcat 请求线程上无限等。两个路径语义不同——
      * 同步（RestClient）要 connect + read 两者，一次调用就该有始有终；流式（WebClient）只设
      * connect，read 超时会掐断长回答，整体上限交给 HTTP 通道的 streamTimeout 与取消传播。
      * 用 JDK 自带的 HttpClient，不为此引 reactor-netty。
      *
-     * @param properties  模型配置，取 DeepSeek 那一段
+     * @param properties  模型配置，取 name=deepseek 那一条
      * @param environment 用来解析密钥句柄
      * @return DeepSeek 的同步与流式聊天模型
      */
     @Bean(DEEPSEEK_BEAN)
     @Conditional(DeepSeekModelCondition.class)
     public ChatModel deepSeekChatModel(ModelProperties properties, Environment environment) {
-        ModelProperties.DeepSeek config = properties.getDeepseek();
+        ModelProperties.Provider config = properties.require(ModelProperties.DEEPSEEK);
         SecretResolver secrets = SpringSecretResolver.of(environment);
         requireConfigured(config, secrets);
 
@@ -119,14 +120,14 @@ public class ModelConfiguration {
      * 所以取 readTimeout，连接建立由底层 okhttp 的默认超时兜底。SDK 内部的重试关掉——重试与
      * {@code RoutingChatModel} 的降级叠加会把"换一家试试"拖成"在这一家上死等三轮"。
      *
-     * @param properties  模型配置，取通义那一段
+     * @param properties  模型配置，取 name=qwen 那一条
      * @param environment 用来解析密钥句柄
      * @return 走 OpenAI 兼容端点的同步与异步聊天模型
      */
     @Bean(QWEN_BEAN)
     @Conditional(QwenModelCondition.class)
     public ChatModel qwenChatModel(ModelProperties properties, Environment environment) {
-        ModelProperties.Qwen config = properties.getQwen();
+        ModelProperties.Provider config = properties.require(ModelProperties.QWEN);
         SecretResolver secrets = SpringSecretResolver.of(environment);
         requireConfigured(config, secrets);
 
@@ -182,16 +183,18 @@ public class ModelConfiguration {
             throw new IllegalStateException(
                     "没有配置任何 API key，应用拒绝启动（ADR-0011 起不再降级到 mock 模型）。二选一："
                             + "① 仓库根目录放 .env 并用 local profile 启动（.env 由它 import）；"
-                            + "② 直接设环境变量 DEEPSEEK_API_KEY 或 QWEN_API_KEY"
+                            + "② 直接设环境变量 " + config.envPrefix() + "_API_KEY"
                             + "（IDEA：Run Configuration → Environment variables）。"
-                            + "配置里写的是句柄，不是 key：claw4j.model.deepseek.api-key: secret:deepseek_api_key");
+                            + "配置里写的是句柄，不是 key：claw4j.model.providers 里 name="
+                            + config.name() + " 那条的 api-key: secret:" + config.name() + "_api_key");
         }
         // 配了句柄却没有真值：在这里失败，别等到第一次提问。
         config.apiKey().requireResolvable(secrets);
         if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()
                 || config.getModel() == null || config.getModel().isBlank()) {
             throw new IllegalStateException(
-                    "claw4j.model." + config.name() + ".base-url / model 未配置，唯一默认值在 application.yml。"
+                    "claw4j.model.providers 里 name=" + config.name() + " 那条的 base-url / model 未配置，"
+                            + "唯一默认值在 application.yml。"
                             + "可用环境变量 " + config.envPrefix() + "_BASE_URL / "
                             + config.envPrefix() + "_MODEL 覆盖。");
         }

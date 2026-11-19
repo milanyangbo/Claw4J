@@ -24,12 +24,12 @@ import org.springframework.core.env.Environment;
 /**
  * 向量模型：一个部署只有一份，缓存的与知识库的消费者共用。
  *
- * <p>独立于缓存（P10）：不带 {@code claw4j.cache.enabled} 这个条件。语义缓存是省钱开关、
+ * <p>独立于缓存（P10）：不带 {@code claw4j.advisor.cache.enabled} 这个条件。语义缓存是省钱开关、
  * 知识库是功能，两者的变更节奏不同——绑在一起的话，关掉缓存会连带让知识库起不来。
  * 条件只剩"配了通义 key"，两个消费者各用各的。
  *
  * <p>只有通义这一家：DeepSeek 没有 embedding 接口，所以向量能力跟着
- * {@code claw4j.model.qwen.*} 那套凭据走，不新增配置、也不新增一把钥匙。
+ * {@code providers} 里 name=qwen 那一条的凭据走，不新增配置、也不新增一把钥匙。
  *
  * <p>用 {@code OpenAiEmbeddingModel}：通义提供的是 OpenAI 兼容端点
  * （{@code /compatible-mode/v1}），与 {@code qwenChatModel} 同一个接缝。
@@ -60,7 +60,7 @@ public class EmbeddingAutoConfiguration {
     @ConditionalOnMissingBean(EmbeddingModel.class)
     public EmbeddingModel embeddingModel(ModelProperties model, EmbeddingProperties embedding,
                                         Environment environment) {
-        ModelProperties.Qwen qwen = model.getQwen();
+        ModelProperties.Provider qwen = model.require(ModelProperties.QWEN);
         SecretResolver secrets = SpringSecretResolver.of(environment);
         SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()
                 .timeout(qwen.getReadTimeout())

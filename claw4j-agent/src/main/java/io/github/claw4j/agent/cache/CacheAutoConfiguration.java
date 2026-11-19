@@ -38,7 +38,7 @@ import redis.clients.jedis.RedisClient;
 @AutoConfiguration(after = EmbeddingAutoConfiguration.class)
 @ConditionalOnClass({SemanticCache.class, SemanticCacheAdvisor.class, RedisVectorStore.class})
 @Conditional(QwenModelCondition.class)
-@ConditionalOnProperty(value = "claw4j.cache.enabled", matchIfMissing = true)
+@ConditionalOnProperty(value = "claw4j.advisor.cache.enabled", matchIfMissing = true)
 @EnableConfigurationProperties(CacheProperties.class)
 public class CacheAutoConfiguration {
 

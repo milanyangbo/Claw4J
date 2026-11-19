@@ -107,7 +107,7 @@ class EvalRunTest {
         // 语义缓存要关掉：上下文键是权限指纹加问题里的时间词与数字，不含区域词，
         // 所以「上周华东」与「上周华南」在它看来是同一个问题，后一条直接拿到前一条的答案、
         // 工具一次都不调，判出来是轨迹没命中。缓存本身有它自己的用例，不在这一份里判。
-        registry.add("claw4j.cache.enabled", () -> "false");
+        registry.add("claw4j.advisor.cache.enabled", () -> "false");
     }
 
     @Autowired
@@ -261,8 +261,7 @@ class EvalRunTest {
     }
 
     private Map<String, Object> modelInfo() {
-        boolean deepseek = ModelProperties.DEEPSEEK.equals(models.getPrimary());
-        ModelProperties.Provider provider = deepseek ? models.getDeepseek() : models.getQwen();
+        ModelProperties.Provider provider = models.require(models.getPrimary());
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("primary", models.getPrimary());
         info.put("model", provider.getModel());

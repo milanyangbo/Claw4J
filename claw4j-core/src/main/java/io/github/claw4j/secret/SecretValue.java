@@ -82,7 +82,7 @@ public final class SecretValue {
      * 日志里去——这正是本票要防的事。
      *
      * @param raw        配置里写的原文
-     * @param where      配置项全名，例如 {@code claw4j.model.deepseek.api-key}
+     * @param where      配置项全名，例如 {@code claw4j.model.providers[0].api-key}
      * @param allowPlain 是否接受 {@code plain:}。凭据位一律 false（模型 key 这种"只能是凭据"的
      *                   位置，连明文常量都没有存在的理由）
      * @return 校验过的值；{@code raw} 为空时是 {@link #absent()}

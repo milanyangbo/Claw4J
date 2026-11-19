@@ -11,14 +11,18 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * <p>字段用包装类型：配置绑定对缺失的键只能传 null，原始类型会被填成 0，而这里的 0 是坏值
  * （阈值 0 等于任何候选都算命中）。
  *
+ * <p>键在 {@code claw4j.advisor.cache}：它挂的是 Advisor 链上的一个 advisor（命中就直接返回，
+ * 这一轮不调模型），与 {@code advisor.session} / {@code advisor.memory} / {@code advisor.tool-search}
+ * 是同一类东西，所以放一处。
+ *
  * <p>没有 {@code enabled} 字段：总开关由 {@code CacheAutoConfiguration} 类上那个
- * {@code @ConditionalOnProperty} 读 {@code claw4j.cache.enabled} 判定，关掉即整套不装。
+ * {@code @ConditionalOnProperty} 读 {@code claw4j.advisor.cache.enabled} 判定，关掉即整套不装。
  * 同一个键在两处判断迟早会不一致，表现是"配了关但还在缓存"（pitfalls 第十条）。
  *
  * @param similarityThreshold 余弦相似度到多少算"同一个问题"
  * @param redisUri            缓存实例的地址；语义缓存落 Redis Stack（RediSearch + RedisJSON）
  */
-@ConfigurationProperties("claw4j.cache")
+@ConfigurationProperties("claw4j.advisor.cache")
 public record CacheProperties(Double similarityThreshold, String redisUri) {
 
     /** 默认与本机 compose 里的那个服务一致。 */

@@ -38,17 +38,20 @@ spring:
 
 claw4j:
   # ---- 模型 ----
-  # primary 先用，另一个兜底。两家都配就自动容灾；一个 key 都没有则启动失败。
+  # primary 先用，表里其余几家兜底。都配就自动容灾；一个 key 都没有则启动失败。
+  # 一行一家。加一行只能改端点与模型名；要新增一家"供应商"还得有对应的 ChatModel bean，
+  # 少了那个 bean 启动时会点名，不会静默忽略。name 不能重，也不能为空。
   model:
     primary: ${CLAW4J_MODEL_PRIMARY:deepseek}
-    deepseek:
-      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-      api-key: secret:deepseek_api_key
-      model: ${DEEPSEEK_MODEL:deepseek-chat}
-    qwen:
-      base-url: ${QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-      api-key: secret:qwen_api_key
-      model: ${QWEN_MODEL:qwen-plus}
+    providers:
+      - name: deepseek
+        base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+        api-key: secret:deepseek_api_key
+        model: ${DEEPSEEK_MODEL:deepseek-chat}
+      - name: qwen
+        base-url: ${QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+        api-key: secret:qwen_api_key
+        model: ${QWEN_MODEL:qwen-plus}
 
     # 向量模型：语义缓存与知识库共用这一份，只跟 qwen key 走。
     embedding:
@@ -133,8 +136,8 @@ claw4j:
     # 命中时回给用户的话。别写命中了哪个词，那等于把词表告诉想绕过的人。
     # failure-response: 这条消息我没法处理，换个说法再试一次。
 
-  # ---- 链上跑的东西：会话记忆、长期记忆、工具检索 ----
-  # 三个都挂在 Advisor 链上（会话记忆、长期记忆、工具循环），配置放一处便于一起调。
+  # ---- 链上跑的东西：会话记忆、长期记忆、工具检索、语义缓存 ----
+  # 四个都挂在 Advisor 链上（会话记忆、长期记忆、工具循环、语义缓存），配置放一处便于一起调。
   advisor:
     session:
       # 私聊怎么分段：
@@ -185,6 +188,16 @@ claw4j:
       lucene:
         # 命中分下限（0–1），只在 index=lucene 时生效。低于它的候选不返回。
         min-score: 0.25
+
+    # ---- 语义缓存：问过的问题不再花第二次钱 ----
+    # 命中就返回上次的回答，这一轮不调模型。配了通义 key 才装配。
+    # 它是强依赖：索引在启动时建，连不上就启动失败。
+    cache:
+      enabled: ${CLAW4J_CACHE_ENABLED:true}
+      # 0.93 取的是"宁漏不误"：漏了只是没省到钱，误了会答错。
+      similarity-threshold: ${CLAW4J_CACHE_THRESHOLD:0.93}
+      # 必须 Redis Stack（带向量检索），普通 Redis 建不出索引。
+      redis-uri: ${CLAW4J_CACHE_REDIS_URI:redis://127.0.0.1:6379}
 
   # ---- 需要库的几样：审计、审批、投递、定时任务 ----
   # 关掉之后：判了不留痕、批了查不到、到点没人跑。
@@ -366,16 +379,6 @@ claw4j:
     sessions:
       visibility: ${CLAW4J_SESSION_VISIBILITY:all}
 
-  # ---- 语义缓存：问过的问题不再花第二次钱 ----
-  # 命中就返回上次的回答，这一轮不调模型。配了通义 key 才装配。
-  # 它是强依赖：索引在启动时建，连不上就启动失败。
-  cache:
-    enabled: ${CLAW4J_CACHE_ENABLED:true}
-    # 0.93 取的是"宁漏不误"：漏了只是没省到钱，误了会答错。
-    similarity-threshold: ${CLAW4J_CACHE_THRESHOLD:0.93}
-    # 必须 Redis Stack（带向量检索），普通 Redis 建不出索引。
-    redis-uri: ${CLAW4J_CACHE_REDIS_URI:redis://127.0.0.1:6379}
-
   # ---- 知识库：按文档回答问题，答案带出处 ----
   # 默认关：它要一份文档目录和一次 embedding 调用。开着就必须能用——
   # 缺目录、目录空、算不出向量都是启动失败，不给你一个"每次都说没有资料"的空库。
@@ -408,7 +411,7 @@ claw4j:
       model: ${CLAW4J_RAG_RERANK_MODEL:qwen3-rerank}
       # 它在每轮检索的路上，用户等的是首字。超时或报错一律按原顺序继续。
       timeout: 2s
-      # 凭据复用 claw4j.model.qwen.api-key，不另配一把。
+      # 凭据复用 providers 里 name=qwen 那一条的 api-key，不另配一把。
 
   # ---- 链路追踪：默认一段都不导 ----
   # 关着时不起线程、不留 exporter。开了却没配 endpoint 也一条不导，启动日志会点名缺哪项。

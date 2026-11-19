@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class SecretValueTest {
 
-    private static final String WHERE = "claw4j.model.deepseek.api-key";
+    private static final String WHERE = "claw4j.model.providers[0].api-key";
 
     /** 一份够用的假环境。真实实现在 capability 里，这里只要"能答出有没有"。 */
     private static SecretResolver env(Map<String, String> values) {

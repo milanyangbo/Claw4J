@@ -3,10 +3,10 @@ package io.github.claw4j.agent.model;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * 向量模型的两项配置，键在 {@code claw4j.model.embedding} 下，不在 {@code claw4j.cache} 下面。
+ * 向量模型的两项配置，键在 {@code claw4j.model.embedding} 下，不在 {@code claw4j.advisor.cache} 下面。
  *
  * <p>独立于缓存：向量模型有两个消费者——语义缓存（"这个问题问过没有"）与知识库
- * （"哪段文档相关"）。挂在 {@code claw4j.cache.enabled} 下面的话，"关掉语义缓存"这个省钱开关
+ * （"哪段文档相关"）。挂在 {@code claw4j.advisor.cache.enabled} 下面的话，"关掉语义缓存"这个省钱开关
  * 会连带关掉知识库要用的向量模型，失败的样子是"知识库起不来"。
  *
  * <p>条件只剩一条：配了通义那家的 key（DeepSeek 没有 embedding 接口）。关掉缓存之后这个 bean

@@ -40,7 +40,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents \
   --claw4j.agent.directory=examples/agents --claw4j.agent.default=ops \
-  --claw4j.cache.enabled=false
+  --claw4j.advisor.cache.enabled=false
 ```
 
 三个目录给全，A/B 两类才都能验。`agent.directory` 与 `default` 是 B3 与 A4 的前提（口径写在人设的
@@ -607,7 +607,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 默认开着。同一句话问两次（换用户也行），第二次 `ok` 计数**不涨**、回答一字不差 = 命中了缓存。
 相似度阈值 0.93，换用户、换进程、重启实例都挡不住它。
 
-**所以验能力时第一行参数必须带 `--claw4j.cache.enabled=false`。**
+**所以验能力时第一行参数必须带 `--claw4j.advisor.cache.enabled=false`。**
 
 ### D2 对话记忆：模型"记得"上一轮
 

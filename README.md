@@ -173,7 +173,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 `claw4j.*` 的每个键都有明确的拥有者，`application.yml` 里逐项写了默认值与"动它之前要知道什么"。
 最常改的几个：`claw4j.tools.profile`、`claw4j.tools.exec.*`、`claw4j.approval.*`、
 `claw4j.channel.*.users`、`claw4j.guard.sensitive-words-file`（词表在
-`examples/guard/sensitive-words.txt`，一行一个词）、`claw4j.cache.*`、`claw4j.rag.*`，
+`examples/guard/sensitive-words.txt`，一行一个词）、`claw4j.advisor.cache.*`、`claw4j.rag.*`，
 以及四个目录 `claw4j.{skills,subagents}.directory`、`claw4j.agent.directory`、`claw4j.rag.directory`。
 
 ## 模块

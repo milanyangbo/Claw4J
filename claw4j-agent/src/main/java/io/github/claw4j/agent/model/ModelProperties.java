@@ -1,12 +1,25 @@
 package io.github.claw4j.agent.model;
 
 import io.github.claw4j.secret.SecretValue;
+import jakarta.annotation.PostConstruct;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
 
 /**
  * 模型供应商的凭据、开关与路由顺序。
+ *
+ * <p>供应商写成**一张表**（{@code providers} 是一个列表，每项自带 {@code name}），不写成以名字为键的
+ * 嵌套节点。理由是每一条要配的东西是同一套（端点、凭据、模型名、两个超时、温度），表里一行就是一家；
+ * 加一家只是多一行，不必在 yaml 里再造一层缩进，也不必让"这一家的字段"与"上一家的字段"对齐着读。
+ * 代价认下来：{@code name} 是一个普通字段，写重了、写空了只有校验能发现，所以
+ * {@link #validateShape()} 在绑定时就查。
  *
  * <p>凭据是句柄，不是值（P08）：yaml 里写 {@code api-key: secret:deepseek_api_key}，真值在发请求
  * 那一刻才由 {@code SecretResolver} 从部署环境换出来。于是这个类、它的 toString、它的日志，
@@ -34,33 +47,103 @@ public class ModelProperties {
      */
     private String primary = DEEPSEEK;
 
-    private final DeepSeek deepseek = new DeepSeek();
-
-    private final Qwen qwen = new Qwen();
+    /** 供应商表，顺序即备选顺序（{@code primary} 那家永远排在第一个）。 */
+    private List<Provider> providers = new ArrayList<>();
 
     public String getPrimary() {
         return primary;
     }
 
     public void setPrimary(String primary) {
-        this.primary = primary == null ? "" : primary.trim().toLowerCase();
+        this.primary = primary == null ? "" : primary.trim().toLowerCase(Locale.ROOT);
     }
 
-    public DeepSeek getDeepseek() {
-        return deepseek;
+    public List<Provider> getProviders() {
+        return providers;
     }
 
-    public Qwen getQwen() {
-        return qwen;
+    public void setProviders(List<Provider> providers) {
+        this.providers = providers == null ? new ArrayList<>() : providers;
+    }
+
+    /** 表里配了哪几家，按配置顺序。报错信息与"primary 可选值"都用它。 */
+    public List<String> names() {
+        return providers.stream().map(Provider::name).filter(Objects::nonNull).toList();
     }
 
     /**
-     * 一个供应商要配的东西。两家共用同一套字段，装配与校验才能写成一份。
+     * 按名字取一家。**找不到不返回 null**，而是一个只带名字的空壳（凭据为空、端点为空）——
+     * 与"这一家没配"在语义上是一回事，读的一方因此不必处处判空。
+     *
+     * <p>装配层不要用它：那边缺一条就该让启动失败并说清缺哪条，那里用 {@link #require(String)}。
+     *
+     * @param name 供应商名
+     * @return 这一家的配置，或一个空壳
      */
-    public abstract static class Provider {
+    public Provider provider(String name) {
+        return providers.stream()
+                .filter(provider -> name.equals(provider.name()))
+                .findFirst()
+                .orElseGet(() -> Provider.absent(name));
+    }
 
-        /** 句柄，不是 key。取值只能经 {@link #apiKey()} 拿到，而它只肯吐出名字。 */
-        private SecretValue apiKey = SecretValue.absent();
+    /**
+     * 按名字取一家，缺了就抛。装配层专用：报错里带上"现在配了哪几家"，
+     * 因为这类错误的成因几乎都是"改了名字没改引用"。
+     *
+     * @param name 供应商名
+     * @return 这一家的配置
+     * @throws IllegalStateException 表里没有这一条
+     */
+    public Provider require(String name) {
+        return providers.stream()
+                .filter(provider -> name.equals(provider.name()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "claw4j.model.providers 里没有 name=" + name + " 这一条，现在配了 " + names() + "。"
+                                + "claw4j.model.primary=" + primary + "，两者指的不是同一家时会在这里对不上。"));
+    }
+
+    /**
+     * 绑定完就查形状：名字不能空、不能重。剩下两项（primary 指的是谁、这一家的 key 有没有真值）
+     * 要等容器起来才判，在装配层。
+     *
+     * @throws IllegalStateException 有空白名字或重名
+     */
+    @PostConstruct
+    void validateShape() {
+        Set<String> seen = new LinkedHashSet<>();
+        for (int index = 0; index < providers.size(); index++) {
+            Provider provider = providers.get(index);
+            String name = provider.name();
+            if (name == null || name.isBlank()) {
+                throw new IllegalStateException("claw4j.model.providers[" + index
+                        + "] 没有 name。每一条都要写名字：它是 primary 的取值，也是路由与日志里的称呼。");
+            }
+            if (!seen.add(name)) {
+                throw new IllegalStateException("claw4j.model.providers 里 name=" + name
+                        + " 出现了两次。两家同名时哪一条生效取决于绑定顺序，"
+                        + "这种不确定性不该存在于配置里。");
+            }
+        }
+    }
+
+    /**
+     * 一家供应商要配的东西。两家共用同一套字段，装配与校验才能写成一份。
+     */
+    public static class Provider {
+
+        /**
+         * 名字。写成可读字段而不是由子类覆写：供应商是一个列表，绑定层只认字段。
+         * 它是 {@code primary} 的取值，也是路由与日志里的称呼。
+         */
+        private String name;
+
+        /** 句柄原文。取值只能经 {@link #apiKey()} 拿到，而它只肯吐出名字。 */
+        private String apiKeyHandle;
+
+        /** {@link #apiKey()} 的解析结果，第一次要的时候才算。 */
+        private SecretValue apiKey;
 
         /**
          * 端点与模型名的默认值只活在 application.yml（ADR-0006）。
@@ -90,11 +173,27 @@ public class ModelProperties {
          */
         private Double temperature = 0.0;
 
-        /** 路由键，与 {@code claw4j.model.primary} 的取值对应。 */
-        public abstract String name();
+        /**
+         * "这一家没配"的空壳：只有名字，凭据与端点都是空。
+         *
+         * @param name 供应商名
+         * @return 空壳
+         */
+        static Provider absent(String name) {
+            Provider absent = new Provider();
+            absent.setName(name);
+            return absent;
+        }
 
-        /** 环境变量前缀，只用于启动失败时告诉人去哪里配。 */
-        public abstract String envPrefix();
+        public String name() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name == null ? null : name.trim().toLowerCase(Locale.ROOT);
+            // 名字变了，报错里的配置项名跟着变，缓存那份解析结果作废。
+            this.apiKey = null;
+        }
 
         /**
          * 这一家用的凭据句柄。空（{@code isAbsent()}）表示这一家没配。
@@ -103,20 +202,27 @@ public class ModelProperties {
          * 下一个人就会拿它去拼 header，那把钥匙就有了第二个出口。要真值只有一个入口——
          * {@code apiKey().render(resolver)}，它只该出现在装配类的出口。
          *
+         * <p>解析推迟到第一次调用而不是在 setter 里：yaml 里 {@code name} 写在 {@code api-key}
+         * 之后是合法的，绑定时先到的可能是句柄；报错信息里带上名字才有用。
+         *
          * @return 凭据句柄，可能是 absent
          */
         public SecretValue apiKey() {
+            if (apiKey == null) {
+                apiKey = SecretValue.parse(apiKeyHandle, "claw4j.model.providers[name="
+                        + (name == null ? "?" : name) + "].api-key", false);
+            }
             return apiKey;
         }
 
         /**
-         * 绑定时校验形状，不等出口：写成明文的 key 在这里就失败，并点名是哪一个配置项。
-         * 校验失败的消息不回显原值（它多半就是真 key），只说要什么形状。
+         * 绑定时收下句柄原文，校验留到 {@link #apiKey()}：这一步只存字符串。
          *
          * @param apiKey 配置里写的句柄
          */
         public void setApiKey(String apiKey) {
-            this.apiKey = SecretValue.parse(apiKey, "claw4j.model." + name() + ".api-key", false);
+            this.apiKeyHandle = apiKey;
+            this.apiKey = null;
         }
 
         public String getBaseUrl() {
@@ -158,35 +264,10 @@ public class ModelProperties {
         public void setTemperature(Double temperature) {
             this.temperature = temperature;
         }
-    }
 
-    public static class DeepSeek extends Provider {
-
-        @Override
-        public String name() {
-            return DEEPSEEK;
-        }
-
-        @Override
+        /** 环境变量前缀，只用于启动失败时告诉人去哪里配。 */
         public String envPrefix() {
-            return "DEEPSEEK";
-        }
-    }
-
-    /**
-     * 通义走自己提供的 OpenAI 兼容端点（{@code /compatible-mode/v1}），
-     * 所以适配器是 {@code spring-ai-openai} —— 没有官方的 Qwen 模块。
-     */
-    public static class Qwen extends Provider {
-
-        @Override
-        public String name() {
-            return QWEN;
-        }
-
-        @Override
-        public String envPrefix() {
-            return "QWEN";
+            return name == null ? "" : name.toUpperCase(Locale.ROOT);
         }
     }
 }

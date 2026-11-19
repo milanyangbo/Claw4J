@@ -263,11 +263,14 @@ class ChatPipelineTest {
                 .as("真模型用例需要 DEEPSEEK_API_KEY；运行前先 source 仓库根的 .env")
                 .isNotBlank();
 
-        ModelProperties properties = new ModelProperties();
+        ModelProperties.Provider deepseek = new ModelProperties.Provider();
+        deepseek.setName(ModelProperties.DEEPSEEK);
         // 配的是句柄，真值在测试自己的 Environment 里（P08 之后模型装配只认这一条路）。
-        properties.getDeepseek().setApiKey("secret:deepseek_api_key");
-        properties.getDeepseek().setBaseUrl("https://api.deepseek.com");
-        properties.getDeepseek().setModel("deepseek-chat");
+        deepseek.setApiKey("secret:deepseek_api_key");
+        deepseek.setBaseUrl("https://api.deepseek.com");
+        deepseek.setModel("deepseek-chat");
+        ModelProperties properties = new ModelProperties();
+        properties.setProviders(List.of(deepseek));
         ChatModel model = new ModelConfiguration().deepSeekChatModel(properties, keyInEnvironment(apiKey));
 
         List<String> executedSql = new CopyOnWriteArrayList<>();
