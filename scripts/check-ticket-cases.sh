@@ -30,7 +30,8 @@ METHODS=$(mktemp)
 CLASSES=$(mktemp)
 REFS=$(mktemp)
 SOURCES=$(mktemp)
-trap 'rm -f "$METHODS" "$CLASSES" "$REFS" "$SOURCES"' EXIT
+SETTLED=$(mktemp)
+trap 'rm -f "$METHODS" "$CLASSES" "$REFS" "$SOURCES" "$SETTLED"' EXIT
 
 # 0. 先落一份文件清单。空清单必须当场判红：`xargs` 在没输入时仍会跑一次命令，
 #    那时 awk 会去读 stdin 然后挂住——一道闸最坏的形态是"卡住"或"永远绿"。
@@ -66,12 +67,17 @@ xargs -0 awk '
     }' < "$SOURCES" > "$CLASSES"
 
 # 3. 票面里声明存在的东西：resolved / done 的票、打了 ✅ 的行、反引号里的那种写法。
+#
+# "这张票是不是已收"先单独扫一遍（而不是在同一个 pass 里边读 Status 边判断）：Status 通常写在
+# 票的末尾，而 TDD 表在它上面——按文件顺序判断会把这些行整批漏掉，闸照样绿（2026-11-20 实测：
+# 新写的票表在前、Status 在后，✅ 行一条都没被提取，总数还是 153）。
+find .scratch -path '*/issues/*.md' -print0 2>/dev/null \
+    | xargs -0 grep -lE '^\*\*Status:\*\* *(resolved|done)' > "$SETTLED" 2>/dev/null || true
+
 find .scratch -path '*/issues/*.md' -print0 2>/dev/null | xargs -0 awk '
-    FNR == 1 { settled = 0 }
-    /^\*\*Status:\*\*/ {
-        if (index($0, "resolved") > 0 || index($0, "done") > 0) settled = 1
-    }
-    settled && index($0, "✅") > 0 {
+    NR == FNR { settled[$0] = 1; next }
+    FNR == 1 { on = (FILENAME in settled) }
+    on && index($0, "✅") > 0 {
         rest = $0
         while (match(rest, /`[^`]+`/)) {
             tok = substr(rest, RSTART + 1, RLENGTH - 2)
@@ -82,7 +88,7 @@ find .scratch -path '*/issues/*.md' -print0 2>/dev/null | xargs -0 awk '
                 print FILENAME "\t" tok
             }
         }
-    }' > "$REFS"
+    }' "$SETTLED" > "$REFS"
 
 total=0
 missing=0

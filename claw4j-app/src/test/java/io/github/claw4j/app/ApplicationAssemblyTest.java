@@ -10,6 +10,7 @@ import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.agent.rag.HybridDocumentRetriever;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.capability.mcp.McpServerProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.channel.http.HttpChatController;
@@ -171,6 +172,10 @@ class ApplicationAssemblyTest {
         registry.add("claw4j.guard.sensitive-words-file",
                 () -> ExamplesSubagentsTest.repositoryFile("examples/guard/sensitive-words.txt").toString());
         registry.add("claw4j.channel.dingtalk.users[0]", () -> DINGTALK_USER);
+        // 这份装配有三个不同的人在敲（http / 企业微信 / 钉钉各一个），所以私聊边界必须是
+        // per-channel-peer：默认的 main 会把三个人的私聊并成一段，SessionBoundaryCheck 直接拒绝启动
+        // （ADR-0032）。这条不是为了让用例通过而加的补丁——它就是"多人可及的部署该怎么配"的示范。
+        registry.add("claw4j.advisor.session.dm-scope", () -> SessionScopeProperties.DM_PER_CHANNEL_PEER);
     }
 
     @LocalServerPort

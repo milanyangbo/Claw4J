@@ -13,8 +13,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 私聊 {@code main}、群聊 {@code per-group}。
  *
  * <p>代价要认清：{@code main} 意味着同一个人的所有私聊共用一段上下文。单用户部署这是便利，
- * 多人可及的部署里它等于串话——网页里问到的数字，飞书私聊里的模型也看得见。所以生效值在启动
- * 日志里打一行，多用户部署必须显式配 {@code per-channel-peer}。
+ * 多人可及的部署里它等于串话——网页里问到的数字，飞书私聊里的模型也看得见。这一条不再只写在
+ * 注释里（ADR-0032）：生效值进启动日志（{@code SessionMemoryConfiguration}），而"多个人可及 +
+ * {@code main}"由 {@code claw4j-app} 的 {@code SessionBoundaryCheck} 直接拒绝启动。
  *
  * @param dmScope    私聊的分段方式，见 {@link #DM_MAIN} 等四档
  * @param groupScope 群聊的分段方式，见 {@link #GROUP_PER_GROUP} 与 {@link #DM_MAIN}
@@ -86,13 +87,19 @@ public record SessionScopeProperties(String dmScope, String groupScope) {
     }
 
     /**
-     * 认不出的值落到 {@code main}，与它一致。
+     * 认不出的值直接抛，让启动失败。
      *
-     * <p>不像 {@code session.maintenance.mode} 那样让拼错启动失败：那一档的两侧是"删数据"与
-     * "不删数据"，错的方向必须选得出来；这一档的两侧只是"合并上下文"与"分开上下文"，
-     * 而默认侧（合并）就是它的默认，照抄它不会更意外。代价是拼错不会被告知，所以启动日志
-     * 打的是<b>生效值</b>而不是配置值——写了 {@code per-channel-pee} 的人会看到日志里是
-     * {@code main}。
+     * <p>不落回 {@code main}：这一档两侧的后果不对称——{@code main} 把一个人的所有私聊并成一段
+     * 上下文，多人可及的部署里就是串话；而拼错的人恰好以为自己配的是"分开"。静默落回默认值等于
+     * 把"我配了"变成"其实没配"，且没有任何东西会说一声（ADR-0032）。
+     *
+     * <p>"没配"仍然是 {@code main}（对齐 ADR-0029 与上游默认值）；它可不可接受由装配层判：
+     * {@code claw4j-app} 的 {@code SessionBoundaryCheck} 拿准入名单的并集与它对照，
+     * 多个人共用一段就拒绝启动。
+     *
+     * @param value 配置里写的值
+     * @return 认得的那个值；{@code null} 或空白返回 {@code main}
+     * @throws IllegalArgumentException 写了值但不在四档之内
      */
     private static String normalizeDmScope(String value) {
         if (value == null || value.isBlank()) {
@@ -101,11 +108,19 @@ public record SessionScopeProperties(String dmScope, String groupScope) {
         String trimmed = value.trim();
         return switch (trimmed) {
             case DM_MAIN, DM_PER_PEER, DM_PER_CHANNEL_PEER, DM_PER_ACCOUNT_CHANNEL_PEER -> trimmed;
-            default -> DM_MAIN;
+            default -> throw new IllegalArgumentException("claw4j.advisor.session.dm-scope 只接受 "
+                    + DM_MAIN + " / " + DM_PER_PEER + " / " + DM_PER_CHANNEL_PEER + " / "
+                    + DM_PER_ACCOUNT_CHANNEL_PEER + "，收到的是「" + trimmed + "」。"
+                    + "拼错不再静默落回 " + DM_MAIN + "：那会把多个人的私聊并成一段（ADR-0032）。");
         };
     }
 
-    /** 认不出的值落到 {@code per-group}，理由同 {@link #normalizeDmScope(String)}。 */
+    /**
+     * 认不出的值落到 {@code per-group}。
+     *
+     * <p>与 {@link #normalizeDmScope(String)} 不同：这一档错的方向是安全的——分得开。
+     * "群并进主会话"必须显式写 {@code main}，它不是一个会自己发生的默认值（ADR-0032 只拦 dm-scope）。
+     */
     private static String normalizeGroupScope(String value) {
         if (value == null || value.isBlank()) {
             return GROUP_PER_GROUP;

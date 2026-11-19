@@ -145,6 +145,8 @@ claw4j:
       #   per-peer      按对端分，同一个人跨通道共用
       #   per-channel-peer  按通道 + 对端分，换通道就是另一段
       # **多人可及的部署必须改成 per-channel-peer**：否则网页里问到的数字，飞书私聊里也看得见。
+      # 这件不只是注释：装配层会拿各通道 users 的并集与它对照，多个人而这里还是 main 就**拒绝启动**
+      # （ADR-0032）。写了认不出的值同样起不来，不再静默落回 main。
       dm-scope: main
       # 群聊：per-group（默认）按群隔离；main 把群并进主会话。
       group-scope: per-group

@@ -44,12 +44,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.stream.Stream;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -309,6 +311,62 @@ class BuildContractTest {
                 .as("拿到默认值就说明没绑上，而这两种情况在运行时看起来一样")
                 .isEqualTo(SessionScopeProperties.DM_PER_CHANNEL_PEER);
         assertThat(bound.groupScope()).isEqualTo(SessionScopeProperties.DM_MAIN);
+    }
+
+    /**
+     * 拼错的 {@code dm-scope} 必须当场失败。
+     *
+     * <p>以前它落回 {@code main}：多人可及的部署里，写 {@code per-channel-pee} 的人得到的是
+     * "所有人的私聊并成一段"，而且没有任何东西说一声——这正是最坏的一种配置错误：
+     * 配了、看起来生效了、其实变成了另一个意思（ADR-0032）。
+     */
+    @Test
+    @DisplayName("认不出的 dm-scope 直接失败，不静默落回 main")
+    void unknownDmScopeIsRejected() {
+        assertThatThrownBy(() -> new SessionScopeProperties("per-channel-pee", null))
+                .as("错的方向必须选得出来：静默落回 main 等于把多个人的私聊并成一段")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("dm-scope")
+                .hasMessageContaining(SessionScopeProperties.DM_PER_CHANNEL_PEER);
+
+        assertThat(SessionScopeProperties.defaults().dmScope())
+                .as("没配仍然是 main（对齐上游默认值）；它可不可接受由 SessionBoundaryCheck 判")
+                .isEqualTo(SessionScopeProperties.DM_MAIN);
+    }
+
+    /**
+     * 多人可及 + {@code main} = 起不来。
+     *
+     * <p>四种放行情形一起钉：只有一个人（多通道也算一个人）、一个人都没有、换一档分法、
+     * 以及"判据是并集而不是逐通道"——http 给 alice、飞书给 bob 时，逐通道看每边都是 1 个人，
+     * 而他们仍然共用一段主会话。
+     */
+    @Test
+    @DisplayName("多人可及 + dm-scope=main 拒绝启动；单人或换一档就放行")
+    void multiUserWithMainScopeIsRejected() {
+        assertThatThrownBy(() -> SessionBoundaryCheck.verify(
+                Set.of("alice", "bob"), SessionScopeProperties.DM_MAIN))
+                .as("两个人的私聊并成一段：网页里问到的数字，飞书私聊里也看得见")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("alice")
+                .hasMessageContaining(SessionScopeProperties.DM_PER_CHANNEL_PEER);
+
+        assertThatThrownBy(() -> SessionBoundaryCheck.verify(
+                Set.of(SessionBoundaryCheck.ANY_USER), SessionScopeProperties.DM_MAIN))
+                .as("不设准入 = 人数未知，取严的一侧")
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThatCode(() -> SessionBoundaryCheck.verify(
+                Set.of("alice"), SessionScopeProperties.DM_MAIN))
+                .as("单用户：换几条通道也只有一个身份")
+                .doesNotThrowAnyException();
+        assertThatCode(() -> SessionBoundaryCheck.verify(
+                Set.of("alice", "bob"), SessionScopeProperties.DM_PER_CHANNEL_PEER))
+                .as("各有各的分法，不存在并成一段")
+                .doesNotThrowAnyException();
+        assertThatCode(() -> SessionBoundaryCheck.verify(Set.of(), SessionScopeProperties.DM_MAIN))
+                .as("一个人都进不来，谈不上串话")
+                .doesNotThrowAnyException();
     }
 
     // ---------------------------------------------------------------- 迁移合成一套 schema

@@ -374,6 +374,12 @@ public class SessionMemoryConfiguration implements DisposableBean {
                                          SessionScopeProperties scopes,
                                          AgentProperties agent,
                                          ObjectProvider<MeterRegistry> meterRegistry) {
+        // 生效值必须进日志，这是 SessionScopeProperties 的注释承诺过的一行（ADR-0032 之前只有承诺）：
+        // dm-scope 的默认值是 main——单用户便利、多人部署串话，而"配了没生效"与"没配"在日志上
+        // 长得一模一样。多用户部署的收口在 claw4j-app 的 SessionBoundaryCheck（直接拒绝启动），
+        // 这里打生效值是为了单用户部署也能看见自己在用哪一档。
+        log.info("会话边界生效值：私聊={}，群聊={}（多用户部署私聊必须是 {}，见 ADR-0029 / 0032）",
+                scopes.dmScope(), scopes.groupScope(), SessionScopeProperties.DM_PER_CHANNEL_PEER);
         return new SessionEntries(store, reset, scopes, agent.zone(), Clock.systemUTC(),
                 meterRegistry.getIfAvailable());
     }
