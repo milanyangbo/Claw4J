@@ -105,14 +105,16 @@ public final class SessionMaintenance {
 
     private static final String CRON_MARKER = "%:cron:%";
 
+    // 与 SessionCompactor 那三个同理：配置键在 claw4j.advisor.session 下，指标名留在
+    // claw4j.session 上——指标是对外契约，换前缀等于让面板与告警静默落空（ADR-0031）。
     /** 本来会被清掉的数量。它是 {@code warn} 档位唯一能看得见的东西。 */
-    public static final String PRUNABLE = "claw4j.advisor.session.maintenance.prunable";
+    public static final String PRUNABLE = "claw4j.session.maintenance.prunable";
 
     /** 真删掉的累计数量。 */
-    public static final String PRUNED = "claw4j.advisor.session.maintenance.pruned";
+    public static final String PRUNED = "claw4j.session.maintenance.pruned";
 
     /** 清理跑不成（库连不上、表没迁）的次数。它不为 0 就说明这些天一行都没清。 */
-    public static final String FAILURES = "claw4j.advisor.session.maintenance.failures";
+    public static final String FAILURES = "claw4j.session.maintenance.failures";
 
     private final JdbcTemplate jdbc;
     private final SessionMaintenanceProperties properties;

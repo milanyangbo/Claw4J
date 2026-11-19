@@ -44,6 +44,27 @@ claw4j:
 `provider` 给空壳、`require` 抛、重名起不来）；`ChatPipelineTest`、`SemanticCacheTest`、`EvalRunTest`
 按新形状取配置；`./scripts/verify.sh` 全绿。
 
+## TDD 用例清单
+
+| 判什么行为 | 用例名 | 先红的样子 |
+| --- | --- | --- |
+| 表能绑上，且 `name` 写在 `api-key` 之后也认 | `ModelAndToolSelectionTest#providerTableBindsByName` | 去掉 `Provider.setName` → 两家的名字都是 null，`names()` 那条红 ✅ |
+| 缺一条时 `provider()` 给空壳、`require()` 抛且列出已配名字 | 同上 | 把 `provider()` 改成直接 `find` 返回 null → 空指针那条红 ✅ |
+| 重名直接起不来（谁生效不该取决于绑定顺序） | 同上 | 删掉 `@PostConstruct validateShape()` → 后半条红（上下文起来了）✅ |
+| 装配层：表里有名字但没有 ChatModel bean 时启动失败 | ⏳ `RoutingModelConfiguration#requireAdapter` | 见「缺口」第 1 条 |
+| yml 里那两行 provider 的存在与绑定 | ⏳ 与票 02 的「缺口 1」同一件事 | 见「缺口」第 2 条 |
+| 空表时给的是 ADR-0011 那条"去哪配 key"的指引，不是"没有 name=xxx 这一条" | ⏳ `ModelProperties#require` | 见「缺口」第 1 条 |
+
+**缺口**
+
+1. 装配层的两条（`requireAdapter`、空表的报错文案）现在**没有用例**：它们要在真
+   `Environment` 下跑 `RoutingModelConfiguration`，得先造一份"有名字、有 key、但没 bean"的表。
+   `claw4j-agent` 已到 14 个测试文件的上限，这两条与「缺口 2」一起并进下一张配置票的装配用例。
+2. `application.yml` 里 `providers` 两行的存在与绑定没有断言（`BuildContractTest` 只覆盖了
+   session 那组）。下一张配置票统一把四组键 + 这张表纳进去，而不是每组各写一套。
+
+**复核：2026-11-19 `./scripts/verify.sh` 全绿（9 模块 0 失败 / 0 错误 / 0 跳过）**
+
 **Status:** resolved
 
 **进度（2026-11-19）**：`ModelProperties` 重写（`providers` 列表 + `Provider` 普通类 +

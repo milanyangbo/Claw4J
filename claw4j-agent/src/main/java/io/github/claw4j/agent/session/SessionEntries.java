@@ -27,14 +27,14 @@ import java.util.concurrent.ThreadLocalRandom;
  * 不是"能不能回答"，与 {@link FaultTolerantSessionService} 同一个判断。
  *
  * <p>降级之后所有对话退到"每个节点一段、永不换段"，也就是回到改造之前的行为，不是更糟。
- * {@code claw4j.advisor.session.pointer.failures} 是"它到底生效了没有"的唯一信号。
+ * {@code claw4j.session.pointer.failures} 是"它到底生效了没有"的唯一信号。
  */
 public final class SessionEntries {
 
     private static final Logger log = LoggerFactory.getLogger(SessionEntries.class);
 
     /** 状态行失败的计数。它不为 0 就说明段这个改造当前没生效。 */
-    public static final String FAILURE_METRIC = "claw4j.advisor.session.pointer.failures";
+    public static final String FAILURE_METRIC = "claw4j.session.pointer.failures";
 
     /**
      * 存储。可为 null——没有数据库时没有"段"这回事，那是能力不在场，不是配置错误，

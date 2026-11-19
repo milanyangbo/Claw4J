@@ -71,7 +71,7 @@ public final class ToolSearch {
     /**
      * 按配置建索引。三种实现的差别只在"怎么把 query 变成候选"，见 {@link ToolSearchProperties.Index}。
      *
-     * <p>选 {@code vector} 而容器里没有 {@code VectorStore} 时**在这里就失败**，不悄悄回落到正则：
+     * <p>选 {@code vector} 而容器里没有 {@code VectorStore} 时<b>在这里就失败</b>，不悄悄回落到正则：
      * 回落之后日志上一切正常，而"我明明配了向量检索"这个判断会一直错下去，错到有人拿它做线上决定。
      *
      * @param properties 检索配置，必填

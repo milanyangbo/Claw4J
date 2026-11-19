@@ -27,9 +27,11 @@ public class SessionCompactor {
 
     private static final Logger log = LoggerFactory.getLogger(SessionCompactor.class);
 
-    public static final String ARCHIVED = "claw4j.advisor.session.compaction.archived";
-    public static final String TOKENS_SAVED = "claw4j.advisor.session.compaction.tokens_saved";
-    public static final String FAILURES = "claw4j.advisor.session.compaction.failures";
+    // 指标名不跟配置键走：配置键在 claw4j.advisor.session 下（ADR-0031），而这三个名字是给面板、
+    // 告警与历史数据用的对外契约。搬配置时别顺手把它们也换前缀——查询会静默落空。
+    public static final String ARCHIVED = "claw4j.session.compaction.archived";
+    public static final String TOKENS_SAVED = "claw4j.session.compaction.tokens_saved";
+    public static final String FAILURES = "claw4j.session.compaction.failures";
 
     private final SessionService sessions;
     private final CompactionTrigger trigger;

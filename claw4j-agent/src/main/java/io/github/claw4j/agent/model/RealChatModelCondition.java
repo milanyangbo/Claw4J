@@ -60,12 +60,8 @@ public abstract class RealChatModelCondition extends SpringBootCondition {
         SecretResolver secrets = SpringSecretResolver.of(env);
         List<ModelProperties.Provider> providers = bindProviders(env);
 
-        boolean mine = providers.stream()
-                .filter(provider -> providerName().equals(provider.name()))
-                .findFirst()
-                .map(provider -> resolvable(provider.apiKey(), secrets))
-                .orElse(false);
-        if (mine) {
+        ModelProperties.Provider mine = ModelProperties.find(providers, providerName());
+        if (mine != null && resolvable(mine.apiKey(), secrets)) {
             return ConditionOutcome.match(label() + " 的句柄有真值，装配真实模型");
         }
         if (providers.stream().noneMatch(provider -> resolvable(provider.apiKey(), secrets))) {

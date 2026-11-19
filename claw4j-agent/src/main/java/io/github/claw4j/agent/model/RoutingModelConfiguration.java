@@ -42,6 +42,14 @@ public class RoutingModelConfiguration {
     public static final String ROUTING_BEAN = "routingChatModel";
 
     /**
+     * 名字 → 承载它的 bean。<b>加一家供应商只改这一行</b>，外加 {@link ModelConfiguration} 里一个
+     * ChatModel bean；两处都写了才算接上，只写配置会在 {@link #requireAdapter} 那里被拒。
+     */
+    private static final Map<String, String> ADAPTERS = Map.of(
+            ModelProperties.DEEPSEEK, ModelConfiguration.DEEPSEEK_BEAN,
+            ModelProperties.QWEN, ModelConfiguration.QWEN_BEAN);
+
+    /**
      * 业务侧（ChatClient、AgentPort）按类型注入 {@code ChatModel}，容器里同时有各家模型和这个路由，
      * 必须用 {@code @Primary} 指定谁是被注入的那个。
      *
@@ -56,11 +64,13 @@ public class RoutingModelConfiguration {
     public RoutingChatModel routingChatModel(ModelProperties properties, ApplicationContext context,
                                             ObjectProvider<MeterRegistry> meterRegistry) {
         MeterRegistry registry = meterRegistry.getIfAvailable();
-        Map<String, ChatModel> available = new LinkedHashMap<>();
-        putIfPresent(available, context, ModelProperties.DEEPSEEK, ModelConfiguration.DEEPSEEK_BEAN);
-        putIfPresent(available, context, ModelProperties.QWEN, ModelConfiguration.QWEN_BEAN);
-
         requireAdapter(properties);
+        // 按配置顺序装：路由的备选顺序因此跟着 yml 走，而不是跟着某张 Map 的迭代顺序走。
+        Map<String, ChatModel> available = new LinkedHashMap<>();
+        for (String name : properties.names()) {
+            putIfPresent(available, context, name, ADAPTERS.get(name));
+        }
+
         String primary = properties.getPrimary();
         if (!properties.names().contains(primary)) {
             // 拼错的 supplier 名字与"名字对但没给 key"是两种不同的错，分开说才不用猜。
@@ -107,10 +117,10 @@ public class RoutingModelConfiguration {
      */
     private static void requireAdapter(ModelProperties properties) {
         for (String name : properties.names()) {
-            if (!ModelProperties.DEEPSEEK.equals(name) && !ModelProperties.QWEN.equals(name)) {
+            if (!ADAPTERS.containsKey(name)) {
                 throw new IllegalStateException("claw4j.model.providers 里有一条 name=" + name
-                        + "，但没有对应的适配器。现在只认 " + ModelProperties.DEEPSEEK + "（DeepSeek 官方 API）与 "
-                        + ModelProperties.QWEN + "（OpenAI 兼容端点）；加一家要同时加一个 ChatModel bean。");
+                        + "，但没有对应的适配器。现在只认 " + ADAPTERS.keySet().stream().sorted().toList()
+                        + "；加一家要同时加一个 ChatModel bean 和这里的一行。");
             }
         }
     }

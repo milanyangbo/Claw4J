@@ -15,11 +15,10 @@ import java.util.Set;
 /**
  * 模型供应商的凭据、开关与路由顺序。
  *
- * <p>供应商写成**一张表**（{@code providers} 是一个列表，每项自带 {@code name}），不写成以名字为键的
- * 嵌套节点。理由是每一条要配的东西是同一套（端点、凭据、模型名、两个超时、温度），表里一行就是一家；
- * 加一家只是多一行，不必在 yaml 里再造一层缩进，也不必让"这一家的字段"与"上一家的字段"对齐着读。
- * 代价认下来：{@code name} 是一个普通字段，写重了、写空了只有校验能发现，所以
- * {@link #validateShape()} 在绑定时就查。
+ * <p>供应商是<b>一张表</b>（{@code providers} 是列表，每项自带 {@code name}），不是以名字为键的嵌套节点：
+ * 每一家要配的东西是同一套（端点、凭据、模型名、两个超时、温度），表里一行就是一家。
+ * 代价认下来——{@code name} 成了普通字段，写重、写空只有校验能发现，所以 {@link #validateShape()}
+ * 在绑定时就查。
  *
  * <p>凭据是句柄，不是值（P08）：yaml 里写 {@code api-key: secret:deepseek_api_key}，真值在发请求
  * 那一刻才由 {@code SecretResolver} 从部署环境换出来。于是这个类、它的 toString、它的日志，
@@ -72,7 +71,7 @@ public class ModelProperties {
     }
 
     /**
-     * 按名字取一家。**找不到不返回 null**，而是一个只带名字的空壳（凭据为空、端点为空）——
+     * 按名字取一家。<b>找不到不返回 null</b>，而是给一个只带名字的空壳（凭据为空、端点为空）——
      * 与"这一家没配"在语义上是一回事，读的一方因此不必处处判空。
      *
      * <p>装配层不要用它：那边缺一条就该让启动失败并说清缺哪条，那里用 {@link #require(String)}。
@@ -81,27 +80,51 @@ public class ModelProperties {
      * @return 这一家的配置，或一个空壳
      */
     public Provider provider(String name) {
-        return providers.stream()
-                .filter(provider -> name.equals(provider.name()))
-                .findFirst()
-                .orElseGet(() -> Provider.absent(name));
+        Provider found = find(providers, name);
+        return found == null ? Provider.absent(name) : found;
     }
 
     /**
      * 按名字取一家，缺了就抛。装配层专用：报错里带上"现在配了哪几家"，
      * 因为这类错误的成因几乎都是"改了名字没改引用"。
      *
+     * <p>整张表空着是另一回事：那多半是这段配置被整块删了，报"没有 name=xxx 这一条"会把人引到
+     * 名字上去，所以单独给 ADR-0011 那条指引（去哪配 key）。
+     *
      * @param name 供应商名
      * @return 这一家的配置
      * @throws IllegalStateException 表里没有这一条
      */
     public Provider require(String name) {
+        Provider found = find(providers, name);
+        if (found != null) {
+            return found;
+        }
+        if (providers.isEmpty()) {
+            throw new IllegalStateException("claw4j.model.providers 是空的，一个模型供应商都没有"
+                    + "（ADR-0011 起没有 mock 兜底，缺 key 就是起不来）。二选一："
+                    + "① 仓库根放 .env 并用 local profile 启动（.env 由它 import）；"
+                    + "② 直接设环境变量 DEEPSEEK_API_KEY 或 QWEN_API_KEY。");
+        }
+        throw new IllegalStateException("claw4j.model.providers 里没有 name=" + name + " 这一条，现在配了 "
+                + names() + "。claw4j.model.primary=" + primary + "，两者指的不是同一家时会在这里对不上。");
+    }
+
+    /**
+     * 按名字找一家，找不到返回 {@code null}。
+     *
+     * <p>三处查找共用这一份：{@link #provider(String)}、{@link #require(String)}、以及装配条件
+     * （它比别处更早拿到表，只能自己绑，但"算不算同一家"的判断不该跟着再写一遍）。
+     *
+     * @param providers 供应商表
+     * @param name      供应商名
+     * @return 找到的那一家，或 null
+     */
+    static Provider find(List<Provider> providers, String name) {
         return providers.stream()
                 .filter(provider -> name.equals(provider.name()))
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException(
-                        "claw4j.model.providers 里没有 name=" + name + " 这一条，现在配了 " + names() + "。"
-                                + "claw4j.model.primary=" + primary + "，两者指的不是同一家时会在这里对不上。"));
+                .orElse(null);
     }
 
     /**
