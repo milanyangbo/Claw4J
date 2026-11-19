@@ -444,11 +444,14 @@ claw4j:
   # claw4j.skills.directory / claw4j.subagents.directory / claw4j.rag.directory
   # 这里不给默认值：给一个默认目录就等于默认打开这一层。怎么开见 README-adding-capabilities.md。
   #
-  # 长期记忆（claw4j.agent.memory.directory）也走这一条：它下面**每人一个子目录**，
-  # 目录名由 userId 派生（安全化 + 哈希后缀，两个人撞不进同一层）。配了之后模型会自己
-  # 用 Memory* 那几个工具读写它，写进去的是**明文** Markdown——与会话表/审计的脱敏口径不同，
+  # 记忆是两个并列的节点，不互相嵌套（理由：它们不是"同一个东西的两部分"）：
+  #   claw4j.session.*   一段对话的作用域与它的短期记忆——压缩、换段、清理都挂在这里。
+  #   claw4j.memory.*    跨会话留下的长期记忆——每人一个子目录，目录名由 userId 派生
+  #                      （安全化 + 哈希后缀，两个人撞不进同一层）。
+  # 长期记忆（claw4j.memory.directory）也走"配了目录才有"这一条。配了之后模型自己用
+  # Memory* 那几个工具读写，写进去的是**明文** Markdown——与会话表/审计的脱敏口径不同，
   # 理由与缺口见 docs/design/long-term-memory.md。
-  # 整理（claw4j.agent.memory.dream，默认 true）：库的 dream 周期，同一人距上次满 24 小时
+  # 整理（claw4j.memory.dream，默认 true）：库的 dream 周期，同一人距上次满 24 小时
   # 且又过 5 轮才在后台跑一次，合并重复、删掉过时的。关掉只是不整理，读写记忆照旧。
 
 # ---- 运维面：指标与服务端口分开 ----

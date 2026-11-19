@@ -161,7 +161,7 @@ _Avoid_: conversationId、userId、sessionId（它是另一个东西）
 
 **长期记忆（Long-term Memory）**:
 跨会话留下来的一小撮**事实**（偏好、项目决定、纠正过的事），由模型自己判断该不该记，
-存在 `<claw4j.agent.memory.directory>/<每人一层>/` 下的 Markdown 里，换会话、重启都还在。
+存在 `<claw4j.memory.directory>/<每人一层>/` 下的 Markdown 里，换会话、重启都还在。
 与会话记忆是两条轴，不能互替：会话记忆记的是"这一段对话发生了什么"（经历，会压缩、会随段结束），
 长期记忆记的是"这个人是谁"（事实，压缩碰不到它）。它落盘是明文，而且不受工具清单管——
 注入发生在提示词那一层（缺口记在 `.scratch/m8-agent-quality/issues/A09-long-term-memory.md`）。

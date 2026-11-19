@@ -39,7 +39,7 @@
 - 取到就转给**为这个人的目录构建的那个** `AutoMemoryToolsAdvisor`（按 userId 缓存实例）：
   系统提示、工具注入、按名字去重、`MEMORIES_ROOT_DIERCTORY` 渲染全部是库的。
 - 取不到身份**原样返回**：没有身份就没有记忆，不 fallback 到公共目录。
-- 目录：`<claw4j.agent.memory.directory>/<安全化 userId>-<sha256 前 12 位>/`。安全化是必需的——
+- 目录：`<claw4j.memory.directory>/<安全化 userId>-<sha256 前 12 位>/`。安全化是必需的——
   `userId` 来自通道（飞书 open_id、邮箱都可能），直接当目录名会撞路径分隔符；哈希后缀防
   "两个不同的 id 安全化之后同名"，那种撞车的后果是两个人共用一份记忆。
 - order = `HIGHEST_PRECEDENCE + 3`：在 persona（+2）之后，于是记忆块拼在最终系统提示的尾部；
@@ -101,5 +101,5 @@ advisor 注入）。那种状态比不登记更坏——它看起来像是策略
 2. **`AutoDreamService` 要一个 `ChatClient.Builder`**：用主模型建，不挂任何 Advisor。
    dreamer 看不到当前对话，也不该被会话记忆、脱敏、语义缓存影响。
 
-**默认参数** `hoursAndSessions(24, 5)`；关掉用 `claw4j.agent.memory.dream=false`（传库的
+**默认参数** `hoursAndSessions(24, 5)`；关掉用 `claw4j.memory.dream=false`（传库的
 `manualOnly`），不自己写空实现。

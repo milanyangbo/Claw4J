@@ -22,8 +22,13 @@
 
 ## 形状
 
+配置上它是 `claw4j.session.*` 的**并列节点**，不嵌在里面：`claw4j.session` 说的是"一段对话"
+（换段、压缩、清理都挂那儿），`claw4j.memory` 说的是"跨会话的那份事实"。合到一起会让"会话"
+一个词同时指两种东西。也没放在 `claw4j.agent` 下——那里回答"这个部署是哪个 agent"，
+而记忆是按人分的运行时状态。
+
 ```
-claw4j.agent.memory.directory  ← 配了才有，不配就没有（不给默认值）
+claw4j.memory.directory  ← 配了才有，不配就没有（不给默认值）
 └── <安全化 userId>-<sha256 前 12 位>/
     ├── MEMORY.md            ← 索引，模型自己维护
     └── <事实>.md            ← 带 YAML front matter（name / description / type）
@@ -68,7 +73,7 @@ claw4j.agent.memory.directory  ← 配了才有，不配就没有（不给默认
 | `DreamLock` | 按目录的锁，同一份记忆不会有两个 dreamer 同时改（15 分钟算过期） |
 
 默认参数是 `hoursAndSessions(24, 5)`——照库注释里写的 Claude Code 那套双条件启发式。
-关掉用 `claw4j.agent.memory.dream=false`，传给库的是 `DreamTriggers.manualOnly()`；
+关掉用 `claw4j.memory.dream=false`，传给库的是 `DreamTriggers.manualOnly()`；
 不自己写一个"永远返回 false"的空实现。
 
 三处与"照抄"不同的地方，都是因为我们自己按人分目录：

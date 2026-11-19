@@ -48,6 +48,7 @@ claw4j:
     approvers: []
 
   # ---- 短期记忆（会话）：完整清单与默认值在 application.yml 的 `session:` 段 ----
+  # 长期记忆是另一个并列节点（`memory:`，在下面），两者不嵌套。
   # 这里写成本地的值，方便一处看完。库是本机 compose 起的那个 Postgres，会话表同库不同 schema。
   # 要验"换段 = 换对话"就把 reset.mode 改成 daily-and-idle（那时才用到分界点 4 点与
   # 空闲 120 分钟）；换了主模型就改 context-window——压缩阈值是它的 0.5 倍。
@@ -78,14 +79,13 @@ claw4j:
     directory: examples/subagents
 
   # ---- 长期记忆：每人一个子目录，模型自己判断该记什么 ----
-  # 与会话记忆是两条轴：那条只活在一段对话里，这条跨会话、跨重启。
+  # 与会话记忆是两条轴：那条只活在一段对话里（上面的 `session:`），这条跨会话、跨重启。
   # 放在仓库外：它是本机这个人的东西，不是项目产物（mvn clean 不该把它删掉）。
   # 写进去的是明文 Markdown。整理（dream）默认开着：同一人距上次满 24 小时、且又过 5 轮
   # 才在后台合并一次；关掉只是不整理，读写照旧。
-  agent:
-    memory:
-      directory: ${user.home}/.claw4j/memory
-      dream: true
+  memory:
+    directory: ${user.home}/.claw4j/memory
+    dream: true
 
 
   # ---- 业务示例插件（claw4j-example-sales）----
