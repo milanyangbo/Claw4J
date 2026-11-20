@@ -11,7 +11,6 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.rag.Query;
-import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
 import org.springframework.ai.rag.retrieval.join.ConcatenationDocumentJoiner;
 import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -403,16 +402,44 @@ class KnowledgeRetrievalTest {
                 .as("最终只留 top-k，顺序沿用上面那一个")
                 .containsExactly("b", "a");
 
-        // 重排关掉时截断必须还在：否则 30 段候选池会整个进提示词，而这只在关掉开关时出现。
+        // 重排关掉时截断必须还在：否则候选池会整个进提示词，而这只在关掉开关时出现。
         List<Document> pool = new ArrayList<>();
         for (int i = 0; i < 30; i++) {
-            pool.add(doc("d" + i, "returns/x.md", i));
+            pool.add(scored("d" + i, "returns/x.md", i, 1.0 - i * 0.01));
         }
-        List<Document> afterChain = pool;
-        for (DocumentPostProcessor step : RagAutoConfiguration.postProcessors(null, 5)) {
-            afterChain = step.process(query("退货"), afterChain);
-        }
-        assertThat(afterChain).as("没有重排时，链上只剩截断，且它照 top-k 生效").hasSize(5);
+        KnowledgeRetrievalPipeline pipeline = new KnowledgeRetrievalPipeline(
+                new HybridDocumentRetriever(q -> pool, null, joiner()),
+                new ConcatenationDocumentJoiner(), null, 5);
+
+        assertThat(pipeline.retrieve(query("退货")))
+                .as("没有重排时，链上只剩截断，且它照 top-k 生效").hasSize(5);
+        assertThat(pipeline.candidates(query("退货")))
+                .as("候选池不截断：评测要靠它说清「缺的那段排第几」").hasSize(30);
+    }
+
+    @Test
+    @DisplayName("重排换过的顺序能穿到链尾：链外那个 joiner 不能按 score 再排一次")
+    void rerankOrderSurvivesPassThroughJoiner() {
+        // score 是融合分，重排不动它：a 分高、b 分低，重排把 b 顶到前面。
+        Document a = scored("a", "returns/a.md", 1, 0.90);
+        Document b = scored("b", "returns/b.md", 1, 0.20);
+        // 替身重排：直接反过来，等价于"端点认为 b 更相关"。
+        KnowledgeRetrievalPipeline pipeline = new KnowledgeRetrievalPipeline(
+                new HybridDocumentRetriever(q -> List.of(a, b), null, joiner()),
+                new ConcatenationDocumentJoiner(),
+                (query, documents) -> documents.reversed(), 5);
+
+        List<Document> candidates = pipeline.candidates(query("退货"));
+        assertThat(candidates).extracting(Document::getId)
+                .as("重排的结果是 b 在前").containsExactly("b", "a");
+
+        // advisor 在 retriever 之后还会跑一次自己的 joiner，默认那个按 score 倒序——
+        // 真接上它，这里会变回 a、b，重排白做一次且不报错。所以链外给的必须是直通的这个。
+        List<Document> joined = KnowledgeRetrievalPipeline.passThroughJoiner()
+                .join(Map.of(query("退货"), List.of(candidates)));
+        assertThat(joined).extracting(Document::getId)
+                .as("换成 ConcatenationDocumentJoiner 就会把 b（0.20）打回末尾")
+                .containsExactly("b", "a");
     }
 
     @Test
@@ -474,6 +501,12 @@ class KnowledgeRetrievalTest {
                     assertThat(advisor.getOrder())
                             .as("排在记忆之后，否则检索看到的是没有历史的一轮")
                             .isGreaterThan(Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER);
+                    // 这条链是线上路径，不是给评测准备的：advisor 拿到的检索器必须就是它。
+                    // 反过来说，若哪天有人把 advisor 接回只有召回那一步的 retriever，重排与截断
+                    // 就同时从线上消失，而装配测试、启动日志都不会有任何提示。
+                    assertThat(context.getBean(DocumentRetriever.class))
+                            .as("默认检索器 = 整条链（召回 → 融合 → 重排 → 截断）")
+                            .isSameAs(context.getBean(KnowledgeRetrievalPipeline.class));
                 });
     }
 

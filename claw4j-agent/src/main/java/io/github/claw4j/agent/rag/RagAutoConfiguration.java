@@ -15,7 +15,6 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
-import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
 import org.springframework.ai.rag.retrieval.join.ConcatenationDocumentJoiner;
 import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
@@ -31,6 +30,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -170,9 +170,9 @@ public class RagAutoConfiguration {
      * @return 两路检索器
      */
     @Bean
-    @ConditionalOnMissingBean(DocumentRetriever.class)
-    public DocumentRetriever knowledgeDocumentRetriever(VectorStore vectorStore, JdbcTemplate jdbc,
-                                                        RagProperties properties) {
+    @ConditionalOnMissingBean(HybridDocumentRetriever.class)
+    public HybridDocumentRetriever knowledgeDocumentRetriever(VectorStore vectorStore, JdbcTemplate jdbc,
+                                                              RagProperties properties) {
         RagProperties.Hybrid hybrid = properties.hybrid();
         DocumentRetriever vector = VectorStoreDocumentRetriever.builder()
                 .vectorStore(vectorStore)
@@ -234,56 +234,59 @@ public class RagAutoConfiguration {
     }
 
     /**
-     * 编排器。这是整个知识库能力的入口——没有它就只剩一个没人调的 retriever 工厂。
+     * 检索链路：召回 → 融合 → 重排 → 截断。这是<b>线上</b>那条链，advisor 直接拿它当
+     * {@code documentRetriever}，每轮对话都从这里过。
+     *
+     * <p>之所以单独一颗 bean 而不是在 advisor 里就地拼：链路是产品行为，得有个能命名、能单独验的
+     * 对象。写成一串 builder 调用时，把截断调到重排前面、或者漏掉重排，编译启动都不报错，也没有测试
+     * 会红（{@link KnowledgeRetrievalPipeline} 类注释）。
+     *
+     * <p>{@code @Primary}：容器里因此有两颗 {@link DocumentRetriever}（这条链与它内部的两路召回），
+     * 不指定首选的话，下一次有人写 {@code @Autowired DocumentRetriever} 就会撞上
+     * "expected single matching bean but found 2"。应用里"检索器"这个词指的就该是整条链。
+     *
+     * @param retriever 两路召回
+     * @param properties 知识库配置，取最终条数
+     * @param reranker  可选的重排器
+     * @return 检索链路
+     */
+    @Bean
+    @Primary
+    @ConditionalOnMissingBean(KnowledgeRetrievalPipeline.class)
+    public KnowledgeRetrievalPipeline knowledgeRetrievalPipeline(HybridDocumentRetriever retriever,
+                                                                 RagProperties properties,
+                                                                 ObjectProvider<RerankDocumentPostProcessor> reranker) {
+        return new KnowledgeRetrievalPipeline(retriever, new ConcatenationDocumentJoiner(),
+                reranker.getIfAvailable(), properties.topK());
+    }
+
+    /**
+     * 编排器。这是整个知识库能力的入口——没有它就只剩一条没人调的检索链。
      *
      * <p>它注册成 {@link Advisor}：{@code AgentAutoConfiguration#chatClient} 用
      * {@code ObjectProvider<Advisor>} 收容器里所有的 advisor，这里不点名任何 ChatClient。
      *
-     * @param retriever 两路检索器
-     * @param properties 知识库配置，取 top-k 与模板
-     * @param reranker  可选的重排器
+     * <p>检索那几步全在 {@link KnowledgeRetrievalPipeline} 里，这里只剩两件事：把它交给框架，
+     * 以及把读到的段落拼成提示词。所以下面的 joiner 必须是直通的——理由见
+     * {@link KnowledgeRetrievalPipeline#passThroughJoiner()}。
+     *
+     * @param pipeline 检索链路
      * @return 检索增强 advisor
      */
     @Bean
     @ConditionalOnMissingBean(RetrievalAugmentationAdvisor.class)
-    public Advisor knowledgeAugmentationAdvisor(DocumentRetriever retriever, RagProperties properties,
-                                                ObjectProvider<RerankDocumentPostProcessor> reranker) {
+    public Advisor knowledgeAugmentationAdvisor(KnowledgeRetrievalPipeline pipeline) {
         ContextualQueryAugmenter augmenter = ContextualQueryAugmenter.builder()
                 .promptTemplate(new PromptTemplate(PROMPT_TEMPLATE))
                 .allowEmptyContext(true)
                 .documentFormatter(RagAutoConfiguration::formatDocuments)
                 .build();
-        RerankDocumentPostProcessor processor = reranker.getIfAvailable();
         return RetrievalAugmentationAdvisor.builder()
-                .documentRetriever(retriever)
-                // 框架默认的 joiner：多路已经在 retriever 内部融过，这里每个 query 只有一路，
-                // 它做"按 id 去重 + 按 score 倒序"。所以融合分必须写进 Document 的 score
-                // （见 WeightedScoreJoiner），否则它按 0.0 把只有全文命中的块甩到末尾，
-                // 融合的顺序当场作废。
-                .documentJoiner(new ConcatenationDocumentJoiner())
-                // 顺序即链路的顺序：先重排（换顺序、不截断），再截断到 top-k（唯一的截断点）。
-                // 重排关掉时截断照样在，提示词不会被候选池撑满。
-                .documentPostProcessors(postProcessors(processor, properties.topK()))
+                .documentRetriever(pipeline)
+                .documentJoiner(KnowledgeRetrievalPipeline.passThroughJoiner())
                 .queryAugmenter(augmenter)
                 .order(ORDER)
                 .build();
-    }
-
-    /**
-     * 重排在前面跑，截断最后跑；重排没装就只剩截断。
-     *
-     * <p>截断不跟着重排走：重排可以关（默认开但可选），而"注入几段"不是可选项。两件事绑一起的话，
-     * 关掉重排就会把两路候选池（默认 30 段）整个塞进提示词，而那只在关掉一个开关时才出现。
-     *
-     * @param reranker 重排器，可以为 null
-     * @param topK     最终注入几段
-     * @return 按执行顺序排好的后处理器
-     */
-    static List<DocumentPostProcessor> postProcessors(RerankDocumentPostProcessor reranker, int topK) {
-        TopKDocumentPostProcessor truncation = new TopKDocumentPostProcessor(topK);
-        return reranker == null
-                ? List.of(truncation)
-                : List.of(reranker, truncation);
     }
 
     /**

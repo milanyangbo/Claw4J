@@ -433,6 +433,11 @@ def diff_cases(baseline: dict | None, result: dict) -> dict:
     cutoff = main_cutoff(l1)
     if not baseline or baseline.get("cutoff") != cutoff:
         return {"comparable": False, "new_fail": [], "fixed": []}
+    if baseline.get("cases") != l1["cases"]:
+        # 题集变了还逐题比，比的是两个不同的卷子：旧基线里没有的题会被一律算成"翻红"，
+        # 而它们从来没被基线考过。这不是回归，是换了尺子——先 --update-baseline 再谈逐题。
+        return {"comparable": False, "new_fail": [], "fixed": [],
+                "why": f"基线是 {baseline.get('cases')} 条题的，这次是 {l1['cases']} 条"}
     now = set(l1["cutoffs"][cutoff]["missed"])
     was = set(baseline.get("l1", {}).get("missed") or [])
     return {"comparable": True, "new_fail": sorted(now - was), "fixed": sorted(was - now)}
@@ -586,7 +591,7 @@ def pad(text: str, width: int) -> str:
     return text + " " * max(0, width - shown)
 
 
-def print_verdicts(rows: list[dict], flips: dict | None = None) -> None:
+def print_verdicts(rows: list[dict], flips: dict | None = None, cases: int = 0) -> None:
     print("\n判定（口径见 eval/rag/README.md：L1 用绝对门，L2 用相对基线）\n")
     print(f"{pad('指标', 24)}{pad('当前', 16)}{pad('判定口径', 20)}{pad('档位', 6)}结论")
     for row in rows:
@@ -605,8 +610,8 @@ def print_verdicts(rows: list[dict], flips: dict | None = None) -> None:
             print("\n没有不达标项，但 L2 还在建基线：这次的均值只被记下来，还没跟谁比过。"
                   "下次起才判回归。")
         else:
-            print("\n全部达标。但这不等于「没问题」：它只说明当前配置在这 12 条上没有明显塌方，"
-                  "而 12 条里一条就是 8 个百分点。")
+            print(f"\n全部达标。但这不等于「没问题」：它只说明当前配置在这 {cases} 条上没有明显塌方，"
+                  f"而 {cases} 条里一条就是 {100 / cases:.1f} 个百分点。")
         return
     print("\n不达标或存疑的怎么查：")
     for row in failing:
@@ -693,8 +698,9 @@ def build_report(result: dict, rows: list[dict], command: str, rebuilt: bool = F
         "跌超容差才算回归。「档位」那一列只帮人读数字，**不参与判定**——它的边界来自实践文章，"
         "不是 Ragas 官方口径，更不是本仓的验收标准。",
         "",
-        "结论有五种：**达标** / **不达标** / **回归**（比基线跌超容差）/ **存疑**（judge 有失败，"
-        "这批分数覆盖不全）/ **基准**（首次跑，还没有基线可比）。`召回完整性` 一行标 `—`，"
+        "结论有七种：**达标** / **不达标** / **稳定**（与基线差在容差内）/ **提升**（涨超容差）/ "
+        "**回归**（跌超容差）/ **存疑**（judge 有失败，这批分数覆盖不全）/ "
+        "**基准**（首次跑或题集变了，还没有可比的基线）。`召回完整性` 一行标 `—`，"
         "它是诊断项，不判达标与否。",
         "",
     ]
@@ -702,8 +708,9 @@ def build_report(result: dict, rows: list[dict], command: str, rebuilt: bool = F
     if flips is not None:
         lines += ["### 与基线的逐题差异", ""]
         if not flips.get("comparable"):
-            lines.append("基线缺失，或基线的 k 与本次不同，无法逐题比。"
-                         "用 `--update-baseline` 在当前 k 下重建一份。")
+            lines.append((f"无法逐题比：{flips['why']}，等于换了一份卷子。" if flips.get("why")
+                          else "基线缺失，或基线的 k 与本次不同，无法逐题比。")
+                         + " 用 `--update-baseline` 在当前题集与 k 下重建一份。")
         elif not flips["new_fail"] and not flips["fixed"]:
             lines.append("无变化：基线里没召全的那几条，这次状态相同。")
         else:
@@ -725,9 +732,9 @@ def build_report(result: dict, rows: list[dict], command: str, rebuilt: bool = F
         "| Recall@k | 该被找到的段，有多少进了前 k 段 | 检索漏了。它是最要紧的一个："
         "这一项低，后面所有指标都在测一个没料可用的模型 |",
         "| 召回完整性@k | 有几条题是**一段不漏**地召回了 | 看长尾。它不是门槛：均值会把"
-        "「某条只召到一半」抹平，而 12 条里一条就是 8 个百分点，拿它当门只会常红 |",
-        "| Precision@k | 前 k 段里 gold 占多少 | 上下文里夹带噪声。一条题只有一段 gold 时，"
-        "k=5 的理论上限就是 0.2，所以它不该当目标去优化，只看趋势 |",
+        "「某条只召到一半」抹平，而这条线上一条题就是几个百分点，拿它当门只会常红 |",
+        "| Precision@k | 前 k 段里 gold 占多少 | 上下文里夹带噪声。题里大多只有一段 gold，分母却是 k，"
+        "k=5 时上限只有 0.2——它基本就是 `R@k / k`，只看趋势 |",
         "| faithfulness | 回答里每条主张能否被上下文支持 | 在编。要么模型写进了常识，"
         "要么上下文被截断丢了一段 |",
         "| context_recall | 参考答案的要点被上下文覆盖了多少 | 检索漏段（回到 Recall 看），"
@@ -891,9 +898,16 @@ async def main() -> int:
 
     if baseline is None:
         print(f"\n（没有基线 {baseline_path}：L2 只记基准值，不判回归）")
-    judged = verdicts(result, baseline)
+    # 题集换过就不能拿旧均值比：56 条比 12 条，差的不一定是质量，可能只是新题更难。
+    # 逐题 diff 另有判断（diff_cases 会说明原因），这里只管 L2 那三行的回归判定。
+    compared = baseline
+    if baseline is not None and baseline.get("cases") != result["l1"]["cases"]:
+        print(f"\n（基线是 {baseline.get('cases')} 条题的，这次 {result['l1']['cases']} 条："
+              f"L2 不跟它比，只记基准值。确认这一版之后跑 --update-baseline）")
+        compared = None
+    judged = verdicts(result, compared)
     flips = diff_cases(baseline, result)
-    print_verdicts(judged, flips)
+    print_verdicts(judged, flips, result["l1"]["cases"])
     result["verdicts"] = judged
     result["flips"] = flips
 

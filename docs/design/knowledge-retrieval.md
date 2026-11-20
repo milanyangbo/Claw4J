@@ -85,15 +85,28 @@ ChatClient.defaultAdvisors(...)
 RetrievalAugmentationAdvisor                     ← 官方编排器，装了就不再自己串
         │  before(): 取最后一条用户消息 → 检索 → 增强这条消息
         │
-        ├─ documentRetriever: HybridDocumentRetriever      ← 实现官方 DocumentRetriever
-        │      ├─ VectorStoreDocumentRetriever（官方，只装配）
-        │      └─ KeywordDocumentRetriever（实现官方接口）
-        │      └─ 内部用 WeightedScoreJoiner 融合两路（0.7 / 0.3）
+        ├─ documentRetriever: KnowledgeRetrievalPipeline   ← 实现官方 DocumentRetriever，整条链
+        │      ├─ HybridDocumentRetriever                   ← 两路召回
+        │      │      ├─ VectorStoreDocumentRetriever（官方，只装配）
+        │      │      ├─ KeywordDocumentRetriever（实现官方接口）
+        │      │      └─ 内部用 WeightedScoreJoiner 融合两路（0.7 / 0.3）
+        │      ├─ ConcatenationDocumentJoiner（官方）：去重 + 按融合分排序
+        │      ├─ RerankDocumentPostProcessor：换顺序，不改条数
+        │      └─ TopKDocumentPostProcessor：唯一的截断点
         │
-        ├─ documentJoiner: ConcatenationDocumentJoiner     ← 官方默认，去重 + 排序
-        ├─ documentPostProcessors: RerankDocumentPostProcessor  ← 实现官方 DocumentPostProcessor
+        ├─ documentJoiner: passThroughJoiner               ← 必须直通，理由见第五节
         └─ queryAugmenter: ContextualQueryAugmenter        ← 官方，但要自定义模板（见下）
 ```
+
+### 为什么四步收进一个类，而不是摊在 builder 上
+
+摊在 `RagAutoConfiguration` 的 builder 链上时，「链路是什么」只对读装配代码的人可见。第二个
+想用这条链的人（评测）只能自己拼一遍——它当初只调了 retriever，量到的是重排前的排序，
+Recall@5 比线上低 0.07，而报告上完全看不出这件事，只显得检索很差。
+
+所以链路挪进 `KnowledgeRetrievalPipeline`，它实现官方 `DocumentRetriever`：装配侧只把整条链
+交给 advisor，评测侧只调 `candidates(query)`（重排后、截断前的候选池，用来回答"缺的那段排第几"）。
+顺序只有一处定义，两边量的就是同一个东西。
 
 ### 为什么两路必须在 retriever 内部融合
 
@@ -273,11 +286,17 @@ score(d) = 0.7 × 向量分(d) + 0.3 × 全文分(d)
 
 **融合分要写回 `Document#getScore()`**，不留在内部 map 里。原因不是偏好，是链路决定的：
 
-- advisor 里紧接着跑的是官方的 `ConcatenationDocumentJoiner`（`RagAutoConfiguration` 装配的
+- 链里紧接着跑的是官方的 `ConcatenationDocumentJoiner`（`KnowledgeRetrievalPipeline` 装配的
   就是这个），反编译可见它是 `sorted(comparingDouble(Document::getScore).reversed())`，
   分数为 null 时按 `0.0`。不写回的话，融合算得再对也会被它按原分数重排；
   同分之间还会退化成 `HashMap` 的迭代顺序，每次跑都可能不一样。
 - Spring AI 的排序信号本来就只有一个：`Document#getScore()`。喂给它融合分，就是照它的契约办事。
+
+**但链外的那个 joiner 必须直通。** `RetrievalAugmentationAdvisor` 在 retriever 之后一定会跑一次
+它自己的 joiner，默认也是 `ConcatenationDocumentJoiner`。而重排只换顺序、不改 score——把默认那个
+接在链后，重排的结果会在最后一刻被按 score 排回去，**不报任何错**。所以
+`RagAutoConfiguration` 传的是 `KnowledgeRetrievalPipeline.passThroughJoiner()`：单查询只有一路结果，
+摊平就够，去重与排序在链内已经做过。
 
 **同分定序**：融合分相同（只有全文命中的块常常同为一个命中数）时，按出处路径、段号兜底——
 OpenClaw 也是 `rankingScore` 相同后比 path / startLine / endLine。不定序就是不确定。

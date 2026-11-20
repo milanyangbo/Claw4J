@@ -1,5 +1,6 @@
 package io.github.claw4j.eval;
 
+import io.github.claw4j.agent.rag.KnowledgeRetrievalPipeline;
 import io.github.claw4j.agent.rag.RagMetadata;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.AgentPort;
@@ -13,7 +14,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.rag.Query;
-import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -94,8 +94,15 @@ class RetrievalExportTest {
         registry.add("claw4j.advisor.cache.enabled", () -> "false");
     }
 
+    /**
+     * 线上那条检索链：召回 → 融合 → 重排 → 截断。
+     *
+     * <p>取整条链，而不是把 retriever 与 reranker 各自注进来再按顺序调一遍。这不只是好看：
+     * 自己拼的那一版漏了重排，量到的是「重排前」的排序，Recall@5 比线上低 0.07，
+     * 而报告上看不出这件事——它只会显得检索很差。
+     */
     @Autowired
-    private DocumentRetriever retriever;
+    private KnowledgeRetrievalPipeline pipeline;
 
     @Autowired
     private AgentPort agent;
@@ -162,13 +169,21 @@ class RetrievalExportTest {
         List<RetrievalGold> golds = golds();
         List<RetrievalGold.Chunk> chunks = indexedChunks();
         assertThat(chunks).as("索引是空的：知识库没建起来，导出的每一行都会是空结果").isNotEmpty();
+        // 把规模打出来：语料改了却没进库时，这是第一眼能看见的东西——56 条题照样能跑完，
+        // 分数也会像个正常分数，只有"108 份却只切出 30 段"这种数字对不上。
+        System.out.println("索引：" + chunks.size() + " 段 / "
+                + chunks.stream().map(RetrievalGold.Chunk::doc).distinct().count() + " 份文档");
 
         List<ExportRow> exported = new ArrayList<>(golds.size());
         for (RetrievalGold gold : golds) {
             // 必须带身份：检索器看到 context 里没有 principal 会跳过检索，只留一行 WARN，
-            // 于是 12 条全是空结果、指标全 0，看起来像"检索烂"，实际是没传身份。
-            List<Document> hits = retriever.retrieve(new Query(gold.question(), List.of(),
-                    Map.of(ContextKeys.PRINCIPAL, EVAL_PRINCIPAL)));
+            // 于是每条都是空结果、指标全 0，看起来像"检索烂"，实际是没传身份。
+            //
+            // 取候选池（重排之后、截断之前）而不是 retrieve()：截断是保序地切前缀，所以评分侧
+            // 按 k=5 截出来的就是线上 top-5，同集合同顺序；留着整池，报告才能说清缺的那段是
+            // "排第 9"还是"不在候选里"——这两种要改的地方完全不同。
+            List<Document> hits = pipeline.candidates(
+                    new Query(gold.question(), List.of(), Map.of(ContextKeys.PRINCIPAL, EVAL_PRINCIPAL)));
             List<String> ids = new ArrayList<>(hits.size());
             List<String> texts = new ArrayList<>(hits.size());
             for (Document hit : hits) {
