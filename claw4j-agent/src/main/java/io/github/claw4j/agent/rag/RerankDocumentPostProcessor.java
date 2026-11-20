@@ -23,7 +23,10 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * 重排：调通义的 {@code qwen3-rerank}，实现框架的 {@link DocumentPostProcessor}。
+ * 重排：调重排端点（默认通义的 {@code qwen3-rerank}），实现框架的 {@link DocumentPostProcessor}。
+ *
+ * <p>模型名、端点、超时、候选数全部来自构造参数（{@code claw4j.rag.rerank.*}），这个类里不写死
+ * 任何一个：换模型是配置的事，不是改代码的事。
  *
  * <p>直接调 HTTP，是因为 Spring AI 2.0.2 没有 rerank 类型：BOM 里没有模块，jar 里也没有
  * {@code RerankModel} 这样的接口。所以"实现框架的 rerank 接口"这条路不成立，只能在框架留的

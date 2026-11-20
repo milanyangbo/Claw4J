@@ -55,7 +55,7 @@ claw4j:
 
     # 向量模型：语义缓存与知识库共用这一份，只跟 qwen key 走。
     embedding:
-      model: ${QWEN_EMBEDDING_MODEL:text-embedding-v3}
+      model: ${QWEN_EMBEDDING_MODEL:text-embedding-v4}
       # 必须与数据库里的 vector(1024) 一致；改它要同时改两处迁移。
       dimensions: 1024
 
@@ -389,7 +389,7 @@ claw4j:
     # 文档目录，递归找 .md / .txt。启动后同步一次，按内容哈希跳过没变的；文件删了块跟着删。
     directory: ${CLAW4J_RAG_DIRECTORY:}
     # 最终给模型几段（最后一步截断），与下面"每路召回多少"是两件事。
-    top-k: ${CLAW4J_RAG_TOP_K:5}
+    top-k: ${CLAW4J_RAG_TOP_K:10}
     # 相似度下限，只负责挡掉明显不相关的。调它之前先攒一批真实问题。
     min-similarity: ${CLAW4J_RAG_MIN_SIMILARITY:0.5}
     # 一块文档多少 token（不是字符）。
@@ -399,21 +399,38 @@ claw4j:
     hybrid:
       # 关掉只剩向量：`SKU-2024` 这种"字面精确、语义无关"的查询会退化。
       enabled: ${CLAW4J_RAG_HYBRID_ENABLED:true}
-      # 每路各召回多少。必须比 top-k 大，否则"两路都命中"根本发生不了。
-      candidates-per-route: ${CLAW4J_RAG_CANDIDATES_PER_ROUTE:15}
+      # 每路各召回多少。融合会去重，池子约等于每路条数，所以它必须 ≥ 重排候选（25 → 重排 20 → 截 10）。
+      candidates-per-route: ${CLAW4J_RAG_CANDIDATES_PER_ROUTE:25}
 
     # 重排（qwen3-rerank）：只换顺序，不删结果。
     rerank:
       enabled: ${CLAW4J_RAG_RERANK_ENABLED:true}
       # 送进重排的条数。最终留几段由上面的 top-k 决定。
-      candidates: ${CLAW4J_RAG_RERANK_CANDIDATES:10}
+      candidates: ${CLAW4J_RAG_RERANK_CANDIDATES:20}
       # 注意是 compatible-api，与 chat / embedding 的 compatible-mode 不是同一个前缀，
       # 所以单独配，不从 qwen 的 base-url 拼。
       base-url: ${CLAW4J_RAG_RERANK_BASE_URL:https://dashscope.aliyuncs.com/compatible-api/v1}
+      # 换模型只改这里。同为百炼兼容端点的可选值：qwen3-rerank（当前默认）、
+      # gte-rerank-v2、bge-reranker-v2-m3、qwen3.7-text-rerank——前两个的价格与上限不同，
+      # 换之前先确认单条文档的长度上限（见 docs/design/knowledge-retrieval.md 第六节）。
       model: ${CLAW4J_RAG_RERANK_MODEL:qwen3-rerank}
       # 它在每轮检索的路上，用户等的是首字。超时或报错一律按原顺序继续。
       timeout: 2s
       # 凭据复用 providers 里 name=qwen 那一条的 api-key，不另配一把。
+
+    # 章节父块回填（small-to-big）：命中的子块换成"同一章节全部块"拼成的父块。
+    # 默认关：它用 token 换上下文完整度（段数变少、每段变长），收益要靠对照实验证明。
+    parent:
+      enabled: ${CLAW4J_RAG_PARENT_ENABLED:false}
+      # 父块字符上限。超过就不聚合、保留原子块——别让一章把上下文吃光。
+      max-chars: ${CLAW4J_RAG_PARENT_MAX_CHARS:2400}
+
+    # 检索前改写：把口语问题改成"文档里会怎么写"。含数字与型号的问题自动跳过。
+    # 默认关：每轮多一次模型调用，收益只在"问题用词与文档完全不重叠"时出现。
+    rewrite:
+      enabled: ${CLAW4J_RAG_REWRITE_ENABLED:false}
+      # 超过就按原问题检索（改写是增强，不是前提）。
+      timeout: ${CLAW4J_RAG_REWRITE_TIMEOUT:3s}
 
   # ---- 链路追踪：默认一段都不导 ----
   # 关着时不起线程、不留 exporter。开了却没配 endpoint 也一条不导，启动日志会点名缺哪项。

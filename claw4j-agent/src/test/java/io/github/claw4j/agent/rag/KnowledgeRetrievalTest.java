@@ -1,6 +1,7 @@
 package io.github.claw4j.agent.rag;
 
 import com.sun.net.httpserver.HttpServer;
+import io.github.claw4j.agent.model.EmbeddingProperties;
 import io.github.claw4j.agent.model.ModelProperties;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
@@ -35,6 +36,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.mockito.ArgumentCaptor;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
@@ -74,11 +76,12 @@ class KnowledgeRetrievalTest {
                 .thenReturn(List.of(ContentHash.of(body)));
         // 切块身份也对得上，才轮到"比 hash"
         when(jdbc.queryForList(contains("index_meta"), eq(String.class), any()))
-                .thenReturn(List.of(KnowledgeIndexer.identityOf(200)));
+                .thenReturn(List.of(KnowledgeIndexer.identityOf(200, EmbeddingProperties.DEFAULT_MODEL,
+                EmbeddingProperties.DEFAULT_DIMENSIONS)));
         VectorStore store = mock(VectorStore.class);
 
         KnowledgeIndexer.Stats stats = new KnowledgeIndexer(jdbc, store, mock(EmbeddingModel.class),
-                props(docs)).index();
+                props(docs), EmbeddingProperties.defaults()).index();
 
         assertThat(stats.skipped()).as("hash 相等就是没变").isEqualTo(1);
         assertThat(stats.indexed()).isZero();
@@ -95,11 +98,45 @@ class KnowledgeRetrievalTest {
         when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(1);
         VectorStore store = mock(VectorStore.class);
 
-        new KnowledgeIndexer(jdbc, store, mock(EmbeddingModel.class), props(docs)).index();
+        new KnowledgeIndexer(jdbc, store, mock(EmbeddingModel.class), props(docs), EmbeddingProperties.defaults()).index();
 
         var order = inOrder(store);
         order.verify(store).delete(any(Filter.Expression.class));
         order.verify(store).add(any());
+    }
+
+    @Test
+    @DisplayName("块文本带「文档 › 章节」前缀、section 落进 metadata：碎块自己说不清出处")
+    void chunksCarrySectionContext(@TempDir Path docs) throws IOException {
+        Files.writeString(docs.resolve("after-sales.md"), """
+                # 售后政策
+
+                ## 第二章 退货
+
+                七天无理由退货，运费由买家承担。
+                """);
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(contains("content_hash"), eq(String.class), any(), any()))
+                .thenReturn(List.of());
+        when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(1);
+        VectorStore store = mock(VectorStore.class);
+
+        new KnowledgeIndexer(jdbc, store, mock(EmbeddingModel.class), props(docs),
+                EmbeddingProperties.defaults()).index();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> captured = ArgumentCaptor.forClass(List.class);
+        verify(store).add(captured.capture());
+        List<Document> chunks = captured.getValue();
+
+        assertThat(chunks).as("这份文档只有一小段").hasSize(1);
+        assertThat(chunks.getFirst().getText())
+                .as("前缀进的是 content 本身：向量与提示词两侧都需要它")
+                .startsWith("【售后政策 › 第二章 退货】\n")
+                .contains("七天无理由退货");
+        assertThat(chunks.getFirst().getMetadata())
+                .as("章节也落进 metadata：父块回填要按它聚合，从文本反解前缀太脆")
+                .containsEntry(RagMetadata.SECTION, "第二章 退货");
     }
 
     @Test
@@ -115,7 +152,7 @@ class KnowledgeRetrievalTest {
         VectorStore store = mock(VectorStore.class);
 
         KnowledgeIndexer.Stats stats = new KnowledgeIndexer(jdbc, store, mock(EmbeddingModel.class),
-                props(docs)).index();
+                props(docs), EmbeddingProperties.defaults()).index();
 
         assertThat(stats.removed()).as("目录里已经没有它了").isEqualTo(1);
         // 断言的是"文件账被删"，不是"块被删"：块由同一句 deleteChunksOf 带走，
@@ -127,7 +164,8 @@ class KnowledgeRetrievalTest {
     @DisplayName("目录里一个可索引文件都没有：启动失败，不是空知识库")
     void emptyDirectoryFailsLoudly(@TempDir Path docs) {
         KnowledgeIndexer indexer = new KnowledgeIndexer(mock(JdbcTemplate.class),
-                mock(VectorStore.class), mock(EmbeddingModel.class), props(docs));
+                mock(VectorStore.class), mock(EmbeddingModel.class), props(docs),
+                EmbeddingProperties.defaults());
 
         assertThatThrownBy(indexer::index)
                 .as("空知识库让每次检索都答「没有相关资料」，与「这段确实没写」分不开")
@@ -277,14 +315,16 @@ class KnowledgeRetrievalTest {
     @DisplayName("全文那一路的 SQL 带 escape 与 limit，参数按 ? 在 SQL 里出现的顺序给")
     void keywordSqlEscapesAndBounds() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        when(jdbc.query(anyString(), any(RowMapper.class), any(), any(), any(), any(), any()))
-                .thenReturn(List.of());
+        when(jdbc.query(anyString(), any(RowMapper.class),
+                any(), any(), any(), any(), any(), any())).thenReturn(List.of());
 
         new KeywordDocumentRetriever(jdbc, "docs", 7).retrieve(query("5% 折扣"));
 
-        // 顺序 = select 里的命中次数（term、term）→ where（source、转义后的 pattern）→ limit。
+        // 词项是「整句 + 中文 bigram」两个，所以 select 里两组 case、where 里两个 or。
+        // 顺序 = select 里的 pattern（两处都必须是带 % 的模式串）→ source → where 的 pattern → limit。
         verify(jdbc).query(contains("escape"), any(RowMapper.class),
-                eq("5% 折扣"), eq("5% 折扣"), eq("docs"), eq("%5\\% 折扣%"), eq(7));
+                eq("%5\\% 折扣%"), eq("%折扣%"), eq("docs"),
+                eq("%5\\% 折扣%"), eq("%折扣%"), eq(7));
     }
 
     // ---- 语义切块：句子之间判语义，token 只做上限（ADR-0028） ----
@@ -342,7 +382,26 @@ class KnowledgeRetrievalTest {
         verify(embeddings, never()).embed(anyList());
     }
 
-    // ---- 重排：失败必须原样返回 ----
+    // ---- 重排：模型/端点/超时全部来自配置，失败必须原样返回 ----
+
+    @Test
+    @DisplayName("重排模型名来自配置：换模型只改配置，代码里没有写死的模型")
+    void rerankModelComesFromConfiguration() throws Exception {
+        try (Stub endpoint = new Stub("""
+                {"object":"list","id":"req-1","model":"bge-reranker-v2-m3",
+                 "usage":{"total_tokens":1},
+                 "results":[{"index":0,"relevance_score":0.9,"document":null}]}
+                """)) {
+            // 必须两条以上：一条候选时 process() 直接短路，一次请求都不发（也验不到报文）。
+            endpoint.reranker("bge-reranker-v2-m3", Duration.ofSeconds(2), 3)
+                    .process(query("退货"), List.of(doc("d1", "a.md", 1), doc("d2", "b.md", 1)));
+
+            assertThat(endpoint.lastBody())
+                    .as("请求报文里的 model 必须是配置传进来的那个：写死成默认值的话，"
+                            + "换模型改了配置也不生效，而症状只是「重排好像没什么用」")
+                    .contains("\"model\":\"bge-reranker-v2-m3\"");
+        }
+    }
 
     @Test
     @DisplayName("重排只换顺序不截断：送进去的是候选池前 N 条，回来还是这些条")
@@ -491,6 +550,9 @@ class KnowledgeRetrievalTest {
                 .withBean(EmbeddingModel.class, () -> mock(EmbeddingModel.class))
                 .withBean(VectorStore.class, () -> mock(VectorStore.class))
                 .withBean(ModelProperties.class)
+                // 索引器要拿模型名与维度算身份，容器里必须有这份配置：少了它，启动失败报的是
+                // "No qualifying bean of type EmbeddingProperties"，与知识库本身无关。
+                .withBean(EmbeddingProperties.class, EmbeddingProperties::defaults)
                 .withPropertyValues("claw4j.rag.enabled=true", "claw4j.rag.directory=" + docs)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -536,7 +598,7 @@ class KnowledgeRetrievalTest {
     }
 
     private static RagProperties props(Path docs) {
-        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null);
+        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null, null, null);
     }
 
     private static WeightedScoreJoiner joiner() {
@@ -554,7 +616,7 @@ class KnowledgeRetrievalTest {
 
     private static Document doc(String id, String path, int index) {
         return new Document(id, "内容 " + id, RagMetadata.of(path, KnowledgeIndexer.SOURCE_KIND,
-                String.valueOf(index), DIGEST));
+                String.valueOf(index), DIGEST, null));
     }
 
     private static Query query(String text) {
@@ -594,6 +656,8 @@ class KnowledgeRetrievalTest {
                         Thread.currentThread().interrupt();
                     }
                 }
+                // 记下请求体：本轮要验"模型名到底是不是配置给的那个"，只能从发出去的报文看。
+                lastBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().add("Content-Type", "application/json");
                 exchange.sendResponseHeaders(status, bytes.length);
@@ -604,16 +668,27 @@ class KnowledgeRetrievalTest {
             server.start();
         }
 
+        /** 最近一次请求的报文。断言只看这一份，不与并发竞态。 */
+        private volatile String lastBody;
+
+        String lastBody() {
+            return lastBody;
+        }
+
         RerankDocumentPostProcessor reranker(int topK) {
             return reranker(Duration.ofSeconds(2), topK);
         }
 
         RerankDocumentPostProcessor reranker(Duration timeout, int topK) {
+            return reranker("qwen3-rerank", timeout, topK);
+        }
+
+        RerankDocumentPostProcessor reranker(String model, Duration timeout, int topK) {
             return new RerankDocumentPostProcessor(
                     HttpClient.newHttpClient(),
                     new com.fasterxml.jackson.databind.ObjectMapper(),
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/reranks",
-                    "qwen3-rerank", timeout, topK, () -> "test-key");
+                    model, timeout, topK, () -> "test-key");
         }
 
         @Override

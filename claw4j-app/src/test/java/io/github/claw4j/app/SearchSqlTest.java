@@ -190,7 +190,7 @@ class SearchSqlTest {
     @DisplayName("内容没变就跳过：第二次同步不重算 embedding")
     void unchangedFileIsSkipped() {
         copyCorpus();
-        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties());
+        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), EmbeddingProperties.defaults());
 
         KnowledgeIndexer.Stats first = indexer.index();
         KnowledgeIndexer.Stats second = indexer.index();
@@ -205,7 +205,7 @@ class SearchSqlTest {
     @DisplayName("切块身份变了：内容一个字节没改也要全量重建（照 OpenClaw 的 index identity）")
     void indexMetaChangeRebuildsEverything() {
         copyCorpus();
-        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties());
+        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), EmbeddingProperties.defaults());
         indexer.index();
 
         // 模拟"切块实现升了一版"：身份对不上。hash 全是好的，但边界已经换了。
@@ -219,7 +219,8 @@ class SearchSqlTest {
         assertThat(jdbc.queryForObject("select value from claw4j_rag.index_meta where key = ?",
                 String.class, KnowledgeIndexer.META_KEY))
                 .as("重建完写回当前身份，第二次才会跳过")
-                .isEqualTo(KnowledgeIndexer.identityOf(properties().chunkSize()));
+                .isEqualTo(KnowledgeIndexer.identityOf(properties().chunkSize(), EmbeddingProperties.DEFAULT_MODEL,
+                        EmbeddingProperties.DEFAULT_DIMENSIONS));
         assertThat(jdbc.queryForObject("""
                 select count(*) from information_schema.columns
                 where table_schema = 'claw4j_rag' and table_name = 'source' and column_name like '%chunk%'
@@ -258,7 +259,7 @@ class SearchSqlTest {
 
     private void indexCorpus() {
         copyCorpus();
-        new KnowledgeIndexer(jdbc, store(), embeddings(), properties()).index();
+        new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), EmbeddingProperties.defaults()).index();
     }
 
     /** 把 40 份语料复制到本用例的临时目录：有些用例要改文件（重建、删除），不能动源目录。 */
@@ -310,7 +311,7 @@ class SearchSqlTest {
 
     private RagProperties properties() {
         // 块长 200 token：40 份短文档要切出足够多的块，"候选 15 条"才有区分度。
-        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null);
+        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null, null, null);
     }
 
     /** 检索与索引共用同一个 store：表由它建（迁移里不建），两个用例之间也不会重复启动。 */

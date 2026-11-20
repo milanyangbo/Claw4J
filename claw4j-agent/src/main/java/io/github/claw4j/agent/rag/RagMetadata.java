@@ -29,6 +29,23 @@ public final class RagMetadata {
     /** 内容哈希，与 {@code claw4j_rag.source} 那一列同源。 */
     public static final String HASH = "content_hash";
 
+    /**
+     * 章节链，例如 {@code 第二章 退货 › 2.3 运费承担}。块前缀里也有一份，这里再存一次是因为
+     * 父子分块要按它聚合（{@code SectionExpander}）：从文本里反解前缀是"解析自己刚拼出来的
+     * 字符串"，比多存一个键脆弱。
+     */
+    public static final String SECTION = "section";
+
+    /**
+     * 父块覆盖的子块号，逗号分隔（例如 {@code 3,4,5}）。只有
+     * {@link SectionExpander} 拼出来的父块才有这个键。
+     *
+     * <p>存在的理由只有一个：导出侧要按它把父块展开成子块 id。不展开的话，gold 的
+     * {@code reference} 是一个子块 id，而返回列表里只有父块的 id，评测会把"其实答上了"
+     * 记成"没召回"——一个只在开父块时才出现的假跌。
+     */
+    public static final String COVERED = "covered";
+
     private RagMetadata() {
     }
 
@@ -43,10 +60,12 @@ public final class RagMetadata {
      * @param source  来源类别，可以为 null
      * @param ordinal 文档内块号，文本形态，可以为 null
      * @param hash    内容哈希，可以为 null
+     * @param section 章节链，可以为 null
      * @return 只含非空键的 metadata
      */
-    public static Map<String, Object> of(String path, String source, String ordinal, String hash) {
-        Map<String, Object> metadata = new HashMap<>(4);
+    public static Map<String, Object> of(String path, String source, String ordinal, String hash,
+                                        String section) {
+        Map<String, Object> metadata = new HashMap<>(5);
         if (path != null) {
             metadata.put(PATH, path);
         }
@@ -59,6 +78,9 @@ public final class RagMetadata {
         }
         if (hash != null) {
             metadata.put(HASH, hash);
+        }
+        if (section != null && !section.isBlank()) {
+            metadata.put(SECTION, section);
         }
         return Map.copyOf(metadata);
     }

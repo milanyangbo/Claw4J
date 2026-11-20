@@ -42,6 +42,14 @@ public class KnowledgeRetrievalPipeline implements DocumentRetriever {
     private final DocumentPostProcessor reranker;
 
     /**
+     * 章节父块回填，没装时为 null。挂在重排之后：先按子块排序，再把最相关的换成父块。
+     *
+     * <p>它可关（{@code claw4j.rag.parent.enabled}，默认关）：开它等于用 token 换上下文完整度，
+     * 段数会变少而每段变长，和 top-k 是两个方向的调整。
+     */
+    private final DocumentPostProcessor expander;
+
+    /**
      * 唯一截断点。它不跟着重排走：重排可关，「注入几段」不可选（见 {@link TopKDocumentPostProcessor}）。
      */
     private final DocumentPostProcessor truncation;
@@ -56,9 +64,25 @@ public class KnowledgeRetrievalPipeline implements DocumentRetriever {
      */
     public KnowledgeRetrievalPipeline(HybridDocumentRetriever retriever, DocumentJoiner joiner,
                                       DocumentPostProcessor reranker, int topK) {
+        this(retriever, joiner, reranker, null, topK);
+    }
+
+    /**
+     * 带父块回填的完整链。
+     *
+     * @param retriever 两路召回
+     * @param joiner    去重与按融合分排序
+     * @param reranker  重排，没装时传 null
+     * @param expander  章节父块回填，没装时传 null
+     * @param topK      最终留几段
+     */
+    public KnowledgeRetrievalPipeline(HybridDocumentRetriever retriever, DocumentJoiner joiner,
+                                      DocumentPostProcessor reranker, DocumentPostProcessor expander,
+                                      int topK) {
         this.retriever = Objects.requireNonNull(retriever, "retriever");
         this.joiner = Objects.requireNonNull(joiner, "joiner");
         this.reranker = reranker;
+        this.expander = expander;
         this.truncation = new TopKDocumentPostProcessor(topK);
     }
 
@@ -94,7 +118,10 @@ public class KnowledgeRetrievalPipeline implements DocumentRetriever {
             return List.of();
         }
         List<Document> ordered = joiner.join(Map.of(query, List.of(hits)));
-        return reranker == null ? ordered : reranker.process(query, ordered);
+        if (reranker != null) {
+            ordered = reranker.process(query, ordered);
+        }
+        return expander == null ? ordered : expander.process(query, ordered);
     }
 
     /**

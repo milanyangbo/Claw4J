@@ -19,11 +19,11 @@ import java.util.Set;
  * （{@code src/agents/memory-search.ts:165-166}）。不做成配置：多一个旋钮，"结果为什么变了"
  * 就多一个可能的答案。
  *
- * <p>全文那路的分是命中次数，先按本次查询的最大值归一（{@code hits / maxHits}）再乘 0.3，
+ * <p>全文那路的分是"命中的不同词项数"，先按本次查询的最大值归一（{@code hits / maxHits}）再乘 0.3，
  * 两路才都在 0~1。归一对应 OpenClaw 的 {@code createKeywordScoreScale}
  * （{@code extensions/memory-core/src/memory/hybrid.ts:66}）里"按本次最强命中度量"这一步；
  * 它还叠了 {@code score / (1 - score)} 的反饱和与向量上限缩放，本仓库都没有——那一步是为 BM25
- * 的饱和曲线准备的，而这里的全文分是计数，本来线性。
+ * 的饱和曲线准备的，而这里的全文分是"命中几个词项"的计数，本来线性。
  *
  * <p>融合分写回 {@link Document#getScore()}：下游的 {@code ConcatenationDocumentJoiner} 按这个分
  * 排序，不写回去会被重排。OpenClaw 的 {@code mergeHybridResults}（同文件 {@code :81}）也是把
@@ -44,10 +44,10 @@ public final class WeightedScoreJoiner implements DocumentJoiner {
      * 按 {@code vectorHits}、{@code keywordHits} 的顺序融合两路命中。
      *
      * <p>参数顺序就是路别。{@link DocumentJoiner#join} 的 {@code Map} 签名不带路别信息，
-     * 传反了会把余弦当命中次数用，而且不报错。
+     * 传反了会把余弦当词项命中数用，而且不报错。
      *
      * @param vectorHits  向量命中，分是余弦（0~1）
-     * @param keywordHits 全文命中，分是命中次数（{@link KeywordDocumentRetriever} 写的）
+     * @param keywordHits 全文命中，分是命中的不同词项数（{@link KeywordDocumentRetriever} 写的）
      * @return 融合后的列表，按融合分降序，同分时按出处定序
      */
     public List<Document> join(List<Document> vectorHits, List<Document> keywordHits) {
@@ -158,7 +158,7 @@ public final class WeightedScoreJoiner implements DocumentJoiner {
         return score == null || score.isNaN() ? 0 : score;
     }
 
-    /** 全文那一路的分：命中次数，只会是非负数。 */
+    /** 全文那一路的分：命中的不同词项数，只会是非负数。 */
     private static double textScoreOf(Document document) {
         return Math.max(0, scoreOf(document));
     }

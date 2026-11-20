@@ -26,12 +26,24 @@ import java.time.Duration;
  * @param chunkSize     一块最多多少 token（不是字符）。切块见 {@link SemanticTextSplitter}
  * @param hybrid        混合检索（向量 + 全文两路）。关掉只剩向量
  * @param rerank        重排。关掉只影响顺序，不影响召回
+ * @param parent        章节父块回填（small-to-big）。默认关，见 {@link Parent}
+ * @param rewrite       检索前改写。默认关，见 {@link Rewrite}
  */
 @ConfigurationProperties("claw4j.rag")
 public record RagProperties(String directory, Integer topK, Double minSimilarity, Integer chunkSize,
-                            Hybrid hybrid, Rerank rerank) {
+                            Hybrid hybrid, Rerank rerank, Parent parent, Rewrite rewrite) {
 
-    public static final int DEFAULT_TOP_K = 5;
+    /**
+     * 一次检索最终注入多少段，默认 10。
+     *
+     * <p>行业给的上下文宽度普遍是 10–20：Anthropic 的 Contextual Retrieval 实验里 top-20 的
+     * 失败率明显低于 top-10 与 top-5，多数 RAG 实践也落在这一段。5 是偏紧的一端，
+     * 而本仓库的实测显示 k 从 5 加到 8 分数不动——说明多给几段不会掉分，只是当时池子里没有更多可给。
+     *
+     * <p><b>改这个数会换尺子</b>：Recall@k 随 k 单调不减，所以 k=5 的分数与 k=10 的分数不能直接比。
+     * 评测侧（{@code eval/rag}）的 main cutoff 取的是候选 k 里最大的那个，与这里的取值对齐。
+     */
+    public static final int DEFAULT_TOP_K = 10;
 
     /**
      * 相似度下限，默认 0.5。
@@ -62,13 +74,23 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
     public record Hybrid(Boolean enabled, Integer candidatesPerRoute) {
 
         /**
-         * 每路 15 条。
+         * 每路 25 条。
          *
-         * <p>比最终 topK（5）大是必须的：融合与重排都只能从候选里挑，候选只有 5 条的话，
-         * "两路都命中"这件事根本发生不了，名次永远是各路自己的前 5。15 是"足够让排名有区分度"
-         * 与"不把整库倒出来"之间的取值。
+         * <p>这个数是量出来的，不是按比例拍的：融合会按 id 去重，两路有大量重叠，所以
+         * <b>融合池约等于每路条数</b>，不是两路之和。实测（68 条评测集）：
+         *
+         * <pre>
+         * 每路 25 → 融合后平均 24.6 条（关重排时量的，那才是完整池子）
+         * 每路 15 → 融合后平均 11.9 条，最大 15
+         * </pre>
+         *
+         * <p>要重排看前 20 条，池子就必须 ≥ 20：每路 15 时池子只有 12 条，重排等于在 12 条里
+         * 排 10 条，筛选空间几乎为零——重排候选配成 20 也形同虚设。
+         *
+         * <p>为什么不加到 30：这一层几乎不花钱（一次 SQL + 一次向量近邻，都在本地），但多了
+         * 没有用——重排只收 20 条，多出来的永远进不了重排。真正按条数计费的是重排。
          */
-        public static final int DEFAULT_CANDIDATES_PER_ROUTE = 15;
+        public static final int DEFAULT_CANDIDATES_PER_ROUTE = 25;
 
         public Hybrid {
             enabled = enabled == null || enabled;
@@ -113,7 +135,14 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
          */
         public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(2);
 
-        public static final int DEFAULT_CANDIDATES = 10;
+        /**
+         * 默认 20 条送进重排。
+         *
+         * <p>必须大于 {@code top-k}：{@link RagProperties#rerankCandidates()} 取两者的最大值，若两者
+         * 相等，重排的输入条数就等于最终条数，它从"筛选 + 排序"退化成"只排序"——能选的范围消失了，
+         * 而这件事在结果上看不出来（分数照样是一个分数）。
+         */
+        public static final int DEFAULT_CANDIDATES = 20;
 
         public Rerank {
             enabled = enabled == null || enabled;
@@ -147,11 +176,73 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
         chunkSize = (chunkSize == null || chunkSize <= 0) ? DEFAULT_CHUNK_SIZE : chunkSize;
         hybrid = hybrid == null ? Hybrid.defaults() : hybrid;
         rerank = rerank == null ? Rerank.defaults() : rerank;
+        parent = parent == null ? Parent.defaults() : parent;
+        rewrite = rewrite == null ? Rewrite.defaults() : rewrite;
     }
 
     /** 开了就必须有目录：没有目录的知识库检索永远返回空，而"空"与"没有这段"分不开。 */
     public boolean hasDirectory() {
         return directory != null;
+    }
+
+    /**
+     * 章节父块回填（small-to-big）。
+     *
+     * <p>小块召回准、上下文碎：命中 350 字的一段，适用范围与例外都落在兄弟块里。打开后，
+     * 命中的子块会被"同一文档同一章节的全部块"拼成的父块替代（见 {@code SectionExpander}）。
+     *
+     * <p><b>默认关</b>：它用 token 换上下文完整度，收益要靠对照实验证明，不能因为"业界这么做"
+     * 就默认开。开着的时候上下文会变长（段数变少、每段更长），而模型看到的段数变少这件事
+     * 与 top-k 是两个方向，必须分开量。
+     *
+     * @param enabled  是否回填
+     * @param maxChars 父块最多多少字符；超过就不聚合，保留原子块——宁可不合并，也不把一章几千字
+     *                 塞进提示词
+     */
+    public record Parent(Boolean enabled, Integer maxChars) {
+
+        /** 2400 字符约等于 3 块（默认块长 800 token 上下），再大就该考虑摘要而不是拼接。 */
+        public static final int DEFAULT_MAX_CHARS = 2400;
+
+        public Parent {
+            enabled = enabled != null && enabled;
+            maxChars = (maxChars == null || maxChars <= 0) ? DEFAULT_MAX_CHARS : maxChars;
+        }
+
+        static Parent defaults() {
+            return new Parent(null, null);
+        }
+    }
+
+    /**
+     * 检索前改写（{@link RetrievalQueryRewriter}）。
+     *
+     * <p>默认关：它每轮多一次模型调用（延迟 + 成本），而收益只在"问题用词与文档完全不重叠"时
+     * 出现。开着的时候含数字与型号的问题会自动跳过。
+     *
+     * @param enabled 是否改写
+     * @param timeout 等多久；超时按原问题检索
+     */
+    public record Rewrite(Boolean enabled, Duration timeout) {
+
+        /**
+         * 3 秒。
+         *
+         * <p>改写挂在检索之前，用户等的是首字，所以不能等太久；但 1.5 秒对 deepseek-chat 这种
+         * 一次几百 token 的同步调用偏紧，实测命中率会掉一半——那时改写等于随机生效，
+         * 归因会更难。3 秒是"能等到"与"不算太慢"之间的取值。
+         */
+        public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(3);
+
+        public Rewrite {
+            enabled = enabled != null && enabled;
+            timeout = (timeout == null || timeout.isZero() || timeout.isNegative())
+                    ? DEFAULT_TIMEOUT : timeout;
+        }
+
+        static Rewrite defaults() {
+            return new Rewrite(null, null);
+        }
     }
 
     /**
@@ -164,6 +255,6 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
 
     /** 全部走默认值，但 {@code directory} 为空——这时 {@code hasDirectory()} 为 false。 */
     public static RagProperties defaults() {
-        return new RagProperties(null, null, null, null, null, null);
+        return new RagProperties(null, null, null, null, null, null, null, null);
     }
 }

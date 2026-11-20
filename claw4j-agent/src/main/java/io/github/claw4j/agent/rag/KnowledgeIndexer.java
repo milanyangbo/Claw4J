@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.rag;
 
+import io.github.claw4j.agent.model.EmbeddingProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -88,7 +89,7 @@ public class KnowledgeIndexer {
      * <p>改切块算法、词表、阈值、最少句数都要加一：身份一变，下次启动就全量重建。不这样做的话，
      * hash 没变的文件永远不重建，库里会混着两套边界的块且没有任何迹象。
      */
-    static final int CHUNKING_VERSION = 1;
+    static final int CHUNKING_VERSION = 2;
 
     private static final String FIND_META =
             "select value from " + RagAutoConfiguration.VECTOR_SCHEMA + ".index_meta where key = ?";
@@ -104,29 +105,54 @@ public class KnowledgeIndexer {
     private final RagProperties properties;
 
     /**
+     * 向量模型的配置（模型名与维度）。只用来算索引身份，不参与切块。
+     *
+     * <p>不写成 {@link org.springframework.ai.embedding.EmbeddingModel} 的类名：容器里那一层是
+     * {@code BatchingEmbeddingModel} 装饰器，类名与真实模型无关；而配置里的模型名才是
+     * "这批向量是谁算的"的唯一答案。
+     */
+    private final EmbeddingProperties embedding;
+
+    /**
      * 切块器，两级：句子之间按语义断（转折词 + 向量跃迁），块超 token 上限才硬切。裁决见
      * ADR-0028，算法在 {@code claw4j-core} 的 {@link io.github.claw4j.chunk.ChunkPlanner}。
      */
     private final TextSplitter splitter;
 
     public KnowledgeIndexer(JdbcTemplate jdbc, VectorStore vectorStore, EmbeddingModel embeddings,
-                            RagProperties properties) {
+                            RagProperties properties, EmbeddingProperties embedding) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.vectorStore = Objects.requireNonNull(vectorStore, "vectorStore");
         this.properties = Objects.requireNonNull(properties, "properties");
+        this.embedding = Objects.requireNonNull(embedding, "embedding");
         this.splitter = new SemanticTextSplitter(Objects.requireNonNull(embeddings, "embeddings"),
                 properties.chunkSize());
     }
 
     /**
-     * 索引身份：切块实现版本 + token 上限。
+     * 索引身份：切块实现版本 + token 上限 + 向量模型名 + 维度。
      *
      * <p>写进 {@code claw4j_rag.index_meta} 一行（照 OpenClaw 的 {@code memory_index_meta}），
      * 值是一个固定的 JSON 串——只有我们写它，所以按字符串比较就够，不需要再解析一遍。
-     * {@code chunkTokens} 也进身份，因为改 {@code chunk-size} 同样会改变块边界。
+     * {@code chunkTokens} 进身份，因为改 {@code chunk-size} 同样会改变块边界。
+     *
+     * <p><b>向量模型名必须进身份</b>：换一个 embedding 模型（哪怕同一个端点、同样 1024 维），
+     * 算出来的向量与旧向量不在同一个空间里。身份不含模型名时，换模型既不触发重建也不报错，
+     * 库里会新旧向量混着用——余弦分数照样落在 0~1 之间，检索悄悄变差，没有任何症状可查。
+     * 维度同理：维度变了插入就会失败，混用则不会，所以两种都要写进来。
+     *
+     * @param chunkSize      一块最多多少 token
+     * @param embeddingModel 向量模型名，来自 {@code claw4j.model.embedding.model}
+     * @param dimensions     向量维度，来自 {@code claw4j.model.embedding.dimensions}
+     * @return 可直接比较的身份串
      */
-    public static String identityOf(int chunkSize) {
-        return "{\"chunkingVersion\":" + CHUNKING_VERSION + ",\"chunkTokens\":" + chunkSize + "}";
+    public static String identityOf(int chunkSize, String embeddingModel, int dimensions) {
+        return "{\"chunkingVersion\":" + CHUNKING_VERSION
+                + ",\"chunkTokens\":" + chunkSize
+                // 模型名与维度都来自配置，只会是 ASCII 标识符与数字；这里不做转义，
+                // 因为转义规则只对"有人把模型名写成带引号的句子"有意义，而那会是又一个配置错误。
+                + ",\"embedding\":\"" + embeddingModel + "\""
+                + ",\"dimensions\":" + dimensions + "}";
     }
 
     /**
@@ -163,7 +189,7 @@ public class KnowledgeIndexer {
                     + "而那与「这段确实没写」分不开——所以这里直接失败");
         }
 
-        String identity = identityOf(properties.chunkSize());
+        String identity = identityOf(properties.chunkSize(), embedding.model(), embedding.dimensions());
         boolean rebuildAll = !identity.equals(storedIdentity());
         if (rebuildAll) {
             log.info("知识库切块身份与库里不一致（或还没有身份），这次全量重建：{}", identity);
@@ -234,23 +260,50 @@ public class KnowledgeIndexer {
     }
 
     /**
-     * 切块并给每块装上出处。
+     * 切块并给每块装上出处与上下文。
      *
      * <p><b>为什么 metadata 重新造而不是沿用切块器给的</b>：{@code TokenTextSplitter} 会往
      * metadata 里塞它自己的 {@code chunk_index} 之类的键。沿用它意味着"第几段"有两套口径
      * （它从 0 起、我们对外从 1 起），而出处是要给人读的，两套口径迟早对不上。
+     *
+     * <p><b>块前缀</b>（见 {@link MarkdownOutline}）：碎块里往往没有"这是哪份文档的哪一章"，
+     * 前置一行 {@code 【文档标题 › 章节路径】} 让向量与提示词都带上主题词。前缀会进库、进注入，
+     * 因为这两侧都需要它；块号与出处不受影响，前缀永远在最前面，正文原样跟在后面。
      */
     private List<Document> chunk(String path, String content, String hash) {
         List<Document> pieces = splitter.apply(List.of(new Document(content)));
         List<Document> chunks = new ArrayList<>(pieces.size());
+        String title = MarkdownOutline.title(content, path);
+        List<MarkdownOutline.Section> sections = MarkdownOutline.sections(content);
+        // 切块器按原文顺序输出块，所以用一个只前进的游标定位每块的位置：
+        // 用全篇 indexOf 会在"同一句出现两次"时把章节定位到前一处。
+        int cursor = 0;
+        String section = "";
         int index = 0;
         for (Document piece : pieces) {
             if (piece.getText() == null || piece.getText().isBlank()) {
                 continue;
             }
             index++;
-            chunks.add(new Document(piece.getText(),
-                    RagMetadata.of(path, SOURCE_KIND, String.valueOf(index), hash)));
+            String body = piece.getText();
+            String stripped = body.strip();
+            int at = content.indexOf(stripped, cursor);
+            if (at >= 0) {
+                cursor = at + stripped.length();
+            }
+            // 定位失败也照试一次：切块器拼接句子时会删掉换行，块文本常常不是原文的连续子串，
+            // 但它里面通常还带着章节标题那几个字，那条路还能走通。
+            String found = MarkdownOutline.sectionOf(sections, stripped, at);
+            if (!found.isEmpty()) {
+                section = found;
+            }
+            else if (at < 0) {
+                // 两条路都没结果：沿用上一块的章节。不猜、也不让同步失败——一行错的前缀，
+                // 比一份文档索引不了轻得多。
+                log.debug("{} 第 {} 块定位不到也认不出章节，沿用上一块的「{}」", path, index, section);
+            }
+            chunks.add(new Document(MarkdownOutline.prefix(title, section) + body,
+                    RagMetadata.of(path, SOURCE_KIND, String.valueOf(index), hash, section)));
         }
         return chunks;
     }

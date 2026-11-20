@@ -11,6 +11,7 @@ import io.github.claw4j.capability.secret.SpringSecretResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
@@ -249,7 +250,8 @@ public class RagAutoConfiguration {
      * "expected single matching bean but found 2"。应用里"检索器"这个词指的就该是整条链。
      *
      * @param retriever 两路召回
-     * @param properties 知识库配置，取最终条数
+     * @param properties 知识库配置，取最终条数与父块开关
+     * @param jdbc       JDBC 句柄，父块回填要聚合同章节的块
      * @param reranker  可选的重排器
      * @return 检索链路
      */
@@ -258,9 +260,24 @@ public class RagAutoConfiguration {
     @ConditionalOnMissingBean(KnowledgeRetrievalPipeline.class)
     public KnowledgeRetrievalPipeline knowledgeRetrievalPipeline(HybridDocumentRetriever retriever,
                                                                  RagProperties properties,
+                                                                 JdbcTemplate jdbc,
                                                                  ObjectProvider<RerankDocumentPostProcessor> reranker) {
         return new KnowledgeRetrievalPipeline(retriever, new ConcatenationDocumentJoiner(),
-                reranker.getIfAvailable(), properties.topK());
+                reranker.getIfAvailable(), sectionExpander(properties, jdbc), properties.topK());
+    }
+
+    /**
+     * 章节父块回填。默认关，所以这里返回 null 而不是"装了不调用"。
+     *
+     * @param properties 知识库配置
+     * @param jdbc       JDBC 句柄，聚合同章节的块要用
+     * @return 回填器；没开时是 null
+     */
+    private static SectionExpander sectionExpander(RagProperties properties, JdbcTemplate jdbc) {
+        if (!properties.parent().enabled()) {
+            return null;
+        }
+        return new SectionExpander(jdbc, KnowledgeIndexer.SOURCE_KIND, properties.parent().maxChars());
     }
 
     /**
@@ -278,18 +295,45 @@ public class RagAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(RetrievalAugmentationAdvisor.class)
-    public Advisor knowledgeAugmentationAdvisor(KnowledgeRetrievalPipeline pipeline) {
+    public Advisor knowledgeAugmentationAdvisor(KnowledgeRetrievalPipeline pipeline,
+                                                ObjectProvider<RetrievalQueryRewriter> rewriter) {
         ContextualQueryAugmenter augmenter = ContextualQueryAugmenter.builder()
                 .promptTemplate(new PromptTemplate(PROMPT_TEMPLATE))
                 .allowEmptyContext(true)
                 .documentFormatter(RagAutoConfiguration::formatDocuments)
                 .build();
-        return RetrievalAugmentationAdvisor.builder()
+        RetrievalAugmentationAdvisor.Builder builder = RetrievalAugmentationAdvisor.builder()
                 .documentRetriever(pipeline)
                 .documentJoiner(KnowledgeRetrievalPipeline.passThroughJoiner())
                 .queryAugmenter(augmenter)
-                .order(ORDER)
-                .build();
+                .order(ORDER);
+        RetrievalQueryRewriter rewriterBean = rewriter.getIfAvailable();
+        if (rewriterBean != null) {
+            builder.queryTransformers(rewriterBean);
+        }
+        return builder.build();
+    }
+
+    /**
+     * 检索改写器。没开就没有这颗 bean——与重排、父块同一套写法（"不装"而不是"装了不调用"）。
+     *
+     * <p>注册成 bean 而不是在 advisor 里就地 new：评测侧要挂同一个实例（导出绕过了 advisor，
+     * 直接调检索链路）。两处各自 new 一份，参数迟早会写成两套。
+     *
+     * <p>{@code chatModel::getObject} 是延迟解析：本类排在模型那一层之前，bean 创建时解析模型
+     * 会引入一条没有必要的启动顺序约束，而第一轮检索时才需要它。
+     *
+     * @param properties 知识库配置
+     * @param chatModel  模型，第一次改写时取
+     * @return 改写器
+     */
+    @Bean
+    @ConditionalOnProperty(value = "claw4j.rag.rewrite.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(RetrievalQueryRewriter.class)
+    public RetrievalQueryRewriter retrievalQueryRewriter(RagProperties properties,
+                                                         ObjectProvider<ChatModel> chatModel) {
+        log.info("知识库检索改写已启用：超时 {}", properties.rewrite().timeout());
+        return new RetrievalQueryRewriter(chatModel::getObject, properties.rewrite().timeout());
     }
 
     /**
@@ -350,12 +394,14 @@ public class RagAutoConfiguration {
      * @param vectorStore  向量库
      * @param embeddings   向量模型，切块时也要用它算句子向量
      * @param properties   知识库配置
+     * @param embedding    向量模型的模型名与维度，进索引身份
      * @return 目录同步器
      */
     @Bean
     @ConditionalOnMissingBean(KnowledgeIndexer.class)
     public KnowledgeIndexer knowledgeIndexer(JdbcTemplate jdbc, VectorStore vectorStore,
-                                            EmbeddingModel embeddings, RagProperties properties) {
+                                            EmbeddingModel embeddings, RagProperties properties,
+                                            EmbeddingProperties embedding) {
         log.info("知识库已启用：目录 {}、最终取 {} 段、每路候选 {}、相似度下限 {}、块长 {} token、"
                         + "混合检索 {}、重排 {}",
                 properties.directory(), properties.topK(),
@@ -363,7 +409,7 @@ public class RagAutoConfiguration {
                 properties.chunkSize(),
                 properties.hybrid().enabled() ? "开" : "关",
                 properties.rerank().enabled() ? "开" : "关");
-        return new KnowledgeIndexer(jdbc, vectorStore, embeddings, properties);
+        return new KnowledgeIndexer(jdbc, vectorStore, embeddings, properties, embedding);
     }
 
     /**

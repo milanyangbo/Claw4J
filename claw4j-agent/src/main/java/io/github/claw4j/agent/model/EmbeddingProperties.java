@@ -19,8 +19,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties("claw4j.model.embedding")
 public record EmbeddingProperties(String model, Integer dimensions) {
 
-    /** 通义的第三代向量模型。这是唯一被实测过的取值（见 {@code CacheProperties} 的阈值表）。 */
-    public static final String DEFAULT_MODEL = "text-embedding-v3";
+    /**
+     * 通义的第四代向量模型（Qwen3-Embedding 系列）。
+     *
+     * <p>换它的代价只有一次全量重建：同一个兼容端点、同样支持 1024 维、单请求上限同为 10 条、
+     * 单价同档。所以"用哪一代"是配置，不是架构。
+     *
+     * <p>换模型必须让索引重建——模型名与维度都进了
+     * {@code KnowledgeIndexer#identityOf}，不然库里会新旧向量混着用，分数看着正常而检索悄悄变差。
+     */
+    public static final String DEFAULT_MODEL = "text-embedding-v4";
 
     /** 与迁移里的 {@code vector(1024)} 成对。 */
     public static final int DEFAULT_DIMENSIONS = 1024;
