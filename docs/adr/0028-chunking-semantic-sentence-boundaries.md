@@ -125,7 +125,7 @@ LlamaIndex **都没有这条**（它们只有向量距离）。所以它是一�
 | 层 | 包 | 内容 | 依赖 |
 | --- | --- | --- | --- |
 | 算法 | `io.github.claw4j.chunk`（`claw4j-core`，新包） | 切句、`buffer_size` 分组、相邻组距离断点、`min_chunk_size` 合块、句首转折词判定 | **只有 JDK** |
-| 框架壳 | `io.github.claw4j.agent.rag` | `SemanticTextSplitter`：取文本 → 批量 `embed` → 调算法 → 超长交 `TokenTextSplitter` → 组装 `Document` | Spring AI（`EmbeddingModel` / `TextSplitter`） |
+| 框架壳 | `io.github.claw4j.rag` | `SemanticTextSplitter`：取文本 → 批量 `embed` → 调算法 → 超长交 `TokenTextSplitter` → 组装 `Document` | Spring AI（`EmbeddingModel` / `TextSplitter`） |
 
 ```java
 // core：纯函数，String[] / double[] 进，边界下标出

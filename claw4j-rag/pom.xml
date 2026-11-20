@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.claw4j</groupId>
+        <artifactId>claw4j</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>claw4j-rag</artifactId>
+    <name>Claw4J :: Rag</name>
+    <description>知识库：索引、混合检索、重排与检索前改写</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+          只为了 `SpringSecretResolver`：重排要用 qwen 的 key，配置里写的是 `secret:qwen_api_key`
+          这种句柄，真值在这一层换出来。核心能力模块刻意不依赖 agent——agent 反过来要靠
+          `ObjectProvider<Advisor>` 收它，方向不能倒。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-capability</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- 检索链：DocumentRetriever / DocumentJoiner / DocumentPostProcessor / Advisor。 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-rag</artifactId>
+        </dependency>
+        <!--
+          向量存储用框架的 `PgVectorStore`：自带建表、写入与相似度检索，维度由装配时传进去的
+          `EmbeddingModel.dimensions()` 决定。不自己拼 SQL。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-pgvector-store</artifactId>
+        </dependency>
+        <!--
+          全文那一路直接查 pg 表（`KeywordDocumentRetriever`），索引器也要读写 `index_meta` 与
+          `source`。JDBC 是这一层的实现细节，不是从 agent 借来的。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <!-- 重排器自己拼 DashScope 的 JSON：请求体与响应都要手写序列化。 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

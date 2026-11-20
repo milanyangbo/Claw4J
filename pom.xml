@@ -20,6 +20,7 @@
         <module>claw4j-agent</module>
         <module>claw4j-channel</module>
         <module>claw4j-capability</module>
+        <module>claw4j-rag</module>
         <!-- 示例一律在核心之外：业务插件与 Java 版 MCP server。
              它们只依赖 core 与 Spring AI，不依赖 capability——
              "删掉这一行，框架照常构建启动"就是插件契约的自证。 -->

@@ -26,6 +26,12 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-rag</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
 
         <!--
           执行器要起整机（真模型 + 真库 + 真工具清单），所以把 app 依赖的那几个模块

@@ -25,6 +25,16 @@
             <artifactId>claw4j-agent</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!--
+          知识库是独立能力模块：agent 不依赖它（agent 只按 `ObjectProvider<Advisor>` 收 advisor），
+          由这个部署把两者接起来。放在这里而不是 agent 里，是为了让"要不要知识库"变成一个
+          显式决定，而不是 agent 硬带进来的一段。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-rag</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>io.github.claw4j</groupId>
             <artifactId>claw4j-capability</artifactId>

@@ -1,12 +1,11 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.inbound.JdbcInboundStore;
-import io.github.claw4j.agent.model.EmbeddingProperties;
-import io.github.claw4j.agent.rag.HybridDocumentRetriever;
-import io.github.claw4j.agent.rag.KeywordDocumentRetriever;
-import io.github.claw4j.agent.rag.KnowledgeIndexer;
-import io.github.claw4j.agent.rag.RagProperties;
-import io.github.claw4j.agent.rag.WeightedScoreJoiner;
+import io.github.claw4j.rag.HybridDocumentRetriever;
+import io.github.claw4j.rag.KeywordDocumentRetriever;
+import io.github.claw4j.rag.KnowledgeIndexer;
+import io.github.claw4j.rag.RagProperties;
+import io.github.claw4j.rag.WeightedScoreJoiner;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.agent.session.SessionEntryStore;
@@ -190,7 +189,7 @@ class SearchSqlTest {
     @DisplayName("内容没变就跳过：第二次同步不重算 embedding")
     void unchangedFileIsSkipped() {
         copyCorpus();
-        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), EmbeddingProperties.defaults());
+        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), "text-embedding-v4", 1024);
 
         KnowledgeIndexer.Stats first = indexer.index();
         KnowledgeIndexer.Stats second = indexer.index();
@@ -205,7 +204,7 @@ class SearchSqlTest {
     @DisplayName("切块身份变了：内容一个字节没改也要全量重建（照 OpenClaw 的 index identity）")
     void indexMetaChangeRebuildsEverything() {
         copyCorpus();
-        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), EmbeddingProperties.defaults());
+        KnowledgeIndexer indexer = new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), "text-embedding-v4", 1024);
         indexer.index();
 
         // 模拟"切块实现升了一版"：身份对不上。hash 全是好的，但边界已经换了。
@@ -219,8 +218,8 @@ class SearchSqlTest {
         assertThat(jdbc.queryForObject("select value from claw4j_rag.index_meta where key = ?",
                 String.class, KnowledgeIndexer.META_KEY))
                 .as("重建完写回当前身份，第二次才会跳过")
-                .isEqualTo(KnowledgeIndexer.identityOf(properties().chunkSize(), EmbeddingProperties.DEFAULT_MODEL,
-                        EmbeddingProperties.DEFAULT_DIMENSIONS));
+                .isEqualTo(KnowledgeIndexer.identityOf(properties().chunkSize(), "text-embedding-v4",
+                        1024));
         assertThat(jdbc.queryForObject("""
                 select count(*) from information_schema.columns
                 where table_schema = 'claw4j_rag' and table_name = 'source' and column_name like '%chunk%'
@@ -238,7 +237,7 @@ class SearchSqlTest {
         assertThat(columnType("claw4j_rag.vector_store", "embedding"))
                 .as("维度来自 claw4j.model.embedding：不一致时插入直接报错，"
                         + "所以这里是「建表那一步对不对」的唯一证据")
-                .isEqualTo("vector(" + EmbeddingProperties.DEFAULT_DIMENSIONS + ")");
+                .isEqualTo("vector(" + 1024 + ")");
     }
 
     @Test
@@ -259,7 +258,7 @@ class SearchSqlTest {
 
     private void indexCorpus() {
         copyCorpus();
-        new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), EmbeddingProperties.defaults()).index();
+        new KnowledgeIndexer(jdbc, store(), embeddings(), properties(), "text-embedding-v4", 1024).index();
     }
 
     /** 把 40 份语料复制到本用例的临时目录：有些用例要改文件（重建、删除），不能动源目录。 */
@@ -306,7 +305,7 @@ class SearchSqlTest {
     }
 
     private static List<String> citations(List<Document> documents) {
-        return documents.stream().map(io.github.claw4j.agent.rag.RagMetadata::citation).toList();
+        return documents.stream().map(io.github.claw4j.rag.RagMetadata::citation).toList();
     }
 
     private RagProperties properties() {
@@ -323,7 +322,7 @@ class SearchSqlTest {
         PgVectorStore store = PgVectorStore.builder(jdbc, embeddings())
                 .schemaName("claw4j_rag")
                 .vectorTableName("vector_store")
-                .dimensions(EmbeddingProperties.DEFAULT_DIMENSIONS)
+                .dimensions(1024)
                 .idType(PgVectorStore.PgIdType.UUID)
                 .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
                 .indexType(PgVectorStore.PgIndexType.NONE)
@@ -726,7 +725,7 @@ class SearchSqlTest {
 
     /** 1024 维、只有一位是 1：同一条向量之间余弦 1.0，不同维度上的偏移会把它拉到 0。 */
     private static float[] vector(int hotIndex) {
-        float[] embedding = new float[EmbeddingProperties.DEFAULT_DIMENSIONS];
+        float[] embedding = new float[1024];
         embedding[hotIndex] = 1f;
         return embedding;
     }

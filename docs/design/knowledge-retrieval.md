@@ -565,7 +565,7 @@ claw4j:
 | 转折词 | **开源没有**（LangChain / LlamaIndex 都只有向量距离） | 用户规则：句首转折/转场词就地断块 |
 
 **代码落点**（2026-11-09 定）：算法在 `claw4j-core` 的 `io.github.claw4j.chunk`——纯函数、
-只碰 JDK（切句 / 分组 / 距离断点 / 最小块合并 / 转折判定）；框架壳是 `agent.rag` 的
+只碰 JDK（切句 / 分组 / 距离断点 / 最小块合并 / 转折判定）；框架壳是 `claw4j-rag` 的
 `SemanticTextSplitter extends TextSplitter`，只有它碰 `EmbeddingModel` 与 `TokenTextSplitter`。
 
 三条容易记错的：
