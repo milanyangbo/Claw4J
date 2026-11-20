@@ -75,6 +75,19 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
      */
     private static final Pattern ASCII_ANCHOR = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{2,}");
 
+    /**
+     * 短型号：一个字母加一到两位数字，两侧不接字母数字（{@code A1}、{@code A2}、{@code B3}、
+     * {@code K4}）。
+     *
+     * <p>{@link #ASCII_ANCHOR} 要求 ≥3 字符，把这类型号全漏了。而产品型号恰好是两位：
+     * 「A2 买一年延保要多少钱」里唯一能匹配价格表那块的字面就是 {@code A2}——漏了它，
+     * 价格表第 1 块（整机表格）永远进不了候选，四条多跳题全卡在这里。
+     *
+     * <p>不收 1 位数字（{@code A1} 之外的 {@code P1} 是收的，但 {@code v2} 这种版本号也收）：
+     * 再短就是噪声。两侧不接字母数字是为了不把 {@code SKU2024A2} 切出一个假的 {@code 4A}。
+     */
+    private static final Pattern SHORT_MODEL = Pattern.compile("(?<![A-Za-z0-9])[A-Za-z]\\d{1,2}(?![A-Za-z0-9])");
+
     /** 一条查询最多带几个锚点。再多就是整句被切碎了，命中率上升而精度下降。 */
     private static final int MAX_ANCHORS = 4;
 
@@ -204,6 +217,13 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
         int accepted = 0;
         while (anchors.find() && accepted < MAX_ANCHORS && weighted.size() < MAX_TERMS) {
             if (weighted.putIfAbsent(anchors.group(), WHOLE_WEIGHT) == null) {
+                accepted++;
+            }
+        }
+        // 短型号与长锚点共用 4 个名额：它们都是"字面精确"那一类，多收会挤掉中文 bigram。
+        Matcher models = SHORT_MODEL.matcher(trimmed);
+        while (models.find() && accepted < MAX_ANCHORS && weighted.size() < MAX_TERMS) {
+            if (weighted.putIfAbsent(models.group(), WHOLE_WEIGHT) == null) {
                 accepted++;
             }
         }

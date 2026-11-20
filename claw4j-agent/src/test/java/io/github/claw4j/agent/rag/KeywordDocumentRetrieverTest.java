@@ -53,6 +53,16 @@ class KeywordDocumentRetrieverTest {
     }
 
     @Test
+    @DisplayName("两位型号也是锚点：`A2` 是价格表那块唯一能匹配的字面")
+    void twoCharacterModelIsAnAnchor() {
+        assertThat(KeywordDocumentRetriever.searchTerms("A2 买一年延保要多少钱"))
+                .as("≥3 字符的锚点规则会把 A2 漏掉，价格表第 1 块就永远进不了候选")
+                .contains("A2");
+        assertThat(KeywordDocumentRetriever.searchTerms("用一台外观良好的 A1 以旧换新能抵多少钱"))
+                .contains("A1");
+    }
+
+    @Test
     @DisplayName("词项数有上限：一条长提问不能变成上千字符的 SQL")
     void termCountIsCapped() {
         String query = "华东区售后政策里关于备机押金退还流程与违约金计算方式的全部规定是什么".repeat(3);
