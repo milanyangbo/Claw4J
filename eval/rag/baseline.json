@@ -1,21 +1,24 @@
 {
   "recorded_at": "2026-11-20",
-  "cases": 56,
-  "cutoff": "5",
+  "cases": 68,
+  "cutoff": "10",
   "l1": {
-    "recall": 0.9196428571428571,
+    "recall": 0.9117647058823529,
     "missed": [
-      "rag-overdue-interest",
-      "rag-noanswer-contact-name",
+      "rag-multihop-price-protect",
+      "rag-multihop-tradein-a1",
+      "rag-noanswer-iso",
+      "rag-noanswer-2027-roadmap",
       "rag-colloquial-late",
       "rag-colloquial-white-line",
-      "rag-meeting-return-10days"
+      "rag-crossdoc-tier-limit",
+      "rag-discount-rebate"
     ]
   },
   "l2": {
-    "faithfulness": 0.8989387100994243,
-    "context_recall": 0.9151785714285714,
-    "context_precision": 0.87540816320246
+    "faithfulness": 0.907354875188293,
+    "context_recall": 0.9485294117647058,
+    "context_precision": 0.7733466090992177
   },
   "judge": "deepseek-flash"
 }
