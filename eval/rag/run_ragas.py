@@ -104,7 +104,10 @@ DISAGREEMENT = {
 # 这两类不依赖 judge，同样的输入永远同样的分，所以才配得上一个固定数字。
 # 门槛值本身仍是本仓约定（行业在 IR 侧也不给统一线），但依据不是感觉，是这条：
 # 漏掉一成的正确段，模型就只能靠常识补——那已经不是"检索略差"，是"检索不能用"。
-GATE_RECALL5 = 0.90
+#
+# k 不写死在这里：判定用的 cutoff 由 --cutoffs 与 main_cutoff() 决定，取候选里最大的那个
+# （= 线上 claw4j.rag.top-k 注入的段数）。k 一变就是换尺子，分数不可与前一轮直接比。
+GATE_RECALL = 0.90
 GATE_JUDGE_FAILURES = 0
 
 # ③ 相对门：L2 的 judge 指标只跟自己的基线比。
@@ -170,7 +173,7 @@ L2_ADVICE = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RAG 评测（L1 检索 + L2 生成）")
     parser.add_argument("--input", default=DEFAULT_INPUT, help="Java 导出的 JSONL 路径")
-    parser.add_argument("--cutoffs", default="3,5,8", help="L1 按前 k 段算 Recall/Precision，逗号分隔")
+    parser.add_argument("--cutoffs", default="3,5,10", help="L1 按前 k 段算 Recall/Precision，逗号分隔")
     parser.add_argument("--skip-judge", action="store_true", help="只跑 L1（不调模型、零成本）")
     parser.add_argument("--judge", default=os.environ.get("EVAL_JUDGE_MODEL", DEFAULT_JUDGE),
                         help=f"L2 的 judge 模型，默认 {DEFAULT_JUDGE}")
@@ -448,8 +451,13 @@ def diff_cases(baseline: dict | None, result: dict) -> dict:
 
 
 def main_cutoff(l1: dict) -> str:
-    """判定用哪个 k：优先 5（常规上下文预算），没有就取最大。"""
-    return "5" if "5" in l1["cutoffs"] else max(l1["cutoffs"], key=int)
+    """判定用哪个 k：取候选里最大的那个。
+
+    它对应线上 ``claw4j.rag.top-k``——模型真正看到几段，门就该按几段算。原先是"优先 5"，
+    那条规则的前提是线上 k 固定为 5；k 可配之后，写死一个数字会让"改大 k"与"判定口径"
+    悄悄脱钩（改大 k 却仍按 5 判定，等于给自己多几次机会）。
+    """
+    return max(l1["cutoffs"], key=int)
 
 
 def verdicts(result: dict, baseline: dict | None = None) -> list[dict]:
@@ -467,11 +475,11 @@ def verdicts(result: dict, baseline: dict | None = None) -> list[dict]:
     cases = l1["cases"]
     missed = values["missed"]
 
-    recall_ok = recall >= GATE_RECALL5
+    recall_ok = recall >= GATE_RECALL
     rows: list[dict] = [{
         "metric": f"Recall@{cutoff}",
         "current": f"{recall:.3f}",
-        "gate": f"≥{GATE_RECALL5:.2f}",
+        "gate": f"≥{GATE_RECALL:.2f}",
         "reference": "—",
         "state": "达标" if recall_ok else "不达标",
         "ok": recall_ok,
@@ -772,7 +780,7 @@ def build_report(result: dict, rows: list[dict], command: str, rebuilt: bool = F
     lines += [
         "| Recall@k | — | — | — | IR 侧不给通用分档：同样 0.9，小语料是常态、"
         "开放域几乎不可能。本仓只用绝对门 "
-        f"{GATE_RECALL5:.2f}，那是约定不是共识 |",
+        f"{GATE_RECALL:.2f}，那是约定不是共识 |",
         "",
         "这一列（判定表里的「档位」）只用来读数，**没有任何一项判定是它做的**。"
         "真要约哪一档才算过，用 `--update-baseline` 把当时的分数钉下来，之后比相对变化——"
@@ -787,7 +795,7 @@ def build_report(result: dict, rows: list[dict], command: str, rebuilt: bool = F
               "所以本仓的门槛分三层，每一层都写明凭什么：", "",
               "| 层 | 用在谁身上 | 凭什么 |",
               "| --- | --- | --- |",
-              f"| 绝对门 | Recall@k ≥{GATE_RECALL5:.2f}、judge 失败 ={GATE_JUDGE_FAILURES} | "
+              f"| 绝对门 | Recall@k ≥{GATE_RECALL:.2f}、judge 失败 ={GATE_JUDGE_FAILURES} | "
               f"确定性指标，同输入同输出。依据是：漏一成正确段，模型就只能靠常识补，"
               f"那叫检索不可用 |",
               f"| 相对门 ±{TOLERANCE:.2f} | faithfulness / context_recall / context_precision | "

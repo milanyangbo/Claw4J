@@ -2,6 +2,7 @@ package io.github.claw4j.eval;
 
 import io.github.claw4j.agent.rag.KnowledgeRetrievalPipeline;
 import io.github.claw4j.agent.rag.RagMetadata;
+import io.github.claw4j.agent.rag.RetrievalQueryRewriter;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.rag.Query;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -121,6 +123,15 @@ class RetrievalExportTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    /**
+     * 检索改写器。默认关，所以这里可能取不到。
+     *
+     * <p>必须挂在这里：本测试直接调 {@code pipeline.candidates()}，绕过了 advisor，而改写是
+     * advisor 的前置步骤。不挂的话，线上开了改写而评测量到的是没改写的检索——两条路静默分叉。
+     */
+    @Autowired
+    private ObjectProvider<RetrievalQueryRewriter> rewriter;
+
     private List<ExportRow> rows;
 
     @BeforeAll
@@ -136,12 +147,17 @@ class RetrievalExportTest {
     }
 
     @Test
-    @DisplayName("每条 gold 都导出一行，而且检索结果非空")
+    @DisplayName("每条 gold 都导出一行，而且检索结果非空（无答案题除外）")
     void everyCaseExportsRetrievedIds() throws IOException {
         List<RetrievalGold> golds = golds();
 
         assertThat(rows).as("导出少一条，后面算出来的平均分就少一个分母").hasSize(golds.size());
         for (ExportRow row : rows) {
+            if (row.id().startsWith("rag-noanswer-")) {
+                // 无答案题问的东西文档里本来就没有（"你们总经理叫什么名字"），零召回是正确结果，
+                // 把它当失败等于要求检索器在没答案时硬编一段出来。
+                continue;
+            }
             assertThat(row.retrievedContextIds())
                     .as("gold %s 一条都没检索到：知识库没建起来，或者 min-similarity 把结果全挡了", row.id())
                     .isNotEmpty();
@@ -193,16 +209,33 @@ class RetrievalExportTest {
             // 取候选池（重排之后、截断之前）而不是 retrieve()：截断是保序地切前缀，所以评分侧
             // 按 k=5 截出来的就是线上 top-5，同集合同顺序；留着整池，报告才能说清缺的那段是
             // "排第 9"还是"不在候选里"——这两种要改的地方完全不同。
-            List<Document> hits = pipeline.candidates(
-                    new Query(gold.question(), List.of(), Map.of(ContextKeys.PRINCIPAL, EVAL_PRINCIPAL)));
+            Query query = new Query(gold.question(), List.of(),
+                    Map.of(ContextKeys.PRINCIPAL, EVAL_PRINCIPAL));
+            RetrievalQueryRewriter transformer = rewriter.getIfAvailable();
+            if (transformer != null) {
+                query = transformer.transform(query);
+            }
+            List<Document> hits = pipeline.candidates(query);
             List<String> ids = new ArrayList<>(hits.size());
             List<String> texts = new ArrayList<>(hits.size());
             for (Document hit : hits) {
-                ids.add(chunkId(hit));
-                texts.add(hit.getText() == null ? "" : hit.getText());
+                String text = hit.getText() == null ? "" : hit.getText();
+                // 父块（父块回填开着时）覆盖了多个子块，要展开成子块 id：gold 的 reference 是
+                // 「路径#块号」，只留父块自己的 id（路径#3-5）会让"其实答上了"记成没召回。
+                // 展开后一个父块按它覆盖的块数占预算，与线上"模型确实看到了这些块的文本"一致。
+                List<String> covered = coveredIds(hit);
+                if (covered.isEmpty()) {
+                    ids.add(chunkId(hit));
+                    texts.add(text);
+                    continue;
+                }
+                for (String id : covered) {
+                    ids.add(id);
+                    texts.add(text);
+                }
             }
-            exported.add(new ExportRow(gold.id(), gold.question(), gold.reference(), answerOf(gold),
-                    List.copyOf(ids), List.copyOf(texts), gold.resolveIds(chunks)));
+            exported.add(new ExportRow(gold.id(), gold.question(), query.text(), gold.reference(),
+                    answerOf(gold), List.copyOf(ids), List.copyOf(texts), gold.resolveIds(chunks)));
         }
         return exported;
     }
@@ -243,23 +276,45 @@ class RetrievalExportTest {
     }
 
     /**
+     * 父块覆盖的子块 id；普通块返回空列表。
+     *
+     * <p>父块的 {@code covered} 是 {@code "3,4,5"} 这样的块号列表，路径取自父块自己的 metadata。
+     */
+    private static List<String> coveredIds(Document document) {
+        Object covered = document.getMetadata().get(RagMetadata.COVERED);
+        if (covered == null || covered.toString().isBlank()) {
+            return List.of();
+        }
+        Object path = document.getMetadata().get(RagMetadata.PATH);
+        List<String> ids = new ArrayList<>();
+        for (String ordinal : covered.toString().split(",")) {
+            if (!ordinal.isBlank()) {
+                ids.add(path + "#" + ordinal.strip());
+            }
+        }
+        return ids;
+    }
+
+    /**
      * 导出的一行。字段名按 Ragas 的 Sample 口径，Python 侧不用再翻译一遍。
      *
      * @param id                  用例 id
-     * @param question            问题
+     * @param question            问题原文
+     * @param retrievalQuery      实际送去检索的查询（改写开着时与 question 不同）
      * @param reference           参考答案
      * @param response            agent 的回答，L2 的 faithfulness / answer_relevancy 要用
      * @param retrievedContextIds 检索到的段 id，按名次排
      * @param retrievedContexts   检索到的正文，与 id 同序
      * @param referenceContextIds gold 落在索引里的段 id
      */
-    private record ExportRow(String id, String question, String reference, String response,
-                             List<String> retrievedContextIds, List<String> retrievedContexts,
-                             List<String> referenceContextIds) {
+    private record ExportRow(String id, String question, String retrievalQuery, String reference,
+                             String response, List<String> retrievedContextIds,
+                             List<String> retrievedContexts, List<String> referenceContextIds) {
 
         String toJsonLine() {
             return "{\"id\":" + quote(id)
                     + ",\"question\":" + quote(question)
+                    + ",\"retrieval_query\":" + quote(retrievalQuery)
                     + ",\"reference\":" + quote(reference)
                     + ",\"response\":" + quote(response)
                     + ",\"retrieved_context_ids\":" + array(retrievedContextIds)

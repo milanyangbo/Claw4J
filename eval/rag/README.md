@@ -69,9 +69,9 @@ L2 三项要 judge，分数会随模型版本和温度漂，所以只跟自己�
 
 | 指标 | 在回答什么 | 低了说明什么 |
 | --- | --- | --- |
-| Recall@k | 该被找到的段，有多少进了前 k 段 | 检索漏了。这一项低，后面所有指标都在测一个没料可用的模型。k 超过产品 `top-k`（5）时，量的是候选池里的名次，不是模型真正看到的那几段 |
+| Recall@k | 该被找到的段，有多少进了前 k 段 | 检索漏了。这一项低，后面所有指标都在测一个没料可用的模型。k 超过产品 `top-k`（10）时，量的是候选池里的名次，不是模型真正看到的那几段 |
 | 召回完整性@k | 有几条题是一段不漏地召回的 | 看长尾。均值会把「某条只召到一半」抹平，所以它是诊断项，不是门槛 |
-| Precision@k | 前 k 段里 gold 占多少 | 上下文夹带噪声。56 题里 54 题只有 1 段 gold，分母是 k、分子最多 1 → k=5 的上限只有 **0.207**，实测 0.189 已占 91%。它基本就是 `R@k / k`，只在多段 gold 的题上才有独立信息，所以只看趋势 |
+| Precision@k | 前 k 段里 gold 占多少 | 上下文夹带噪声。多数题只有 1 段 gold，分母是 k、分子最多 1 → k=10 时单题上限就是 **0.1**。它基本就是 `R@k / k`，只在多处证据的题上才有独立信息，所以只看趋势 |
 | faithfulness | 回答里每条主张能否被上下文支持 | 在编。要么写进了常识，要么上下文被截断丢了一段 |
 | context_recall | 参考答案的要点被上下文覆盖了多少 | 检索漏段（回到 Recall 看），或 reference 写得比文档还宽 |
 | context_precision | 上下文里相关段的比例与顺序 | 夹带噪声，或 gold 被排到了后面 |
@@ -172,50 +172,55 @@ order by chunk;
 切块问题只能这样看：块尾断在半句话上、或者"万分之五"被切成"每日万"+"分之五"，
 `head` / `tail` 一眼能看出来。
 
-**③ 全文那一路：SQL 与命中次数**
+**③ 全文那一路：词项与命中权重**
 
-这一路没有一条写死的 SQL，它按"词"的个数现拼。词是从问题里抽的：**整句 + 最多 4 个纯 ASCII 锚点**
-（字母或数字开头、长度 ≥3，如 `SKU-2024`、`A-07`、`v1.2`）。问「SKU-2024 还剩多少」时，文档里
-没有这七个连续的字，整句一条都命不中，靠锚点那一路才捞得回来。
+这一路没有一条写死的 SQL，它按"词项"的个数现拼。词项从问题里抽，三类：**整句**（不超过 12 字时
+才用）、**最多 4 个纯 ASCII 锚点**（`SKU-2024`、`A-07`、`v1.2`）、**中文 bigram**
+（`退货政策` → `退货 / 货政 / 政策`），总上限 12 个。
 
-等价、可直接跑的写法——**换问题只改 `values` 那行**：
+问「SKU-2024 还剩多少」时，文档里没有这七个连续的字，整句一条都命不中——靠锚点与 bigram 才捞得
+回来。中文不再"整句硬 match"，这是这一路从"实际只有向量在干活"变成真混合的那次改动。
+
+等价、可直接跑的写法——**换问题只改 `values` 那行**（权重：整句与锚点 3，bigram 1）：
 
 ```sql
-with t(term) as (values ('退货'), ('退款'))
+with t(term, weight) as (values ('SKU-2024', 3), ('还剩', 1), ('剩多', 1), ('多少', 1))
 select v.metadata->>'path' as doc,
        (v.metadata->>'index')::int as chunk,
-       sum((length(v.content) - length(replace(lower(v.content), lower(t.term), '')))
-             / length(t.term)) as hits
+       sum(case when v.content ilike '%' || t.term || '%' then t.weight else 0 end) as hits
 from claw4j_rag.vector_store v
 join t on v.content ilike '%' || t.term || '%'
 where v.metadata->>'source' = 'docs'
 group by 1, 2
 order by hits desc, chunk
-limit 10;
+limit 25;
 ```
 
-`hits` 是每个词「出现次数 ÷ 词长」再求和。除词长是为了让一次命中都算 1 分——不除的话，
-长词命中一次就等于短词命中三次，那是拿词长当相关度。它同时是排序依据和交给融合的分数
-（`0.7 × 向量 + 0.3 × 全文`，见 `WeightedScoreJoiner`）。
+`hits` 是**命中的词项权重之和**，不是出现次数：一个高频词出现十次会压过命中五个不同词项的块，
+那是拿词频当相关度。它同时是排序依据和交给融合的分数（`0.7 × 向量 + 0.3 × 全文`，
+见 `WeightedScoreJoiner`）。
 
-代码里那条是同一个式子，只是词写成绑定参数（`KeywordDocumentRetriever#sqlFor`）：
+代码里那条是同一个式子，词写成绑定参数（`KeywordDocumentRetriever#sqlFor`）：
 
 ```sql
 select id, content, metadata->>'path' as path, metadata->>'source' as source,
        metadata->>'index' as ordinal, metadata->>'content_hash' as hash,
-       ((length(content) - length(replace(lower(content), lower(?), ''))) / length(?)
-      + (length(content) - length(replace(lower(content), lower(?), ''))) / length(?)) as hits
+       metadata->>'section' as section,
+       ((case when content ilike ? escape '\' then 3 else 0 end)
+      + (case when content ilike ? escape '\' then 1 else 0 end)) as hits
 from claw4j_rag.vector_store
 where metadata->>'source' = ? and (content ilike ? escape '\' or content ilike ? escape '\')
 order by hits desc, (metadata->>'index')::int
 limit ?;
 ```
 
-绑定顺序就是 `?` 出现的顺序：`词1, 词1, 词2, 词2, source, %词1%, %词2%, limit`。
+绑定顺序就是 `?` 出现的顺序：`%词1%, %词2%, source, %词1%, %词2%, limit`。
+**两处都是带 `%` 的模式串**——`select` 那一处给裸词项会让 `ilike` 退化成精确相等，结果是
+`where` 命中了而 `score` 恒为 0，融合时全文那一路等于白召回（踩过一次）。
 
-这里的 `limit` 是**每路候选数**（`claw4j.rag.hybrid.candidates-per-route`，默认 15），不是最终的
-`top-k`（默认 5）：两路各召回 15 条 → 融合 → 重排拿前 10 条换顺序 → 截到 5 段进提示词。
-所以"关键词没命中"要分清是哪一层没中：SQL 一条都没有，还是 SQL 有但排在 15 名之后。
+这里的 `limit` 是**每路候选数**（`candidates-per-route`，默认 25），不是最终的 `top-k`（默认 10）：
+两路各 25 条 → 融合去重后约 24 条 → 重排取前 20 条 → 截到 10 段进提示词。所以"关键词没命中"
+要分清是哪一层没中：SQL 一条都没有，还是 SQL 有但排在候选之外。
 
 两个坑：
 
