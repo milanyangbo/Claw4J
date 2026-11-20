@@ -44,3 +44,13 @@
 - `SectionExpanderTest`：同章节三条子块聚成一条父块、跨章节不合并、超 `max-chars` 保留子块、
   候选顺序按最靠前名次。
 - 一次开/关对照（只跑 L1），报告里同时给"父块平均字数/条数"与 Recall，判断默认值。
+
+## 七、实施（2026-11-20）
+
+- `SectionExpander implements DocumentPostProcessor`：按 `(path, section)` 分组，同章节命中 ≥2 块
+  才聚合；拼起来超 `max-chars` 不聚合；父块占组内最靠前的名次。
+- 装配：`claw4j.rag.parent.enabled`（默认 false）、`max-chars`（默认 2400）；
+  `KnowledgeRetrievalPipeline` 多一个 expander（保留旧 4 参构造器）。
+- 导出：父块按 `covered` 展开成子块 id，`idsAlignWithContexts` 仍要求两个列表等长（同时展开）。
+- 单测 `SectionExpanderTest` 6 条全绿。
+- **未验收**：开/关对照（要 `CLAW4J_RAG_PARENT_ENABLED=true` 跑一轮 L1）。

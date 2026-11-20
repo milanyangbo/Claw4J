@@ -39,3 +39,13 @@ Ragas 用的是 `question` 与 `reference`，改写只影响检索。这一列�
 - `QueryRewriterTest`：含数字/型号的问题不改写、正常问题被改写、模型抛异常时回落原文、
   超时回落原文。
 - 一次开/关对照（只跑 L1），报告里给"被改写的条数"与 Recall；默认值由此决定。
+
+## 七、实施（2026-11-20）
+
+- `RetrievalQueryRewriter implements QueryTransformer`：含数字/量词跳过；3 秒超时；
+  失败一律回落原 query；输出取首行、去「改写：」标签与引号、截 60 字。
+- 装配：`claw4j.rag.rewrite.enabled`（默认 false）、`timeout`（默认 3s）。bean 只在开启时创建。
+  线上由 advisor 的 `queryTransformers` 调用，评测导出自己再 transform 一次（同一个 bean）。
+- 导出新增 `retrieval_query` 字段：实际送去检索的文本，改写把问题改坏时能一眼看出来。
+- 单测 `RetrievalQueryRewriterTest` 6 条全绿（含超时回落，断言不早于超时值太多）。
+- **未验收**：开/关对照（要 `CLAW4J_RAG_REWRITE_ENABLED=true` 跑一轮 L1）。

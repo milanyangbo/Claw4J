@@ -45,3 +45,13 @@ return "{\"chunkingVersion\":" + CHUNKING_VERSION + ",\"chunkTokens\":" + chunkS
 - 新单测：模型名变 / 维度变 → identity 变；同参数两次调用结果相同。
 - 一次全量重建，日志里 `这次全量重建：{...,"embedding":"text-embedding-v4",...}`，段数与上一轮接近；
 - 一次 L1 导出，与票 04 那一轮同口径对照。
+
+## 四、实施（2026-11-20）
+
+- `EmbeddingProperties.DEFAULT_MODEL` → `text-embedding-v4`，`application.yml` 同步。
+- `KnowledgeIndexer.identityOf(chunkSize, embeddingModel, dimensions)`；构造器多一个
+  `EmbeddingProperties` 参数（`RagAutoConfiguration` 与两处测试同步）。
+- 新增 `KnowledgeIndexerIdentityTest` 5 条：模型变 / 维度变 / 块长变 / 同输入稳定 / 串里带模型名。
+- 实测：装配日志 `model=text-embedding-v4, dimensions=1024`；索引 440 段
+  （上一轮 434，差异来自块前缀与切块边界，不是 v4 本身）。
+- **未验收**：与 v3 的同口径 L1 对照（需要把模型改回 v3 跑一轮，没做）。

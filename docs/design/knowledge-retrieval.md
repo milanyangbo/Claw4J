@@ -202,6 +202,25 @@ select similarity('退货', '无理由退货');
 这与 FTS5 trigram 的行为正好一致（它也是子串），所以我们不是"发明了一个打分法"，
 是**照着它的检索形态在 PG 上找等价物**。
 
+### 词项：整句、型号锚点、中文 bigram
+
+上一版只拿整句去 `ilike`。中文长问题在文档里几乎不会原样出现（「为什么隔壁那家店能退我不能退」
+十七个字），于是这条路对绝大多数中文题零命中——`hybrid.enabled=true` 名义上是混合检索，实际只有
+向量在干活。那 8 条"三次实验都没进过候选池"的题里，口语题与多跳题的主要嫌疑就是它。
+
+现在一条查询拆成三类词项（`KeywordDocumentRetriever#terms`）：
+
+| 词项 | 取值 | 权重 | 为什么 |
+| --- | --- | --- | --- |
+| 整句 | 不超过 12 字时才用 | 3 | 短查询本身就是最好的词项；长句加进去只是一条必然不命中的 `or` |
+| ASCII 锚点 | 最多 4 个，≥3 字符 | 3 | `SKU-2024` 只有那份文档有，是这一路最该命中的东西 |
+| 中文 bigram | 连续汉字串两两切 | 1 | 覆盖度信号，单个 bigram 命中不足以说明相关 |
+
+总数上限 12：SQL 里每个词项是一个 `or` 加一个 `case`，一条长提问能切出几十个 bigram。
+
+**它不是 BM25**：没有 IDF、没有长度归一、也没有倒排索引。真 BM25 要 `pg_bigm` / `zhparser` /
+ParadeDB `pg_search`，三者都要换数据库镜像。这一步没做，代价写在下面"索引"一节。
+
 ### 分数怎么来
 
 子串匹配是布尔，没有分数。三档可选：
@@ -209,29 +228,29 @@ select similarity('退货', '无理由退货');
 | 方案 | 打分 | 结论 |
 | --- | --- | --- |
 | `similarity()` | 0~1 | 实测对中文长文本恒 0，不可用 |
-| **命中次数** | 整数，融合时归一 | **选它**：`hits` 落进 `Document#getScore()`，融合按"本次最大命中"归一成 0~1（第五节） |
+| **命中词项权重之和** | 整数，融合时归一 | **选它**：`hits` 落进 `Document#getScore()`，融合按"本次最大命中"归一成 0~1（第五节） |
 | 只用排名 | 不定义 | 上一版用 RRF 时的做法，第五次修订撤了 |
 
-选第二个的代价要说清：归一化系数是"这一问的最强命中"——那是 OpenClaw 的口径，不是我们拍的；
-但**两路之间的可比性仍然是个近似**：计数除以最大值，与余弦相似度不是同一个物理量，
-0.7/0.3 只是把它们拉到同一个区间。要真正可比，得让关键词那一路也由数据库给分
-（`pg_search`/ParadeDB 的 BM25，或中文分词扩展 + 换镜像）——那是另一个决定，没做。
+**不是命中次数**：早先的式子是"出现次数 ÷ 词长"求和，那样一个高频词（某份文档里反复出现"退货"）
+出现十次会等于命中十个不同词项——拿词频当相关度。现在每个词项只贡献 0 或它自己的权重。
+
+归一化系数仍是"这一问的最强命中"，所以**两路之间的可比性是个近似**：计数与余弦不是同一个物理量，
+0.7/0.3 只是把两者拉到同一区间。要真正可比，得让这一路也由数据库给分（BM25），见上一节。
 
 ### SQL
 
 ```sql
-select id, content, metadata
+select id, content, metadata->>'path' as path, metadata->>'section' as section,
+       ((case when content ilike ? escape '\' then 3 else 0 end)
+      + (case when content ilike ? escape '\' then 1 else 0 end)) as hits
 from claw4j_rag.vector_store
-where metadata->>'source' = ?
-  and content ilike '%' || ? || '%'
-order by (length(content) - length(replace(lower(content), lower(?), ''))) / length(?) desc,
-         (metadata->>'index')::int
+where metadata->>'source' = ? and (content ilike ? escape '\' or content ilike ? escape '\')
+order by hits desc, (metadata->>'index')::int
 limit ?
 ```
 
-三个 `?` 是同一个查询词：`ilike` 一次、计数两次（`length` 与 `replace`）。
-`lower()` 两侧都做：`ilike` 本身不区分大小写，但 `replace` 区分——不统一就会把
-`SKU-2024` 与 `sku-2024` 算成两种命中。
+**两处都是带 `%` 的模式串**。`select` 那一处若给裸词项，`ilike` 会退化成精确相等：`where` 命中了、
+`score` 恒为 0，融合时全文那一路等于白召回。这个错误不报错，只在融合后表现为"关键词好像没什么用"。
 
 ### 通配符必须转义
 
@@ -257,6 +276,10 @@ where content ilike '%' || ? || '%' escape '\'
 
 第 2 步写在 Java 里是不得已：索引属于 schema，但表的所有权在框架手上。
 `if not exists` 让它幂等。**退场条件**：框架哪天开放"额外索引"的配置项，这段删掉。
+
+**2 字 bigram 走不了这个索引**：`pg_trgm` 的 GIN 只对 ≥3 字符的模式有效。当前库是几百段，
+全表扫描毫秒级；段数上万时这一条会变成瓶颈，那时要换 `pg_bigm`——它的索引支持 2 字，代价是
+换数据库镜像（与第四节"它不是 BM25"是同一笔账）。
 
 不加这个索引也**能正确工作**，只是每次全文查询扫全表。所以它是"性能开关"，建失败不该让启动失败
 ——降级成一行 WARN，检索照跑（见第七节）。
@@ -419,20 +442,35 @@ HTTP 用 JDK 自带的 `java.net.http.HttpClient`，不用 `RestClient`：`claw4
 ```yaml
 claw4j:
   rag:
-    top-k: 5                          # 最终注入几段（由 TopKDocumentPostProcessor 在最后截断）
+    top-k: 10                         # 最终注入几段（TopKDocumentPostProcessor 在最后截断）
     min-similarity: 0.5               # 只作用于向量那一路
-    chunk-size: 800                   # token，交给 TokenTextSplitter
+    chunk-size: 800                   # token，交给 SemanticTextSplitter
     hybrid:
-      enabled: true                   # 关掉 = 只有向量，等价于上一版行为
-      candidates-per-route: 15        # 每路各召回多少（这是"召回"，不是"最终注入"）
+      enabled: true                   # 关掉 = 只有向量
+      candidates-per-route: 25        # 每路召回；融合按 id 去重，池子约等于这个数
     rerank:
       enabled: true
-      candidates: 10                  # 送进重排的条数（输入上限，小于 top-k 时按 top-k 用）
+      candidates: 20                  # 送进重排的条数；必须 > top-k
       base-url: https://dashscope.aliyuncs.com/compatible-api/v1
-      model: qwen3-rerank
+      model: qwen3-rerank             # 可换：gte-rerank-v2 / bge-reranker-v2-m3
       timeout: 2s
-      # key 不在这里：复用 providers 里 name=qwen 那一条的 api-key（secret:qwen_api_key），不引第二把钥匙
+      # key 不在这里：复用 providers 里 name=qwen 那一条的 api-key（secret:qwen_api_key）
+    parent:                           # 章节父块回填，默认关
+      enabled: false
+      max-chars: 2400
+    rewrite:                          # 检索前改写，默认关
+      enabled: false
+      timeout: 3s
 ```
+
+三级比例是量出来的，不是等比放大：**每路 25 → 融合 24.6 → 重排 20 → 截 10**。
+
+- 重排候选必须 **>** top-k。`rerankCandidates()` 取 `max(top-k, candidates)`：两者相等时，重排
+  输入 = 最终输出，它从"筛选 + 排序"退化成"只排序"。而 `max` 只保证不退化，不保证有余量——
+  要余量得手动把两者分开。
+- 每路召回要 ≥ 重排候选。融合按 id 去重，**池子约等于每路条数**（实测每路 25 → 24.6，
+  每路 15 → 11.9）。每路 15 配 top-k=10 时池子只有 12 条，重排候选设 20 也取不满。
+- 加到 30 没有收益：重排只收 20 条，第 21 条起永远进不了重排。
 
 `rrf-k` 不做成配置：60 是论文默认值，调它没有可依据的目标，多一个旋钮只会让
 "结果为什么变了"多一个可能的答案。
@@ -479,7 +517,7 @@ claw4j:
 | 两路结果会合并去重 | 同一块被两路命中时，结果里只出现一次 | `KnowledgeRetrievalTest`（替身） |
 | 加权融合真的在加权 | 两路都命中的块（0.7×0.9 + 0.3×1 = 0.93）压过只有向量的同名分数块（0.63）；只有全文的封顶 0.3；同一路重复不加分 | `KnowledgeRetrievalTest#weightedFusionAddsLanesAndCapsTextOnly` |
 | 融合分是**下游**的排序信号 | 过了官方 `ConcatenationDocumentJoiner` 之后顺序不变：余弦 0.90 的块不该压过"两路都命中"的块，也不该把只有全文命中的块甩到最后 | `KnowledgeRetrievalTest#fusedOrderSurvivesOfficialJoinerAndTopKCut` |
-| `top-k` 真的生效 | 30 条候选过完 post-processor 链只剩 5 条；**重排关掉时也一样** | 同上 |
+| `top-k` 真的生效 | 候选过完 post-processor 链只剩 top-k 条；**重排关掉时也一样** | 同上 |
 | 重排真的改变顺序 | 替身 reranker 返回倒序，结果顺序跟着变 | `KnowledgeRetrievalTest` |
 | 重排结果非法时不丢结果 | 替身返回越界下标 / 空 `results`，结果条数与候选一致、顺序不变 | `KnowledgeRetrievalTest` |
 | 某一路挂了不影响另一路 | 全文 SQL 抛异常，向量结果照返 | `KnowledgeRetrievalTest` |
@@ -532,3 +570,47 @@ claw4j:
 **② 语义断点只认句首转折词与向量跃迁**，句中引用不触发；
 **③ 切块算法变了必须重建**，靠 `claw4j_rag.index_meta` 那一行身份（照 OpenClaw 的
 `memory_index_meta`，不是给 `source` 加列），否则库里会混着两种边界的块且没有迹象。
+
+## 十二、召回侧的三个增强（块上下文 / 父块 / 改写）
+
+三个都在"把正确段弄进候选池"这条线上，各自独立可关，默认值不同——原因写在各自的条目里。
+
+### 块上下文：`【文档标题 › 章节路径】` 前置进块文本
+
+语义断点生效后平均 3.9 段/份，一段 350 字的块可能只写"押金在 7 个工作日内原路退回"，
+里面没有"备机"、没有"租赁"。同一种说法散在三份文档里时，几块的向量几乎一样，谁进池靠运气。
+这就是 Anthropic Contextual Retrieval 的出发点。
+
+做法是零成本版：`MarkdownOutline` 抽出第一个 `#` 标题与所在章节链，拼在块文本最前面
+（**拼进 content 本身**，向量与提示词两侧都要）；章节链同时落进 metadata 的 `section`。
+Anthropic 那套用 LLM 生成 50–100 token 的具体上下文（约 $1.02/百万 token），这里没做。
+
+两个实现细节容易踩：块文本经过切块器拼接后换行被删、**不是原文的连续子串**，按位置定位会失败
+（短文档被切成一块时必失败），所以定位有两级——先看块里出现了哪个章节标题的文字，再回退到位置。
+`CHUNKING_VERSION` 因此从 1 提到 2，升级后第一次启动会全量重建。
+
+### 父块回填：`SectionExpander`，默认关
+
+小块召回准、上下文碎：命中一段，适用范围与例外都在兄弟块里。打开后，重排后的候选按
+`(path, section)` 聚合，命中的子块被"同章节全部块"拼成的父块替代（small-to-big）。
+
+三条约束：父块超过 `max-chars`（默认 2400）不聚合；只有同章节命中 ≥2 块才聚合（单块命中时
+父块只是变长）；父块在重排**之后**生成（先按子块排序，否则分数会被章节里无关部分拉平）。
+
+评测口径要跟着改：父块的 metadata 带 `covered`（覆盖的子块号），导出时展开成子块 id——
+否则 gold 的 reference 是子块、返回列表里只有父块 id，"其实答上了"会被记成没召回。
+
+默认关的理由：它用 token 换上下文完整度，段数变少而每段变长，收益要用开/关对照证明。
+
+### 查询改写：`RetrievalQueryRewriter`，默认关
+
+文档写"无书面约定时按下列顺序处理"，用户问"没白纸黑字写能退吗"——两个文本没有一个共同词，
+向量与 bigram 都救不了。改写把问题换成"文档里会怎么写"的一句话，只用于检索，不进提示词。
+
+**含数字与型号一律跳过**：HyDE 类改写对数值有害，会把"万分之五"改成近似值，而这类题考的就是
+精确值。失败（超时 / 报错 / 空输出）一律用原问题——改写是增强，不是前提。
+
+挂载点有两处且必须是同一个 bean：线上由 `RetrievalAugmentationAdvisor#queryTransformers` 调用，
+评测导出绕过 advisor 直接调检索链路，所以自己也要先 transform 一次。只挂一处的话，
+线上改了、评测量不到，两条路静默分叉。
+

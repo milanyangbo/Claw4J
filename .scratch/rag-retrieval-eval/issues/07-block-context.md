@@ -48,3 +48,13 @@ Anthropic 那套是用 LLM 生成 50–100 token 的具体上下文（约 $1.02/
 - `MarkdownOutlineTest`：H1 缺失时回退文件名、多级标题链、代码块里的 `#` 不算标题（围栏内跳过）。
 - 一次全量重建，抽样 3 份文档的块文本确认前缀正确（`after-sales.md` 的三段应分别落在不同章节）。
 - 一次 L1 导出对照。
+
+## 六、实施（2026-11-20）
+
+- 新增 `MarkdownOutline`：`title` / `sections` / `at` / `sectionOf` / `prefix`；
+  跳过围栏代码块；章节链最多 3 级；前缀上限 120 字符。
+- `KnowledgeIndexer#chunk` 前置前缀并把章节写进 metadata（`RagMetadata.SECTION`）；
+  `RagMetadata.of` 多一个参数；`CHUNKING_VERSION` 1→2（改块文本必须重建）。
+- 定位做了两级：先看块里出现了哪个章节标题的文字，再回退到"块起点所属章节"。只按位置不行——
+  切块器拼接句子时删掉换行，块文本不是原文的连续子串（短文档被切成一块时必失败，实测抓到）。
+- 单测：`MarkdownOutlineTest` 10 条、`KnowledgeRetrievalTest#chunksCarrySectionContext` 全绿。

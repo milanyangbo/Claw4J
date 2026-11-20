@@ -51,3 +51,15 @@ ParadeDB `pg_search`，三者都要换数据库镜像，那是另一件事。
   且不含整句；`searchTerms("SKU-2024 还剩多少")` 含整句与锚点；词项数不超上限。
 - 打分列改成 0/1 相加，`SearchSqlTest` 里对 SQL 形状的断言同步。
 - 一次 L1 导出：关注那 8 条"从没进过池"的题里，口语 2 条与多跳 2 条是否进池。
+
+## 五、实施（2026-11-20）
+
+- `KeywordDocumentRetriever#terms` 返回带权词项：整句 3 / ASCII 锚点 3 / 中文 bigram 1，
+  上限 12；`searchTerms` 保留为"只要文本"的视图，给日志与单测用。
+- SQL 打分改成"命中词项权重之和"；`select` 与 `where` 两处都用带 `%` 的模式串。
+- 踩到两次，都是"改了形状忘了改配套"：
+  1. 每词项占位符从 3 个变 2 个，参数仍按 3 个给 → `column index is out of range`（真库测试抓住）；
+  2. `select` 那一处给裸词项 → `ilike` 退化成精确相等，`where` 命中而 `score` 恒 0
+     （`SearchSqlTest` 的 "命中次数要落进 score" 断言抓住）。
+- 单测 `KeywordDocumentRetrieverTest` 7 条 + 真库 `SearchSqlTest` 17 条全绿。
+- 真库实测：问 `SKU-2024 还剩多少`，全文那一路第 1 条回到 `warehouse/sku-2024-stock.md`。
