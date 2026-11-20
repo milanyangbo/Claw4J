@@ -133,6 +133,9 @@ Authority and safety）与 `read approval checkpoint before schema ... changes`�
   `docs/agents/guardrails.md`：已知偏差的清单与改红线怎么走。不看后者，已记账的偏差会被当成缺陷报出来。
 - **写、改、删测试，或判断一条测试该不该留** → `docs/agents/testing.md`：四条判据、
   正反例、组织界限（每模块 ≤14 个文件、每文件 ≤26 个方法、行覆盖率 ≥60%）。
+- **改检索评测（`eval/rag`）** → `docs/agents/rag-eval.md`：门槛为什么分三层、Ragas 为什么不给分档
+  （核实过）、judge 的三个必须、踩过的坑、还没做的。**用户怎么跑看 `eval/rag/README.md`**，
+  那两份不重复：一份讲为什么，一份讲怎么用。
 - **写、改代码注释或 Javadoc** → `docs/agents/comments.md`：Google Java Style 第 7 章的硬格式，
   加上本仓库追加的七条（Javadoc 里禁 Markdown、一段一意、不自称「我们」、
   引用外部系统必须带得出处、不写变更史……）。

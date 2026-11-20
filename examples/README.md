@@ -13,6 +13,7 @@
 | `subagents/` | Subagent | `claw4j.subagents.directory=examples/subagents` |
 | `mcp/` | 二层：MCP server（跨进程） | `claw4j.capability.mcp.servers`（三个 server 都写在 `application-local.yml` 里） |
 | `guard/` | 不属于能力层：入站拦截的词表 | `claw4j.guard.sensitive-words-file`，**默认就指向这里** |
+| `knowledge/` | 知识库：一份可检索的文档目录 | `claw4j.rag.directory=examples/knowledge`（`local` 已配） |
 
 `guard/sensitive-words.txt` 是唯一一个默认生效的：一行一个词，`#` 开头是注释，命中任意一条
 整轮拒答。不想拦就把键清空（拦不拦得住单看这份文件，见
@@ -26,6 +27,18 @@
 技能（含技能里的脚本）、Subagent 的语言无关来自文件格式与本项目的接缝，Spring AI 没有对应抽象。
 这条分界在根 README 的「集成」与 [`docs/capability-tests.md`](../docs/capability-tests.md) §8 里写清楚了，
 别把它们当成同一件事。每一个工具怎么验（命令、要涨的计数、期望值）也在那份测试手册里。
+
+## 知识库样本（`knowledge/`）
+
+一套虚构公司的完整制度文档：销售与合同、产品与技术、售后现场、结算开票、内部流程、历史归档。
+刻意做成"真实密度"而不是"标准答案集"——里面混着大量与客户问题无关的内容（人事、IT、采购、安全），
+混着几份已废止的旧版，混着一份几乎每次检索都会命中的术语表。
+
+为什么这么设计：只有几份文档时，检索等于把答案端上来，测不出"从一堆看着都相关的段落里挑对那一段"。
+语料越接近真实知识库的样子，这条能力才验得出意义。
+
+逐条验法（问什么、期望什么、答错时先看哪一行日志）在
+[`README-capability-tests.md`](../README-capability-tests.md) 的 B6。
 
 ## 技能里的脚本（原来的"脚本层"）
 

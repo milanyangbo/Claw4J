@@ -23,8 +23,11 @@ scheduled_tasks.json
 application-local.yml
 application-local.yaml
 
-# 评测报告：一次运行一份，内容随模型与提交而变，不入库（目录留着）
-eval/reports/*.json
+# RAG 评测的产物与本地环境（gold.yaml / run_ragas.py / baseline.json 是源码，入库）
+eval/rag/reports/*
+!eval/rag/reports/.gitkeep
+eval/rag/.venv/
+eval/rag/__pycache__/
 
 # Python 示例跑一次就会生成，不是源码
 __pycache__/

@@ -9,7 +9,8 @@ date: 2026-10-23
 > 今天门禁里走模型的用例绝大多数换成 `FixedChatModel` / `SubagentModelStub` 替身 + 真容器，
 > 只有一条真模型用例——`ChatPipelineTest#realModelTurnsNaturalLanguageIntoTheRightToolCall`
 > （`ChatPipelineTest.java:265`）——连真实 DeepSeek，且它没有 key 时是**红**、不是跳过。
-> 真模型那条完整的线在 `docs/capability-tests.md`（一个工具一条，人工）与 `./scripts/eval.sh`。
+> 真模型那条完整的线在 `docs/capability-tests.md`（一个工具一条，人工）与 `./eval/rag/run.sh`
+> （检索评测；2026-11-20 之前它还兼着通用评测集，那一套连同 `scripts/eval.sh` 一起删了）。
 > 这条偏离已经记账：`docs/agents/guardrails.md:38`。
 >
 > **没失效的是开头那条"删掉 mock 兜底"**：生产装配今天仍然是"没 key 就起不来"

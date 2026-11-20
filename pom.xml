@@ -26,8 +26,8 @@
         <module>claw4j-example-sales</module>
         <module>claw4j-example-mcp-server</module>
         <module>claw4j-app</module>
-        <!-- 评测集与判分（A06）。放在 app 之后：它的执行器要起整机，而"起整机"这件事
-             只有 app 装配得出来。判分本身不依赖 app——那一层只有三个类，见模块的 pom。 -->
+        <!-- 检索评测的导出（A06）。放在 app 之后：它的导出用例要起整机，而"起整机"这件事
+             只有 app 装配得出来。main 侧只剩纯 JDK 的 gold 解析，见模块的 pom。 -->
         <module>claw4j-eval</module>
     </modules>
 
@@ -218,7 +218,7 @@
 
                       - real-cli（本机装了 gh / himalaya / xurl）
                       - real-mcp（要 Node、要能出网，去连真的第三方 MCP server）
-                      - eval（评测集：五十条真模型调用，一次十几分钟。A06）
+                      - eval（检索评测的导出：真检索 + 真回答，一次几分钟）
                       - docker（P17a：要守护进程与镜像。CI 上没有 docker，而这几条验的正是
                         "换台机器就没有容器"这件事本身——不排除的话，换台机器整份回归变红，
                         而红的原因跟被测的那行代码无关）
@@ -233,11 +233,11 @@
                       它们依赖本机装了什么、公网今天连不连得上、以及愿不愿意为一次评分花钱，
                       不属于回归基线（票面：真实外部调用不进 CI）。
 
-                      eval 那一组另有两条防线，否则"排除"就等于"没人管"：
-                      用例集自洽由 EvalCaseSetTest 守着（不调模型，进回归），
-                      判分口径由 EvalScorerTest 守着（同样进回归）。
+                      eval 那一组另有一条防线，否则"排除"就等于"没人管"：
+                      gold 里的原句能不能落到 chunk 上，由 RetrievalGoldTest 守着
+                      （不调模型、只读文件，进回归）。
 
-                      本机想跑：./mvnw test -Preal-cli、./mvnw test -Pdocker、./scripts/eval.sh
+                      本机想跑：./mvnw test -Preal-cli、./mvnw test -Pdocker、./eval/rag/run.sh
                     -->
                     <configuration>
                         <!-- 默认排除这几组；profile 里换成不存在的组名来放开。
@@ -403,12 +403,13 @@
         </profile>
 
         <!--
-          评测（A06）。照抄上面那份的形状，不发明第二套机制：
-          默认那份把 eval 排除了，而 includeTags 与 excludeTags 同时命中时排除优先，
-          所以必须把 excludedGroups 一起换成一个不存在的组名，光写 groups 是顶不掉的。
+          检索评测的导出（A06 那条线收窄之后只剩这一支）。照抄上面那份的形状，
+          不发明第二套机制：默认那份把 eval 排除了，而 includeTags 与 excludeTags
+          同时命中时排除优先，所以必须把 excludedGroups 一起换成一个不存在的组名，
+          光写 groups 是顶不掉的。
 
-          用法一律走脚本（它负责载入 .env、给定过滤条件、打印摘要）：
-          全跑、按类别跑、单条跑三种都在 scripts/eval.sh 的头部注释里。
+          用法一律走脚本（它负责载入 .env、跑导出、建 venv、算分）：
+          ./eval/rag/run.sh
 
           不要在全仓上 -Peval：那只会跑带 eval 标签的那一个类，其余全被跳过，
           而"跳过"在这里是合法的（includeTags 的效果），看起来却像全绿。

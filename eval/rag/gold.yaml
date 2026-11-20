@@ -1,0 +1,95 @@
+# 检索层评测的 gold。
+#
+# 每条 = 一个问题 + 参考答案 + 答案所在的原句（gold_span）。
+# 绑句子不绑段号：段号随切块参数变，改一次 chunk-size 或切块算法，整份评估集就过期，
+# 而过期的评估集比没有更糟——它给出可信的假分数。
+#
+# span 抄文档原句即可，不必带 Markdown 的 ** 强调：比对时会去掉标记与空白。
+# doc 用来消歧：同一句话在两份文档里出现时，靠它决定命中的是哪一份。
+#
+# 覆盖五类失效：单跳 / 地区分叉 / 跨文档 / 长文档跨块 / 已废止旧版；另有一条口语问句
+# 与一条"同形状数字"（物流时效 vs 退货窗口，都是天数，含义完全不同）。
+
+- id: rag-east-return
+  question: 华东区无理由退货是几天？
+  reference: 华东区自签收之日起 7 天内可无理由退货，商品需保持完好。
+  gold_span:
+    doc: after-sales.md
+    span: 华东区（上海、江苏、浙江、安徽）自签收之日起 7 天内可无理由退货
+
+- id: rag-south-window
+  question: 广州的客户想退货，签收后几天内可以？
+  reference: 华南区（广东、广西、福建、海南）的无理由退货窗口是 5 天，比华东短两天。
+  gold_span:
+    doc: after-sales.md
+    span: 华南区（广东、广西、福建、海南）的无理由退货窗口是 5 天
+
+- id: rag-unopened-return
+  question: 拆开用了还能退吗？
+  reference: 整机拆封使用后不影响二次销售是退货的前提，实际判定看外观与耗材余量。
+  gold_span:
+    doc: faq.md
+    span: 整机拆封使用后不影响二次销售是退货的前提
+
+- id: rag-return-amount
+  question: 折扣订单退货退多少钱，按标价还是实付？
+  reference: 折扣订单发生退货时，按实付金额退款，不按标价退款。
+  gold_span:
+    doc: pricing.md
+    span: 折扣订单发生退货时，按实付金额退款，不按标价退款
+
+- id: rag-warranty-months
+  question: 整机保修多久？便携机型呢？
+  reference: 整机 12 个月、便携机型 6 个月，从签收日算。
+  gold_span:
+    doc: warranty.md
+    span: 整机 12 个月、便携机型 6 个月，从签收日算
+
+- id: rag-warranty-extend
+  question: 保修期能延长到多久？
+  reference: 整机可以购买延保，最长延到 36 个月（含原保修期）。
+  gold_span:
+    doc: warranty.md
+    span: 整机可以购买延保，最长延到 36 个月（含原保修期）
+
+- id: rag-sku-spec
+  question: SKU-2024-M6 的尺寸和每卷张数是多少？
+  reference: 热敏标签纸，100mm × 150mm，每卷 320 张，68 元。
+  gold_span:
+    doc: products.md
+    span: 100mm × 150mm，每卷 320 张
+
+- id: rag-overdue-interest
+  question: 月结客户逾期回款怎么计息，利息滚入本金吗？
+  reference: 从到期日的次日起按未回款金额每日万分之五计息，计息不滚入本金。
+  gold_span:
+    doc: settlement.md
+    span: 从到期日的次日起按未回款金额每日万分之五计息，计息不滚入本金
+
+- id: rag-shipping-hours
+  question: 华中省会城市发货后多久能到？
+  reference: 华中、华北、西南的省会城市 48 小时内到；其余地区 4 到 6 个自然日。
+  gold_span:
+    doc: shipping.md
+    span: 华中、华北、西南的省会城市 48 小时内到
+
+- id: rag-old-warranty
+  question: 2024 年买的机器，整机保修是 18 个月吗？
+  reference: 2024 版整机保修 18 个月，从签收日起算；现行版已改为 12 个月。
+  gold_span:
+    doc: archive/warranty-2024.md
+    span: 整机保修 18 个月，从签收日起算
+
+- id: rag-old-discount
+  question: 旧版的折扣审批权限是怎么规定的？
+  reference: 2025 版标价基础上 9.5 折以内由销售代表直接给出，不需要审批。
+  gold_span:
+    doc: archive/pricing-2025.md
+    span: 标价基础上 9.5 折以内，销售代表直接给出，不需要审批
+
+- id: rag-old-interest
+  question: 2025 版逾期计息是万分之八吗？
+  reference: 2025 版逾期计息每日万分之八，计息滚入本金；现行版改为万分之五且不滚入。
+  gold_span:
+    doc: archive/settlement-2025.md
+    span: 逾期计息每日万分之八（现行万分之五），计息滚入本金（现行不滚入）

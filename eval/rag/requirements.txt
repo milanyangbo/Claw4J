@@ -1,0 +1,16 @@
+# RAG 评测的 Python 依赖（Ragas 的指标 + L2 的 judge SDK）。
+#
+# 锁版本：Ragas 的指标口径在 0.4 上改过（collections API 替换 legacy），
+# 换小版本就可能换一套实现，而"分数变了"要能归因到被测代码，不是归因到库升级。
+#
+# 装法（脚本会自动做）：
+#   python3 -m venv eval/rag/.venv
+#   eval/rag/.venv/bin/pip install -r eval/rag/requirements.txt
+ragas==0.4.4
+
+# NonLLM* 那组指标的字符串相似度靠它；不装时报的是 import 错，不是"这个指标不可用"。
+rapidfuzz>=3.9
+
+# L2 的 judge 走 OpenAI 兼容端点（DeepSeek 的 /chat/completions 就是），
+# 用官方 SDK 而不是再引一层 langchain。
+openai>=1.40

@@ -179,23 +179,23 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 | `./scripts/verify.sh` | 一条命令跑完上面几步：载入 `.env` → 删除词闸 → **票面闸**（`Status: resolved` 的票里打了 ✅ 的用例名必须真的存在，见 `scripts/check-ticket-cases.sh`）→ `clean verify`（含覆盖率红线）→ **失败 / 错误 / 跳过必须都为 0** → 文件数/方法数上限（≤14 / ≤26）。**不打印用例条数**：条数不是质量信号，指标是覆盖率与有没有红 | 提交前 |
 | 本地冒烟 | 起应用带 `examples/{skills,subagents}`（三个示例 MCP server 已经写在 `application-local.yml` 里），真模型走一遍各层与工具清单可见性。**命令、每层问什么、该看到什么，见 [`docs/capability-tests.md`](docs/capability-tests.md)** | 改了装配或能力层之后 |
 | 要外部世界的两组（`real-cli` / `real-mcp`） | 真的 OS 子进程（Python、`gh`、`himalaya`）与真的公网 MCP 端点。**默认排除**，`-Preal-cli` 才跑；它们依赖本机装了什么与能不能出网，不属于回归基线 | 改 MCP 传输、改脚本层之后 |
-| `./scripts/eval.sh` | **评测集**：四十来条真模型调用，判分锚在数字与标识符上（`sales` / `knowledge` / `tools` / `memory` 四类）。回答"这版比上版好还是差"，而不是"接上了没有"。**默认不在 `verify.sh` 里**：一次十几分钟、几分钱、要联网。用例集写坏了与判分口径坏了仍然进回归（`EvalCaseSetTest` / `EvalScorerTest`） | 改了工具描述、换了模型、调了路由顺序之后，以及想说"这版更好"之前 |
+| `./eval/rag/run.sh` | **检索评测**：Java 只导出（每条问题的 chunk id + 文本 + 分数），Python 侧用 Ragas 算分，出 `Recall@5` / `faithfulness` / `context_precision` 这些指标与一份判定（哪项达标、不达标怎么查）。回答"检索这一层准不准"，而不是"接上了没有"。**默认不在 `verify.sh` 里**：要起容器、建索引、调 embedding 与 judge。`gold.yaml` 里的原句能不能落到 chunk 上仍然进回归（`RetrievalGoldTest`） | 改了切块、检索、重排、embedding 之后；想说"这次比上次好"之前在 `eval/rag/baseline.json` 上比 |
 
 **为什么评测单独一条路而不是并进 `verify.sh`**：它回答的不是同一个问题。`verify.sh` 守
-"装配成立、跳过 0、覆盖够"，那是可以每次提交都跑的；评测守"答得好不好"，答案会随模型版本漂、
-每条要 1~6 次往返。把两者绑在一起的结果只有一个——慢到没人提交前跑，
-于是闸形同虚设。代价是它可能长期没人跑，所以用例集自洽那部分留在回归里垫底。
+"装配成立、跳过 0、覆盖够"，那是可以每次提交都跑的；评测守"检索准不准、答得好不好"，
+答案会随 embedding 与模型版本漂，每条还要起容器、走真实检索。把两者绑在一起的结果只有一个——
+慢到没人提交前跑，于是闸形同虚设。代价是它可能长期没人跑，所以 gold 自洽那部分留在回归里垫底。
 
-**评测红了先看报告，别先改代码**：每份报告里带着那条用例的 `answer` 原文与 `runId`。
-判分是字符串包含，假红与"模型抖了一次"都真实存在（温度 0.0 也不保证确定），
-所以红了要做的是读那句回答，判断这是判据写窄了、模型退步了，还是它这次恰好换了说法。
+**评测红了先看报告，别先改代码**：`eval/rag/reports/report.md` 会写清没召全的那几条缺的是哪一段、
+那段在完整候选里排第几。同一份数据连跑两次，judge 的分数会差 0.02 上下（12 条样本），
+所以先分清是 gold 写窄了、检索退步了，还是 judge 这次换了口气——只有 L1 那些确定性指标说得清。
 
 **为什么 Advisor 那条值得单独立规则**：`BaseAdvisorChain` 给流式路径取的是 `getStreamAdvisors()`，
 只认 `StreamAdvisor`。只写 `CallAdvisor` 的鉴权 Advisor 在 `.stream()` 上**既不报错也不生效**，
 客户端照常拿到回答——鉴权等于没做，而且从日志上看不出来（ADR-0007）。
 
 门禁全在本地跑：仓库没有接 CI，也没有 pre-commit hook。`./scripts/verify.sh` 是提交前的唯一入口，
-它红了就是不能提交。评测走 `./scripts/eval.sh`，那是**并列**的另一条路（不进 `verify.sh`，
+它红了就是不能提交。检索评测走 `./eval/rag/run.sh`，那是**并列**的另一条路（不进 `verify.sh`，
 理由见上面那行）。接 CI 时有两件事得先备好：runner 上的 Docker 守护进程（数据库那一类没有
 Docker 就直接红，不许判成跳过），以及 `secrets.DEEPSEEK_API_KEY`（ADR-0011：没有 key 是红，不是跳过）。
 
