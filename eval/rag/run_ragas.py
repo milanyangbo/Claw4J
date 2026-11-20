@@ -313,7 +313,11 @@ def make_judge(model: str):
     # max_tokens 必须显式给：默认值只够短回答，而 faithfulness 要把回答拆成主张逐条判，
     # 十几条主张的 JSON 会超出上限、被服务端截断，instructor 抛 IncompleteOutputException
     # （它的 repr 是空的，不打类型名会看到"算不出来："后面什么都没有）。
-    return llm_factory(model, client=client, max_tokens=2048,
+    #
+    # 2048 实测不够：68 条那一轮有 2 条（rag-multihop-price-protect、rag-crossdoc-refund-steps）
+    # 就是撞在这上面。提到 4096——仍是"够判完一份长回答"的量级，不是无脑拉满：
+    # 截断的代价是整条判不出来，白花的钱比多出来的输出 token 贵得多。
+    return llm_factory(model, client=client, max_tokens=4096,
                        extra_body={"thinking": {"type": "disabled"}})
 
 
