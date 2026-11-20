@@ -36,6 +36,18 @@ public class SemanticTextSplitter extends TextSplitter {
     /** 少于这个句数就没有"相邻组"可言，向量那一路直接跳过（省一次请求）。 */
     private static final int MIN_SENTENCES_FOR_VECTORS = 3;
 
+    /**
+     * 单次向量请求最多几条 input：通义 {@code text-embedding-v3} 的接口上限就是 10。
+     *
+     * <p>不按篇发：{@link ChunkPlanner#groups} 是"每组一窗口"，组数等于句子数，一篇上百句的文档
+     * 一次发上百条会被直接 400（{@code batch size is invalid, it should not be larger than 10}），
+     * 于是整篇退化成只按转折词切——等于这条判据从来没生效过。
+     *
+     * <p>写成常量而不是配置键：换一家上限更大的模型，多分几批只是多发几次请求，不坏；
+     * 而多一个配置就多一处要维护的默认值，还得有人记得它跟模型一起改。
+     */
+    private static final int EMBEDDING_BATCH = 10;
+
     private final EmbeddingModel embeddings;
 
     /** token 上限的兜底。与"切分判据"无关，只在块超限时被调用。 */
@@ -80,9 +92,14 @@ public class SemanticTextSplitter extends TextSplitter {
      */
     private List<Integer> semanticBreaks(List<String> sentences) {
         List<String> groups = ChunkPlanner.groups(sentences, ChunkPlanner.BUFFER_SIZE);
-        List<float[]> vectors;
+        List<float[]> vectors = new ArrayList<>(groups.size());
         try {
-            vectors = embeddings.embed(groups);
+            // 整段 try，不是每批各 catch：断点靠下标对齐相邻组，缺任何一批都会让后面的配对
+            // 全部错位，而错位不报错——它只会把块悄悄切坏。
+            for (int from = 0; from < groups.size(); from += EMBEDDING_BATCH) {
+                int to = Math.min(from + EMBEDDING_BATCH, groups.size());
+                vectors.addAll(embeddings.embed(groups.subList(from, to)));
+            }
         }
         catch (RuntimeException failure) {
             log.warn("语义切块：{} 句的向量算不出来，这一篇只按转折词切：{}",
