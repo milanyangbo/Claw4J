@@ -1,8 +1,8 @@
 package io.github.claw4j.eval;
 
+import io.github.claw4j.agent.rag.GuardedQueryRewriter;
 import io.github.claw4j.agent.rag.KnowledgeRetrievalPipeline;
 import io.github.claw4j.agent.rag.RagMetadata;
-import io.github.claw4j.agent.rag.RetrievalQueryRewriter;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
@@ -130,7 +130,7 @@ class RetrievalExportTest {
      * advisor 的前置步骤。不挂的话，线上开了改写而评测量到的是没改写的检索——两条路静默分叉。
      */
     @Autowired
-    private ObjectProvider<RetrievalQueryRewriter> rewriter;
+    private ObjectProvider<GuardedQueryRewriter> rewriter;
 
     private List<ExportRow> rows;
 
@@ -211,7 +211,7 @@ class RetrievalExportTest {
             // "排第 9"还是"不在候选里"——这两种要改的地方完全不同。
             Query query = new Query(gold.question(), List.of(),
                     Map.of(ContextKeys.PRINCIPAL, EVAL_PRINCIPAL));
-            RetrievalQueryRewriter transformer = rewriter.getIfAvailable();
+            GuardedQueryRewriter transformer = rewriter.getIfAvailable();
             if (transformer != null) {
                 query = transformer.transform(query);
             }

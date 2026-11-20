@@ -215,15 +215,24 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
     }
 
     /**
-     * 检索前改写（{@link RetrievalQueryRewriter}）。
+     * 检索前改写（{@link GuardedQueryRewriter} + 框架的 {@code RewriteQueryTransformer}）。
      *
      * <p>默认关：它每轮多一次模型调用（延迟 + 成本），而收益只在"问题用词与文档完全不重叠"时
-     * 出现。开着的时候含数字与型号的问题会自动跳过。
+     * 出现。
      *
-     * @param enabled 是否改写
-     * @param timeout 等多久；超时按原问题检索
+     * <p><b>两个正则都由部署方给，代码里没有词表</b>：什么算"数值"、什么算"必须原样保留的标识"，
+     * 在售后合同、医疗指南、英文手册里是三套答案。{@code application.yml} 里那份是中文业务文档的
+     * 取值，换领域改那两行即可。空 = 不做那一道检查。
+     *
+     * @param enabled     是否改写
+     * @param timeout     等多久；超时按原问题检索
+     * @param target      拼进提示词的目标检索系统描述，如「知识库」「产品手册」
+     * @param prompt      自定义提示词；null 用内置中文模板，必须含 {@code {query}}
+     * @param skipPattern 命中就跳过改写的正则；null = 从不跳过
+     * @param keepPattern 改写结果必须原样保留的片段正则；null = 不做保留校验
      */
-    public record Rewrite(Boolean enabled, Duration timeout) {
+    public record Rewrite(Boolean enabled, Duration timeout, String target, String prompt,
+                          String skipPattern, String keepPattern) {
 
         /**
          * 3 秒。
@@ -234,14 +243,19 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
          */
         public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(3);
 
+        /** 提示词里 {target} 的默认取值。它只影响改写方向，不影响检索。 */
+        public static final String DEFAULT_TARGET = "知识库";
+
         public Rewrite {
             enabled = enabled != null && enabled;
             timeout = (timeout == null || timeout.isZero() || timeout.isNegative())
                     ? DEFAULT_TIMEOUT : timeout;
+            target = (target == null || target.isBlank()) ? DEFAULT_TARGET : target.trim();
+            prompt = (prompt == null || prompt.isBlank()) ? null : prompt;
         }
 
         static Rewrite defaults() {
-            return new Rewrite(null, null);
+            return new Rewrite(null, null, null, null, null, null);
         }
     }
 
