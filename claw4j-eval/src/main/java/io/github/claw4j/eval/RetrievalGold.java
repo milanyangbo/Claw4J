@@ -7,27 +7,25 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 一条检索评测的 gold：问什么、参考答案是什么、答案在哪份文档的哪句话里。
+ * 一条检索评测的 gold：问什么、参考答案是什么、答案在哪份文档的哪几句话里。
+ *
+ * <p>证据是一组而不是一条：多跳题（"A2 买延保多少钱"要目录价与延保比例各一处）与跨文档题
+ * 天然有两处。只标一处时，第二处缺了也算满分——那正是这类题要抓的失效。
  *
  * <p>绑句子不绑段号：段号随切块参数变，改一次 chunk-size 或切块算法，整份评估集就过期，
- * 而过期的评估集比没有更糟——它给出可信的假分数。比对前把 Markdown 标记与空白归一化掉，
- * 因为文档里的关键句常带 {@code **} 强调，而 gold 在 yaml 里不会写星号。
- *
- * <p>解析时拒掉不认识的键：{@code gold_span} 敲成 {@code goldspan} 时，宽松的解析器会把这条
- * 用例变成什么都不判，而它跑起来是绿的。
+ * 而过期的评估集比没有更糟——它给出可信的假分数。
  *
  * @param id        kebab-case，报告与报错靠它定位
  * @param question  问给检索器的那句话
  * @param reference 参考答案，L2 的 LLM 指标要用；L1 不读它，但一起标好，免得以后再补一遍
- * @param doc       文档相对路径，用于"同一句话在两份文档出现"时消歧
- * @param span      答案所在的原句片段，比对时做归一化
+ * @param spans     答案所在的原文片段，至少一处
  */
-public record RetrievalGold(String id, String question, String reference, String doc, String span) {
+public record RetrievalGold(String id, String question, String reference, List<Span> spans) {
 
     /** yaml 里认得的顶层键。多一个就是写错了（宁可当场报错，也别让打错的键被静默忽略）。 */
-    private static final Set<String> KEYS = Set.of("id", "question", "reference", "gold_span");
+    private static final Set<String> KEYS = Set.of("id", "question", "reference", "gold_spans");
 
-    /** {@code gold_span} 里认得的键。 */
+    /** {@code gold_spans} 每一项里认得的键。 */
     private static final Set<String> SPAN_KEYS = Set.of("doc", "span");
 
     /**
@@ -58,21 +56,28 @@ public record RetrievalGold(String id, String question, String reference, String
         id = requireText(id, "gold.id");
         question = requireText(question, "gold.question");
         reference = requireText(reference, "gold.reference");
-        doc = requireText(doc, "gold.gold_span.doc");
-        span = requireText(span, "gold.gold_span.span");
-        int normalized = normalize(span).length();
-        if (normalized < MIN_SPAN_CHARS) {
-            throw new IllegalArgumentException("gold " + id + " 的 span 归一化后只有 " + normalized
-                    + " 个字符，区分度不够（至少 " + MIN_SPAN_CHARS + "）：" + span);
+        if (spans == null || spans.isEmpty()) {
+            throw new IllegalArgumentException("gold " + id + " 的 gold_spans 是空的：一条题至少要有一处证据");
+        }
+        spans = List.copyOf(spans);
+        for (Span one : spans) {
+            int normalized = normalize(one.span()).length();
+            if (normalized < MIN_SPAN_CHARS) {
+                throw new IllegalArgumentException("gold " + id + " 的 span 归一化后只有 " + normalized
+                        + " 个字符，区分度不够（至少 " + MIN_SPAN_CHARS + "）：" + one.span());
+            }
         }
     }
 
     /**
      * 从一行已解析的 YAML 造一条 gold。
      *
+     * <p>{@code gold_spans} 必须是列表，只有一处证据也写成列表：允许"单对象或列表"两种形状，
+     * 下一个人就会两种都用，而读代码的人每次都得判断两者有没有区别。
+     *
      * @param raw YAML 解析出来的一个条目
      * @return 校验过的 gold
-     * @throws IllegalArgumentException 缺字段、键写错、span 太短
+     * @throws IllegalArgumentException 缺字段、键写错、spans 不是列表、span 太短
      */
     public static RetrievalGold from(Map<String, Object> raw) {
         if (raw == null) {
@@ -80,39 +85,46 @@ public record RetrievalGold(String id, String question, String reference, String
         }
         String where = "gold " + raw.get("id");
         requireNoUnknown(raw.keySet(), KEYS, where);
-        Map<String, Object> block = block(raw, "gold_span", where);
-        requireNoUnknown(block.keySet(), SPAN_KEYS, where + " 的 gold_span");
-        return new RetrievalGold(
-                text(raw, "id"),
-                text(raw, "question"),
-                text(raw, "reference"),
-                text(block, "doc"),
-                text(block, "span"));
+        Object value = raw.get("gold_spans");
+        if (value == null) {
+            throw new IllegalArgumentException(where + " 缺少 gold_spans");
+        }
+        if (!(value instanceof List<?> list) || list.isEmpty()) {
+            throw new IllegalArgumentException(where + " 的 gold_spans 应当是非空列表（只有一处证据也写成列表）："
+                    + value);
+        }
+        List<Span> spans = new ArrayList<>(list.size());
+        for (int i = 0; i < list.size(); i++) {
+            spans.add(span(list.get(i), where + " 的 gold_spans[" + i + "]"));
+        }
+        return new RetrievalGold(text(raw, "id"), text(raw, "question"), text(raw, "reference"), spans);
     }
 
     /**
-     * 把 span 落到库里的段上，返回它们的 id。
+     * 把每处证据落到库里的段上，返回它们的并集。
      *
-     * <p>span 按中文句读切成几片，每片各落一段：切块会在句中断开（长文档里很常见），
-     * 整句 contains 必然落空，而"答案跨块"恰恰是要验的一类。并集就是这条 gold 的 reference ids。
+     * <p>每处证据按中文句读切成几片，每片各落一段：切块会在句中断开（长文档里很常见），
+     * 整句 contains 必然落空，而"答案跨块"恰恰是要验的一类。
      *
-     * <p>任何一片落不到都抛，不返回空列表：空 id 会让 Ragas 把这一条算成 recall 0，
+     * <p>任何一片落不到都抛，不返回部分结果：少一处证据会让 recall 悄悄从 1.0 变成 0.5，
      * 看起来像"检索没召回到"，实际是"gold 抄错了"。两种错要分开，否则评估集会带着错的锚点跑下去。
      *
      * @param chunks 索引全集的段
-     * @return 命中的段 id，按片顺序去重
+     * @return 命中的段 id，按证据与片的顺序去重
      * @throws IllegalStateException 有片段一段都没命中
      */
     public List<String> resolveIds(List<Chunk> chunks) {
         Set<String> ids = new LinkedHashSet<>();
-        for (String piece : pieces(span)) {
-            List<String> hits = hitsOf(piece, chunks);
-            if (hits.isEmpty()) {
-                throw new IllegalStateException("gold " + id + " 的片段没有落到任何一段：doc=" + doc
-                        + "，片段=" + piece + "。切块参数改过，或者 span 抄错了（比对会去掉 Markdown 标记与空白）。"
-                        + nearby(chunks));
+        for (Span one : spans) {
+            for (String piece : pieces(one.span())) {
+                List<String> hits = hitsOf(piece, one.doc(), chunks);
+                if (hits.isEmpty()) {
+                    throw new IllegalStateException("gold " + id + " 的片段没有落到任何一段：doc=" + one.doc()
+                            + "，片段=" + piece + "。切块参数改过，或者 span 抄错了（比对会去掉 Markdown 标记与空白）。"
+                            + nearby(one.doc(), chunks));
+                }
+                ids.addAll(hits);
             }
-            ids.addAll(hits);
         }
         return List.copyOf(ids);
     }
@@ -125,10 +137,11 @@ public record RetrievalGold(String id, String question, String reference, String
      * 要求重合到一定比例，才既能定位到块，又不会因为一次硬切就让整条 gold 崩掉。
      *
      * @param piece  一个分片
+     * @param doc    这片应当落在哪份文档
      * @param chunks 索引全集的段
      * @return 命中的段 id
      */
-    private List<String> hitsOf(String piece, List<Chunk> chunks) {
+    private List<String> hitsOf(String piece, String doc, List<Chunk> chunks) {
         String needle = normalize(piece);
         int needed = Math.max(MIN_PIECE_CHARS, (int) Math.ceil(needle.length() * COVERAGE_THRESHOLD));
         return chunks.stream()
@@ -211,10 +224,11 @@ public record RetrievalGold(String id, String question, String reference, String
      * <p>片段落不到只有两种原因：span 抄错了，或者块边界正好切在这句话中间。
      * 两种都得看到实际切块结果才能区分，所以把每段的开头与结尾一起报出来。
      *
+     * @param doc    落不到的那份文档
      * @param chunks 索引全集的段
      * @return 给人看的诊断，接在异常消息后面
      */
-    private String nearby(List<Chunk> chunks) {
+    private static String nearby(String doc, List<Chunk> chunks) {
         List<Chunk> sameDoc = chunks.stream().filter(chunk -> doc.equals(chunk.doc())).toList();
         if (sameDoc.isEmpty()) {
             return "\n（索引里没有 " + doc + " 这份文档）";
@@ -277,20 +291,46 @@ public record RetrievalGold(String id, String question, String reference, String
     }
 
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> block(Map<String, Object> raw, String key, String where) {
-        Object value = raw.get(key);
-        if (value == null) {
-            throw new IllegalArgumentException(where + " 缺少 " + key);
+    private static Span span(Object item, String where) {
+        if (!(item instanceof Map<?, ?> map)) {
+            throw new IllegalArgumentException(where + " 应当是 doc/span 两个键：" + item);
         }
-        if (!(value instanceof Map<?, ?> map)) {
-            throw new IllegalArgumentException(where + " 的 " + key + " 应当是 doc/span 两个键：" + value);
-        }
-        return (Map<String, Object>) map;
+        Map<String, Object> block = (Map<String, Object>) map;
+        requireNoUnknown(block.keySet(), SPAN_KEYS, where);
+        return Span.of(text(block, "doc"), text(block, "span"));
     }
 
     private static String text(Map<String, Object> raw, String key) {
         Object value = raw.get(key);
         return value == null ? null : String.valueOf(value);
+    }
+
+    /**
+     * 一处证据：哪份文档的哪句原话。
+     *
+     * <p>{@code doc} 不只是出处，它参与匹配：同一句话在两份文档里出现时（现行版与归档版），
+     * 靠它决定命中的是哪一份，否则归档版会排在前面把现行版顶掉。
+     *
+     * @param doc  文档相对路径
+     * @param span 答案所在的原句片段，比对时做归一化
+     */
+    public record Span(String doc, String span) {
+
+        public Span {
+            doc = requireText(doc, "gold_spans.doc");
+            span = requireText(span, "gold_spans.span");
+        }
+
+        /**
+         * 按文档与原句造一处证据。
+         *
+         * @param doc  文档相对路径
+         * @param span 原句片段
+         * @return 校验过非空的一处证据
+         */
+        public static Span of(String doc, String span) {
+            return new Span(doc, span);
+        }
     }
 
     /**

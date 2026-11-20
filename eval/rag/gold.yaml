@@ -1,15 +1,19 @@
 # 检索层评测的 gold。
 #
-# 每条 = 一个问题 + 参考答案 + 答案所在的原句（gold_span）。
+# 每条 = 一个问题 + 参考答案 + 答案所在的原句（gold_spans，一组而不是一条）。
 # 绑句子不绑段号：段号随切块参数变，改一次 chunk-size 或切块算法，整份评估集就过期，
 # 而过期的评估集比没有更糟——它给出可信的假分数。
+#
+# 证据写成列表，只有一处也写成列表：允许"单对象或列表"两种形状，下一个人就会两种都用。
+# 一处证据 = doc 里的一段原句；多跳题与跨文档题写多处，缺任何一处 recall 就只有 0.5。
 #
 # span 抄文档原句即可，不必带 Markdown 的 ** 强调：比对时会去掉标记与空白。
 # doc 用来消歧：同一句话在两份文档里出现时，靠它决定命中的是哪一份。
 #
-# 56 条的覆盖（不按数量堆，每一类对应一种真实的检索失效）：
-#   单跳事实 / 表格数据 / 多跳（要拼两处）/ 否定与例外 / 无答案（该说没有）
-#   已废止旧版 / 口语化 / 同形状数字 / 会议纪要与政策的冲突 / 跨文档
+# 覆盖（不按数量堆，每一类对应一种真实的检索失效）：
+#   单跳事实 / 表格数据 / 多跳（两处证据，同类多跳题第二跳原先没标）/ 否定与例外
+#   无答案（该说没有）/ 已废止旧版 / 口语化 / 同形状数字 / 会议纪要与政策的冲突 / 跨文档
+#   跨块（同一份长文档的两段）/ 长文档（4000+ 字符，答案埋在小节中间）
 #
 # 无答案那几条的 span 指向"边界文档"——比如问 2027 年价格，指向 2026 价格表里
 # "自 2026 年 1 月 1 日起执行"那句。标准不是"什么都不召回"，是"召回到能支撑拒答的那一段"。
@@ -19,409 +23,526 @@
 - id: rag-east-return
   question: 华东区无理由退货是几天？
   reference: 华东区自签收之日起 7 天内可无理由退货，商品需保持完好。
-  gold_span:
-    doc: after-sales.md
-    span: 华东区（上海、江苏、浙江、安徽）自签收之日起 7 天内可无理由退货
+  gold_spans:
+    - doc: after-sales.md
+      span: 华东区（上海、江苏、浙江、安徽）自签收之日起 7 天内可无理由退货
 
 - id: rag-south-window
   question: 广州的客户想退货，签收后几天内可以？
   reference: 华南区（广东、广西、福建、海南）的无理由退货窗口是 5 天，比华东短两天。
-  gold_span:
-    doc: after-sales.md
-    span: 华南区（广东、广西、福建、海南）的无理由退货窗口是 5 天
+  gold_spans:
+    - doc: after-sales.md
+      span: 华南区（广东、广西、福建、海南）的无理由退货窗口是 5 天
 
 - id: rag-unopened-return
   question: 拆开用了还能退吗？
   reference: 整机拆封使用后不影响二次销售是退货的前提，实际判定看外观与耗材余量。
-  gold_span:
-    doc: faq.md
-    span: 整机拆封使用后不影响二次销售是退货的前提
+  gold_spans:
+    - doc: faq.md
+      span: 整机拆封使用后不影响二次销售是退货的前提
 
 - id: rag-return-amount
   question: 折扣订单退货退多少钱，按标价还是实付？
   reference: 折扣订单发生退货时，按实付金额退款，不按标价退款。
-  gold_span:
-    doc: pricing.md
-    span: 折扣订单发生退货时，按**实付金额**退款，不按标价退款
+  gold_spans:
+    - doc: pricing.md
+      span: 折扣订单发生退货时，按**实付金额**退款，不按标价退款
 
 - id: rag-warranty-months
   question: 整机保修多久？便携机型呢？
   reference: 整机 12 个月、便携机型 6 个月，从签收日算。
-  gold_span:
-    doc: warranty.md
-    span: 整机 12 个月、便携机型 6 个月，从签收日算
+  gold_spans:
+    - doc: warranty.md
+      span: 整机 12 个月、便携机型 6 个月，从签收日算
 
 - id: rag-warranty-extend
   question: 保修期能延长到多久？
   reference: 整机可以购买延保，最长延到 36 个月（含原保修期）。
-  gold_span:
-    doc: warranty.md
-    span: 整机可以购买延保，最长延到 36 个月（含原保修期）
+  gold_spans:
+    - doc: warranty.md
+      span: 整机可以购买延保，最长延到 36 个月（含原保修期）
 
 - id: rag-sku-spec
   question: SKU-2024-M6 的尺寸和每卷张数是多少？
   reference: 热敏标签纸，100mm × 150mm，每卷 320 张，68 元。
-  gold_span:
-    doc: products.md
-    span: 100mm × 150mm，每卷 320 张
+  gold_spans:
+    - doc: products.md
+      span: 100mm × 150mm，每卷 320 张
 
 - id: rag-deposit-sample
   question: 借样品要交多少押金？
   reference: 按样品目录价全额收取押金，借期 30 天，到期未还可延一次。
-  gold_span:
-    doc: deposit-rules.md
-    span: 样品可以免费借，但要收押金，按目录价全额收
+  gold_spans:
+    - doc: deposit-rules.md
+      span: 样品可以免费借，但要收押金，按目录价全额收
 
 - id: rag-install-fee
   question: 上门安装一台机器收多少钱？
   reference: 每台每次 400 元；同一项目一次安装 30 台以上，每台 300 元。
-  gold_span:
-    doc: installation-charge.md
-    span: 每台每次 400 元；同一项目一次安装 30 台以上的，每台 300 元
+  gold_spans:
+    - doc: installation-charge.md
+      span: 每台每次 400 元；同一项目一次安装 30 台以上的，每台 300 元
 
 - id: rag-repair-hours
   question: 保外维修的工时费是多少？
   reference: 工时费每台 240 元，配件按目录价不打折。
-  gold_span:
-    doc: warranty.md
-    span: 工时标准为每台 240 元，配件按目录价
+  gold_spans:
+    - doc: warranty.md
+      span: 工时标准为每台 240 元，配件按目录价
 
 - id: rag-invoice-4items
   question: 开专票要提供哪些信息？
   reference: 名称、纳税人识别号、地址电话、开户行及账号，四项缺一项都开不出专票。
-  gold_span:
-    doc: settlement.md
-    span: 开票信息包括名称、纳税人识别号、地址电话、开户行及账号
+  gold_spans:
+    - doc: settlement.md
+      span: 开票信息包括名称、纳税人识别号、地址电话、开户行及账号
 
 - id: rag-overdue-interest
   question: 月结客户逾期回款怎么计息，利息滚入本金吗？
   reference: 从到期日的次日起按未回款金额每日万分之五计息，计息不滚入本金。
-  gold_span:
-    doc: settlement.md
-    span: 从到期日的次日起按未回款金额每日万分之五计息，计息不滚入本金
+  gold_spans:
+    - doc: settlement.md
+      span: 从到期日的次日起按未回款金额每日万分之五计息，计息不滚入本金
 
 - id: rag-shipping-hours
   question: 华中省会城市发货后多久能到？
   reference: 华中、华北、西南的省会城市 48 小时内到；其余地区 4 到 6 个自然日。
-  gold_span:
-    doc: shipping.md
-    span: 华中、华北、西南的省会城市 48 小时内到
+  gold_spans:
+    - doc: shipping.md
+      span: 华中、华北、西南的省会城市 48 小时内到
 
 # ---------------------------------------------------------------- 表格数据
 
 - id: rag-price-a2
   question: A2 桌面机多少钱？
   reference: SKU-2026-A2 含税单价 1680 元，打印宽度 108mm，300dpi，USB + 网口 + 蓝牙。
-  gold_span:
-    doc: price-list-2026.md
-    span: SKU-2026-A2 | 桌面标签机（高精度） | 108mm | 300dpi | USB + 网口 + 蓝牙 | 1680 元
+  gold_spans:
+    - doc: price-list-2026.md
+      span: SKU-2026-A2 | 桌面标签机（高精度） | 108mm | 300dpi | USB + 网口 + 蓝牙 | 1680 元
 
 - id: rag-price-k4
   question: 想买个打标签的，最便宜的多少钱？
   reference: 便携机 K4 680 元，打印宽度 48mm，203dpi，蓝牙连接。
-  gold_span:
-    doc: price-list-2026.md
-    span: SKU-2023-K4 | 便携标签机 | 48mm | 203dpi | 蓝牙 | 680 元
+  gold_spans:
+    - doc: price-list-2026.md
+      span: SKU-2023-K4 | 便携标签机 | 48mm | 203dpi | 蓝牙 | 680 元
 
 - id: rag-price-m7
   question: M7 标签纸每卷多少张？
   reference: SKU-2024-M7 热敏标签纸 80mm × 60mm，每卷 800 张，42 元。
-  gold_span:
-    doc: price-list-2026.md
-    span: SKU-2024-M7 | 热敏标签纸 | 80mm × 60mm | 800 张 | 42 元
+  gold_spans:
+    - doc: price-list-2026.md
+      span: SKU-2024-M7 | 热敏标签纸 | 80mm × 60mm | 800 张 | 42 元
 
 - id: rag-sla-p1
   question: P1 停机故障多久要恢复？
   reference: P1 首次响应 30 分钟，恢复目标 4 小时。
-  gold_span:
-    doc: service-sla.md
-    span: P1 停机 | 整条产线停产，或单台设备完全不能打印且无备用 | 30 分钟 | 4 小时
+  gold_spans:
+    - doc: service-sla.md
+      span: P1 停机 | 整条产线停产，或单台设备完全不能打印且无备用 | 30 分钟 | 4 小时
 
 - id: rag-sla-upgrade-owner
   question: P1 超过 8 小时没恢复，谁介入？
   reference: 服务负责人立即介入，并向客户书面说明。
-  gold_span:
-    doc: service-sla.md
-    span: 服务负责人 | P1 超 8 小时未恢复 | 立即，并向客户书面说明
+  gold_spans:
+    - doc: service-sla.md
+      span: 服务负责人 | P1 超 8 小时未恢复 | 立即，并向客户书面说明
 
 - id: rag-tier-b-response
   question: B 级客户的问题响应时间是多久？
   reference: 8 小时；A 级 2 小时，C 级次一工作日。
-  gold_span:
-    doc: customer-tiers.md
-    span: 问题响应 | 2 小时 | 8 小时 | 次一工作日
+  gold_spans:
+    - doc: customer-tiers.md
+      span: 问题响应 | 2 小时 | 8 小时 | 次一工作日
 
 - id: rag-inspection-sample
   question: 一批 40 台的订单，成品检验抽几台？
   reference: 批量 26–50 台，样本量 8 台；严重缺陷判定 0/1，轻微缺陷 1/2。
-  gold_span:
-    doc: finished-goods-inspection.md
-    span: 26–50 | 8 | 0 / 1 | 1 / 2
+  gold_spans:
+    - doc: finished-goods-inspection.md
+      span: 26–50 | 8 | 0 / 1 | 1 / 2
 
 - id: rag-deposit-train
   question: 培训用的设备要交押金吗？
   reference: 培训设备押金每台 2000 元，培训结束设备完好当场退。
-  gold_span:
-    doc: deposit-rules.md
-    span: 培训设备押金 | 每台 2000 元 | 培训结束设备完好 | 当场退
+  gold_spans:
+    - doc: deposit-rules.md
+      span: 培训设备押金 | 每台 2000 元 | 培训结束设备完好 | 当场退
 
 - id: rag-service-base
   question: 服务合同的基础包包含什么？
   reference: 远程支持 + 备件折扣（8 折），不含上门。
-  gold_span:
-    doc: service-contract.md
-    span: '**基础包**：远程支持 + 备件折扣（8 折），不含上门'
+  gold_spans:
+    - doc: service-contract.md
+      span: '**基础包**：远程支持 + 备件折扣（8 折），不含上门'
 
 # ---------------------------------------------------------------- 多跳（要拼两处）
 
 - id: rag-multihop-extend-a2
   question: A2 买一年延保要多少钱？
   reference: A2 目录价 1680 元，整机延保按目录价的 8% 收，即每年约 134 元。
-  gold_span:
-    doc: price-list-2026.md
-    span: 延保（整机） | 每台每年 | 设备目录价的 8%
+  gold_spans:
+    - doc: price-list-2026.md
+      span: 延保（整机） | 每台每年 | 设备目录价的 8%
+    - doc: price-list-2026.md
+      span: '| SKU-2026-A2 | 桌面标签机（高精度） | 108mm | 300dpi | USB + 网口 + 蓝牙 | 1680 元 |'
 
 - id: rag-multihop-project-tail
   question: 20 万的项目验收后要付多少比例？
   reference: 验收通过付 25%；另有 5% 质保金在质保期满后支付。
-  gold_span:
-    doc: project-delivery.md
-    span: M5 验收通过 | 双方签署验收单 | 验收期 7 个工作日 | 验收后付 25%
+  gold_spans:
+    - doc: project-delivery.md
+      span: M5 验收通过 | 双方签署验收单 | 验收期 7 个工作日 | 验收后付 25%
+    - doc: project-delivery.md
+      span: '| M6 质保期满 | 质保 12 个月 | 12 个月 | 付 5% 质保金 |'
 
 - id: rag-multihop-freeze
   question: 客户额度被冻结了，什么条件能解冻？再冻一次会怎样？
   reference: 逾期款全额到账即解冻，额度按原值恢复；连续两次冻结的客户，下次核定按 1 倍算。
-  gold_span:
-    doc: credit-limit.md
-    span: 解冻条件：逾期款全额到账。解冻后额度按原值恢复，不因为逾期降额
+  gold_spans:
+    - doc: credit-limit.md
+      span: 解冻条件：逾期款全额到账。解冻后额度按原值恢复，不因为逾期降额
+    - doc: credit-limit.md
+      span: '但连续两次冻结的客户，下一次核定按 1 倍算。'
 
 - id: rag-multihop-price-protect
   question: 刚买的机器降价了能补差吗，补多久？
   reference: 直营客户签收后 15 天内可补目录价差额；经销商是提货后 30 天、以返利形式补。
-  gold_span:
-    doc: price-protection.md
-    span: 直营客户是 **15 天**，以退款或抵扣券形式补回
+  gold_spans:
+    - doc: price-protection.md
+      span: 直营客户是 **15 天**，以退款或抵扣券形式补回
+    - doc: price-protection.md
+      span: '经销商的保价见 channel-policy.md：提货后 30 天内目录价下调，差额以返利补回。'
 
 - id: rag-multihop-tradein-a1
   question: 用一台外观良好的 A1 以旧换新能抵多少钱？
   reference: 按当期目录价 1280 元的 30% 折，抵 384 元。
-  gold_span:
-    doc: trade-in.md
-    span: 正常使用，外观良好 | 30%
+  gold_spans:
+    - doc: trade-in.md
+      span: 正常使用，外观良好 | 30%
+    - doc: price-list-2026.md
+      span: '| SKU-2024-A1 | 桌面标签机 | 108mm | 203dpi | USB + 网口 | 1280 元 | 12 个月 |'
 
 - id: rag-multihop-refund-invoice
   question: 已经开过票的订单退货，退款要等多久？
   reference: 先冲红（跨月通常 2–4 个工作日），冲红完成后 3 个工作日内发起退款。
-  gold_span:
-    doc: after-sales.md
-    span: 退货入库验收通过后 3 个工作日内发起退款
+  gold_spans:
+    - doc: after-sales.md
+      span: 退货入库验收通过后 3 个工作日内发起退款
+    - doc: invoice-reissue.md
+      span: '发票已开具的订单，必须先冲红再退款'
 
 # ---------------------------------------------------------------- 否定与例外
 
 - id: rag-neg-warranty-scope
   question: 哪些情况不在保修范围内？
   reference: 耗材本身、人为损坏（跌落、进液、私拆、非原厂电源）、超负荷使用。
-  gold_span:
-    doc: warranty.md
-    span: 人为损坏：跌落、进液、私自拆机、使用非原厂电源导致的烧毁
+  gold_spans:
+    - doc: warranty.md
+      span: 人为损坏：跌落、进液、私自拆机、使用非原厂电源导致的烧毁
 
 - id: rag-neg-consumable-return
   question: 标签纸买了能退吗？
   reference: 不能。耗材不设保修期，也不进入退货流程；到货外观破损走物流破损理赔。
-  gold_span:
-    doc: products.md
-    span: 耗材不设保修期，也不进入退货流程
+  gold_spans:
+    - doc: products.md
+      span: 耗材不设保修期，也不进入退货流程
 
 - id: rag-neg-deposit-cash
   question: 押金可以交现金吗？
   reference: 不可以。押金一律公对公转账，不收现金，也不收个人账户。
-  gold_span:
-    doc: deposit-rules.md
-    span: 押金一律公对公转账，不收现金，不收个人账户
+  gold_spans:
+    - doc: deposit-rules.md
+      span: 押金一律公对公转账，不收现金，不收个人账户
 
 - id: rag-neg-custom-cancel
   question: 定制的机器下单后能取消吗？
   reference: 样品确认后不可取消，已发生的打样、模具、投料费用不退；确认前可取消但要收打样费。
-  gold_span:
-    doc: order-cancel.md
-    span: 一旦样品确认即不可取消，已发生的打样、模具、投料费用不退
+  gold_spans:
+    - doc: order-cancel.md
+      span: 一旦样品确认即不可取消，已发生的打样、模具、投料费用不退
 
 - id: rag-neg-sla-rootcause
   question: 你们承诺多久能找到故障根因？
   reference: 不承诺根因定位时间。有时效的是恢复使用，不是找到根因。
-  gold_span:
-    doc: service-sla.md
-    span: 不承诺根因定位时间
+  gold_spans:
+    - doc: service-sla.md
+      span: 不承诺根因定位时间
 
 - id: rag-neg-firmware-third
   question: 刷了第三方固件还能保修吗？
   reference: 不能。整机保修直接失效，不是只影响固件部分。
-  gold_span:
-    doc: firmware-rollback.md
-    span: '刷第三方固件（含"破解版""免芯片版"）的机器，**整机保修直接失效**'
+  gold_spans:
+    - doc: firmware-rollback.md
+      span: '刷第三方固件（含"破解版""免芯片版"）的机器，**整机保修直接失效**'
 
 # ---------------------------------------------------------------- 无答案（该说没有）
 
 - id: rag-noanswer-2027-price
   question: 2027 年的价格表是多少？
   reference: 只有 2026 年价格表（自 2026 年 1 月 1 日起执行），2027 年的尚未发布，无法给出。
-  gold_span:
-    doc: price-list-2026.md
-    span: 本表自 2026 年 1 月 1 日起执行，上一版价格表同时废止
+  gold_spans:
+    - doc: price-list-2026.md
+      span: 本表自 2026 年 1 月 1 日起执行，上一版价格表同时废止
 
 - id: rag-noanswer-iso
   question: 你们有 ISO 9001 认证吗？
   reference: 资料里没有 ISO 9001 认证的说明。能确认的是成品检验按 GB/T 2828.1 抽样。
-  gold_span:
-    doc: finished-goods-inspection.md
-    span: 按 GB/T 2828.1 的正常检验一次抽样方案
+  gold_spans:
+    - doc: finished-goods-inspection.md
+      span: 按 GB/T 2828.1 的正常检验一次抽样方案
 
 - id: rag-noanswer-contact-name
   question: 你们总经理叫什么名字？
   reference: 资料里没有人员姓名。会议纪要只写职务（总经理、销售总监等），没有具名。
-  gold_span:
-    doc: meeting-notes-2026-q2.md
-    span: 参会：总经理、销售总监、渠道负责人、财务负责人、产品负责人、各区域经理
+  gold_spans:
+    - doc: meeting-notes-2026-q2.md
+      span: 参会：总经理、销售总监、渠道负责人、财务负责人、产品负责人、各区域经理
 
 - id: rag-noanswer-2027-roadmap
   question: 2027 年要出哪些新机型？
   reference: 资料里没有 2027 年的机型规划。会议纪要只提到 2027 年价格体系预研。
-  gold_span:
-    doc: meeting-notes-2026-q2.md
-    span: 议题：三季度经营情况、A2 / B3 上市首月复盘、2027 年价格体系预研
+  gold_spans:
+    - doc: meeting-notes-2026-q2.md
+      span: 议题：三季度经营情况、A2 / B3 上市首月复盘、2027 年价格体系预研
 
 # ---------------------------------------------------------------- 已废止旧版
 
 - id: rag-old-warranty
   question: 2024 年买的机器，整机保修是 18 个月吗？
   reference: 2024 版整机保修 18 个月，从签收日起算；现行版已改为 12 个月。
-  gold_span:
-    doc: archive/warranty-2024.md
-    span: 整机保修 18 个月，从签收日起算
+  gold_spans:
+    - doc: archive/warranty-2024.md
+      span: 整机保修 18 个月，从签收日起算
 
 - id: rag-old-discount
   question: 旧版的折扣审批权限是怎么规定的？
   reference: 2025 版标价基础上 9.5 折以内由销售代表直接给出，不需要审批。
-  gold_span:
-    doc: archive/pricing-2025.md
-    span: 标价基础上 9.5 折以内，销售代表直接给出，不需要审批
+  gold_spans:
+    - doc: archive/pricing-2025.md
+      span: 标价基础上 9.5 折以内，销售代表直接给出，不需要审批
 
 - id: rag-old-interest
   question: 2025 版逾期计息是万分之八吗？
   reference: 2025 版逾期计息每日万分之八，计息滚入本金；现行版改为万分之五且不滚入。
-  gold_span:
-    doc: archive/settlement-2025.md
-    span: 逾期计息每日万分之八（现行万分之五），计息滚入本金（现行不滚入）
+  gold_spans:
+    - doc: archive/settlement-2025.md
+      span: 逾期计息每日万分之八（现行万分之五），计息滚入本金（现行不滚入）
 
 - id: rag-old-channel-40
   question: 经销商提货后多久内降价可以补差？
   reference: 现行是提货后 30 天；旧版是 40 天，已废止（archive/channel-2025.md）。
-  gold_span:
-    doc: channel-policy.md
-    span: 经销商提货后 30 天内，若我方对同型号的目录价下调，差额以返利形式补回
+  gold_spans:
+    - doc: channel-policy.md
+      span: 经销商提货后 30 天内，若我方对同型号的目录价下调，差额以返利形式补回
 
 # ---------------------------------------------------------------- 口语化
 
 - id: rag-colloquial-late
   question: 机器到货晚了能赔钱吗？
   reference: 能。每延迟 1 个工作日按该笔订单金额 0.3% 支付违约金，累计不超过 5%。
-  gold_span:
-    doc: framework-agreement-template.md
-    span: 每延迟 1 个工作日按该笔订单金额的 0.3% 支付违约金
+  gold_spans:
+    - doc: framework-agreement-template.md
+      span: 每延迟 1 个工作日按该笔订单金额的 0.3% 支付违约金
 
 - id: rag-colloquial-stopped
   question: 客户一直不付钱，能停货吗？
   reference: 能。逾期超过 60 个自然日可暂停供货并启动催收，暂停不构成违约。
-  gold_span:
-    doc: settlement.md
-    span: 连续两个月逾期或单笔逾期超过 60 个自然日的，暂停供货并启动合同约定的催收流程
+  gold_spans:
+    - doc: settlement.md
+      span: 连续两个月逾期或单笔逾期超过 60 个自然日的，暂停供货并启动合同约定的催收流程
 
 - id: rag-colloquial-white-line
   question: 打出来一条白线是怎么回事？
   reference: 通常是打印头断针，按 SLA 属 P2 降级；保修期内免费维修。
-  gold_span:
-    doc: service-sla.md
-    span: P2 降级 | 能打印但质量不达标（断针、偏移、模糊），或吞吐降到一半以下
+  gold_spans:
+    - doc: service-sla.md
+      span: P2 降级 | 能打印但质量不达标（断针、偏移、模糊），或吞吐降到一半以下
 
 - id: rag-colloquial-p1-dispatch
   question: P1 故障必须马上派人到现场吗？
   reference: 不是。先远程，远程 30 分钟内无法定位的才派人。
-  gold_span:
-    doc: service-sla.md
-    span: P1 到场不是默认动作。先远程
+  gold_spans:
+    - doc: service-sla.md
+      span: P1 到场不是默认动作。先远程
 
 # ---------------------------------------------------------------- 同形状数字
 
 - id: rag-confuse-15days
   question: 华东的货签收 10 天了，还能退吗？
   reference: 超过 7 天但不到 15 天的，需经区域售后主管审批，且仅限质量问题。
-  gold_span:
-    doc: after-sales.md
-    span: 超过 7 天但在 15 天内的，需经区域售后主管审批，且仅限质量问题
+  gold_spans:
+    - doc: after-sales.md
+      span: 超过 7 天但在 15 天内的，需经区域售后主管审批，且仅限质量问题
 
 - id: rag-confuse-24months
   question: 机器停产以后，备件和耗材还能供多久？
   reference: 停产满 24 个月后连耗材也停供，备件供应期同样是 24 个月。
-  gold_span:
-    doc: product-discontinuation.md
-    span: 停产满 **24 个月**后连耗材也停供
+  gold_spans:
+    - doc: product-discontinuation.md
+      span: 停产满 **24 个月**后连耗材也停供
 
 - id: rag-confuse-6months
   question: 翻新机保修多久？
   reference: 翻新机单独保修 6 个月，从翻新出库日算，不可转移、不可延保。
-  gold_span:
-    doc: warranty-transfer.md
-    span: 翻新机单独保修 6 个月，从翻新出库日算，不可转移、不可延保
+  gold_spans:
+    - doc: warranty-transfer.md
+      span: 翻新机单独保修 6 个月，从翻新出库日算，不可转移、不可延保
 
 - id: rag-confuse-50percent
   question: 哪些押金是按 50% 收的？
   reference: 备机押金与备件借用押金都是目录价 50%；样品是 100%，培训设备是每台 2000 元。
-  gold_span:
-    doc: deposit-rules.md
-    span: 备机押金 | 备机目录价的 50%
+  gold_spans:
+    - doc: deposit-rules.md
+      span: 备机押金 | 备机目录价的 50%
 
 # ---------------------------------------------------------------- 会议纪要与政策的冲突
 
 - id: rag-meeting-return-10days
   question: 华东的退货窗口是不是要改成 10 天？
   reference: 不是。会上讨论过，结论是维持 7 天不变，理由是这套差异是渠道调整时定下的。
-  gold_span:
-    doc: meeting-notes-2026-q2.md
-    span: 华东区的退货政策**维持 7 天不变**
+  gold_spans:
+    - doc: meeting-notes-2026-q2.md
+      span: 华东区的退货政策**维持 7 天不变**
 
 - id: rag-meeting-a1-stop
   question: A1 要停产了吗？
   reference: 没有。会上否决了用 A2 替代 A1 的提议，A1 继续销售，停产时间未定。
-  gold_span:
-    doc: meeting-notes-2026-q2.md
-    span: '**A1 与 B2 不停产**。产品部提出过"用 A2 替代 A1"，会议否决'
+  gold_spans:
+    - doc: meeting-notes-2026-q2.md
+      span: '**A1 与 B2 不停产**。产品部提出过"用 A2 替代 A1"，会议否决'
 
 - id: rag-meeting-q3-price
   question: 三季度会涨价吗？
   reference: 不会。原材料涨 6% 没到 10% 的调价线；配件价格单独评估，8 月底给方案。
-  gold_span:
-    doc: meeting-notes-2026-q2.md
-    span: '**三季度不做全线调价**。原材料涨了 6%，没到 10% 的调价触发线'
+  gold_spans:
+    - doc: meeting-notes-2026-q2.md
+      span: '**三季度不做全线调价**。原材料涨了 6%，没到 10% 的调价触发线'
 
 # ---------------------------------------------------------------- 跨文档
 
 - id: rag-crossdoc-refund-steps
   question: 退货退款要走哪些步骤？
   reference: 退货入库验收 → 已开票的先冲红 → 冲红完成后 3 个工作日内发起退款 → 原路退回。
-  gold_span:
-    doc: after-sales.md
-    span: 发票已开具的订单需先完成发票冲红，否则退款会挂起
+  gold_spans:
+    - doc: after-sales.md
+      span: 发票已开具的订单需先完成发票冲红，否则退款会挂起
 
 - id: rag-crossdoc-install-free
   question: 什么情况下安装不收费？
   reference: 质保内换机重新装机、项目型订单已含安装费、年度服务合同的标准包与全包客户。
-  gold_span:
-    doc: installation-charge.md
-    span: 质保期内的换机、修机后重新装机
+  gold_spans:
+    - doc: installation-charge.md
+      span: 质保期内的换机、修机后重新装机
 
 - id: rag-crossdoc-tier-limit
   question: A 级客户的账期是多少？
   reference: 月结 60 个自然日；额度按上一年度月均采购额的 2 倍核定。B 级 30 天，C 级款到发货。
-  gold_span:
-    doc: customer-tiers.md
-    span: 月结 60 个自然日
+  gold_spans:
+    - doc: customer-tiers.md
+      span: 月结 60 个自然日
+    - doc: credit-limit.md
+      span: 按上一年度月均采购额的 2 倍核定
+
+# ---------------------------------------------------------------- 长文档跨块
+#
+# 下面这一组考的是"答案分散在同一份长文档的两处"：只召回首处时 recall 是 0.5，
+# 而单段题永远显示 1.0。语料里这几份 4000 字上下、切 4–7 段，答案埋在小节中间。
+
+- id: rag-workflow-replace
+  question: 同一台机器修了几次还没好，能要求换机吗？换机之后保修怎么算？
+  reference: 同一故障维修 3 次未解决、或累计停机超 15 个工作日可申请换机；换机后保修期不重新计算，
+    仍按原设备出厂日期算。
+  gold_spans:
+    - doc: after-sales-workflow.md
+      span: 同一故障维修 3 次仍未解决
+    - doc: after-sales-workflow.md
+      span: 换机后原设备的保修期不重新计算
+
+- id: rag-warehouse-return48
+  question: 退回来的货多久要分完类？分成哪几类？
+  reference: 入库后 48 小时内完成分类，分"可再销售 / 需维修 / 报废"三类，且退货区必须与正常库物理隔开。
+  gold_spans:
+    - doc: warehouse-operations.md
+      span: 入库后 48 小时内完成分类
+    - doc: warehouse-operations.md
+      span: 退货区与正常库必须物理隔开
+
+- id: rag-discount-rebate
+  question: 一台 A2 给客户让了 10%，年底返利按哪个金额算？
+  reference: 按折扣后实收算，不按目录价。A2 目录价 1680，让 10% 后实收 1512，返利基数是 1512。
+  gold_spans:
+    - doc: discount-approval.md
+      span: 返利按折扣后实收计提，不按目录价
+    - doc: price-list-2026.md
+      span: '| SKU-2026-A2 | 桌面标签机（高精度） | 108mm | 300dpi | USB + 网口 + 蓝牙 | 1680 元 |'
+
+- id: rag-aftersales-crossregion
+  question: 客户注册在上海，货发到广州，退货窗口是几天？
+  reference: 按收货地址算，不按注册地。广州属华南，无理由退货 5 天。
+  gold_spans:
+    - doc: after-sales.md
+      span: 按收货地址所属区域算，不按客户注册地
+    - doc: after-sales.md
+      span: 华南区（广东、广西、福建、海南）的无理由退货窗口是 5 天
+
+- id: rag-warranty-batch
+  question: 多少台出现同一个故障算批量缺陷？算上之后怎么处理？
+  reference: 同一型号同一批次 90 天内 3 台以上相同故障即为批量缺陷，要立即冻结该批次库存发货，
+    并主动上门检测。
+  gold_spans:
+    - doc: warranty.md
+      span: 同一型号、同一批次在 90 天内出现 3 台以上相同故障
+    - doc: warranty.md
+      span: 立即冻结该批次的库存发货
+
+- id: rag-tier-group
+  question: 集团下两家子公司各自回款都不够 300 万，能按 A 级算吗？
+  reference: 同一集团下的子公司默认合并计算回款额定级，能证明关联关系（同一控股方超 50%）即可合并。
+  gold_spans:
+    - doc: customer-tiers.md
+      span: 默认合并计算回款额定级
+    - doc: customer-tiers.md
+      span: A 级 300 万元以上，B 级 60 万元以上
+
+- id: rag-workflow-selfrepair
+  question: 客户想自己换打印头，能远程指导他拆吗？
+  reference: 不能。拆机壳、换打印头、动电源模块、刷固件都不允许客户自修。
+  gold_spans:
+    - doc: after-sales-workflow.md
+      span: 拆机壳、换打印头、动电源模块、刷固件
+
+- id: rag-workflow-firstfix
+  question: 首次解决率现在是多少？
+  reference: 68%，定义为一次上门或一次远程就关闭的工单占比。
+  gold_spans:
+    - doc: after-sales-workflow.md
+      span: '| 首次解决率 | 一次上门或一次远程就关闭的工单占比 | 68% |'
+
+- id: rag-warehouse-pending
+  question: 到货之后最晚多久必须检验完上架？
+  reference: 待检区停留不超过 1 个工作日，检验结论必须当天出。
+  gold_spans:
+    - doc: warehouse-operations.md
+      span: 待检区停留不超过 1 个工作日
+
+- id: rag-discount-range
+  question: 给客户让 12% 要谁批，多久能批下来？
+  reference: 10%–20% 由区域销售经理批，时限 1 个工作日。
+  gold_spans:
+    - doc: discount-approval.md
+      span: 10–20% | 9 折到 8 折 | 区域销售经理 | 1 个工作日
+
+- id: rag-deposit-nodeduct
+  question: 客户还欠着货款，能不能直接从押金里扣？
+  reference: 不能。押金不是担保金，不能拿来抵逾期货款，否则等于用押金变相延长账期。
+  gold_spans:
+    - doc: deposit-rules.md
+      span: 押金不是担保金，不能拿来抵逾期货款
+
+- id: rag-credit-prepay
+  question: 客户把订单改成预付，还占信用额度吗？
+  reference: 不占。预付订单的金额直接从额度占用里剔除，因为钱已经收了，不存在信用风险。
+  gold_spans:
+    - doc: credit-limit.md
+      span: 预付订单不占额度

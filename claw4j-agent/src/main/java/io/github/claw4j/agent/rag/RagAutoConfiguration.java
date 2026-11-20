@@ -119,6 +119,9 @@ public class RagAutoConfiguration {
      * bean 会去连库建表，如果它先于索引器被创建，"没配目录"就永远轮不到被说出来——报出来的是
      * "连不上库"。判据属于配置，就该配置一绑好就判。
      *
+     * <p>不改成"没目录就当关着"：那等于让一次配置失误静默变成"知识库不存在"，而症状是
+     * 每次检索都答"没有相关资料"，与"文档确实没写"分不开。
+     *
      * @param properties 知识库配置
      * @throws IllegalStateException 没有配 {@code claw4j.rag.directory} 时
      */

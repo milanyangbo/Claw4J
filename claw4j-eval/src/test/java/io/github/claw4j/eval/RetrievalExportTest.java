@@ -47,7 +47,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @SpringBootTest(classes = RetrievalExportTest.ExportApplication.class,
-        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        // 本机在 IDE 里跑时没有那几个环境变量，把仓库根的 .env 当属性文件导入。
+        // 路径写两个：surefire 与 IDEA 的工作目录都是模块目录，从仓库根手跑则是根目录，
+        // 与 application-local.yml 同一个写法（都 optional，少一个也不报错）。
+        //
+        // 写在注解里而不是 DynamicPropertySource：这里的值赶在 config data 处理之前进
+        // Environment（内联属性以最高优先级先落地），所以 spring.config.import 还算数；
+        // 而 DynamicPropertySource 的值是建上下文时才加的，那时 import 已经处理完了。
+        //
+        // 系统环境变量优先级高于配置文件，所以 run.sh 里 source 过的值仍然盖住 .env。
+        properties = "spring.config.import=optional:file:./.env[.properties],"
+                + "optional:file:../.env[.properties]")
 @Tag("eval")
 class RetrievalExportTest {
 
@@ -169,8 +180,8 @@ class RetrievalExportTest {
         List<RetrievalGold> golds = golds();
         List<RetrievalGold.Chunk> chunks = indexedChunks();
         assertThat(chunks).as("索引是空的：知识库没建起来，导出的每一行都会是空结果").isNotEmpty();
-        // 把规模打出来：语料改了却没进库时，这是第一眼能看见的东西——56 条题照样能跑完，
-        // 分数也会像个正常分数，只有"108 份却只切出 30 段"这种数字对不上。
+        // 把规模打出来：语料改了却没进库时，这是第一眼能看见的东西——68 条题照样能跑完，
+        // 分数也会像个正常分数，只有"111 份却只切出 30 段"这种数字对不上。
         System.out.println("索引：" + chunks.size() + " 段 / "
                 + chunks.stream().map(RetrievalGold.Chunk::doc).distinct().count() + " 份文档");
 
