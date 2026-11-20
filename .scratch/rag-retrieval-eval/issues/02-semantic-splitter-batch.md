@@ -64,3 +64,44 @@ for (int from = 0; from < groups.size(); from += EMBEDDING_BATCH) {
 增量索引只处理内容哈希变过的文档，日常无感。这笔时间换的是"语义切块真的在切"。
 
 **无需 ADR：** 不改对外契约、不加配置键、不改断点口径，只修一处内部调用的分批方式。
+
+## 六、上限集中到一层（2026-11-20 追加，用户裁决按 B 改）
+
+第一版把分批写在 `SemanticTextSplitter` 里，当天跑评测就撞上第二个调用点：
+
+```
+PgVectorStore.doAdd(PgVectorStore.java:261) → EmbeddingModel.embed(List) 一次交 11 块
+  ← KnowledgeIndexer.indexOne(:218) 的 vectorStore.add(chunks)
+  ← 一篇文档被语义断点切成了 11 块（修复生效的直接证据）
+→ 400 batch size is invalid → 那份文档索引失败 → ApplicationRunner 抛错，上下文起不来
+```
+
+结论：单请求条数上限是**模型的性质**，不是某个调用方的性质。两处各写一遍，第三处还会漏。
+
+**第二版把闸放在 `embed(List)` 上，同一次评测又撞了第三次**，这条值得记：
+
+```
+PgVectorStore.doAdd → EmbeddingModel.embed(documents, options, batchingStrategy)   ← 三参默认实现
+  → 内部直接 call(new EmbeddingRequest(该批全部文本))                              ← 绕过 embed(List)
+→ 仍然一条请求 11 条 input → 400
+```
+
+`EmbeddingModel` 里三条批量入口最后都汇到 `call(EmbeddingRequest)`：`embed(List)`、
+`embedForResponse` 是三参那两条的直接调用者，三参 `embed` 则是自己拼 request 再 `call`。
+所以闸落在 `call`。
+
+最终形状（`BatchingEmbeddingModel`）：
+
+- `call(EmbeddingRequest)` 里按 10 切片、逐批 `delegate.call`，结果顺序拼接；
+- 跨批合并口径：`index` 重新编成全局序号（沿用每批的 0 起序号，下游按 index 放置时会错位）、
+  输入 token 相加（输出恒 0，向量请求没有输出 token）、`nativeUsage` 丢弃（单条请求的原生结构，
+  拼起来只会得到一份假的）；每批自己的 observation 仍由真模型上报，不因合并而丢；
+- `dimensions()` / `embed(Document)` / `getEmbeddingContent()` 原样透传；
+- 切块器改回单次 `embed(groups)`，自己那份循环和常量撤掉。
+
+消费方不用改，它们都只注入 `EmbeddingModel` 一个类型：向量库（`RagAutoConfiguration:147`）、
+切块器（`KnowledgeIndexer:112/117`）、语义缓存（`CacheAutoConfiguration:86`）。
+
+测试跟着搬：`BatchingEmbeddingModelTest` 八条——10/10/5 分批、跨批保序、合并后 index 是全局序号、
+用量按批相加、正好 10 条只发一次、**三参 `embed` 那条路同样受闸**（就是撞过两次的那个点）、
+`dimensions` 与单条透传、null delegate 拒绝；`SemanticTextSplitterTest` 只留降级那一条。

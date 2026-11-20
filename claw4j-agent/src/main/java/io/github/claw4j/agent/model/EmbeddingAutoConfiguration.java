@@ -51,10 +51,14 @@ public class EmbeddingAutoConfiguration {
      * <p>重试关掉：缓存那边算不出向量就退化成"没命中"，知识库那边索引失败会在启动时明确报错
      * ——两处都不需要在这里重试三轮，那只是拖慢一次提问。
      *
+     * <p>外面套一层 {@link BatchingEmbeddingModel}：单请求条数上限（通义 10 条）是模型的性质，
+     * 而每个调用方都按"一次要一批"来写（向量库入库、切块器算句子组都是这样）。上限放在这里，
+     * 调用方就不必各写一遍——漏一处就是 400，轻则整篇降级切块，重则索引启动失败。
+     *
      * @param model       模型配置，取通义的凭据、端点与超时
      * @param embedding   向量模型名与维度
      * @param environment 用来解析密钥占位符
-     * @return 走 OpenAI 兼容端点的向量模型
+     * @return 走 OpenAI 兼容端点、且每请求不超过上限的向量模型
      */
     @Bean
     @ConditionalOnMissingBean(EmbeddingModel.class)
@@ -80,13 +84,13 @@ public class EmbeddingAutoConfiguration {
                 qwen.getBaseUrl(), embedding.model(), embedding.dimensions(),
                 qwen.apiKey().text());
 
-        return OpenAiEmbeddingModel.builder()
+        return new BatchingEmbeddingModel(OpenAiEmbeddingModel.builder()
                 .openAiClient(client)
                 .metadataMode(MetadataMode.EMBED)
                 .options(OpenAiEmbeddingOptions.builder()
                         .model(embedding.model())
                         .dimensions(embedding.dimensions())
                         .build())
-                .build();
+                .build());
     }
 }
