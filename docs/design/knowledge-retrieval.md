@@ -219,7 +219,7 @@ select similarity('退货', '无理由退货');
 
 总数上限 12：SQL 里每个词项是一个 `or` 加一个 `case`，一条长提问能切出几十个 bigram。
 
-**这三个正则、三个上限、两个权重全部走配置**（`claw4j.rag.keyword.*`），代码里没有词表。
+**这三个正则、三个上限、两个权重全部走配置**（`claw4j.rag.keyword.substring.*`），代码里没有词表。
 理由是它们每一个都替部署方做了领域假设：`≥3 字符`放过 `a`、`1` 这类噪声，但正好漏掉 `A1`/`A2`
 这种两个字符的型号；
 `12 个字`对中文是一句话，对英文只有一两个词；`3 : 1` 是"字面精确 vs 覆盖度"的比值，换语言要重标。
@@ -233,6 +233,10 @@ select similarity('退货', '无理由退货');
 | --- | --- | --- | --- |
 | `substring`（默认） | `KeywordDocumentRetriever`：`ilike` + 自拆词项 | 任何 PG | 生效 |
 | `bm25` | `Bm25KeywordDocumentRetriever`：ParadeDB `pg_search` + `pdb.jieba` + IDF | 必须换 `paradedb/paradedb` 镜像 | **不生效** |
+
+配置结构上也照这个分：八项挂在 `keyword.substring` 下，与 `engine` 分开。切到 `bm25` 之后那些键
+仍能写进配置文件，但谁都不读——"这些值属于哪个引擎"由结构说出来，不靠注释提醒。将来 `bm25`
+若有自己的旋钮（分词词典、`k1`/`b`），挂在 `keyword.bm25` 下，两边对称。
 
 为什么要第二个：`substring` 那一路没有分词，"什么算词"只能靠正则猜。语料里多一种编号写法就要多
 一条规则（`A1`/`A2` 就是这么来的），而规则没有尽头——ADR-0033 决定这一路冻结，新能力走 BM25。
@@ -479,16 +483,17 @@ claw4j:
     hybrid:
       enabled: true                   # 关掉 = 只有向量
       candidates-per-route: 25        # 每路召回；融合按 id 去重，池子约等于这个数
-    keyword:                          # 全文那一路：引擎二选一 + 词项规则（规则只对 substring 生效）
+    keyword:                          # 全文那一路：先选引擎，再给 substring 专属的规则
       engine: substring               # substring（默认，任何 PG）/ bm25（ParadeDB，要求换镜像）
-      anchor-pattern: '[A-Za-z0-9][A-Za-z0-9._-]{2,}'        # 长锚点：≥3 字符
-      short-model-pattern: '(?<![A-Za-z0-9])[A-Za-z]\d{1,2}(?![A-Za-z0-9])'   # A1 / A2
-      cjk-pattern: '[\u4e00-\u9fff\u3040-\u30ff]+'           # bigram 的切分范围
-      max-anchors: 4                  # 长短锚点共用
-      max-terms: 12                   # 每个词项在 SQL 里占两个占位符
-      whole-max-chars: 12             # 汉字口径；英文提问要调大
-      whole-weight: 3                 # 整句与锚点共用
-      bigram-weight: 1
+      substring:                      # 只对 substring 生效；engine=bm25 时这些一个都不读
+        anchor-pattern: '[A-Za-z0-9][A-Za-z0-9._-]{2,}'      # 长锚点：≥3 字符
+        short-model-pattern: '(?<![A-Za-z0-9])[A-Za-z]\d{1,2}(?![A-Za-z0-9])'   # A1 / A2
+        cjk-pattern: '[\u4e00-\u9fff\u3040-\u30ff]+'         # bigram 的切分范围
+        max-anchors: 4                # 长短锚点共用
+        max-terms: 12                 # 每个词项在 SQL 里占两个占位符
+        whole-max-chars: 12           # 汉字口径；英文提问要调大
+        whole-weight: 3               # 整句与锚点共用
+        bigram-weight: 1
     rerank:
       enabled: true
       candidates: 20                  # 送进重排的条数；必须 > top-k

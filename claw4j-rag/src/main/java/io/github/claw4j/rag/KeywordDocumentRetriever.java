@@ -76,7 +76,7 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
     record Rules(Pattern anchor, Pattern shortModel, Pattern cjkRun, int maxAnchors, int maxTerms,
                  int wholeMaxChars, int wholeWeight, int bigramWeight) {
 
-        static Rules of(RagProperties.Keyword config) {
+        static Rules of(RagProperties.Keyword.Substring config) {
             return new Rules(
                     compile(config.anchorPattern(), "anchor-pattern"),
                     compile(config.shortModelPattern(), "short-model-pattern"),
@@ -86,7 +86,7 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
         }
 
         static Rules defaults() {
-            return of(RagProperties.Keyword.defaults());
+            return of(RagProperties.Keyword.Substring.defaults());
         }
 
         private static Pattern compile(String regex, String name) {
@@ -111,14 +111,14 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
      * @param jdbc       JDBC 句柄
      * @param sourceKind 只查这个来源的块
      * @param candidates 候选上限，交给 SQL 的 {@code limit}
-     * @param keyword    词项规则（正则、上限、权重），见 {@link RagProperties.Keyword}
+     * @param substring  词项规则（正则、上限、权重），见 {@link RagProperties.Keyword.Substring}
      */
     public KeywordDocumentRetriever(JdbcTemplate jdbc, String sourceKind, int candidates,
-                                    RagProperties.Keyword keyword) {
+                                    RagProperties.Keyword.Substring substring) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.sourceKind = Objects.requireNonNull(sourceKind, "sourceKind");
         this.candidates = candidates;
-        this.rules = Rules.of(keyword == null ? RagProperties.Keyword.defaults() : keyword);
+        this.rules = Rules.of(substring == null ? RagProperties.Keyword.Substring.defaults() : substring);
     }
 
     /**

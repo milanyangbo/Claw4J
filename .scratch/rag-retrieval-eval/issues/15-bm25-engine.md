@@ -97,12 +97,34 @@ limit ?
 | 新检索器 | `Bm25KeywordDocumentRetriever`：一条 `pdb.match($1)` 的 SQL；空/纯标点不打库 |
 | 建索引 | 同类的 `static ensureIndex(JdbcTemplate)`：先查 `pg_available_extensions`，再建扩展与索引；**失败即启动失败**，消息给两条出路 |
 | 装配 | `RagAutoConfiguration#keywordRetriever`（唯一一处判断引擎）+ `knowledgeIndexRunner` 按引擎建对应索引 |
-| 配置 | `claw4j.rag.keyword.engine`（`CLAW4J_RAG_KEYWORD_ENGINE`，默认 `substring`） |
-| 单测 | `KeywordEngineTest` 5、`Bm25KeywordDocumentRetrieverTest` 5、`RagPropertiesBindingTest` +2 |
+| 配置 | `claw4j.rag.keyword.engine`（`CLAW4J_RAG_KEYWORD_ENGINE`，默认 `substring`）；八项规则移到 `claw4j.rag.keyword.substring.*`，见下 |
+| 单测 | `KeywordEngineTest` 5、`Bm25KeywordDocumentRetrieverTest` 5、`RagPropertiesBindingTest` +3 |
 | 集成测试 | `claw4j-app/Bm25SearchTest` 3 条，默认跳过 |
 | 文档 | `docs/design/knowledge-retrieval.md` 新增「两个引擎」小节 + 配置节 |
 
-### 3. 两个实现细节，写下来免得被"顺手改掉"
+### 3. 八项规则挪到 `keyword.substring` 下（**配置键的破坏性变更**）
+
+原本八项与 `engine` 平铺在 `keyword` 下。读配置的人很容易以为"切到 bm25 之后调 `max-anchors`
+还有用"——而它一个字都不生效。现在：
+
+```yaml
+keyword:
+  engine: substring        # 选引擎
+  substring:               # 只属于 substring 引擎
+    anchor-pattern: ...
+```
+
+`RagProperties.Keyword` 因此变成 `(engine, Substring substring)` 两个字段，八项的常量与默认值
+都在 `Keyword.Substring` 里；`KeywordDocumentRetriever` 的构造参数也从 `Keyword` 收窄成 `Substring`
+——它只用得到那一节，不该拿得到 `engine`。将来 `bm25` 的旋钮挂在 `keyword.bm25`，结构对称。
+
+**代价要说清**：旧键（`claw4j.rag.keyword.max-anchors` 这类）现在被静默忽略——Spring Boot 对未知
+属性默认不报错。`RagPropertiesBindingTest#legacyFlatKeysAreIgnored` 把这个行为钉住了，不是因为它
+对，而是让它成为"已知"而不是"隐患"。要改成启动失败得给 `RagProperties` 加
+`ignoreUnknownFields = false`，那会影响所有 `claw4j.rag` 键（写错任意一个都启动失败），属于另一个
+决定，本票没做。
+
+### 4. 两个实现细节，写下来免得被"顺手改掉"
 
 - **DDL 放在检索器类里**（`ensureIndex`），不是放在 `RagAutoConfiguration`：装配与集成测试共用同一份
   DDL。放两处一定会漂：索引名或分词器改一处，另一处照旧，症状是"测试过了、线上没建对"。
@@ -110,7 +132,7 @@ limit ?
   两者都要启动失败，但修法完全不同（换镜像 vs 版本差异）。合成一句"建索引失败"，运维只有一条
   Postgres 英文报错可看。
 
-### 4. 未做（保持原边界）
+### 5. 未做（保持原边界）
 
 - 没换默认值、没跑 L1 对照、没跑 L2、没重钉基线
 - `substring` 一行规则没动

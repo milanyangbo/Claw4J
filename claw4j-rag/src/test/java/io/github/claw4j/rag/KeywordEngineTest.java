@@ -17,9 +17,14 @@ class KeywordEngineTest {
     @Test
     @DisplayName("不配就是 substring：现有部署升级后行为不变")
     void defaultsToSubstring() {
-        assertThat(RagProperties.Keyword.defaults().engine())
-                .isEqualTo(RagProperties.Keyword.ENGINE_SUBSTRING);
-        assertThat(RagProperties.Keyword.defaults().isBm25()).isFalse();
+        RagProperties.Keyword defaults = RagProperties.Keyword.defaults();
+
+        assertThat(defaults.engine()).isEqualTo(RagProperties.Keyword.ENGINE_SUBSTRING);
+        assertThat(defaults.isBm25()).isFalse();
+        assertThat(defaults.substring())
+                .as("substring 那一节不配也要有默认值：不能是 null，否则切词项时 NPE")
+                .isNotNull();
+        assertThat(defaults.substring().maxAnchors()).isEqualTo(4);
     }
 
     @Test
@@ -55,8 +60,8 @@ class KeywordEngineTest {
         assertThat(withEngine(null).engine()).isEqualTo(RagProperties.Keyword.ENGINE_SUBSTRING);
     }
 
-    /** 只改引擎，其余全走默认——这样断言失败时不会混进"正则被我改了"。 */
+    /** 只改引擎，substring 那一节传 null（走默认）——这样断言失败时不会混进"正则被我改了"。 */
     private static RagProperties.Keyword withEngine(String engine) {
-        return new RagProperties.Keyword(engine, null, null, null, null, null, null, null, null);
+        return new RagProperties.Keyword(engine, null);
     }
 }

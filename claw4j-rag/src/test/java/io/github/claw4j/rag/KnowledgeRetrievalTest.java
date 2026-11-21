@@ -317,7 +317,7 @@ class KnowledgeRetrievalTest {
                 any(), any(), any(), any(), any(), any())).thenReturn(List.of());
 
         new KeywordDocumentRetriever(jdbc, "docs", 7,
-                RagProperties.defaults().keyword()).retrieve(query("5% 折扣"));
+                RagProperties.defaults().keyword().substring()).retrieve(query("5% 折扣"));
 
         // 词项是「整句 + 中文 bigram」两个，所以 select 里两组 case、where 里两个 or。
         // 顺序 = select 里的 pattern（两处都必须是带 % 的模式串）→ source → where 的 pattern → limit。

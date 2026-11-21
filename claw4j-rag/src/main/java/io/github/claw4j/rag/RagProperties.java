@@ -108,85 +108,37 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
     }
 
     /**
-     * 全文那一路的词项规则：一条查询怎么被拆成"拿去 {@code ilike} 的子串"。
+     * 全文那一路：选哪个引擎，以及<b>只属于 {@code substring} 引擎</b>的那套词项规则。
      *
-     * <p>这些值**全都带领域假设**，所以走配置而不是写死在代码里：
+     * <p>分两层不是为了好看。{@code engine=bm25} 时 {@code substring} 底下那八项一个字都不生效——
+     * 分词、IDF、长度归一都在引擎里，那些规则存在的理由（猜"什么算词"）消失了。以前它们与
+     * {@code engine} 平铺，读配置的人很容易以为"切到 bm25 之后调 {@code max-anchors} 还有用"；
+     * 挂到 {@code substring} 下面之后，"这些值属于哪个引擎"由配置结构说出来，不靠注释提醒。
      *
-     * <ul>
-     *   <li>锚点要求 ≥3 字符——中文合同里的型号常常是两位（{@code A1}、{@code A2}），
-     *       英文手册里的版本号又常常带点（{@code v1.2}），同一个长度门槛不可能两边都对；
-     *   <li>整句只在 12 个字符内才当词项——12 个汉字是一句话，12 个英文字符只有一两个词；
-     *   <li>权重 3 对 1 是"字面精确 vs 覆盖度"的比值，换语言与语料就该重标。
-     * </ul>
+     * <p>将来 bm25 若有自己的旋钮（分词词典、{@code k1}/{@code b}），同样挂在 {@code keyword.bm25}
+     * 下，两边对称。
      *
-     * <p>默认值就是配置化之前写死在 {@link KeywordDocumentRetriever} 里的那套，行为不变。
-     *
-     * @param anchorPattern     长锚点：以字母或数字开头、≥3 字符的连续 ASCII 片段
-     * @param shortModelPattern 短型号：一个字母 + 1~2 位数字，两侧不接字母数字
-     * @param cjkPattern        bigram 的切分范围：只在这些串内部两两切，不跨标点
-     * @param maxAnchors        一条查询最多几个锚点（长短锚点共用这个名额）
-     * @param maxTerms          一条查询最多几个词项；SQL 里每个词项是一个 {@code or} 加一个 {@code case}
-     * @param wholeMaxChars     整句不超过多少字符才当词项
-     * @param wholeWeight       整句与锚点的权重（锚点复用这个值）
-     * @param bigramWeight      中文 bigram 的权重
+     * @param engine    用哪个引擎：{@code substring}（默认）或 {@code bm25}
+     * @param substring 只对 {@code substring} 生效的词项规则，见 {@link Substring}
      */
-    public record Keyword(String engine, String anchorPattern, String shortModelPattern, String cjkPattern,
-                          Integer maxAnchors, Integer maxTerms, Integer wholeMaxChars,
-                          Integer wholeWeight, Integer bigramWeight) {
+    public record Keyword(String engine, Substring substring) {
 
         /**
          * 子串匹配引擎：{@code content ilike '%词项%'}，自己拆词项。
          *
          * <p>任何 PG 都能跑，不要求额外扩展。代价写在 {@link KeywordDocumentRetriever} 的类注释里：
-         * 它没有分词，所以"什么算词"只能靠下面这些形状规则去猜。
+         * 它没有分词，所以"什么算词"只能靠 {@link Substring} 里那几条形状规则去猜。
          */
         public static final String ENGINE_SUBSTRING = "substring";
 
         /**
          * BM25 引擎：ParadeDB {@code pg_search} + jieba 分词 + IDF。
          *
-         * <p>要求数据库换成 ParadeDB 镜像。换过去之后<b>下面八项全部不生效</b>——分词、
-         * IDF、长度归一都在引擎里，那些规则存在的理由（猜词）消失了。这不是"两种实现细节不同"，
-         * 是两种能力：{@code A1}/{@code A2} 这类两字符型号在前者需要专门加一条形状规则，
-         * 在后者是默认行为。
+         * <p>要求数据库换成 ParadeDB 镜像。换过去之后 {@link Substring} 那八项全部不生效。
+         * 这不是"两种实现细节不同"，是两种能力：{@code A1}/{@code A2} 这类两字符型号在
+         * {@code substring} 里需要专门加一条形状规则，在 BM25 里是默认行为。
          */
         public static final String ENGINE_BM25 = "bm25";
-
-        /** 长锚点。下限 3 是躲开 {@code a}、{@code 1} 这类噪声。 */
-        public static final String DEFAULT_ANCHOR_PATTERN = "[A-Za-z0-9][A-Za-z0-9._-]{2,}";
-
-        /**
-         * 短型号。默认认"一个字母 + 1~2 位数字"，两侧不接字母数字。
-         *
-         * <p>为什么单独一条：长锚点要求 ≥3 字符，而产品型号恰好两位。漏掉 {@code A2}，
-         * 「A2 买一年延保多少钱」里就只剩"延保""一年""多少"这些泛词——它们指向延保政策，
-         * 指不到整机价格表，而价格表才是这道题的另一半证据。
-         *
-         * <p>两侧不接字母数字，是为了不从 {@code SKU2024A2} 里切出 {@code 4A} 这种假锚点。
-         *
-         * <p>它是**按长相认**，不是按词表认：任何"字母+数字"的编号都走这一条，代码里没有
-         * 型号清单。换领域只需改正则（比如 {@code AB-12} 要加连字符、中文型号要另一条）。
-         */
-        public static final String DEFAULT_SHORT_MODEL_PATTERN =
-                "(?<![A-Za-z0-9])[A-Za-z]\\d{1,2}(?![A-Za-z0-9])";
-
-        /** 连续汉字（含日文假名）。bigram 只在这类串内部切，跨标点拼出的组合文档里不存在。 */
-        public static final String DEFAULT_CJK_PATTERN = "[\\u4e00-\\u9fff\\u3040-\\u30ff]+";
-
-        /** 一条查询最多几个锚点。再多就是整句被切碎了：命中率上升，精度下降。 */
-        public static final int DEFAULT_MAX_ANCHORS = 4;
-
-        /** 一条查询最多几个词项。每个词项在 SQL 里是两个占位符，不封顶会拼出上千字符的语句。 */
-        public static final int DEFAULT_MAX_TERMS = 12;
-
-        /** 整句只在不超过这么多字符时当词项：长句加进去只是一条必然不命中的 {@code or}。 */
-        public static final int DEFAULT_WHOLE_MAX_CHARS = 12;
-
-        /** 整句与锚点的权重：命中一次就足以把它和"只沾了个虚词"的块分开。 */
-        public static final int DEFAULT_WHOLE_WEIGHT = 3;
-
-        /** bigram 的权重：它是覆盖度信号，单独命中一个不足以说明相关。 */
-        public static final int DEFAULT_BIGRAM_WEIGHT = 1;
 
         public Keyword {
             engine = (engine == null || engine.isBlank())
@@ -197,23 +149,11 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
                 throw new IllegalArgumentException("claw4j.rag.keyword.engine 只能是 "
                         + ENGINE_SUBSTRING + " 或 " + ENGINE_BM25 + "，收到：" + engine);
             }
-            anchorPattern = (anchorPattern == null || anchorPattern.isBlank())
-                    ? DEFAULT_ANCHOR_PATTERN : anchorPattern.strip();
-            shortModelPattern = (shortModelPattern == null || shortModelPattern.isBlank())
-                    ? DEFAULT_SHORT_MODEL_PATTERN : shortModelPattern.strip();
-            cjkPattern = (cjkPattern == null || cjkPattern.isBlank())
-                    ? DEFAULT_CJK_PATTERN : cjkPattern.strip();
-            maxAnchors = (maxAnchors == null || maxAnchors <= 0) ? DEFAULT_MAX_ANCHORS : maxAnchors;
-            maxTerms = (maxTerms == null || maxTerms <= 0) ? DEFAULT_MAX_TERMS : maxTerms;
-            wholeMaxChars = (wholeMaxChars == null || wholeMaxChars <= 0)
-                    ? DEFAULT_WHOLE_MAX_CHARS : wholeMaxChars;
-            wholeWeight = (wholeWeight == null || wholeWeight <= 0) ? DEFAULT_WHOLE_WEIGHT : wholeWeight;
-            bigramWeight = (bigramWeight == null || bigramWeight <= 0)
-                    ? DEFAULT_BIGRAM_WEIGHT : bigramWeight;
+            substring = substring == null ? Substring.defaults() : substring;
         }
 
         static Keyword defaults() {
-            return new Keyword(null, null, null, null, null, null, null, null, null);
+            return new Keyword(null, null);
         }
 
         /**
@@ -227,6 +167,90 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
          */
         public boolean isBm25() {
             return ENGINE_BM25.equals(engine);
+        }
+
+        /**
+         * {@code substring} 引擎的词项规则：一条查询怎么被拆成"拿去 {@code ilike} 的子串"。
+         *
+         * <p>这些值**全都带领域假设**，所以走配置而不是写死在代码里：
+         *
+         * <ul>
+         *   <li>锚点要求 ≥3 字符——中文合同里的型号常常是两位（{@code A1}、{@code A2}），
+         *       英文手册里的版本号又常常带点（{@code v1.2}），同一个长度门槛不可能两边都对；
+         *   <li>整句只在 12 个字符内才当词项——12 个汉字是一句话，12 个英文字符只有一两个词；
+         *   <li>权重 3 对 1 是"字面精确 vs 覆盖度"的比值，换语言与语料就该重标。
+         * </ul>
+         *
+         * <p>默认值就是配置化之前写死在 {@link KeywordDocumentRetriever} 里的那套，行为不变。
+         *
+         * @param anchorPattern     长锚点：以字母或数字开头、≥3 字符的连续 ASCII 片段
+         * @param shortModelPattern 短型号：一个字母 + 1~2 位数字，两侧不接字母数字
+         * @param cjkPattern        bigram 的切分范围：只在这些串内部两两切，不跨标点
+         * @param maxAnchors        一条查询最多几个锚点（长短锚点共用这个名额）
+         * @param maxTerms          一条查询最多几个词项；SQL 里每个词项是一个 {@code or} 加一个 {@code case}
+         * @param wholeMaxChars     整句不超过多少字符才当词项
+         * @param wholeWeight       整句与锚点的权重（锚点复用这个值）
+         * @param bigramWeight      中文 bigram 的权重
+         */
+        public record Substring(String anchorPattern, String shortModelPattern, String cjkPattern,
+                                Integer maxAnchors, Integer maxTerms, Integer wholeMaxChars,
+                                Integer wholeWeight, Integer bigramWeight) {
+
+            /** 长锚点。下限 3 是躲开 {@code a}、{@code 1} 这类噪声。 */
+            public static final String DEFAULT_ANCHOR_PATTERN = "[A-Za-z0-9][A-Za-z0-9._-]{2,}";
+
+            /**
+             * 短型号。默认认"一个字母 + 1~2 位数字"，两侧不接字母数字。
+             *
+             * <p>为什么单独一条：长锚点要求 ≥3 字符，而产品型号恰好两位。漏掉 {@code A2}，
+             * 「A2 买一年延保多少钱」里就只剩"延保""一年""多少"这些泛词——它们指向延保政策，
+             * 指不到整机价格表，而价格表才是这道题的另一半证据。
+             *
+             * <p>两侧不接字母数字，是为了不从 {@code SKU2024A2} 里切出 {@code 4A} 这种假锚点。
+             *
+             * <p>它是**按长相认**，不是按词表认：任何"字母+数字"的编号都走这一条，代码里没有
+             * 型号清单。换领域只需改正则（比如 {@code AB-12} 要加连字符、中文型号要另一条）。
+             */
+            public static final String DEFAULT_SHORT_MODEL_PATTERN =
+                    "(?<![A-Za-z0-9])[A-Za-z]\\d{1,2}(?![A-Za-z0-9])";
+
+            /** 连续汉字（含日文假名）。bigram 只在这类串内部切，跨标点拼出的组合文档里不存在。 */
+            public static final String DEFAULT_CJK_PATTERN = "[\\u4e00-\\u9fff\\u3040-\\u30ff]+";
+
+            /** 一条查询最多几个锚点。再多就是整句被切碎了：命中率上升，精度下降。 */
+            public static final int DEFAULT_MAX_ANCHORS = 4;
+
+            /** 一条查询最多几个词项。每个词项在 SQL 里是两个占位符，不封顶会拼出上千字符的语句。 */
+            public static final int DEFAULT_MAX_TERMS = 12;
+
+            /** 整句只在不超过这么多字符时当词项：长句加进去只是一条必然不命中的 {@code or}。 */
+            public static final int DEFAULT_WHOLE_MAX_CHARS = 12;
+
+            /** 整句与锚点的权重：命中一次就足以把它和"只沾了个虚词"的块分开。 */
+            public static final int DEFAULT_WHOLE_WEIGHT = 3;
+
+            /** bigram 的权重：它是覆盖度信号，单独命中一个不足以说明相关。 */
+            public static final int DEFAULT_BIGRAM_WEIGHT = 1;
+
+            public Substring {
+                anchorPattern = (anchorPattern == null || anchorPattern.isBlank())
+                        ? DEFAULT_ANCHOR_PATTERN : anchorPattern.strip();
+                shortModelPattern = (shortModelPattern == null || shortModelPattern.isBlank())
+                        ? DEFAULT_SHORT_MODEL_PATTERN : shortModelPattern.strip();
+                cjkPattern = (cjkPattern == null || cjkPattern.isBlank())
+                        ? DEFAULT_CJK_PATTERN : cjkPattern.strip();
+                maxAnchors = (maxAnchors == null || maxAnchors <= 0) ? DEFAULT_MAX_ANCHORS : maxAnchors;
+                maxTerms = (maxTerms == null || maxTerms <= 0) ? DEFAULT_MAX_TERMS : maxTerms;
+                wholeMaxChars = (wholeMaxChars == null || wholeMaxChars <= 0)
+                        ? DEFAULT_WHOLE_MAX_CHARS : wholeMaxChars;
+                wholeWeight = (wholeWeight == null || wholeWeight <= 0) ? DEFAULT_WHOLE_WEIGHT : wholeWeight;
+                bigramWeight = (bigramWeight == null || bigramWeight <= 0)
+                        ? DEFAULT_BIGRAM_WEIGHT : bigramWeight;
+            }
+
+            static Substring defaults() {
+                return new Substring(null, null, null, null, null, null, null, null);
+            }
         }
     }
 

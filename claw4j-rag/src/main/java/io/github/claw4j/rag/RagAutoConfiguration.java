@@ -213,7 +213,7 @@ public class RagAutoConfiguration {
         return properties.keyword().isBm25()
                 ? new Bm25KeywordDocumentRetriever(jdbc, KnowledgeIndexer.SOURCE_KIND, candidates)
                 : new KeywordDocumentRetriever(jdbc, KnowledgeIndexer.SOURCE_KIND, candidates,
-                        properties.keyword());
+                        properties.keyword().substring());
     }
 
     /**

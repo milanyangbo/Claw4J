@@ -130,7 +130,7 @@ class SearchSqlTest {
     void keywordLaneFindsTheExactCode() {
         indexCorpus();
         List<Document> hits = new KeywordDocumentRetriever(jdbc, "docs", 15,
-                RagProperties.defaults().keyword())
+                RagProperties.defaults().keyword().substring())
                 .retrieve(question("SKU-2024 还剩多少"));
         List<String> citations = citations(hits);
 
@@ -247,7 +247,7 @@ class SearchSqlTest {
         indexCorpus();
 
         List<Document> hits = new KeywordDocumentRetriever(jdbc, "docs", 15,
-                RagProperties.defaults().keyword())
+                RagProperties.defaults().keyword().substring())
                 .retrieve(question("5%"));
 
         assertThat(hits).as("语料里有两段含字面「5%」（价差、盘点差异率），该被找到").isNotEmpty();
@@ -295,7 +295,7 @@ class SearchSqlTest {
                 .build();
         DocumentRetriever keyword = hybrid
                 ? new KeywordDocumentRetriever(jdbc, "docs", 15,
-                        RagProperties.defaults().keyword())
+                        RagProperties.defaults().keyword().substring())
                 : null;
         DocumentRetriever retriever = new HybridDocumentRetriever(vector, keyword,
                 new WeightedScoreJoiner());
