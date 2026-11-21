@@ -60,4 +60,5 @@ V4 会变成 out-of-order，`flyway.validate-on-migrate` 默认直接报错。�
 - [x] `claw4j-agent` 不含 `rag` 包，单测全绿（搬走的 8 个测试类已在 `claw4j-rag` 里跑过）
 - [x] `claw4j-app` / `claw4j-eval` 显式依赖 `claw4j-rag`，测试里的 import 同步
 - [x] checkstyle / spotbugs 全绿
-- [ ] **未跑**：整机（`SearchSqlTest` 要 Testcontainers）与一轮真实评测
+- [x] **整机**：`SearchSqlTest` 17 条全绿（真 pgvector 容器）、`Bm25SearchTest` 3 条全绿（真 ParadeDB 容器）
+- [x] **真实评测**：`-Peval` 导出 68 条跑过多轮，L1 0.919（后来票 16 又跑了两组对照）

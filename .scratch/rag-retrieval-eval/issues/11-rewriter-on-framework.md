@@ -1,6 +1,6 @@
 # 票 11：改写器换成「框架骨架 + 我们的容错层」
 
-状态：进行中（2026-11-20）
+状态：**已完成（2026-11-21 复核）**。`MeasurementGuard` 已整类删除，改为可配置的 `PatternGuard`。
 
 ## 一、问题
 
@@ -110,12 +110,18 @@ claw4j:
 
 ## 五、验收
 
-- [ ] `GuardedQueryRewriter` 只做超时 / 跳过 / 校验 / 清洗，改写本身交给官方 transformer
-- [ ] 提示词与 target 可从配置覆盖，不配时用内置中文模板
-- [ ] `RewriteGuard` 可被业务 bean 替换
-- [ ] 单测覆盖：跳过、超时、校验回落、清洗、delegate 抛错回落
-- [ ] 既有 7 条行为断言（数值跳过 / 标识保留 / 大小写 / 标准号）不回归
-- [ ] `claw4j-agent` 全绿，评测导出侧改类型后编译通过
+- [x] `GuardedQueryRewriter` 只做超时 / 跳过 / 校验 / 清洗，改写本身交给官方 transformer
+      → `GuardedQueryRewriterTest#与框架的 RewriteQueryTransformer 真的能拼上`
+- [x] 提示词与 target 可从配置覆盖，不配时用内置中文模板
+      → `claw4j.rag.rewrite.prompt` / `.target`；默认模板缺 `{query}` 启动即抛
+- [x] `RewriteGuard` 可被业务 bean 替换
+      → `@ConditionalOnMissingBean(RewriteGuard.class)`；默认实现是 `PatternGuard`
+- [x] 单测覆盖：跳过、超时、校验回落、清洗、delegate 抛错回落
+      → `GuardedQueryRewriterTest` 13 条
+- [x] 既有 7 条行为断言（数值跳过 / 标识保留 / 大小写 / 标准号）不回归
+      → 同一测试类里逐条对应
+- [x] `claw4j-agent` 全绿，评测导出侧改类型后编译通过
+      → 2026-11-21 复核：agent 207 条全绿（带 `.env`，真模型用例也跑了）；导出侧 `-Peval test` 通过
 
 ## 六、实施（2026-11-20）
 
