@@ -1,6 +1,6 @@
 package io.github.claw4j.capability.mcp;
 
-import io.github.claw4j.capability.secret.SpringSecretResolver;
+import io.github.claw4j.secret.PropertySecretResolver;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -46,7 +46,7 @@ public class ConfiguredMcpServersAutoConfiguration {
      */
     @Bean
     public McpToolProvider configuredMcpToolProvider(McpServerProperties properties, Environment environment) {
-        return new McpToolProvider(McpEndpoints.from(properties, SpringSecretResolver.of(environment)).stream()
+        return new McpToolProvider(McpEndpoints.from(properties, PropertySecretResolver.of(environment::getProperty)).stream()
                 .map(endpoint -> new McpConnection(endpoint,
                         properties.getRequestTimeout(), properties.getInitializationTimeout()))
                 .toList());

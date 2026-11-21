@@ -33,7 +33,7 @@ import java.util.Set;
  * 填的是 Slack 的 user id（{@code U} 开头），不是用户名：显示名会变，而且能重名。
  *
  * <p>凭据是环境变量占位，不是 P08 的 {@code secret:} 句柄：解析句柄的
- * {@code SpringSecretResolver} 在 {@code claw4j-capability}，而 channel 不依赖它
+ * {@code PropertySecretResolver} 在 {@code claw4j-core}，本模块直接用它
  * （{@code ChannelBoundaryTest} 钉着这条边）。
  */
 @ConfigurationProperties(prefix = "claw4j.channel.slack")

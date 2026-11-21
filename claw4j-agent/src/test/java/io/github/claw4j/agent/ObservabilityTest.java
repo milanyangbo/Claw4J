@@ -1,7 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.audit.ToolCallAudit;
-import io.github.claw4j.agent.observability.MeteredChatModel;
+import io.github.claw4j.model.usage.MeteredChatModel;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.ObservabilityAutoConfiguration;
 import io.github.claw4j.agent.observability.OtelSpanTracer;

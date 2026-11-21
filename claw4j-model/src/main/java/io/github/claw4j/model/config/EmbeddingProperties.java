@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 

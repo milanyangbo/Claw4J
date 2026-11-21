@@ -1,7 +1,7 @@
 package io.github.claw4j.agent.cache;
 
-import io.github.claw4j.agent.model.EmbeddingAutoConfiguration;
-import io.github.claw4j.agent.model.QwenModelCondition;
+import io.github.claw4j.model.config.EmbeddingAutoConfiguration;
+import io.github.claw4j.model.config.QwenModelCondition;
 import org.springframework.ai.chat.cache.semantic.SemanticCache;
 import org.springframework.ai.chat.cache.semantic.SemanticCacheAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;

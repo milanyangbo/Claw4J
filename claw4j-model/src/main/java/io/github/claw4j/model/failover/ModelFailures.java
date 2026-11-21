@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.failover;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.openai.errors.OpenAIServiceException;

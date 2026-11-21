@@ -21,6 +21,15 @@
             <version>${project.version}</version>
         </dependency>
         <!--
+          模型层（ADR-0035）。agent 只拿一个 ChatModel 去组 ChatClient，不认识供应商与路由细节。
+          `spring-ai-deepseek` / `spring-ai-openai` 随这条边传递进来，本模块不再自己声明。
+        -->
+        <dependency>
+            <groupId>io.github.claw4j</groupId>
+            <artifactId>claw4j-model</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
           工具层（ADR-0003 第一层）。M0 时这条边没接上，工具无处可挂。
           装配只依赖 ToolCallbackProvider 这个 Spring AI 接口，不点名具体工具类，
           所以加工具是加一个 bean，改不到这里的装配代码。

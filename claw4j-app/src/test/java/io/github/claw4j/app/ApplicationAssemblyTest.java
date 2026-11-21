@@ -3,7 +3,7 @@ package io.github.claw4j.app;
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.guard.SensitiveWords;
-import io.github.claw4j.agent.model.ModelRoutingException;
+import io.github.claw4j.model.routing.ModelRoutingException;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;

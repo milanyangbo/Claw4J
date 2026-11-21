@@ -1,6 +1,3 @@
-io.github.claw4j.agent.model.ModelConfiguration
-io.github.claw4j.agent.model.EmbeddingAutoConfiguration
-io.github.claw4j.agent.model.RoutingModelConfiguration
 io.github.claw4j.agent.AgentAutoConfiguration
 io.github.claw4j.agent.webtools.WebFetchAutoConfiguration
 io.github.claw4j.agent.question.AskUserAutoConfiguration

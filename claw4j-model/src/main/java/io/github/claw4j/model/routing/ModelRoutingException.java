@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.routing;
 
 /**
  * 模型调用失败。两种情形共用这一个类型，区别在 {@code getCause()}：

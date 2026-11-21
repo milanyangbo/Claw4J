@@ -17,6 +17,9 @@
              ADR-0015 把原来的 claw4j-domain 并了进来，所以模块数没变多也没有并列的第二个"核心"。
              依赖方向只有一条规矩：core 不依赖下面任何一个模块。 -->
         <module>claw4j-core</module>
+        <!-- 模型层（ADR-0035）：目录、路由、失败分类、冷却与用量。只依赖 core——
+             agent 拿它的 ChatModel 去组 ChatClient，反方向不成立。 -->
+        <module>claw4j-model</module>
         <module>claw4j-agent</module>
         <module>claw4j-channel</module>
         <module>claw4j-capability</module>

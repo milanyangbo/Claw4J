@@ -41,7 +41,7 @@ import java.util.concurrent.Executor;
  *
  * <p>凭据是环境变量占位，不是 P08 的 {@code secret:} 句柄，与另外三个通道一致。
  * 这是记下来的偏差（见 {@link DingtalkProperties} 的类注释）：解析句柄的
- * {@code SpringSecretResolver} 在 capability，channel 不依赖它。
+ * {@code PropertySecretResolver} 在 core，本模块直接用它。
  */
 @AutoConfiguration(afterName = "io.github.claw4j.agent.AgentAutoConfiguration")
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)

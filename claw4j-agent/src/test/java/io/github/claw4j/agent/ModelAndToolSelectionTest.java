@@ -1,9 +1,9 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.model.ModelFailures;
-import io.github.claw4j.agent.model.ModelProperties;
-import io.github.claw4j.agent.model.ModelRoutingException;
-import io.github.claw4j.agent.model.RoutingChatModel;
+import io.github.claw4j.model.failover.ModelFailures;
+import io.github.claw4j.model.config.ModelProperties;
+import io.github.claw4j.model.routing.ModelRoutingException;
+import io.github.claw4j.model.routing.RoutingChatModel;
 
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -77,318 +77,6 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 class ModelAndToolSelectionTest {
 
     private static final ToolCallback TOOL = new RecordingTool("querySales", "128400");
-
-    @Test
-    @DisplayName("主模型正常时备模型一次都不碰；路由顺序就是主在前（日志与降级都按这个顺序）")
-    void primarySuccessDoesNotTouchBackup() {
-        AtomicInteger backupCalls = new AtomicInteger();
-        RoutingChatModel routing = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("primary", model(
-                        DeepSeekChatOptions.builder().model("deepseek-chat").build(),
-                        prompt -> answer("主模型的回答"),
-                        prompt -> Flux.just(answer("主模型的回答")))),
-                new RoutingChatModel.Route("backup", model(
-                        OpenAiChatOptions.builder().model("qwen-plus").build(),
-                        prompt -> {
-                            backupCalls.incrementAndGet();
-                            return answer("备模型的回答");
-                        },
-                        prompt -> Flux.just(answer("备模型的回答"))))));
-
-        ChatResponse response = routing.call(prompt(DeepSeekChatOptions.builder().model("deepseek-chat").build()));
-
-        assertThat(textOf(response)).isEqualTo("主模型的回答");
-        assertThat(backupCalls).hasValue(0);
-        assertThat(routing.routeOrder()).containsExactly("primary", "backup");
-    }
-
-    @Test
-    @DisplayName("主模型抛错时备模型接住，工具与工具上下文一个都不丢")
-    void fallbackKeepsToolsAndToolContext() {
-        List<Prompt> backupPrompts = new CopyOnWriteArrayList<>();
-        RoutingChatModel routing = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("primary", model(
-                        DeepSeekChatOptions.builder().model("deepseek-chat").build(),
-                        prompt -> {
-                            throw statusFailure(429, "429 too many requests");
-                        },
-                        prompt -> Flux.error(statusFailure(429, "429 too many requests")))),
-                new RoutingChatModel.Route("backup", model(
-                        OpenAiChatOptions.builder().model("qwen-plus").build(),
-                        prompt -> {
-                            backupPrompts.add(prompt);
-                            return answer("备模型接住了");
-                        },
-                        prompt -> Flux.just(answer("备模型接住了"))))));
-
-        ChatOptions incoming = DeepSeekChatOptions.builder()
-                .model("deepseek-chat")
-                .temperature(0.3)
-                .toolCallbacks(List.of(TOOL))
-                .toolContext(Map.of("claw4j.principal", "guest"))
-                .build();
-
-        ChatResponse response = routing.call(prompt(incoming));
-
-        assertThat(textOf(response)).isEqualTo("备模型接住了");
-        assertThat(backupPrompts).hasSize(1);
-
-        ChatOptions sent = backupPrompts.getFirst().getOptions();
-        assertThat(sent).isInstanceOf(OpenAiChatOptions.class);
-        assertThat(sent.getModel())
-                .as("把主模型的 model 名带给备模型，等于让别家跑一个它没有的模型")
-                .isEqualTo("qwen-plus");
-        assertThat(sent.getTemperature()).isEqualTo(0.3);
-        assertThat(((org.springframework.ai.model.tool.ToolCallingChatOptions) sent).getToolCallbacks())
-                .extracting(callback -> callback.getToolDefinition().name())
-                .containsExactly("querySales");
-        assertThat(((org.springframework.ai.model.tool.ToolCallingChatOptions) sent).getToolContext())
-                .containsEntry("claw4j.principal", "guest");
-    }
-
-    @Test
-    @DisplayName("两路都失败时抛 ModelRoutingException，不静默返回空回答")
-    void allRoutesFailingThrowsInsteadOfReturningEmpty() {
-        RoutingChatModel routing = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("primary", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> {
-                            throw statusFailure(500, "主挂了");
-                        },
-                        prompt -> Flux.error(statusFailure(500, "主挂了")))),
-                new RoutingChatModel.Route("backup", model(
-                        OpenAiChatOptions.builder().build(),
-                        prompt -> {
-                            throw statusFailure(503, "备也挂了");
-                        },
-                        prompt -> Flux.error(statusFailure(503, "备也挂了"))))));
-
-        assertThatThrownBy(() -> routing.call(prompt(DeepSeekChatOptions.builder().build())))
-                .isInstanceOf(ModelRoutingException.class)
-                .hasMessageContaining("primary")
-                .hasMessageContaining("backup")
-                .satisfies(failure -> assertThat(failure.getSuppressed())
-                        .hasSize(2)
-                        .allSatisfy(suppressed -> assertThat(suppressed)
-                                .isInstanceOf(com.openai.errors.OpenAIServiceException.class)));
-    }
-
-    @Test
-    @DisplayName("空路由在构造时就失败：没有候选的「降级」没有意义")
-    void emptyRoutesAreRejected() {
-        assertThatThrownBy(() -> new RoutingChatModel(List.of()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("至少要有一个");
-    }
-
-    @Test
-    @DisplayName("流式首块之前失败才降级：备模型的块原样交给客户端")
-    void streamFallsBackBeforeFirstChunk() {
-        AtomicInteger backupCalls = new AtomicInteger();
-        RoutingChatModel routing = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("primary", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> answer(""),
-                        prompt -> Flux.error(new java.net.ConnectException("连接被重置")))),
-                new RoutingChatModel.Route("backup", model(
-                        OpenAiChatOptions.builder().build(),
-                        prompt -> answer(""),
-                        prompt -> {
-                            backupCalls.incrementAndGet();
-                            return Flux.just(answer("备"), answer("接住"));
-                        }))));
-
-        List<String> texts = routing.stream(prompt(DeepSeekChatOptions.builder().build()))
-                .map(ModelAndToolSelectionTest::textOf)
-                .collectList()
-                .block();
-
-        assertThat(texts).containsExactly("备", "接住");
-        assertThat(backupCalls).hasValue(1);
-    }
-
-    @Test
-    @DisplayName("已经吐过一块再失败就不换人：同一条回答发两遍比报错更难接受")
-    void streamDoesNotRestartAfterFirstChunk() {
-        AtomicInteger backupCalls = new AtomicInteger();
-        RoutingChatModel routing = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("primary", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> answer(""),
-                        prompt -> Flux.concat(
-                                Flux.just(answer("前半截")),
-                                Flux.error(new java.net.ConnectException("流中断了"))))),
-                new RoutingChatModel.Route("backup", model(
-                        OpenAiChatOptions.builder().build(),
-                        prompt -> answer(""),
-                        prompt -> {
-                            backupCalls.incrementAndGet();
-                            return Flux.just(answer("全文"));
-                        }))));
-
-        assertThatThrownBy(() -> routing.stream(prompt(DeepSeekChatOptions.builder().build()))
-                .map(ModelAndToolSelectionTest::textOf)
-                .collectList()
-                .block())
-                .as("流中断是可重试的失败，这里没换人只可能是因为「已经吐过一块」")
-                .hasCauseInstanceOf(java.net.ConnectException.class);
-        assertThat(backupCalls).hasValue(0);
-    }
-
-    @Test
-    @DisplayName("模型生成的字节解析不出来：同一家不再重试，只换家；坏参数的正确归处在工具层")
-    void unparseableOutputDoesNotRetryTheSameModel() {
-        AtomicInteger attempts = new AtomicInteger();
-        RoutingChatModel single = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("deepseek", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> {
-                            attempts.incrementAndGet();
-                            // 真实形状：Spring AI 解析工具参数时把 Jackson 3 的解析异常包了一层
-                            throw new IllegalStateException("Conversion from JSON to java.util.Map failed",
-                                    new tools.jackson.core.exc.StreamReadException(
-                                            "Unexpected character ('专'): was expecting comma to separate Object entries"));
-                        },
-                        prompt -> Flux.empty()))));
-
-        assertThatThrownBy(() -> single.call(prompt(DeepSeekChatOptions.builder().build())))
-                .isInstanceOf(ModelRoutingException.class);
-        assertThat(attempts)
-                .as("整轮重生成是票 02 撤掉的那条路：坏参数回给模型让它自己重发，路由层只管换家")
-                .hasValue(1);
-
-        AtomicInteger primaryCalls = new AtomicInteger();
-        AtomicInteger backupCalls = new AtomicInteger();
-        RoutingChatModel failover = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("primary", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> {
-                            primaryCalls.incrementAndGet();
-                            throw new IllegalStateException("Conversion from JSON to java.util.Map failed",
-                                    new tools.jackson.core.exc.StreamReadException("Unexpected character ('专')"));
-                        },
-                        prompt -> Flux.empty())),
-                new RoutingChatModel.Route("backup", model(
-                        OpenAiChatOptions.builder().build(),
-                        prompt -> {
-                            backupCalls.incrementAndGet();
-                            return answer("备家接住了");
-                        },
-                        prompt -> Flux.empty()))));
-
-        assertThat(textOf(failover.call(prompt(DeepSeekChatOptions.builder().build()))))
-                .as("换一家就是换一份新字节，值得试")
-                .isEqualTo("备家接住了");
-        assertThat(primaryCalls).hasValue(1);
-        assertThat(backupCalls).hasValue(1);
-
-        AtomicInteger limitedCalls = new AtomicInteger();
-        RoutingChatModel limited = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("deepseek", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> {
-                            limitedCalls.incrementAndGet();
-                            throw statusFailure(429, "429 too many requests");
-                        },
-                        prompt -> Flux.empty()))));
-
-        assertThatThrownBy(() -> limited.call(prompt(DeepSeekChatOptions.builder().build())))
-                .isInstanceOf(ModelRoutingException.class);
-        assertThat(limitedCalls)
-                .as("429 立刻重打同一家只会更糟；那是 SDK 重试层的事，路由层不掺和")
-                .hasValue(1);
-    }
-
-    @Test
-    @DisplayName("流式上「备模型接住」也带工具：换了一家不是退化成只能说话")
-    void streamingFallbackAlsoCarriesTools() {
-        List<Prompt> backupPrompts = new CopyOnWriteArrayList<>();
-        RoutingChatModel routing = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("primary", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> answer(""),
-                        prompt -> Flux.error(new java.net.ConnectException("首块前挂了")))),
-                new RoutingChatModel.Route("backup", model(
-                        OpenAiChatOptions.builder().build(),
-                        prompt -> answer(""),
-                        prompt -> {
-                            backupPrompts.add(prompt);
-                            return Flux.just(answer("备答"));
-                        }))));
-
-        ChatOptions incoming = DeepSeekChatOptions.builder()
-                .model("deepseek-chat")
-                .toolCallbacks(List.of(TOOL))
-                .toolContext(Map.of("claw4j.principal", "guest"))
-                .build();
-        routing.stream(prompt(incoming)).blockLast();
-
-        assertThat(backupPrompts).hasSize(1);
-        var options = (org.springframework.ai.model.tool.ToolCallingChatOptions) backupPrompts.getFirst().getOptions();
-        assertThat(options.getToolCallbacks()).hasSize(1);
-        assertThat(options.getToolContext()).containsEntry("claw4j.principal", "guest");
-    }
-
-    @Test
-    @DisplayName("主模型 401 直接报出来并点名是哪一家，备模型一次都不碰")
-    void unauthorizedDoesNotFallBack() {
-        AtomicInteger backupCalls = new AtomicInteger();
-        RoutingChatModel routing = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("deepseek", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> {
-                            throw statusFailure(401, "Incorrect API key provided");
-                        },
-                        prompt -> Flux.error(statusFailure(401, "Incorrect API key provided")))),
-                new RoutingChatModel.Route("qwen", model(
-                        OpenAiChatOptions.builder().build(),
-                        prompt -> {
-                            backupCalls.incrementAndGet();
-                            return answer("备模型的回答");
-                        },
-                        prompt -> Flux.just(answer("备模型的回答"))))));
-
-        assertThatThrownBy(() -> routing.call(prompt(DeepSeekChatOptions.builder().build())))
-                .isInstanceOf(ModelRoutingException.class)
-                .hasMessageContaining("deepseek")
-                .hasMessageContaining("401")
-                .hasMessageContaining("没有降级");
-        assertThat(backupCalls)
-                .as("key 失效时去撞第二家，只会把一次确定的错误拖成两次网络往返")
-                .hasValue(0);
-    }
-
-    @Test
-    @DisplayName("可重试与不可重试各一张表：这条判据只有一处，加供应商不用重新讨论")
-    void retryableClassificationTable() {
-        Map<Throwable, Boolean> table = new java.util.LinkedHashMap<>();
-        // 换一家可能好
-        table.put(statusFailure(429, "限流"), true);
-        table.put(statusFailure(500, "服务端错误"), true);
-        table.put(statusFailure(503, "服务不可用"), true);
-        table.put(new TransientAiException("限流"), true);
-        table.put(new java.net.ConnectException("连接被拒"), true);
-        table.put(new java.net.http.HttpTimeoutException("读超时"), true);
-        table.put(new RuntimeException("被框架包了一层", statusFailure(502, "网关错误")), true);
-        // 模型生成的内容解析不了：字节每次重新生成都不同，值得再要一份
-        // （两个包名都要认：tools.jackson 是 Spring AI 解析工具参数用的，com.fasterxml.jackson 是
-        //   openai-java-core 解析响应体用的，后者会被包进 OpenAIInvalidDataException 抛出来）
-        table.put(new tools.jackson.core.exc.StreamReadException("Unexpected character ('专')"), true);
-        table.put(new com.fasterxml.jackson.core.JsonParseException(null, "Unexpected end-of-input"), true);
-        // 换一家也一样
-        table.put(statusFailure(401, "key 无效"), false);
-        table.put(statusFailure(403, "无权限"), false);
-        table.put(statusFailure(400, "参数错"), false);
-        table.put(statusFailure(422, "参数不可处理"), false);
-        table.put(new NonTransientAiException("key 无效"), false);
-        table.put(new IllegalArgumentException("空消息"), false);
-        table.put(new IllegalStateException("模型返回了不该有的东西"), false);
-        table.put(new RuntimeException("被框架包了一层", statusFailure(401, "key 无效")), false);
-
-        table.forEach((failure, retryable) -> assertThat(ModelFailures.worthTryingAnother(failure))
-                .as("%s 应%s降级", failure, retryable ? "该" : "不该")
-                .isEqualTo(retryable));
-    }
 
     @Test
     @DisplayName("降级后工具真的跑得起来：拿回的是库里的数，不是「我无法访问数据库」")
@@ -938,6 +626,38 @@ class ModelAndToolSelectionTest {
                 .check(agentClasses());
     }
 
+    /**
+     * 模型实现类不在 agent 里（ADR-0035）：agent 只拿一个 {@code ChatModel} 去组 ChatClient。
+     *
+     * <p>搬走之前，路由、供应商装配、embedding 与指标都寄生在 agent 里，"换模型"和"改 Agent"
+     * 是同一次改动。规则一旦破，症状不是报错：新加的模型功能会重新长回 agent，
+     * 而模型层那张表又少一行。
+     */
+    @Test
+    @DisplayName("模型实现类不在 agent 里（架构闸）")
+    void agentHasNoModelImplementation() {
+        noClasses().that().resideInAPackage("io.github.claw4j.agent..")
+                .should().implement(ChatModel.class)
+                .check(agentClasses());
+    }
+
+    /**
+     * 模型层只依赖 core（ADR-0035）：不认识 agent / capability / rag / channel。
+     *
+     * <p>反过来依赖会编译通过（那些模块在同一个 reactor 里），代价是一个环：
+     * agent 依赖 model，model 又去问 agent 要会话或工具，谁也不能单独替换。
+     */
+    @Test
+    @DisplayName("模型层只依赖 core：不认识 agent / capability / rag / channel（架构闸）")
+    void modelDependsOnCoreOnly() {
+        noClasses().that().resideInAPackage("io.github.claw4j.model..")
+                .should().dependOnClassesThat()
+                .resideInAnyPackage("io.github.claw4j.agent..", "io.github.claw4j.capability..",
+                        "io.github.claw4j.rag..", "io.github.claw4j.channel..",
+                        "io.github.claw4j.app..")
+                .check(agentClasses());
+    }
+
     /** 两条规则看的是同一批类，导入一次就够。 */
     private static JavaClasses agentClasses() {
         return AgentClasses.IMPORTED;
@@ -975,6 +695,6 @@ class ModelAndToolSelectionTest {
 
         private static final JavaClasses IMPORTED = new ClassFileImporter()
                 .withImportOption(new ImportOption.DoNotIncludeTests())
-                .importPackages("io.github.claw4j.agent");
+                .importPackages("io.github.claw4j.agent", "io.github.claw4j.model");
     }
 }

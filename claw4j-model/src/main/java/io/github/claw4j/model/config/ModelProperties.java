@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.config;
 
 import io.github.claw4j.secret.SecretValue;
 import jakarta.annotation.PostConstruct;

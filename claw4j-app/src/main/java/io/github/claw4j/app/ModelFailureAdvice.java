@@ -1,6 +1,6 @@
 package io.github.claw4j.app;
 
-import io.github.claw4j.agent.model.ModelRoutingException;
+import io.github.claw4j.model.routing.ModelRoutingException;
 import io.github.claw4j.channel.http.HttpChatController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

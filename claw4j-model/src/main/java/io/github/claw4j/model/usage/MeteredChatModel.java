@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.observability;
+package io.github.claw4j.model.usage;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;

@@ -1,6 +1,6 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.config;
 
-import io.github.claw4j.capability.secret.SpringSecretResolver;
+import io.github.claw4j.secret.PropertySecretResolver;
 import io.github.claw4j.secret.MissingSecretException;
 import io.github.claw4j.secret.SecretResolver;
 import io.github.claw4j.secret.SecretValue;
@@ -57,7 +57,7 @@ public abstract class RealChatModelCondition extends SpringBootCondition {
     @Override
     public ConditionOutcome getMatchOutcome(ConditionContext context, AnnotatedTypeMetadata metadata) {
         Environment env = context.getEnvironment();
-        SecretResolver secrets = SpringSecretResolver.of(env);
+        SecretResolver secrets = PropertySecretResolver.of(env::getProperty);
         List<ModelProperties.Provider> providers = bindProviders(env);
 
         ModelProperties.Provider mine = ModelProperties.find(providers, providerName());

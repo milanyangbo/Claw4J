@@ -35,7 +35,7 @@ import java.util.Set;
  * （{@code senderStaffId}），没登记的人不该拿到任何一张表。
  *
  * <p>凭据是环境变量占位，不是 P08 的 {@code secret:} 句柄：解析句柄的
- * {@code SpringSecretResolver} 在 {@code claw4j-capability}，而 channel 不依赖它
+ * {@code PropertySecretResolver} 在 {@code claw4j-core}，本模块直接用它
  * （{@code ChannelBoundaryTest} 钉着这条边）。要让通道也用句柄，得先把
  * {@code SecretResolver} 接口下沉到 core，那是另一件事。
  */

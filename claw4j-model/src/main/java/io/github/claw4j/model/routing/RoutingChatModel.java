@@ -1,7 +1,8 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.routing;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.claw4j.model.failover.ModelFailures;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;

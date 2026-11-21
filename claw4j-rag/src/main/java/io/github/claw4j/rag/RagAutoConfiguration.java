@@ -4,7 +4,7 @@ import io.github.claw4j.domain.untrusted.ExternalContent;
 import io.github.claw4j.domain.untrusted.PromptData;
 import io.github.claw4j.secret.SecretResolver;
 import io.github.claw4j.secret.SecretValue;
-import io.github.claw4j.capability.secret.SpringSecretResolver;
+import io.github.claw4j.secret.PropertySecretResolver;
 import io.github.claw4j.rag.config.RagProperties;
 import io.github.claw4j.rag.store.RagMetadata;
 import io.github.claw4j.rag.store.VectorStoreNames;
@@ -93,7 +93,7 @@ import java.util.Map;
  * 进程生命周期内它不会变，要重新索引就重启。不提供"模型主动重建索引"的工具——写知识库是
  * 运维的事，让模型能写就是给它一个把提示注入落库的口子。
  */
-@AutoConfiguration(afterName = {"io.github.claw4j.agent.model.EmbeddingAutoConfiguration",
+@AutoConfiguration(afterName = {"io.github.claw4j.model.config.EmbeddingAutoConfiguration",
         "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration"},
         beforeName = "io.github.claw4j.agent.AgentAutoConfiguration")
 @ConditionalOnClass({JdbcTemplate.class, EmbeddingModel.class, RetrievalAugmentationAdvisor.class})
@@ -220,7 +220,7 @@ public class RagAutoConfiguration {
      * <ul>
      *   <li>{@code rerank.enabled=false} 就不装（装配层判断，类里不再有第二个开关）；
      *   <li>凭据在调用时取，取不到就不重排（WARN 一行）。不在启动时判：凭据可能轮换，
-     *       {@code SpringSecretResolver} 明确不缓存，把"装不装 bean"钉死在启动那一刻，
+     *       {@code PropertySecretResolver} 明确不缓存，把"装不装 bean"钉死在启动那一刻，
      *       等于让一次轮换后的恢复必须重启进程。
      * </ul>
      *
@@ -243,7 +243,7 @@ public class RagAutoConfiguration {
         // 凭据走自己的键（默认指向 qwen 那把），不去读 claw4j.model.providers：本模块不依赖
         // agent 的模型路由表，反过来 agent 也不该为了一次重排多知道一份东西。
         // allowPlain=false：与 providers 那边一致，只认 secret: 句柄，不接受明文密钥。
-        SecretResolver secrets = SpringSecretResolver.of(environment);
+        SecretResolver secrets = PropertySecretResolver.of(environment::getProperty);
         SecretValue apiKey = SecretValue.parse(properties.rerank().apiKey(),
                 "claw4j.rag.rerank.api-key", false);
         HttpClient http = HttpClient.newBuilder()

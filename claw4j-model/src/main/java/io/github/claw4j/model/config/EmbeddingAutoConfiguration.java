@@ -1,10 +1,11 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.config;
 
 import com.openai.client.OpenAIClient;
 import com.openai.client.OpenAIClientImpl;
 import com.openai.core.ClientOptions;
 import com.openai.credential.BearerTokenCredential;
-import io.github.claw4j.capability.secret.SpringSecretResolver;
+import io.github.claw4j.model.usage.BatchingEmbeddingModel;
+import io.github.claw4j.secret.PropertySecretResolver;
 import io.github.claw4j.secret.SecretResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,7 +66,7 @@ public class EmbeddingAutoConfiguration {
     public EmbeddingModel embeddingModel(ModelProperties model, EmbeddingProperties embedding,
                                         Environment environment) {
         ModelProperties.Provider qwen = model.require(ModelProperties.QWEN);
-        SecretResolver secrets = SpringSecretResolver.of(environment);
+        SecretResolver secrets = PropertySecretResolver.of(environment::getProperty);
         SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()
                 .timeout(qwen.getReadTimeout())
                 .build();

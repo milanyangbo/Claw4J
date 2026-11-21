@@ -1,13 +1,13 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.config;
 
 import com.openai.client.OpenAIClient;
 import com.openai.client.OpenAIClientImpl;
 import com.openai.core.ClientOptions;
 import com.openai.credential.BearerTokenCredential;
-import io.github.claw4j.agent.model.DeepSeekModelCondition;
-import io.github.claw4j.agent.model.ModelProperties;
-import io.github.claw4j.agent.model.QwenModelCondition;
-import io.github.claw4j.capability.secret.SpringSecretResolver;
+import io.github.claw4j.model.config.DeepSeekModelCondition;
+import io.github.claw4j.model.config.ModelProperties;
+import io.github.claw4j.model.config.QwenModelCondition;
+import io.github.claw4j.secret.PropertySecretResolver;
 import io.github.claw4j.secret.SecretResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,7 +71,7 @@ public class ModelConfiguration {
     @Conditional(DeepSeekModelCondition.class)
     public ChatModel deepSeekChatModel(ModelProperties properties, Environment environment) {
         ModelProperties.Provider config = properties.require(ModelProperties.DEEPSEEK);
-        SecretResolver secrets = SpringSecretResolver.of(environment);
+        SecretResolver secrets = PropertySecretResolver.of(environment::getProperty);
         requireConfigured(config, secrets);
 
         java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
@@ -128,7 +128,7 @@ public class ModelConfiguration {
     @Conditional(QwenModelCondition.class)
     public ChatModel qwenChatModel(ModelProperties properties, Environment environment) {
         ModelProperties.Provider config = properties.require(ModelProperties.QWEN);
-        SecretResolver secrets = SpringSecretResolver.of(environment);
+        SecretResolver secrets = PropertySecretResolver.of(environment::getProperty);
         requireConfigured(config, secrets);
 
         SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()

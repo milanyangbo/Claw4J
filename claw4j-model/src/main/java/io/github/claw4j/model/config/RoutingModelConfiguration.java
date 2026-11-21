@@ -1,8 +1,8 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.config;
 
-import io.github.claw4j.agent.model.ModelProperties;
-import io.github.claw4j.agent.model.RoutingChatModel;
-import io.github.claw4j.agent.observability.MeteredChatModel;
+import io.github.claw4j.model.config.ModelProperties;
+import io.github.claw4j.model.routing.RoutingChatModel;
+import io.github.claw4j.model.usage.MeteredChatModel;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

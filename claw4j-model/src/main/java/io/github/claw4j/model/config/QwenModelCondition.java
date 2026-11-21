@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.config;
 
 /**
  * 通义这一家的装配条件，判定逻辑在 {@link RealChatModelCondition}。

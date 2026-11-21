@@ -20,8 +20,9 @@ import java.util.Optional;
  * 削弱了；代价是每次出口多一次 Map 查找，与本票要解决的问题不在一个量级。
  *
  * <p>它是接口而不是类：测试要能给出"这个句柄不存在"而不依赖本机环境。生产实现见
- * {@code io.github.claw4j.capability.secret.SpringSecretResolver}（放在 capability 是因为
- * {@code claw4j-core} 不许有 Spring，而 agent 依赖 capability）。
+ * {@link PropertySecretResolver}——它只吃一个"属性名 → 值"的函数，所以本模块不需要认识
+ * Spring（enforcer 与 ArchUnit 两处守着这条边界）；Spring 那边由调用方递
+ * {@code environment::getProperty} 进来。
  */
 public interface SecretResolver {
 

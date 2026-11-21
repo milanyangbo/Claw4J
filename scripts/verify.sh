@@ -27,7 +27,7 @@ if [ -f .env ]; then
     set +a
 fi
 
-MODULES="claw4j-core claw4j-channel claw4j-capability claw4j-agent claw4j-example-sales claw4j-example-mcp-server claw4j-app claw4j-eval"
+MODULES="claw4j-core claw4j-model claw4j-channel claw4j-capability claw4j-agent claw4j-example-sales claw4j-example-mcp-server claw4j-app claw4j-eval"
 
 # 两个上限跟 `docs/agents/testing.md` 是同一对数（2026-11-18 从 10 / 20 抬到实测值）。
 #

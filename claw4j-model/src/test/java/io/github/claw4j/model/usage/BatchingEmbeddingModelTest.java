@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.model;
+package io.github.claw4j.model.usage;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

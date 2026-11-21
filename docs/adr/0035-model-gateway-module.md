@@ -71,8 +71,12 @@ date: 2026-11-22
 
 ### 一、新增 `claw4j-model`，模型层整体从 agent 下沉
 
-依赖只有 `claw4j-core`；`SpringSecretResolver`（58 行，只用 `Environment`）从 `claw4j-capability/secret`
-下沉到 `claw4j-core/secret`。包按部件切，不按「服务」切：
+依赖只有 `claw4j-core`。真值解析这一件单独说：原计划是把 `SpringSecretResolver` 下沉到 core，
+**做不到**——core 被 enforcer 与 ArchUnit 钉成"零框架"，而它要用 `Environment`。落地改成
+core 里放一个不引 Spring 的 `PropertySecretResolver`（吃一个 `属性名 → 值` 的函数），
+调用方递 `environment::getProperty` 进去；`SpringSecretResolver` 随之删除。
+
+包按部件切，不按「服务」切：
 
 ```
 catalog/   ModelCatalogProperties（providers → models）、ModelRef、ContextWindow、Cost、Compat

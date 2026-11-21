@@ -2,7 +2,7 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.cache.CacheAutoConfiguration;
 import io.github.claw4j.agent.cache.CacheProperties;
-import io.github.claw4j.agent.model.ModelProperties;
+import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
