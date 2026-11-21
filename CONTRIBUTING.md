@@ -229,5 +229,6 @@ Docker 就直接红，不许判成跳过），以及 `secrets.DEEPSEEK_API_KEY`�
 | 给 AI 助理的仓库约定 | [`AGENTS.md`](AGENTS.md) |
 
 1.x 的代码（Spring Boot 3.3.4 / Spring AI 1.0.0-M6，根包名 `com.xteammors.openclaw`）**已从工作区移除**，
-冻结在 `v1.x-legacy` tag 上，要作 before/after 对照时用 `git show v1.x-legacy:<路径>` 或
-`git worktree add /tmp/v1x v1.x-legacy` 取回。当前仓库只包含 `claw4j-*` 模块。
+冻结在 `v1.x-legacy` tag 上。要作 before/after 对照时用 `git show v1.x-legacy:<路径>` 或
+`git worktree add /tmp/v1x v1.x-legacy` 取回——**那个快照里代码在仓库根**（`src/main/java/...`），
+没有 `legacy/` 这一层。当前仓库只包含 `claw4j-*` 模块。

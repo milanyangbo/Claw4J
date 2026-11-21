@@ -26,9 +26,11 @@ ADR-0004 把 1.x 源码搬进仓库根的 `legacy/`，理由是「一次 clone �
 tag 是完整快照，取回成本一条命令：
 
 ```bash
-git show v1.x-legacy:legacy/src/main/java/com/xteammors/openclaw/skills/GenericSkill.java
+git show v1.x-legacy:src/main/java/com/xteammors/openclaw/skills/GenericSkill.java
 git worktree add /tmp/v1x v1.x-legacy
 ```
+
+**注意路径里没有 `legacy/` 这一层。** `v1.x-legacy` 打在**移动之前**，那个快照里 1.x 代码就在仓库根（`src/main/java/com/xteammors/...`、`skills/`、`pom.xml`）；`legacy/` 是之后才建出来的目录。ADR-0004 里写的「之后再打一次 tag 标记移动」实际没有执行，全仓只有 `v1.x-legacy` 一个 tag——所以照着 tag 找 `legacy/` 会扑空。
 
 对照能力没有下降——**只要愿意敲一条命令，证据仍在**；而平时不再为它付搜索与索引的代价。
 
