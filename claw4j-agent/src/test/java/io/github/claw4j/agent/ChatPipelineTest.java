@@ -302,14 +302,16 @@ class ChatPipelineTest {
                 .isNotBlank();
 
         ModelProperties.Provider deepseek = new ModelProperties.Provider();
-        deepseek.setName(ModelProperties.DEEPSEEK);
+        deepseek.setApi(ModelProperties.API_DEEPSEEK);
         // 配的是句柄，真值在测试自己的 Environment 里（P08 之后模型装配只认这一条路）。
-        deepseek.setApiKey("secret:deepseek_api_key");
+        deepseek.setApiKeys(List.of("secret:deepseek_api_key"));
         deepseek.setBaseUrl("https://api.deepseek.com");
         deepseek.setModel("deepseek-chat");
         ModelProperties properties = new ModelProperties();
-        properties.setProviders(List.of(deepseek));
-        ChatModel model = new ModelConfiguration().deepSeekChatModel(properties, keyInEnvironment(apiKey));
+        properties.setProviders(Map.of("deepseek", deepseek));
+        ChatModel model = new ModelConfiguration()
+                .providerChatModels(properties, keyInEnvironment(apiKey))
+                .byProvider().get("deepseek");
 
         List<String> executedSql = new CopyOnWriteArrayList<>();
         ToolCallback querySales = MethodToolCallbackProvider.builder()

@@ -65,7 +65,7 @@ public class EmbeddingAutoConfiguration {
     @ConditionalOnMissingBean(EmbeddingModel.class)
     public EmbeddingModel embeddingModel(ModelProperties model, EmbeddingProperties embedding,
                                         Environment environment) {
-        ModelProperties.Provider qwen = model.require(ModelProperties.QWEN);
+        ModelProperties.Provider qwen = model.require(QwenModelCondition.PROVIDER);
         SecretResolver secrets = PropertySecretResolver.of(environment::getProperty);
         SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()
                 .timeout(qwen.getReadTimeout())

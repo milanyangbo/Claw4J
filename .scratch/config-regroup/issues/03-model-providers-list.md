@@ -40,7 +40,8 @@ claw4j:
 路径的方式读属性（加一家就要改一次条件），改为把 `claw4j.model.providers` 绑一遍再按 `name` 挑。
 判定表不变（本家有真值就装；一家都没有则 match，交给装配方法 fail fast）。
 
-**验证**：`ModelAndToolSelectionTest#providerTableBindsByName`（name 写在 api-key 之后也能绑、
+**验证**：`ModelProviderShapeTest#providersBindById`（id 就是键、大小写归一；ADR-0035 之后这条用例跟着形状搬进了模型层）
+（原 `ModelAndToolSelectionTest#providerTableBindsByName` 已随列表形状下线，
 `provider` 给空壳、`require` 抛、重名起不来）；`ChatPipelineTest`、`SemanticCacheTest`、`EvalRunTest`
 按新形状取配置；`./scripts/verify.sh` 全绿。
 
@@ -48,7 +49,7 @@ claw4j:
 
 | 判什么行为 | 用例名 | 先红的样子 |
 | --- | --- | --- |
-| 表能绑上，且 `name` 写在 `api-key` 之后也认 | `ModelAndToolSelectionTest#providerTableBindsByName` | 去掉 `Provider.setName` → 两家的名字都是 null，`names()` 那条红 ✅ |
+| 表能绑上，id 就是键、大小写归一 | `ModelProviderShapeTest#providersBindById` | 去掉 `Provider.setName` → 两家的名字都是 null，`names()` 那条红 ✅ |
 | 缺一条时 `provider()` 给空壳、`require()` 抛且列出已配名字 | 同上 | 把 `provider()` 改成直接 `find` 返回 null → 空指针那条红 ✅ |
 | 重名直接起不来（谁生效不该取决于绑定顺序） | 同上 | 删掉 `@PostConstruct validateShape()` → 后半条红（上下文起来了）✅ |
 | 装配层：表里有名字但没有 ChatModel bean 时启动失败 | ⏳ `RoutingModelConfiguration#requireAdapter` | 见「缺口」第 1 条 |

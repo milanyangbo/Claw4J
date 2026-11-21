@@ -123,6 +123,12 @@ claw4j:
 我们保留 `spring-ai-deepseek` 原生适配器（`reasoning_content` 与 options 归它管），把 `api` 当成
 「选哪个 Spring AI 适配器」的键。**这是不参与对齐，不是偏差**：接入层的实现语言不同。
 
+**`auth: none` 有一处真偏差（落地时发现）。** OpenClaw 的 `auth: "none"` 是"不发 `Authorization`"；
+Spring AI 的 OpenAI 适配器走 `openai-java` 的 `ClientOptions`，`build()` 要求"至少一个凭据来源"，
+而"自己实现认证器"的入口是 `@JvmSynthetic`（Java 侧看不见）。所以我们的 `auth: none` 实际发的是
+空值 `Authorization: Bearer`：不校验头部的端点（Ollama / vLLM / 内网网关）照常工作，
+严格语义要等适配器给口子。
+
 ### 三、失败分类：词表照抄，规则库不搬
 
 `FailoverReason` 17 项字面量照抄，不翻译不合并。分类器只做四层判据：Spring AI 的

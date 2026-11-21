@@ -1,6 +1,5 @@
 package io.github.claw4j.model.config;
 
-import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.model.routing.RoutingChatModel;
 import io.github.claw4j.model.usage.MeteredChatModel;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -9,17 +8,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionOutcome;
-import org.springframework.boot.autoconfigure.condition.SpringBootCondition;
-import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.ConditionContext;
-import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Primary;
-import org.springframework.core.type.AnnotatedTypeMetadata;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -27,12 +19,13 @@ import java.util.Map;
  * 把装好的真实模型排成主备，对外只暴露一个 {@code ChatModel}。
  *
  * <p>单独成一个自动配置类是为了顺序：它必须在 {@link ModelConfiguration} 之后，才知道装了几家。
- * 没有 mock 兜底（ADR-0011）：一家都没装上时 {@link ModelConfiguration} 自己就 fail fast，
- * 轮不到这里兜。
+ * 没有 mock 兜底（ADR-0011）：一家都没装上时 {@link ModelConfiguration} 自己就 fail fast。
+ *
+ * <p>不再有"名字 → bean 名"的适配器表（{@code ADAPTERS}）：协议在 {@code api} 字段里，
+ * 供应商数量与代码无关。这里只负责排序与包装。
  *
  * <p>路由做在 ChatModel 层而不是"具名 ChatClient.Builder"：Advisor 链、工具调用只有一份，
- * 挂在 ChatClient 上；分流的实体若是 ChatClient，等于把 Advisor 链复制两份，鉴权与脱敏会各配
- * 一次、各错一次。真正需要"换一家"的时刻是模型调用失败那一刻，那正好是 ChatModel 的职责。
+ * 挂在 ChatClient 上；分流的实体若是 ChatClient，等于把 Advisor 链复制两份。
  */
 @AutoConfiguration(after = ModelConfiguration.class)
 public class RoutingModelConfiguration {
@@ -42,57 +35,35 @@ public class RoutingModelConfiguration {
     public static final String ROUTING_BEAN = "routingChatModel";
 
     /**
-     * 名字 → 承载它的 bean。<b>加一家供应商只改这一行</b>，外加 {@link ModelConfiguration} 里一个
-     * ChatModel bean；两处都写了才算接上，只写配置会在 {@link #requireAdapter} 那里被拒。
-     */
-    private static final Map<String, String> ADAPTERS = Map.of(
-            ModelProperties.DEEPSEEK, ModelConfiguration.DEEPSEEK_BEAN,
-            ModelProperties.QWEN, ModelConfiguration.QWEN_BEAN);
-
-    /**
      * 业务侧（ChatClient、AgentPort）按类型注入 {@code ChatModel}，容器里同时有各家模型和这个路由，
      * 必须用 {@code @Primary} 指定谁是被注入的那个。
      *
      * @param properties    模型配置，取 {@code claw4j.model.primary}
-     * @param context       用来按名字取已注册的模型 bean
+     * @param models        已建好的模型，键是供应商 id
      * @param meterRegistry 可选，有才给每条 route 包一层计量
      * @return 主备路由模型
      */
     @Bean(ROUTING_BEAN)
     @Primary
-    @Conditional(AnyRealModelCondition.class)
-    public RoutingChatModel routingChatModel(ModelProperties properties, ApplicationContext context,
-                                            ObjectProvider<MeterRegistry> meterRegistry) {
+    public RoutingChatModel routingChatModel(ModelProperties properties,
+                                             ModelConfiguration.ProviderModels models,
+                                             ObjectProvider<MeterRegistry> meterRegistry) {
         MeterRegistry registry = meterRegistry.getIfAvailable();
-        requireAdapter(properties);
-        // 按配置顺序装：路由的备选顺序因此跟着 yml 走，而不是跟着某张 Map 的迭代顺序走。
-        Map<String, ChatModel> available = new LinkedHashMap<>();
-        for (String name : properties.names()) {
-            putIfPresent(available, context, name, ADAPTERS.get(name));
-        }
-
+        Map<String, ChatModel> available = models.byProvider();
         String primary = properties.getPrimary();
-        if (!properties.names().contains(primary)) {
-            // 拼错的 supplier 名字与"名字对但没给 key"是两种不同的错，分开说才不用猜。
-            throw new IllegalStateException("claw4j.model.primary=" + primary + " 不在 claw4j.model.providers 里，"
-                    + "表里配的是 " + properties.names() + "。");
-        }
         if (!available.containsKey(primary)) {
-            // 主模型那家没配 key 就启动失败，而不是悄悄拿备用的顶上：
-            // 悄悄顶上的话，"主模型其实一直没配好"这件事永远不会暴露。
-            throw new IllegalStateException("claw4j.model.primary=" + primary + " 没有配置 key，"
-                    + "当前已配置 key 的有 " + available.keySet() + "。"
-                    + "要让主模型可用，需要配 " + primary.toUpperCase() + "_API_KEY；"
-                    + "或者把 primary 改成已配 key 的那一家。");
+            // 拼错的 id 与"id 对但没给钥匙"是两种不同的错，分开说才不用猜。
+            throw new IllegalStateException("claw4j.model.primary=" + primary
+                    + " 不在 claw4j.model.providers 里，表里配的是 " + available.keySet() + "。");
         }
 
         List<RoutingChatModel.Route> routes = new ArrayList<>();
-        // 每条 route 各包一层计量：route 这个标签就是这里的 name，
+        // 每条 route 各包一层计量：route 这个标签就是供应商 id，
         // 于是"降级了几次"= 非主那条 route 的调用数，路由类里不需要再有第二个计数器。
         routes.add(new RoutingChatModel.Route(primary, metered(available.get(primary), primary, registry)));
-        available.forEach((name, model) -> {
-            if (!name.equals(primary)) {
-                routes.add(new RoutingChatModel.Route(name, metered(model, name, registry)));
+        available.forEach((id, model) -> {
+            if (!id.equals(primary)) {
+                routes.add(new RoutingChatModel.Route(id, metered(model, id, registry)));
             }
         });
 
@@ -105,28 +76,7 @@ public class RoutingModelConfiguration {
     }
 
     /**
-     * 表里每一条都得有适配器。没有的话，那一行配置会静默不生效——"我明明加了一家供应商"与
-     * "它到底在不在链上"从此对不上，所以在这里直接拒掉。
-     *
-     * <p>适配器和供应商不是一回事：供应商是配置，适配器是 Java 类（DeepSeek 官方 API 一种、
-     * OpenAI 兼容端点一种）。加一家走 OpenAI 兼容端点的供应商要同时加一个 bean，
-     * 见 {@link ModelConfiguration}。
-     *
-     * @param properties 模型配置
-     * @throws IllegalStateException 表里有一个没有适配器的名字
-     */
-    private static void requireAdapter(ModelProperties properties) {
-        for (String name : properties.names()) {
-            if (!ADAPTERS.containsKey(name)) {
-                throw new IllegalStateException("claw4j.model.providers 里有一条 name=" + name
-                        + "，但没有对应的适配器。现在只认 " + ADAPTERS.keySet().stream().sorted().toList()
-                        + "；加一家要同时加一个 ChatModel bean 和这里的一行。");
-            }
-        }
-    }
-
-    /**
-     * 有 registry 才包。没有 registry 表示调用方没装 actuator——包一层也没地方导出，
+     * 有 registry 才包。没有 registry 表示没装 actuator——包一层也没地方导出，
      * 只是多一层调用，原样返回。
      *
      * @param model    被包的模型
@@ -136,36 +86,5 @@ public class RoutingModelConfiguration {
      */
     private static ChatModel metered(ChatModel model, String route, MeterRegistry registry) {
         return registry == null ? model : new MeteredChatModel(model, route, registry);
-    }
-
-    private static void putIfPresent(Map<String, ChatModel> target,
-                                     ApplicationContext context,
-                                     String name,
-                                     String beanName) {
-        // 按名字取而不是按类型注入：类型只有一个 ChatModel，届时多家模型都同名同类型，
-        // 只能靠"这个 bean 定义有没有被注册"来区分——没注册就是这家没配 key。
-        if (context.containsBean(beanName)) {
-            target.put(name, context.getBean(beanName, ChatModel.class));
-        }
-    }
-
-    /**
-     * 至少装了一家真实模型才需要路由；一家都没有时这里不注册——
-     * 而那种情况在 {@link ModelConfiguration} 装配那几个模型 bean 时就已经启动失败了（ADR-0011）。
-     *
-     * <p>用自定义 Condition 而不是 {@code @ConditionalOnBean}：后者给多个名字时是"全都存在"，
-     * 而这里要的是"任一存在"。
-     */
-    static class AnyRealModelCondition extends SpringBootCondition {
-
-        @Override
-        public ConditionOutcome getMatchOutcome(ConditionContext context, AnnotatedTypeMetadata metadata) {
-            boolean any = context.getBeanFactory() != null
-                    && (context.getBeanFactory().containsBeanDefinition(ModelConfiguration.DEEPSEEK_BEAN)
-                    || context.getBeanFactory().containsBeanDefinition(ModelConfiguration.QWEN_BEAN));
-            return any
-                    ? ConditionOutcome.match("至少装配了一家真实模型，需要路由")
-                    : ConditionOutcome.noMatch("没有任何真实模型，装配阶段就会启动失败");
-        }
     }
 }

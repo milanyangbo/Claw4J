@@ -43,14 +43,19 @@ claw4j:
   # 少了那个 bean 启动时会点名，不会静默忽略。name 不能重，也不能为空。
   model:
     primary: ${CLAW4J_MODEL_PRIMARY:deepseek}
+    # 以 id 为键的表（ADR-0035）：api 决定用哪个适配器，加一家只改这里。
+    # api 只认两种：deepseek（官方适配器）、openai-completions（任何 OpenAI 兼容端点）。
+    # api-keys 写句柄（secret:xxx），真值在部署环境；不需要鉴权的端点写 auth: none。
     providers:
-      - name: deepseek
+      deepseek:
+        api: deepseek
         base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-        api-key: secret:deepseek_api_key
+        api-keys: [secret:deepseek_api_key]
         model: ${DEEPSEEK_MODEL:deepseek-chat}
-      - name: qwen
+      qwen:
+        api: openai-completions
         base-url: ${QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-        api-key: secret:qwen_api_key
+        api-keys: [secret:qwen_api_key]
         model: ${QWEN_MODEL:qwen-plus}
 
     # 向量模型：语义缓存与知识库共用这一份，只跟 qwen key 走。
@@ -448,7 +453,7 @@ claw4j:
       model: ${CLAW4J_RAG_RERANK_MODEL:qwen3-rerank}
       # 它在每轮检索的路上，用户等的是首字。超时或报错一律按原顺序继续。
       timeout: 2s
-      # 凭据复用 providers 里 name=qwen 那一条的 api-key，不另配一把。
+      # 凭据复用 providers.qwen 那一家的 api-keys，不另配一把。
 
     # 章节父块回填（small-to-big）：命中的子块换成"同一章节全部块"拼成的父块。
     # 默认关：它用 token 换上下文完整度（段数变少、每段变长），收益要靠对照实验证明。

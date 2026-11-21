@@ -2,7 +2,6 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.cache.CacheAutoConfiguration;
 import io.github.claw4j.agent.cache.CacheProperties;
-import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
@@ -148,21 +147,13 @@ class SemanticCacheTest {
         ApplicationContextRunner runner = new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(CacheAutoConfiguration.class))
                 .withBean(SemanticCache.class, () -> mock(SemanticCache.class))
-                .withBean(ModelProperties.class, () -> {
-                    ModelProperties.Provider qwen = new ModelProperties.Provider();
-                    qwen.setName(ModelProperties.QWEN);
-                    qwen.setApiKey("secret:qwen_api_key");
-                    qwen.setBaseUrl("http://127.0.0.1:9/v1");
-                    ModelProperties properties = new ModelProperties();
-                    properties.setProviders(List.of(qwen));
-                    return properties;
-                })
                 // 句柄在属性里、真值在环境里（P08）：两处都写，走的才是生产那条路。
+                // 形状是以 id 为键的表（ADR-0035）：条件自己按 qwen 这个键去找。
                 .withPropertyValues(
-                        "claw4j.model.providers[0].name=qwen",
-                        "claw4j.model.providers[0].api-key=secret:qwen_api_key",
-                        "QWEN_API_KEY=test-key",
-                        "claw4j.model.providers[0].base-url=http://127.0.0.1:9/v1");
+                        "claw4j.model.providers.qwen.api=openai-completions",
+                        "claw4j.model.providers.qwen.api-keys[0]=secret:qwen_api_key",
+                        "claw4j.model.providers.qwen.base-url=http://127.0.0.1:9/v1",
+                        "QWEN_API_KEY=test-key");
 
         // 先证明"开着时确实装了"。没有这一半，条件写错成"永不匹配"时，下半条照样绿
         runner.run(context -> assertThat(context)
