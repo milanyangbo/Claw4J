@@ -32,7 +32,7 @@ M0 结束就必须能演示，不等 M2。
 
 真实 IM 通道的选型（飞书长连接为主、企业微信个人不可行）见 **ADR-0009**。交付顺序更新为：**HTTP+SSE（M1）→ 飞书长连接（M2）→ A2A（M3）→ Teammors WebSocket（最后，可不做）**；Telegram 作为可选的第二 Channel 实现，用于证明 SPI 可替换。
 
-1.x 那套私有加密 WebSocket（`XMessageClient`，685 行）排在最后，因为它的加解密与心跳协议讲不出通用价值，而维护成本与缺陷密度（每请求 `new OkHttpClient()`、跨线程 `ArrayList`、public 可变字段）都是实打实的。它的 ECDH/AES 代码**保留在 `legacy/` 里作为对照**，用来讲"我们如何把通道抽象掉了"。时间不够就不做，不影响叙事。
+1.x 那套私有加密 WebSocket（`XMessageClient`，685 行）排在最后，因为它的加解密与心跳协议讲不出通用价值，而维护成本与缺陷密度（每请求 `new OkHttpClient()`、跨线程 `ArrayList`、public 可变字段）都是实打实的。它的 ECDH/AES 代码**保留在 `v1.x-legacy` tag 上作为对照**，用来讲"我们如何把通道抽象掉了"。时间不够就不做，不影响叙事。
 
 ### 测试策略
 

@@ -40,7 +40,7 @@ ADR-0008 定的通道顺序里没有真实 IM。真实 IM 通道的价值不在�
 - **集群投递语义**：长连接模式的推送是集群模式、不支持广播，同一应用多个客户端时只有随机一个收到。本地演示保持单实例；多实例场景要说明这条限制，不能假装它能负载均衡。
 - **模块调整**：`claw4j-channel` 拆为 `claw4j-channel-api`（放 `ChatChannel` SPI，不依赖任何平台 SDK）+ `claw4j-channel-http` + `claw4j-channel-feishu`。重依赖（`oapi-sdk`）只留在飞书实现里，`claw4j-app` 按需引入，不想接 IM 的人不会被拖累。ADR-0004 的五模块由此变为七模块。**〔已过时〕**此条已被 ADR-0010 推翻：三个通道模块当时都是零 Java 文件的空壳，拆分没有收益；最终形态是单一 `claw4j-channel` 模块内按包分层（`spi` / `http` / `feishu`），边界由 ArchUnit 包级规则守卫。加渠道不再新建模块。**依赖也不再走 optional + `-P` 开关**：`oapi-sdk` 作为普通依赖随 `claw4j-channel` 传递，`claw4j-app` 不必声明、构建不必带参数（2026-10-27，见 ADR-0010）。
 - **凭据处理**：App ID / App Secret 走环境变量与 Spring 配置，不进 `SKILL.md`、不进仓库（延续 ADR-0002 的收口原则）。
-- 1.x 的 Teammors 私有加密协议仍排最后：它的 ECDH/AES 与自建心跳讲不出通用价值，代码留在 `legacy/` 作对照。
+- 1.x 的 Teammors 私有加密协议仍排最后：它的 ECDH/AES 与自建心跳讲不出通用价值，代码留在 `v1.x-legacy` tag 上作对照。
 
 ## 实现记录（2026-10-26，M2 收尾落地）
 

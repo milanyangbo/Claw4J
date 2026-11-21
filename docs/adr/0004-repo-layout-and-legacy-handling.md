@@ -1,9 +1,18 @@
 # 同仓库重建：旧代码移入 legacy/，新代码用 claw4j-* 模块
 
 ---
-status: accepted
+status: superseded
+superseded-by: 0034
 date: 2026-10-22
 ---
+
+> **`legacy/` 那部分作废（2026-11-21，见 [ADR-0034](0034-remove-legacy-directory.md)）。**
+>
+> 这份 ADR 决定"1.x 源码移进仓库根的 `legacy/`，作为 before/after 对照"。ADR-0034 判定这条不再成立：
+> 对照改由 `v1.x-legacy` tag 承载，工作区里的副本已删除。
+>
+> **仍然有效的部分**：多模块结构、`io.github.claw4j` 包名与 1.x 彻底分开、`claw` 分支停在 tag 上不再提交、
+> 1.x 明文凭证已替换为占位符。
 
 重建不新建仓库。1.x 的源码整体移入仓库根的 `legacy/` 目录（含它自己的 `pom.xml`，但**不作为新父 POM 的模块**，Maven 不会构建它），新代码在根下按 `claw4j-*` 多模块展开。旧代码在 `v1.x-legacy` tag 上已冻结，之后再打一次 tag 标记移动。这样一次 clone 就能看到 before 与 after 的对照，不需要在两个仓库之间跳。
 

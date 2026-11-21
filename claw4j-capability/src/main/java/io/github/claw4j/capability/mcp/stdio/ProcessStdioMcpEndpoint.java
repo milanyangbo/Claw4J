@@ -26,8 +26,8 @@ import java.util.Optional;
  * <p>命令是结构化的，不是拼出来的：{@code command} 与 {@code args} 分别给出，交给 SDK 的
  * {@link StdioClientTransport}（内部用 {@code ProcessBuilder} 起进程），不经任何命令解释器。
  * ADR-0002 挡的是"Java 侧构造一条命令行交给解释器去解释"，1.x 就是这么做的
- * （{@code legacy/src/main/java/com/xteammors/openclaw/skills/GenericSkill.java:206}
- * 把参数原样拼进 argv 末尾）；这里只给出一个 argv 数组，谁都不解释它。
+ * （把参数原样拼进 argv 末尾，源码在 {@code v1.x-legacy} tag 上）；这里只给出一个 argv 数组，
+ * 谁都不解释它。
  *
  * <p>模型的输出进不了这条命令行：工具入参走 MCP 的 JSON-RPC 帧，由 SDK 序列化后写进 stdin，
  * 永远不会成为 argv 的一部分。
