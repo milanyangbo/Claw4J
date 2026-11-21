@@ -23,8 +23,9 @@ services:
       POSTGRES_PASSWORD: claw4j
     ports:
       - "5432:5432"
+    # 不挂 init 脚本：扩展与 schema 全部由 Flyway 建（各模块 db/migration，启动时按版本号跑）。
+    # 曾经挂过一份 infra/postgres/init.sql，内容与 Flyway 的重复，两处都能改建库结果。
     volumes:
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - claw4j-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U claw4j -d claw4j"]
