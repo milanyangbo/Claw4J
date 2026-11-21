@@ -1,11 +1,11 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.inbound.JdbcInboundStore;
-import io.github.claw4j.rag.HybridDocumentRetriever;
-import io.github.claw4j.rag.KeywordDocumentRetriever;
-import io.github.claw4j.rag.KnowledgeIndexer;
-import io.github.claw4j.rag.RagProperties;
-import io.github.claw4j.rag.WeightedScoreJoiner;
+import io.github.claw4j.rag.retrieval.HybridDocumentRetriever;
+import io.github.claw4j.rag.retrieval.KeywordDocumentRetriever;
+import io.github.claw4j.rag.index.KnowledgeIndexer;
+import io.github.claw4j.rag.config.RagProperties;
+import io.github.claw4j.rag.retrieval.WeightedScoreJoiner;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.agent.session.SessionEntryStore;
@@ -308,7 +308,7 @@ class SearchSqlTest {
     }
 
     private static List<String> citations(List<Document> documents) {
-        return documents.stream().map(io.github.claw4j.rag.RagMetadata::citation).toList();
+        return documents.stream().map(io.github.claw4j.rag.store.RagMetadata::citation).toList();
     }
 
     private RagProperties properties() {

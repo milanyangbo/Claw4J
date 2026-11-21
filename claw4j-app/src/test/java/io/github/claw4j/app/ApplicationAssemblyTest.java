@@ -8,7 +8,7 @@ import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
-import io.github.claw4j.rag.HybridDocumentRetriever;
+import io.github.claw4j.rag.retrieval.HybridDocumentRetriever;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.capability.mcp.McpServerProperties;

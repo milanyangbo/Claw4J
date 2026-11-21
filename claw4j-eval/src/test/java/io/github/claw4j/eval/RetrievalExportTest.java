@@ -1,8 +1,8 @@
 package io.github.claw4j.eval;
 
-import io.github.claw4j.rag.GuardedQueryRewriter;
-import io.github.claw4j.rag.KnowledgeRetrievalPipeline;
-import io.github.claw4j.rag.RagMetadata;
+import io.github.claw4j.rag.rewrite.GuardedQueryRewriter;
+import io.github.claw4j.rag.retrieval.KnowledgeRetrievalPipeline;
+import io.github.claw4j.rag.store.RagMetadata;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;

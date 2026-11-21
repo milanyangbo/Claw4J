@@ -1,5 +1,6 @@
 package io.github.claw4j.rag;
 
+import io.github.claw4j.rag.config.RagProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

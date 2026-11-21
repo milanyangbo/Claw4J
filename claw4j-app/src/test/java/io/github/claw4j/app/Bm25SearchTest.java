@@ -1,6 +1,6 @@
 package io.github.claw4j.app;
 
-import io.github.claw4j.rag.Bm25KeywordDocumentRetriever;
+import io.github.claw4j.rag.retrieval.Bm25KeywordDocumentRetriever;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;

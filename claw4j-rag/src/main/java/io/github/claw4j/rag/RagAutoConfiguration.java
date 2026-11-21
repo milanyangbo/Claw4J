@@ -6,6 +6,20 @@ import io.github.claw4j.domain.untrusted.PromptData;
 import io.github.claw4j.secret.SecretResolver;
 import io.github.claw4j.secret.SecretValue;
 import io.github.claw4j.capability.secret.SpringSecretResolver;
+import io.github.claw4j.rag.config.RagProperties;
+import io.github.claw4j.rag.store.RagMetadata;
+import io.github.claw4j.rag.store.VectorStoreNames;
+import io.github.claw4j.rag.index.KnowledgeIndexer;
+import io.github.claw4j.rag.retrieval.KnowledgeRetrievalPipeline;
+import io.github.claw4j.rag.retrieval.HybridDocumentRetriever;
+import io.github.claw4j.rag.retrieval.WeightedScoreJoiner;
+import io.github.claw4j.rag.retrieval.KeywordDocumentRetriever;
+import io.github.claw4j.rag.retrieval.Bm25KeywordDocumentRetriever;
+import io.github.claw4j.rag.postprocess.RerankDocumentPostProcessor;
+import io.github.claw4j.rag.postprocess.SectionExpander;
+import io.github.claw4j.rag.rewrite.GuardedQueryRewriter;
+import io.github.claw4j.rag.rewrite.RewriteGuard;
+import io.github.claw4j.rag.rewrite.PatternGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -90,23 +104,6 @@ public class RagAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(RagAutoConfiguration.class);
 
     /**
-     * 知识库的向量表所在 schema。表名与 schema 名只在这里写一次：索引器、关键词那一路与建表的
-     * 一侧都引用它。两处各写一遍的后果是"表建在 A、查的是 B"，而那种错不会报错，只会让
-     * "库是空的"永远为真。
-     */
-    static final String VECTOR_SCHEMA = "claw4j_rag";
-
-    /** 框架默认表名。由 {@code PgVectorStore} 建（{@code initializeSchema}），迁移里不建。 */
-    static final String VECTOR_TABLE = "vector_store";
-
-    /**
-     * {@code content} 上的 trigram 索引名。
-     *
-     * <p>PG 的标识符上限 63 字符，这个名字 32 个，留了余量。
-     */
-    static final String TRIGRAM_INDEX = "ix_rag_vector_store_content_trgm";
-
-    /**
      * 排在记忆之后。
      *
      * <p>{@code before()} 取的是 {@code prompt.getInstructions()}，记忆 advisor 还没加载历史时
@@ -154,8 +151,8 @@ public class RagAutoConfiguration {
                                             @Value("${claw4j.model.embedding.dimensions:1024}")
                                             int dimensions) {
         return PgVectorStore.builder(jdbc, embeddings)
-                .schemaName(VECTOR_SCHEMA)
-                .vectorTableName(VECTOR_TABLE)
+                .schemaName(VectorStoreNames.SCHEMA)
+                .vectorTableName(VectorStoreNames.TABLE)
                 .dimensions(dimensions)
                 .idType(PgVectorStore.PgIdType.UUID)
                 .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
@@ -630,13 +627,13 @@ public class RagAutoConfiguration {
      */
     private static void ensureTrigramIndex(JdbcTemplate jdbc) {
         try {
-            jdbc.execute("create index if not exists " + TRIGRAM_INDEX
-                    + " on " + VECTOR_SCHEMA + "." + VECTOR_TABLE
+            jdbc.execute("create index if not exists " + VectorStoreNames.TRIGRAM_INDEX
+                    + " on " + VectorStoreNames.table()
                     + " using gin (content gin_trgm_ops)");
         }
         catch (RuntimeException failure) {
             log.warn("在 {}.{}(content) 上建 trigram 索引失败，全文检索会走全表扫描（结果不变）：{}",
-                    VECTOR_SCHEMA, VECTOR_TABLE, failure.getMessage());
+                    VectorStoreNames.SCHEMA, VectorStoreNames.TABLE, failure.getMessage());
         }
     }
 }

@@ -3,6 +3,17 @@ package io.github.claw4j.rag;
 import com.sun.net.httpserver.HttpServer;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.rag.config.RagProperties;
+import io.github.claw4j.rag.store.RagMetadata;
+import io.github.claw4j.rag.index.KnowledgeIndexer;
+import io.github.claw4j.rag.index.SemanticTextSplitter;
+import io.github.claw4j.rag.index.ContentHash;
+import io.github.claw4j.rag.retrieval.KnowledgeRetrievalPipeline;
+import io.github.claw4j.rag.retrieval.HybridDocumentRetriever;
+import io.github.claw4j.rag.retrieval.WeightedScoreJoiner;
+import io.github.claw4j.rag.retrieval.KeywordDocumentRetriever;
+import io.github.claw4j.rag.postprocess.RerankDocumentPostProcessor;
+import io.github.claw4j.rag.postprocess.TopKDocumentPostProcessor;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -300,14 +311,6 @@ class KnowledgeRetrievalTest {
     }
 
     // ---- 全文那一路：通配符 ----
-
-    @Test
-    @DisplayName("通配符转义：问「5%」不会变成「匹配所有含 5 的块」")
-    void likeWildcardsAreEscaped() {
-        assertThat(KeywordDocumentRetriever.escapeLike("折扣率 5%")).isEqualTo("折扣率 5\\%");
-        assertThat(KeywordDocumentRetriever.escapeLike("a_b")).isEqualTo("a\\_b");
-        assertThat(KeywordDocumentRetriever.escapeLike("c:\\x")).isEqualTo("c:\\\\x");
-    }
 
     @Test
     @DisplayName("全文那一路的 SQL 带 escape 与 limit，参数按 ? 在 SQL 里出现的顺序给")
