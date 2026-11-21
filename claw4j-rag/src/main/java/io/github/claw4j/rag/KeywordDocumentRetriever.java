@@ -89,12 +89,21 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
             return of(RagProperties.Keyword.Substring.defaults());
         }
 
+        /**
+         * 错误消息里的配置前缀。
+         *
+         * <p>单独拎出来是因为它必须与真实的键路径逐字一致：写短一层（{@code claw4j.rag.keyword.}）
+         * 就会把人指到一个不存在的键上，而"照着报错去改配置"是最常见的排查动作。八项从
+         * {@code keyword} 挪到 {@code keyword.substring} 那次，这里就漏改过一回。
+         */
+        private static final String KEY_PREFIX = "claw4j.rag.keyword.substring.";
+
         private static Pattern compile(String regex, String name) {
             try {
                 return Pattern.compile(regex);
             } catch (RuntimeException broken) {
                 throw new IllegalStateException(
-                        "claw4j.rag.keyword." + name + " 不是合法正则：" + regex, broken);
+                        KEY_PREFIX + name + " 不是合法正则：" + regex, broken);
             }
         }
     }

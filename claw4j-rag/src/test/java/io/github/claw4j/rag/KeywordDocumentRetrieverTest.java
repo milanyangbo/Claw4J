@@ -149,13 +149,14 @@ class KeywordDocumentRetrieverTest {
     }
 
     @Test
-    @DisplayName("正则配错：启动即抛，不留到第一次提问才变成「一条都不命中」")
+    @DisplayName("正则配错：启动即抛，且消息里的键名是全路径——少一层就会把人指到不存在的键上")
     void brokenPatternFailsFast() {
         RagProperties.Keyword.Substring broken = new RagProperties.Keyword.Substring("(", null, null,
                 null, null, null, null, null);
 
         assertThatThrownBy(() -> KeywordDocumentRetriever.Rules.of(broken))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("anchor-pattern");
+                .hasMessageContaining("claw4j.rag.keyword.substring.anchor-pattern")
+                .hasMessageContaining("不是合法正则");
     }
 }

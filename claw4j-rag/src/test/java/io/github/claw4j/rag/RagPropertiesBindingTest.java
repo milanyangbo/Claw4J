@@ -96,18 +96,4 @@ class RagPropertiesBindingTest {
             assertThat(substring.bigramWeight()).isEqualTo(1);
         });
     }
-
-    @Test
-    @DisplayName("旧的平铺键不再生效，而且是静默的：这条钉的是已知风险，不是想要的行为")
-    void legacyFlatKeysAreIgnored() {
-        runner.withPropertyValues("claw4j.rag.keyword.max-anchors=6")
-                .run(context -> {
-                    assertThat(context).hasNotFailed();
-                    assertThat(context.getBean(RagProperties.class).keyword().substring().maxAnchors())
-                            .as("写到旧位置的值被忽略，回落到 4——升级时这份配置会静默失效。"
-                                    + "要改成启动失败，需要给 RagProperties 加 "
-                                    + "ignoreUnknownFields=false，那会影响所有 claw4j.rag 键，得单独决定")
-                            .isEqualTo(4);
-                });
-    }
 }

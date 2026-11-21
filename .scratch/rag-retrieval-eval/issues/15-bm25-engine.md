@@ -118,11 +118,14 @@ keyword:
 都在 `Keyword.Substring` 里；`KeywordDocumentRetriever` 的构造参数也从 `Keyword` 收窄成 `Substring`
 ——它只用得到那一节，不该拿得到 `engine`。将来 `bm25` 的旋钮挂在 `keyword.bm25`，结构对称。
 
-**代价要说清**：旧键（`claw4j.rag.keyword.max-anchors` 这类）现在被静默忽略——Spring Boot 对未知
-属性默认不报错。`RagPropertiesBindingTest#legacyFlatKeysAreIgnored` 把这个行为钉住了，不是因为它
-对，而是让它成为"已知"而不是"隐患"。要改成启动失败得给 `RagProperties` 加
-`ignoreUnknownFields = false`，那会影响所有 `claw4j.rag` 键（写错任意一个都启动失败），属于另一个
-决定，本票没做。
+**没留旧键兼容**：项目还没发布（`0.1.0-SNAPSHOT`，没有外部部署），不存在"别人按旧结构写过的配置"
+要迁移。旧键不识别就是不识别——不加别名，也不为它写测试。Spring Boot 对未知属性默认不报错，那是
+框架的行为，不是本项目的契约。
+
+**改结构时漏过一处，记下来**：`KeywordDocumentRetriever.Rules#compile` 拼错误消息用的是
+`claw4j.rag.keyword.` + 规则名，键挪到 `substring` 之后那一行没跟着改——报错会把人指到一个
+不存在的键上，而"照着报错去改配置"正好是最常见的排查动作。已修成常量 `KEY_PREFIX`，并在
+`KeywordDocumentRetrieverTest#brokenPatternFailsFast` 里断言全路径。
 
 ### 4. 两个实现细节，写下来免得被"顺手改掉"
 
