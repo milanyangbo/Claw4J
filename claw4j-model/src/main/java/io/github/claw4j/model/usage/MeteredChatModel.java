@@ -71,7 +71,7 @@ public class MeteredChatModel implements ChatModel {
             return response;
         }
         catch (RuntimeException failure) {
-            calls("error");
+            calls("error", failure);
             throw failure;
         }
         finally {
@@ -89,7 +89,7 @@ public class MeteredChatModel implements ChatModel {
                     calls("ok");
                     recordTokens(lastChunk.get());
                 })
-                .doOnError(failure -> calls("error"))
+                .doOnError(failure -> calls("error", failure))
                 // doFinally 而不是 doOnComplete：客户端中断（飞书那边 cancel）也要记耗时，
                 // 否则被掐断的那些请求在耗时分布里整条消失，看着像是没发生过。
                 .doFinally(signal -> duration(true, System.nanoTime() - startedAt));
@@ -101,12 +101,29 @@ public class MeteredChatModel implements ChatModel {
     }
 
     private void calls(String outcome) {
-        Counter.builder(CALLS)
+        calls(outcome, null);
+    }
+
+    /**
+     * 记一次调用。失败时多一个 {@code reason} 标签：冷却与准入闸都要按原因决定"这家什么时候能再用"，
+     * 只有 outcome 的话它们没有输入。
+     *
+     * @param outcome {@code ok} 或 {@code error}
+     * @param failure 失败原因，成功时为 null
+     */
+    private void calls(String outcome, Throwable failure) {
+        Counter.Builder builder = Counter.builder(CALLS)
                 .description("模型调用次数")
                 .tag("route", route)
-                .tag("outcome", outcome)
-                .register(registry)
-                .increment();
+                .tag("outcome", outcome);
+        if (failure != null) {
+            builder = builder.tag("reason", classify(failure).name());
+        }
+        builder.register(registry).increment();
+    }
+
+    private static io.github.claw4j.model.failover.FailoverReason classify(Throwable failure) {
+        return io.github.claw4j.model.failover.FailoverClassifier.classify(failure);
     }
 
     private void duration(boolean stream, long nanos) {

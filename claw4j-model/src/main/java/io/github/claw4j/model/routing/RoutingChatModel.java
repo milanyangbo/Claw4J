@@ -2,7 +2,8 @@ package io.github.claw4j.model.routing;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.claw4j.model.failover.ModelFailures;
+import io.github.claw4j.model.failover.FailoverClassifier;
+import io.github.claw4j.model.failover.FailoverReason;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
@@ -22,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>自己写而不用现成的：Spring AI 2.x 没有多模型主备这个抽象，它的路由是按用途分流
  * （不同 ChatClient 挂不同模型），没有"这家挂了换那家"。
  *
- * <p>降级条件只认"换一家可能好"的失败（判断在 {@link ModelFailures}，只此一处）：限流、5xx、
+ * <p>降级条件只认"换一家可能好"的失败（判断在 {@link FailoverClassifier}，只此一处）：限流、5xx、
  * 连接失败、超时退到下一家；401 / 403 / 400 / 422 与本地构造错误直接报出。不做
  * {@code catch (RuntimeException)} 一刀切：那会让 key 失效时撞完所有供应商再捆成一堆抛出来，
  * 一次确定的错误被拖成 N 次网络往返。
@@ -86,15 +87,16 @@ public class RoutingChatModel implements ChatModel {
                 return route.model().call(optionsFor(prompt, route));
             }
             catch (RuntimeException routeFailure) {
-                if (!ModelFailures.worthTryingAnother(routeFailure)) {
-                    log.warn("模型 {} 调用失败，这类错误换一家也不会好，直接报出：{}",
-                            route.name(), routeFailure.toString());
+                FailoverReason reason = FailoverClassifier.classify(routeFailure);
+                if (!reason.worthTryingAnother()) {
+                    log.warn("模型 {} 调用失败（{}），这类错误换一家也不会好，直接报出：{}",
+                            route.name(), reason, routeFailure.toString());
                     throw new ModelRoutingException(
-                            "模型 " + route.name() + " 调用失败，这类错误换一家也不会好，因此没有降级："
-                                    + routeFailure,
+                            "模型 " + route.name() + " 调用失败（" + reason
+                                    + "），这类错误换一家也不会好，因此没有降级：" + routeFailure,
                             routeFailure);
                 }
-                log.warn("模型 {} 调用失败，降级到下一个（若有）", route.name(), routeFailure);
+                log.warn("模型 {} 调用失败（{}），降级到下一个（若有）", route.name(), reason, routeFailure);
                 failure.addSuppressed(routeFailure);
             }
         }
@@ -114,7 +116,7 @@ public class RoutingChatModel implements ChatModel {
         return route.model().stream(optionsFor(prompt, route))
                 .doOnNext(chunk -> started.set(true))
                 .onErrorResume(error -> {
-                    boolean worthRetrying = ModelFailures.worthTryingAnother(error);
+                    boolean worthRetrying = FailoverClassifier.classify(error).worthTryingAnother();
                     log.warn("模型 {} 流式调用失败（已吐出内容={}，可重试={}）",
                             route.name(), started.get(), worthRetrying, error);
                     int next = index + 1;

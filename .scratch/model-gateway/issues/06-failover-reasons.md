@@ -1,6 +1,6 @@
 # 票 06：失败原因 17 项词表，两个布尔退场
 
-状态：**待做**。裁决：`docs/adr/0035-model-gateway-module.md` 第三节。
+状态：**完成**（2026-11-22）。裁决：`docs/adr/0035-model-gateway-module.md` 第三节。
 
 ## 一、目标
 
@@ -43,3 +43,21 @@
 
 - `session_expired` / `context_overflow` 目前没有产生方（后者在票 10 接上）；词表先留着。
 - `billing` 与 `auth` 的文本判据只做 DeepSeek/通义能见到的两三条，不搬正则库。
+
+## 实施记录
+
+- `FailoverReason` 17 项字面量照抄；两张动作集合（`TRANSIENT_SLOT` / `KEEPS_PROBE_BUDGET`）也在枚举里，
+  另有 `PRODUCER_GAPS` 写明目前没有产生方的五项（`auth_permanent` / `session_expired` /
+  `empty_response` / `no_error_details` / `unknown`）。
+- `FailoverClassifier` 四层判据：Spring AI 两类 → 文本（上下文溢出、额度）→ 状态码 → 解析失败与网络。
+  文本**沿整条 cause 链**取：状态码在外层、真正的原因说明常常在内层
+  （403 带 "insufficient quota" 的那条一开始就踩到这里）。
+- 状态码映射：401 auth、402 billing、403 看文案（有额度词是 billing，否则 auth）、404 model_not_found、
+  408/超时 timeout、429 rate_limit、503 overloaded、其余 5xx server_error。
+- `MeteredChatModel` 的 `claw4j.model.calls` 失败时多一个 `reason` 标签；`RoutingChatModel` 的日志与
+  异常消息也带上原因。
+- `ModelFailures` 与其测试删除；`ModelFailuresTest` 的内容并入 `FailoverClassifierTest`（七条，含
+  "17 项都有归宿"与"两张动作表"）。
+- 偏差：`worthTryingAnother()` 只有 auth / auth_permanent / format / session_expired 返回 false，
+  其余都换家——比 OpenClaw 的"按 reason 查表"粗一档，原因是它那张表里有若干项我们没有产生方；
+  `PRODUCER_GAPS` 补齐时再逐项收紧。

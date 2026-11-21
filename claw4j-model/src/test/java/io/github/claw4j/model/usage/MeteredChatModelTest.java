@@ -68,16 +68,24 @@ class MeteredChatModelTest {
     }
 
     @Test
-    @DisplayName("失败记在 outcome=error 上，异常原样抛出")
-    void failureIsCountedAndRethrown() {
+    @DisplayName("失败记在 outcome=error 上，并带上 reason：冷却与闸要按原因决定何时再用")
+    void failureCarriesFailoverReason() {
         MeteredChatModel model = new MeteredChatModel(
                 model(prompt -> {
-                    throw new IllegalStateException("库连不上");
+                    throw new org.springframework.ai.retry.TransientAiException("429 too many requests");
                 }), "deepseek", registry);
 
         assertThatThrownBy(() -> model.call(new Prompt("上周华东成交额")))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(org.springframework.ai.retry.TransientAiException.class);
         assertThat(counter(MeteredChatModel.CALLS, "outcome", "error")).isEqualTo(1);
+        assertThat(registry.get(MeteredChatModel.CALLS)
+                .tag("route", "deepseek")
+                .tag("outcome", "error")
+                .tag("reason", "rate_limit")
+                .counter()
+                .count())
+                .as("只有 route/outcome 的话，冷却没有输入")
+                .isEqualTo(1.0);
         assertThat(registry.find(MeteredChatModel.TOKENS).counter()).isNull();
     }
 

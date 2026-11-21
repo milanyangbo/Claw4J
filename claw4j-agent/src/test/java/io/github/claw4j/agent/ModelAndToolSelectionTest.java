@@ -1,6 +1,5 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.model.failover.ModelFailures;
 import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.model.routing.ModelRoutingException;
 import io.github.claw4j.model.routing.RoutingChatModel;
