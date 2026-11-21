@@ -24,6 +24,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
@@ -77,15 +78,31 @@ class RetrievalExportTest {
     /** 知识库目录：与 B6 验收用的是同一份。 */
     private static final Path KNOWLEDGE_DIR = TestPaths.repositoryRoot().resolve("examples/knowledge");
 
-    /** 导出落盘处。{@code eval/rag/reports} 的内容不入库，只有目录。 */
-    private static final Path OUTPUT =
-            TestPaths.repositoryRoot().resolve("eval/rag/reports/run.jsonl");
+    /**
+     * 导出落盘处。{@code eval/rag/reports} 的内容不入库，只有目录。
+     *
+     * <p>可用 {@code -Dclaw4j.eval.output=...} 换一个：同一批题跑两次对照时（substring 与
+     * bm25），两次不能写同一个文件——后一次会覆盖前一次，两组分数变成同一组，而报告上看不出。
+     */
+    private static final Path OUTPUT = TestPaths.repositoryRoot()
+            .resolve(System.getProperty("claw4j.eval.output", "eval/rag/reports/run.jsonl"));
 
     /** 评测用的身份。可见性现在不按身份过滤，但检索器要求 context 里必须有它，否则整轮跳过。 */
     private static final Principal EVAL_PRINCIPAL = new Principal("eval");
 
+    /**
+     * 数据库镜像。默认与线上一致；跑到 BM25 时用 {@code -Dclaw4j.eval.image=paradedb/paradedb:pg16}。
+     *
+     * <p>{@code asCompatibleSubstituteFor("postgres")}：Testcontainers 只认自己见过的镜像，
+     * ParadeDB 是"普通 postgres + 扩展"，声明兼容后才会照常等就绪。pgvector 那个镜像同样声明，
+     * 于是两条路走同一段代码——不给某一边开特例。
+     */
+    private static final String IMAGE =
+            System.getProperty("claw4j.eval.image", "pgvector/pgvector:pg16");
+
     /** 容器要在 Spring 建上下文之前起好：{@code DynamicPropertySource} 要读它的端口。 */
-    private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
+    private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(
+            DockerImageName.parse(IMAGE).asCompatibleSubstituteFor("postgres"));
 
     static {
         POSTGRES.start();
@@ -105,6 +122,10 @@ class RetrievalExportTest {
                 () -> TestPaths.repositoryRoot().resolve("examples/guard/sensitive-words.txt").toString());
         // 缓存关掉：它会给同一句话换一个缓存答案，检索就测不到了。
         registry.add("claw4j.advisor.cache.enabled", () -> "false");
+        // 全文那一路的引擎：默认与生产默认一致。BM25 对照传
+        // -Dclaw4j.eval.keyword-engine=bm25，此时镜像也要一起换成 ParadeDB。
+        registry.add("claw4j.rag.keyword.engine",
+                () -> System.getProperty("claw4j.eval.keyword-engine", "substring"));
     }
 
     /**
