@@ -27,13 +27,15 @@ class ModelProviderShapeTest {
                         "claw4j.model.providers.DeepSeek.api=deepseek",
                         "claw4j.model.providers.DeepSeek.base-url=http://127.0.0.1:9",
                         "claw4j.model.providers.DeepSeek.api-keys[0]=secret:deepseek_api_key",
-                        "claw4j.model.providers.DeepSeek.model=deepseek-chat",
+                        "claw4j.model.providers.DeepSeek.models[0].id=deepseek-chat",
+                        "claw4j.model.providers.DeepSeek.models[0].context-window=65536",
                         "DEEPSEEK_API_KEY=test-key")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     ModelProperties properties = context.getBean(ModelProperties.class);
                     assertThat(properties.names()).containsExactly("deepseek");
-                    assertThat(properties.require("deepseek").getModel()).isEqualTo("deepseek-chat");
+                    assertThat(properties.require("deepseek").getModels().getFirst().getId())
+                            .isEqualTo("deepseek-chat");
                     assertThat(properties.require("deepseek").getApi())
                             .isEqualTo(ModelProperties.API_DEEPSEEK);
                 });
@@ -46,7 +48,8 @@ class ModelProviderShapeTest {
                         "claw4j.model.providers.mine.api=bogus-protocol",
                         "claw4j.model.providers.mine.base-url=http://127.0.0.1:9",
                         "claw4j.model.providers.mine.api-keys[0]=secret:mine_api_key",
-                        "claw4j.model.providers.mine.model=m",
+                        "claw4j.model.providers.mine.models[0].id=m",
+                        "claw4j.model.providers.mine.models[0].context-window=1024",
                         "MINE_API_KEY=test-key")
                 .run(context -> {
                     assertThat(context).hasFailed();
@@ -65,14 +68,16 @@ class ModelProviderShapeTest {
                         "claw4j.model.providers.local.api=openai-completions",
                         "claw4j.model.providers.local.auth=none",
                         "claw4j.model.providers.local.base-url=http://127.0.0.1:11434/v1",
-                        "claw4j.model.providers.local.model=qwen3")
+                        "claw4j.model.providers.local.models[0].id=qwen3",
+                        "claw4j.model.providers.local.models[0].context-window=8192")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context.getBean(ModelConfiguration.ProviderModels.class)
-                            .byProvider()).containsKey("local");
+                            .byRef()).containsKey(
+                            new io.github.claw4j.model.catalog.ModelRef("local", "qwen3"));
                     assertThat(context.getBean(RoutingModelConfiguration.ROUTING_BEAN,
                             io.github.claw4j.model.routing.RoutingChatModel.class)
-                            .routeOrder()).containsExactly("local");
+                            .routeOrder()).containsExactly("local/qwen3");
                 });
     }
 
@@ -84,7 +89,8 @@ class ModelProviderShapeTest {
                         "claw4j.model.providers.nokey.api=openai-completions",
                         "claw4j.model.providers.nokey.base-url=http://127.0.0.1:9/v1",
                         "claw4j.model.providers.nokey.api-keys[0]=secret:nokey_api_key",
-                        "claw4j.model.providers.nokey.model=m")
+                        "claw4j.model.providers.nokey.models[0].id=m",
+                        "claw4j.model.providers.nokey.models[0].context-window=1024")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
@@ -101,11 +107,13 @@ class ModelProviderShapeTest {
                         "claw4j.model.providers.first.api=openai-completions",
                         "claw4j.model.providers.first.base-url=http://127.0.0.1:9/v1",
                         "claw4j.model.providers.first.api-keys[0]=secret:first_api_key",
-                        "claw4j.model.providers.first.model=a",
+                        "claw4j.model.providers.first.models[0].id=a",
+                        "claw4j.model.providers.first.models[0].context-window=1024",
                         "claw4j.model.providers.second.api=openai-completions",
                         "claw4j.model.providers.second.base-url=http://127.0.0.1:9/v1",
                         "claw4j.model.providers.second.api-keys[0]=secret:second_api_key",
-                        "claw4j.model.providers.second.model=b",
+                        "claw4j.model.providers.second.models[0].id=b",
+                        "claw4j.model.providers.second.models[0].context-window=1024",
                         "FIRST_API_KEY=k1",
                         "SECOND_API_KEY=k2")
                 .run(context -> {
@@ -114,7 +122,7 @@ class ModelProviderShapeTest {
                             io.github.claw4j.model.routing.RoutingChatModel.class)
                             .routeOrder())
                             .as("primary 排第一，其余按配置顺序")
-                            .containsExactly("second", "first");
+                            .containsExactly("second/b", "first/a");
                 });
     }
 
@@ -123,7 +131,7 @@ class ModelProviderShapeTest {
     void legacyListShapeIsRejected() {
         runner.withPropertyValues(
                         "claw4j.model.providers[0].api=deepseek",
-                        "claw4j.model.providers[0].model=deepseek-chat",
+                        "claw4j.model.providers[0].models[0].id=deepseek-chat",
                         "claw4j.model.providers[0].api-key=secret:deepseek_api_key")
                 .run(context -> {
                     assertThat(context).hasFailed();

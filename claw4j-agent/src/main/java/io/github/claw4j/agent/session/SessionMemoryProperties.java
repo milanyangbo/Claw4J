@@ -79,7 +79,21 @@ public record SessionMemoryProperties(String schema, int poolSize,
 
     /** 压缩阈值：按窗口比例算，不是一个写死的绝对数。 */
     public int compactionThreshold() {
-        return (int) Math.round(contextWindow * triggerRatio);
+        return compactionThreshold(contextWindow);
+    }
+
+    /**
+     * 按给定窗口算压缩阈值。
+     *
+     * <p>为什么不直接用 {@link #contextWindow}：窗口现在是模型的元数据（ADR-0035），
+     * 装配时从目录取；这一项只在目录拿不到时兜底。两处都能算，就必须有一个入口接受"外部传进来的窗口"。
+     *
+     * @param window 当次生效的上下文窗口
+     * @return 触发压缩的 token 数
+     */
+    public int compactionThreshold(int window) {
+        int effective = window <= 0 ? contextWindow : window;
+        return (int) Math.round(effective * triggerRatio);
     }
 
     /** 全部走默认值。 */

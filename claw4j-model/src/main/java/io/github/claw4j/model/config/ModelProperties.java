@@ -143,9 +143,13 @@ public class ModelProperties {
             normalized.put(id, provider);
         }
         this.providers = normalized;
-        if (!providers.isEmpty() && !providers.containsKey(primary)) {
-            throw new IllegalStateException("claw4j.model.primary=" + primary
-                    + " 不在 claw4j.model.providers 里，表里配的是 " + names() + "。");
+        if (!providers.isEmpty()) {
+            // primary 允许 provider/model（具体到哪一行由 ModelCatalog 校验）；这里只查供应商那一段。
+            String providerId = primary.contains("/") ? primary.substring(0, primary.indexOf('/')) : primary;
+            if (!providers.containsKey(providerId)) {
+                throw new IllegalStateException("claw4j.model.primary=" + primary
+                        + " 里的供应商不在 claw4j.model.providers 里，表里配的是 " + names() + "。");
+            }
         }
     }
 
@@ -175,7 +179,8 @@ public class ModelProperties {
          */
         private String baseUrl;
 
-        private String model;
+        /** 这一家下面有哪些模型。顺序即"同一家里的偏好顺序"，第一行是该家的默认模型。 */
+        private List<io.github.claw4j.model.catalog.ModelRow> models = new ArrayList<>();
 
         /**
          * 建立连接的最长时间。这个默认值是防呆兜底，刻意放代码里而不是 yml：
@@ -250,6 +255,37 @@ public class ModelProperties {
                             + "要么这一家不支持鉴权时写 auth: none。");
                 }
             }
+            validateModels();
+        }
+
+        /** 模型行：至少一行、id 非空且不重复、窗口是正数。 */
+        private void validateModels() {
+            if (models == null || models.isEmpty()) {
+                throw new IllegalStateException("claw4j.model.providers." + id + ".models 是空的。"
+                        + "至少写一行，例如 models: [{id: " + (id == null ? "chat" : id + "-chat")
+                        + ", context-window: 65536}]。");
+            }
+            java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+            for (int index = 0; index < models.size(); index++) {
+                io.github.claw4j.model.catalog.ModelRow row = models.get(index);
+                if (row == null) {
+                    throw new IllegalStateException("claw4j.model.providers." + id + ".models[" + index
+                            + "] 是空的。");
+                }
+                String modelId = row.getId();
+                if (modelId == null || modelId.isBlank()) {
+                    throw new IllegalStateException("claw4j.model.providers." + id + ".models[" + index
+                            + "].id 没写：它是被 provider/model 引用的那一半。");
+                }
+                if (!seen.add(modelId)) {
+                    throw new IllegalStateException("claw4j.model.providers." + id + ".models 里 id="
+                            + modelId + " 出现了两次。引用到哪一行取决于顺序，这种不确定性不该存在于配置里。");
+                }
+                if (row.getContextWindow() <= 0) {
+                    throw new IllegalStateException("claw4j.model.providers." + id + ".models[" + index
+                            + "].context-window 没写或不是正数。压缩阈值按它算，缺了就只能拿错误的窗口去压。");
+                }
+            }
         }
 
         /** 这一家要不要发 Authorization。 */
@@ -314,12 +350,12 @@ public class ModelProperties {
             this.baseUrl = baseUrl;
         }
 
-        public String getModel() {
-            return model;
+        public List<io.github.claw4j.model.catalog.ModelRow> getModels() {
+            return models;
         }
 
-        public void setModel(String model) {
-            this.model = model;
+        public void setModels(List<io.github.claw4j.model.catalog.ModelRow> models) {
+            this.models = models == null ? new ArrayList<>() : models;
         }
 
         public Duration getConnectTimeout() {

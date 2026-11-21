@@ -1,5 +1,7 @@
 package io.github.claw4j.model.config;
 
+import io.github.claw4j.model.catalog.ModelCatalog;
+import io.github.claw4j.model.catalog.ModelRef;
 import io.github.claw4j.model.routing.RoutingChatModel;
 import io.github.claw4j.model.usage.MeteredChatModel;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -38,32 +40,33 @@ public class RoutingModelConfiguration {
      * 业务侧（ChatClient、AgentPort）按类型注入 {@code ChatModel}，容器里同时有各家模型和这个路由，
      * 必须用 {@code @Primary} 指定谁是被注入的那个。
      *
-     * @param properties    模型配置，取 {@code claw4j.model.primary}
-     * @param models        已建好的模型，键是供应商 id
+     * @param catalog       目录，给主模型那一行与候选顺序
+     * @param models        已建好的模型，键是 {@code provider/model}
      * @param meterRegistry 可选，有才给每条 route 包一层计量
      * @return 主备路由模型
      */
     @Bean(ROUTING_BEAN)
     @Primary
-    public RoutingChatModel routingChatModel(ModelProperties properties,
+    public RoutingChatModel routingChatModel(ModelCatalog catalog,
                                              ModelConfiguration.ProviderModels models,
                                              ObjectProvider<MeterRegistry> meterRegistry) {
         MeterRegistry registry = meterRegistry.getIfAvailable();
-        Map<String, ChatModel> available = models.byProvider();
-        String primary = properties.getPrimary();
+        Map<ModelRef, ChatModel> available = models.byRef();
+        ModelRef primary = catalog.primary();
         if (!available.containsKey(primary)) {
-            // 拼错的 id 与"id 对但没给钥匙"是两种不同的错，分开说才不用猜。
-            throw new IllegalStateException("claw4j.model.primary=" + primary
-                    + " 不在 claw4j.model.providers 里，表里配的是 " + available.keySet() + "。");
+            throw new IllegalStateException("主模型 " + primary + " 没有对应的模型实例，"
+                    + "现在建好的有 " + available.keySet() + "。");
         }
 
         List<RoutingChatModel.Route> routes = new ArrayList<>();
         // 每条 route 各包一层计量：route 这个标签就是供应商 id，
         // 于是"降级了几次"= 非主那条 route 的调用数，路由类里不需要再有第二个计数器。
-        routes.add(new RoutingChatModel.Route(primary, metered(available.get(primary), primary, registry)));
-        available.forEach((id, model) -> {
-            if (!id.equals(primary)) {
-                routes.add(new RoutingChatModel.Route(id, metered(model, id, registry)));
+        routes.add(new RoutingChatModel.Route(primary.toString(),
+                metered(available.get(primary), primary.toString(), registry)));
+        available.forEach((ref, model) -> {
+            if (!ref.equals(primary)) {
+                routes.add(new RoutingChatModel.Route(ref.toString(),
+                        metered(model, ref.toString(), registry)));
             }
         });
 

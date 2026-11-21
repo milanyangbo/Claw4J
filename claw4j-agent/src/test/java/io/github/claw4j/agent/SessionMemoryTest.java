@@ -624,12 +624,48 @@ class SessionMemoryTest {
                 .isEqualTo(65536);
 
         new SessionMemoryConfiguration().sessionCompactor(mock(SessionService.class), properties,
-                mock(ChatModel.class), new DefaultListableBeanFactory()
-                        .getBeanProvider(MeterRegistry.class));
+                mock(ChatModel.class),
+                new DefaultListableBeanFactory().getBeanProvider(
+                        io.github.claw4j.model.catalog.ModelCatalog.class),
+                new DefaultListableBeanFactory().getBeanProvider(MeterRegistry.class));
 
         assertThat(output.toString())
                 .as("这一行是换模型时唯一看得见窗口的地方，三个数都必须是绑上来的值")
                 .contains("窗口 131072 token", "到 65536 触发", "保留最近 20 条事件");
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("目录优先、会话配置兜底：主模型那一行说 65536，就不该按配置里的 131072 去压")
+    void sessionContextWindowIsFallbackOnly(CapturedOutput output) {
+        io.github.claw4j.model.catalog.ModelRow row = new io.github.claw4j.model.catalog.ModelRow();
+        row.setId("deepseek-chat");
+        row.setContextWindow(65536);
+        io.github.claw4j.model.config.ModelProperties.Provider deepseek =
+                new io.github.claw4j.model.config.ModelProperties.Provider();
+        deepseek.setApi(io.github.claw4j.model.config.ModelProperties.API_DEEPSEEK);
+        deepseek.setBaseUrl("http://127.0.0.1:9");
+        deepseek.setApiKeys(List.of("secret:deepseek_api_key"));
+        deepseek.setModels(List.of(row));
+        io.github.claw4j.model.config.ModelProperties modelProperties =
+                new io.github.claw4j.model.config.ModelProperties();
+        modelProperties.setProviders(Map.of("deepseek", deepseek));
+        io.github.claw4j.model.catalog.ModelCatalog catalog =
+                io.github.claw4j.model.catalog.ModelCatalog.of(modelProperties);
+
+        DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
+        factory.registerSingleton("modelCatalog", catalog);
+        SessionMemoryProperties properties =
+                new SessionMemoryProperties(null, 131072, 0, 0, 0, null);
+
+        new SessionMemoryConfiguration().sessionCompactor(mock(SessionService.class), properties,
+                mock(ChatModel.class),
+                factory.getBeanProvider(io.github.claw4j.model.catalog.ModelCatalog.class),
+                factory.getBeanProvider(MeterRegistry.class));
+
+        assertThat(output.toString())
+                .as("窗口是模型的元数据：目录里那行才是准的，配置那个数只在没有目录时兜底")
+                .contains("窗口 65536 token", "到 32768 触发");
     }
 
     /** 只装会话属性，不装整套会话装配：这条用例问的是"键绑在哪一层"，不是"记忆能不能跑"。 */

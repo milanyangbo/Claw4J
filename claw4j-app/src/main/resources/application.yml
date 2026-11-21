@@ -51,12 +51,18 @@ claw4j:
         api: deepseek
         base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
         api-keys: [secret:deepseek_api_key]
-        model: ${DEEPSEEK_MODEL:deepseek-chat}
+        # 一行一个模型。context-window 是总窗口，压缩阈值按它算（ADR-0035）：
+        # 它跟着模型走，降级到备模型之后用的就是备模型的窗口。
+        models:
+          - id: ${DEEPSEEK_MODEL:deepseek-chat}
+            context-window: 65536
       qwen:
         api: openai-completions
         base-url: ${QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
         api-keys: [secret:qwen_api_key]
-        model: ${QWEN_MODEL:qwen-plus}
+        models:
+          - id: ${QWEN_MODEL:qwen-plus}
+            context-window: 131072
 
     # 向量模型：语义缓存与知识库共用这一份，只跟 qwen key 走。
     embedding:

@@ -30,6 +30,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
+import io.github.claw4j.model.catalog.ModelCatalog;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -155,6 +156,21 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
+     * 当次生效的上下文窗口：目录优先，会话配置兜底。
+     *
+     * @param catalog  模型目录，可能为 null（这个部署没装配模型层）
+     * @param fallback 会话配置里的那个数
+     * @return token 数
+     */
+    private static int contextWindowOf(ModelCatalog catalog, int fallback) {
+        if (catalog == null) {
+            return fallback;
+        }
+        int window = catalog.primaryRow().getContextWindow();
+        return window <= 0 ? fallback : window;
+    }
+
+    /**
      * 压缩器：进模型之前把历史收拾一遍（M3-02）。
      *
      * <p>摘要用一个单独建的 {@code ChatClient}，不挂任何 Advisor：挂上记忆 Advisor 就是
@@ -174,17 +190,19 @@ public class SessionMemoryConfiguration implements DisposableBean {
     public SessionCompactor sessionCompactor(SessionService sessionService,
                                              SessionMemoryProperties properties,
                                              ChatModel chatModel,
+                                             ObjectProvider<ModelCatalog> catalog,
                                              ObjectProvider<MeterRegistry> meterRegistry) {
         ChatClient summaryClient = ChatClient.builder(chatModel).build();
-        // 三个数是"改了要重启才生效"的，所以放在启动期而不是每轮。它也是"换主模型时改没改
-        // context-window"唯一看得见的地方——本仓库没有 OpenClaw 那样的模型目录可查
-        // （它靠 openclaw models list 与协议里的 contextWindows 暴露，见票 05 第二节）。
+        // 窗口跟着模型走（ADR-0035）：目录里主模型那一行说了算；目录拿不到时，
+        // claw4j.advisor.session.context-window 才兜底——它现在只是一个"没有目录的部署"的退路。
+        int window = contextWindowOf(catalog.getIfAvailable(), properties.contextWindow());
+        // 三个数是"改了要重启才生效"的，所以放在启动期而不是每轮。
         log.info("会话压缩已启用：窗口 {} token、到 {} 触发（{}%）、保留最近 {} 条事件",
-                properties.contextWindow(), properties.compactionThreshold(),
+                window, properties.compactionThreshold(window),
                 Math.round(properties.triggerRatio() * 100), properties.eventsToKeep());
         var trigger = TokenCountTrigger.builder()
-                // 按窗口比例算出来的数：换模型只改 context-window 一个值。
-                .threshold(properties.compactionThreshold())
+                // 按窗口比例算出来的数：换模型只改目录里那一行的 context-window。
+                .threshold(properties.compactionThreshold(window))
                 .build();
         var strategy = RecursiveSummarizationCompactionStrategy.builder(summaryClient)
                 .maxEventsToKeep(properties.eventsToKeep())

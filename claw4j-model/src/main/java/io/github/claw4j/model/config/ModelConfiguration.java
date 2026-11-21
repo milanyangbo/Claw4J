@@ -53,19 +53,21 @@ public class ModelConfiguration {
     private static final Logger log = LoggerFactory.getLogger(ModelConfiguration.class);
 
     /**
-     * 建好的模型，键是供应商 id。
+     * 建好的模型，键是 {@code provider/model}。
      *
-     * <p>用一个 holder 而不是"每家一个 {@code ChatModel} bean"：bean 的集合要在运行期按配置长度
-     * 决定，{@code @Bean} 方法数却是编译期固定的。多一层 holder 之后，加供应商只改配置这件事
-     * 才成立。
+     * <p>一个目录行一个 ChatModel——不是一家一个。上下文窗口、最大输出都是行的属性，
+     * 一家两行共用同一个 ChatModel 的话，调用时就没法按"这一次回答用的是哪一行"去算阈值。
      *
-     * @param byProvider id → 模型，顺序与配置一致
+     * <p>用一个 holder 而不是"每行一个 {@code ChatModel} bean"：bean 的集合要在运行期按配置长度
+     * 决定，{@code @Bean} 方法数却是编译期固定的。
+     *
+     * @param byRef 引用 → 模型，顺序与目录一致
      */
-    public record ProviderModels(Map<String, ChatModel> byProvider) {
+    public record ProviderModels(Map<io.github.claw4j.model.catalog.ModelRef, ChatModel> byRef) {
 
         public ProviderModels {
-            // 不用 Map.copyOf：它不保证顺序，而备选顺序就是这张表的顺序
-            byProvider = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(byProvider));
+            // 不用 Map.copyOf：它不保证顺序，而备选顺序就是目录的顺序
+            byRef = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(byRef));
         }
     }
 
@@ -80,20 +82,33 @@ public class ModelConfiguration {
     @Bean
     public ProviderModels providerChatModels(ModelProperties properties, Environment environment) {
         SecretResolver secrets = PropertySecretResolver.of(environment::getProperty);
-        Map<String, ChatModel> built = new LinkedHashMap<>();
+        Map<io.github.claw4j.model.catalog.ModelRef, ChatModel> built = new LinkedHashMap<>();
         for (String id : properties.names()) {
             ModelProperties.Provider config = properties.require(id);
             requireConfigured(config, secrets);
-            ChatModel model = switch (config.getApi()) {
-                case ModelProperties.API_DEEPSEEK -> deepSeek(config, secrets);
-                case ModelProperties.API_OPENAI_COMPLETIONS -> openAiCompatible(config, secrets);
-                // 绑定时的 validate() 已经拒过未知值，这里只是编译期的穷尽性兜底
-                default -> throw new IllegalStateException("claw4j.model.providers." + id + ".api="
-                        + config.getApi() + " 没有对应的适配器，可选 " + ModelProperties.KNOWN_APIS);
-            };
-            built.put(id, model);
+            for (io.github.claw4j.model.catalog.ModelRow row : config.getModels()) {
+                ChatModel model = switch (config.getApi()) {
+                    case ModelProperties.API_DEEPSEEK -> deepSeek(config, row, secrets);
+                    case ModelProperties.API_OPENAI_COMPLETIONS -> openAiCompatible(config, row, secrets);
+                    // 绑定时的 validate() 已经拒过未知值，这里只是编译期的穷尽性兜底
+                    default -> throw new IllegalStateException("claw4j.model.providers." + id + ".api="
+                            + config.getApi() + " 没有对应的适配器，可选 " + ModelProperties.KNOWN_APIS);
+                };
+                built.put(new io.github.claw4j.model.catalog.ModelRef(id, row.getId()), model);
+            }
         }
         return new ProviderModels(built);
+    }
+
+    /**
+     * 目录：每一行的元数据摊平成 {@code provider/model → 行}，主模型那一行也从这里定。
+     *
+     * @param properties 供应商表
+     * @return 目录
+     */
+    @Bean
+    public io.github.claw4j.model.catalog.ModelCatalog modelCatalog(ModelProperties properties) {
+        return io.github.claw4j.model.catalog.ModelCatalog.of(properties);
     }
 
     /**
@@ -107,7 +122,9 @@ public class ModelConfiguration {
      * @param secrets 密钥解析器
      * @return 同步与流式聊天模型
      */
-    private static ChatModel deepSeek(ModelProperties.Provider config, SecretResolver secrets) {
+    private static ChatModel deepSeek(ModelProperties.Provider config,
+                                      io.github.claw4j.model.catalog.ModelRow row,
+                                      SecretResolver secrets) {
         HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(config.getConnectTimeout())
                 .build();
@@ -126,14 +143,14 @@ public class ModelConfiguration {
                 .webClientBuilder(WebClient.builder().clientConnector(webClientConnector))
                 .build();
 
-        logModel(config, "DeepSeek 适配器");
+        logModel(config, row, "DeepSeek 适配器");
 
         return DeepSeekChatModel.builder()
                 .deepSeekApi(api)
                 // 必须显式给 model：默认 options 的 model 是 null，
                 // 请求不带 model 时 DeepSeek 会返回空内容，而且不报错——很难排查。
                 .options(DeepSeekChatOptions.builder()
-                        .model(config.getModel())
+                        .model(row.getId())
                         .temperature(config.getTemperature())
                         .build())
                 // 模型内部只留短重试（10 次 × 100ms），不用默认的两秒起跳、上限 180s 那一份。
@@ -153,7 +170,9 @@ public class ModelConfiguration {
      * @param secrets 密钥解析器
      * @return 走 OpenAI 兼容端点的同步与异步聊天模型
      */
-    private static ChatModel openAiCompatible(ModelProperties.Provider config, SecretResolver secrets) {
+    private static ChatModel openAiCompatible(ModelProperties.Provider config,
+                                              io.github.claw4j.model.catalog.ModelRow row,
+                                              SecretResolver secrets) {
         SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()
                 .timeout(config.getReadTimeout())
                 .build();
@@ -181,13 +200,14 @@ public class ModelConfiguration {
 
         OpenAIClient client = new OpenAIClientImpl(options.build());
 
-        logModel(config, config.requiresCredential() ? "OpenAI 兼容端点" : "OpenAI 兼容端点（auth: none）");
+        logModel(config, row, config.requiresCredential()
+                ? "OpenAI 兼容端点" : "OpenAI 兼容端点（auth: none）");
 
         return OpenAiChatModel.builder()
                 .openAiClient(client)
                 .openAiClientAsync(client.async())
                 .options(OpenAiChatOptions.builder()
-                        .model(config.getModel())
+                        .model(row.getId())
                         .temperature(config.getTemperature())
                         .build())
                 .build();
@@ -214,13 +234,11 @@ public class ModelConfiguration {
             }
             config.apiKey().requireResolvable(secrets);
         }
-        if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()
-                || config.getModel() == null || config.getModel().isBlank()) {
+        if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()) {
             throw new IllegalStateException(
-                    "claw4j.model.providers." + config.id() + " 的 base-url / model 未配置，"
+                    "claw4j.model.providers." + config.id() + " 的 base-url 未配置，"
                             + "唯一默认值在 application.yml。"
-                            + "可用环境变量 " + config.envPrefix() + "_BASE_URL / "
-                            + config.envPrefix() + "_MODEL 覆盖。");
+                            + "可用环境变量 " + config.envPrefix() + "_BASE_URL 覆盖。");
         }
     }
 
@@ -231,9 +249,10 @@ public class ModelConfiguration {
      * @param config 这一家的配置
      * @param label  适配器名，写进日志
      */
-    private static void logModel(ModelProperties.Provider config, String label) {
-        log.info("已装配 {}：id={}, baseUrl={}, model={}, 凭据={}, connectTimeout={}, readTimeout={}",
-                label, config.id(), config.getBaseUrl(), config.getModel(),
+    private static void logModel(ModelProperties.Provider config,
+                                 io.github.claw4j.model.catalog.ModelRow row, String label) {
+        log.info("已装配 {}：id={}, baseUrl={}, model={}, 窗口={}, 凭据={}, connectTimeout={}, readTimeout={}",
+                label, config.id(), config.getBaseUrl(), row.getId(), row.getContextWindow(),
                 config.requiresCredential() ? config.apiKey().text() : "（auth: none）",
                 config.getConnectTimeout(), config.getReadTimeout());
     }

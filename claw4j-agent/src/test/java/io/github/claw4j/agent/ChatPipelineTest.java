@@ -306,12 +306,15 @@ class ChatPipelineTest {
         // 配的是句柄，真值在测试自己的 Environment 里（P08 之后模型装配只认这一条路）。
         deepseek.setApiKeys(List.of("secret:deepseek_api_key"));
         deepseek.setBaseUrl("https://api.deepseek.com");
-        deepseek.setModel("deepseek-chat");
+        io.github.claw4j.model.catalog.ModelRow row = new io.github.claw4j.model.catalog.ModelRow();
+        row.setId("deepseek-chat");
+        row.setContextWindow(65536);
+        deepseek.setModels(List.of(row));
         ModelProperties properties = new ModelProperties();
         properties.setProviders(Map.of("deepseek", deepseek));
         ChatModel model = new ModelConfiguration()
                 .providerChatModels(properties, keyInEnvironment(apiKey))
-                .byProvider().get("deepseek");
+                .byRef().get(new io.github.claw4j.model.catalog.ModelRef("deepseek", "deepseek-chat"));
 
         List<String> executedSql = new CopyOnWriteArrayList<>();
         ToolCallback querySales = MethodToolCallbackProvider.builder()
