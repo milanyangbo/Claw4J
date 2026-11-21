@@ -47,6 +47,33 @@ class RagPropertiesBindingTest {
     }
 
     @Test
+    @DisplayName("引擎能绑上：配 bm25 就走 BM25，不配就是 substring")
+    void bindsEngine() {
+        runner.withPropertyValues("claw4j.rag.keyword.engine=bm25")
+                .run(context -> {
+                    RagProperties.Keyword keyword = context.getBean(RagProperties.class).keyword();
+
+                    assertThat(keyword.engine()).isEqualTo(RagProperties.Keyword.ENGINE_BM25);
+                    assertThat(keyword.isBm25()).isTrue();
+                });
+
+        runner.run(context -> assertThat(context.getBean(RagProperties.class).keyword().isBm25())
+                .as("一行不配时还是 substring：升级后行为不变")
+                .isFalse());
+    }
+
+    @Test
+    @DisplayName("引擎拼错：启动失败，不是静默回落")
+    void rejectsUnknownEngineAtStartup() {
+        runner.withPropertyValues("claw4j.rag.keyword.engine=bm2")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasRootCauseMessage("claw4j.rag.keyword.engine 只能是 substring 或 bm25，收到：bm2");
+                });
+    }
+
+    @Test
     @DisplayName("一行都不配：八项全是默认值，与配置化之前写死在代码里的那套一致")
     void emptyConfigKeepsTheOldBehaviour() {
         runner.run(context -> {

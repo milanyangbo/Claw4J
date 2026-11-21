@@ -3,6 +3,7 @@ package io.github.claw4j.rag;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.Locale;
 
 /**
  * 知识库的几项配置。
@@ -25,7 +26,7 @@ import java.time.Duration;
  * @param minSimilarity 相似度下限，只作用于向量那一路
  * @param chunkSize     一块最多多少 token（不是字符）。切块见 {@link SemanticTextSplitter}
  * @param hybrid        混合检索（向量 + 全文两路）。关掉只剩向量
- * @param keyword       全文那一路的词项规则（三个正则、三个上限、两个权重），见 {@link Keyword}
+ * @param keyword       全文那一路的引擎与词项规则（引擎二选一，规则只对 substring 生效），见 {@link Keyword}
  * @param rerank        重排。关掉只影响顺序，不影响召回
  * @param parent        章节父块回填（small-to-big）。默认关，见 {@link Parent}
  * @param rewrite       检索前改写。默认关，见 {@link Rewrite}
@@ -129,9 +130,27 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
      * @param wholeWeight       整句与锚点的权重（锚点复用这个值）
      * @param bigramWeight      中文 bigram 的权重
      */
-    public record Keyword(String anchorPattern, String shortModelPattern, String cjkPattern,
+    public record Keyword(String engine, String anchorPattern, String shortModelPattern, String cjkPattern,
                           Integer maxAnchors, Integer maxTerms, Integer wholeMaxChars,
                           Integer wholeWeight, Integer bigramWeight) {
+
+        /**
+         * 子串匹配引擎：{@code content ilike '%词项%'}，自己拆词项。
+         *
+         * <p>任何 PG 都能跑，不要求额外扩展。代价写在 {@link KeywordDocumentRetriever} 的类注释里：
+         * 它没有分词，所以"什么算词"只能靠下面这些形状规则去猜。
+         */
+        public static final String ENGINE_SUBSTRING = "substring";
+
+        /**
+         * BM25 引擎：ParadeDB {@code pg_search} + jieba 分词 + IDF。
+         *
+         * <p>要求数据库换成 ParadeDB 镜像。换过去之后<b>下面八项全部不生效</b>——分词、
+         * IDF、长度归一都在引擎里，那些规则存在的理由（猜词）消失了。这不是"两种实现细节不同"，
+         * 是两种能力：{@code A1}/{@code A2} 这类两字符型号在前者需要专门加一条形状规则，
+         * 在后者是默认行为。
+         */
+        public static final String ENGINE_BM25 = "bm25";
 
         /** 长锚点。下限 3 是躲开 {@code a}、{@code 1} 这类噪声。 */
         public static final String DEFAULT_ANCHOR_PATTERN = "[A-Za-z0-9][A-Za-z0-9._-]{2,}";
@@ -170,6 +189,14 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
         public static final int DEFAULT_BIGRAM_WEIGHT = 1;
 
         public Keyword {
+            engine = (engine == null || engine.isBlank())
+                    ? ENGINE_SUBSTRING : engine.strip().toLowerCase(Locale.ROOT);
+            // 拼错不回落：静默回落的表现是"改了配置没反应"，而这里两条路的代价差一个镜像。
+            // 抛在绑定期，启动就看得见；换成运行期才发现，人只会以为"BM25 没效果"。
+            if (!ENGINE_SUBSTRING.equals(engine) && !ENGINE_BM25.equals(engine)) {
+                throw new IllegalArgumentException("claw4j.rag.keyword.engine 只能是 "
+                        + ENGINE_SUBSTRING + " 或 " + ENGINE_BM25 + "，收到：" + engine);
+            }
             anchorPattern = (anchorPattern == null || anchorPattern.isBlank())
                     ? DEFAULT_ANCHOR_PATTERN : anchorPattern.strip();
             shortModelPattern = (shortModelPattern == null || shortModelPattern.isBlank())
@@ -186,7 +213,20 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
         }
 
         static Keyword defaults() {
-            return new Keyword(null, null, null, null, null, null, null, null);
+            return new Keyword(null, null, null, null, null, null, null, null, null);
+        }
+
+        /**
+         * 是否走 BM25 引擎。
+         *
+         * <p>只在这一处判断：装配选实现、启动任务决定建哪种索引，两处都读它。散开写
+         * {@code ENGINE_BM25.equals(...)} 的后果是"装配走了 BM25、索引却按 substring 建"——
+         * 表现是启动不报错、每次检索都失败。
+         *
+         * @return 配的是 BM25 时为 true
+         */
+        public boolean isBm25() {
+            return ENGINE_BM25.equals(engine);
         }
     }
 

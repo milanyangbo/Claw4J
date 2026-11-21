@@ -225,8 +225,32 @@ select similarity('退货', '无理由退货');
 `12 个字`对中文是一句话，对英文只有一两个词；`3 : 1` 是"字面精确 vs 覆盖度"的比值，换语言要重标。
 正则语法错在启动时抛，否则表现是"全文那一路一条都不命中"，不报错。
 
-**它不是 BM25**：没有 IDF、没有长度归一、也没有倒排索引。真 BM25 要 `pg_bigm` / `zhparser` /
-ParadeDB `pg_search`，三者都要换数据库镜像。这一步没做，代价写在下面"索引"一节。
+### 两个引擎：`substring` 与 `bm25`
+
+全文那一路有两个实现，由 `claw4j.rag.keyword.engine` 选：
+
+| 引擎 | 实现 | 要求 | 上面那套词项规则 |
+| --- | --- | --- | --- |
+| `substring`（默认） | `KeywordDocumentRetriever`：`ilike` + 自拆词项 | 任何 PG | 生效 |
+| `bm25` | `Bm25KeywordDocumentRetriever`：ParadeDB `pg_search` + `pdb.jieba` + IDF | 必须换 `paradedb/paradedb` 镜像 | **不生效** |
+
+为什么要第二个：`substring` 那一路没有分词，"什么算词"只能靠正则猜。语料里多一种编号写法就要多
+一条规则（`A1`/`A2` 就是这么来的），而规则没有尽头——ADR-0033 决定这一路冻结，新能力走 BM25。
+BM25 把分词、IDF、长度归一交给引擎，`A2`、`AB-12`、中文型号都不需要各自的形状规则。
+
+代价是**换引擎**，不是加参数：镜像、许可证（AGPL-3.0 + 商业双许可）、融合权重重标都要重新判断。
+所以默认仍是 `substring`，换不换由一次 L1 对照决定（票 15 的"不做"里写明了本轮不换默认）。
+
+**索引是硬依赖**：没有 bm25 索引时查询直接报错（`does not contain a USING paradedb index`），
+不是慢一点。所以建索引失败必须**启动失败**，消息里给两条出路（换镜像 / 设回 `substring`）。
+这与 trigram 索引"失败只 WARN"刚好相反：那边没有索引只是慢，这边没有索引是不可用。
+
+语法错（`engine: bm2`）也在启动时抛：静默回落成 `substring` 的表现是"改了配置没反应"，
+而两条路的部署前提差一个镜像，这种错不能靠运气被人发现。
+
+真容器测试是 `claw4j-app` 的 `Bm25SearchTest`，**默认跳过**：
+`-Dclaw4j.test.paradedb=true` 才跑，镜像名走 `-Dclaw4j.test.paradedb.image`（内网填镜像站地址）。
+它验的是单测验不了的那一半——分词真的把 `A2` 当成一个词。
 
 ### 分数怎么来
 
@@ -455,7 +479,8 @@ claw4j:
     hybrid:
       enabled: true                   # 关掉 = 只有向量
       candidates-per-route: 25        # 每路召回；融合按 id 去重，池子约等于这个数
-    keyword:                          # 全文那一路的词项规则（都带领域假设，所以可配）
+    keyword:                          # 全文那一路：引擎二选一 + 词项规则（规则只对 substring 生效）
+      engine: substring               # substring（默认，任何 PG）/ bm25（ParadeDB，要求换镜像）
       anchor-pattern: '[A-Za-z0-9][A-Za-z0-9._-]{2,}'        # 长锚点：≥3 字符
       short-model-pattern: '(?<![A-Za-z0-9])[A-Za-z]\d{1,2}(?![A-Za-z0-9])'   # A1 / A2
       cjk-pattern: '[\u4e00-\u9fff\u3040-\u30ff]+'           # bigram 的切分范围

@@ -190,10 +190,30 @@ public class RagAutoConfiguration {
                 .similarityThreshold(properties.minSimilarity())
                 .build();
         DocumentRetriever keyword = hybrid.enabled()
-                ? new KeywordDocumentRetriever(jdbc, KnowledgeIndexer.SOURCE_KIND,
-                        hybrid.candidatesPerRoute(), properties.keyword())
+                ? keywordRetriever(jdbc, properties)
                 : null;
         return new HybridDocumentRetriever(vector, keyword, new WeightedScoreJoiner());
+    }
+
+    /**
+     * 按 {@code claw4j.rag.keyword.engine} 选全文那一路的实现。
+     *
+     * <p>两个实现只在这个方法里出现，别处不许判断引擎：散开判的后果是"装配走了 BM25、
+     * 索引却按 substring 建"——启动不报错，每次检索都失败。
+     *
+     * <p>BM25 那条没有把八项词项规则传进去，因为它们对它不生效。传进去也不报错，
+     * 但会让人以为改 {@code anchor-pattern} 能影响 BM25 的结果。
+     *
+     * @param jdbc       JDBC 句柄
+     * @param properties 知识库配置
+     * @return 全文那一路的检索器
+     */
+    private static DocumentRetriever keywordRetriever(JdbcTemplate jdbc, RagProperties properties) {
+        int candidates = properties.hybrid().candidatesPerRoute();
+        return properties.keyword().isBm25()
+                ? new Bm25KeywordDocumentRetriever(jdbc, KnowledgeIndexer.SOURCE_KIND, candidates)
+                : new KeywordDocumentRetriever(jdbc, KnowledgeIndexer.SOURCE_KIND, candidates,
+                        properties.keyword());
     }
 
     /**
@@ -563,21 +583,37 @@ public class RagAutoConfiguration {
     }
 
     /**
-     * 启动后：先建 trigram 索引，再同步一次目录。
+     * 启动后：先建这一路要用的索引，再同步一次目录。
      *
      * <p>索引在这里建，是因为 {@code vector_store} 由框架建，迁移跑的时候它还不存在，所以 V5 只建
-     * 扩展。索引建不出来只 WARN——它影响的是速度，不是结果。
+     * 扩展。
+     *
+     * <p>两种引擎建不同索引，且失败的处理<b>故意不一样</b>：
+     *
+     * <ul>
+     *   <li>trigram 建不出来只 WARN——它影响的是速度，结果一样；
+     *   <li>bm25 建不出来直接抛，启动失败——没有索引时查询会报错，不是变慢。
+     *       那个异常的消息里带了两条出路（换镜像 / 设回 substring）。
+     * </ul>
+     *
+     * <p>{@code hybrid.enabled=false} 时两种都不建：全文那一路根本没装，建出来的索引没人用。
      *
      * <p>同步失败会让启动失败：空知识库不该被当成"正常启动"。
      *
-     * @param indexer 目录同步器
-     * @param jdbc    JDBC 句柄，用来建索引
+     * @param indexer    目录同步器
+     * @param jdbc       JDBC 句柄，用来建索引
+     * @param properties 知识库配置，决定建哪一种索引
      * @return 启动后跑一次的任务
      */
     @Bean
-    public ApplicationRunner knowledgeIndexRunner(KnowledgeIndexer indexer, JdbcTemplate jdbc) {
+    public ApplicationRunner knowledgeIndexRunner(KnowledgeIndexer indexer, JdbcTemplate jdbc,
+                                                  RagProperties properties) {
         return args -> {
-            ensureTrigramIndex(jdbc);
+            if (properties.hybrid().enabled() && properties.keyword().isBm25()) {
+                Bm25KeywordDocumentRetriever.ensureIndex(jdbc);
+            } else {
+                ensureTrigramIndex(jdbc);
+            }
             indexer.index();
         };
     }
