@@ -1,6 +1,6 @@
 # 票 08：重试预算交给 Spring 的 RetryPolicy
 
-状态：**待做**。裁决：`docs/adr/0035-model-gateway-module.md` 第五节。
+状态：**完成**（2026-11-22）。裁决：`docs/adr/0035-model-gateway-module.md` 第五节。
 
 ## 一、目标
 
@@ -42,3 +42,15 @@
 
 - "有 replay-safe 候选时限流只重试 2 次"依赖票 10 的候选链；本票先把 2 次 / 15s 这档做成可配置，票 10 接上。
 - 流式请求不重试（吐过内容不能重来），与现状一致。
+
+## 实施记录
+
+- `RetryBudget`：限流 15 次重试（16 次总尝试）、其它瞬时 8 次 + 90s 窗口、1s 起 ×2、
+  抖动 10%、封顶 60s / 30s；用 Spring 的 `RetryPolicy` / `RetryTemplate`，没自己写退避。
+- **供应商 bean 只装"其它瞬时"那一档**：同一家内部重打 429 只会更糟，限流该做的是冷却 + 换家
+  （票 07 / 10）。限流那 16 次留给外层路由。
+- DeepSeek 的 `RetryUtils.SHORT_RETRY_TEMPLATE` 删掉，改吃这个 bean；通义侧 `maxRetries(0)` 保持
+  （SDK 内部不重试，由统一预算负责）。
+- `worthWaiting(Duration)`：供应商给的 `Retry-After` 超过 60s 就不等，交回路由。
+- 缺口："有 replay-safe 候选时限流只重试 2 次"仍未接：外层路由目前按候选逐个尝试，
+  没有单独收窄限流档。

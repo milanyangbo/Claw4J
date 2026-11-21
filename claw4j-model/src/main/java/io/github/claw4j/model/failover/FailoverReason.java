@@ -95,6 +95,23 @@ public enum FailoverReason {
             auth_permanent, session_expired, empty_response, no_error_details, unknown);
 
     /**
+     * 同一个模型上再试一次有没有意义（重试预算用）。
+     *
+     * <p>与 {@link #worthTryingAnother()} 不是一回事：{@code route_unavailable} / {@code timeout}
+     * 值得在同家重试（链路抖了一下），但换一家也对；{@code context_overflow} 换一家有意义、
+     * 同家重试没意义（同一个窗口还是装不下）。
+     *
+     * @return 值得同家重试时为 true
+     */
+    public boolean retryable() {
+        return switch (this) {
+            case auth, auth_permanent, format, model_not_found, session_expired,
+                 tls_certificate, billing, context_overflow -> false;
+            default -> true;
+        };
+    }
+
+    /**
      * 换另一家还有没有意义。
      *
      * <p>false 的只有四种：鉴权失败（换谁都要钥匙）、凭据永久失效、格式不对（同一份请求换一家

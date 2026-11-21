@@ -23,9 +23,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * 模型，一次提问可能是 3~6 次调用。只在最外层记一次，看到的是「一次提问」，而账单按「一次调用」结，
  * 成本恰恰在中间那几轮。
  *
- * <p>包在每条 route 上，而不是包住整个 {@code RoutingChatModel}：{@code route} 这个标签要能回答
+ * <p>包在每条候选上，而不是包住整个 {@code ModelRouter}：{@code route} 这个标签要能回答
  * 「这次是主模型答的，还是降级之后答的」。包在外面只知道「这次请求成功了」；要分清就得在
- * {@code RoutingChatModel} 里再埋一个计数器，那是第二处状态，而这里一个标签就够了——降级次数等于
+ * {@code ModelRouter} 里再埋一个计数器，那是第二处状态，而这里一个标签就够了——降级次数等于
  * 另一条 route 的调用数。
  *
  * <p>流式只认最后一帧：多数供应商只在末帧带 usage，前面的帧里是空。逐帧累加的结果是把总量记成 0

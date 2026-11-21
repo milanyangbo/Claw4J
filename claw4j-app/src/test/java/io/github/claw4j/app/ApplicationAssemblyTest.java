@@ -3,7 +3,7 @@ package io.github.claw4j.app;
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.guard.SensitiveWords;
-import io.github.claw4j.model.routing.ModelRoutingException;
+import io.github.claw4j.model.routing.ModelFallbackExhaustedException;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
@@ -613,7 +613,7 @@ class ApplicationAssemblyTest {
     @DisplayName("模型这一轮给不出可用结果 → 503，不是 500；body 里不带内部原文")
     void modelFailureIsUnavailableNotAServerError() {
         ResponseEntity<HttpChatController.ErrorResponse> response = new ModelFailureAdvice()
-                .onModelUnavailable(new ModelRoutingException(
+                .onModelUnavailable(new ModelFallbackExhaustedException(
                         "模型 deepseek 调用失败，这类错误换一家也不会好："
                                 + "Conversion from JSON to java.util.Map failed"));
 

@@ -313,7 +313,8 @@ class ChatPipelineTest {
         ModelProperties properties = new ModelProperties();
         properties.setProviders(Map.of("deepseek", deepseek));
         ChatModel model = new ModelConfiguration()
-                .providerChatModels(properties, keyInEnvironment(apiKey))
+                .providerChatModels(properties, keyInEnvironment(apiKey),
+                        io.github.claw4j.model.failover.RetryBudget.defaults())
                 .byRef().get(new io.github.claw4j.model.catalog.ModelRef("deepseek", "deepseek-chat"));
 
         List<String> executedSql = new CopyOnWriteArrayList<>();

@@ -76,7 +76,7 @@ class ModelProviderShapeTest {
                             .byRef()).containsKey(
                             new io.github.claw4j.model.catalog.ModelRef("local", "qwen3"));
                     assertThat(context.getBean(RoutingModelConfiguration.ROUTING_BEAN,
-                            io.github.claw4j.model.routing.RoutingChatModel.class)
+                            io.github.claw4j.model.routing.ModelRouter.class)
                             .routeOrder()).containsExactly("local/qwen3");
                 });
     }
@@ -119,7 +119,7 @@ class ModelProviderShapeTest {
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context.getBean(RoutingModelConfiguration.ROUTING_BEAN,
-                            io.github.claw4j.model.routing.RoutingChatModel.class)
+                            io.github.claw4j.model.routing.ModelRouter.class)
                             .routeOrder())
                             .as("primary 排第一，其余按配置顺序")
                             .containsExactly("second/b", "first/a");

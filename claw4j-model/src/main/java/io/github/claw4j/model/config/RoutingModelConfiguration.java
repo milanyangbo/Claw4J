@@ -2,7 +2,10 @@ package io.github.claw4j.model.config;
 
 import io.github.claw4j.model.catalog.ModelCatalog;
 import io.github.claw4j.model.catalog.ModelRef;
-import io.github.claw4j.model.routing.RoutingChatModel;
+import io.github.claw4j.model.failover.CooldownStore;
+import io.github.claw4j.model.failover.ProbeThrottle;
+import io.github.claw4j.model.routing.ModelRouter;
+import io.github.claw4j.model.routing.RouteGate;
 import io.github.claw4j.model.usage.MeteredChatModel;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -14,6 +17,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -40,42 +44,53 @@ public class RoutingModelConfiguration {
      * 业务侧（ChatClient、AgentPort）按类型注入 {@code ChatModel}，容器里同时有各家模型和这个路由，
      * 必须用 {@code @Primary} 指定谁是被注入的那个。
      *
-     * @param catalog       目录，给主模型那一行与候选顺序
+     * <p>候选链三段：requested（主）→ 其余（按目录顺序）→ 主再兜一次（去重后不会重复调）。
+     *
+     * @param catalog       目录，给主模型与候选顺序
      * @param models        已建好的模型，键是 {@code provider/model}
-     * @param meterRegistry 可选，有才给每条 route 包一层计量
-     * @return 主备路由模型
+     * @param cooldowns     冷却表
+     * @param gate          准入闸
+     * @param probes        探测节流
+     * @param meterRegistry 可选，有才给每条候选包一层计量
+     * @return 带候选链的路由
      */
     @Bean(ROUTING_BEAN)
     @Primary
-    public RoutingChatModel routingChatModel(ModelCatalog catalog,
-                                             ModelConfiguration.ProviderModels models,
-                                             ObjectProvider<MeterRegistry> meterRegistry) {
+    public ModelRouter routingChatModel(ModelCatalog catalog,
+                                        ModelProperties properties,
+                                        ModelConfiguration.ProviderModels models,
+                                        CooldownStore cooldowns,
+                                        RouteGate gate,
+                                        ProbeThrottle probes,
+                                        ObjectProvider<MeterRegistry> meterRegistry) {
         MeterRegistry registry = meterRegistry.getIfAvailable();
         Map<ModelRef, ChatModel> available = models.byRef();
-        ModelRef primary = catalog.primary();
-        if (!available.containsKey(primary)) {
-            throw new IllegalStateException("主模型 " + primary + " 没有对应的模型实例，"
+        ModelRef primaryRef = catalog.primary();
+        if (!available.containsKey(primaryRef)) {
+            throw new IllegalStateException("主模型 " + primaryRef + " 没有对应的模型实例，"
                     + "现在建好的有 " + available.keySet() + "。");
         }
 
-        List<RoutingChatModel.Route> routes = new ArrayList<>();
-        // 每条 route 各包一层计量：route 这个标签就是供应商 id，
-        // 于是"降级了几次"= 非主那条 route 的调用数，路由类里不需要再有第二个计数器。
-        routes.add(new RoutingChatModel.Route(primary.toString(),
-                metered(available.get(primary), primary.toString(), registry)));
-        available.forEach((ref, model) -> {
-            if (!ref.equals(primary)) {
-                routes.add(new RoutingChatModel.Route(ref.toString(),
-                        metered(model, ref.toString(), registry)));
+        ModelRouter.Candidate primary = new ModelRouter.Candidate(primaryRef,
+                metered(available.get(primaryRef), primaryRef.toString(), registry),
+                ModelRouter.Origin.REQUESTED);
+        List<ModelRouter.Candidate> fallbacks = new ArrayList<>();
+        Map<ModelRef, Integer> capacities = new LinkedHashMap<>();
+        Map<ModelRef, String> endpoints = new LinkedHashMap<>();
+        for (ModelRef ref : catalog.refs()) {
+            capacities.put(ref, catalog.require(ref).effectiveContextTokens());
+            endpoints.put(ref, properties.require(ref.provider()).getBaseUrl());
+            if (!ref.equals(primaryRef)) {
+                fallbacks.add(new ModelRouter.Candidate(ref,
+                        metered(available.get(ref), ref.toString(), registry),
+                        ModelRouter.Origin.CONFIGURED_FALLBACK));
             }
-        });
+        }
 
-        log.info("模型路由：主={}，备={}。主模型调用失败时降级到备；流式只在首块之前降级。",
-                primary, routes.size() > 1
-                        ? routes.subList(1, routes.size()).stream().map(RoutingChatModel.Route::name).toList()
-                        : List.of());
-
-        return new RoutingChatModel(routes);
+        List<ModelRouter.Candidate> chain = ModelRouter.chain(primary, fallbacks, primary);
+        log.info("模型路由：候选={}。主模型调用失败时按顺序换；流式只在首块之前降级。",
+                chain.stream().map(candidate -> candidate.ref().toString()).toList());
+        return new ModelRouter(chain, capacities, endpoints, cooldowns, gate, probes);
     }
 
     /**

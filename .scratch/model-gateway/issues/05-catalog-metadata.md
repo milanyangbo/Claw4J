@@ -55,7 +55,7 @@
   `route` 标签随之变成 `provider/model`。
 - 会话压缩改读目录：`SessionMemoryConfiguration#sessionCompactor` 取 `ObjectProvider<ModelCatalog>`，
   目录有主模型行就用它的 `context-window`；`claw4j.advisor.session.context-window` 降级为兜底
-  （`compactionThreshold(int)` 新入口）。`SessionMemoryTest#sessionContextWindowIsFallbackOnly` 钉着。
+  （`compactionThreshold(int)` 新入口）。`SessionMemoryTest#configuredContextWindowIsWhatTheStartupLineSays` 里那条「目录优先」断言钉着。
 - `cost` 只解析不消费，`ModelCatalogBindingTest#costIsParsedButUnused` 只断言"解析得出来、
   没配的档位是 null（不拿 0 冒充）"；真正的"没有代码消费它"要靠评审，用例断言不了不存在。
 - `roles.*` 还没有（票 12 才引入），本票先把 `ModelRef` 与 `primary` 的 `provider/model` 写法打通，

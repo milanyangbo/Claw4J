@@ -1,6 +1,6 @@
 # 票 07：冷却四类与探测
 
-状态：**待做**。裁决：`docs/adr/0035-model-gateway-module.md` 第五节。
+状态：**完成**（2026-11-22）。裁决：`docs/adr/0035-model-gateway-module.md` 第五节。
 
 ## 一、目标
 
@@ -45,3 +45,14 @@
 
 - 多把钥匙的钥匙级冷却依赖票 04 的 `api-keys` 解析，本票先按 provider 与 provider/model 两档。
 - 冷却不落盘：重启后要重新撞一次失败才知道，这是认下来的代价。
+
+## 实施记录
+
+- `CooldownStore`：普通失败 30s / 1min / 5min 封顶；限流只认供应商时长（没给不冷却）；
+  `billing` 10min 起翻倍封顶 24h；`auth_permanent` 10min 起封顶 60min；计数窗口 24h；
+  **只延长不缩短**（`merge` 取更晚的那个）。
+- `ProbeThrottle`：同键 30s 一次；有候选链且距到期 > 2min 不探；键上限 256（LRU）。
+- 两个都在 `ModelConfiguration` 里装成 bean，由 `ModelRouter`（票 10）消费。
+- `Retry-After` 的解析放在 `ModelRouter`（"retry after 6" / "try again in 6s" 两种写法），
+  冷却表只接受一个 `Duration` —— 谁解析、谁定时长分开，测试才好写。
+- 冷却键：`provider/model`（模型级）；`billing` / 凭据级锁整家留给多钥匙那张票。

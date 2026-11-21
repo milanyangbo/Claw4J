@@ -1,8 +1,11 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.model.config.ModelProperties;
-import io.github.claw4j.model.routing.ModelRoutingException;
-import io.github.claw4j.model.routing.RoutingChatModel;
+import io.github.claw4j.model.catalog.ModelRef;
+import io.github.claw4j.model.failover.CooldownStore;
+import io.github.claw4j.model.failover.ProbeThrottle;
+import io.github.claw4j.model.routing.ModelRouter;
+import io.github.claw4j.model.routing.RouteGate;
 
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -83,20 +86,28 @@ class ModelAndToolSelectionTest {
         List<Prompt> backupPrompts = new CopyOnWriteArrayList<>();
         RecordingTool tool = new RecordingTool("querySales", "128400");
 
-        RoutingChatModel routing = new RoutingChatModel(List.of(
-                new RoutingChatModel.Route("primary", model(
-                        DeepSeekChatOptions.builder().build(),
-                        prompt -> {
-                            throw statusFailure(429, "429 too many requests");
-                        },
-                        prompt -> Flux.error(statusFailure(429, "429 too many requests")))),
-                new RoutingChatModel.Route("backup", model(
-                        OpenAiChatOptions.builder().build(),
-                        prompt -> {
-                            backupPrompts.add(prompt);
-                            return wantsTool("call-1", "querySales");
-                        },
-                        prompt -> Flux.just(wantsTool("call-1", "querySales"))))));
+        ModelRef primaryRef = new ModelRef("deepseek", "deepseek-chat");
+        ModelRef backupRef = new ModelRef("qwen", "qwen-plus");
+        ModelRouter.Candidate primary = new ModelRouter.Candidate(primaryRef, model(
+                DeepSeekChatOptions.builder().build(),
+                prompt -> {
+                    throw statusFailure(429, "429 too many requests");
+                },
+                prompt -> Flux.error(statusFailure(429, "429 too many requests"))),
+                ModelRouter.Origin.REQUESTED);
+        ModelRouter.Candidate backup = new ModelRouter.Candidate(backupRef, model(
+                OpenAiChatOptions.builder().build(),
+                prompt -> {
+                    backupPrompts.add(prompt);
+                    return wantsTool("call-1", "querySales");
+                },
+                prompt -> Flux.just(wantsTool("call-1", "querySales"))),
+                ModelRouter.Origin.CONFIGURED_FALLBACK);
+        ModelRouter routing = new ModelRouter(
+                ModelRouter.chain(primary, List.of(backup), primary),
+                Map.of(primaryRef, 65536, backupRef, 131072),
+                Map.of(primaryRef, "http://primary", backupRef, "http://backup"),
+                new CooldownStore(), new RouteGate(), new ProbeThrottle());
 
         Prompt incoming = new Prompt(List.of(new UserMessage("上周华东成交额")),
                 DeepSeekChatOptions.builder()

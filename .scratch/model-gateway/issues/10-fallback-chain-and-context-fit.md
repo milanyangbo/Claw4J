@@ -1,6 +1,6 @@
 # 票 10：候选链、上下文适配重排，替掉 RoutingChatModel
 
-状态：**待做**。裁决：`docs/adr/0035-model-gateway-module.md` 第四节。
+状态：**完成**（2026-11-22）。裁决：`docs/adr/0035-model-gateway-module.md` 第四节。
 
 ## 一、目标
 
@@ -47,3 +47,16 @@
 
 - 用户显式选择的"严格性"（选了别的模型就不降级）本仓还没有"用户选模型"入口，本轮只保留 `origin`。
 - `requestSizeCeiling` 不做：简化成 `reason == context_overflow` 即触发。
+
+## 实施记录
+
+- `ModelRouter` 替掉 `RoutingChatModel`：三段链（requested → fallbacks → primary 兜底，去重）、
+  逐候选查冷却与闸、被跳过也进尝试列表、溢出后只重排失败位置之后。
+- `ContextFit`：需求下界取错误里的实际 token 数或"失败容量 + 1"，稳定分区、不丢候选。
+- 耗尽抛 `ModelFallbackExhaustedException`：带每一跳的 `ref/reason/status` 与最早恢复时刻；
+  app 的 `ModelFailureAdvice` 随之改类型（对外仍是 503 + 一句可读的话）。
+- 流式：只在首块之前换人，与之前的严格规则一致。
+- `RoutingChatModel` / `ModelRoutingException` 删除；`ModelRouteTest` 的行为并入
+  `FallbackChainTest`（六条）+ 工具搬运那条留在 agent 的 `toolsActuallyRunAfterFallback`。
+- 缺口：`requestSizeCeiling` 不做（简化成 `reason == context_overflow` 即触发）；
+  "索引直接跳过已知不可用候选"目前靠逐条 advance + 跳过记录实现，没有做跳跃优化。

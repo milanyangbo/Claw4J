@@ -15,7 +15,6 @@ import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.http.okhttp.SpringAiOpenAiHttpClient;
-import org.springframework.ai.retry.RetryUtils;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -80,7 +79,8 @@ public class ModelConfiguration {
      * @throws IllegalStateException 某一家缺钥匙、缺端点或 {@code api} 不认识
      */
     @Bean
-    public ProviderModels providerChatModels(ModelProperties properties, Environment environment) {
+    public ProviderModels providerChatModels(ModelProperties properties, Environment environment,
+                                             io.github.claw4j.model.failover.RetryBudget retryBudget) {
         SecretResolver secrets = PropertySecretResolver.of(environment::getProperty);
         Map<io.github.claw4j.model.catalog.ModelRef, ChatModel> built = new LinkedHashMap<>();
         for (String id : properties.names()) {
@@ -88,8 +88,8 @@ public class ModelConfiguration {
             requireConfigured(config, secrets);
             for (io.github.claw4j.model.catalog.ModelRow row : config.getModels()) {
                 ChatModel model = switch (config.getApi()) {
-                    case ModelProperties.API_DEEPSEEK -> deepSeek(config, row, secrets);
-                    case ModelProperties.API_OPENAI_COMPLETIONS -> openAiCompatible(config, row, secrets);
+                    case ModelProperties.API_DEEPSEEK -> deepSeek(config, row, secrets, retryBudget);
+                    case ModelProperties.API_OPENAI_COMPLETIONS -> openAiCompatible(config, row, secrets, retryBudget);
                     // 绑定时的 validate() 已经拒过未知值，这里只是编译期的穷尽性兜底
                     default -> throw new IllegalStateException("claw4j.model.providers." + id + ".api="
                             + config.getApi() + " 没有对应的适配器，可选 " + ModelProperties.KNOWN_APIS);
@@ -106,6 +106,46 @@ public class ModelConfiguration {
      * @param properties 供应商表
      * @return 目录
      */
+    /**
+     * 重试预算：一个 bean，两家供应商都从它取模板。
+     *
+     * @return 默认那一组数（限流 16 次总尝试、其它瞬时 8 次 / 90s、1s 起 ×2）
+     */
+    @Bean
+    public io.github.claw4j.model.failover.RetryBudget retryBudget() {
+        return io.github.claw4j.model.failover.RetryBudget.defaults();
+    }
+
+    /**
+     * 冷却表：限流只听供应商时长，其它按次数爬。全在进程内，不落盘。
+     *
+     * @return 冷却表
+     */
+    @Bean
+    public io.github.claw4j.model.failover.CooldownStore cooldownStore() {
+        return new io.github.claw4j.model.failover.CooldownStore();
+    }
+
+    /**
+     * 探测节流：同键 30 秒最多一次，距到期 2 分钟以上不探。
+     *
+     * @return 节流器
+     */
+    @Bean
+    public io.github.claw4j.model.failover.ProbeThrottle probeThrottle() {
+        return new io.github.claw4j.model.failover.ProbeThrottle();
+    }
+
+    /**
+     * 准入闸：端点 + 账号 + 模型什么时候能再用。
+     *
+     * @return 闸
+     */
+    @Bean
+    public io.github.claw4j.model.routing.RouteGate routeGate() {
+        return new io.github.claw4j.model.routing.RouteGate();
+    }
+
     @Bean
     public io.github.claw4j.model.catalog.ModelCatalog modelCatalog(ModelProperties properties) {
         return io.github.claw4j.model.catalog.ModelCatalog.of(properties);
@@ -124,7 +164,8 @@ public class ModelConfiguration {
      */
     private static ChatModel deepSeek(ModelProperties.Provider config,
                                       io.github.claw4j.model.catalog.ModelRow row,
-                                      SecretResolver secrets) {
+                                      SecretResolver secrets,
+                                      io.github.claw4j.model.failover.RetryBudget budget) {
         HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(config.getConnectTimeout())
                 .build();
@@ -153,9 +194,9 @@ public class ModelConfiguration {
                         .model(row.getId())
                         .temperature(config.getTemperature())
                         .build())
-                // 模型内部只留短重试（10 次 × 100ms），不用默认的两秒起跳、上限 180s 那一份。
-                // 上层路由已经在做"换一家"，这里再叠指数退避就是乘法。
-                .retryTemplate(RetryUtils.SHORT_RETRY_TEMPLATE)
+                // 用统一预算，不用 RetryUtils 那两份（短重试 / 默认 180s 封顶）：
+                // 一次抖动打几次必须只有一个答案（票 08）。
+                .retryTemplate(budget.template())
                 .build();
     }
 
@@ -172,7 +213,8 @@ public class ModelConfiguration {
      */
     private static ChatModel openAiCompatible(ModelProperties.Provider config,
                                               io.github.claw4j.model.catalog.ModelRow row,
-                                              SecretResolver secrets) {
+                                              SecretResolver secrets,
+                                              io.github.claw4j.model.failover.RetryBudget budget) {
         SpringAiOpenAiHttpClient httpClient = SpringAiOpenAiHttpClient.builder()
                 .timeout(config.getReadTimeout())
                 .build();
