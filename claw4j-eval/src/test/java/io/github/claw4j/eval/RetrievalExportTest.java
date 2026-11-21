@@ -104,6 +104,15 @@ class RetrievalExportTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(
             DockerImageName.parse(IMAGE).asCompatibleSubstituteFor("postgres"));
 
+    /**
+     * 摘掉短型号规则时替换成的正则：要求 3 位以上数字。
+     *
+     * <p>语料里没有 {@code A123} 这种写法，所以这条规则等于不命中任何块。用一个语法绝对合法的
+     * 正则而不是"空匹配"，是为了让失败只可能来自测的东西本身，不来自这个开关。
+     */
+    private static final String SHORT_MODEL_DISABLED =
+            "(?<![A-Za-z0-9])[A-Za-z]\\d{3,}(?![A-Za-z0-9])";
+
     static {
         POSTGRES.start();
     }
@@ -126,6 +135,12 @@ class RetrievalExportTest {
         // -Dclaw4j.eval.keyword-engine=bm25，此时镜像也要一起换成 ParadeDB。
         registry.add("claw4j.rag.keyword.engine",
                 () -> System.getProperty("claw4j.eval.keyword-engine", "substring"));
+        // 摘掉短型号那条形状规则的对照：-Dclaw4j.eval.no-short-model=true。
+        // 不传时一行都不加，走 yml 默认——默认路径必须零变化。
+        if (Boolean.getBoolean("claw4j.eval.no-short-model")) {
+            registry.add("claw4j.rag.keyword.substring.short-model-pattern",
+                    () -> SHORT_MODEL_DISABLED);
+        }
     }
 
     /**
