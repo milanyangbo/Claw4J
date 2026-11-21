@@ -53,7 +53,15 @@ public final class ModelCatalog {
             throw new IllegalStateException("claw4j.model.providers 里一个模型行都没有。"
                     + "每一家至少写一行 models: [{id: ...}]，否则没有可调用的模型。");
         }
-        return new ModelCatalog(rows, resolvePrimary(properties.getPrimary(), rows));
+        ModelRef primary = resolvePrimary(properties.getPrimary(), rows);
+        ModelPolicy policy = ModelPolicy.of(properties.getPolicy() == null
+                ? null : properties.getPolicy().getAllow());
+        if (!policy.allows(primary)) {
+            throw new IllegalStateException("主模型 " + primary + " 被 claw4j.model.policy.allow 排除了。"
+                    + "允许集是 " + policy.patterns() + "，目录里有 " + rows.keySet() + "。"
+                    + "要么把它的写法加进白名单，要么改 primary。");
+        }
+        return new ModelCatalog(rows, primary);
     }
 
     /**

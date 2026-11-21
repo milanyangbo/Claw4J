@@ -50,6 +50,12 @@ public class ModelProperties {
     /** id → 一家供应商。顺序即备选顺序（{@code primary} 那家永远排第一个）。 */
     private Map<String, Provider> providers = new LinkedHashMap<>();
 
+    /** 选择策略：哪些模型可以被选中。 */
+    private Policy policy = new Policy();
+
+    /** 按用途取模型。不配 = 全部继承 main。 */
+    private Map<String, RoleSpec> roles = new LinkedHashMap<>();
+
     public String getPrimary() {
         return primary;
     }
@@ -64,6 +70,81 @@ public class ModelProperties {
 
     public void setProviders(Map<String, Provider> providers) {
         this.providers = providers == null ? new LinkedHashMap<>() : providers;
+    }
+
+    public Policy getPolicy() {
+        return policy;
+    }
+
+    public void setPolicy(Policy policy) {
+        this.policy = policy == null ? new Policy() : policy;
+    }
+
+    public Map<String, RoleSpec> getRoles() {
+        return roles;
+    }
+
+    public void setRoles(Map<String, RoleSpec> roles) {
+        this.roles = roles == null ? new LinkedHashMap<>() : roles;
+    }
+
+    /**
+     * 一个角色的配置。
+     *
+     * <p>三种写法：给了 {@code provider/model} 用它；给空串表示关闭这个角色；不配则继承 main。
+     * {@code auto: true} 时取主供应商里最便宜的一行（票 12 的"auto"档）。
+     */
+    public static class RoleSpec {
+
+        private String primary;
+
+        private List<String> fallbacks = new ArrayList<>();
+
+        private Boolean auto;
+
+        public String getPrimary() {
+            return primary;
+        }
+
+        public void setPrimary(String primary) {
+            this.primary = primary;
+        }
+
+        public List<String> getFallbacks() {
+            return fallbacks;
+        }
+
+        public void setFallbacks(List<String> fallbacks) {
+            this.fallbacks = fallbacks == null ? new ArrayList<>() : fallbacks;
+        }
+
+        public Boolean getAuto() {
+            return auto;
+        }
+
+        public void setAuto(Boolean auto) {
+            this.auto = auto;
+        }
+
+        /** 显式配了空串：这个角色关掉，不回落 main。 */
+        public boolean disabled() {
+            return primary != null && primary.isEmpty();
+        }
+    }
+
+    /** 白名单配置。空列表 = 放行全部。 */
+    public static class Policy {
+
+        /** 允许的模型：精确 {@code provider/model}、{@code provider/*}、{@code provider/family-*}。 */
+        private List<String> allow = new ArrayList<>();
+
+        public List<String> getAllow() {
+            return allow;
+        }
+
+        public void setAllow(List<String> allow) {
+            this.allow = allow == null ? new ArrayList<>() : allow;
+        }
     }
 
     /** 表里配了哪几家，按配置顺序。报错信息与"primary 可选值"都用它。 */

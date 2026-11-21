@@ -1,6 +1,6 @@
 # 票 12：角色入口 main / utility，以及缓存命中计量
 
-状态：**待做**。裁决：`docs/adr/0035-model-gateway-module.md` 第七节、对照表第 16 行。
+状态：**完成**（2026-11-22）。裁决：`docs/adr/0035-model-gateway-module.md` 第七节、对照表第 16 行。
 
 ## 一、目标
 
@@ -49,3 +49,16 @@
 - **本模块只给入口，不接消费方**：压缩、子代理、RAG 改写都不改；谁切过来由各自的票决定。
 - `auto` 档的"主供应商轻量模型"先取目录里同家最便宜的一行；没有就退回继承，不做它那套小模型推导。
 - `decision` 角色不接：本仓没有判型决策的消费方。
+
+## 实施记录
+
+- `ModelRole`（main / utility）+ `ModelRoles.forRole`；`@Primary ChatModel` = `forRole(main)`。
+- utility 四态：explicit / disabled（空串，**不回落**）/ auto（主供应商里 input 单价最低的一行）/
+  继承（完全没配）。关掉的角色返回一个"一用就抛"的实现，让"谁还在用它"当场暴露。
+- 每条角色链独立排候选，但共享冷却、闸与探测（同一个 bean）。
+- 指标：`claw4j.model.calls` 多一个 `role` 标签。
+- 缓存计量：`claw4j.model.tokens` 的 `kind` 多 `cache-read` / `cache-write` 两个取值；
+  OpenAI 兼容侧读 `getCacheReadInputTokens()`，DeepSeek 侧读 native usage 的
+  `promptTokensDetails().cachedTokens()`；两边都没有就不记（不写 0）。
+- 缺口（照票面）：**只给入口，不接消费方**——压缩、子代理、RAG 改写都没改；`decision` 角色不接。
+- 端点进闸键时目前用供应商 id 兜底（目录不知道 base-url），等闸要细分端点时再从配置补。

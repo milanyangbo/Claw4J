@@ -1,6 +1,6 @@
 # 票 11：白名单 policy.allow
 
-状态：**待做**。裁决：`docs/adr/0035-model-gateway-module.md` 第六节。
+状态：**完成**（2026-11-22）。裁决：`docs/adr/0035-model-gateway-module.md` 第六节。
 
 ## 一、目标
 
@@ -42,3 +42,14 @@
 
 - 别名（`agents.defaults.models`）不做：我们还没有别名表。
 - per-agent 覆盖（`agents.entries.*.modelPolicy`）不做，等 per-agent 模型覆盖那张票。
+
+## 实施记录
+
+- `ModelPolicy`：三种写法（精确 / {@code provider/*} / {@code provider/family-*}），只认尾部 `*`；
+  供应商那段出现 `*`、`*` 不在末尾、少了斜杠，三种都在启动时抛（`IllegalArgumentException`）。
+- 不配或空列表 = 放行全部。
+- 显式选择被排除 → 启动失败并列出允许集与目录：本仓没有"自动选模型"的场景，所以不像 OpenClaw
+  那样退到第一个被允许的模型。
+- **fallbacks 不过滤**：目录不按白名单裁剪（`ModelPolicyTest#fallbacksIgnorePolicy` 钉着）。
+  白名单管的是"能被选中"，备选是显式意图。
+- 缺口：别名表与 per-agent 覆盖仍不做（等 per-agent 模型覆盖那张票）。

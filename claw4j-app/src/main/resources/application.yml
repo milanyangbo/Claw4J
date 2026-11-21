@@ -70,6 +70,17 @@ claw4j:
       # 必须与数据库里的 vector(1024) 一致；改它要同时改两处迁移。
       dimensions: 1024
 
+    # 白名单：哪些模型可以被选中。不配 = 放行全部；只认尾部 *（provider/* 或 provider/family-*）。
+    # 显式 primary 被排除会启动失败并列出允许集；备选（fallbacks）不受它过滤。
+    # policy:
+    #   allow: [deepseek/*, qwen/qwen-plus]
+
+    # 按用途取模型。main 永远有；utility 三种写法：给了 provider/model 用它、
+    # 空串 = 关掉（不回落 main）、整段不写 = 继承 main。auto: true 取主供应商里最便宜的一行。
+    # roles:
+    #   utility:
+    #     primary: qwen/qwen-turbo
+
   # ---- 这个部署是哪个 agent（人设）----
   agent:
     # 人设目录：顶层每份 *.md 是一个 agent。不配就用内置的最小人设。

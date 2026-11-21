@@ -55,7 +55,21 @@ public class MeteredChatModel implements ChatModel {
      * @param route 路由名，作为指标标签
      * @param registry 指标注册表，必填
      */
+    /** 角色标签；没有角色（老构造器）时不打这个标签。 */
+    private final String role;
+
     public MeteredChatModel(ChatModel delegate, String route, MeterRegistry registry) {
+        this(delegate, route, null, registry);
+    }
+
+    /**
+     * @param delegate 被包的模型
+     * @param route    路由名（{@code provider/model}）
+     * @param role     角色名（{@code main} / {@code utility}），可以为 null
+     * @param registry 指标出口
+     */
+    public MeteredChatModel(ChatModel delegate, String route, String role, MeterRegistry registry) {
+        this.role = role;
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.route = Objects.requireNonNull(route, "route");
         this.registry = Objects.requireNonNull(registry, "registry");
@@ -116,6 +130,9 @@ public class MeteredChatModel implements ChatModel {
                 .description("模型调用次数")
                 .tag("route", route)
                 .tag("outcome", outcome);
+        if (role != null) {
+            builder = builder.tag("role", role);
+        }
         if (failure != null) {
             builder = builder.tag("reason", classify(failure).name());
         }
@@ -146,9 +163,35 @@ public class MeteredChatModel implements ChatModel {
         }
         tokens("prompt", usage.getPromptTokens());
         tokens("completion", usage.getCompletionTokens());
+        // 缓存命中：OpenAI 适配器把 cachedTokens 填进了 cacheReadInputTokens；
+        // DeepSeek 适配器不填，值在 native usage 的 promptTokensDetails.cachedTokens 里（票 12）。
+        Long cacheRead = usage.getCacheReadInputTokens() != null
+                ? usage.getCacheReadInputTokens() : nativeCachedTokens(usage);
+        tokens("cache-read", cacheRead);
+        tokens("cache-write", usage.getCacheWriteInputTokens());
+    }
+
+    /**
+     * 从厂商原生 usage 里取缓存命中数。
+     *
+     * @param usage 框架的 usage
+     * @return 命中数；取不到时为 null（不估算、不写 0）
+     */
+    private static Long nativeCachedTokens(Usage usage) {
+        if (usage.getNativeUsage() instanceof org.springframework.ai.deepseek.api.DeepSeekApi.Usage deep) {
+            var details = deep.promptTokensDetails();
+            if (details != null && details.cachedTokens() != null) {
+                return details.cachedTokens().longValue();
+            }
+        }
+        return null;
     }
 
     private void tokens(String kind, Integer amount) {
+        tokens(kind, amount == null ? null : Long.valueOf(amount));
+    }
+
+    private void tokens(String kind, Long amount) {
         // 0 也不记：0 会把"没拿到"和"真的没用 token"混成一个数。
         if (amount == null || amount <= 0) {
             return;
