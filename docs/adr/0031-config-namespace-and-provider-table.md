@@ -6,6 +6,16 @@
   "cache 放到 advisor 下面"、"供应商改成一张表，更有扩展性"）。代码与本文同一次落地。
 - 相关票：`.scratch/config-regroup/issues/01`、`02`、`03`
 
+## 修订（2026-11-22）
+
+- **冲突点**：本文裁决「供应商写成一张表」（list + 每行自带 `name` 字段）。OpenClaw 的 `models.providers`
+  是**以 provider id 为键的 map**，一家下面再挂一张 `models[]`（`docs/concepts/model-providers/custom-providers.md:36-52`、
+  `packages/model-catalog-core/src/model-catalog-types.ts:258-292`）。
+- **改成什么**：`claw4j.model.providers` 改成 id 键 map；一家的 `model`（单值）改成 `models[]`，
+  元数据（`context-window` / `context-tokens` / `max-tokens` / `cost` / `compat`）跟着模型行。
+  本文其余裁决（链上的东西收在 `claw4j.advisor.*`、cache 归 advisor）不变。
+- **落地**：ADR-0035（票待拆）。
+
 ## 背景
 
 配置原来是按组件名平铺的：`claw4j.tool-search.*`、`claw4j.memory.*`、`claw4j.session.*`、
