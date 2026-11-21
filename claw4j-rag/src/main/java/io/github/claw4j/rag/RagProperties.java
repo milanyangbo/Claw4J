@@ -25,13 +25,16 @@ import java.time.Duration;
  * @param minSimilarity 相似度下限，只作用于向量那一路
  * @param chunkSize     一块最多多少 token（不是字符）。切块见 {@link SemanticTextSplitter}
  * @param hybrid        混合检索（向量 + 全文两路）。关掉只剩向量
+ * @param keyword       全文那一路的词项规则（三个正则、三个上限、两个权重），见 {@link Keyword}
  * @param rerank        重排。关掉只影响顺序，不影响召回
  * @param parent        章节父块回填（small-to-big）。默认关，见 {@link Parent}
  * @param rewrite       检索前改写。默认关，见 {@link Rewrite}
+ * @param answer        回答的范围约束。默认开，见 {@link Answer}
  */
 @ConfigurationProperties("claw4j.rag")
 public record RagProperties(String directory, Integer topK, Double minSimilarity, Integer chunkSize,
-                            Hybrid hybrid, Rerank rerank, Parent parent, Rewrite rewrite) {
+                            Hybrid hybrid, Keyword keyword, Rerank rerank, Parent parent, Rewrite rewrite,
+                            Answer answer) {
 
     /**
      * 一次检索最终注入多少段，默认 10。
@@ -100,6 +103,90 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
 
         static Hybrid defaults() {
             return new Hybrid(null, null);
+        }
+    }
+
+    /**
+     * 全文那一路的词项规则：一条查询怎么被拆成"拿去 {@code ilike} 的子串"。
+     *
+     * <p>这些值**全都带领域假设**，所以走配置而不是写死在代码里：
+     *
+     * <ul>
+     *   <li>锚点要求 ≥3 字符——中文合同里的型号常常是两位（{@code A1}、{@code A2}），
+     *       英文手册里的版本号又常常带点（{@code v1.2}），同一个长度门槛不可能两边都对；
+     *   <li>整句只在 12 个字符内才当词项——12 个汉字是一句话，12 个英文字符只有一两个词；
+     *   <li>权重 3 对 1 是"字面精确 vs 覆盖度"的比值，换语言与语料就该重标。
+     * </ul>
+     *
+     * <p>默认值就是配置化之前写死在 {@link KeywordDocumentRetriever} 里的那套，行为不变。
+     *
+     * @param anchorPattern     长锚点：以字母或数字开头、≥3 字符的连续 ASCII 片段
+     * @param shortModelPattern 短型号：一个字母 + 1~2 位数字，两侧不接字母数字
+     * @param cjkPattern        bigram 的切分范围：只在这些串内部两两切，不跨标点
+     * @param maxAnchors        一条查询最多几个锚点（长短锚点共用这个名额）
+     * @param maxTerms          一条查询最多几个词项；SQL 里每个词项是一个 {@code or} 加一个 {@code case}
+     * @param wholeMaxChars     整句不超过多少字符才当词项
+     * @param wholeWeight       整句与锚点的权重（锚点复用这个值）
+     * @param bigramWeight      中文 bigram 的权重
+     */
+    public record Keyword(String anchorPattern, String shortModelPattern, String cjkPattern,
+                          Integer maxAnchors, Integer maxTerms, Integer wholeMaxChars,
+                          Integer wholeWeight, Integer bigramWeight) {
+
+        /** 长锚点。下限 3 是躲开 {@code a}、{@code 1} 这类噪声。 */
+        public static final String DEFAULT_ANCHOR_PATTERN = "[A-Za-z0-9][A-Za-z0-9._-]{2,}";
+
+        /**
+         * 短型号。默认认"一个字母 + 1~2 位数字"，两侧不接字母数字。
+         *
+         * <p>为什么单独一条：长锚点要求 ≥3 字符，而产品型号恰好两位。漏掉 {@code A2}，
+         * 「A2 买一年延保多少钱」里就只剩"延保""一年""多少"这些泛词——它们指向延保政策，
+         * 指不到整机价格表，而价格表才是这道题的另一半证据。
+         *
+         * <p>两侧不接字母数字，是为了不从 {@code SKU2024A2} 里切出 {@code 4A} 这种假锚点。
+         *
+         * <p>它是**按长相认**，不是按词表认：任何"字母+数字"的编号都走这一条，代码里没有
+         * 型号清单。换领域只需改正则（比如 {@code AB-12} 要加连字符、中文型号要另一条）。
+         */
+        public static final String DEFAULT_SHORT_MODEL_PATTERN =
+                "(?<![A-Za-z0-9])[A-Za-z]\\d{1,2}(?![A-Za-z0-9])";
+
+        /** 连续汉字（含日文假名）。bigram 只在这类串内部切，跨标点拼出的组合文档里不存在。 */
+        public static final String DEFAULT_CJK_PATTERN = "[\\u4e00-\\u9fff\\u3040-\\u30ff]+";
+
+        /** 一条查询最多几个锚点。再多就是整句被切碎了：命中率上升，精度下降。 */
+        public static final int DEFAULT_MAX_ANCHORS = 4;
+
+        /** 一条查询最多几个词项。每个词项在 SQL 里是两个占位符，不封顶会拼出上千字符的语句。 */
+        public static final int DEFAULT_MAX_TERMS = 12;
+
+        /** 整句只在不超过这么多字符时当词项：长句加进去只是一条必然不命中的 {@code or}。 */
+        public static final int DEFAULT_WHOLE_MAX_CHARS = 12;
+
+        /** 整句与锚点的权重：命中一次就足以把它和"只沾了个虚词"的块分开。 */
+        public static final int DEFAULT_WHOLE_WEIGHT = 3;
+
+        /** bigram 的权重：它是覆盖度信号，单独命中一个不足以说明相关。 */
+        public static final int DEFAULT_BIGRAM_WEIGHT = 1;
+
+        public Keyword {
+            anchorPattern = (anchorPattern == null || anchorPattern.isBlank())
+                    ? DEFAULT_ANCHOR_PATTERN : anchorPattern.strip();
+            shortModelPattern = (shortModelPattern == null || shortModelPattern.isBlank())
+                    ? DEFAULT_SHORT_MODEL_PATTERN : shortModelPattern.strip();
+            cjkPattern = (cjkPattern == null || cjkPattern.isBlank())
+                    ? DEFAULT_CJK_PATTERN : cjkPattern.strip();
+            maxAnchors = (maxAnchors == null || maxAnchors <= 0) ? DEFAULT_MAX_ANCHORS : maxAnchors;
+            maxTerms = (maxTerms == null || maxTerms <= 0) ? DEFAULT_MAX_TERMS : maxTerms;
+            wholeMaxChars = (wholeMaxChars == null || wholeMaxChars <= 0)
+                    ? DEFAULT_WHOLE_MAX_CHARS : wholeMaxChars;
+            wholeWeight = (wholeWeight == null || wholeWeight <= 0) ? DEFAULT_WHOLE_WEIGHT : wholeWeight;
+            bigramWeight = (bigramWeight == null || bigramWeight <= 0)
+                    ? DEFAULT_BIGRAM_WEIGHT : bigramWeight;
+        }
+
+        static Keyword defaults() {
+            return new Keyword(null, null, null, null, null, null, null, null);
         }
     }
 
@@ -186,9 +273,11 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
                 ? DEFAULT_MIN_SIMILARITY : minSimilarity;
         chunkSize = (chunkSize == null || chunkSize <= 0) ? DEFAULT_CHUNK_SIZE : chunkSize;
         hybrid = hybrid == null ? Hybrid.defaults() : hybrid;
+        keyword = keyword == null ? Keyword.defaults() : keyword;
         rerank = rerank == null ? Rerank.defaults() : rerank;
         parent = parent == null ? Parent.defaults() : parent;
         rewrite = rewrite == null ? Rewrite.defaults() : rewrite;
+        answer = answer == null ? Answer.defaults() : answer;
     }
 
     /** 开了就必须有目录：没有目录的知识库检索永远返回空，而"空"与"没有这段"分不开。 */
@@ -271,6 +360,33 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
     }
 
     /**
+     * 回答的范围约束：把检索到的资料交给模型时，限定"只答被问到的部分"。
+     *
+     * <p>问题不在"资料用不用"，在"用的时候用多少"：检索回来的块是 350 字，答案常常只有一句，
+     * 块一旦被判为相关，模型就有权把整块搬进回答——问"退货几天"，运费谁承担、生鲜例外
+     * 也一并带上。行业里这一步通常靠长度约束代理（LangChain 的 rag-prompt 写的是
+     * "three sentences maximum"），本模块不用句数：分级账期、例外清单这类合法答案会被截断。
+     *
+     * <p><b>默认开</b>，因为关掉之后的行为是旧的"多条信息请整合"——那等于鼓励把多段都写进回答。
+     *
+     * @param enabled      是否用新的范围约束。关 = 回到旧三条，用于对照实验
+     * @param instructions 自定义"用法"整段文本；null 用 {@code RagAutoConfiguration} 里的内置措辞。
+     *                     <b>不能含花括号</b>（&#123; / &#125;）：那是模板占位符，混进来会让
+     *                     {@code {query}} 与 {@code {context}} 的渲染错位，所以启动时就拦
+     */
+    public record Answer(Boolean enabled, String instructions) {
+
+        public Answer {
+            enabled = enabled == null || enabled;
+            instructions = (instructions == null || instructions.isBlank()) ? null : instructions.strip();
+        }
+
+        static Answer defaults() {
+            return new Answer(null, null);
+        }
+    }
+
+    /**
      * 送进重排的条数：不能少于最终要返回的条数，否则"重排之后取 topK"会取到候选之外。
      * 两处配置各写一个数时，这种错只在结果只剩两三条时才看得出来。
      */
@@ -280,6 +396,6 @@ public record RagProperties(String directory, Integer topK, Double minSimilarity
 
     /** 全部走默认值，但 {@code directory} 为空——这时 {@code hasDirectory()} 为 false。 */
     public static RagProperties defaults() {
-        return new RagProperties(null, null, null, null, null, null, null, null);
+        return new RagProperties(null, null, null, null, null, null, null, null, null, null);
     }
 }

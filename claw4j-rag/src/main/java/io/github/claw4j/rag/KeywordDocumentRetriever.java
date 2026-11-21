@@ -39,7 +39,7 @@ import java.util.regex.Pattern;
  * <p>所以一条查询拆成三类词项（{@link #searchTerms}）：
  *
  * <ol>
- *   <li><b>整句</b>，只在不长于 {@value #WHOLE_QUERY_MAX_CHARS} 个字时用——短查询本身就是最好的词项，
+ *   <li><b>整句</b>，只在不长于配置里的整句长度上限（默认 12 字）时用——短查询本身就是最好的词项，
  *       长句加进去只是一条必然不命中的 {@code or}；
  *   <li><b>ASCII 锚点</b>：{@code SKU-2024}、{@code A-07}、{@code v1.2} 这类向量认不出的编号；
  *   <li><b>中文 bigram</b>：连续汉字串内部两两切分（{@code 退货政策} → {@code 退货 / 货政 / 政策}）。
@@ -65,60 +65,39 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
     private static final Logger log = LoggerFactory.getLogger(KeywordDocumentRetriever.class);
 
     /**
-     * 字面锚点：以字母或数字开头、长度至少 3 的连续 ASCII 片段。
+     * 编译好的词项规则。
      *
-     * <p>下限 3 是为了放过 {@code a}、{@code 1} 这类噪声。{@code P1} 只有 2 个字符，会被漏掉，
-     * 但放到 2 也会命中所有含 {@code p1} 的块，噪声大于收益——那种级别靠整句匹配或向量。
+     * <p>正则在这里编译，不等到第一次提问才暴露语法错——配错一个括号，表现会是"全文那一路
+     * 突然一条都不命中"，而不是启动失败，很难归因。
      *
-     * <p>允许的字符是字母、数字、下划线、点、连字符：覆盖 {@code SKU-2024}、{@code A-07}、
-     * {@code v1.2}、{@code mb_3}。
+     * <p>锚点复用整句的权重是有意的：两者都是"字面精确"信号，只有 bigram 是覆盖度信号。
+     * 拆成两个可配的权重看着更灵活，实际会让人调出"锚点比整句还重"这种无法解释的组合。
      */
-    private static final Pattern ASCII_ANCHOR = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{2,}");
+    record Rules(Pattern anchor, Pattern shortModel, Pattern cjkRun, int maxAnchors, int maxTerms,
+                 int wholeMaxChars, int wholeWeight, int bigramWeight) {
 
-    /**
-     * 短型号：一个字母加一到两位数字，两侧不接字母数字（{@code A1}、{@code A2}、{@code B3}、
-     * {@code K4}）。
-     *
-     * <p>{@link #ASCII_ANCHOR} 要求 ≥3 字符，把这类型号全漏了。而产品型号恰好是两位：
-     * 「A2 买一年延保要多少钱」里唯一能匹配价格表那块的字面就是 {@code A2}——漏了它，
-     * 价格表第 1 块（整机表格）永远进不了候选，四条多跳题全卡在这里。
-     *
-     * <p>不收 1 位数字（{@code A1} 之外的 {@code P1} 是收的，但 {@code v2} 这种版本号也收）：
-     * 再短就是噪声。两侧不接字母数字是为了不把 {@code SKU2024A2} 切出一个假的 {@code 4A}。
-     */
-    private static final Pattern SHORT_MODEL = Pattern.compile("(?<![A-Za-z0-9])[A-Za-z]\\d{1,2}(?![A-Za-z0-9])");
+        static Rules of(RagProperties.Keyword config) {
+            return new Rules(
+                    compile(config.anchorPattern(), "anchor-pattern"),
+                    compile(config.shortModelPattern(), "short-model-pattern"),
+                    compile(config.cjkPattern(), "cjk-pattern"),
+                    config.maxAnchors(), config.maxTerms(), config.wholeMaxChars(),
+                    config.wholeWeight(), config.bigramWeight());
+        }
 
-    /** 一条查询最多带几个锚点。再多就是整句被切碎了，命中率上升而精度下降。 */
-    private static final int MAX_ANCHORS = 4;
+        static Rules defaults() {
+            return of(RagProperties.Keyword.defaults());
+        }
 
-    /**
-     * 连续汉字（含日文假名）串。bigram 只在这些串内部切：跨标点、跨空格拼出来的两字组合
-     * （{@code 退，我}）在文档里不会出现。
-     */
-    private static final Pattern CJK_RUN = Pattern.compile("[\\u4e00-\\u9fff\\u3040-\\u30ff]+");
-
-    /**
-     * 一条查询最多几个词项。SQL 里每个词项是一个 {@code or} 加一个 {@code case}，两个都会随词项数
-     * 线性增长；一条长提问能切出几十个 bigram，不封顶就变成一条上千字符的语句。
-     *
-     * <p>12 的依据是"够覆盖一句 13 字左右的中文提问的实义部分"：再长的提问里，前 12 个词项
-     * （主语 + 关键名词 + 动作）通常已经足够把相关块区分开。
-     */
-    private static final int MAX_TERMS = 12;
-
-    /**
-     * 整句只在不超过这么多字时作为一个词项。
-     *
-     * <p>12 是经验值：短查询（{@code 退货政策}、{@code 5%}）整句就是最好的词项，而 20 字的提问
-     * 整句几乎不可能在文档里原样出现，加进去只是一条必然不命中的 {@code or}。
-     */
-    private static final int WHOLE_QUERY_MAX_CHARS = 12;
-
-    /** 整句与 ASCII 锚点的权重：命中一次就足以把它和"只沾了个虚词"的块分开。 */
-    private static final int WHOLE_WEIGHT = 3;
-
-    /** 中文 bigram 的权重：它是覆盖度信号，单个 bigram 命中不足以说明相关。 */
-    private static final int BIGRAM_WEIGHT = 1;
+        private static Pattern compile(String regex, String name) {
+            try {
+                return Pattern.compile(regex);
+            } catch (RuntimeException broken) {
+                throw new IllegalStateException(
+                        "claw4j.rag.keyword." + name + " 不是合法正则：" + regex, broken);
+            }
+        }
+    }
 
     private final JdbcTemplate jdbc;
 
@@ -126,15 +105,20 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
 
     private final int candidates;
 
+    private final Rules rules;
+
     /**
      * @param jdbc       JDBC 句柄
      * @param sourceKind 只查这个来源的块
      * @param candidates 候选上限，交给 SQL 的 {@code limit}
+     * @param keyword    词项规则（正则、上限、权重），见 {@link RagProperties.Keyword}
      */
-    public KeywordDocumentRetriever(JdbcTemplate jdbc, String sourceKind, int candidates) {
+    public KeywordDocumentRetriever(JdbcTemplate jdbc, String sourceKind, int candidates,
+                                    RagProperties.Keyword keyword) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.sourceKind = Objects.requireNonNull(sourceKind, "sourceKind");
         this.candidates = candidates;
+        this.rules = Rules.of(keyword == null ? RagProperties.Keyword.defaults() : keyword);
     }
 
     /**
@@ -150,7 +134,7 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
             return List.of();
         }
         String raw = query.text();
-        List<Term> terms = terms(raw);
+        List<Term> terms = terms(raw, rules);
         // 每个词项在 SQL 里出现两次（select 的 case 与 where 的 ilike），**两处都要 pattern**：
         // select 那一处是 `content ilike ?`，给裸词项（不带 %）会让它退化成精确相等，
         // 于是 where 命中了、score 还是 0——融合按 score 加权，全文那一路等于白召回。
@@ -193,46 +177,46 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
      * <p>顺序与权重（{@link Term#weight}）：
      *
      * <ol>
-     *   <li>整句（不超过 {@value #WHOLE_QUERY_MAX_CHARS} 字）：权重 3，完整匹配是最强的信号；
+     *   <li>整句（不超过配置里的整句长度上限）：权重 3，完整匹配是最强的信号；
      *   <li>ASCII 锚点：权重 3，{@code SKU-2024} 只有那份文档有；
      *   <li>中文 bigram：权重 1，它是覆盖度信号，单独命中一个不足以说明相关性。
      * </ol>
      *
-     * <p>锚点排在 bigram 之前：bigram 会把 {@link #MAX_TERMS} 用满，先切 bigram 的话，
+     * <p>锚点排在 bigram 之前：bigram 会把词项上限用满，先切 bigram 的话，
      * 一个 20 字的提问会把型号挤出去——正是这一路最该命中的东西没查。
      *
      * @param query 查询原文，可以为 null
      * @return 词项列表；空查询时为空
      */
-    static List<Term> terms(String query) {
+    static List<Term> terms(String query, Rules rules) {
         String trimmed = query == null ? "" : query.trim();
         if (trimmed.isEmpty()) {
             return List.of();
         }
         Map<String, Integer> weighted = new LinkedHashMap<>();
-        if (trimmed.length() <= WHOLE_QUERY_MAX_CHARS) {
-            weighted.put(trimmed, WHOLE_WEIGHT);
+        if (trimmed.length() <= rules.wholeMaxChars()) {
+            weighted.put(trimmed, rules.wholeWeight());
         }
-        Matcher anchors = ASCII_ANCHOR.matcher(trimmed);
+        Matcher anchors = rules.anchor().matcher(trimmed);
         int accepted = 0;
-        while (anchors.find() && accepted < MAX_ANCHORS && weighted.size() < MAX_TERMS) {
-            if (weighted.putIfAbsent(anchors.group(), WHOLE_WEIGHT) == null) {
+        while (anchors.find() && accepted < rules.maxAnchors() && weighted.size() < rules.maxTerms()) {
+            if (weighted.putIfAbsent(anchors.group(), rules.wholeWeight()) == null) {
                 accepted++;
             }
         }
-        // 短型号与长锚点共用 4 个名额：它们都是"字面精确"那一类，多收会挤掉中文 bigram。
-        Matcher models = SHORT_MODEL.matcher(trimmed);
-        while (models.find() && accepted < MAX_ANCHORS && weighted.size() < MAX_TERMS) {
-            if (weighted.putIfAbsent(models.group(), WHOLE_WEIGHT) == null) {
+        // 短型号与长锚点共用名额：它们都是"字面精确"那一类，多收会挤掉中文 bigram。
+        Matcher models = rules.shortModel().matcher(trimmed);
+        while (models.find() && accepted < rules.maxAnchors() && weighted.size() < rules.maxTerms()) {
+            if (weighted.putIfAbsent(models.group(), rules.wholeWeight()) == null) {
                 accepted++;
             }
         }
-        Matcher runs = CJK_RUN.matcher(trimmed);
-        while (runs.find() && weighted.size() < MAX_TERMS) {
+        Matcher runs = rules.cjkRun().matcher(trimmed);
+        while (runs.find() && weighted.size() < rules.maxTerms()) {
             String run = runs.group();
             // 两两切：长度 n 的串给 n-1 个 bigram，n==1 时一个也没有（单字命中全是噪声）。
-            for (int i = 0; i + 2 <= run.length() && weighted.size() < MAX_TERMS; i++) {
-                weighted.putIfAbsent(run.substring(i, i + 2), BIGRAM_WEIGHT);
+            for (int i = 0; i + 2 <= run.length() && weighted.size() < rules.maxTerms(); i++) {
+                weighted.putIfAbsent(run.substring(i, i + 2), rules.bigramWeight());
             }
         }
         List<Term> terms = new ArrayList<>(weighted.size());
@@ -240,9 +224,14 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
         return List.copyOf(terms);
     }
 
-    /** 只有词项文本，给日志与单测用。 */
+    /**
+     * 用默认规则切词项。
+     *
+     * <p>只给日志与单测用：线上那个实例带着部署方配的规则，不会走到这里。两个入口共用
+     * 一份实现（这里只是传默认规则），不做第二套切分逻辑——两套一定会有一套先过期。
+     */
     static List<String> searchTerms(String query) {
-        return terms(query).stream().map(Term::text).toList();
+        return terms(query, Rules.defaults()).stream().map(Term::text).toList();
     }
 
     /**

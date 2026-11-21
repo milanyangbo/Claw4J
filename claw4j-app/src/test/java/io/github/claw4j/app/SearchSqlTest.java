@@ -129,7 +129,8 @@ class SearchSqlTest {
     @DisplayName("编号类查询只有全文那一路找得到：SKU-2024 不会连 SKU-2025 一起捞回来")
     void keywordLaneFindsTheExactCode() {
         indexCorpus();
-        List<Document> hits = new KeywordDocumentRetriever(jdbc, "docs", 15)
+        List<Document> hits = new KeywordDocumentRetriever(jdbc, "docs", 15,
+                RagProperties.defaults().keyword())
                 .retrieve(question("SKU-2024 还剩多少"));
         List<String> citations = citations(hits);
 
@@ -245,7 +246,8 @@ class SearchSqlTest {
     void percentSignIsNotAWildcard() {
         indexCorpus();
 
-        List<Document> hits = new KeywordDocumentRetriever(jdbc, "docs", 15)
+        List<Document> hits = new KeywordDocumentRetriever(jdbc, "docs", 15,
+                RagProperties.defaults().keyword())
                 .retrieve(question("5%"));
 
         assertThat(hits).as("语料里有两段含字面「5%」（价差、盘点差异率），该被找到").isNotEmpty();
@@ -292,7 +294,8 @@ class SearchSqlTest {
                 .similarityThreshold(0.5)
                 .build();
         DocumentRetriever keyword = hybrid
-                ? new KeywordDocumentRetriever(jdbc, "docs", 15)
+                ? new KeywordDocumentRetriever(jdbc, "docs", 15,
+                        RagProperties.defaults().keyword())
                 : null;
         DocumentRetriever retriever = new HybridDocumentRetriever(vector, keyword,
                 new WeightedScoreJoiner());
@@ -310,7 +313,7 @@ class SearchSqlTest {
 
     private RagProperties properties() {
         // 块长 200 token：40 份短文档要切出足够多的块，"候选 15 条"才有区分度。
-        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null, null, null);
+        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null, null, null, null, null);
     }
 
     /** 检索与索引共用同一个 store：表由它建（迁移里不建），两个用例之间也不会重复启动。 */

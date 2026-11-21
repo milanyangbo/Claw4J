@@ -316,7 +316,8 @@ class KnowledgeRetrievalTest {
         when(jdbc.query(anyString(), any(RowMapper.class),
                 any(), any(), any(), any(), any(), any())).thenReturn(List.of());
 
-        new KeywordDocumentRetriever(jdbc, "docs", 7).retrieve(query("5% 折扣"));
+        new KeywordDocumentRetriever(jdbc, "docs", 7,
+                RagProperties.defaults().keyword()).retrieve(query("5% 折扣"));
 
         // 词项是「整句 + 中文 bigram」两个，所以 select 里两组 case、where 里两个 or。
         // 顺序 = select 里的 pattern（两处都必须是带 % 的模式串）→ source → where 的 pattern → limit。
@@ -592,7 +593,7 @@ class KnowledgeRetrievalTest {
     }
 
     private static RagProperties props(Path docs) {
-        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null, null, null);
+        return new RagProperties(docs.toString(), 5, 0.5, 200, null, null, null, null, null, null);
     }
 
     private static WeightedScoreJoiner joiner() {

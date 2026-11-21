@@ -8,6 +8,9 @@
   参数对照（hybrid / rerank / top-k）全在这一层扫。
 - **L2（生成）**：``Faithfulness`` / ``LLMContextRecall`` / ``LLMContextPrecision``，要 judge。
   它回答"模型有没有照着检索到的内容答"，与 L1 的"检索给对没有"是两件事。
+  另有一项可选的 ``ResponseRelevancy``（回答反推问题 → embedding 相似度），
+  **默认不跑**：``--answer-relevancy`` 才开。它测的是"有没有答非所问"，
+  现有三项都测不到——把无关的两句从上下文里搬进回答，faithfulness 照样满分。
 
 跑完除了打印分数，还会给一份**判定**（达标 / 回归 / 存疑 + 怎么查），并落一份
 ``report.md``。
@@ -55,6 +58,11 @@ DEFAULT_REPORT = "eval/rag/reports/report.md"
 DEFAULT_BASELINE = "eval/rag/baseline.json"
 DEFAULT_JUDGE = "deepseek-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
+
+# answer_relevancy 走 embedding，不走 judge：把回答反推成"它其实在回答什么问题"，
+# 再和原问题算余弦。默认用 DashScope 的 OpenAI 兼容 /embeddings（与 Java 侧同一套凭据）。
+DEFAULT_EMBEDDING_MODEL = "text-embedding-v4"
+DEFAULT_EMBEDDING_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # ------------------------------------------------------------------ 门槛：分三层
 #
@@ -167,6 +175,10 @@ L2_ADVICE = {
                       "少数是 reference 写得比文档还宽。",
     "context_precision": "上下文里相关段占比低，也就是夹带了无关段。调小 top-k、提高相似度下限、"
                          "或让重排把 gold 顶到前面。",
+    # 只在 --answer-relevancy 打开时才会用到。它测的是"回答有没有跑题"，
+    # 与上面三项互不替代：那三项判上下文与依据，这一项判回答对准了没有。
+    "answer_relevancy": "回答没对准问题（跑题、或把整块资料搬了进来）。先看提示词里的"
+                        "「用法」有没有范围约束（claw4j.rag.answer），再看是不是问题本身含糊。",
 }
 
 
@@ -181,6 +193,10 @@ def parse_args() -> argparse.Namespace:
     # 那类失败会整轮变成失败条数，比慢更糟。真要再往上加，先确认 judge 供应商的限额。
     parser.add_argument("--concurrency", type=int, default=4, help="L2 的并发数，默认 4（撞限流就降到 1）")
     parser.add_argument("--per-case", action="store_true", help="把 L1 逐条明细也写进结果文件")
+    # 默认关：它多花一轮 embedding 调用，而现有三项量不到"答非所问"。
+    # 要验证提示词里的范围约束（claw4j.rag.answer）时再开。
+    parser.add_argument("--answer-relevancy", action="store_true",
+                        help="额外算 answer_relevancy（回答有没有跑题；走 embedding，不用 judge）")
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="机器可读结果的落盘处")
     parser.add_argument("--report", default=DEFAULT_REPORT, help="人读报告的落盘处")
     # 改门槛、改报告文案、或想按新口径重看旧结果时用它：不调模型、零成本。
@@ -335,7 +351,39 @@ def l2_sample(row: dict) -> SingleTurnSample:
     )
 
 
-async def score_l2(rows: list[dict], judge, model: str, concurrency: int) -> dict:
+def make_answer_relevancy(judge):
+    """构造回答相关性指标（``ResponseRelevancy``）。
+
+    它要一个 embeddings 对象：先让 judge 把回答反推成"它其实在回答什么问题"，再把那个问题
+    与原问题算余弦。所以它既要用 judge，也要用 embedding——而**最终分数只由 embedding 决定**，
+    judge 那一步只是把回答翻译回问题。
+
+    **默认不跑**：这一项要额外的 embedding 调用，而现有三项已经把"检索给错"与"没照着说"
+    分开了。它只在验证"提示词的范围约束有没有生效"时才需要——把无关的整块资料搬进回答，
+    faithfulness 是查不出来的。
+
+    凭据与 Java 侧 embedding 是同一套：``EVAL_EMBEDDING_API_KEY``，端点与模型同名环境变量可换。
+    """
+    api_key = os.environ.get("EVAL_EMBEDDING_API_KEY") or os.environ.get("DASHSCOPE_API_KEY")
+    if not api_key:
+        raise SystemExit("--answer-relevancy 需要 EVAL_EMBEDDING_API_KEY（或 DASHSCOPE_API_KEY）")
+
+    from openai import OpenAI
+    from ragas.embeddings import OpenAIEmbeddings
+    from ragas.metrics import ResponseRelevancy
+
+    embeddings = OpenAIEmbeddings(
+        client=OpenAI(
+            api_key=api_key,
+            base_url=os.environ.get("EVAL_EMBEDDING_BASE_URL", DEFAULT_EMBEDDING_BASE_URL),
+        ),
+        model=os.environ.get("EVAL_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+    )
+    return ResponseRelevancy(llm=judge, embeddings=embeddings)
+
+
+async def score_l2(rows: list[dict], judge, model: str, concurrency: int,
+                   with_answer_relevancy: bool = False) -> dict:
     from ragas.metrics import Faithfulness, LLMContextPrecisionWithReference, LLMContextRecall
 
     metrics = [
@@ -343,6 +391,8 @@ async def score_l2(rows: list[dict], judge, model: str, concurrency: int) -> dic
         ("context_recall", LLMContextRecall(llm=judge)),
         ("context_precision", LLMContextPrecisionWithReference(llm=judge)),
     ]
+    if with_answer_relevancy:
+        metrics.append(("answer_relevancy", make_answer_relevancy(judge)))
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def one(row: dict, name: str, metric) -> float:
@@ -504,7 +554,11 @@ def verdicts(result: dict, baseline: dict | None = None) -> list[dict]:
     if not l2:
         return rows
 
-    for name in ("faithfulness", "context_recall", "context_precision"):
+    for name in ("faithfulness", "context_recall", "context_precision", "answer_relevancy"):
+        if name not in l2["metrics"]:
+            # answer_relevancy 只在 --answer-relevancy 打开时才有。缺了就跳过，
+            # 不要补一行 0——那会把"没测"写成"很差"。
+            continue
         item = l2["metrics"][name]
         mean = item["mean"]
         failed = item["failed"]
@@ -756,6 +810,14 @@ def build_report(result: dict, rows: list[dict], command: str, rebuilt: bool = F
         "失败被剔除并单独计数，不当 0 分算——当 0 会把 judge 的问题伪装成质量问题 |",
         "",
     ]
+    if "answer_relevancy" in (result.get("l2") or {}).get("metrics", {}):
+        # 只有 --answer-relevancy 打开时这一项才存在，所以说明文字也只在有它的时候出现。
+        # 它测的是"回答对准问题没有"，前三项都测不到：把上下文里无关的两句搬进回答，
+        # faithfulness 照样满分（那两句本来就来自上下文）。
+        lines.insert(len(lines) - 2,
+                     "| answer_relevancy | 回答能不能反推回这个问题 | 答非所问，或把整块资料搬了"
+                     "进来。查提示词里的「用法」有没有范围约束（`claw4j.rag.answer`）；"
+                     "它走 embedding，不吃 judge，也不看上下文 |")
 
     # 这张表回答"0.805 到底算好还是差"，是用户最常问的一句。
     lines += [
@@ -905,7 +967,8 @@ async def main() -> int:
             print("\n（跳过 L2：--skip-judge）")
         else:
             judge = make_judge(args.judge)
-            result["l2"] = await score_l2(rows, judge, args.judge, args.concurrency)
+            result["l2"] = await score_l2(rows, judge, args.judge, args.concurrency,
+                                          with_answer_relevancy=args.answer_relevancy)
             print_l2(result["l2"])
 
     if baseline is None:

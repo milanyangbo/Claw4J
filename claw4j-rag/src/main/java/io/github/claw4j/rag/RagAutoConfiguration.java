@@ -191,7 +191,7 @@ public class RagAutoConfiguration {
                 .build();
         DocumentRetriever keyword = hybrid.enabled()
                 ? new KeywordDocumentRetriever(jdbc, KnowledgeIndexer.SOURCE_KIND,
-                        hybrid.candidatesPerRoute())
+                        hybrid.candidatesPerRoute(), properties.keyword())
                 : null;
         return new HybridDocumentRetriever(vector, keyword, new WeightedScoreJoiner());
     }
@@ -297,15 +297,18 @@ public class RagAutoConfiguration {
      * 以及把读到的段落拼成提示词。所以下面的 joiner 必须是直通的——理由见
      * {@link KnowledgeRetrievalPipeline#passThroughJoiner()}。
      *
-     * @param pipeline 检索链路
+     * @param pipeline   检索链路
+     * @param properties 知识库配置，这里只取 {@code answer} 那一段的"用法"规则
+     * @param rewriter   改写器（可能没有，改写默认关）
      * @return 检索增强 advisor
      */
     @Bean
     @ConditionalOnMissingBean(RetrievalAugmentationAdvisor.class)
     public Advisor knowledgeAugmentationAdvisor(KnowledgeRetrievalPipeline pipeline,
+                                                RagProperties properties,
                                                 ObjectProvider<GuardedQueryRewriter> rewriter) {
         ContextualQueryAugmenter augmenter = ContextualQueryAugmenter.builder()
-                .promptTemplate(new PromptTemplate(PROMPT_TEMPLATE))
+                .promptTemplate(new PromptTemplate(promptTemplate(properties.answer())))
                 .allowEmptyContext(true)
                 .documentFormatter(RagAutoConfiguration::formatDocuments)
                 .build();
@@ -423,16 +426,15 @@ public class RagAutoConfiguration {
             """;
 
     /**
-     * 增强模板。这是对框架默认模板的替换，不是可选的风格调整：
+     * 增强模板的前半段（到"用法："为止）。改的是对框架默认模板的替换，不是可选的风格调整：
      *
      * <p>默认模板要求"只根据上下文回答，不在上下文里就说不知道"，会把用户消息整个换成一个 RAG
      * 提问。装在一个通用助手上，问"你好"也会被要求"只按资料回答"——人格、工具、常识全被压住。
      * 这里改成"资料相关就用、无关就忽略"，既保留 RAG 的好处，又不劫持对话。
      *
-     * <p>{@code {query}} 与 {@code {context}} 两个占位符是 {@code PromptAssert} 要求的，
-     * 少一个会在构建时抛。
+     * <p>{@code {context}} 是框架注入的占位符。
      */
-    static final String PROMPT_TEMPLATE = """
+    static final String PROMPT_HEADER = """
             下面是从内部知识库里检索到的资料，可能相关、也可能不相关。
 
             ---------------------
@@ -440,14 +442,72 @@ public class RagAutoConfiguration {
             ---------------------
 
             用法：
-            1. 资料确实回答了问题，就据此回答，并在句末用资料开头的编号标出处（例如「见 [2]」）。
-            2. 资料与问题无关，就忽略它，按你平时的方式回答，不要提"资料里没有"。
-            3. 不要在资料之外编造规定、数字或流程。
+            """;
+
+    /**
+     * "用法"之后那一段。{@code {query}} 是用户问题。
+     *
+     * <p>开头留一个空行，因为"用法"那几行由 {@link #promptTemplate} 拼在中间。拼接只在那一处做，
+     * 写两处就会有一次多一个空行。
+     */
+    static final String PROMPT_FOOTER = """
+
 
             问题：{query}
 
             回答：
             """;
+
+    /**
+     * 默认的用法：在"相关就用 / 无关就忽略 / 别编"之外，加三条<b>范围</b>约束。
+     *
+     * <p>行业里这一步常写成"最多三句"（LangChain 的 {@code rlm/rag-prompt} 就是
+     * "Use three sentences maximum"），本模块不这么做：分级账期、例外清单这类合法答案会被
+     * 句数截断。所以约束的是"不多写没被问的东西"，不是"写几句"。
+     *
+     * <p>第 3 条（可以合并）不能省：只写"只答所问"，多跳题（价格 + 延保 = 总价）会被理解成
+     * "只能引用一段"，本该答对的题退化成"资料不足"。
+     */
+    static final String DEFAULT_ANSWER_USAGE = """
+            1. 资料确实回答了问题，就据此回答，并在句末用资料开头的编号标出处（例如「见 [2]」）。
+            2. 只答被问到的部分：同一份资料里还写着别的条款、别的数字、别的例外，不要一并搬出来。
+            3. 一个问题要几处资料合起来才答得全，就合起来答——合并是允许的，超范围不是。
+            4. 篇幅按问题定：问一件事就一两句；要列条件时才用短列表，不为了显得完整而扩写。
+            5. 资料与问题无关，就忽略它，按你平时的方式回答，不要提"资料里没有"。
+            6. 不要在资料之外编造规定、数字或流程。
+            """;
+
+    /**
+     * 旧的三条：只回答"资料用不用"，没有一条管"用多少"。
+     *
+     * <p>留着只为对照——{@code claw4j.rag.answer.enabled=false} 要能退回这一版，否则
+     * "加了范围约束到底有没有用"永远说不清。它本身就是被替换掉的那一版，不要在这里加规则。
+     */
+    static final String LEGACY_ANSWER_USAGE = """
+            1. 资料确实回答了问题，就据此回答，并在句末用资料开头的编号标出处（例如「见 [2]」）。
+            2. 资料与问题无关，就忽略它，按你平时的方式回答，不要提"资料里没有"。
+            3. 不要在资料之外编造规定、数字或流程。
+            """;
+
+    /**
+     * 拼出完整的增强模板。
+     *
+     * <p>{@code {query}} 与 {@code {context}} 两个占位符是 {@code PromptAssert} 要求的，
+     * 少一个会在构建时抛。所以自定义"用法"里不许再出现花括号——它会和占位符语法撞车，
+     * 而那种错在运行期表现为"问题被吃掉一段"，很难归因。
+     *
+     * @param config 回答范围配置
+     * @return 完整模板
+     */
+    static String promptTemplate(RagProperties.Answer config) {
+        String usage = !config.enabled() ? LEGACY_ANSWER_USAGE
+                : config.instructions() == null ? DEFAULT_ANSWER_USAGE : config.instructions();
+        if (usage.indexOf('{') >= 0 || usage.indexOf('}') >= 0) {
+            throw new IllegalStateException("claw4j.rag.answer.instructions 不能含花括号："
+                    + "那是 {query} / {context} 的占位符语法，混进来会让渲染错位：" + usage);
+        }
+        return PROMPT_HEADER + usage.strip() + PROMPT_FOOTER;
+    }
 
     /**
      * 每段的注入格式：{@code [n] 路径 第 N 段} 加正文。

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 词项切分的单测。
@@ -92,5 +93,69 @@ class KeywordDocumentRetrieverTest {
     void blankQueryHasNoTerms() {
         assertThat(KeywordDocumentRetriever.searchTerms("   ")).isEmpty();
         assertThat(KeywordDocumentRetriever.searchTerms(null)).isEmpty();
+    }
+
+    // ---------------------------------------------------------------- 配置化之后
+
+    private static List<KeywordDocumentRetriever.Term> terms(String query, RagProperties.Keyword config) {
+        return KeywordDocumentRetriever.terms(query, KeywordDocumentRetriever.Rules.of(config));
+    }
+
+    @Test
+    @DisplayName("短型号正则可配：两字母带横线的型号换一条正则就能收进来")
+    void shortModelPatternIsConfigurable() {
+        RagProperties.Keyword config = new RagProperties.Keyword(null,
+                "(?<![A-Za-z0-9])[A-Za-z]{2}-\\d{2}(?![A-Za-z0-9])", null, null, null, null, null, null);
+
+        assertThat(terms("AB-12 还有备件吗", config))
+                .as("默认规则认的是「字母+数字」，AB-12 这种要换正则")
+                .extracting(KeywordDocumentRetriever.Term::text)
+                .contains("AB-12");
+    }
+
+    @Test
+    @DisplayName("权重可配：整句权重改了，命中一项就按新值算分")
+    void wholeWeightIsConfigurable() {
+        RagProperties.Keyword config = new RagProperties.Keyword(null, null, null,
+                null, null, null, 7, null);
+
+        List<KeywordDocumentRetriever.Term> terms = terms("退货政策", config);
+
+        assertThat(terms).isNotEmpty();
+        assertThat(terms.getFirst().text()).isEqualTo("退货政策");
+        assertThat(terms.getFirst().weight()).isEqualTo(7);
+    }
+
+    @Test
+    @DisplayName("词项上限可配：调小之后长提问不会把 SQL 撑长")
+    void maxTermsIsConfigurable() {
+        RagProperties.Keyword config = new RagProperties.Keyword(null, null, null,
+                null, 3, null, null, null);
+        String query = "华东区售后政策里关于备机押金退还流程与违约金计算方式的全部规定是什么";
+
+        assertThat(terms(query, config)).hasSizeLessThanOrEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("整句长度上限可配：英文提问 12 个字符只有一两个词，调大才收得进来")
+    void wholeMaxCharsIsConfigurable() {
+        RagProperties.Keyword wide = new RagProperties.Keyword(null, null, null,
+                null, null, 40, null, null);
+        String query = "how long is the return window";
+
+        assertThat(terms(query, wide))
+                .extracting(KeywordDocumentRetriever.Term::text)
+                .contains(query);
+    }
+
+    @Test
+    @DisplayName("正则配错：启动即抛，不留到第一次提问才变成「一条都不命中」")
+    void brokenPatternFailsFast() {
+        RagProperties.Keyword broken = new RagProperties.Keyword("(", null, null,
+                null, null, null, null, null);
+
+        assertThatThrownBy(() -> KeywordDocumentRetriever.Rules.of(broken))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("anchor-pattern");
     }
 }
