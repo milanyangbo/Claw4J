@@ -23,11 +23,9 @@ import java.util.concurrent.TimeoutException;
  * <ul>
  *   <li>可重试：限流（429）、服务端错误（5xx）、连接被拒、DNS 解析不了、读写超时。
  *       这些是对方或链路的问题，另一家大概率没事。
- *   <li>可重试：<b>模型生成的内容解析不了</b>（工具参数不是合法 JSON、响应体截断）。
- *       这一条曾经被划到"不可重试"，理由是"同一份解析不了的响应换一家也解析不了"——
- *       那句话对<b>同一次生成的同一份字节</b>成立，对我们真正遇到的场景不成立：那些字节是模型
- *       这一轮现写的，重新生成就是另一份。实测 DeepSeek 五次里有一次把工具参数写成
- *       {@code {"text":"…"专}}，重试一次就正常（票 14）。
+ *   <li>可重试：<b>拿到的字节解析不出来</b>（工具参数不是合法 JSON、响应体截断）。
+ *       换一家就是换一份新字节，值得试；但对<b>同一家</b>不做整轮重生成——坏参数的正确归处是
+ *       工具层：框架把它转成一段工具结果回灌给模型，模型在同一轮自己重发调用（票 02）。
  *   <li>不可重试：鉴权失败（401）、无权限（403）、参数错误（400 / 422）、
  *       本地构造错误（空消息、选项拼不出来）。换一家只会再失败一次，
  *       把一次确定的错误拖成 N 次网络往返。
@@ -71,29 +69,6 @@ public final class ModelFailures {
                 return true;
             }
             if (isNetworkFailure(current)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 同一个模型再试一次有没有意义。
-     *
-     * <p>只对"模型生成的内容解析不了"为 true：那是这一<b>次</b>生成的质量问题，重新生成一份
-     * 大概率就好了。限流与网络失败<b>不</b>在这里重试——那是 SDK 自己的重试层在管，
-     * 429 立刻重打同一家只会更糟。
-     *
-     * <p>为什么要有这个方法：只有一个供应商的部署里，{@link #worthTryingAnother} 为 true 也
-     * 没有下一家可降，于是"可重试"等于"没人重试"，一次抖动就是一个 500（票 14）。
-     *
-     * @param failure 捕获到的异常，不能为 null
-     * @return 值得在同一家上再生成一次时为 true
-     */
-    public static boolean worthRetryingTheSameModel(Throwable failure) {
-        Objects.requireNonNull(failure, "failure");
-        for (Throwable current = failure; current != null; current = next(current)) {
-            if (isUnparseableContent(current)) {
                 return true;
             }
         }

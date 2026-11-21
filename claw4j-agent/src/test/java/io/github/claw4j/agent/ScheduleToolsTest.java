@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.execution.DefaultToolExecutionExceptionProcessor;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 
 import java.time.Instant;
 import java.util.Arrays;
@@ -24,6 +26,8 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
@@ -159,12 +163,27 @@ class ScheduleToolsTest {
     }
 
     @Test
-    @DisplayName("参数不是 JSON、或者缺 goal：回一句话让模型自己改，不抛成整轮 500")
-    void badArgumentsComeBackAsAdvice() {
+    @DisplayName("参数不是 JSON：包成 ToolExecutionException，框架把它变成一段工具结果回灌给模型")
+    void badJsonBecomesToolExecutionException() {
+        ScheduleTools tools = tools(mock(ScheduleStore.class));
+        ToolCallback create = tool(tools, ScheduleTools.CREATE);
+
+        assertThatThrownBy(() -> create.call("不是 JSON", context(OWNER)))
+                .as("裸 Jackson 异常冒到路由层会变成一次整轮重试；包成这一种才进得了框架的回落路径")
+                .isInstanceOf(ToolExecutionException.class);
+
+        // 框架的处理器（alwaysThrow=false）不抛，而是把异常变成一句话——模型在同一轮就能看到，
+        // 自己重发一次调用。这句文本长什么样由框架决定，我们只断言它真的带上了原因。
+        String advice = new DefaultToolExecutionExceptionProcessor(false).process(
+                (ToolExecutionException) catchThrowable(() -> create.call("不是 JSON", context(OWNER))));
+        assertThat(advice).contains("JSON");
+    }
+
+    @Test
+    @DisplayName("缺 goal 这类参数问题仍回一句话：它不是「读不懂」，换一个参数就能自救")
+    void missingArgumentStillComesBackAsAdvice() {
         ScheduleTools tools = tools(mock(ScheduleStore.class));
 
-        assertThat(call(tools, ScheduleTools.CREATE, "不是 JSON", context(OWNER)))
-                .contains("没办成").contains("JSON");
         assertThat(call(tools, ScheduleTools.CREATE, "{\"cron\":\"0 0 9 * * *\"}", context(OWNER)))
                 .contains("没办成").contains("goal");
     }
@@ -242,6 +261,14 @@ class ScheduleToolsTest {
         return Arrays.stream(tools.getToolCallbacks())
                 .filter(tool -> tool.getToolDefinition().name().equals(name))
                 .map(tool -> tool.call(args, context))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("没有这个工具：" + name));
+    }
+
+    /** 拿单个回调，用来断言它会抛什么。 */
+    private static ToolCallback tool(ScheduleTools tools, String name) {
+        return Arrays.stream(tools.getToolCallbacks())
+                .filter(tool -> tool.getToolDefinition().name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("没有这个工具：" + name));
     }

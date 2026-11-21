@@ -52,6 +52,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.mockito.ArgumentCaptor;
 import org.springframework.core.env.MapPropertySource;
@@ -173,6 +174,43 @@ class ChatPipelineTest {
 
         assertThat(tool.calls()).isEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
         assertThat(text).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("一直交坏参数：错误回灌给模型让它自己重发，但同一工具第 4 次要就被上限截断")
+    void repeatedBadArgumentsHitTheToolCallCap() {
+        AtomicInteger attempts = new AtomicInteger();
+        ToolCallback badArguments = new ToolCallback() {
+
+            private final ToolDefinition definition = ToolDefinition.builder()
+                    .name("lookup")
+                    .description("参数会坏的查询")
+                    .inputSchema("{\"type\":\"object\"}")
+                    .build();
+
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return definition;
+            }
+
+            @Override
+            public String call(String toolInput) {
+                attempts.incrementAndGet();
+                // 真实形状：Spring AI 的参数转换把 Jackson 3 的解析异常包成 ToolExecutionException
+                throw new ToolExecutionException(definition,
+                        new tools.jackson.core.exc.StreamReadException("Unexpected character ('专')"));
+            }
+        };
+        FixedChatModel model = new FixedChatModel(
+                prompt -> requestTool("lookup", "{\"text\":\"x\"专}"),
+                List.of());
+
+        String text = port(model, List.of(badArguments)).reply(message("chat-bad", "查一下")).text();
+
+        assertThat(attempts)
+                .as("工具错误是「可自救」的，但自救次数由上限兜住：模型没读懂就停，不再无限烧模型往返")
+                .hasValue(ToolCallBudget.MAX_CALLS_PER_TOOL);
+        assertThat(text).isEqualTo(ChatClientAgentPort.TOOL_CALL_CAPPED);
     }
 
     @Test

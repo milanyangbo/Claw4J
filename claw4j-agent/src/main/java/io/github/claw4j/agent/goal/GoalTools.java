@@ -5,6 +5,7 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.ai.util.JsonHelper;
 
 import java.util.List;
@@ -278,7 +279,7 @@ public final class GoalTools implements ToolCallbackProvider {
                 return NO_SESSION;
             }
             try {
-                return handle(parse(toolInput), sessionKey);
+                return handle(parse(toolInput, definition), sessionKey);
             } catch (IllegalArgumentException bad) {
                 return "没办成：" + bad.getMessage();
             }
@@ -306,7 +307,7 @@ public final class GoalTools implements ToolCallbackProvider {
         return value instanceof String sessionKey && !sessionKey.isBlank() ? sessionKey : null;
     }
 
-    private static Map<String, Object> parse(String toolInput) {
+    private static Map<String, Object> parse(String toolInput, ToolDefinition definition) {
         if (toolInput == null || toolInput.isBlank()) {
             return Map.of();
         }
@@ -314,7 +315,9 @@ public final class GoalTools implements ToolCallbackProvider {
             return new JsonHelper().fromJsonToMap(toolInput);
         }
         catch (RuntimeException failure) {
-            throw new IllegalArgumentException("参数不是 JSON 对象：" + toolInput, failure);
+            // 与 ScheduleTools 同一个取向：坏参数是模型现写的，交给框架 processor 回灌，
+            // 它在同一轮自己重发，不用整轮重生成。
+            throw new ToolExecutionException(definition, failure);
         }
     }
 

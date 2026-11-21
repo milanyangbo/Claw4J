@@ -10,6 +10,7 @@ import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.SessionEvent;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.ai.util.JsonHelper;
 
 import java.time.Instant;
@@ -384,7 +385,7 @@ public final class RecallSessionTool implements ToolCallback {
         return value instanceof Principal principal ? principal : null;
     }
 
-    private static Map<String, Object> parse(String toolInput) {
+    private Map<String, Object> parse(String toolInput) {
         if (toolInput == null || toolInput.isBlank()) {
             throw new IllegalArgumentException("recall_session 需要 {\"query\":\"..\"}");
         }
@@ -392,7 +393,10 @@ public final class RecallSessionTool implements ToolCallback {
             return new JsonHelper().fromJsonToMap(toolInput);
         }
         catch (RuntimeException failure) {
-            throw new IllegalArgumentException("recall_session 的参数不是 JSON 对象：" + toolInput, failure);
+            // 坏 JSON 不在下面的 IllegalArgumentException 兜底里：那一支回的是"参数不合法，
+            // 换个参数"，而这里连参数都读不出来。包成 ToolExecutionException 交给框架 processor
+            // 回灌给模型，它在同一轮重发；裸 Jackson 异常会一路冒到路由层，变成一次整轮重试。
+            throw new ToolExecutionException(definition, failure);
         }
     }
 

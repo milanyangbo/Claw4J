@@ -9,6 +9,7 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.ai.util.JsonHelper;
 
 import java.time.Instant;
@@ -324,7 +325,7 @@ public final class ScheduleTools implements ToolCallbackProvider {
                 return NO_PRINCIPAL;
             }
             try {
-                return handle(parse(toolInput), principal, toolContext);
+                return handle(parse(toolInput, definition), principal, toolContext);
             } catch (IllegalArgumentException bad) {
                 return "没办成：" + bad.getMessage();
             }
@@ -350,14 +351,17 @@ public final class ScheduleTools implements ToolCallbackProvider {
         return value instanceof String runId && !runId.isBlank() ? runId : null;
     }
 
-    private static Map<String, Object> parse(String toolInput) {
+    private static Map<String, Object> parse(String toolInput, ToolDefinition definition) {
         if (toolInput == null || toolInput.isBlank()) {
             return Map.of();
         }
         try {
             return new JsonHelper().fromJsonToMap(toolInput);
         } catch (RuntimeException failure) {
-            throw new IllegalArgumentException("参数不是 JSON 对象：" + toolInput, failure);
+            // 参数是模型这一轮现写的，不是我们手上的字节：包成框架认识的那一种，
+            // DefaultToolExecutionExceptionProcessor 会把它当**工具结果**回灌给模型，
+            // 它在同一轮自己重发一次——比重生成整轮回答便宜一个数量级。
+            throw new ToolExecutionException(definition, failure);
         }
     }
 

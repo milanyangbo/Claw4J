@@ -236,27 +236,51 @@ class ModelAndToolSelectionTest {
     }
 
     @Test
-    @DisplayName("模型生成的字节解析不出来 → 同一家再试一次；限流不走这条路（SDK 自己会重试）")
-    void unparseableOutputIsRetriedOnceOnTheSameModel() {
+    @DisplayName("模型生成的字节解析不出来：同一家不再重试，只换家；坏参数的正确归处在工具层")
+    void unparseableOutputDoesNotRetryTheSameModel() {
         AtomicInteger attempts = new AtomicInteger();
-        RoutingChatModel routing = new RoutingChatModel(List.of(
+        RoutingChatModel single = new RoutingChatModel(List.of(
                 new RoutingChatModel.Route("deepseek", model(
                         DeepSeekChatOptions.builder().build(),
                         prompt -> {
-                            if (attempts.incrementAndGet() == 1) {
-                                // 真实形状：Spring AI 解析工具参数时把 Jackson 3 的解析异常包了一层
-                                throw new IllegalStateException("Conversion from JSON to java.util.Map failed",
-                                        new tools.jackson.core.exc.StreamReadException(
-                                                "Unexpected character ('专'): was expecting comma to separate Object entries"));
-                            }
-                            return answer("第二次成了");
+                            attempts.incrementAndGet();
+                            // 真实形状：Spring AI 解析工具参数时把 Jackson 3 的解析异常包了一层
+                            throw new IllegalStateException("Conversion from JSON to java.util.Map failed",
+                                    new tools.jackson.core.exc.StreamReadException(
+                                            "Unexpected character ('专'): was expecting comma to separate Object entries"));
                         },
                         prompt -> Flux.empty()))));
 
-        assertThat(textOf(routing.call(prompt(DeepSeekChatOptions.builder().build()))))
-                .as("单供应商部署里没有下一家可降：不在同一家重试，一次抖动就是整个请求失败")
-                .isEqualTo("第二次成了");
-        assertThat(attempts).hasValue(2);
+        assertThatThrownBy(() -> single.call(prompt(DeepSeekChatOptions.builder().build())))
+                .isInstanceOf(ModelRoutingException.class);
+        assertThat(attempts)
+                .as("整轮重生成是票 02 撤掉的那条路：坏参数回给模型让它自己重发，路由层只管换家")
+                .hasValue(1);
+
+        AtomicInteger primaryCalls = new AtomicInteger();
+        AtomicInteger backupCalls = new AtomicInteger();
+        RoutingChatModel failover = new RoutingChatModel(List.of(
+                new RoutingChatModel.Route("primary", model(
+                        DeepSeekChatOptions.builder().build(),
+                        prompt -> {
+                            primaryCalls.incrementAndGet();
+                            throw new IllegalStateException("Conversion from JSON to java.util.Map failed",
+                                    new tools.jackson.core.exc.StreamReadException("Unexpected character ('专')"));
+                        },
+                        prompt -> Flux.empty())),
+                new RoutingChatModel.Route("backup", model(
+                        OpenAiChatOptions.builder().build(),
+                        prompt -> {
+                            backupCalls.incrementAndGet();
+                            return answer("备家接住了");
+                        },
+                        prompt -> Flux.empty()))));
+
+        assertThat(textOf(failover.call(prompt(DeepSeekChatOptions.builder().build()))))
+                .as("换一家就是换一份新字节，值得试")
+                .isEqualTo("备家接住了");
+        assertThat(primaryCalls).hasValue(1);
+        assertThat(backupCalls).hasValue(1);
 
         AtomicInteger limitedCalls = new AtomicInteger();
         RoutingChatModel limited = new RoutingChatModel(List.of(

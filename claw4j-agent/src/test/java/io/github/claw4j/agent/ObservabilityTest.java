@@ -41,6 +41,7 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springaicommunity.agent.tools.ToolCallListener;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import reactor.core.publisher.Flux;
@@ -306,6 +307,43 @@ class ObservabilityTest {
                 .isEqualTo(original.getToolDefinition().inputSchema());
         assertThat(observed.getToolMetadata().returnDirect())
                 .isEqualTo(original.getToolMetadata().returnDirect());
+    }
+
+    @Test
+    @DisplayName("包装层不改异常类型：ToolExecutionException 原样穿过，工具错误只记一次")
+    void wrapperPreservesToolExecutionException() {
+        ToolDefinition definition = ToolDefinition.builder()
+                .name("lookup")
+                .description("参数会坏的工具")
+                .inputSchema("{\"type\":\"object\"}")
+                .build();
+        ToolCallback failing = new ToolCallback() {
+
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return definition;
+            }
+
+            @Override
+            public String call(String toolInput) {
+                // 这就是模型交坏 JSON 之后，框架那一层应当看到的异常类型
+                throw new ToolExecutionException(definition,
+                        new tools.jackson.core.exc.StreamReadException("Unexpected character ('专')"));
+            }
+        };
+
+        ToolCallback wrapped = new MeteredToolCallback(failing, registry);
+
+        assertThatThrownBy(() -> wrapped.call("{\"text\":\"x\"专}"))
+                .as("换成别的类型，框架的处理器就接不到了，坏参数又变成整轮失败")
+                .isInstanceOf(ToolExecutionException.class);
+        assertThat(registry.get(MeteredToolCallback.TOOL_CALLS)
+                .tag("tool", "lookup")
+                .tag("outcome", "error")
+                .counter()
+                .count())
+                .as("工具错误在这里记一次，模型调用指标那边不该再记一次")
+                .isEqualTo(1.0);
     }
 
     @Test

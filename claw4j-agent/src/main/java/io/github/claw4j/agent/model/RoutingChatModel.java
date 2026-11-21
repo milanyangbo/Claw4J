@@ -68,13 +68,12 @@ public class RoutingChatModel implements ChatModel {
     /**
      * 依次试每个模型，第一次成功就返回。
      *
-     * <p>同一个模型最多调用<b>两次</b>，且只在"它这一轮生成的字节解析不出来"时重试
-     * （{@link ModelFailures#worthRetryingTheSameModel}）。理由：那是这一<b>次</b>生成的质量问题，
-     * 重新生成一份大概率就好；而只有一个供应商的部署里，{@code worthTryingAnother} 为 true 也
-     * 没有下一家可降，不重试就等于没人重试——一次抖动整个请求变 500（票 14）。
-     * 限流与网络失败不走这条路：SDK 自己会重试，429 立刻重打同一家只会更糟。
+     * <p>同一家不重试。曾经这里有一个"这一轮生成的字节解析不出来就再生成一次"的分支（票 14），
+     * 后来撤了：坏参数的正确归处是<b>工具层</b>——框架把解析失败转成一段工具结果回灌给模型，
+     * 模型在同一轮自己重发调用，代价一次工具往返，而不是把整轮回答重生成一遍。
+     * 模型层再叠一层同家重试，等于同一个症状两处补，而且把"一次失败"变成两倍等待。
      *
-     * <p>流式那一侧不重试：吐过东西之后再生成一遍，客户端会收到两遍内容；
+     * <p>流式那一侧同样不重试：吐过东西之后再生成一遍，客户端会收到两遍内容；
      * 没吐过时的失败已经由 {@code streamFrom} 的降级路径处理。
      */
     @Override
@@ -82,29 +81,21 @@ public class RoutingChatModel implements ChatModel {
         ModelRoutingException failure =
                 new ModelRoutingException("所有模型都调用失败，路由顺序：" + routeOrder());
         for (Route route : routes) {
-            RuntimeException routeFailure = null;
-            for (int attempt = 0; attempt < 2; attempt++) {
-                try {
-                    return route.model().call(optionsFor(prompt, route));
-                }
-                catch (RuntimeException e) {
-                    routeFailure = e;
-                    if (attempt == 0 && ModelFailures.worthRetryingTheSameModel(e)) {
-                        log.warn("模型 {} 这一轮没产出可解析的内容，同一家再试一次（不换家）：{}",
-                                route.name(), e.toString());
-                        continue;
-                    }
-                    break;
-                }
+            try {
+                return route.model().call(optionsFor(prompt, route));
             }
-            if (!ModelFailures.worthTryingAnother(routeFailure)) {
-                log.warn("模型 {} 调用失败，这类错误换一家也不会好，直接报出：{}", route.name(), routeFailure.toString());
-                throw new ModelRoutingException(
-                        "模型 " + route.name() + " 调用失败，这类错误换一家也不会好，因此没有降级：" + routeFailure,
-                        routeFailure);
+            catch (RuntimeException routeFailure) {
+                if (!ModelFailures.worthTryingAnother(routeFailure)) {
+                    log.warn("模型 {} 调用失败，这类错误换一家也不会好，直接报出：{}",
+                            route.name(), routeFailure.toString());
+                    throw new ModelRoutingException(
+                            "模型 " + route.name() + " 调用失败，这类错误换一家也不会好，因此没有降级："
+                                    + routeFailure,
+                            routeFailure);
+                }
+                log.warn("模型 {} 调用失败，降级到下一个（若有）", route.name(), routeFailure);
+                failure.addSuppressed(routeFailure);
             }
-            log.warn("模型 {} 调用失败，降级到下一个（若有）", route.name(), routeFailure);
-            failure.addSuppressed(routeFailure);
         }
         throw failure;
     }
