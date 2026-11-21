@@ -179,8 +179,12 @@ fallbacks 不受 `policy.allow` 过滤（它的注释原话：*explicit user int
 `com.fasterxml.jackson.annotation.*` **不动**（`jackson-databind-3.1.7.pom`：「3.x retains dep to annotations 2.x」）；
 `java.time` 内置，不用注册 `JavaTimeModule`。
 
-`ModelFailures.isUnparseableContent` 从「认两个 Jackson」缩成一个；同时把自定义 `ToolCallback` 的解析失败
-包成 `ToolExecutionException`，让第三节那条回落路径真正生效。
+`ModelFailures.isUnparseableContent` **仍然认两个包名**，但理由换了一个：`openai-java-core`（`spring-ai-openai`
+带进来）自己就用 Jackson 2 解析 HTTP 响应体，解析失败时把 `JsonProcessingException` 包进
+`OpenAIInvalidDataException` 抛出来。所以「classpath 上不再有 Jackson 2」做不到，能做到的是
+**本仓的代码不再 import 它的 databind**（由一条扫描用例守着）。缩成一个包名会让这类失败落到
+「认不出来 → 不重试」上，是静默的行为变化。同时把自定义 `ToolCallback` 的解析失败
+包成 `ToolExecutionException`，让第三节那条回落路径真正生效（票 02）。
 
 ### 九、明确不做
 

@@ -6,6 +6,7 @@ import com.openai.errors.OpenAIRetryableException;
 import org.springframework.ai.retry.NonTransientAiException;
 import org.springframework.ai.retry.TransientAiException;
 import org.springframework.web.client.ResourceAccessException;
+import tools.jackson.core.JacksonException;
 
 import java.io.IOException;
 import java.net.http.HttpTimeoutException;
@@ -34,9 +35,7 @@ import java.util.concurrent.TimeoutException;
  *
  * <p>怎么认：先看 Spring AI 自己的两类（{@link TransientAiException} /
  * {@link NonTransientAiException}），再看 OpenAI 兼容家族的状态码（DeepSeek 与通义都走这套 SDK，
- * 所以这里是唯一一处认识具体 SDK 的地方），再看 JSON 解析失败（<b>两个 Jackson 都要认</b>：
- * 本仓自己用 Jackson 2，Spring Boot 4 的框架侧用 Jackson 3，只认一个的话另一个会静默走到
- * 末尾的默认值上——结论碰巧对，理由全错），最后看 JDK 的网络异常。
+ * 所以这里是唯一一处认识具体 SDK 的地方），再看 JSON 解析失败，最后看 JDK 的网络异常。
  * 异常会被一层层包起来，判断沿 {@code getCause()} 走完整条链。
  *
  * <p>认不出来的失败按不可重试处理：只有明确知道"换一家可能好"时才换。反过来会把每一次编程错误
@@ -104,13 +103,21 @@ public final class ModelFailures {
     /**
      * 是不是"拿到的字节解析不出来"。
      *
-     * <p>两个 Jackson 都要认：Jackson 2 的 {@code JsonProcessingException}（本仓自己的代码）
-     * 与 Jackson 3 的 {@code JacksonException}（Spring Boot 4 的框架侧，Spring AI 解析工具参数
-     * 时抛的就是它）。只认前者的话，后者会一路走到"认不出来 → 不重试"的默认值上。
+     * <p>两个包名都要认，来源不同：
+     * <ul>
+     *   <li>{@link JacksonException}（{@code tools.jackson}）：本仓自己的代码与 Spring AI 都用这一份，
+     *       Spring AI 解析工具参数时抛的就是它。
+     *   <li>{@link JsonProcessingException}（{@code com.fasterxml.jackson}）：Jackson 2 仍随
+     *       {@code openai-java-core} 在 classpath 上——那是 SDK 自己解析 HTTP 响应体用的，解析失败时
+     *       它把异常包进 {@code OpenAIInvalidDataException} 抛出来。只认前者的话，这条会走到末尾
+     *       "认不出来 → 不重试"。
+     * </ul>
+     *
+     * <p>认的是异常类型，不是"我们依赖 Jackson 2"：本仓没有任何一行代码 import 它的 databind。
      */
     private static boolean isUnparseableContent(Throwable failure) {
-        return failure instanceof JsonProcessingException
-                || failure instanceof tools.jackson.core.JacksonException;
+        return failure instanceof JacksonException
+                || failure instanceof JsonProcessingException;
     }
 
     private static boolean isRetryableStatus(int statusCode) {

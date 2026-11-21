@@ -1,9 +1,10 @@
 package io.github.claw4j.agent.approval;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.claw4j.capability.exec.FrozenPlan;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * 冻结件在库里的样子：{@code {"command": "...", "cwd": "..."}}（{@code frozen_plan} 那一列）。
@@ -17,7 +18,7 @@ import io.github.claw4j.capability.exec.FrozenPlan;
  */
 final class FrozenPlanJson {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     private FrozenPlanJson() {
     }

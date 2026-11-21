@@ -1,6 +1,6 @@
 # 票 01：全仓迁到 Jackson 3，删掉 Jackson 2 的显式依赖
 
-状态：**待做**。裁决：`docs/adr/0035-model-gateway-module.md` 第八节。
+状态：**完成**（2026-11-22）。裁决：`docs/adr/0035-model-gateway-module.md` 第八节。
 
 ## 一、目标
 
@@ -26,13 +26,41 @@ Jackson 2 与 3 并存是「坏 JSON 认不出来」的根因之一（`ModelFail
 
 | 判什么行为 | 用例名 | 先红的样子 |
 | --- | --- | --- |
-| 源码里不再出现 Jackson 2 的 databind import | `Jackson3MigrationTest#noJacksonTwoImportsRemain` | 留一个 `com.fasterxml.jackson.databind.ObjectMapper`，扫描命中 |
-| 运行时 classpath 上没有 Jackson 2 的 databind | `Jackson3MigrationTest#jacksonTwoDatabindNotOnClasspath` | `Class.forName("com.fasterxml.jackson.databind.ObjectMapper")` 成功 |
-| 已有的 JSON 往返行为不变（goal 存读） | `Jackson3MigrationTest#goalRoundTrips` | 字段名或时间格式变了 |
-| `Instant` / `Duration` 不需要额外注册模块 | `Jackson3MigrationTest#javaTimeRoundTripsWithoutModule` | 抛 `InvalidDefinitionException` |
-| 入站报文与审批回调仍能解析 | `ApprovalFlowTest#approvalCallbackStillParses` | 解析失败或字段丢失 |
+| 各模块主代码里没有 Jackson 2 的 databind | `BuildContractTest#noJacksonTwoDatabindImports` | 在 `claw4j-agent/src/main` 放一个 import 它的类，扫描命中该行（已实测红过） |
+| 审批回调报文在 Jackson 3 下仍按注解绑定，缺字段落默认值 | `ApprovalRequestBodyTest#minimalBodyBindsToDefaults` / `#fullBodyKeepsEveryField` | `@JsonCreator` 不生效 → 构造失败；或 `always`/`reason` 变必填 → 400 |
+
+## 实施记录（两处与票面不一致，按实际改）
+
+**1. 「运行时 classpath 上没有 Jackson 2 的 databind」做不到，用例删掉。**
+`openai-java-core`（`com.openai:openai-java-core:4.80.0`，`spring-ai-openai` 带进来）自己就用
+`com.fasterxml.jackson.databind.json.JsonMapper` 解析 HTTP 响应体，它是硬依赖。删了 SDK 就跑不起来。
+
+连带结论：`ModelFailures` 仍要认 `com.fasterxml.jackson.core.JsonProcessingException`——那不是"我们还在用
+Jackson 2"，是 SDK 解析响应体失败时把它包进 `OpenAIInvalidDataException` 抛出来的异常类型。
+删掉这一支，这类失败会落到"认不出来 → 不重试"的默认值上，是一次静默的行为变化。
+javadoc 已改成这个说法（原先写的"本仓自己用 Jackson 2"已不成立）。
+
+**2. 「`Instant` / `Duration` 不需注册模块」不写用例。**
+本仓没有任何一处直接序列化 `java.time` 类型：`SessionGoalJson` 与 `JdbcInboundStore` 都存 epoch 毫秒。
+写这条等于测 Jackson 自己，删掉。
+
+**3. 「goal 存读往返不变」不新写用例。**
+`TurnFlowTest`（目标读回、resume、预算）、`ExecApprovalTest`（冻结件与批准兑现）、`PersistenceSchemaTest`
+已经在真库上把这几条 JSON 写进去读出来了，重复一份只会多一处要跟着改的断言。
+
+## 落地清单
+
+- agent：8 个类换包 + `new ObjectMapper()` → `JsonMapper.builder().build()`；
+  `ToolCallAudit` 的 `fieldNames()` 在 3.x 已改名 `propertyNames()`（`Iterator` → `Collection`），改了一行。
+- rag：2 个类换包；`RagAutoConfiguration` 里关于"Jackson 2 没有 bean"的那段 javadoc 已重写（前提消失了）；
+  删 `jackson-databind` 依赖。
+- channel：`ApprovalController` 只有注解 import，包名没变，**一行没改**（这正是要验的：注解仍被 3.x 认）。
+- 新增两条测试：`BuildContractTest#noJacksonTwoDatabindImports`（扫描；并进既有的构建契约类，
+  因为 `claw4j-app` 的测试文件名额正好卡在 14 个）、`ApprovalRequestBodyTest`（注解绑定 + 缺字段默认值）。
 
 ## 缺口
 
 - 序列化器配置（大小写、时间格式）如与 Jackson 2 默认不同，要在迁移里显式固定；本票不改变现有报文格式，
   跑一遍现有集成测试确认。
+- `claw4j-channel` 里 9 处 `new ObjectMapper()`（飞书/钉钉/Slack/企微的翻译器与发送器）本来就已是
+  Jackson 3，不在本票的 13 个文件里，没动。它们同样可以换成 `JsonMapper.builder().build()`，留作后续统一。

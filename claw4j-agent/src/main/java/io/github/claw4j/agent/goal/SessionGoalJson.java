@@ -1,7 +1,8 @@
 package io.github.claw4j.agent.goal;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -26,7 +27,7 @@ import java.util.UUID;
  */
 final class SessionGoalJson {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     private static final String SCHEMA_VERSION = "schemaVersion";
     private static final String ID = "id";
@@ -76,7 +77,7 @@ final class SessionGoalJson {
         json.put(BUDGET_LIMITED_AT, millis(goal.budgetLimitedAt()));
         try {
             return MAPPER.writeValueAsString(json);
-        } catch (JsonProcessingException impossible) {
+        } catch (JacksonException impossible) {
             // 全是字符串与数字，序列化不会失败；真失败说明 Jackson 的配置被人改坏了。
             throw new IllegalStateException("目标编码失败", impossible);
         }
@@ -96,7 +97,7 @@ final class SessionGoalJson {
         Map<?, ?> map;
         try {
             map = MAPPER.readValue(json, Map.class);
-        } catch (JsonProcessingException malformed) {
+        } catch (JacksonException malformed) {
             throw new IllegalArgumentException("目标 JSON 无法解析：" + malformed.getOriginalMessage(),
                     malformed);
         }

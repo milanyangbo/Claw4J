@@ -1,13 +1,14 @@
 package io.github.claw4j.agent.webtools;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.net.InetAddress;
 import java.net.URI;
@@ -36,7 +37,7 @@ public final class WebFetchGuard implements ToolCallback {
 
     private static final Logger log = LoggerFactory.getLogger(WebFetchGuard.class);
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builder().build();
 
     /** 拒绝时回给模型的话。要确定，不要像异常。 */
     static final String REFUSED = "这个地址不在允许出网的范围内（只允许公网 http/https）：";

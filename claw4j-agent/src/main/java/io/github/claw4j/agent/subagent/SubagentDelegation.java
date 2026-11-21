@@ -1,11 +1,12 @@
 package io.github.claw4j.agent.subagent;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -58,7 +59,7 @@ public final class SubagentDelegation implements ToolCallback {
     private static final ThreadLocal<Principal> CURRENT = new ThreadLocal<>();
 
     /** 只用来把库那份 JSON 化的字符串还原，不参与任何判定。 */
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     private final ToolCallback delegate;
 

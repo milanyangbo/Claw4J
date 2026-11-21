@@ -1,7 +1,5 @@
 package io.github.claw4j.agent.inbound;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.claw4j.domain.inbound.ClaimRef;
 import io.github.claw4j.domain.inbound.ClaimedInbound;
 import io.github.claw4j.domain.inbound.EnqueueOutcome;
@@ -13,6 +11,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -137,7 +138,7 @@ public class JdbcInboundStore implements InboundStore {
      * 自己一份 mapper：信封只有六个字段，用应用那份（带各种自定义序列化器）反而要把
      * "队列表里存的是什么"这件事的解释权分散出去。时间存成 epoch 毫秒，不引 jsr310 模块。
      */
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = JsonMapper.builder().build();
 
     /**
      * @param jdbc JDBC 句柄
@@ -308,7 +309,7 @@ public class JdbcInboundStore implements InboundStore {
         try {
             return mapper.writeValueAsString(payload);
         }
-        catch (JsonProcessingException failure) {
+        catch (JacksonException failure) {
             throw new IllegalStateException("入站事件序列化失败（" + event.eventId() + "）", failure);
         }
     }
@@ -328,7 +329,7 @@ public class JdbcInboundStore implements InboundStore {
                     Instant.ofEpochMilli(((Number) payload.get("receivedAt")).longValue()),
                     direct == null || (Boolean) direct);
         }
-        catch (JsonProcessingException failure) {
+        catch (JacksonException failure) {
             throw new IllegalStateException("入站事件反序列化失败（" + queueName + " / " + eventId + "）", failure);
         }
     }

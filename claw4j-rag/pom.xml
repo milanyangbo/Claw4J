@@ -56,11 +56,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
-        <!-- 重排器自己拼 DashScope 的 JSON：请求体与响应都要手写序列化。 -->
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-        </dependency>
+        <!--
+          重排器自己拼 DashScope 的 JSON：请求体与响应都要手写序列化。用的是 Jackson 3
+          （{@code tools.jackson}），由 spring-boot-starter 带进来，不显式声明——全仓只留一份
+          编解码库，Jackson 2 只剩 openai-java-core 内部那一份（ADR-0035）。
+        -->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

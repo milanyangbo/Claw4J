@@ -1,9 +1,10 @@
 package io.github.claw4j.agent.audit;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -40,7 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class ToolCallAudit {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     /**
      * 兑现与执行之间的那条线能活多久。取十分钟，与默认的审批有效期同一个量级。
@@ -273,8 +274,7 @@ public class ToolCallAudit {
             return "null";
         }
         if (node.isObject()) {
-            List<String> names = new ArrayList<>();
-            node.fieldNames().forEachRemaining(names::add);
+            List<String> names = new ArrayList<>(node.propertyNames());
             Collections.sort(names);
             StringBuilder text = new StringBuilder("{");
             for (String name : names) {

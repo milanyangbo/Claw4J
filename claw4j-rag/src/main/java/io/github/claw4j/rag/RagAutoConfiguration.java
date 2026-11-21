@@ -1,6 +1,5 @@
 package io.github.claw4j.rag;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.claw4j.domain.untrusted.ExternalContent;
 import io.github.claw4j.domain.untrusted.PromptData;
 import io.github.claw4j.secret.SecretResolver;
@@ -50,6 +49,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import javax.sql.DataSource;
 import java.net.http.HttpClient;
@@ -225,13 +226,9 @@ public class RagAutoConfiguration {
      *
      * <p>取不到 key 不等于启动失败：重排是排序优化，不是检索的前提。
      *
-     * <p>JSON 编解码器在这里自己造，<b>不从容器里要</b>：Spring Boot 4 只为 Jackson 3
-     * （{@code tools.jackson}）提供 bean，Jackson 2 的 {@link ObjectMapper} 已经没有 bean 了
-     * （它只在 classpath 上，随 spring-ai 传递进来）。写成 bean 方法参数的话，重排开着的部署
-     * 一律启动失败并报「required a bean of type ObjectMapper that could not be found」。
-     * 本模块另外四处用 Jackson 2 的地方（{@code SessionGoalJson}、{@code ToolCallAudit} 的参数指纹、
-     * {@code JdbcApprovals}、{@code JdbcInboundStore}）都是各自 {@code new}，跟着它们走，
-     * 而不是给框架已经不再提供的东西在我们这边复活一颗 bean（票 01）。
+     * <p>JSON 编解码器在这里自己造，<b>不从容器里要</b>：重排只有请求与响应两个 record，字段名用注解
+     * 钉死，形状不跟着应用的 mapper 配置走；而且这条 bean 在只装了本模块的切片测试里也要能起来，
+     * 写成参数就得替每个切片补一份 JSON 装配。
      *
      * @param properties  知识库配置，取重排端点、模型、超时、候选数与凭据句柄
      * @param environment 用来解析密钥句柄
@@ -242,7 +239,7 @@ public class RagAutoConfiguration {
     @ConditionalOnMissingBean(RerankDocumentPostProcessor.class)
     public RerankDocumentPostProcessor knowledgeReranker(RagProperties properties,
                                                          Environment environment) {
-        ObjectMapper json = new ObjectMapper();
+        ObjectMapper json = JsonMapper.builder().build();
         // 凭据走自己的键（默认指向 qwen 那把），不去读 claw4j.model.providers：本模块不依赖
         // agent 的模型路由表，反过来 agent 也不该为了一次重排多知道一份东西。
         // allowPlain=false：与 providers 那边一致，只认 secret: 句柄，不接受明文密钥。

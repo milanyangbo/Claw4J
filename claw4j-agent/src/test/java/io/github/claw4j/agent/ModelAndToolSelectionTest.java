@@ -347,6 +347,8 @@ class ModelAndToolSelectionTest {
         table.put(new java.net.http.HttpTimeoutException("读超时"), true);
         table.put(new RuntimeException("被框架包了一层", statusFailure(502, "网关错误")), true);
         // 模型生成的内容解析不了：字节每次重新生成都不同，值得再要一份
+        // （两个包名都要认：tools.jackson 是 Spring AI 解析工具参数用的，com.fasterxml.jackson 是
+        //   openai-java-core 解析响应体用的，后者会被包进 OpenAIInvalidDataException 抛出来）
         table.put(new tools.jackson.core.exc.StreamReadException("Unexpected character ('专')"), true);
         table.put(new com.fasterxml.jackson.core.JsonParseException(null, "Unexpected end-of-input"), true);
         // 换一家也一样

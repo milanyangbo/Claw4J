@@ -1,8 +1,5 @@
 package io.github.claw4j.agent.approval;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.capability.exec.ExecProperties;
@@ -19,6 +16,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -125,7 +126,7 @@ public class JdbcApprovals implements Approvals {
                     + " expires_at <= now() as expired, expires_at"
                     + " from claw4j_run.approval_request where id = ?";
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     private final JdbcTemplate jdbc;
 

@@ -544,7 +544,7 @@ class KnowledgeRetrievalTest {
 
         // 这里**不写** claw4j.rag.rerank.enabled=false：默认就是开，而"重排开着的装配"正是曾经
         // 起不来的那一条（票 01——knowledgeReranker 当时向容器要 Jackson 2 的 ObjectMapper，
-        // 而 Spring Boot 4 已经不再提供这颗 bean）。把它关掉再验，等于绕过唯一会出问题的路径。
+        // 而 Spring Boot 4 已经不再提供这颗 bean；现在编解码器由它自己造，这条守着别退回去）。
         new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(RagAutoConfiguration.class))
                 .withBean(DataSource.class, () -> mock(DataSource.class))
@@ -684,7 +684,7 @@ class KnowledgeRetrievalTest {
         RerankDocumentPostProcessor reranker(String model, Duration timeout, int topK) {
             return new RerankDocumentPostProcessor(
                     HttpClient.newHttpClient(),
-                    new com.fasterxml.jackson.databind.ObjectMapper(),
+                    tools.jackson.databind.json.JsonMapper.builder().build(),
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/reranks",
                     model, timeout, topK, () -> "test-key");
         }

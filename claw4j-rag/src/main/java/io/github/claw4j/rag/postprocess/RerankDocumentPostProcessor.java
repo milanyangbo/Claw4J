@@ -2,12 +2,12 @@ package io.github.claw4j.rag.postprocess;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.rag.Query;
 import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
+import tools.jackson.databind.ObjectMapper;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -205,9 +205,9 @@ public class RerankDocumentPostProcessor implements DocumentPostProcessor {
      * 响应体。只要 {@code results}：文本已经有了，{@code return_documents=false} 让它别回传。
      *
      * <p>{@code ignoreUnknown}: 端点是 OpenAI 兼容格式，除了 {@code results} 还会回
-     * {@code object} / {@code id} / {@code model} / {@code usage}。只声明 {@code results} 的 record
-     * 默认不容忍多余字段（Jackson 2 的 {@code FAIL_ON_UNKNOWN_PROPERTIES=true}），于是一次成功的重排
-     * 会被当成解析失败、静静退回原顺序——<b>功能从来没见过效果，而日志里只有一行 WARN</b>。
+     * {@code object} / {@code id} / {@code model} / {@code usage}。这一条用注解钉死、不靠默认值：
+     * 只声明 {@code results} 的 record 一旦不容忍多余字段，一次成功的重排会被当成解析失败、
+     * 静静退回原顺序——<b>功能从来没见过效果，而日志里只有一行 WARN</b>。
      * 容忍的是"我们不关心的字段"，不是"格式错"：缺 {@code results}、类型不对仍然走失败路径。
      *
      * @param results 每条候选的下标与相关性分
