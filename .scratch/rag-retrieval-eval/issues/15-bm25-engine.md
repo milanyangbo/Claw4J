@@ -122,10 +122,11 @@ keyword:
 要迁移。旧键不识别就是不识别——不加别名，也不为它写测试。Spring Boot 对未知属性默认不报错，那是
 框架的行为，不是本项目的契约。
 
-**改结构时漏过一处，记下来**：`KeywordDocumentRetriever.Rules#compile` 拼错误消息用的是
-`claw4j.rag.keyword.` + 规则名，键挪到 `substring` 之后那一行没跟着改——报错会把人指到一个
-不存在的键上，而"照着报错去改配置"正好是最常见的排查动作。已修成常量 `KEY_PREFIX`，并在
-`KeywordDocumentRetrieverTest#brokenPatternFailsFast` 里断言全路径。
+**那一层包装最后整个删掉了**：`Rules#compile` 原本把 `PatternSyntaxException` 包成
+"`claw4j.rag.keyword.xxx` 不是合法正则"，好处只是多一句"哪个键"。键改名时那句前缀漏改过一次，
+说明两份描述同一件事本来就是负担。现在直接 `Pattern.compile(...)`——写错在构造 `Rules` 时就抛，
+仍是启动失败，而 JDK 的消息自带正则原文与出错位置。`KeywordDocumentRetrieverTest#brokenPatternFailsFast`
+断言的就是 `PatternSyntaxException`。
 
 ### 4. 两个实现细节，写下来免得被"顺手改掉"
 

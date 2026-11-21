@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.regex.PatternSyntaxException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -149,14 +150,13 @@ class KeywordDocumentRetrieverTest {
     }
 
     @Test
-    @DisplayName("正则配错：启动即抛，且消息里的键名是全路径——少一层就会把人指到不存在的键上")
+    @DisplayName("正则配错：构造 Rules 时就抛，不留到第一次提问才变成「一条都不命中」")
     void brokenPatternFailsFast() {
         RagProperties.Keyword.Substring broken = new RagProperties.Keyword.Substring("(", null, null,
                 null, null, null, null, null);
 
         assertThatThrownBy(() -> KeywordDocumentRetriever.Rules.of(broken))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("claw4j.rag.keyword.substring.anchor-pattern")
-                .hasMessageContaining("不是合法正则");
+                .as("直接用 PatternSyntaxException：它自带正则原文与出错位置")
+                .isInstanceOf(PatternSyntaxException.class);
     }
 }

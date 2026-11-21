@@ -65,5 +65,5 @@
 - [x] 默认值下词项与改动前逐条相同（原有 8 条单测不改一行仍全绿）
 - [x] 改 `short-model-pattern` 能认出 `AB-12`
 - [x] 改 `whole-weight` / `max-terms` / `whole-max-chars` 生效
-- [x] 正则非法 → 启动即抛，消息点名是哪个键
+- [x] 正则非法 → 启动即抛（`PatternSyntaxException`，JDK 那条消息自带正则原文与位置）
 - [x] `claw4j-rag` 全量单测通过

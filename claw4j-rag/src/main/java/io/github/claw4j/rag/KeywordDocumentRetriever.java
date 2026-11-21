@@ -77,25 +77,18 @@ public class KeywordDocumentRetriever implements DocumentRetriever {
                  int wholeMaxChars, int wholeWeight, int bigramWeight) {
 
         static Rules of(RagProperties.Keyword.Substring config) {
+            // 这里编译，写错正则就在构造期抛 PatternSyntaxException——启动失败，不会等到第一次提问
+            // 才变成"这一路一条都不命中"。
             return new Rules(
-                    compile(config.anchorPattern(), "anchor-pattern"),
-                    compile(config.shortModelPattern(), "short-model-pattern"),
-                    compile(config.cjkPattern(), "cjk-pattern"),
+                    Pattern.compile(config.anchorPattern()),
+                    Pattern.compile(config.shortModelPattern()),
+                    Pattern.compile(config.cjkPattern()),
                     config.maxAnchors(), config.maxTerms(), config.wholeMaxChars(),
                     config.wholeWeight(), config.bigramWeight());
         }
 
         static Rules defaults() {
             return of(RagProperties.Keyword.Substring.defaults());
-        }
-
-        private static Pattern compile(String regex, String name) {
-            try {
-                return Pattern.compile(regex);
-            } catch (RuntimeException broken) {
-                throw new IllegalStateException(
-                        "claw4j.rag.keyword.substring." + name + " 不是合法正则：" + regex, broken);
-            }
         }
     }
 
