@@ -291,7 +291,8 @@ public class JdbcApprovals implements Approvals {
                     deniedText(row.toolName(), reason) + denialTrailer(reached));
         }
         int written = decision == ApprovalChoice.ALLOW_ALWAYS ? remember(row) : 0;
-        Reached reached = wake(row, grantedNote(row.toolName(), approvalId, decision, written));
+        Reached reached = wake(row, grantedNote(row.toolName(), approvalId, decision, written,
+                row.frozenPlan()));
         return new Result(ApprovalVerdict.GRANTED, grantedTrailer(reached, decision, written));
     }
 
@@ -550,13 +551,49 @@ public class JdbcApprovals implements Approvals {
      * @param written 真正写进放行表的条数
      * @return 交给模型的文本
      */
-    private static String grantedNote(String toolName, String approvalId, ApprovalChoice choice, int written) {
+    private static String grantedNote(String toolName, String approvalId, ApprovalChoice choice,
+                                      int written, String frozenPlan) {
         StringBuilder text = new StringBuilder("[审批通过] 工具 ").append(toolName)
                 .append(" 的审批已经通过（编号 ").append(approvalId).append("）。");
         if (choice == ApprovalChoice.ALLOW_ALWAYS && written > 0) {
             text.append("这次选的是“以后都放行”：同一条命令段不再需要审批。");
         }
-        return text.append("下一步就是执行它，不要再问用户要不要做；现在还没有任何输出。").toString();
+        // 附上被批准的那次调用原文：审批按原文兑现，模型凭记忆重写会差一个分号、一句 echo，
+        // 于是又多出一条新的待批（实测过：重复发起三次、批了三次，一次都没跑成）。
+        String exact = exactCall(frozenPlan);
+        if (!exact.isEmpty()) {
+            text.append("\n已批准的那次调用，原样重新发起（一个字符都别改）：\n").append(exact);
+        }
+        return text.append("\n下一步就是执行它，不要再问用户要不要做；现在还没有任何输出。").toString();
+    }
+
+    /**
+     * 从冻结计划里取出那次调用长什么样。
+     *
+     * <p>exec 的冻结计划是 {@code {"cwd":…,"command":…}}，其它工具是参数本身。取不到就给空串，
+     * 那时只说"原样重发"，不编一个形状出来。
+     *
+     * @param frozenPlan 冻结计划 JSON，可为 {@code null}
+     * @return 可直接照抄的调用；读不出来时为空串
+     */
+    private static String exactCall(String frozenPlan) {
+        if (blank(frozenPlan)) {
+            return "";
+        }
+        try {
+            JsonNode node = MAPPER.readTree(frozenPlan);
+            if (node == null || node.isNull()) {
+                return "";
+            }
+            JsonNode command = node.get("command");
+            if (command != null && !command.isNull() && !command.asText().isBlank()) {
+                return command.asText();
+            }
+            return frozenPlan.strip();
+        }
+        catch (Exception unreadable) {
+            return "";
+        }
     }
 
     /**

@@ -310,6 +310,24 @@ class ExecApprovalTest {
     }
 
     @Test
+    @DisplayName("批准后续跑的那句话带着被批准的原文：差一个分号就得重批")
+    void grantedFollowupQuotesTheExactCall() {
+        CountingAgent agent = new CountingAgent();
+        String approvalId = asOwnerIn("claw4j:user:u-runner:http:chat-ap", () -> port(
+                ExecProperties.of(ExecProperties.Mode.ASK, WORKSPACE, List.of()), agent)
+                .decide(request("echo hi"))).approvalId();
+
+        approvals(agent, null).decide(approvalId, APPROVER, ApprovalChoice.ALLOW_ONCE, null);
+
+        // 实测出来的形状：只说"原样重发"，模型仍会自己补一个 `; echo "EXIT=$?"`，
+        // 于是那条命令对不上冻结计划、又生成一条新的待批，批多少次都跑不成。
+        assertThat(agent.lastText())
+                .contains("[审批通过]")
+                .contains("原样重新发起")
+                .contains("echo hi");
+    }
+
+    @Test
     @DisplayName("执行那一行的审计带审批编号：兑现之后由端口递给审计，不再是空")
     void executedCommandCarriesTheApprovalIdInAudit() {
         ToolCallAudit audit = new ToolCallAudit(new AuditLedger(jdbc, null));
