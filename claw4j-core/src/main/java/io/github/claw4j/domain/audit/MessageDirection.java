@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.audit;
+package io.github.claw4j.domain.audit;
 
 /**
  * 一条消息往哪个方向走（ADR-0037 票 04）。

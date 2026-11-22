@@ -1,6 +1,9 @@
 package io.github.claw4j.agent.channel;
 
 import io.github.claw4j.domain.NotifyPolicy;
+import io.github.claw4j.agent.audit.MessageReason;
+import io.github.claw4j.domain.audit.MessageOutcome;
+import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.untrusted.OutboundText;
 import io.micrometer.core.instrument.Counter;
@@ -37,6 +40,9 @@ public class ConversationDelivery {
     /** 为 null 表示没装 actuator：照常投递，只是没有指标可报。 */
     private final MeterRegistry registry;
 
+    /** 消息审计（ADR-0037 票 04）。默认空实现：没有审计设施时不写消息行。 */
+    private final MessageAudit messageAudit;
+
     /**
      * 投递与投递的计数。
      *
@@ -44,8 +50,21 @@ public class ConversationDelivery {
      * @param registry 指标注册表，为 null 时不记指标
      */
     public ConversationDelivery(List<OutboundDelivery> deliveries, MeterRegistry registry) {
+        this(deliveries, registry, MessageAudit.NONE);
+    }
+
+    /**
+     * 带上消息审计的那一份。
+     *
+     * @param deliveries 各通道的推送实现，为 null 时按空处理
+     * @param registry 指标注册表，为 null 时不记指标
+     * @param messageAudit 消息审计，null 时按空实现
+     */
+    public ConversationDelivery(List<OutboundDelivery> deliveries, MeterRegistry registry,
+                                MessageAudit messageAudit) {
         this.deliveries = deliveries == null ? List.of() : List.copyOf(deliveries);
         this.registry = registry;
+        this.messageAudit = messageAudit == null ? MessageAudit.NONE : messageAudit;
     }
 
     /**
@@ -63,15 +82,24 @@ public class ConversationDelivery {
      */
     public void announce(DeliveryTarget target, NotifyPolicy policy, String text) {
         if (target == null || text == null || text.isBlank()) {
+            // 没有内容可推也是一条事实：客户问"为什么没收到"，答案可能是"那轮什么都没产出"。
+            auditOutbound(target, MessageOutcome.SUPPRESSED, MessageReason.NO_VISIBLE_PAYLOAD,
+                    null, 0);
             return;
         }
+        long startedAt = System.nanoTime();
         if (policy != null && !policy.announcesFinish()) {
             count("skipped", "policy", policy.column());
+            // 策略说"别推"：这是被抑制，不是失败——没有人期待它出现。
+            auditOutbound(target, MessageOutcome.SUPPRESSED, MessageReason.NO_VISIBLE_PAYLOAD,
+                    null, elapsedMillis(startedAt));
             return;
         }
         OutboundDelivery delivery = deliveryFor(target.channel());
         if (delivery == null) {
             // 没有实现推的通道（HTTP）：它的结果靠轮询取，这不是失败，是设计。
+            // 这一路不写消息行：答案已经随那次请求返回了，写一行"suppressed"是撒谎，
+            // 写"sent"又没有投递这件事。缺口记在票 04 里。
             count("polled", "channel", target.channel());
             return;
         }
@@ -80,11 +108,42 @@ public class ConversationDelivery {
             // 也可能复述工具返回（票 02）。
             delivery.send(target.channelRef(), OutboundText.clean(text));
             count("sent", "channel", target.channel());
+            auditOutbound(target, MessageOutcome.SENT, null, null, elapsedMillis(startedAt));
         }
         catch (RuntimeException failure) {
             count("failed", "channel", target.channel());
             log.error("投递失败 channel={}（结果仍在库里，可查）", target.channel(), failure);
+            auditOutbound(target, MessageOutcome.FAILED, null, "platform_send",
+                    elapsedMillis(startedAt));
         }
+    }
+
+    /**
+     * 记一条「这条出站消息投递结束」。
+     *
+     * @param target 送到哪里；为 null 时（没有来处）不记
+     * @param outcome 结果
+     * @param reasonCode 原因码，没有时为 null
+     * @param failureStage 失败发生在哪一段，没有失败时为 null
+     * @param durationMs 从开始投递算起的毫秒数
+     */
+    private void auditOutbound(DeliveryTarget target, MessageOutcome outcome, String reasonCode,
+                               String failureStage, long durationMs) {
+        if (target == null) {
+            return;
+        }
+        try {
+            messageAudit.outbound(new MessageAudit.Outbound(null, null, target.channel(),
+                    target.channelRef(), target.channelRef(), outcome, reasonCode, failureStage,
+                    "text", durationMs));
+        } catch (RuntimeException ignored) {
+            // 审计缺一行不该让一次投递失败；实现本身也承诺吞异常，这里再兜一层。
+            log.debug("写投递审计时出错：channel={}", target.channel());
+        }
+    }
+
+    private static long elapsedMillis(long startedAtNanos) {
+        return Math.max(0, (System.nanoTime() - startedAtNanos) / 1_000_000L);
     }
 
     private OutboundDelivery deliveryFor(String channel) {

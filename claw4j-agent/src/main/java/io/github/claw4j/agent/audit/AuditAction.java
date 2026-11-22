@@ -16,7 +16,24 @@ public enum AuditAction {
     AGENT_RUN_STARTED("agent_run", "agent.run.started"),
     AGENT_RUN_FINISHED("agent_run", "agent.run.finished"),
     TOOL_ACTION_STARTED("tool_action", "tool.action.started"),
-    TOOL_ACTION_FINISHED("tool_action", "tool.action.finished");
+    TOOL_ACTION_FINISHED("tool_action", "tool.action.finished"),
+
+    /**
+     * 一条入站消息处理完了（ADR-0037 票 04）。
+     *
+     * <p>只有终态一条，没有 started 那一半：消息的"开始"就是它到达，而到达有平台自己的时间戳，
+     * 不需要我们再记一遍。OpenClaw 的消息动作同样是「一次处理一条终态」
+     * （{@code src/audit/audit-event-types.ts:220}）。
+     */
+    MESSAGE_INBOUND_PROCESSED("message", "message.inbound.processed"),
+
+    /**
+     * 一条出站消息投递结束（ADR-0037 票 04）。
+     *
+     * <p>同样只有终态：{@code queued} / {@code platform-started} 那种进度行在 OpenClaw 里也不进
+     * {@code audit.activity.list}（{@code docs/gateway/protocol/ledgers.md:132-136}）。
+     */
+    MESSAGE_OUTBOUND_FINISHED("message", "message.outbound.finished");
 
     private final String kind;
 

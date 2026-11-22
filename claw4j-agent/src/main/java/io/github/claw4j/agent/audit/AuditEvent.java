@@ -1,5 +1,7 @@
 package io.github.claw4j.agent.audit;
 
+import io.github.claw4j.domain.audit.MessageDirection;
+import io.github.claw4j.domain.audit.MessageOutcome;
 import io.github.claw4j.domain.principal.Principal;
 
 /**
@@ -25,10 +27,12 @@ import io.github.claw4j.domain.principal.Principal;
  *     重复投递靠 {@code on conflict do nothing} 只留第一行（OpenClaw 同名同义，
  *     {@code audit-event-store.ts:81-116}）
  * @param sourceSequence 来源内序号：1 = started，2 = finished
+ * @param message 消息专有的那一组（方向、结果、假名引用）；运行与工具事件为空
  */
 public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
                          AuditErrorCode errorCode, String toolName, String argsDigest,
-                         String approvalId, String sourceId, int sourceSequence) {
+                         String approvalId, String sourceId, int sourceSequence,
+                         Message message) {
 
     /**
      * 这一轮是谁、在哪段会话、从哪个通道来。
@@ -98,7 +102,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runStarted(Scope scope) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_STARTED, AuditStatus.STARTED,
-                null, null, null, null, runSource(scope), 1);
+                null, null, null, null, runSource(scope), 1, null);
     }
 
     /**
@@ -111,7 +115,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runFinished(Scope scope, AuditStatus status, AuditErrorCode errorCode) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_FINISHED, status,
-                errorCode, null, null, null, runSource(scope), 2);
+                errorCode, null, null, null, runSource(scope), 2, null);
     }
 
     /**
@@ -124,7 +128,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent toolStarted(Scope scope, String toolName, String argsDigest) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_STARTED, AuditStatus.STARTED,
-                null, toolName, argsDigest, null, toolSource(scope, toolName, argsDigest), 1);
+                null, toolName, argsDigest, null, toolSource(scope, toolName, argsDigest), 1, null);
     }
 
     /**
@@ -142,7 +146,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
                                           AuditStatus status, AuditErrorCode errorCode, String approvalId) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_FINISHED, status,
                 errorCode, toolName, argsDigest, approvalId,
-                toolSource(scope, toolName, argsDigest), 2);
+                toolSource(scope, toolName, argsDigest), 2, null);
     }
 
     /**
@@ -164,5 +168,72 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     private static String toolSource(Scope scope, String toolName, String argsDigest) {
         String runId = scope == null ? null : scope.runId();
         return "tool:" + (runId == null ? "" : runId) + ':' + toolName + ':' + argsDigest;
+    }
+
+    /**
+     * 消息专有的那一组（ADR-0037 票 04）。
+     *
+     * <p>为什么单开一个 record 而不是往主 record 上加十三个字段：运行与工具事件一个都用不上它们，
+     * 而"永远为空的十三个字段"会让每一条 {@code runStarted} 的构造都多十三个 {@code null}——
+     * 抄错一格不会有编译错误，只会多一行看起来正常、其实带了别人方向的数据。
+     *
+     * <p>四个 {@code *Ref} 是 HMAC 假名，不是原文（{@link AuditPseudonyms}）：审计要能回答"是不是同一个人
+     * 反复没收到"，而回答那个问题不需要知道他是谁。形状照 OpenClaw 的
+     * {@code hmac-sha256:v1:<keyId>:<digest>}（{@code docs/gateway/protocol/ledgers.md:41-48}）。
+     *
+     * @param direction 进来还是出去
+     * @param outcome 具体结果（completed / skipped / sent / suppressed / failed / unknown）
+     * @param reasonCode 为什么是这个结果，闭集见 {@link MessageReason}
+     * @param conversationKind 私聊 / 群 / 频道 / 不知道
+     * @param deliveryKind 文本 / 媒体 / 其它
+     * @param failureStage 失败发生在排队还是在平台发送
+     * @param durationMs 从到达（或开始投递）到收尾的毫秒数
+     * @param resultCount 一条入站产出几条回复；出站为空
+     * @param actorType 谁在说这句话（channel_sender / agent / system）
+     * @param accountRef 发送者账号的假名
+     * @param conversationRef 会话地址的假名
+     * @param messageRef 这条消息编号的假名
+     * @param targetRef 投递目标的假名
+     */
+    public record Message(MessageDirection direction, MessageOutcome outcome, String reasonCode,
+                          String conversationKind, String deliveryKind, String failureStage,
+                          Integer durationMs, Integer resultCount, String actorType,
+                          String accountRef, String conversationRef, String messageRef,
+                          String targetRef) {
+    }
+
+    /**
+     * 一条入站消息处理完了。
+     *
+     * <p>来源键用消息自己的编号（{@code message_ref} 的原文）：平台重投同一条消息时，这个键相同，
+     * 唯一键于是把第二次投递挡成重复——那正是"平台重推三次，我们只记一次"的落点。
+     *
+     * @param scope 这一轮的身份与位置（可能没有 runId：入站可能在开跑之前就结束了）
+     * @param status 通用结局：succeeded / blocked / failed
+     * @param errorCode 失败时的归一化错误码
+     * @param message 消息专有的一组
+     * @param sourceId 这条消息的来源键
+     * @return 入站事件
+     */
+    public static AuditEvent inboundMessage(Scope scope, AuditStatus status, AuditErrorCode errorCode,
+                                            Message message, String sourceId) {
+        return new AuditEvent(scope, AuditAction.MESSAGE_INBOUND_PROCESSED, status, errorCode,
+                null, null, null, sourceId, 1, message);
+    }
+
+    /**
+     * 一条出站消息投递结束。
+     *
+     * @param scope 这一轮的身份与位置
+     * @param status 通用结局：succeeded / blocked / failed / unknown
+     * @param errorCode 失败时的归一化错误码
+     * @param message 消息专有的一组
+     * @param sourceId 这条投递的来源键
+     * @return 出站事件
+     */
+    public static AuditEvent outboundMessage(Scope scope, AuditStatus status, AuditErrorCode errorCode,
+                                             Message message, String sourceId) {
+        return new AuditEvent(scope, AuditAction.MESSAGE_OUTBOUND_FINISHED, status, errorCode,
+                null, null, null, sourceId, 1, message);
     }
 }

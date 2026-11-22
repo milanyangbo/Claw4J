@@ -21,7 +21,10 @@ import java.util.StringJoiner;
 public class JdbcAuditQuery implements AuditQuery {
 
     private static final String COLUMNS = "seq, event_id, kind, action, status, error_code, run_id,"
-            + " session_key, agent_id, actor, channel, tool_name, args_digest, approval_id, at";
+            + " session_key, agent_id, actor, channel, tool_name, args_digest, approval_id, at,"
+            + " direction, message_outcome, reason_code, conversation_kind, delivery_kind,"
+            + " failure_stage, duration_ms, result_count, actor_type,"
+            + " account_ref, conversation_ref, message_ref, target_ref";
 
     private static final RowMapper<Row> MAPPER = (rs, rowNum) -> new Row(
             rs.getLong("seq"),
@@ -38,7 +41,26 @@ public class JdbcAuditQuery implements AuditQuery {
             rs.getString("tool_name"),
             rs.getString("args_digest"),
             rs.getString("approval_id"),
-            rs.getTimestamp("at").toInstant());
+            rs.getTimestamp("at").toInstant(),
+            messageOf(rs));
+
+    /**
+     * 消息那几列。不是 message 行时整组为 null——读的人一眼就知道这一行没有那种字段，
+     * 而不是面对十二个空格去猜"是没记还是记了空"。
+     */
+    private static MessageRow messageOf(java.sql.ResultSet rs) throws java.sql.SQLException {
+        String direction = rs.getString("direction");
+        if (direction == null) {
+            return null;
+        }
+        return new MessageRow(direction, rs.getString("message_outcome"),
+                rs.getString("reason_code"), rs.getString("conversation_kind"),
+                rs.getString("delivery_kind"), rs.getString("failure_stage"),
+                rs.getObject("duration_ms", Integer.class),
+                rs.getObject("result_count", Integer.class), rs.getString("actor_type"),
+                rs.getString("account_ref"), rs.getString("conversation_ref"),
+                rs.getString("message_ref"), rs.getString("target_ref"));
+    }
 
     private final JdbcTemplate jdbc;
 

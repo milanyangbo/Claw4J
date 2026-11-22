@@ -6,6 +6,7 @@ import io.github.claw4j.domain.question.QuestionGate;
 import io.github.claw4j.channel.slack.SlackOutboundDelivery;
 import io.github.claw4j.channel.slack.SlackReplySender;
 import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -130,10 +131,11 @@ public class SlackChannelAutoConfiguration {
                 SlackPrincipalResolver principalResolver,
                 SlackReplySender replySender,
                 ObjectProvider<InboundStore> store,
-                ObjectProvider<QuestionGate> questions) {
+                ObjectProvider<QuestionGate> questions,
+                                                         ObjectProvider<MessageAudit> audit) {
             InboundDispatcher dispatcher = new InboundDispatcher(agentPort, slackExecutor, principalResolver,
                     replySender, "Slack", SlackOutboundDelivery.CHANNEL, SlackChannel.RECEIPT_REPLY,
-                    store.getIfAvailable(), questions.getIfAvailable());
+                    store.getIfAvailable(), questions.getIfAvailable(), audit.getIfAvailable());
             // 启动恢复（把上一个进程留下的 claimed 收回）加定时扫描。必须在端点开始接请求之前：
             // 晚一步的话，重启之后那条没跑完的消息要等到第一次定时扫描才有人接着跑。
             // 扫描线程是守护线程，所以这里没有配对的 stop()，JVM 该退还是退（票 04）。

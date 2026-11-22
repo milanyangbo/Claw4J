@@ -3,9 +3,10 @@ package io.github.claw4j.agent.audit;
 /**
  * 审计的归一化错误码，闭合词表（ADR-0027 决定二）。
  *
- * <p>九个值逐字照 OpenClaw 的 {@code AuditEventErrorCodeSchema}
- * （{@code packages/gateway-protocol/src/schema/audit.ts:27}）。一半属于运行、一半属于工具，前缀就是
- * 归属。前缀不是为了好看——审计的主要读法是按 {@code kind} 与 {@code status} 过滤，而一个
+ * <p>运行与工具那九个值逐字照 OpenClaw 的 {@code AuditEventErrorCodeSchema}
+ * （{@code packages/gateway-protocol/src/schema/audit.ts:27}）；消息那三个来自它的内部生产者契约
+ * （{@code src/audit/audit-event-types.ts:157-215}）——对外 schema 还没有它们，因为那三个码只出现在
+ * 消息行上。前缀就是归属。前缀不是为了好看——审计的主要读法是按 {@code kind} 与 {@code status} 过滤，而一个
  * {@code agent_run} 的事件配上 {@code tool_failed}，读的人一眼就能看出写错了层。但那只是看得出来，
  * 不是写不进去：库里没有 {@code kind} 与 {@code error_code} 的配对约束，枚举只管值域、管不了这两个
  * 字段搭不搭。要真挡住得再加一条 check，目前没有。
@@ -49,7 +50,21 @@ public enum AuditErrorCode {
     TOOL_BLOCKED("tool_blocked"),
 
     /** 工具跑了，但结果不可知：流式中断了、进程在写回之前没了。 */
-    TOOL_OUTCOME_UNKNOWN("tool_outcome_unknown");
+    TOOL_OUTCOME_UNKNOWN("tool_outcome_unknown"),
+
+    /**
+     * 一条入站消息没处理成（ADR-0037 票 04）。
+     *
+     * <p>与下面两个投递码分开：没处理成与没送出去是两件事，处置也不同——前者要重放入站，
+     * 后者要重发。合成一个 {@code message_failed} 的话，审计里分不出该找哪一边。
+     */
+    MESSAGE_PROCESSING_FAILED("message_processing_failed"),
+
+    /** 整条投递失败：平台拒了、连接断了、队列满了。 */
+    MESSAGE_DELIVERY_FAILED("message_delivery_failed"),
+
+    /** 部分投递失败：一条消息拆成几段发，发出去了一部分。 */
+    MESSAGE_DELIVERY_PARTIAL_FAILURE("message_delivery_partial_failure");
 
     private final String column;
 

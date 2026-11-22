@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -514,6 +515,33 @@ class InboundDispatchTest {
         dispatcher(Runnable::run).accept(event(EVENT_ID + "-3", "问题"));
         assertEquals(List.of("答复"), sender.texts(),
                 "不传回执就一句都不多：飞书自己能被动回复，多推一句只是噪音");
+    }
+
+    @Test
+    @DisplayName("重复投递被跳过时写一条 skipped/duplicate：客户说「我发了两遍」要查得到（ADR-0037 票 04）")
+    void duplicateInboundIsAuditedAsSkipped() {
+        List<io.github.claw4j.domain.port.MessageAudit.Inbound> audited = new ArrayList<>();
+        io.github.claw4j.domain.port.MessageAudit audit = new io.github.claw4j.domain.port.MessageAudit() {
+            @Override
+            public void inbound(io.github.claw4j.domain.port.MessageAudit.Inbound record) {
+                audited.add(record);
+            }
+
+            @Override
+            public void outbound(io.github.claw4j.domain.port.MessageAudit.Outbound record) {
+            }
+        };
+        InboundDispatcher dispatcher = new InboundDispatcher(agent, Runnable::run, this::lookup, sender,
+                PLATFORM, "feishu", null, null, null, audit);
+
+        dispatcher.accept(event(EVENT_ID, "问题"));
+        dispatcher.accept(event(EVENT_ID, "问题"));
+
+        assertEquals(1, audited.size(), "只有被跳过的那一遍写审计：正常那一条由 Agent 那一侧记");
+        assertEquals(io.github.claw4j.domain.audit.MessageOutcome.SKIPPED, audited.get(0).outcome());
+        assertEquals("duplicate", audited.get(0).reasonCode());
+        assertEquals("feishu", audited.get(0).channel());
+        assertEquals(CONVERSATION, audited.get(0).chatRef());
     }
 
     // ---------------------------------------------------------------- 装配

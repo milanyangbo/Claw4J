@@ -1,5 +1,7 @@
 package io.github.claw4j.agent.approval;
 
+import io.github.claw4j.agent.observability.MeteredToolCallback;
+
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
@@ -104,6 +106,9 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
         String toolName = getToolDefinition().name();
         Principal principal = principalOf(toolContext);
         if (principal == null) {
+            // 再等也不会通过：审计里这是 blocked，不是 failed（ADR-0037 票 01）。
+            // 而且只有这一条——动作没有开始，就没有 started 那条。
+            blocked(toolContext, toolName, toolInput);
             return DENIAL_PREFIX
                     + "：这次调用没有携带身份，声明了要审批的工具一律不放行。";
         }
@@ -125,7 +130,27 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
         Optional<String> approvalId = approvals.ask(new Approvals.Ask(
                 text(toolContext, ContextKeys.RUN_ID), principal.userId(), toolName, digest.get(),
                 toolInput, originOf(toolContext, principal)));
+        if (approvalId.isEmpty()) {
+            // 登记都没登记上：这一条在修好之前同样永远不会被放行，与"没有身份"同一个结局。
+            // 登记上了就什么都不写——等审批这件事的真相在 approval_request 一张表里，写两遍迟早对不上。
+            blocked(toolContext, toolName, toolInput);
+        }
         return denial(approvalId.orElse(null));
+    }
+
+    /**
+     * 记一条「被拦下」。
+     *
+     * <p>没装审计（测试链路、裁剪部署）时什么都不写——记账不该成为拒绝的前置条件。
+     *
+     * @param toolContext 工具上下文，可为 null
+     * @param toolName 工具名
+     * @param toolInput 参数原文，只用来算指纹
+     */
+    private void blocked(ToolContext toolContext, String toolName, String toolInput) {
+        if (audit != null) {
+            audit.rejected(MeteredToolCallback.scopeOf(toolContext), toolName, toolInput);
+        }
     }
 
     /**

@@ -6,6 +6,7 @@ import io.github.claw4j.channel.kernel.InboundDispatcher;
 import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.domain.question.QuestionGate;
 import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.ApprovalCards;
 import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.port.OutboundDelivery;
@@ -115,13 +116,14 @@ public class FeishuChannelAutoConfiguration {
                                                          FeishuReplySender replySender,
                                                          FeishuPrincipalResolver principalResolver,
                                                          ObjectProvider<InboundStore> store,
-                                                         ObjectProvider<QuestionGate> questions) {
+                                                         ObjectProvider<QuestionGate> questions,
+                                                         ObjectProvider<MessageAudit> audit) {
             // 通道标识进去之后，从这里问出去的每一件事都会把"飞书这个会话"登记成收件地址。
             // 少传它的后果不是报错，是"在飞书开的头，别处做完之后飞书这头什么也收不到"。
             // questions：模型问的一句话要推到这个会话，用户在这个会话里的下一句就是答案。
             return new InboundDispatcher(agentPort, feishuExecutor, principalResolver, replySender,
                     "飞书", FeishuOutboundDelivery.CHANNEL, null, store.getIfAvailable(),
-                    questions.getIfAvailable());
+                    questions.getIfAvailable(), audit.getIfAvailable());
         }
 
         /**

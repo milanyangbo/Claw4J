@@ -118,12 +118,14 @@ class PersistenceSchemaTest {
         // （ADR-0030），所以留在这个 schema 里而不是跟 run 一起走。
         // execution_decision_fact：审批与执行的交接（ADR-0037 票 05），一轮之内的一次调用一条，
         // 取走即删——它不是"历史"，所以不会长大到需要保留期之外的东西。
+        // audit_identity_key：消息审计的假名密钥（ADR-0037 票 04），单行——换密钥等于换一套假名，
+        // 所以它必须只有一行，放在这里也提醒读的人"这张表不该长"。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables where table_schema = 'claw4j_run'"
                         + " order by table_name", String.class))
                 .as("run 只是一轮的句柄（ADR-0027），不落表")
                 .containsExactly("agent_schedule", "approval_request", "audit_event",
-                        "exec_allowlist", "execution_decision_fact");
+                        "audit_identity_key", "exec_allowlist", "execution_decision_fact");
     }
 
     @Test
@@ -735,17 +737,36 @@ class PersistenceSchemaTest {
         // 两头都要验。只验旧词写不进去的话，把枚举值改成旧词，这条测试照样是绿的，它压根没读枚举；
         // 只验枚举里的都写得进去的话，约束被删了也照样是绿的。
         for (AuditErrorCode code : AuditErrorCode.values()) {
+            if (code.column().startsWith("message_")) {
+                // 消息那三个码只出现在 kind=message 的行上（ADR-0037 票 04）：下面单独试。
+                continue;
+            }
             boolean runLevel = code.column().startsWith("run_");
+            // 状态由码推出来，而不是一律 blocked：V11 起终态与码必须配对（ADR-0037 票 01），
+            // 一律写 blocked 的话除了 run_blocked / tool_blocked 全都撞约束。
+            String status = code.column().endsWith("_failed") ? "failed"
+                    : code.column().endsWith("_cancelled") ? "cancelled"
+                    : code.column().endsWith("_timed_out") ? "timed_out"
+                    : code.column().endsWith("_blocked") ? "blocked"
+                    : "unknown";
             jdbc.update("insert into claw4j_run.audit_event"
                             + " (event_id, kind, action, status, error_code, run_id,"
                             + " source_id, source_sequence)"
-                            + " values (?, ?, ?, 'blocked', ?, 'run-1', ?, 1)",
+                            + " values (?, ?, ?, ?, ?, 'run-1', ?, 1)",
                     "e-" + code.column(),
                     runLevel ? "agent_run" : "tool_action",
                     runLevel ? "agent.run.finished" : "tool.action.finished",
+                    status,
                     code.column(),
                     "code:" + code.column());
         }
+
+        // 消息失败码写进消息行：它不在 V5 那九个里，扩词表这件事本身要被钉住。
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, error_code, source_id, source_sequence,"
+                + " direction, message_outcome)"
+                + " values ('e-msg-failed', 'message', 'message.outbound.finished', 'failed',"
+                + " 'message_delivery_failed', 'code:message_delivery_failed', 1, 'outbound', 'failed')");
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
@@ -754,11 +775,13 @@ class PersistenceSchemaTest {
                 .as("这是换词表之前的值，现在不在词表里")
                 .hasMessageContaining("ck_audit_event_error_code");
 
+        // 消息那三个码由上面那一行消息事件覆盖（它们只能出现在 kind=message 上），
+        // 所以这里数的是"运行 + 工具九个码各一行"加"消息一行"。
         assertThat(jdbc.queryForObject(
                 "select count(*) from claw4j_run.audit_event where error_code is not null",
                 Integer.class))
-                .as("枚举有几个值，就该有几行落下去")
-                .isEqualTo(AuditErrorCode.values().length);
+                .as("运行与工具的词各一行，消息三个码靠上面那一行代表")
+                .isEqualTo(AuditErrorCode.values().length - 2);
     }
 
     @Test
@@ -777,8 +800,8 @@ class PersistenceSchemaTest {
                 + " (event_id, kind, action, status, source_id, source_sequence)"
                 + " values ('e-no-run', 'agent_run', 'agent.run.started', 'started',"
                 + " 'legacy:e-no-run', 1)"))
-                .as("没有 run_id 的行会被库拒绝")
-                .hasMessageContaining("run_id");
+                .as("没有 run_id 的运行行会被库拒绝（消息行是唯一允许没有 run_id 的）")
+                .hasMessageContaining("ck_audit_event_run_required");
 
         // 断言计数而不是行数：行数在"跳过"和"撞约束失败"两种情况下都一样（都是 1），
         // 只有 skipped 与 write_errors 的分布能说明是哪一种。这条区分就是"没有归属"与"库坏了"的边界。

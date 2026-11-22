@@ -6,6 +6,7 @@ import io.github.claw4j.agent.approval.ElevatedProperties;
 import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.audit.AuditAction;
+import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditSink;
 import io.github.claw4j.agent.audit.AuditStatus;
@@ -134,19 +135,6 @@ class ChatPipelineTest {
         assertThat(chunks).filteredOn(OutboundMessage::finalChunk).hasSize(1);
         assertThat(chunks.getLast().finalChunk()).isTrue();
         assertThat(chunks.getLast().text()).isEmpty();
-    }
-
-    @Test
-    @DisplayName("模型一块都不吐时也要发结束信号：通道不能靠超时猜「说完了」")
-    void emptyStreamStillEnds() {
-        List<OutboundMessage> chunks = new ArrayList<>();
-        ChatClientAgentPort port = port(new FixedChatModel(prompt -> answer(""), List.of()));
-
-        port.stream(message("chat-2", "在吗"), chunks::add);
-
-        assertThat(chunks).hasSize(1);
-        assertThat(chunks.getFirst().finalChunk()).isTrue();
-        assertThat(chunks.getFirst().text()).isEmpty();
     }
 
     @Test
@@ -390,6 +378,19 @@ class ChatPipelineTest {
             assertThat(event.scope().actor()).as("谁发起的").isEqualTo("u-1");
         });
         assertThat(audit.events.getLast().status()).isEqualTo(AuditStatus.SUCCEEDED);
+
+        // 审计写不进去，回答照给（原「aBrokenAuditStillAnswers」，同一件事的另一半）：
+        // 合并是因为两者都是"一轮的记账"，分开只是各准备一次模型桩。
+        // 库连不上、迁移没跑过时，正确的姿势是"这一行没记上、话照说"，而不是把问题打死——
+        // 代价由 claw4j.audit.write_errors 暴露：一个不为 0 的数就说明这些天缺了记录。
+        AuditSink broken = event -> {
+            throw new IllegalStateException("库连不上");
+        };
+        ChatClientAgentPort brokenPort = port(new FixedChatModel("华东上周成交 128400"),
+                new ToolCallAudit(broken));
+        OutboundMessage stillAnswered = brokenPort.reply(message("chat-1", "上周华东成交额"));
+        assertThat(stillAnswered.text()).isEqualTo("华东上周成交 128400");
+        assertThat(stillAnswered.runId()).as("编号本地生成，不依赖任何存储").isNotNull();
     }
 
     /** 失败也要留下痕迹：没有这一条，崩掉的那一轮在系统里等于没发生过。 */
@@ -426,6 +427,63 @@ class ChatPipelineTest {
         assertThat(chunks.stream().map(OutboundMessage::runId).distinct()).hasSize(1);
         assertThat(audit.actions()).containsExactly(
                 AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
+
+        // 模型一块都不吐时也要发结束信号（原「emptyStreamStillEnds」）：通道不能靠超时猜「说完了」。
+        // 与上面同一条流式链路，只是模型没有内容——合并是因为两者共用一个桩，拆开只多一次准备。
+        List<OutboundMessage> empty = new ArrayList<>();
+        port(new FixedChatModel(prompt -> answer(""), List.of()))
+                .stream(message("chat-2", "在吗"), empty::add);
+        assertThat(empty).hasSize(1);
+        assertThat(empty.getFirst().finalChunk()).isTrue();
+        assertThat(empty.getFirst().text()).isEmpty();
+    }
+
+    /**
+     * 客户端断开时记 {@code cancelled}，不是 {@code failed}（ADR-0037 票 01）。
+     *
+     * <p>真实的断流长这样：SSE 那一头没了，写回客户端的那一下抛 {@code IOException}（broken pipe），
+     * 异常从 {@code onChunk} 冒回来、穿过 {@code blockLast()}。以前它被一律记成
+     * {@code failed / run_failed}，于是「这轮是被谁掐掉的」在审计里问不出来——而那正是客户说
+     * 「聊到一半就没反应了」时第一个要查的。
+     */
+    @Test
+    @DisplayName("客户端断开：审计里是 cancelled，不是 failed")
+    void cancelledStreamIsAuditedAsCancelled() {
+        RecordingAudit audit = new RecordingAudit();
+        ChatClientAgentPort port = port(
+                new FixedChatModel(prompt -> answer("整段"), List.of("第一块", "第二块")),
+                audit.toolCallAudit());
+
+        assertThatThrownBy(() -> port.stream(message("chat-1", "讲一下"), chunk -> {
+            throw new java.io.UncheckedIOException(new IOException("Broken pipe"));
+        })).isInstanceOf(RuntimeException.class);
+
+        assertThat(audit.actions()).containsExactly(
+                AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
+        assertThat(audit.events.getLast().status()).isEqualTo(AuditStatus.CANCELLED);
+        assertThat(audit.events.getLast().errorCode()).isEqualTo(AuditErrorCode.RUN_CANCELLED);
+    }
+
+    /**
+     * 超时记 {@code timed_out}：与「失败」「取消」分开。
+     *
+     * <p>判据只看异常链：上游是 {@code TimeoutException} 还是它包着的运行时异常，都算超时。
+     * 合成一档的话，「模型太慢」和「模型挂了」在审计里长得一样，排查要先花半天分这两件事。
+     */
+    @Test
+    @DisplayName("流超时：审计里是 timed_out，与 failed 分开")
+    void timedOutStreamIsAuditedAsTimedOut() {
+        RecordingAudit audit = new RecordingAudit();
+        ChatClientAgentPort port = port(
+                new FixedChatModel(prompt -> answer("整段"),
+                        prompt -> Flux.error(new java.util.concurrent.TimeoutException("模型没在时限内返回"))),
+                audit.toolCallAudit());
+
+        assertThatThrownBy(() -> port.stream(message("chat-1", "讲一下"), chunk -> { }))
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(audit.events.getLast().status()).isEqualTo(AuditStatus.TIMED_OUT);
+        assertThat(audit.events.getLast().errorCode()).isEqualTo(AuditErrorCode.RUN_TIMED_OUT);
     }
 
     /**
@@ -467,28 +525,6 @@ class ChatPipelineTest {
         port.stream(new InboundMessage(new Principal("alice"), "chat-7", "/elevated"), again::add);
         assertThat(again.getFirst().text()).contains("full");
         assertThat(model.prompts()).as("两条命令都不该碰模型").isEmpty();
-    }
-
-    /**
-     * 审计写不进去，回答照给。
-     *
-     * <p>审计是记账，不是回答的前置条件。库连不上、迁移没跑过时，正确的姿势是
-     * "这一行没记上、话照说"，而不是把用户的问题打死——代价由
-     * {@code claw4j.audit.write_errors} 暴露：一个不为 0 的数就说明这些天缺了记录。
-     */
-    @Test
-    @DisplayName("审计写不进去（库不可用）时回答照给：记账不是回答的前置条件")
-    void aBrokenAuditStillAnswers() {
-        AuditSink broken = event -> {
-            throw new IllegalStateException("库连不上");
-        };
-        ChatClientAgentPort port = port(new FixedChatModel("华东上周成交 128400"),
-                new ToolCallAudit(broken));
-
-        OutboundMessage answer = port.reply(message("chat-1", "上周华东成交额"));
-
-        assertThat(answer.text()).isEqualTo("华东上周成交 128400");
-        assertThat(answer.runId()).as("编号本地生成，不依赖任何存储").isNotNull();
     }
 
     // ---------------------------------------------------------------- 审批（P02）

@@ -142,9 +142,10 @@ class MessageAuditTest {
         verify(jdbc, never()).queryForList(anyString(), eq(byte[].class));
     }
 
+    /** 最后记下来的那一条。用 atLeastOnce 是因为同一用例里可能记两条（成功一次、失败一次）。 */
     private AuditEvent capture() {
         ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
-        verify(ledger).record(captor.capture());
+        verify(ledger, org.mockito.Mockito.atLeastOnce()).record(captor.capture());
         return captor.getValue();
     }
 }

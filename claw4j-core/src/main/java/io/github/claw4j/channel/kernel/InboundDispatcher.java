@@ -8,10 +8,12 @@ import io.github.claw4j.domain.inbound.InboundStore;
 import io.github.claw4j.domain.inbound.QueuedInbound;
 import io.github.claw4j.domain.inbound.Retention;
 
+import io.github.claw4j.domain.audit.MessageOutcome;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.question.QuestionGate;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
+import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.OutboundMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,6 +113,9 @@ public class InboundDispatcher {
     private final ReplySender replySender;
 
     private final InboundStore store;
+
+    /** 消息审计（ADR-0037 票 04）。默认空实现：没有审计设施时调用方不必判空。 */
+    private final MessageAudit audit;
 
     /**
      * 交互提问的登记表（票 02）。默认是「一律不支持」：没有提问设施时，那条消息照常走一轮。
@@ -279,6 +284,38 @@ public class InboundDispatcher {
                              String receipt,
                              InboundStore store,
                              QuestionGate questions) {
+        this(agentPort, executor, principalResolver, replySender, platformName, channel, receipt,
+                store, questions, MessageAudit.NONE);
+    }
+
+    /**
+     * 带上消息审计的那一份（ADR-0037 票 04）。
+     *
+     * <p>这一层只记<b>被跳过</b>的入站：重复投递、这段对话正有一条在跑。处理完成与处理失败由
+     * Agent 那一侧记——消息到了那边才有 runId，而"这条消息被哪一轮答的"只有那边知道。
+     * 两边各记各的那一段，同一条消息因此只有一行终态，不会一个事实写两边。
+     *
+     * @param agentPort 真正跑一轮的那一侧
+     * @param executor 编排用的执行器
+     * @param principalResolver 平台用户标识到 {@link Principal} 的解析
+     * @param replySender 回推的目标通道
+     * @param platformName 答复里用来称呼平台的名字
+     * @param channel 本通道的标识
+     * @param receipt 认出人之后先推的一句"收到了"
+     * @param store 入站事件的落点
+     * @param questions 交互提问的登记表
+     * @param audit 消息审计，null 时按空实现
+     */
+    public InboundDispatcher(AgentPort agentPort,
+                             Executor executor,
+                             Function<String, Optional<Principal>> principalResolver,
+                             ReplySender replySender,
+                             String platformName,
+                             String channel,
+                             String receipt,
+                             InboundStore store,
+                             QuestionGate questions,
+                             MessageAudit audit) {
         this.agentPort = Objects.requireNonNull(agentPort, "agentPort");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.principalResolver = Objects.requireNonNull(principalResolver, "principalResolver");
@@ -287,6 +324,7 @@ public class InboundDispatcher {
         this.queueName = this.channel == null ? "default" : this.channel;
         this.receipt = receipt == null || receipt.isBlank() ? null : receipt;
         this.questions = questions == null ? QuestionGate.unsupported() : questions;
+        this.audit = audit == null ? MessageAudit.NONE : audit;
         this.store = store == null ? new InMemoryInboundStore() : store;
         if (store == null) {
             log.warn("入站事件不落库（队列 {}）：重启之后没跑完的那条不会有人接着跑。"
@@ -363,6 +401,11 @@ public class InboundDispatcher {
             // 四种重复对调用方是四件不同的事（见 EnqueueOutcome）：
             // DUPLICATE_FAILED 尤其要看一眼——那是死信，重推也救不回来。
             log.info("同一 eventId 重复投递（{}）：已 ACK，不再执行。eventId={}", outcome, eventId);
+            // 跳过也要留一行（ADR-0037 票 04）：客户说"我发了两遍它只答一次"时，
+            // 审计要能指着这条说"第二遍在这里被当成重复挡掉了"，而不是只能说"没印象"。
+            audit.inbound(new MessageAudit.Inbound(null, null, channel == null ? queueName : channel,
+                    conversationId, eventId, event.senderId(),
+                    MessageOutcome.SKIPPED, "duplicate", 0));
             return;
         }
         submitDrain();

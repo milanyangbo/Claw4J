@@ -8,6 +8,9 @@ import io.github.claw4j.agent.approval.JdbcExecAllowlist;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.JdbcAuditQuery;
+import io.github.claw4j.domain.port.MessageAudit;
+import io.github.claw4j.agent.audit.JdbcMessageAudit;
+import io.github.claw4j.agent.audit.AuditPseudonyms;
 import io.github.claw4j.domain.port.AuditQuery;
 import io.github.claw4j.agent.audit.DecisionFacts;
 import io.github.claw4j.agent.audit.JdbcDecisionFacts;
@@ -114,6 +117,41 @@ public class AgentPersistenceConfiguration {
     @ConditionalOnMissingBean(ToolCallAudit.class)
     public ToolCallAudit toolCallAudit(AuditLedger ledger, DecisionFacts facts) {
         return new ToolCallAudit(ledger, facts);
+    }
+
+    /**
+     * 消息审计的假名密钥（ADR-0037 票 04）。
+     *
+     * <p>单独一个 bean 而不是藏进 {@link JdbcMessageAudit}：密钥的首次生成要写库，而"取不到密钥"
+     * 与"消息审计没开"是两件事——分开之后，前者只让假名那一格空着，后者整行都不写。
+     *
+     * @param jdbc 主连接池
+     * @return 假名器
+     */
+    @Bean
+    @ConditionalOnMissingBean(AuditPseudonyms.class)
+    public AuditPseudonyms auditPseudonyms(JdbcTemplate jdbc) {
+        return new AuditPseudonyms(jdbc);
+    }
+
+    /**
+     * 消息审计的落点（ADR-0037 票 04）。
+     *
+     * <p>开关是 {@code claw4j.audit.messages}，默认关：消息行带着"谁跟谁说了话"这种关系数据，
+     * 与 OpenClaw 的 {@code logging.audit.messages} 同默认
+     * （{@code docs/gateway/protocol/ledgers.md:117-118}）。
+     *
+     * @param ledger 账本
+     * @param pseudonyms 假名器
+     * @param properties 审计开关
+     * @return 消息审计
+     */
+    @Bean
+    @ConditionalOnMissingBean(MessageAudit.class)
+    public MessageAudit messageAudit(AuditLedger ledger, AuditPseudonyms pseudonyms,
+                                     AuditProperties properties) {
+        boolean enabled = properties.isEnabled() && properties.isMessages();
+        return new JdbcMessageAudit(ledger, pseudonyms, enabled);
     }
 
     /**
@@ -296,14 +334,17 @@ public class AgentPersistenceConfiguration {
      *
      * @param deliveries 容器里的推送实现
      * @param registry 指标注册表，可能不存在
+     * @param messageAudit 消息审计，可能不存在（没开这一层）
      * @return 投递与回收
      */
     @Bean
     @ConditionalOnMissingBean(ConversationDelivery.class)
     public ConversationDelivery conversationDelivery(
                                    ObjectProvider<OutboundDelivery> deliveries,
-                                   ObjectProvider<MeterRegistry> registry) {
-        return new ConversationDelivery(deliveries.orderedStream().toList(), registry.getIfAvailable());
+                                   ObjectProvider<MeterRegistry> registry,
+                                   ObjectProvider<MessageAudit> messageAudit) {
+        return new ConversationDelivery(deliveries.orderedStream().toList(), registry.getIfAvailable(),
+                messageAudit.getIfAvailable());
     }
 
     /**

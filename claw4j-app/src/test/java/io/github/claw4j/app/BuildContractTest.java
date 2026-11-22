@@ -447,10 +447,12 @@ class BuildContractTest {
         // 9 是审计的来源键（ADR-0037 票 02）：幂等靠 (source_id, source_sequence) 唯一，
         //   顺带删掉从来没写过的 actor_role。
         // 10 是审批与执行的交接（ADR-0037 票 05）：从进程内 Map 换成一张表，重启还在。
-        // 前六张落在各自的 schema 里；7–10 都改已有 schema，不新增。
+        // 11 是审计的终态配对（ADR-0037 票 01）：agent_run 不许带 tool_* 的码，反之亦然。
+        // 12 是消息审计（ADR-0037 票 04）：kind=message 的列 + 假名密钥表。
+        // 前六张落在各自的 schema 里；7–12 都改已有 schema，只有假名密钥表是新增的一张。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -677,7 +679,7 @@ class BuildContractTest {
     }
 
     @Test
-    @DisplayName("同一条审计重复投递只留一行，重复单独计数（ADR-0037 票 02）")
+    @DisplayName("同一条审计重复投递只留一行；表里也没有 actor_role 那列（ADR-0037 票 02 / 票 01）")
     void auditReplayIsWrittenOnce() {
         var jdbc = new JdbcTemplate(dataSource());
         var registry = new SimpleMeterRegistry();
@@ -697,20 +699,16 @@ class BuildContractTest {
         assertThat(registry.get(AuditLedger.DUPLICATES).counter().count())
                 .as("重复要单独计数，不能混进 write_errors")
                 .isEqualTo(1.0);
-    }
 
-    @Test
-    @DisplayName("审计表里没有 actor_role：那一列从来没被写过（ADR-0037 票 01）")
-    void auditEventHasNoActorRole() {
-        var jdbc = new JdbcTemplate(dataSource());
-
+        // 同一张表的另一条形状约束（原 auditEventHasNoActorRole）：死列留着会被下一个人拿去过滤，
+        // 而它恒为 NULL——那种过滤查出来永远是空，且不报错。
         assertThat(jdbc.queryForList(
                 "select column_name from information_schema.columns"
                         + " where table_schema = 'claw4j_run' and table_name = 'audit_event'"
                         + " and column_name = 'actor_role'", String.class))
-                .as("死列留着会被下一个人拿去过滤，而它恒为 NULL")
                 .isEmpty();
     }
+
 
     @Test
     @DisplayName("审批交接落库：换一份实例还读得到，取一次就没了（ADR-0037 票 05）")
@@ -787,6 +785,71 @@ class BuildContractTest {
         assertThat(new AuditQuery.Filter(null, null, null, null, null, null, null, 999).limit())
                 .as("limit 截到 OpenClaw 的上限 500，而不是照单全收")
                 .isEqualTo(AuditQuery.Filter.MAX_LIMIT);
+    }
+
+    @Test
+    @DisplayName("审计终态在库里的两条规则：码与状态必须配对、孤儿补成 unknown（ADR-0037 票 01）")
+    void auditTerminalRowsAreConsistent() {
+        var jdbc = new JdbcTemplate(dataSource());
+        // ① 配对：先证明合法的那一对能进——这条用例不能因为整张表都写不进去而"绿"。
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " values ('e-pair-ok', 'agent_run', 'agent.run.finished', 'failed',"
+                + " 'run_failed', 'run-pair', 'run:run-pair', 2)");
+
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " values ('e-pair-bad', 'agent_run', 'agent.run.finished', 'failed',"
+                + " 'tool_failed', 'run-pair', 'run:run-pair-2', 2)"))
+                .as("运行级事件配工具级的码：两层混在一起，按错误码统计就把两件事加成一个数")
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " values ('e-pair-none', 'tool_action', 'tool.action.finished', 'failed',"
+                + " null, 'run-pair', 'tool:run-pair:Bash:d1', 2)"))
+                .as("failed 不带错误码：查「为什么失败」时那一格是空的")
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " values ('e-pair-started', 'tool_action', 'tool.action.started', 'started',"
+                + " 'tool_failed', 'run-pair', 'tool:run-pair:Bash:d2', 1)"))
+                .as("开始那一条带错误码：它还没结束，有什么错")
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        // ② 孤儿扫尾：两条停在 started 且已经过窗口的，补成 unknown；
+        //    另有一条"刚开跑"的，它不该被补——补了就是把正在跑的一轮判成不知道结果。
+        var ledger = new AuditLedger(jdbc, null);
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, run_id, session_key, agent_id,"
+                + " source_id, source_sequence, at)"
+                + " values ('e-orphan-run', 'agent_run', 'agent.run.started', 'started', 'run-orphan',"
+                + " 'sk-orphan', 'ops', 'run:run-orphan', 1, now() - interval '2 hours')");
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, run_id, tool_name, args_digest,"
+                + " source_id, source_sequence, at)"
+                + " values ('e-orphan-tool', 'tool_action', 'tool.action.started', 'started', 'run-orphan',"
+                + " 'Bash', 'd-orphan', 'tool:run-orphan:Bash:d-orphan', 1, now() - interval '2 hours')");
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, run_id, source_id, source_sequence)"
+                + " values ('e-fresh-start', 'agent_run', 'agent.run.started', 'started', 'run-fresh',"
+                + " 'run:run-fresh', 1)");
+
+        assertThat(ledger.sweepOrphans(AuditLedger.ORPHAN_AGE)).as("补了两条").isEqualTo(2);
+        assertThat(jdbc.queryForList("select status from claw4j_run.audit_event"
+                + " where source_id = 'run:run-orphan' and source_sequence = 2", String.class))
+                .as("运行级孤儿补成 unknown；没有运行级的 unknown 码，错误码留空")
+                .containsExactly("unknown");
+        assertThat(jdbc.queryForObject("select error_code from claw4j_run.audit_event"
+                + " where source_id = 'tool:run-orphan:Bash:d-orphan' and source_sequence = 2",
+                String.class))
+                .as("工具级孤儿带 tool_outcome_unknown：它跑了，但结果不可知")
+                .isEqualTo("tool_outcome_unknown");
+        assertThat(jdbc.queryForList("select status from claw4j_run.audit_event"
+                + " where source_id = 'run:run-fresh'", String.class))
+                .as("刚开跑的那一轮不动")
+                .containsExactly("started");
+        // 再跑一次不重复补：唯一键挡着，不然每小时维护都会给同一件事补一行。
+        assertThat(ledger.sweepOrphans(AuditLedger.ORPHAN_AGE)).isZero();
     }
 
     private Path descriptorDir(String directory, String name, String requiresCore) throws IOException {

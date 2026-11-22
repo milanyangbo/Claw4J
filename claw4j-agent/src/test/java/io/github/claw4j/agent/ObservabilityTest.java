@@ -39,6 +39,7 @@ import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springaicommunity.agent.tools.ToolCallListener;
@@ -264,6 +265,34 @@ class ObservabilityTest {
         assertThat(spanOf("run").getStatus().getStatusCode())
                 .as("回答失败的那一轮，这件事本身要标失败；否则图上它是一次正常结束")
                 .isEqualTo(StatusCode.ERROR);
+    }
+
+    @Test
+    @DisplayName("工具事件带 agent 归属与通道：从工具上下文读，读不到落 unknown（ADR-0037 票 01）")
+    void toolAuditCarriesAgentId() {
+        List<AuditEvent> events = new ArrayList<>();
+        MeteredToolCallback metered = new MeteredToolCallback(new RecordingTool("querySales", "128400"),
+                null, new ToolCallAudit(events::add));
+        metered.call("{\"region\":\"east\"}",
+                new ToolContext(Map.of(
+                        ContextKeys.RUN_ID, "run-1",
+                        ContextKeys.AGENT_ID, "ops",
+                        ContextKeys.CHANNEL, "feishu",
+                        ChatMemory.CONVERSATION_ID, "claw4j:user:u-1:feishu:chat-1")));
+
+        assertThat(events).hasSize(2);
+        assertThat(events).allSatisfy(event -> {
+            assertThat(event.scope().agentId()).as("这条是 ops 干的").isEqualTo("ops");
+            assertThat(event.scope().channel()).as("通道也读得到").isEqualTo("feishu");
+        });
+
+        // 上下文里没有这把键（老部署、裁剪链路）：仍然写，落 unknown——空着的话
+        // 「这条是哪个 agent 干的」在多 agent 部署里永远答不了。
+        events.clear();
+        metered.call("{\"region\":\"east\"}",
+                new ToolContext(Map.of(ContextKeys.RUN_ID, "run-2")));
+        assertThat(events).allSatisfy(event ->
+                assertThat(event.scope().agentId()).isEqualTo(AuditEvent.Scope.UNKNOWN_AGENT));
     }
 
     // ---- 工具观测接缝（票 02：库的 ToolCallListener）----

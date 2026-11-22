@@ -44,6 +44,17 @@ public final class ContextKeys {
     public static final String RUN_ID = "claw4j.runId";
 
     /**
+     * 这一轮是哪个 agent 在跑，在工具上下文里的键名（ADR-0037 票 01）。
+     *
+     * <p>只给审计用：工具事件要能回答"这条是 ops 干的还是 complaint-writer 干的"。入口把部署级
+     * agent 名写进来，工具只读——模型没有参数能改它，所以"把责任记到别的 agent 头上"这条路不存在。
+     *
+     * <p>取不到时写 {@code unknown} 而不是留空：空让「谁干的」不可查，而 OpenClaw 的
+     * {@code agentId} 是必填（{@code audit.ts:53}）。
+     */
+    public static final String AGENT_ID = "claw4j.agentId";
+
+    /**
      * 这一轮从哪个通道来、通道内的哪段会话（ADR-0027）。
      *
      * <p>两个键解决同一类问题：审批要写"这条请求来自哪段对话"（批准之后回到那里开新一轮），

@@ -238,16 +238,34 @@ public class MeteredToolCallback implements ToolCallback {
      * <p>通道留空：工具上下文里没有它，而为了填这一格去加一个 key，会让审计与投递两条本来无关的线互相
      * 拉扯。按 {@code runId} 与 {@code sessionKey} 关联已经够查。
      *
+     * <p>{@code agentId} 从工具上下文读（ADR-0037 票 01）：入口把部署级 agent 名放进去了。读不到时
+     * 落 {@code unknown}——那一格空着的话，「这条是哪个 agent 干的」在多 agent 部署里就永远答不了。
+     *
+     * <p>公开而不是私有：审批闸那一侧拦下调用时也要组同一份作用域（{@code ApprovalRequiredToolCallback}
+     * 的 {@code blocked} 事件）。两处各写一份的话，同一个工具事件在两条路径上长得不一样，而这种不一致
+     * 不会报错，只会让按 agent 过滤时少几行。
+     *
      * @param toolContext 工具上下文，可为 null
      * @return 事件作用域
      */
-    private static AuditEvent.Scope scopeOf(ToolContext toolContext) {
+    public static AuditEvent.Scope scopeOf(ToolContext toolContext) {
         if (toolContext == null) {
             return AuditEvent.Scope.empty();
         }
         Object session = toolContext.getContext().get(ChatMemory.CONVERSATION_ID);
         String sessionKey = session instanceof String value && !value.isBlank() ? value : null;
-        return AuditEvent.Scope.of(runIdOf(toolContext), sessionKey, principalOf(toolContext), null);
+        return AuditEvent.Scope.of(runIdOf(toolContext), sessionKey, agentIdOf(toolContext),
+                principalOf(toolContext), channelOf(toolContext));
+    }
+
+    private static String agentIdOf(ToolContext toolContext) {
+        Object value = toolContext.getContext().get(ContextKeys.AGENT_ID);
+        return value instanceof String agentId && !agentId.isBlank() ? agentId : null;
+    }
+
+    private static String channelOf(ToolContext toolContext) {
+        Object value = toolContext.getContext().get(ContextKeys.CHANNEL);
+        return value instanceof String channel && !channel.isBlank() ? channel : null;
     }
 
     private static Principal principalOf(ToolContext toolContext) {

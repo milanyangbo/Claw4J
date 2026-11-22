@@ -12,6 +12,13 @@ import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
+import io.github.claw4j.agent.approval.ApprovalRequiredTools;
+import io.github.claw4j.domain.ApprovalChoice;
+import io.github.claw4j.domain.ApprovalVerdict;
+import io.github.claw4j.domain.port.Approvals;
+import org.springframework.ai.tool.definition.DefaultToolDefinition;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.principal.Principal;
@@ -847,6 +854,224 @@ class ToolGovernanceTest {
         @Override
         public int prune(java.time.Duration age) {
             return 0;
+        }
+    }
+
+    // ------------------------------------------------- 审批闸那一半（票 05，2026-11-23 并入）
+
+    /**
+     * 非 exec 工具的那道闸（票 05）：执行前问一次，没批准就<b>回一条工具结果</b>。
+     *
+     * <p>判据的重点不是"拦住了"，是"拦的方式"：抛异常会让框架把这一轮打成失败，或者让模型拿到
+     * 一句"出错了"；回一条带理由的结果，模型才知道"这件事在等谁批准、不要重试"。
+     *
+     * <p>这六个用例原来住在 {@code ApprovalRequiredToolCallbackTest}：v0 的 {@code claw4j-agent}
+     * 已经 14 个测试文件（上限 14），本票的 {@code MessageAuditTest} 要一个槽，按
+     * {@code scripts/verify.sh} 的"先合并不抬上限"挪进来。断言一字未改。
+     */
+    @Test
+    @DisplayName("被拦下只写一条 blocked、没有 started；等审批那一条什么都不写（ADR-0037 票 01）")
+    void blockedToolWritesOnlyFinished() {
+        events.clear();
+        // ① 没有身份：再等也不会通过，所以审计里是 blocked 而不是 failed；
+        //    动作没有开始，就只有结束那一条。
+        ApprovalRequiredToolCallback withoutIdentity = new ApprovalRequiredToolCallback(
+                new GatedTool(TOOL), new RecordingGate(), audit);
+
+        String result = withoutIdentity.call("{}", gateContextWithoutPrincipal());
+
+        assertThat(result).startsWith(ApprovalRequiredToolCallback.DENIAL_PREFIX);
+        assertThat(events).as("只有一条：没有 started").hasSize(1);
+        AuditEvent blocked = events.getFirst();
+        assertThat(blocked.action()).isEqualTo(AuditAction.TOOL_ACTION_FINISHED);
+        assertThat(blocked.status()).isEqualTo(AuditStatus.BLOCKED);
+        assertThat(blocked.errorCode()).isEqualTo(AuditErrorCode.TOOL_BLOCKED);
+        assertThat(blocked.toolName()).isEqualTo(TOOL);
+        assertThat(blocked.scope().runId()).isEqualTo("run-gate");
+        assertThat(blocked.scope().agentId()).as("工具事件也带 agent 归属").isEqualTo("ops");
+
+        // ② 登记不上审批也一样：它同样永远不会被放行。
+        events.clear();
+        RecordingGate noFacility = new RecordingGate();
+        noFacility.registered = false;
+        new ApprovalRequiredToolCallback(new GatedTool(TOOL), noFacility, audit)
+                .call("{\"to\":\"zhang@example.com\"}", gateContext());
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().status()).isEqualTo(AuditStatus.BLOCKED);
+
+        // ③ 登记上了就什么都不写：等审批这件事的真相在 approval_request 一张表里。
+        events.clear();
+        new ApprovalRequiredToolCallback(new GatedTool(TOOL), new RecordingGate(), audit)
+                .call("{\"to\":\"zhang@example.com\"}", gateContext());
+        assertThat(events).as("等审批不写审计").isEmpty();
+    }
+
+    @Test
+    @DisplayName("没有批准：回一条带编号与「不要重试」的结果，delegate 一次都不执行")
+    void withoutApprovalItReturnsAResultInsteadOfThrowing() {
+        GatedTool tool = new GatedTool(TOOL);
+        RecordingGate gate = new RecordingGate();
+        ApprovalRequiredToolCallback callback = new ApprovalRequiredToolCallback(tool, gate);
+
+        String result = callback.call("{\"to\":\"zhang@example.com\"}", gateContext());
+
+        assertThat(tool.calls()).isZero();
+        assertThat(result)
+                .contains("先审批")
+                .contains("ap-1")
+                .contains("没有执行")
+                .contains("不要重试")
+                .contains("没有新的输出");
+        assertThat(gate.asked).isEqualTo(1);
+        assertThat(gate.lastAsk.owner()).isEqualTo("u-mailer");
+        assertThat(gate.lastAsk.toolName()).isEqualTo(TOOL);
+        assertThat(gate.lastAsk.origin()).isNotNull();
+        assertThat(gate.lastAsk.origin().sessionKey()).isEqualTo("claw4j:user:u-mailer:http:chat-ap");
+    }
+
+    @Test
+    @DisplayName("已有批准：直接执行，不再问")
+    void anExistingGrantRunsTheTool() {
+        GatedTool tool = new GatedTool(TOOL);
+        RecordingGate gate = new RecordingGate();
+        gate.granted = true;
+        ApprovalRequiredToolCallback callback = new ApprovalRequiredToolCallback(tool, gate);
+
+        String result = callback.call("{\"to\":\"zhang@example.com\"}", gateContext());
+
+        assertThat(tool.calls()).isEqualTo(1);
+        assertThat(result).isEqualTo("已发送");
+        assertThat(gate.asked).isZero();
+    }
+
+    @Test
+    @DisplayName("没有身份：不登记也不执行——批给谁没有答案")
+    void withoutIdentityItRefusesWithoutAsking() {
+        GatedTool tool = new GatedTool(TOOL);
+        RecordingGate gate = new RecordingGate();
+        ApprovalRequiredToolCallback callback = new ApprovalRequiredToolCallback(tool, gate);
+
+        String result = callback.call("{}", null);
+
+        assertThat(tool.calls()).isZero();
+        assertThat(result).startsWith("没有权限");
+        assertThat(gate.asked).isZero();
+    }
+
+    @Test
+    @DisplayName("参数不成 JSON 对象：不执行，也不登记一条看不懂的请求")
+    void malformedArgumentsAreRefused() {
+        GatedTool tool = new GatedTool(TOOL);
+        RecordingGate gate = new RecordingGate();
+        ApprovalRequiredToolCallback callback = new ApprovalRequiredToolCallback(tool, gate);
+
+        String result = callback.call("{\"to\":", gateContext());
+
+        assertThat(tool.calls()).isZero();
+        assertThat(result).contains("不是一段完整的 JSON");
+        assertThat(gate.asked).isZero();
+    }
+
+    @Test
+    @DisplayName("只包名单里那几个：读类工具没有这道闸，不会每读一次弹一次")
+    void onlyListedToolsAreGated() {
+        List<ToolCallback> tools = List.of(new GatedTool("readFile"), new GatedTool(TOOL));
+
+        List<ToolCallback> gated = io.github.claw4j.agent.AgentAutoConfiguration.withApprovalGate(
+                tools, new RecordingGate(), new ApprovalRequiredTools(Set.of(TOOL)), null);
+
+        assertThat(gated.get(0)).isSameAs(tools.get(0));
+        assertThat(gated.get(1)).isInstanceOf(ApprovalRequiredToolCallback.class);
+    }
+
+    @Test
+    @DisplayName("名单是空的时候一个都不包：默认部署不变成「每步都要批」")
+    void anEmptyListWrapsNothing() {
+        List<ToolCallback> tools = List.of(new GatedTool(TOOL));
+
+        assertThat(io.github.claw4j.agent.AgentAutoConfiguration.withApprovalGate(
+                tools, new RecordingGate(), ApprovalRequiredTools.none(), null))
+                .containsExactlyElementsOf(tools);
+    }
+
+    private static ToolContext gateContext() {
+        return new ToolContext(Map.of(
+                ContextKeys.PRINCIPAL, new Principal("u-mailer"),
+                ContextKeys.RUN_ID, "run-gate",
+                ContextKeys.AGENT_ID, "ops",
+                ContextKeys.CHANNEL, "http",
+                ContextKeys.CHAT_REF, "chat-ap",
+                ChatMemory.CONVERSATION_ID, "claw4j:user:u-mailer:http:chat-ap"));
+    }
+
+    private static ToolContext gateContextWithoutPrincipal() {
+        return new ToolContext(Map.of(
+                ContextKeys.RUN_ID, "run-gate",
+                ContextKeys.AGENT_ID, "ops",
+                ChatMemory.CONVERSATION_ID, "claw4j:user:u-mailer:http:chat-ap"));
+    }
+
+    /** 只回一句话的工具桩：验的是"有没有被调到"，不是它做了什么。 */
+    private static final class GatedTool implements ToolCallback {
+
+        private final String name;
+
+        private int calls;
+
+        private GatedTool(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public ToolDefinition getToolDefinition() {
+            return DefaultToolDefinition.builder().name(name).description("用例").inputSchema("{}").build();
+        }
+
+        @Override
+        public String call(String toolInput) {
+            calls++;
+            return "已发送";
+        }
+
+        private int calls() {
+            return calls;
+        }
+    }
+
+    /** 假审批门：记下被问了什么，按 {@code granted} 决定兑现与否。 */
+    private static final class RecordingGate implements Approvals {
+
+        private boolean granted;
+
+        /** false 表示这个部署没有审批设施：问也问不出编号。 */
+        private boolean registered = true;
+
+        private int asked;
+
+        private Approvals.Ask lastAsk;
+
+        @Override
+        public Optional<Approvals.Grant> redeem(String owner, String toolName, String argsDigest) {
+            return granted
+                    ? Optional.of(new Approvals.Grant("ap-old", Instant.now()))
+                    : Optional.empty();
+        }
+
+        @Override
+        public Optional<String> ask(Approvals.Ask ask) {
+            asked++;
+            lastAsk = ask;
+            return registered ? Optional.of("ap-1") : Optional.empty();
+        }
+
+        @Override
+        public Result decide(String approvalId, String approver, ApprovalChoice choice, String reason) {
+            return new Result(ApprovalVerdict.NOT_FOUND, "假审批不落结论");
+        }
+
+        @Override
+        public Optional<Pending> find(String approvalId) {
+            return Optional.empty();
         }
     }
 }

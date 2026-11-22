@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.audit;
+package io.github.claw4j.domain.audit;
 
 /**
  * 消息处理的结果（ADR-0037 票 04）。

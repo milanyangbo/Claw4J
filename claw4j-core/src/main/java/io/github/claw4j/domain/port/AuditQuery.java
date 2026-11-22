@@ -79,11 +79,40 @@ public interface AuditQuery {
      * @param argsDigest 参数指纹，运行类事件为 null
      * @param approvalId 放行这次调用的审批编号
      * @param at 发生时刻
+     * @param message 消息专有的那一组；运行与工具事件为 null
      */
     record Row(long seq, String eventId, String kind, String action, String status,
                String errorCode, String runId, String sessionKey, String agentId,
                String actor, String channel, String toolName, String argsDigest,
-               String approvalId, Instant at) {
+               String approvalId, Instant at, MessageRow message) {
+    }
+
+    /**
+     * 消息行专有的那些列（ADR-0037 票 04）。
+     *
+     * <p>单开一个 record 而不是往 {@link Row} 上加十二个字段：运行与工具行一个都用不上它们，
+     * 而"永远为 null 的十二个字段"会让每一条读出来的行都多十二格没人看的东西。
+     *
+     * <p>四个 {@code *Ref} 是假名，不是原文——读接口拿到的就是假名，原文不在库里。
+     *
+     * @param direction inbound / outbound
+     * @param outcome completed / skipped / sent / suppressed / failed / unknown
+     * @param reasonCode 原因码
+     * @param conversationKind direct / group / channel / unknown
+     * @param deliveryKind text / media / other
+     * @param failureStage queue / platform_send / unknown
+     * @param durationMs 从到达（或开始投递）到收尾的毫秒数
+     * @param resultCount 一条入站产出几条回复
+     * @param actorType channel_sender / agent / system
+     * @param accountRef 发送者账号的假名
+     * @param conversationRef 会话地址的假名
+     * @param messageRef 消息编号的假名
+     * @param targetRef 投递目标的假名
+     */
+    record MessageRow(String direction, String outcome, String reasonCode, String conversationKind,
+                      String deliveryKind, String failureStage, Integer durationMs,
+                      Integer resultCount, String actorType, String accountRef,
+                      String conversationRef, String messageRef, String targetRef) {
     }
 
     /**

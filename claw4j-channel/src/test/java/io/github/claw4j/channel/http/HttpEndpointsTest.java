@@ -161,7 +161,7 @@ class HttpEndpointsTest {
     void anAuditPageIsReadable() {
         AuditQuery.Row row = new AuditQuery.Row(7L, "e-1", "agent_run", "agent.run.started",
                 "started", null, "run-1", "sk", "ops", "ethan", "http", null, null, null,
-                Instant.parse("2026-11-22T12:00:00Z"));
+                Instant.parse("2026-11-22T12:00:00Z"), null);
         AuditQuery fixed = filter -> {
             assertEquals(2, filter.limit());
             assertEquals("run-1", filter.runId());

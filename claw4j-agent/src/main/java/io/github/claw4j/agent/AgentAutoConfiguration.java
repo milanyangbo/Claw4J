@@ -663,7 +663,8 @@ public class AgentAutoConfiguration {
                                AgentProperties properties,
                                ToolCatalog catalog,
                                ModelProperties model,
-                               Elevations elevations) {
+                               Elevations elevations,
+                               ObjectProvider<io.github.claw4j.domain.port.MessageAudit> messageAudit) {
         // 投递走 ObjectProvider 而不是直接注入：没配推送实现时它是缺席而不是失败，
         // 门照常住着，只是结果只从请求里回去（ADR-0027：没有一个可推的地址就不推）。
         // 额度不在这条链上了——它是目标的属性（ADR-0027 决定五）。
@@ -695,6 +696,8 @@ public class AgentAutoConfiguration {
                 // 审计归属（ADR-0037 票 01）：部署级 agent 名，没配目录时是内置人设。
                 .agentId(properties.hasDirectory() && properties.defaultName() != null
                         ? properties.defaultName() : "builtin")
+                // 消息审计（ADR-0037 票 04）：没开这一层时是空实现，入口那两行调用照常走。
+                .messageAudit(messageAudit.getIfAvailable())
                 .clock(Clock.systemUTC())
                 .build();
     }

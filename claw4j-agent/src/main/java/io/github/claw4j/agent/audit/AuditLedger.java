@@ -58,11 +58,22 @@ public class AuditLedger implements AuditSink {
      */
     public static final String DUPLICATES = "claw4j.audit.duplicates";
 
+    /** 消息行那类 kind 的落库写法；与 {@code AuditAction} 的 {@code message} 一致。 */
+    private static final String ACTION_KIND_MESSAGE = "message";
+
     /** 照 OpenClaw：30 天。 */
     public static final Duration RETENTION = Duration.ofDays(30);
 
     /** 照 OpenClaw：10 万行。 */
     public static final int MAX_ROWS = 100_000;
+
+    /**
+     * 超过多久没下文算孤儿（ADR-0037 票 01）。
+     *
+     * <p>30 分钟是估的：一轮正常几十秒，最长受 {@code turnTimeout} 约束。这个数上游没有对应窗口
+     * （OpenClaw 用两行原子落库避开孤儿行），票 01 的缺口里写明它是估的。
+     */
+    public static final Duration ORPHAN_AGE = Duration.ofMinutes(30);
 
     /**
      * 每写多少条清一次。
@@ -77,8 +88,11 @@ public class AuditLedger implements AuditSink {
     private static final String INSERT = """
             insert into claw4j_run.audit_event
                 (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
-                 actor, channel, tool_name, args_digest, approval_id, source_id, source_sequence)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 actor, channel, tool_name, args_digest, approval_id, source_id, source_sequence,
+                 direction, conversation_kind, message_outcome, reason_code, delivery_kind,
+                 failure_stage, duration_ms, result_count, actor_type,
+                 account_ref, conversation_ref, message_ref, target_ref)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict (source_id, source_sequence) do nothing
             """;
 
@@ -96,6 +110,35 @@ public class AuditLedger implements AuditSink {
             "delete from claw4j_run.audit_event where seq <= ("
                     + "select seq from claw4j_run.audit_event order by seq desc"
                     + " offset " + MAX_ROWS + " limit 1)";
+
+    /**
+     * 孤儿扫尾：给「有 started、没有第 2 行、而且已经过了 {@code age}」的来源补一条终态
+     * （ADR-0037 票 01）。
+     *
+     * <p>写成一条 insert-select：判孤儿（{@code status = 'started'} 且超过窗口）与判「来源内没有
+     * 终态」都在 SQL 里，读-判-写之间不会有另一条线插进来。{@code event_id} 由来源键算出来
+     * （{@code md5}）而不是随机：这条语句被跑两遍时，第二遍会被唯一键挡掉，而不是补出第二行。
+     */
+    private static final String SWEEP_ORPHANS = """
+            insert into claw4j_run.audit_event
+                (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
+                 actor, channel, tool_name, args_digest, approval_id, source_id, source_sequence)
+            select 'orphan-' || md5(s.source_id || ':' || s.source_sequence),
+                   s.kind,
+                   case s.kind when 'agent_run' then 'agent.run.finished'
+                               else 'tool.action.finished' end,
+                   'unknown',
+                   case s.kind when 'agent_run' then null else 'tool_outcome_unknown' end,
+                   s.run_id, s.session_key, s.agent_id, s.actor, s.channel,
+                   s.tool_name, s.args_digest, null,
+                   s.source_id, 2
+              from claw4j_run.audit_event s
+             where s.status = 'started'
+               and s.at < now() - (? * interval '1 millisecond')
+               and not exists (select 1 from claw4j_run.audit_event f
+                                where f.source_id = s.source_id and f.source_sequence = 2)
+            on conflict (source_id, source_sequence) do nothing
+            """;
 
     private final JdbcTemplate jdbc;
 
@@ -150,10 +193,14 @@ public class AuditLedger implements AuditSink {
             return;
         }
         AuditEvent.Scope scope = event.scope() == null ? AuditEvent.Scope.empty() : event.scope();
-        if (scope.runId() == null || scope.runId().isBlank()) {
+        // 消息行可以没有 runId（ADR-0037 票 04）：入站消息在开跑之前就到了，而它可能根本没开跑。
+        // 运行与工具事件仍然必须有——那一格空着的行按 runId 永远命中不了，留着只让计数虚高。
+        if (event.action().kind() != ACTION_KIND_MESSAGE
+                && (scope.runId() == null || scope.runId().isBlank())) {
             countSkipped();
             return;
         }
+        AuditEvent.Message message = event.message();
         try {
             int written = jdbc.update(INSERT,
                     // event_id 单独生成而不是复用主键：OpenClaw 用它去重（同一条事件重复投递只留一行）。
@@ -174,7 +221,20 @@ public class AuditLedger implements AuditSink {
                     event.argsDigest(),
                     event.approvalId(),
                     event.sourceId(),
-                    event.sourceSequence());
+                    event.sourceSequence(),
+                    message == null ? null : message.direction().column(),
+                    message == null ? null : message.conversationKind(),
+                    message == null ? null : message.outcome().column(),
+                    message == null ? null : message.reasonCode(),
+                    message == null ? null : message.deliveryKind(),
+                    message == null ? null : message.failureStage(),
+                    message == null ? null : message.durationMs(),
+                    message == null ? null : message.resultCount(),
+                    message == null ? null : message.actorType(),
+                    message == null ? null : message.accountRef(),
+                    message == null ? null : message.conversationRef(),
+                    message == null ? null : message.messageRef(),
+                    message == null ? null : message.targetRef());
             if (written == 0) {
                 // 同一来源已经记过：幂等在起作用，不是故障。计自己的数，然后照常判清理。
                 count(DUPLICATES);
@@ -202,7 +262,42 @@ public class AuditLedger implements AuditSink {
      */
     @PostConstruct
     void pruneOnStartup() {
+        // prune() 里带着孤儿扫尾：一个刚被强杀过的实例，重启这一刻正是补「unknown」的时候。
         prune();
+    }
+
+    /**
+     * 把「有开始没有结束」的行补成 {@code unknown}（ADR-0037 票 01）。
+     *
+     * <p>补的是这个形态的固有缺口：我们是「开跑即落一行 {@code started}」，进程在中间被杀（发版、
+     * OOM、容器被踢）时，那一行永远不会有下文。OpenClaw 靠「终态时两行原子落库」避免孤儿
+     * （{@code src/audit/audit-event-store.ts:327-391}），我们换来了「运行中可见」，代价就是这些孤儿行
+     * ——它们看起来像「跑了但没结果」，而真相是「不知道」。
+     *
+     * <p>为什么是 30 分钟：一轮正常情况下几十秒，最长受 {@code turnTimeout} 约束；比它长一个数量级
+     * 才是「进程没了」。这个数是估的（上游没有对应窗口），写在票 01 的缺口里。
+     *
+     * <p>只补「来源内还没有第 2 行」的那些：同一来源已经有终态的，说明它正常收尾了，不该被改成
+     * {@code unknown}。已经补过的不再补——唯一键挡着，重复执行只是白跑一次。
+     *
+     * <p>工具事件的错误码是 {@code tool_outcome_unknown}（OpenClaw 同名同义）；运行事件没有对应的
+     * 错误码，按「不知道」留空。这两条与 {@code V11} 的配对约束一致。
+     *
+     * @param age 超过多久算孤儿
+     * @return 补了多少行
+     */
+    public int sweepOrphans(Duration age) {
+        try {
+            int swept = jdbc.update(SWEEP_ORPHANS, age.toMillis());
+            if (swept > 0) {
+                log.info("审计：把 {} 条超时未收尾的事件补成 unknown", swept);
+            }
+            return swept;
+        } catch (RuntimeException failure) {
+            // 表还没建（迁移没跑）或者库连不上：启动照常，下一轮再说。
+            log.debug("审计的孤儿扫尾这一轮没跑成", failure);
+            return 0;
+        }
     }
 
     /**
@@ -233,6 +328,8 @@ public class AuditLedger implements AuditSink {
         if (expired > 0) {
             log.info("审计按 30 天保留期清掉 {} 条", expired);
         }
+        // 扫尾跟清理同一节拍：两者都是"让表与事实对齐"的维护，分开跑只会让一个任务两套调度。
+        sweepOrphans(ORPHAN_AGE);
         return new Report(expired, overLimit);
     }
 

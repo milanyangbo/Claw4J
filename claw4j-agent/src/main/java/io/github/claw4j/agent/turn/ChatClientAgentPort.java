@@ -4,6 +4,7 @@ import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
+import io.github.claw4j.agent.audit.RunOutcome;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.channel.DeliveryTarget;
@@ -17,6 +18,8 @@ import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
+import io.github.claw4j.domain.port.MessageAudit;
+import io.github.claw4j.domain.audit.MessageOutcome;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.untrusted.OutboundText;
 import org.slf4j.Logger;
@@ -91,6 +94,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /** 这一轮是哪个 agent 在跑，只用于审计归属（ADR-0037 票 01）。 */
     private final String agentId;
 
+    /** 消息审计（ADR-0037 票 04）。默认空实现：没有审计设施时不写消息行。 */
+    private final MessageAudit messageAudit;
+
     /**
      * 只连 ChatClient 的门：无压缩、无投递、无观测、无审计。
      *
@@ -110,10 +116,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         this.commands = new SlashCommands(address, builder.goals, builder.elevations);
         this.composer = new PromptComposer(chatClient, builder.catalog, builder.providerKey,
                 builder.compactor, builder.elevations, builder.goals, builder.progressCards, builder.intents,
-                builder.turnTimeout, builder.clock);
+                builder.turnTimeout, builder.clock, builder.agentId);
         this.recorder = new TurnRecorder(builder.tracer, builder.audit, builder.delivery, builder.goals);
         this.lane = builder.lane;
         this.agentId = builder.agentId;
+        this.messageAudit = builder.messageAudit == null ? MessageAudit.NONE : builder.messageAudit;
     }
 
     /**
@@ -150,6 +157,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         private Duration turnTimeout = AgentProperties.DEFAULT_TURN_TIMEOUT;
 
         private String agentId = AuditEvent.Scope.UNKNOWN_AGENT;
+
+        private MessageAudit messageAudit = MessageAudit.NONE;
         private Clock clock = Clock.systemUTC();
 
         private Builder(ChatClient chatClient) {
@@ -289,6 +298,20 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         }
 
         /**
+         * 消息审计的落点（ADR-0037 票 04）。
+         *
+         * <p>只在这一层记「这条消息处理完了 / 没处理成」：它是入站消息真正开始跑的地方，
+         * 而 runId 也在这里才有。被跳过的那种（重复投递）在入站派发器那一侧记。
+         *
+         * @param value 消息审计，null 表示不写消息行
+         * @return 这个 builder
+         */
+        public Builder messageAudit(MessageAudit value) {
+            this.messageAudit = value == null ? MessageAudit.NONE : value;
+            return this;
+        }
+
+        /**
          * @param value 算截止时刻的钟，为 null 时用系统钟
          * @return this
          */
@@ -400,8 +423,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // /new、/goal、/elevated 这一族与"跑一轮"同层：认出来就当场办、回一句话，不进模型也不开 run
         // （OpenClaw：纯命令消息绕过队列和模型）。先判命令再算 sessionId：/new 的换段副作用就在
         // 命令那一层发生，两处各算一次会让"换了没有"取决于走了哪条分支。
+        long inboundAt = System.nanoTime();
         SlashCommands.Parsed parsed = commands.parse(message, owner, conversationKey);
         if (parsed.reply().isPresent()) {
+            // 命令也是"处理完了"：它没调模型，但它确实是这条消息的结局。
+            auditInbound(message, null, MessageOutcome.COMPLETED, null, inboundAt);
             return new Turn(null, parsed.reply().get());
         }
         // 对话键与归属键是两把：owner 管"这是谁的东西"，sessionId 管"这是哪一段话"。
@@ -440,21 +466,52 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                             TurnRecorder.tokensOf(response));
                     TurnRecorder.stampTurn(turn, response);
                 }
+                auditInbound(message, runId, MessageOutcome.COMPLETED, null, inboundAt);
                 return new Turn(runId, text);
             } catch (RuntimeException | Error failure) {
+                auditInbound(message, runId, MessageOutcome.FAILED, null, inboundAt);
                 run.failed(failure);
-                recorder.runFinished(auditScope, AuditStatus.FAILED, AuditErrorCode.RUN_FAILED);
+                // 取消 / 超时 / 客户端走了各记各的（ADR-0037 票 01）：一律记 failed 的话，
+                // 「这轮是被谁掐掉的」「是不是模型太慢」在审计里问不出来。
+                RunOutcome outcome = RunOutcome.of(failure);
+                recorder.runFinished(auditScope, outcome.status(), outcome.errorCode());
                 throw failure;
             }
         }
+    }
+
+    /**
+     * 记一条「这条入站消息处理完了」。
+     *
+     * <p>放在轮次的收尾，而不是入口：入口还不知道结局。代价是这一行晚一点落库，
+     * 换来的是它带着 runId——"这条消息是被哪一轮答的"只有这一个键连得起来。
+     *
+     * <p>消息编号传 null：{@link InboundMessage} 上没有这个字段（它是通道侧的寻址键，
+     * 不是平台的消息 id）。代价是这类行不参与来源键去重——平台重投时靠入站派发器那一侧的
+     * {@code duplicate} 挡住，这里不必再挡一次。
+     *
+     * @param message 入站消息
+     * @param runId 这一轮的编号，命令类回执没有
+     * @param outcome 结果
+     * @param reasonCode 原因码，没有时为 null
+     * @param startedAtNanos 到达时刻（{@link System#nanoTime()}）
+     */
+    private void auditInbound(InboundMessage message, String runId, MessageOutcome outcome,
+                              String reasonCode, long startedAtNanos) {
+        messageAudit.inbound(new MessageAudit.Inbound(runId, agentId, message.channel(),
+                message.chatId(), null,
+                message.principal() == null ? null : message.principal().userId(),
+                outcome, reasonCode, (System.nanoTime() - startedAtNanos) / 1_000_000L));
     }
 
     /** 真正的流式那一轮。锁由 {@link #stream} 拿——放在这里就晚了，run 已经开出来了。 */
     private void streamInLane(InboundMessage message, Consumer<OutboundMessage> onChunk) {
         String owner = SessionKeys.ownerOf(message.principal());
         String conversationKey = address.conversationKeyOf(message, owner);
+        long inboundAt = System.nanoTime();
         SlashCommands.Parsed parsed = commands.parse(message, owner, conversationKey);
         if (parsed.reply().isPresent()) {
+            auditInbound(message, null, MessageOutcome.COMPLETED, null, inboundAt);
             // 与"忙"那条同形：一帧正文 + 一帧空文本，调用方靠后者收尾。
             // 正文那一帧不能带 finalChunk：通道看到它只发 done、不发正文（见 AgentPort#stream）。
             onChunk.accept(OutboundMessage.chunk(message.chatId(), parsed.reply().get()));
@@ -500,7 +557,10 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     recorder.closeTurn(auditScope, conversationKey, answer.toString(),
                             TurnRecorder.pushTargetOf(TurnRecorder.addressOf(message), message),
                             message.notifyPolicy(), null);
+                    auditInbound(message, runId, MessageOutcome.COMPLETED, null, inboundAt);
                 } catch (RuntimeException | Error failure) {
+                    // 入站这一行只分完成/失败两种：取消与超时的细分在 run 那一行上（RunOutcome）。
+                    auditInbound(message, runId, MessageOutcome.FAILED, null, inboundAt);
                     // 断流也要把暂存的那截吐出来，否则用户看到"话说到一半没了"。
                     // 发不出去就算了：原始失败更重要，别被它盖掉。
                     try {
@@ -514,7 +574,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
                     turn.failed(failure);
                     run.failed(failure);
-                    recorder.runFinished(auditScope, AuditStatus.FAILED, AuditErrorCode.RUN_FAILED);
+                    RunOutcome outcome = RunOutcome.of(failure);
+                    recorder.runFinished(auditScope, outcome.status(), outcome.errorCode());
                     throw failure;
                 }
             }

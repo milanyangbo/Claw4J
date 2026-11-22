@@ -2,6 +2,7 @@ package io.github.claw4j.agent.turn;
 
 import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.advisor.PiiRedactor;
+import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.intent.IntentBlock;
 import io.github.claw4j.agent.intent.IntentMatcher;
@@ -149,6 +150,9 @@ final class PromptComposer {
     /** 算截止时刻的钟。测试注入固定值，跑起来是系统钟。 */
     private final Clock clock;
 
+    /** 这一轮是哪个 agent 在跑（ADR-0037 票 01）。只进工具上下文，只给审计读。 */
+    private final String agentId;
+
     /**
      * @param chatClient 对话客户端，必填
      * @param catalog 工具清单，可以为 null（按"只有全局层"解析）
@@ -160,11 +164,12 @@ final class PromptComposer {
      * @param intents 意图存储，可以为 null（不做匹配）
      * @param turnTimeout 一轮最多跑多久，可以为 null（取默认值）
      * @param clock 算截止时刻的钟，可以为 null（取系统钟）
+     * @param agentId 这一轮是哪个 agent 在跑，只用于审计归属；为 null 或空白时落成 unknown
      */
     PromptComposer(ChatClient chatClient, ToolCatalog catalog, String providerKey,
                    SessionCompactor compactor, Elevations elevations, SessionGoalStore goals,
                    ProgressCards progressCards, StandingIntents intents,
-                   Duration turnTimeout, Clock clock) {
+                   Duration turnTimeout, Clock clock, String agentId) {
         this.chatClient = chatClient;
         this.catalog = catalog;
         this.providerKey = providerKey;
@@ -176,6 +181,8 @@ final class PromptComposer {
         this.turnTimeout = turnTimeout == null
                 ? io.github.claw4j.agent.persona.AgentProperties.DEFAULT_TURN_TIMEOUT : turnTimeout;
         this.clock = clock == null ? Clock.systemUTC() : clock;
+        this.agentId = agentId == null || agentId.isBlank()
+                ? AuditEvent.Scope.UNKNOWN_AGENT : agentId;
     }
 
     /**
@@ -231,6 +238,9 @@ final class PromptComposer {
         if (runId != null) {
             toolContext.put(ContextKeys.RUN_ID, runId);
         }
+        // 哪个 agent 在跑也进工具上下文（ADR-0037 票 01）：工具事件的审计归属从这里读。
+        // 与 runId 同一个理由——工具回调拿不到 Advisor 上下文，只能从 ToolContext 取。
+        toolContext.put(ContextKeys.AGENT_ID, agentId);
         // 会话 id 也进工具上下文：recall_session 只查本段对话，它得知道"这一段"是哪一段。
         // 键用框架的 ChatMemory.CONVERSATION_ID，与它自己的会话工具（SessionEventTools）
         // 是同一个字符串——哪天换成框架那个工具，键名不必再改一次。
