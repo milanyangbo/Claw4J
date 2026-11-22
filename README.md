@@ -137,6 +137,10 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 加一个能力或一条通道，都是自动配置或一段配置——**不改 Claw4J 的代码，也不在父 POM 里登记**。
 每一步怎么做、代码长什么样，见 **[`README-adding-capabilities.md`](README-adding-capabilities.md)**（九个能直接抄的例子）。
 
+想先看它**串起来是什么样**（三场戏、每场五幕，从客户开口到事后审计）：
+**[`README-demonstration.md`](README-demonstration.md)**。加完东西要逐条验：
+**[`README-capability-tests.md`](README-capability-tests.md)**。
+
 | 你要加的东西 | 写什么 | 例子 |
 | --- | --- | --- |
 | 一个工具 | `@Tool` 方法 + 自动配置 + `AutoConfiguration.imports` | [1](README-adding-capabilities.md#1-java-工具4-个文件) |
