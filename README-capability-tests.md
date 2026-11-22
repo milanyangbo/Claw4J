@@ -12,7 +12,7 @@
 
 ## 怎么用这一份
 
-按**验什么**分六类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
+按**验什么**分七类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
 
 | 类 | 验什么 | 加了什么之后看 |
 | --- | --- | --- |
@@ -22,6 +22,7 @@
 | **D 排除干扰** | 缓存 / 记忆 / 种子造成的假阳性 | 每一类都可能撞上 |
 | **E 故障与降级** | 掉线、超时、熔断时长什么样 | MCP E1、工具 E2 / E3 |
 | **F 模型层** | 主备换家、冷却、白名单、角色、缓存命中（`claw4j-model`） | 模型 F1–F8 |
+| **G Agent 自管理** | 计划落库、嘱咐按事件触发、提示词超限会喊（票 01–03） | 进度卡 G1、意图 G2、预算 G3 |
 
 工具观测器（一个 `ToolCallListener` bean）的验法在
 [README-adding-capabilities.md](README-adding-capabilities.md) 第 9 节末尾。
@@ -1135,6 +1136,192 @@ curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.tokens?tag=k
 
 ---
 
+## G. Agent 自管理（票 01–03）
+
+验三件**系统自己维护的状态**：计划、嘱咐、提示词的量。这一节的证据不在回答里，而在
+**库里那两行**与**一行 WARN**——模型自述在这三件事上尤其不可信：它会说"清单我记下了"，
+而卡可能压根没落；它会说"我提醒你了"，而那一轮并没有注入提醒。
+
+### G1 进度卡：`TodoWrite` 落库
+
+触发就用 B8 那条命令（三步任务 + 要求先写清单），换成自己的绝对路径。跑完查库：
+
+```bash
+docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
+  "select session_key, revision, steps_json from claw4j_session.session_progress_cards
+    order by updated_at desc limit 1;"
+```
+
+（本机没有 `psql` 时用 `docker exec`，库名换成 0 节起的那个临时库；有 `psql` 就直接连。）
+
+**本机实测**（用户 `td1`、chat `card-1`）：
+
+```
+                     session_key                     | revision | steps_json
+-----------------------------------------------------+----------+-------------
+ claw4j:user:td1:http:http:card-1:1795348016149-e212 |        2 | [{"step":"用 Read 读 examples/README.md 前 5 行","status":"COMPLETED"}, …]
+```
+
+四条判据：
+
+- **`revision ≥ 2`**：开工前一次、换步骤时一次。只有 1 说明那一轮模型只交了一份清单（任务太短）。
+- **状态在推进**：看到 `COMPLETED`（做完的），末尾可能还剩一条 `IN_PROGRESS`；**三条全是 `PENDING`
+  说明卡住了**——那是它只写了计划没做事。
+- **没有 `activeForm`、`content` 变成了 `step`**：卡上只有"做什么"和"到哪了"，`activeForm`（"正在核对"）
+  是给模型看的措辞，不进卡。
+- **`session_key` 尾部带一段后缀**（`:1795348016149-e212`）：那是"这一段对话"的段标识。换 `/new`
+  之后是**新的键**，旧卡不会再被读到——这正是"一段对话一张卡"。
+
+| 看到 | 含义 |
+| --- | --- |
+| 一行都没有 | 这一轮没调 `TodoWrite`（先看 B8 的计数），或这一轮没有会话 id（那种情况**不落假键**） |
+| 清空之后行还在、`steps_json is null` | 正常：清空是**墓碑 + `revision + 1`**，不是删行 |
+| 两步文字粘成一句 | 清洗把换行当"不可见字符"删了（修过一次的真 bug，已改成先判空白） |
+
+两点要知道：
+
+- **`revision` 是同段并发写的护栏**：两处同时改时后来者拿到 `Stale`，不会互相覆盖。
+- **撞调用预算不影响卡**：三步那句话有时正好把 6 次预算用完（B8 的已知现象，回答里是
+  `Total tool call limit (6) exceeded`），而库里 `revision` 已经是 2——落库发生在这个上限之前。
+
+**卡是给人看的，不是给模型看的**（ADR-0024 的实测结论没变）：模型那侧仍然只收到 B8 那句固定回话。
+所以"计划进没进模型的上下文"不在这里验，也不该在这里验。
+
+### G2 意图：说一次，遇到才提醒
+
+它和定时任务的分界只有一句：定时任务是**到点做**，意图是**遇到才做**，两者都别拿来验对方。
+
+**① 记一条。**（`X-Claw4j-User: it1`、`X-Claw4j-Chat-Id: intent-1`）
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: it1' -H 'X-Claw4j-Chat-Id: intent-1' \
+  -d '{"text":"帮我记一条提醒：以后我提到「客户数」的时候，先问我这是签约数还是活跃数。就记这一条，别做别的。"}'
+```
+
+回答里带一个 8 位编号（实测 `cb6c8264`），并且 `intent` 计数 +1：
+
+```bash
+curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:intent&tag=outcome:ok'
+```
+
+```bash
+docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
+  "select id, owner, trigger_keywords, status, fire_count, max_fires, cooldown_seconds,
+          channel_scope, sender_scope, trigger_embedding is null as emb_null
+     from claw4j_session.standing_intents;"
+```
+
+期望一行：
+
+```
+    id    | owner | trigger_keywords | status | fire_count | max_fires | cooldown_seconds | channel_scope | sender_scope | emb_null
+----------+-------+------------------+--------+------------+-----------+------------------+---------------+--------------+----------
+ cb6c8264 | it1   | 客户数           | armed  |          0 |         3 |            86400 | http          | it1          | t
+```
+
+三处值得看：
+
+- **`owner` / `sender_scope` 取自这一轮的身份证**，不是模型在参数里声明的——参数里带 owner 等于让它自己说"我是谁"。
+- **`trigger_embedding` 是 `t`（null）**：这一版只做关键词匹配，列留着给将来那条向量路径。
+- **没有段的信息**：意图按人存，跨段存活。`/new` 之后同一个人再提「客户数」，仍然会提醒——
+  这是 ADR-0036 的取舍（按段存等于每天凌晨把 90 天的嘱咐全清了）。
+
+**② 命中一次。必须换一个 chat id**：
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: it1' -H 'X-Claw4j-Chat-Id: intent-2' \
+  -d '{"text":"我们现在的客户数是多少？"}'
+```
+
+期望：回答里出现那句提醒（本机实测："按之前留下的提醒，先确认口径：你要的是签约客户数还是活跃客户数"），
+库里 `fire_count=1`、`status=fired`、`last_fired_at` 有值。
+
+**换 chat id 这条不是洁癖**：同一段对话里模型凭上文就记得你交代过，不注入提醒它也会追问——
+那种回答**不能当命中证据**。判断命中只有两条：`fire_count` 涨了，且这是**全新一段对话**。
+
+**③ 冷却内再来一次**（再换一个 chat id）：`fire_count` **停在 1**。默认冷却 86400 秒、最多 3 次——
+这两个数都能在建的时候改（`cooldownSeconds` / `maxFires`）。
+
+**这一步别拿回答的措辞当判据**：人设与口径本身也会让它顺口提一句"这是档案总数，不是活跃数"，
+那跟提醒没关系。能分辨的只有库里那个数——注入与否，`fire_count` 会告诉你。
+
+**④ 列与撤**（又要换新 chat，否则它凭记忆念）：
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: it1' -H 'X-Claw4j-Chat-Id: intent-9' \
+  -d '{"text":"用 intent 工具列出我名下所有意图，原样念出来。"}'
+```
+
+念出来的是这种形状（本机实测）：
+
+```
+你留下的意图：
+- cb6c8264 [fired] 触发词「客户数」 → 提到「客户数」时，先确认是签约数还是活跃数，再回答（已触发 1/3）
+```
+
+**编号、状态、进度**都在，模型要靠编号才撤得掉。说"把编号 cb6c8264 那条撤掉"之后 `status` 变
+`cancelled`；此后含触发词的话不再算命中（`fire_count` 不再涨）。
+
+| 看到 | 含义 |
+| --- | --- |
+| `intent` 计数没涨，但回答里有编号 | 它在编。编号只可能来自工具回话 |
+| 建完 `status` 不是 `armed` | 建表就没落成（看 G1 同款的迁移日志） |
+| 命中后 `fire_count` 一直是 0 | 触发词没匹配上：中文按**子串**、英文按**整词**；"客户数"要写成 `客户数` 而不是 `客户 数` |
+| 同一句话提醒了两遍 | 记账不是一条 `update`（冷却/预算/过期都该在 `where` 里，不是调用方记得） |
+
+**已知局限**：只做关键词，不做语义；`trigger_embedding` 恒 null。说"帮我盯着老王的电话"这种
+没有固定触发词的嘱咐，它记不成意图——那本来也不是这一档要解决的。
+
+### G3 提示词预算：超了会喊一声，且只喊一次
+
+造一份超长人设（正文 3 万字，超过单段 20000 的上限），用它起一个实例：
+
+```bash
+mkdir -p /tmp/bigagent
+python3 - <<'PY'
+body = "\n".join("第%d条：占位口径，只为把提示词撑过两万字符。" % i for i in range(1, 900))
+open('/tmp/bigagent/big.md', 'w', encoding='utf-8').write(
+    "---\nname: big\ndescription: 超长人设，只为验提示词预算\ntier: full\n---\n\n# 你是谁\n\n" + body)
+PY
+```
+
+起实例时把 0 节那条命令的 `--claw4j.agent.directory=examples/agents --claw4j.agent.default=ops`
+换成 `--claw4j.agent.directory=/tmp/bigagent --claw4j.agent.default=big`，其余照旧。随便问一句：
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: bg1' -H 'X-Claw4j-Chat-Id: big-1' \
+  -d '{"text":"1+1 等于几？只给数字"}'
+```
+
+日志里出现这一行（本机实测）：
+
+```
+WARN … i.g.c.agent.advisor.AgentContextAdvisor : 提示词超预算已截断：22479 → 20106 字符（上限 60000），稳定段 20000 字符
+```
+
+三条判据：
+
+- **回答照常是 `2`**。预算是闸，不是故障：截断之后这一轮照跑。
+- **只出现一行**。再问一次（换用户）不会刷第二行——每轮刷一条 WARN，真正要看的那条会被淹掉。
+- **括号里的 60000 是合计上限，先撞的是单段 20000**。这行字同时报了两个数，读的时候分开看：
+  这次是先按单段 20000 截的稳定段（人设），合计上限根本没到。
+
+| 看到 | 含义 |
+| --- | --- |
+| 一行都没有 | 人设没超 20000 字符（`wc -m` 数的是字符，中文一个算一个） |
+| 每轮都刷 | 一次性开关失效了 |
+| 回答里带"内容不全"之类的话 | 正常：截断会附一句固定提示，但它**不说截了哪一段**（说了等于让模型去读它未必有权读的文件） |
+
+**验不了的那一半**：跨天之后稳定段是否逐字节不变（前缀缓存的前提），手工验收做不了——
+要在两个日期各跑一次再比字节。这条由单测钉着：
+`PromptCompositionTest#stableNeverChangesAcrossDays`。这一节能验的只是"超长时喊一声、喊完还答得出"。
+
+---
+
 ## 一页速查
 
 完整命令都在对应小节里；这里只列"问什么、看什么"。
@@ -1164,3 +1351,6 @@ curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.tokens?tag=k
 | 白名单与形状（F5/F6） | 故意写错再启动 | 启动失败并点名 | 不是静默跳过 |
 | 角色（F7） | 配 `roles.utility` | 日志「独立链 provider/model」 | 只验建链，没有调用方 |
 | 缓存命中（F8） | 查 `kind:cache-read` | 有数，或 404 | 404 不是坏事（取不到就不记） |
+| 进度卡（G1） | 跑 B8 那句三步任务，再查 `session_progress_cards` | `revision ≥ 2` + 三种状态 + 没有 `activeForm` | 卡是给人看的；模型侧只有那句固定回话 |
+| 意图（G2） | 记一条「客户数」提醒，**换 chat id** 再问 | `fire_count` 1 → 冷却内仍 1；回答先问口径 | 同一段对话里它凭上文就答，别拿它当命中 |
+| 提示词预算（G3） | 用一份 3 万字人设起实例 | 一行 WARN、只一次、回答照常 | 括号里 60000 是合计，先撞的是单段 20000 |
