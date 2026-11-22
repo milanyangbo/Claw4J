@@ -49,10 +49,11 @@ class ExamplesSubagentsTest {
             "querySales",        // claw4j-example-sales 的 @Tool
             "Bash",              // capability/exec：技能里的脚本由模型用这个跑
             "Skill",             // capability/skill：AgentSkills.TOOL_NAME
+            "Read",              // capability/builtin 文件工具：演示用的沟通稿子代理只给它这个
             SubagentDelegation.TOOL_NAME);
 
     @Test
-    @DisplayName("五份定义全部解析得出来，name 与文件名一致")
+    @DisplayName("六份定义全部解析得出来，name 与文件名一致")
     void everyExampleDefinitionParses() throws IOException {
         Path directory = examplesSubagents();
         List<SubagentDefinition> definitions = SubagentCatalog.load(directory);
@@ -76,7 +77,7 @@ class ExamplesSubagentsTest {
                 .as("委派按名字找定义；name 与文件名不一致时，日志里那一行会指向另一份文件")
                 .containsExactlyInAnyOrderElementsOf(fileNames);
         assertThat(fileNames).contains("capacity-triage", "incident-triage", "weekly-digest",
-                "metric-glossary", "sql-reviewer");
+                "metric-glossary", "sql-reviewer", "complaint-writer");
     }
 
     @Test

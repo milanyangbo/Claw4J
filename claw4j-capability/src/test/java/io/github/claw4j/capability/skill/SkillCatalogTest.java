@@ -127,14 +127,16 @@ class SkillCatalogTest {
     }
 
     @Test
-    @DisplayName("仓库里那四份示例技能真的加载得出来：目录形状与审批标记都对得上")
+    @DisplayName("仓库里那六份示例技能真的加载得出来：目录形状与审批标记都对得上")
     void exampleSkillsLoadWithTheirApprovalMarkers() {
         Path examples = repositoryFile("examples/skills");
 
         // 审批标记的 sha256 是按目录内容算的：改一个字节、或者漏写一份标记，
         // 对应的技能就会从这里消失。示例是给人照抄的，"看着像能加载"不算。
         assertThat(AgentSkills.names(examples))
-                .containsExactlyInAnyOrder("summarize", "weather-forecast", "xurl", "weekly-sales");
+                .containsExactlyInAnyOrder("summarize", "weather-forecast", "xurl", "weekly-sales",
+                        // 演示用的两份：退货判定（带脚本）与值班采集（带脚本）
+                        "refund-triage", "incident-brief");
 
         String body = AgentSkills.callback(examples, null, true).call("{\"command\":\"summarize\"}");
         assertThat(body)
