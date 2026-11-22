@@ -1,8 +1,11 @@
 package io.github.claw4j.channel.http;
 
+import io.github.claw4j.domain.audit.MessageReason;
 import io.github.claw4j.channel.spi.ChatChannel;
+import io.github.claw4j.domain.audit.MessageOutcome;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.InboundMessage;
+import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.OutboundMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +14,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -34,9 +38,27 @@ public class HttpChatChannel implements ChatChannel {
 
     private final Executor streamExecutor;
 
+    /** 消息审计（ADR-0037 票 04）。默认空实现：没有审计设施时不写消息行。 */
+    private final MessageAudit messageAudit;
+
     public HttpChatChannel(AgentPort agentPort, Executor streamExecutor) {
+        this(agentPort, streamExecutor, MessageAudit.NONE);
+    }
+
+    /**
+     * 带上消息审计的那一份。
+     *
+     * <p>HTTP 是唯一"答案随响应回去"的通道：没有主动推，于是 {@code ConversationDelivery}
+     * 那一侧写不出这一行（它会诚实地什么都不写）。投递事实只在这里——响应真的交回给调用方的那一刻。
+     *
+     * @param agentPort 跑一轮的那一侧
+     * @param streamExecutor 流式用的线程池
+     * @param messageAudit 消息审计，null 时按空实现
+     */
+    public HttpChatChannel(AgentPort agentPort, Executor streamExecutor, MessageAudit messageAudit) {
         this.agentPort = Objects.requireNonNull(agentPort, "agentPort");
         this.streamExecutor = Objects.requireNonNull(streamExecutor, "streamExecutor");
+        this.messageAudit = messageAudit == null ? MessageAudit.NONE : messageAudit;
     }
 
     @Override
@@ -58,7 +80,48 @@ public class HttpChatChannel implements ChatChannel {
      * 一次性问答。调用方自己在请求线程上等着，同步接口本来就是这个语义。
      */
     public OutboundMessage ask(InboundMessage message) {
-        return agentPort.reply(message);
+        long startedAt = System.nanoTime();
+        OutboundMessage answer = agentPort.reply(message);
+        // 同步接口的"投递"就是这次方法返回：调用方拿到的就是它。
+        audit(message, answer.runId(), answer.text(), startedAt);
+        return answer;
+    }
+
+    /**
+     * 记一条出站消息（ADR-0037 票 04）。
+     *
+     * <p>三类结果：有正文就是 {@code sent}；空正文是 {@code suppressed / no_visible_payload}
+     * ——没有人期待它出现，它不是失败；流式断在半路是 {@code unknown}，因为已经发出去的那几帧
+     * 对方收到没有我们不知道，编一个 {@code failed} 就是在替客户端下结论。
+     *
+     * @param message 入站消息（用来取通道、地址与私聊/群）
+     * @param runId 这一轮的编号，可为 null
+     * @param text 交出去的正文，可为 null
+     * @param startedAtNanos 开始那一刻（{@link System#nanoTime()}）
+     */
+    private void audit(InboundMessage message, String runId, String text, long startedAtNanos) {
+        MessageOutcome outcome;
+        String reason = null;
+        if (text == null || text.isBlank()) {
+            outcome = MessageOutcome.SUPPRESSED;
+            reason = MessageReason.NO_VISIBLE_PAYLOAD;
+        } else {
+            outcome = MessageOutcome.SENT;
+        }
+        audit(message, runId, outcome, reason, null, startedAtNanos);
+    }
+
+    private void audit(InboundMessage message, String runId, MessageOutcome outcome, String reason,
+                       String failureStage, long startedAtNanos) {
+        try {
+            messageAudit.outbound(new MessageAudit.Outbound(runId, null, message.channel(),
+                    message.chatId(), message.chatId(), outcome, reason, failureStage, "text",
+                    Math.max(0, (System.nanoTime() - startedAtNanos) / 1_000_000L),
+                    message.direct()));
+        } catch (RuntimeException failure) {
+            // 记账不是回答的前置条件：写不进去只丢一行，回答照给。
+            log.debug("写 HTTP 投递审计时出错：chatId={}", message.chatId(), failure);
+        }
     }
 
     /**
@@ -84,6 +147,25 @@ public class HttpChatChannel implements ChatChannel {
 
         CompletableFuture<Void> future = new CompletableFuture<>();
         AtomicReference<Thread> worker = new AtomicReference<>();
+        long startedAt = System.nanoTime();
+        AtomicBoolean delivered = new AtomicBoolean();
+        // 有没有真的吐出过字：只有结束帧（空文本）时这一路是"模型什么都没说"，
+        // 那是被抑制，不是送达——与同步那条的 blank 判断同一个口径。
+        AtomicBoolean sawText = new AtomicBoolean();
+        AtomicReference<String> runId = new AtomicReference<>();
+        // 先交付、再记账：写不出去的那一块不算送到。最后那一帧到了才算这一路送完。
+        Consumer<OutboundMessage> deliveredThenCounted = chunk -> {
+            onChunk.accept(chunk);
+            if (chunk.runId() != null) {
+                runId.set(chunk.runId());
+            }
+            if (chunk.text() != null && !chunk.text().isBlank()) {
+                sawText.set(true);
+            }
+            if (chunk.finalChunk()) {
+                delivered.set(true);
+            }
+        };
         future.whenComplete((ignored, error) -> {
             if (future.isCancelled()) {
                 Thread thread = worker.get();
@@ -100,9 +182,17 @@ public class HttpChatChannel implements ChatChannel {
                     return; // 提交之后、开跑之前就被取消
                 }
                 try {
-                    agentPort.stream(message, onChunk);
+                    agentPort.stream(message, deliveredThenCounted);
+                    if (delivered.get() && sawText.get()) {
+                        audit(message, runId.get(), MessageOutcome.SENT, null, null, startedAt);
+                    } else if (delivered.get()) {
+                        audit(message, runId.get(), MessageOutcome.SUPPRESSED,
+                                MessageReason.NO_VISIBLE_PAYLOAD, null, startedAt);
+                    }
                     future.complete(null);
                 } catch (Throwable error) {
+                    // 断在半路：已经出去的那几帧对方收到没有，我们不知道——记 unknown 而不是 failed。
+                    audit(message, runId.get(), MessageOutcome.UNKNOWN, null, "platform_send", startedAt);
                     if (!future.isCancelled()) {
                         future.completeExceptionally(error);
                     }

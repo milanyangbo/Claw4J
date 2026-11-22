@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.audit;
+package io.github.claw4j.domain.audit;
 
 /**
  * 消息审计的原因码，闭合词表（ADR-0037 票 04）。

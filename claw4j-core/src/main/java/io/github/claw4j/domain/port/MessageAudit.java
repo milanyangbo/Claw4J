@@ -71,9 +71,13 @@ public interface MessageAudit {
      * @param outcome 结果
      * @param reasonCode 原因码，没有时为 null
      * @param durationMs 从到达算起的毫秒数
+     * @param direct 是不是私聊；null 表示这个调用方不知道（落 {@code unknown}）。
+     *     这个事实在通道解析时就有了（ADR-0029：Slack 看 {@code channel_type}、飞书看
+     *     {@code chat_type}），审计只是把它传下去，不自己猜
      */
     record Inbound(String runId, String agentId, String channel, String chatRef, String messageRef,
-                   String actorId, MessageOutcome outcome, String reasonCode, long durationMs) {
+                   String actorId, MessageOutcome outcome, String reasonCode, long durationMs,
+                   Boolean direct) {
     }
 
     /**
@@ -89,9 +93,10 @@ public interface MessageAudit {
      * @param failureStage 失败发生在哪一段，没有失败时为 null
      * @param deliveryKind 文本 / 媒体 / 其它
      * @param durationMs 从开始投递算起的毫秒数
+     * @param direct 是不是私聊；null 表示不知道（落 {@code unknown}）
      */
     record Outbound(String runId, String agentId, String channel, String chatRef, String targetRef,
                     MessageOutcome outcome, String reasonCode, String failureStage,
-                    String deliveryKind, long durationMs) {
+                    String deliveryKind, long durationMs, Boolean direct) {
     }
 }

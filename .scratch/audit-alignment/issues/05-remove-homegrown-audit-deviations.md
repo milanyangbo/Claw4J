@@ -34,10 +34,22 @@ agent 模块那份 `ToolGovernanceTest` 用的是记录型 sink，验不到表�
 
 ## 缺口
 
-- **`tool_call_id`：blocked（上游没有接缝）**。缺的是 Spring AI 在 `ToolContext` 里给出一次
-  调用的稳定 id（哪怕是一个 `toolCallId` 键）。等它给，回来时改这三处：
-  `AuditEvent.Scope` 加字段、`V9` 的列开始写、`ToolCallAudit#fingerprint` 退为辅助。
-  在此之前不自己生成 UUID 冒充——那会让"同参数两次调用"看起来可分，实际不可分。
+- **`tool_call_id`：blocked（上游没有接缝；2026-11-23 查到字节码这一层，结论没变）**。
+  缺的是 Spring AI 在 `ToolContext` 里给出一次调用的稳定 id（哪怕是一个 `toolCallId` 键）。
+  在 Spring AI 2.0.2 上把 `spring-ai-model-2.0.2.jar` 拆开核过：
+
+  - `ToolContext` 就是一个 `Map` 包装，只有 `getContext()`；
+  - `DefaultToolCallingManager#buildToolContext` 的全部内容是
+    `ToolCallingChatOptions.getToolContext()` 的一份 `HashMap` 拷贝——**它不往里面加任何东西**；
+  - 调用 id 在框架里确实存在，但只出现在两处：`AssistantMessage.ToolCall#id()`（管理器迭代
+    调用时才看得到）与 `ToolCallingObservationContext#toolCallId()`（观测层）。
+    `ToolCallback.call(input, toolContext)` 的入参里没有它。
+
+  所以回调层拿不到，除非把审计搬到 `ToolCallingManager` 的包装里——那要把"逐条解析工具调用"
+  自己写一遍，正是这条票要去的方向的反面（"不要自己实现"）。
+
+  等上游给接缝时改这三处：`AuditEvent.Scope` 加字段、`V12` 之后加一列、`ToolCallAudit` 的
+  指纹退为辅助。在此之前不自己生成 UUID 冒充——那会让"同参数两次调用"看起来可分，实际不可分。
 - `audit.run.inspect` 的 decision receipts 依赖同一张事实表的扩展（执行身份快照、覆盖率），
   本票只做最小键，不冒充它能"解释为什么放行"。
 

@@ -501,7 +501,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         messageAudit.inbound(new MessageAudit.Inbound(runId, agentId, message.channel(),
                 message.chatId(), null,
                 message.principal() == null ? null : message.principal().userId(),
-                outcome, reasonCode, (System.nanoTime() - startedAtNanos) / 1_000_000L));
+                outcome, reasonCode, (System.nanoTime() - startedAtNanos) / 1_000_000L,
+                message.direct()));
     }
 
     /** 真正的流式那一轮。锁由 {@link #stream} 拿——放在这里就晚了，run 已经开出来了。 */

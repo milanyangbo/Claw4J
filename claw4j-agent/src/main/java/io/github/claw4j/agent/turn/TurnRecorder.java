@@ -214,7 +214,7 @@ final class TurnRecorder {
         if (channel == null || channel.isBlank()) {
             return null;
         }
-        return new DeliveryTarget(channel, message.chatId());
+        return new DeliveryTarget(channel, message.chatId(), message.direct());
     }
 
     /**

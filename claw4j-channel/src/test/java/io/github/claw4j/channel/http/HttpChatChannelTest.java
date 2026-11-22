@@ -52,6 +52,17 @@ class HttpChatChannelTest {
         return new InboundMessage(CALLER, CHAT_ID, text);
     }
 
+    /**
+     * 带通道名的那一条：控制器造出来的消息就是这样（{@code channel = "http"}）。
+     *
+     * <p>投递审计要用通道名与地址——{@link #inbound} 那个短构造没有通道，用它验投递会得到一行
+     * {@code channel = null} 的假事实。
+     */
+    private static InboundMessage inboundOnHttp(String text) {
+        return new InboundMessage(CALLER, CHAT_ID, text, java.time.Instant.now(), "evt-1", "http",
+                io.github.claw4j.domain.NotifyPolicy.DEFAULT);
+    }
+
     // ---------------------------------------------------------------- 通道：入站怎么交给 Agent
 
     @Test
@@ -64,6 +75,54 @@ class HttpChatChannelTest {
 
         assertSame(message, agent.received.get(0));
         assertEquals(CHAT_ID, answer.chatId());
+    }
+
+    /**
+     * HTTP 是唯一"答案随响应回去"的通道（ADR-0037 票 04）：投递那一行只能在这里写。
+     *
+     * <p>三种结果各验一次：有正文是 {@code sent}、空正文是 {@code suppressed}（没有人期待它出现，
+     * 它不是失败）、流断在半路是 {@code unknown}（已经出去的那几帧对方收到没有，我们不知道）。
+     * 编一个 {@code failed} 就是在替客户端下结论。
+     */
+    @Test
+    @DisplayName("HTTP 的投递事实记在通道这一层：sent / suppressed / 断在半路是 unknown")
+    void outboundDeliveryIsAuditedWhereTheAnswerLeaves() {
+        List<io.github.claw4j.domain.port.MessageAudit.Outbound> audited = new ArrayList<>();
+        io.github.claw4j.domain.port.MessageAudit audit =
+                new io.github.claw4j.domain.port.MessageAudit() {
+                    @Override
+                    public void inbound(io.github.claw4j.domain.port.MessageAudit.Inbound record) {
+                    }
+
+                    @Override
+                    public void outbound(io.github.claw4j.domain.port.MessageAudit.Outbound record) {
+                        audited.add(record);
+                    }
+                };
+
+        new HttpChatChannel(new TestAgent(), Runnable::run, audit).ask(inboundOnHttp("上周成交额"));
+
+        assertEquals(1, audited.size());
+        assertEquals(io.github.claw4j.domain.audit.MessageOutcome.SENT, audited.get(0).outcome());
+        assertEquals("http", audited.get(0).channel());
+        assertEquals(CHAT_ID, audited.get(0).chatRef());
+        assertEquals(Boolean.TRUE, audited.get(0).direct(), "HTTP 没有群的观念，恒为私聊");
+
+        // 空正文：被抑制，不是失败。
+        audited.clear();
+        new HttpChatChannel(new TestAgent(new OutboundMessage(CHAT_ID, "", true, null)), Runnable::run, audit)
+                .stream(inboundOnHttp("在吗"), chunk -> { });
+        assertEquals(io.github.claw4j.domain.audit.MessageOutcome.SUPPRESSED, audited.get(0).outcome(),
+                "空正文没有可见内容，记抑制而不是送达");
+
+        // 断在半路：unknown，带失败阶段。
+        audited.clear();
+        TestAgent broken = new TestAgent(new OutboundMessage(CHAT_ID, "半截", false, "run-9"))
+                .failingWith(new IllegalStateException("客户端走了"));
+        new HttpChatChannel(broken, Runnable::run, audit).stream(inboundOnHttp("讲一下"), chunk -> { });
+        assertEquals(io.github.claw4j.domain.audit.MessageOutcome.UNKNOWN, audited.get(0).outcome());
+        assertEquals("platform_send", audited.get(0).failureStage());
+        assertEquals("run-9", audited.get(0).runId());
     }
 
     @Test

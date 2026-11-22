@@ -30,14 +30,16 @@ public interface AuditQuery {
      * @param runId 这一轮的编号
      * @param sessionKey 会话键
      * @param agentId 哪个 agent 干的
-     * @param kind {@code agent_run} / {@code tool_action}
+     * @param kind {@code agent_run} / {@code tool_action} / {@code message}
+     * @param direction {@code inbound} / {@code outbound}；只有消息行有方向
+     *     （照 OpenClaw 的 {@code audit.activity.list}，{@code docs/gateway/protocol/ledgers.md:120-131}）
      * @param status 结局
      * @param channel 通道名
      * @param beforeSeq 游标：只取比它小的（翻页用，来自上一页的 {@link Page#nextCursor()}）
      * @param limit 每页条数，1–500，越界按 {@code audit.ts:71} 截断
      */
-    record Filter(String runId, String sessionKey, String agentId, String kind, String status,
-                  String channel, Long beforeSeq, int limit) {
+    record Filter(String runId, String sessionKey, String agentId, String kind, String direction,
+                  String status, String channel, Long beforeSeq, int limit) {
 
         /** 与 OpenClaw 的 {@code DEFAULT_AUDIT_LIST_LIMIT} 同一个数（{@code audit.ts:70}）。 */
         public static final int DEFAULT_LIMIT = 100;
@@ -57,7 +59,7 @@ public interface AuditQuery {
          * @return 不带过滤条件的一页请求
          */
         public static Filter page(Long beforeSeq, int limit) {
-            return new Filter(null, null, null, null, null, null, beforeSeq, limit);
+            return new Filter(null, null, null, null, null, null, null, beforeSeq, limit);
         }
     }
 

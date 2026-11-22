@@ -606,6 +606,12 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
   一条入站一行（`completed` / `skipped` / `failed`）、一次投递一行（`sent` / `suppressed` /
   `failed` / `unknown`）。身份是 HMAC 假名 `hmac-sha256:v1:<keyId>:<digest>`——密钥在
   `claw4j_run.audit_identity_key` 单行表里，读接口不返回它。
+- **私聊还是群来自通道**（`conversation_kind`）：通道解析时就已经知道（ADR-0029，Slack 看
+  `channel_type`、飞书看 `chat_type`、HTTP 恒为私聊），审计只是把它传下去，不自己猜。
+  推送那一侧从收件地址带下来（`DeliveryTarget#direct`），定时任务那种没有"群"的概念，落 `unknown`。
+- **HTTP 的投递行写在通道那一层**：它是唯一"答案随响应回去"的通道，`ConversationDelivery`
+  那一侧不推就不写。有正文是 `sent`、空正文是 `suppressed`、流断在半路是 `unknown`
+  （已经出去的那几帧对方收到没有，我们不知道）。
 - **等审批不写审计**：那件事的真相在 `approval_request`（谁提的、批没批、谁批的、什么时候）。
   写两遍的第一个代价是"今天拒了几条"要 union 两张表，第二个代价是两张迟早对不上。
 - **只落指纹，不落参数**：`args_digest` 是 `sha256(工具名 + 规范化参数)`，与审批表那一列
@@ -618,8 +624,10 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
 > 审计回答"上一次是谁批的"（30 天，按行查）；评测回答"答得好不好"（A06）。
 > 三者混起来的第一个症状是"审计里查不到上个月"——那时通常已经有人拿它当过监控看板了。
 
-读接口：`GET /api/audit?runId=&sessionKey=&agentId=&kind=&status=&channel=&cursor=&limit=`，
+读接口：`GET /api/audit?runId=&sessionKey=&agentId=&kind=&direction=&status=&channel=&cursor=&limit=`，
 按 `seq` 倒序、游标翻页、`limit` 1–500（越界钳位），没装查询时 404（能力不在场，不是库坏了）。
+`direction` 照 OpenClaw 的 `audit.activity.list`（`docs/gateway/protocol/ledgers.md:120-131`）——
+进来的与出去的混在一页里时，"今天发出去的送到没有"得先能只要 `outbound`。
 
 测试钉着这一节：`app/RunSchemaSqlTest`（视图答得出谁/何时/怎么、一条批准一条执行、
 留存窗口删整件旧事）与 `app/ApprovalFlowTest`（执行那一行带着放行它的审批编号、

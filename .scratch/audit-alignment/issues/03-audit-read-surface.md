@@ -47,6 +47,12 @@ Blocked by: 01
 
 - **端点已做**：`AuditController`（`GET /api/audit`）按 ADR-0010 放在通道层，端口在 `domain`、
   实现在 agent；没装配查询时 404（能力不在场），与 `/api/approvals` 同一个判断。
+- **`direction` 过滤已补**（2026-11-23）：`Filter` 加一个字段、端点同名参数，照
+  `audit.activity.list`。我们一个端点盖住 `audit.list` 与 `activity.list` 两套（上游是两个方法），
+  差别只在"能不能按消息专有的列过滤"，所以没有再拆一个端点。
+- `audit.run.inspect` 那套决策回执没做：它要 `executionId` 的精确选择与 `ambiguous` 结果
+  （`ledgers.md:123-131`），而我们没有 execution identity 那一层。现成的替代是
+  `GET /api/audit?runId=<id>`——该轮每条事件都在，`approval_id` 就是"这次执行是哪次批准的"。
 - `audit.activity.list` 那套 `eventType` 判别与消息过滤要等票 04 落地后补；
   本票只按 `audit.list` 的旧形状做（run / tool 两类）。
 - `--explain` / `audit.run.inspect` 不做，理由见 spec「不做」。

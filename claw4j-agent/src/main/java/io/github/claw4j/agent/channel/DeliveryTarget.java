@@ -11,8 +11,20 @@ package io.github.claw4j.agent.channel;
  *
  * @param channel 通道标识，与 {@code OutboundDelivery#channel()} 同口径
  * @param channelRef 通道内的地址（飞书是 {@code chat_id}）
+ * @param direct 这段对话是不是私聊；null 表示这个地址不知道（定时任务那种没有"群"的概念的）。
+ *     只用于审计里的 {@code conversation_kind}（ADR-0037 票 04）——投递本身不因它而变
  */
-public record DeliveryTarget(String channel, String channelRef) {
+public record DeliveryTarget(String channel, String channelRef, Boolean direct) {
+
+    /**
+     * 不知道私聊还是群的地址。
+     *
+     * @param channel 通道标识
+     * @param channelRef 通道内的地址
+     */
+    public DeliveryTarget(String channel, String channelRef) {
+        this(channel, channelRef, null);
+    }
 
     public DeliveryTarget {
         if (channel == null || channel.isBlank()) {

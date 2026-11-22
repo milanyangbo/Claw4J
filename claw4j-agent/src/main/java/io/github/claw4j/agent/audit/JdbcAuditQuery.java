@@ -80,6 +80,7 @@ public class JdbcAuditQuery implements AuditQuery {
         eq(where, args, "session_key", effective.sessionKey());
         eq(where, args, "agent_id", effective.agentId());
         eq(where, args, "kind", effective.kind());
+        eq(where, args, "direction", effective.direction());
         eq(where, args, "status", effective.status());
         eq(where, args, "channel", effective.channel());
         if (effective.beforeSeq() != null) {

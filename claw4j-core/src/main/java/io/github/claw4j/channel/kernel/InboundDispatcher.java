@@ -405,7 +405,7 @@ public class InboundDispatcher {
             // 审计要能指着这条说"第二遍在这里被当成重复挡掉了"，而不是只能说"没印象"。
             audit.inbound(new MessageAudit.Inbound(null, null, channel == null ? queueName : channel,
                     conversationId, eventId, event.senderId(),
-                    MessageOutcome.SKIPPED, "duplicate", 0));
+                    MessageOutcome.SKIPPED, "duplicate", 0, event.direct()));
             return;
         }
         submitDrain();

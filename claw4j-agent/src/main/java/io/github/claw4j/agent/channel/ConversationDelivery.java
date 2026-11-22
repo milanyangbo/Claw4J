@@ -1,7 +1,7 @@
 package io.github.claw4j.agent.channel;
 
 import io.github.claw4j.domain.NotifyPolicy;
-import io.github.claw4j.agent.audit.MessageReason;
+import io.github.claw4j.domain.audit.MessageReason;
 import io.github.claw4j.domain.audit.MessageOutcome;
 import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.OutboundDelivery;
@@ -135,7 +135,7 @@ public class ConversationDelivery {
         try {
             messageAudit.outbound(new MessageAudit.Outbound(null, null, target.channel(),
                     target.channelRef(), target.channelRef(), outcome, reasonCode, failureStage,
-                    "text", durationMs));
+                    "text", durationMs, target.direct()));
         } catch (RuntimeException ignored) {
             // 审计缺一行不该让一次投递失败；实现本身也承诺吞异常，这里再兜一层。
             log.debug("写投递审计时出错：channel={}", target.channel());

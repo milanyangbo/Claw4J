@@ -1,6 +1,7 @@
 package io.github.claw4j.channel.http;
 
 import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.question.QuestionGate;
 import org.springframework.beans.factory.ObjectProvider;
@@ -60,8 +61,11 @@ public class HttpChannelAutoConfiguration {
     @Bean(initMethod = "start", destroyMethod = "stop")
     @ConditionalOnMissingBean
     public HttpChatChannel httpChatChannel(AgentPort agentPort,
-                                           @Qualifier(STREAM_EXECUTOR) Executor streamExecutor) {
-        return new HttpChatChannel(agentPort, streamExecutor);
+                                           @Qualifier(STREAM_EXECUTOR) Executor streamExecutor,
+                                           ObjectProvider<MessageAudit> messageAudit) {
+        // 消息审计（ADR-0037 票 04）：HTTP 是唯一"答案随响应回去"的通道，
+        // 出站那一行只在这里写得出来（ConversationDelivery 那一侧不推就不写）。
+        return new HttpChatChannel(agentPort, streamExecutor, messageAudit.getIfAvailable());
     }
 
     /**

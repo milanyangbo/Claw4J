@@ -754,7 +754,7 @@ class BuildContractTest {
                     new AuditEvent.Scope("run-qpage" + i, "session-q", "agent-qpage", "u", "http")));
         }
 
-        var page1 = query.query(new AuditQuery.Filter(null, null, "agent-qpage", null,
+        var page1 = query.query(new AuditQuery.Filter(null, null, "agent-qpage", null, null,
                 null, null, null, 2));
         assertThat(page1.rows()).as("每页两条").hasSize(2);
         assertThat(page1.rows().get(0).seq())
@@ -762,7 +762,7 @@ class BuildContractTest {
                 .isGreaterThan(page1.rows().get(1).seq());
         assertThat(page1.nextCursor()).as("还有第三条，所以有下一页").isNotNull();
 
-        var page2 = query.query(new AuditQuery.Filter(null, null, "agent-qpage", null,
+        var page2 = query.query(new AuditQuery.Filter(null, null, "agent-qpage", null, null,
                 null, null, page1.nextCursor(), 2));
         assertThat(page2.rows()).as("第二页剩一条").hasSize(1);
         assertThat(page2.rows().getFirst().seq())
@@ -774,15 +774,15 @@ class BuildContractTest {
         ledger.record(AuditEvent.toolStarted(
                 new AuditEvent.Scope("run-qfilter", "session-q", "agent-qfilter", "u", "http"),
                 "Bash", "digest-qfilter"));
-        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action",
+        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action", null,
                 null, null, null, 10)).rows())
                 .as("按 runId + kind 命中那一行")
                 .hasSize(1);
-        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "agent_run",
+        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "agent_run", null,
                 null, null, null, 10)).rows())
                 .as("kind 不匹配时一行都不给")
                 .isEmpty();
-        assertThat(new AuditQuery.Filter(null, null, null, null, null, null, null, 999).limit())
+        assertThat(new AuditQuery.Filter(null, null, null, null, null, null, null, null, 999).limit())
                 .as("limit 截到 OpenClaw 的上限 500，而不是照单全收")
                 .isEqualTo(AuditQuery.Filter.MAX_LIMIT);
 
@@ -790,18 +790,27 @@ class BuildContractTest {
         // 消息审计等于只写不查——"这个客户的消息送到没有"还是得自己写 SQL。
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, agent_id, source_id, source_sequence,"
-                + " direction, message_outcome, duration_ms, actor_type, account_ref)"
+                + " direction, message_outcome, conversation_kind, duration_ms, actor_type,"
+                + " account_ref)"
                 + " values ('e-qmsg', 'message', 'message.inbound.processed', 'succeeded',"
-                + " 'agent-qpage', 'message:in:q1', 1, 'inbound', 'completed', 42,"
+                + " 'agent-qpage', 'message:in:q1', 1, 'inbound', 'completed', 'direct', 42,"
                 + " 'channel_sender', 'hmac-sha256:v1:0011223344556677:abc')");
-        var messages = query.query(new AuditQuery.Filter(null, null, "agent-qpage", "message",
+        var messages = query.query(new AuditQuery.Filter(null, null, "agent-qpage", "message", "inbound",
                 null, null, null, 10));
         assertThat(messages.rows()).as("按 kind=message 只取消息行").hasSize(1);
         assertThat(messages.rows().getFirst().message().outcome()).isEqualTo("completed");
         assertThat(messages.rows().getFirst().message().durationMs()).isEqualTo(42);
         assertThat(messages.rows().getFirst().message().accountRef()).startsWith("hmac-sha256:v1:");
+        // 方向过滤（照 audit.activity.list）：进来的与出去的混在一页里，问"今天发出去的送到没有"
+        // 就得先能只要 outbound。这一条同时钉住 Filter 里那个字段真的进了 where。
+        assertThat(query.query(new AuditQuery.Filter(null, null, "agent-qpage", "message",
+                "outbound", null, null, null, 10)).rows())
+                .as("那一条是 inbound，按 outbound 过滤一行都不给")
+                .isEmpty();
+        assertThat(messages.rows().getFirst().message().conversationKind())
+                .as("私聊/群那一列也读得回来").isEqualTo("direct");
         // 运行与工具行没有那一组：读的人不必面对十二个空格去猜"是没记还是记了空"。
-        assertThat(query.query(new AuditQuery.Filter(null, null, "agent-qpage", "agent_run",
+        assertThat(query.query(new AuditQuery.Filter(null, null, "agent-qpage", "agent_run", null,
                 null, null, null, 10)).rows())
                 .allSatisfy(row -> assertThat(row.message()).isNull());
     }

@@ -53,13 +53,21 @@ Blocked by: 01, 02
 
 - queued / platform-started 的"进度行"在 OpenClaw 里落在一个 lazy companion store，
   不进 `audit.activity.list`（`ledgers.md:132-136`）；本票只做终态行，进度行归缺口。
-- **HTTP 就地返回的那一侧不写消息行**：它的答案随那次请求回去了，没有"投递"这件事。
-  写 `sent` 是假的、写 `suppressed` 是撒谎，所以只留指标 `claw4j.run.delivery.polled`。
-  要补得先有一个"响应即投递"的接缝（`ConversationDelivery` 现在只管主动推）。
-- **`conversation_kind` 恒为 `unknown`**：这个仓库还没有"这段会话是私聊还是群"的判定，
-  闭集里本来就有 unknown，所以不编。
-- 读接口能按 `kind=message` / `status` / `channel` 查，但**还不能按 `direction` 过滤**：
-  `AuditQuery.Filter` 加一个字段要动三个调用点，本票没做，记在票 03 的缺口里。
+- **进度行（`queued` / `platform-started`）没做，这一步刻意不做**：OpenClaw 的原文是
+  "Progress is attribution-only, lives in the lazy companion store, and is not part of the
+  `audit.activity.list` result schema"（`docs/gateway/protocol/ledgers.md:132-136`）——它的唯一
+  读者是 `audit.run.inspect` 的决策回执。我们没有 `run.inspect`，建一张只写不读的表正是
+  `V24` 那条注释反对的东西。哪天做 `run.inspect` 时一起做，形状（两个阶段 + attribution-only）
+  已经在这张票的「做什么」第 1 条里。
+
+（2026-11-23 补做，原缺口两条已清）
+
+- **HTTP 就地返回那一侧也写了**：`HttpChatChannel` 在方法返回（或最后一块交付）时写一条出站行，
+  有正文 `sent`、空正文 `suppressed`、断在半路 `unknown`。`ConversationDelivery` 那边仍然
+  不为"轮询取结果"的通道写——两处各写各的那一段，同一条投递不会有两行。
+- **`conversation_kind` 有值了**：通道的 `InboundMessage#direct`（ADR-0029）直接带下来，
+  `direct` / `group`；通道没说时落 `unknown`（闭集里本来就有）。
+- **读接口能按 `direction` 过滤了**：`AuditQuery.Filter` 加 `direction`，端点同名参数。
 - "被 hook 吞掉"这类 suppressed 原因，我们目前没有 hook 接缝（ADR-0021 不做清单），
   先只写 `no_visible_payload`。
 

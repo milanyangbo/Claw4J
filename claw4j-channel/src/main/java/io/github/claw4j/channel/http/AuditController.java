@@ -40,7 +40,8 @@ public class AuditController {
      * @param runId 这一轮的编号
      * @param sessionKey 会话键
      * @param agentId 哪个 agent 干的
-     * @param kind {@code agent_run} / {@code tool_action}
+     * @param kind {@code agent_run} / {@code tool_action} / {@code message}
+     * @param direction {@code inbound} / {@code outbound}（只有消息行有）
      * @param status 结局
      * @param channel 通道名
      * @param cursor 游标：上一页的 {@code nextCursor}
@@ -53,6 +54,7 @@ public class AuditController {
             @RequestParam(value = "sessionKey", required = false) String sessionKey,
             @RequestParam(value = "agentId", required = false) String agentId,
             @RequestParam(value = "kind", required = false) String kind,
+            @RequestParam(value = "direction", required = false) String direction,
             @RequestParam(value = "status", required = false) String status,
             @RequestParam(value = "channel", required = false) String channel,
             @RequestParam(value = "cursor", required = false) Long cursor,
@@ -62,7 +64,8 @@ public class AuditController {
             return ResponseEntity.notFound().build();
         }
         AuditQuery.Page page = query.query(
-                new AuditQuery.Filter(runId, sessionKey, agentId, kind, status, channel, cursor, limit));
+                new AuditQuery.Filter(runId, sessionKey, agentId, kind, direction, status, channel,
+                        cursor, limit));
         return ResponseEntity.ok(new AuditView(page.rows(), page.nextCursor()));
     }
 

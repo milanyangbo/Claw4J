@@ -165,18 +165,20 @@ class HttpEndpointsTest {
         AuditQuery fixed = filter -> {
             assertEquals(2, filter.limit());
             assertEquals("run-1", filter.runId());
+            assertEquals("inbound", filter.direction(), "方向过滤要传下去");
             return new AuditQuery.Page(List.of(row), 7L);
         };
 
         ResponseEntity<AuditController.AuditView> response =
-                auditController(fixed).list("run-1", null, null, null, null, null, null, 2);
+                auditController(fixed).list("run-1", null, null, null, "inbound", null, null, null, 2);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
         assertEquals(1, response.getBody().events().size());
         assertEquals(Long.valueOf(7L), response.getBody().nextCursor());
         assertEquals(HttpStatus.NOT_FOUND,
-                auditController(null).list(null, null, null, null, null, null, null, 10).getStatusCode());
+                auditController(null).list(null, null, null, null, null, null, null, null, 10)
+                        .getStatusCode());
     }
 
     private static AuditController auditController(AuditQuery query) {

@@ -2,6 +2,7 @@ package io.github.claw4j.agent.audit;
 
 import io.github.claw4j.domain.audit.MessageDirection;
 import io.github.claw4j.domain.audit.MessageOutcome;
+import io.github.claw4j.domain.audit.MessageReason;
 import io.github.claw4j.domain.port.MessageAudit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,10 +32,14 @@ public class JdbcMessageAudit implements MessageAudit {
 
     private static final String ACTOR_AGENT = "agent";
 
-    /** 这个仓库目前只有一对一与群两种可分辨的会话；分不出来的写 unknown（闭集里本来就有）。 */
+    /** 通道没说是私聊还是群时写 unknown（OpenClaw 的闭集里本来就有这个值）。 */
     private static final String CONVERSATION_UNKNOWN = "unknown";
 
     private static final String DELIVERY_TEXT = "text";
+
+    private static final String CONVERSATION_DIRECT = "direct";
+
+    private static final String CONVERSATION_GROUP = "group";
 
     private final AuditLedger ledger;
 
@@ -65,7 +70,7 @@ public class JdbcMessageAudit implements MessageAudit {
         }
         AuditEvent.Message message = new AuditEvent.Message(
                 MessageDirection.INBOUND, record.outcome(), record.reasonCode(),
-                CONVERSATION_UNKNOWN, null, null,
+                conversationKind(record.direct()), null, null,
                 (int) Math.max(0, record.durationMs()), 1, ACTOR_CHANNEL_SENDER,
                 pseudonyms.ref(record.actorId()), pseudonyms.ref(record.chatRef()),
                 pseudonyms.ref(record.messageRef()), null);
@@ -86,7 +91,7 @@ public class JdbcMessageAudit implements MessageAudit {
         }
         AuditEvent.Message message = new AuditEvent.Message(
                 MessageDirection.OUTBOUND, record.outcome(), record.reasonCode(),
-                CONVERSATION_UNKNOWN,
+                conversationKind(record.direct()),
                 record.deliveryKind() == null ? DELIVERY_TEXT : record.deliveryKind(),
                 record.failureStage(),
                 (int) Math.max(0, record.durationMs()), null, ACTOR_AGENT,
@@ -118,6 +123,24 @@ public class JdbcMessageAudit implements MessageAudit {
         return runId == null || runId.isBlank()
                 ? "message:out:" + java.util.UUID.randomUUID()
                 : "message:out:" + runId + ':' + chatRef;
+    }
+
+    /**
+     * 私聊 / 群 / 不知道。
+     *
+     * <p>照 OpenClaw 的四值闭集（{@code direct / group / channel / unknown}）：我们只有前两个，
+     * 因为通道给的事实就只有"是不是私聊"这一个比特（{@code InboundMessage#direct}，ADR-0029）。
+     * {@code channel} 那种（Discord 服务器频道之类）当前没有通道会用到，写一个用不上的值
+     * 只会让"这个部署到底有没有群"变成一个假问题。
+     *
+     * @param direct 通道说的事实；null 表示它没说
+     * @return 落库的写法
+     */
+    private static String conversationKind(Boolean direct) {
+        if (direct == null) {
+            return CONVERSATION_UNKNOWN;
+        }
+        return direct ? CONVERSATION_DIRECT : CONVERSATION_GROUP;
     }
 
     private static AuditEvent.Scope scope(String runId, String agentId, String channel) {

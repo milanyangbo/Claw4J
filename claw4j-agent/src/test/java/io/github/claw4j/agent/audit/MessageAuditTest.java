@@ -2,6 +2,7 @@ package io.github.claw4j.agent.audit;
 
 import io.github.claw4j.domain.audit.MessageDirection;
 import io.github.claw4j.domain.audit.MessageOutcome;
+import io.github.claw4j.domain.audit.MessageReason;
 import io.github.claw4j.domain.port.MessageAudit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -47,7 +48,7 @@ class MessageAuditTest {
     @DisplayName("入站处理完：一条 message/inbound/completed，带 runId 与时长")
     void inboundMessageIsAudited() {
         audit.inbound(new MessageAudit.Inbound("run-1", "ops", "feishu", "chat-1", "om-1",
-                "u-7", MessageOutcome.COMPLETED, null, 42));
+                "u-7", MessageOutcome.COMPLETED, null, 42, true));
 
         AuditEvent event = capture();
         assertThat(event.action()).isEqualTo(AuditAction.MESSAGE_INBOUND_PROCESSED);
@@ -57,13 +58,16 @@ class MessageAuditTest {
         assertThat(event.message().durationMs()).isEqualTo(42);
         assertThat(event.scope().runId()).as("这条消息是被哪一轮答的").isEqualTo("run-1");
         assertThat(event.scope().agentId()).isEqualTo("ops");
+        assertThat(event.message().conversationKind())
+                .as("私聊/群来自通道的判定（ADR-0029），审计只传不猜")
+                .isEqualTo("direct");
     }
 
     @Test
     @DisplayName("入站失败：failed + message_processing_failed，与投递失败分开")
     void failedInboundCarriesItsOwnCode() {
         audit.inbound(new MessageAudit.Inbound(null, null, "slack", "chat-2", "om-2",
-                "u-8", MessageOutcome.FAILED, null, 5));
+                "u-8", MessageOutcome.FAILED, null, 5, null));
 
         AuditEvent event = capture();
         assertThat(event.status()).isEqualTo(AuditStatus.FAILED);
@@ -76,20 +80,21 @@ class MessageAuditTest {
     @DisplayName("重复投递被跳过：blocked/skipped/duplicate，不是 failed")
     void duplicateInboundIsSkipped() {
         audit.inbound(new MessageAudit.Inbound(null, null, "feishu", "chat-3", "om-3",
-                "u-9", MessageOutcome.SKIPPED, MessageReason.DUPLICATE, 0));
+                "u-9", MessageOutcome.SKIPPED, MessageReason.DUPLICATE, 0, false));
 
         AuditEvent event = capture();
         assertThat(event.status()).as("跳过不是故障").isEqualTo(AuditStatus.BLOCKED);
         assertThat(event.errorCode()).isNull();
         assertThat(event.message().outcome()).isEqualTo(MessageOutcome.SKIPPED);
         assertThat(event.message().reasonCode()).isEqualTo(MessageReason.DUPLICATE);
+        assertThat(event.message().conversationKind()).as("群聊").isEqualTo("group");
     }
 
     @Test
     @DisplayName("出站送达：sent，带投递形态；失败时带 failureStage")
     void outboundCarriesStageAndKind() {
         audit.outbound(new MessageAudit.Outbound("run-2", "ops", "feishu", "chat-4", "chat-4",
-                MessageOutcome.SENT, null, null, "text", 12));
+                MessageOutcome.SENT, null, null, "text", 12, null));
         AuditEvent sent = capture();
         assertThat(sent.action()).isEqualTo(AuditAction.MESSAGE_OUTBOUND_FINISHED);
         assertThat(sent.status()).isEqualTo(AuditStatus.SUCCEEDED);
@@ -97,7 +102,7 @@ class MessageAuditTest {
         assertThat(sent.message().deliveryKind()).isEqualTo("text");
 
         audit.outbound(new MessageAudit.Outbound("run-3", "ops", "feishu", "chat-5", "chat-5",
-                MessageOutcome.FAILED, null, "platform_send", "text", 30));
+                MessageOutcome.FAILED, null, "platform_send", "text", 30, null));
         AuditEvent failed = capture();
         assertThat(failed.status()).isEqualTo(AuditStatus.FAILED);
         assertThat(failed.errorCode()).isEqualTo(AuditErrorCode.MESSAGE_DELIVERY_FAILED);
@@ -108,7 +113,7 @@ class MessageAuditTest {
     @DisplayName("身份是假名：不带原文，同一原文算出同一个假名")
     void identityRefsArePseudonymized() {
         audit.inbound(new MessageAudit.Inbound(null, null, "feishu", "chat-6", "om-6",
-                "u-mailer", MessageOutcome.COMPLETED, null, 1));
+                "u-mailer", MessageOutcome.COMPLETED, null, 1, null));
 
         AuditEvent event = capture();
         assertThat(event.message().accountRef())
@@ -120,7 +125,7 @@ class MessageAuditTest {
 
         // 同一个原文两次算出同一个假名：否则"是不是同一个人反复没收到"这个问题就断了。
         audit.inbound(new MessageAudit.Inbound(null, null, "feishu", "chat-6", "om-6",
-                "u-mailer", MessageOutcome.COMPLETED, null, 1));
+                "u-mailer", MessageOutcome.COMPLETED, null, 1, null));
         ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
         verify(ledger, org.mockito.Mockito.times(2)).record(captor.capture());
         assertThat(captor.getAllValues().get(1).message().accountRef())
@@ -134,9 +139,9 @@ class MessageAuditTest {
         JdbcMessageAudit off = new JdbcMessageAudit(ledger, new AuditPseudonyms(jdbc), false);
 
         off.inbound(new MessageAudit.Inbound(null, null, "feishu", "chat-7", "om-7",
-                "u-1", MessageOutcome.COMPLETED, null, 1));
+                "u-1", MessageOutcome.COMPLETED, null, 1, null));
         off.outbound(new MessageAudit.Outbound(null, null, "feishu", "chat-7", "chat-7",
-                MessageOutcome.SENT, null, null, "text", 1));
+                MessageOutcome.SENT, null, null, "text", 1, null));
 
         verify(ledger, never()).record(org.mockito.ArgumentMatchers.any());
         verify(jdbc, never()).queryForList(anyString(), eq(byte[].class));
