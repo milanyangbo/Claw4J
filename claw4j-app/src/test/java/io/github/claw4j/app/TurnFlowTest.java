@@ -8,6 +8,7 @@ import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.OtelSpanTracer;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.channel.ConversationDelivery;
@@ -464,7 +465,7 @@ class TurnFlowTest {
         // 带上真审计：这条用例要读"这一轮照常跑完了"那条事件（ADR-0027）。
         return ChatClientAgentPort.builder(ChatClient.builder(model).build())
                 .pointers(pointers)
-                .audit(new ToolCallAudit(new AuditLedger(jdbc, null)))
+                .audit(new ToolCallAudit(new AuditLedger(jdbc, null), new JdbcDecisionFacts(jdbc)))
                 .goals(new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null))
                 .build();
     }

@@ -20,10 +20,15 @@ import io.github.claw4j.domain.principal.Principal;
  * @param toolName 工具名；运行类事件为空
  * @param argsDigest 参数指纹；运行类事件为空
  * @param approvalId 放行这次调用的审批编号；没有审批时为空
+ * @param sourceId 来源键：同一件事的多次投递共用它（{@code run:<runId>} 或
+ *     {@code tool:<runId>:<工具>:<指纹>}）。与 {@code sourceSequence} 组成唯一键，
+ *     重复投递靠 {@code on conflict do nothing} 只留第一行（OpenClaw 同名同义，
+ *     {@code audit-event-store.ts:81-116}）
+ * @param sourceSequence 来源内序号：1 = started，2 = finished
  */
 public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
                          AuditErrorCode errorCode, String toolName, String argsDigest,
-                         String approvalId) {
+                         String approvalId, String sourceId, int sourceSequence) {
 
     /**
      * 这一轮是谁、在哪段会话、从哪个通道来。
@@ -71,7 +76,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runStarted(Scope scope) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_STARTED, AuditStatus.STARTED,
-                null, null, null, null);
+                null, null, null, null, runSource(scope), 1);
     }
 
     /**
@@ -84,7 +89,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runFinished(Scope scope, AuditStatus status, AuditErrorCode errorCode) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_FINISHED, status,
-                errorCode, null, null, null);
+                errorCode, null, null, null, runSource(scope), 2);
     }
 
     /**
@@ -97,7 +102,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent toolStarted(Scope scope, String toolName, String argsDigest) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_STARTED, AuditStatus.STARTED,
-                null, toolName, argsDigest, null);
+                null, toolName, argsDigest, null, toolSource(scope, toolName, argsDigest), 1);
     }
 
     /**
@@ -114,6 +119,28 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     public static AuditEvent toolFinished(Scope scope, String toolName, String argsDigest,
                                           AuditStatus status, AuditErrorCode errorCode, String approvalId) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_FINISHED, status,
-                errorCode, toolName, argsDigest, approvalId);
+                errorCode, toolName, argsDigest, approvalId,
+                toolSource(scope, toolName, argsDigest), 2);
+    }
+
+    /**
+     * 运行类事件的来源键。没有 runId 时给一个空归属的键——账本本来就会跳过这种行
+     * （{@code AuditLedger} 见 runId 为空即计 skipped），键长什么样都不影响。
+     */
+    private static String runSource(Scope scope) {
+        String runId = scope == null ? null : scope.runId();
+        return "run:" + (runId == null ? "" : runId);
+    }
+
+    /**
+     * 工具类事件的来源键：{@code tool:<runId>:<工具名>:<指纹>}。
+     *
+     * <p>同参数连调两次会得到同一个键（框架拿不到调用 id，见 ADR-0037 的 blocked 项），
+     * 于是第二对 started/finished 会被唯一键挡成重复——这是有意的：宁可少记一行，
+     * 也不让同一件事在账本里数成两次。
+     */
+    private static String toolSource(Scope scope, String toolName, String argsDigest) {
+        String runId = scope == null ? null : scope.runId();
+        return "tool:" + (runId == null ? "" : runId) + ':' + toolName + ':' + argsDigest;
     }
 }

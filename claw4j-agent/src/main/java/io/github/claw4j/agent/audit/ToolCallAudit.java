@@ -9,15 +9,11 @@ import tools.jackson.databind.json.JsonMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 审计的规则层（ADR-0027 决定二）：把「什么时候该记一条什么事件」收在一处，落库交给
@@ -35,44 +31,40 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>只写元数据：参数原文、结果、异常消息都不进来。指纹用 {@link #digest}——审批那一侧算的也是
  * 这个函数，于是「这次执行是哪次批准的」能直接对上，而参数本身不进库。
  *
- * <p>唯一一处靠进程内状态的地方：{@link #granted} 把刚兑现的那条批准记下来，等执行那一下取走。
- * 兑现发生在工具回调里、执行也在同一次调用里，但两处拿不到同一份上下文。代价写在字段上：只在单进程内
- * 成立、兑现了没执行会留下一个不会被取走的条目、键里带 runId + 工具名 + 指纹三样。
+ * <p>唯一一处靠外部状态的地方：{@link #granted} 把刚兑现的那条批准记下来，等执行那一下取走。
+ * 那份状态是 {@link DecisionFacts}——落到 {@code execution_decision_fact} 一张表里（ADR-0037 票 05），
+ * 不再是进程内 Map：重启与多实例都还在，审计里的审批编号不会成批消失。
  */
 public class ToolCallAudit {
 
     private static final ObjectMapper MAPPER = JsonMapper.builder().build();
-
-    /**
-     * 兑现与执行之间的那条线能活多久。取十分钟，与默认的审批有效期同一个量级。
-     */
-    private static final Duration HANDOFF_TTL = Duration.ofMinutes(10);
-
-    /**
-     * 这条线最多记多少条。它只是线索，不是账本——超了整份清掉，
-     * 比"一直涨到内存告警"诚实：清掉的表现是那几行审计少了审批编号。
-     */
-    private static final int HANDOFF_LIMIT = 256;
 
     private static final Logger log = LoggerFactory.getLogger(ToolCallAudit.class);
 
     /** 为 null 表示这个部署没有账本：审计无处可写，于是什么都不写（而不是造一个假账本）。 */
     private final AuditSink ledger;
 
-    /** 兑现过的批准，等着被执行那一下取走。键是 runId + 工具名 + 指纹。 */
-    private final Map<String, Pending> granted = new ConcurrentHashMap<>();
+    /** 审批与执行的交接；为 null 表示没有落点，此时审计行不带审批编号（不是故障）。 */
+    private final DecisionFacts facts;
 
     /**
-     * 规则层，落库交给 {@code ledger}。
+     * 只写事件、不做审批交接。
      *
      * @param ledger 审计落点，为 null 时什么都不写
      */
     public ToolCallAudit(AuditSink ledger) {
-        this.ledger = ledger;
+        this(ledger, null);
     }
 
-    /** 一条兑现过的批准，带着它的到期点（过了就不再被取走）。 */
-    private record Pending(String approvalId, Instant expiresAt) {
+    /**
+     * 规则层，落库交给 {@code ledger}，审批交接交给 {@code facts}。
+     *
+     * @param ledger 审计落点，为 null 时什么都不写
+     * @param facts 审批交接，为 null 时结束事件不带审批编号
+     */
+    public ToolCallAudit(AuditSink ledger, DecisionFacts facts) {
+        this.ledger = ledger;
+        this.facts = facts;
     }
 
     /**
@@ -163,20 +155,10 @@ public class ToolCallAudit {
      * @param approvalId 审批编号
      */
     public void granted(String runId, String toolName, String argsDigest, String approvalId) {
-        if (isBlank(runId) || isBlank(toolName) || isBlank(argsDigest) || isBlank(approvalId)) {
+        if (facts == null) {
             return;
         }
-        if (granted.size() >= HANDOFF_LIMIT) {
-            granted.values().removeIf(pending -> pending.expiresAt().isBefore(Instant.now()));
-            if (granted.size() >= HANDOFF_LIMIT) {
-                // 清空而不是乱丢一条：这条线索没有"更重要"的那一条，而留一半只会让人以为它是完整的。
-                granted.clear();
-                log.info("审批与执行之间的待配对记录超过 {} 条，整份清掉；之后的审计事件不会带审批编号",
-                        HANDOFF_LIMIT);
-            }
-        }
-        granted.put(key(runId, toolName, argsDigest),
-                new Pending(approvalId, Instant.now().plus(HANDOFF_TTL)));
+        facts.grant(runId, toolName, argsDigest, approvalId);
     }
 
     /** 写一条。写不进去只记一条 debug：审计缺一行不该把一次调用打成失败。 */
@@ -192,20 +174,12 @@ public class ToolCallAudit {
         }
     }
 
-    /** 取走那条"刚兑现的批准"。过期的当作没有：它已经不在有效期附近了，配上去只会误导。 */
+    /** 取走那条"刚兑现的批准"。取一次就没了：同一条批准不为第二次执行放行。 */
     private String take(String runId, String toolName, String digest) {
-        if (isBlank(runId) || isBlank(digest)) {
+        if (facts == null) {
             return null;
         }
-        Pending pending = granted.remove(key(runId, toolName, digest));
-        if (pending == null) {
-            return null;
-        }
-        return pending.expiresAt().isBefore(Instant.now()) ? null : pending.approvalId();
-    }
-
-    private static String key(String runId, String toolName, String argsDigest) {
-        return runId + '\n' + toolName + '\n' + argsDigest;
+        return facts.take(runId, toolName, digest);
     }
 
     /**

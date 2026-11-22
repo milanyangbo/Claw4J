@@ -3,6 +3,7 @@ package io.github.claw4j.app;
 import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import io.github.claw4j.agent.turn.ToolCallBudget;
 import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.channel.DeliveryTarget;
@@ -523,7 +524,7 @@ class ScheduleFlowTest {
 
     /** 真账本：定时任务那一轮的审计要真的落库，用例才查得到（ADR-0027）。 */
     private static ToolCallAudit auditIntoDatabase() {
-        return new ToolCallAudit(new AuditLedger(jdbc, null));
+        return new ToolCallAudit(new AuditLedger(jdbc, null), new JdbcDecisionFacts(jdbc));
     }
 
     private ScheduleScanner toolCallingScanner(Recorder delivery) {

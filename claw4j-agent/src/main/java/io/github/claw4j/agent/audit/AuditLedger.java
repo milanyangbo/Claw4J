@@ -49,6 +49,15 @@ public class AuditLedger implements AuditSink {
      */
     public static final String SKIPPED = "claw4j.audit.skipped";
 
+    /**
+     * 因为来源键已经存在而没有落库的事件数（票 02）。
+     *
+     * <p>与 {@link #WRITE_ERRORS} 分开：重复投递不是故障，是幂等在起作用。合成一个数会让
+     * 一次正常重放看起来像库坏了；与 {@link #SKIPPED} 也分开——那个是"没有归属"，
+     * 这个是"同一件事已经记过了"。
+     */
+    public static final String DUPLICATES = "claw4j.audit.duplicates";
+
     /** 照 OpenClaw：30 天。 */
     public static final Duration RETENTION = Duration.ofDays(30);
 
@@ -68,8 +77,9 @@ public class AuditLedger implements AuditSink {
     private static final String INSERT = """
             insert into claw4j_run.audit_event
                 (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
-                 actor, channel, tool_name, args_digest, approval_id)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 actor, channel, tool_name, args_digest, approval_id, source_id, source_sequence)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict (source_id, source_sequence) do nothing
             """;
 
     private static final String PURGE_AGE =
@@ -145,7 +155,7 @@ public class AuditLedger implements AuditSink {
             return;
         }
         try {
-            jdbc.update(INSERT,
+            int written = jdbc.update(INSERT,
                     // event_id 单独生成而不是复用主键：OpenClaw 用它去重（同一条事件重复投递只留一行）。
                     // 这里的写入是同步单次的，没有重放路径，所以它现在只是一个唯一值；
                     // 将来真的需要重放时，调用方带一个稳定的 id 进来就能直接对上，不用改表。
@@ -162,7 +172,13 @@ public class AuditLedger implements AuditSink {
                     scope.channel(),
                     event.toolName(),
                     event.argsDigest(),
-                    event.approvalId());
+                    event.approvalId(),
+                    event.sourceId(),
+                    event.sourceSequence());
+            if (written == 0) {
+                // 同一来源已经记过：幂等在起作用，不是故障。计自己的数，然后照常判清理。
+                count(DUPLICATES);
+            }
             pruneIfDue();
         } catch (RuntimeException failure) {
             count(WRITE_ERRORS);

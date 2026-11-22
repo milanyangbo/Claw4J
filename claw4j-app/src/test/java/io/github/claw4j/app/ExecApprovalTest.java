@@ -5,6 +5,7 @@ import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.approval.JdbcExecAllowlist;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.capability.exec.ExecApprovalPort;
 import io.github.claw4j.capability.exec.ExecCallContext;
@@ -330,7 +331,7 @@ class ExecApprovalTest {
     @Test
     @DisplayName("执行那一行的审计带审批编号：兑现之后由端口递给审计，不再是空")
     void executedCommandCarriesTheApprovalIdInAudit() {
-        ToolCallAudit audit = new ToolCallAudit(new AuditLedger(jdbc, null));
+        ToolCallAudit audit = new ToolCallAudit(new AuditLedger(jdbc, null), new JdbcDecisionFacts(jdbc));
         ExecProperties ask = ExecProperties.of(ExecProperties.Mode.ASK, WORKSPACE, List.of());
         String args = "{\"command\":\"echo hi\"}";
         ExecCallContext context = new ExecCallContext(new Principal(OWNER),

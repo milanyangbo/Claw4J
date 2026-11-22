@@ -6,6 +6,7 @@ import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.domain.ApprovalChoice;
@@ -593,7 +594,7 @@ class ApprovalFlowTest {
         private final Set<String> approvalRequired = new LinkedHashSet<>();
 
         /** 审计落点（P07）：与生产同一条路——工具外面包一层计量/审计的 callback。 */
-        private final ToolCallAudit audit = new ToolCallAudit(new AuditLedger(jdbc, null));
+        private final ToolCallAudit audit = new ToolCallAudit(new AuditLedger(jdbc, null), new JdbcDecisionFacts(jdbc));
 
         private ChatClientAgentPort port;
 

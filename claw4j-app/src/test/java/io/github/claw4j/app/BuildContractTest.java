@@ -1,5 +1,11 @@
 package io.github.claw4j.app;
 
+import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.JdbcDecisionFacts;
+import io.github.claw4j.domain.port.AuditQuery;
+import io.github.claw4j.agent.audit.JdbcAuditQuery;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.plugin.CoreVersion;
@@ -438,10 +444,13 @@ class BuildContractTest {
         //
         // 7 是进度卡（票 01）：每会话一张卡，整卡替换。
         // 8 是事件条件意图（票 02 / ADR-0036）：遇到才做的那一档。
-        // 两张都落在已有的 claw4j_session 里，不新增 schema。
+        // 9 是审计的来源键（ADR-0037 票 02）：幂等靠 (source_id, source_sequence) 唯一，
+        //   顺带删掉从来没写过的 actor_role。
+        // 10 是审批与执行的交接（ADR-0037 票 05）：从进程内 Map 换成一张表，重启还在。
+        // 前六张落在各自的 schema 里；7–10 都改已有 schema，不新增。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -665,6 +674,119 @@ class BuildContractTest {
         Files.writeString(meta.resolve("claw4j-core.properties"),
                 "version=" + CORE_VERSION + "\n", StandardCharsets.UTF_8);
         return temp.resolve(directory);
+    }
+
+    @Test
+    @DisplayName("同一条审计重复投递只留一行，重复单独计数（ADR-0037 票 02）")
+    void auditReplayIsWrittenOnce() {
+        var jdbc = new JdbcTemplate(dataSource());
+        var registry = new SimpleMeterRegistry();
+        var ledger = new AuditLedger(jdbc, registry);
+        var scope = AuditEvent.Scope.of("run-replay-1", "session-replay", null, "http");
+        var event = AuditEvent.runStarted(scope);
+
+        // 同一件事投两次：第二次被 (source_id, source_sequence) 的唯一键挡下。
+        ledger.record(event);
+        ledger.record(event);
+
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_run.audit_event where run_id = 'run-replay-1'",
+                Integer.class))
+                .as("第二次投递不该多出一行")
+                .isEqualTo(1);
+        assertThat(registry.get(AuditLedger.DUPLICATES).counter().count())
+                .as("重复要单独计数，不能混进 write_errors")
+                .isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("审计表里没有 actor_role：那一列从来没被写过（ADR-0037 票 01）")
+    void auditEventHasNoActorRole() {
+        var jdbc = new JdbcTemplate(dataSource());
+
+        assertThat(jdbc.queryForList(
+                "select column_name from information_schema.columns"
+                        + " where table_schema = 'claw4j_run' and table_name = 'audit_event'"
+                        + " and column_name = 'actor_role'", String.class))
+                .as("死列留着会被下一个人拿去过滤，而它恒为 NULL")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("审批交接落库：换一份实例还读得到，取一次就没了（ADR-0037 票 05）")
+    void decisionFactsSurviveAndAreOneShot() {
+        // 原来这份交接是 ToolCallAudit 里的进程内 Map：重启即丢，超 256 条整份清掉。
+        // 落成表之后「这次执行是哪次批准的」不再随进程消失，也仍然只为一次执行放行。
+        var jdbc = new JdbcTemplate(dataSource());
+        var facts = new JdbcDecisionFacts(jdbc);
+        facts.grant("run-df", "Bash", "digest-df", "ap-1");
+
+        assertThat(new JdbcDecisionFacts(jdbc).take("run-df", "Bash", "digest-df"))
+                .as("另一份实例读同一张表：这就是重启之后还对得上")
+                .isEqualTo("ap-1");
+        assertThat(facts.take("run-df", "Bash", "digest-df"))
+                .as("取一次就没了：同一条批准不为第二次执行放行")
+                .isNull();
+
+        // 同一个键写两次只留一条（主键就是"这一次调用"），后写的批准覆盖前一条：
+        // 同一次调用被重新批过时，账上该留最新那条，而不是两条。
+        facts.grant("run-df2", "Bash", "digest-df2", "ap-old");
+        facts.grant("run-df2", "Bash", "digest-df2", "ap-new");
+        assertThat(jdbc.queryForObject("select count(*) from claw4j_run.execution_decision_fact"
+                + " where run_id = 'run-df2'", Integer.class)).isEqualTo(1);
+        assertThat(facts.take("run-df2", "Bash", "digest-df2")).isEqualTo("ap-new");
+
+        // 过期清理按 created_at：把"现在"当成过期点，刚写的那条也该被清掉。
+        facts.grant("run-df3", "Bash", "digest-df3", "ap-3");
+        assertThat(facts.prune(java.time.Duration.ZERO)).isGreaterThanOrEqualTo(1);
+        assertThat(facts.take("run-df3", "Bash", "digest-df3"))
+                .as("清掉之后取不到了")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("审计读侧：seq 倒序、limit 生效、nextCursor 接着翻、过滤与钳位（ADR-0037 票 03）")
+    void auditQueryReturnsNewestFirst() {
+        var jdbc = new JdbcTemplate(dataSource());
+        var ledger = new AuditLedger(jdbc, null);
+        var query = new JdbcAuditQuery(jdbc);
+        // 用 agentId 当判别列：同一个容器被十几条用例共用，不带过滤的"最新三条"分不清是谁写的。
+        for (int i = 1; i <= 3; i++) {
+            ledger.record(AuditEvent.runStarted(
+                    new AuditEvent.Scope("run-qpage" + i, "session-q", "agent-qpage", "u", "http")));
+        }
+
+        var page1 = query.query(new AuditQuery.Filter(null, null, "agent-qpage", null,
+                null, null, null, 2));
+        assertThat(page1.rows()).as("每页两条").hasSize(2);
+        assertThat(page1.rows().get(0).seq())
+                .as("倒序：第一条的序号比第二条大")
+                .isGreaterThan(page1.rows().get(1).seq());
+        assertThat(page1.nextCursor()).as("还有第三条，所以有下一页").isNotNull();
+
+        var page2 = query.query(new AuditQuery.Filter(null, null, "agent-qpage", null,
+                null, null, page1.nextCursor(), 2));
+        assertThat(page2.rows()).as("第二页剩一条").hasSize(1);
+        assertThat(page2.rows().getFirst().seq())
+                .as("下一页的起点严格小于游标")
+                .isLessThan(page1.nextCursor());
+        assertThat(page2.nextCursor()).as("没有更多了").isNull();
+
+        // 过滤与钳位在同一条用例里验：它们共用同一张表、同一份数据，拆开只是多一步准备。
+        ledger.record(AuditEvent.toolStarted(
+                new AuditEvent.Scope("run-qfilter", "session-q", "agent-qfilter", "u", "http"),
+                "Bash", "digest-qfilter"));
+        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action",
+                null, null, null, 10)).rows())
+                .as("按 runId + kind 命中那一行")
+                .hasSize(1);
+        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "agent_run",
+                null, null, null, 10)).rows())
+                .as("kind 不匹配时一行都不给")
+                .isEmpty();
+        assertThat(new AuditQuery.Filter(null, null, null, null, null, null, null, 999).limit())
+                .as("limit 截到 OpenClaw 的上限 500，而不是照单全收")
+                .isEqualTo(AuditQuery.Filter.MAX_LIMIT);
     }
 
     private Path descriptorDir(String directory, String name, String requiresCore) throws IOException {

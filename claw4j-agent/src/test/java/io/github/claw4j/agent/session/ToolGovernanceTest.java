@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.session;
 
+import io.github.claw4j.agent.audit.DecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.goal.GoalStatus;
@@ -82,7 +83,7 @@ class ToolGovernanceTest {
     @BeforeEach
     void setUp() {
         events = new ArrayList<>();
-        audit = new ToolCallAudit(events::add);
+        audit = new ToolCallAudit(events::add, new InMemoryFacts());
     }
 
     private static AuditEvent.Scope scope() {
@@ -820,6 +821,32 @@ class ToolGovernanceTest {
         @Override
         public CompactionResult compact(String sessionId, CompactionTrigger trigger, CompactionStrategy strategy) {
             return null;
+        }
+    }
+
+    /**
+     * 审批交接的替身：只在本进程内。
+     *
+     * <p>真的那份落在 {@code execution_decision_fact} 一张表里（ADR-0037 票 05），这一层测的是
+     * "编号只落在它自己那次执行上"，与存储无关——所以替身够用，也不必为它起一个库。
+     */
+    private static final class InMemoryFacts implements DecisionFacts {
+
+        private final java.util.Map<String, String> facts = new java.util.HashMap<>();
+
+        @Override
+        public void grant(String runId, String toolName, String argsDigest, String approvalId) {
+            facts.put(runId + '|' + toolName + '|' + argsDigest, approvalId);
+        }
+
+        @Override
+        public String take(String runId, String toolName, String argsDigest) {
+            return facts.remove(runId + '|' + toolName + '|' + argsDigest);
+        }
+
+        @Override
+        public int prune(java.time.Duration age) {
+            return 0;
         }
     }
 }

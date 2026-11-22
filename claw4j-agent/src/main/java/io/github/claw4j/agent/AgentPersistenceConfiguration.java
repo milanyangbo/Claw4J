@@ -7,6 +7,10 @@ import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.approval.JdbcExecAllowlist;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
+import io.github.claw4j.agent.audit.JdbcAuditQuery;
+import io.github.claw4j.domain.port.AuditQuery;
+import io.github.claw4j.agent.audit.DecisionFacts;
+import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.turn.TaskLauncher;
 import io.github.claw4j.capability.exec.ExecApprovalPort;
@@ -108,8 +112,38 @@ public class AgentPersistenceConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(ToolCallAudit.class)
-    public ToolCallAudit toolCallAudit(AuditLedger ledger) {
-        return new ToolCallAudit(ledger);
+    public ToolCallAudit toolCallAudit(AuditLedger ledger, DecisionFacts facts) {
+        return new ToolCallAudit(ledger, facts);
+    }
+
+    /**
+     * 审计的只读查询（ADR-0037 票 03）：按 seq 倒序、游标翻页、六个等值过滤。
+     *
+     * <p>端口在 domain（通道只依赖 core），实现在这里。缺席时读接口回 404——能力不在场，
+     * 与审批、目标、投递同一个判断。
+     *
+     * @param jdbc 主连接池
+     * @return 审计查询
+     */
+    @Bean
+    @ConditionalOnMissingBean(AuditQuery.class)
+    public AuditQuery auditQuery(JdbcTemplate jdbc) {
+        return new JdbcAuditQuery(jdbc);
+    }
+
+    /**
+     * 审批与执行的交接（ADR-0037 票 05）：一条事实 = 某次执行依据了哪条批准。
+     *
+     * <p>原来这是 {@code ToolCallAudit} 里的一个进程内 Map，超 256 条整份清掉，重启即丢。
+     * 换成一张表之后，审计里的 {@code approval_id} 不再成批消失，重启也还对得上。
+     *
+     * @param jdbc 主连接池
+     * @return 持久交接
+     */
+    @Bean
+    @ConditionalOnMissingBean(DecisionFacts.class)
+    public DecisionFacts decisionFacts(JdbcTemplate jdbc) {
+        return new JdbcDecisionFacts(jdbc);
     }
 
     /**
