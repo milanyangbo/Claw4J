@@ -17,6 +17,14 @@ Status: claimed
 1. `AuditEvent.Scope` 增 `agentId`；`Scope.of(runId, sessionKey, agentId, principal, channel)`。
    运行侧取当前绑定的 agent（`claw4j.agent.default` / 会话绑定），工具侧从 `ToolContext` 取；
    取不到写 `unknown`。
+
+   **它从哪来（2026-11-22 查清）**：`AgentAutoConfiguration:102`
+   `PersonaCatalog.load(Path.of(agent.directory()), agent.defaultName())` 返回的
+   `Persona` 是一个 record，第一个字段就是 `name`（`Persona.java:41`）——部署级 agent 名。
+   接法：`ChatClientAgentPort.Builder` 存它 → 两条 `Scope.of(...)` 带上 → 组装时往
+   `ToolContext` 写一个 `AGENT_ID` 键 → `MeteredToolCallback` 从 `ToolContext` 读（与它现在读
+   `RUN_ID`/`SESSION_KEY` 同一个形状）。子代理那一侧的归属要另取（`SubagentDelegation` 派发时的
+   定义名），不在本步范围，先把部署级写对。
 2. `blocked` 生产者：工具被策略/权限拦下时写 `tool.action.finished / blocked / tool_blocked`，
    且**不写 started**（`ToolCallAudit#rejected` 已有规则，缺调用点）。
 3. `cancelled`：流式调用方断开（`onChunk` 抛 / Reactor cancel）时写 `run_cancelled`，
