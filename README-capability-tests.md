@@ -12,7 +12,7 @@
 
 ## 怎么用这一份
 
-按**验什么**分七类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
+按**验什么**分八类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
 
 | 类 | 验什么 | 加了什么之后看 |
 | --- | --- | --- |
@@ -23,6 +23,7 @@
 | **E 故障与降级** | 掉线、超时、熔断时长什么样 | MCP E1、工具 E2 / E3 |
 | **F 模型层** | 主备换家、冷却、白名单、角色、缓存命中（`claw4j-model`） | 模型 F1–F8 |
 | **G Agent 自管理** | 计划落库、嘱咐按事件触发、提示词超限会喊（票 01–03） | 进度卡 G1、意图 G2、预算 G3 |
+| **H 流式** | 分帧、命令不进模型、工具静默、换家、忙、断流 | SSE H1–H6 |
 
 工具观测器（一个 `ToolCallListener` bean）的验法在
 [README-adding-capabilities.md](README-adding-capabilities.md) 第 9 节末尾。
@@ -1322,6 +1323,168 @@ WARN … i.g.c.agent.advisor.AgentContextAdvisor : 提示词超预算已截断�
 
 ---
 
+## H. 流式（SSE）
+
+流式不是另一套能力，是同一条路的另一种出站：模型、工具、会话、审计全都一样。但**它的失败模式不一样**：
+一次性回答只有"成功"和"报错"两种结果，流有第三种——**话说到一半没了**。所以这一节的重点是
+**结束信号**，不是内容对不对。
+
+起手就一条：`curl` 必须带 `-N`。不加它 curl 会把响应攒完再一次性打出来，看起来一点都不像流式，
+而你会以为"流式没生效"。端点固定是 `POST /api/chat/stream`，请求体与 `/api/chat` 完全相同。
+
+### H1 帧的形状：`chunk` 是增量，`done` 是唯一结束
+
+```bash
+curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: s1' -H 'X-Claw4j-Chat-Id: s-1' \
+  -d '{"text":"用三句话说明你能做什么"}' \
+  -w '\n---TIMING first=%{time_starttransfer} total=%{time_total}\n'
+```
+
+**本机实测**：79 个 `chunk`、1 个 `done`、`first=1.73 total=2.17`。帧长这样：
+
+```
+event:chunk
+data:我是
+
+event:chunk
+data:运维
+
+...
+
+event:done
+data:
+```
+
+四条判据：
+
+- **一次短回答是几十帧**（79 帧对一百多字），不是"一帧整段"。一帧到底说明对面没在流式。
+- **`done` 恰好一次**，且 `data:` 为空。它是唯一的正常结束信号。
+- **把所有 `data:` 拼起来等于回答全文**——不重不漏。这条比"看着像流式"实在。
+- **`first` 明显小于 `total`**（1.73 vs 2.17）：首字先到、尾巴后到。
+
+| 看到 | 含义 |
+| --- | --- |
+| 帧一次性全出现 | 漏了 `-N`，或者中间有代理在缓冲 |
+| `done` 出现两次 | 正文那一帧带了 `finalChunk`（见 H2，出过这个 bug） |
+| 只有 1 个 `chunk` 就 `done` | 对面把整段当一块发：内容照样对，但这不是流式的价值 |
+
+### H2 命令不进模型：一帧正文 + 一帧 `done`
+
+```bash
+curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: s3' -H 'X-Claw4j-Chat-Id: s-3' \
+  -d '{"text":"/new"}'
+```
+
+```
+event:chunk
+data:好，这是一段新对话。刚才那些不会再被带进来。
+
+event:done
+data:
+```
+
+**1 个 `chunk` + 1 个 `done`**，而且 `claw4j.model.calls` 一次都不涨——命令这一路根本没进模型。
+`/elevated` 同理（这个部署没开提权时回的是"这个部署没有开提权…"那句）。
+
+**这条验出过一个真 bug，值得记住形状**：正文那一帧原来是用"整块回答"的工厂造的，带着
+`finalChunk=true`。通道看到 `finalChunk` 就只发 `done`、正文丢掉——于是用户发 `/new` 看不到回执，
+`done` 还来了两次；而实现那边看起来"我说了那句话"。现在端口契约（`AgentPort#stream`）写明
+**正文帧的 `finalChunk` 必须是 false**，用例 `commandsOnTheStreamPathDoNotReachTheModel` 也加了这条断言。
+
+所以 H2 的三条判据是：帧数 = 2、第一帧是正文且**不是**结束、`model.calls` 不变。
+
+### H3 工具在流里是静默的
+
+```bash
+curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: s2' -H 'X-Claw4j-Chat-Id: s-2' \
+  -d '{"text":"用 Read 读 /绝对路径/examples/README.md 的前 3 行，然后原样贴出来。"}'
+```
+
+**本机实测**：45 个 `chunk`、首帧 `2.25` 秒（纯聊天那一句是 1.73）。
+
+- **流里搜不到工具名与 JSON**：`grep -c 'Read\|todos\|{"'` 应为 **0**。工具参数、工具结果都不会变成帧。
+- **但工具真的跑了**：`claw4j.tool.calls{tool=Read}` +1。
+- **首帧比纯聊天晚**：工具那一轮来回的时间全算在首帧之前。
+
+这条的意义是**别把静默当卡死**：一段要调三次工具的活，可能四五秒一个帧都没有，而它正在正常工作。
+判断"还活着"看工具计数与日志，不要盯流。
+
+### H4 换家发生在首帧之前
+
+用 F2 那份 `model-404.yml`（主模型名写错），请求走 `/stream`：
+
+```bash
+curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: f1' -H 'X-Claw4j-Chat-Id: f-1' \
+  -d '{"text":"1+1 等于几？只给数字"}'
+```
+
+回答照常出来（`2`），`done` 一次，日志里有：
+
+```
+模型 deepseek/no-such-model-xyz 流式失败（unclassified，未吐内容），换下一个
+```
+
+两句要分清：
+
+- **吐过内容就不再换人**（换了客户端会看到重复的半句），所以没吐内容才换、首帧还是干净的。
+- **已知缺口：流式的失败原因记成 `unclassified`**，不是 F2 里的 `model_not_found`。原因是这一路的异常是
+  `WebClientResponseException$BadRequest`，响应体（"模型不存在"那句话）不在异常消息里，分类器拿不到。
+  冷却照常（默认 30 秒→1 分→5 分），保护没丢，**只是 F2 那条按 `reason` 查的判据在流式上不成立**——
+  流式要看日志里那行，或者查 `?tag=outcome:error`。
+
+### H5 忙：一句话 + `done`，不是沉默
+
+默认 `lane-wait` 是 60 秒，所以"同一段对话连发两句"通常是**排队等着**，你看到的是两条正常回答。
+要验"忙"这一支，起实例时把它设成 0：
+
+```
+--claw4j.agent.lane-wait=0
+```
+
+然后同一会话同时发两条（第二条在前一条还没说完时发出）：
+
+```bash
+curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: s6' -H 'X-Claw4j-Chat-Id: s-6' \
+  -d '{"text":"第二句"}'
+```
+
+```
+event:chunk
+data:现在有点忙，请稍后再问一次。
+
+event:done
+data:
+```
+
+1 个 `chunk` + 1 个 `done`。**忙也要说话**：这一支跟 H2 同形，用了带 `finalChunk` 的工厂就是
+"沉默 + 两个 done"——同一个 bug 的两个入口。
+
+### H6 超时 / 断流：没有 `done`
+
+起实例时给一个很短的流超时，再让它写一篇长东西：
+
+```
+--claw4j.channel.http.stream-timeout=2s
+```
+
+**本机实测**：拿到 32 个 `chunk` 之后连接就断了，**`event:done` 出现 0 次**，总耗时 2.1 秒；
+服务端日志是 `AsyncRequestTimeoutException`（`response committed already`，所以只有一行 Warning）。
+
+这是客户端**唯一**能分辨"说完了"和"说到一半"的地方：
+
+- 有 `done`：这段文本是完整的；
+- 没有 `done`：**别把收到的那些字当答案**。它可能是半句，也可能刚好断在工具调用前。
+
+同一条判据也管"服务端换家换到最后一家也失败"和"进程被杀"——它们的表现都是缺 `done`。
+所以客户端不要用"连接关闭"当成功，只认 `done`。
+
+---
+
 ## 一页速查
 
 完整命令都在对应小节里；这里只列"问什么、看什么"。
@@ -1354,3 +1517,9 @@ WARN … i.g.c.agent.advisor.AgentContextAdvisor : 提示词超预算已截断�
 | 进度卡（G1） | 跑 B8 那句三步任务，再查 `session_progress_cards` | `revision ≥ 2` + 三种状态 + 没有 `activeForm` | 卡是给人看的；模型侧只有那句固定回话 |
 | 意图（G2） | 记一条「客户数」提醒，**换 chat id** 再问 | `fire_count` 1 → 冷却内仍 1；回答先问口径 | 同一段对话里它凭上文就答，别拿它当命中 |
 | 提示词预算（G3） | 用一份 3 万字人设起实例 | 一行 WARN、只一次、回答照常 | 括号里 60000 是合计，先撞的是单段 20000 |
+| 流式分帧（H1） | `POST /api/chat/stream`，curl 带 `-N` | 几十个 `chunk` + 一个 `done`；拼起来等于全文 | 不带 `-N` 看起来一点都不像流式 |
+| 命令走流式（H2） | 发 `/new` | 1 帧正文 + 1 帧 `done`，`model.calls` 不涨 | 正文帧带 `finalChunk` 会丢掉正文、done 来两次 |
+| 工具走流式（H3） | 让它 Read 一个文件 | 工具计数 +1，流里没有工具名/JSON | 长静默不是卡死 |
+| 换家走流式（H4） | 模型名写错，发 `/stream` | 照常答 + `done` 一次 | `reason` 是 `unclassified`，不是 `model_not_found` |
+| 忙（H5） | `lane-wait=0`，同会话并发两条 | 一条忙话 + `done` | 默认 60 秒是排队，验不到忙 |
+| 断流（H6） | `stream-timeout=2s`，让它写长文 | 没有 `done`，耗时约等于超时值 | 没 `done` 的那段字不能当答案 |
