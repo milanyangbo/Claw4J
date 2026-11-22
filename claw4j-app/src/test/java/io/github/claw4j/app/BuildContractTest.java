@@ -785,6 +785,25 @@ class BuildContractTest {
         assertThat(new AuditQuery.Filter(null, null, null, null, null, null, null, 999).limit())
                 .as("limit 截到 OpenClaw 的上限 500，而不是照单全收")
                 .isEqualTo(AuditQuery.Filter.MAX_LIMIT);
+
+        // 消息行也读得出来，而且那几列在（ADR-0037 票 04）：读接口没有它们的话，
+        // 消息审计等于只写不查——"这个客户的消息送到没有"还是得自己写 SQL。
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, agent_id, source_id, source_sequence,"
+                + " direction, message_outcome, duration_ms, actor_type, account_ref)"
+                + " values ('e-qmsg', 'message', 'message.inbound.processed', 'succeeded',"
+                + " 'agent-qpage', 'message:in:q1', 1, 'inbound', 'completed', 42,"
+                + " 'channel_sender', 'hmac-sha256:v1:0011223344556677:abc')");
+        var messages = query.query(new AuditQuery.Filter(null, null, "agent-qpage", "message",
+                null, null, null, 10));
+        assertThat(messages.rows()).as("按 kind=message 只取消息行").hasSize(1);
+        assertThat(messages.rows().getFirst().message().outcome()).isEqualTo("completed");
+        assertThat(messages.rows().getFirst().message().durationMs()).isEqualTo(42);
+        assertThat(messages.rows().getFirst().message().accountRef()).startsWith("hmac-sha256:v1:");
+        // 运行与工具行没有那一组：读的人不必面对十二个空格去猜"是没记还是记了空"。
+        assertThat(query.query(new AuditQuery.Filter(null, null, "agent-qpage", "agent_run",
+                null, null, null, 10)).rows())
+                .allSatisfy(row -> assertThat(row.message()).isNull());
     }
 
     @Test
