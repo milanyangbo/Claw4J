@@ -34,6 +34,10 @@ public interface AgentPort {
      * <p>{@code finalChunk} 是唯一的正常结束信号（文本可以为空），实现必须保证它最终发生一次
      * 且仅一次，哪怕模型一块都没吐出来——通道据此收尾，不必另设超时去猜。
      *
+     * <p><b>反过来也成立：正文那一帧的 {@code finalChunk} 必须是 false。</b> 带上它的正文块会被
+     * 通道当成结束信号处理掉——正文不出现、{@code done} 来两次，而实现这边看起来"我说了那句话"。
+     * 命令回执与"忙"这类不经过模型的回答同样按这个形状发：一帧正文（false）+ 一帧空文本（true）。
+     *
      * <p>实现必须响应中断，否则客户端走了，背后的线程还在烧模型调用：Reactor 的
      * {@code blockLast()} 天然满足，裸 HTTP 客户端这类实现要显式处理
      * {@code InterruptedException}。

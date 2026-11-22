@@ -351,8 +351,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         } catch (LaneBusyException busy) {
             // 与 reply 同一条口径：说话，不沉默。最后那一帧空文本是"这一路结束"的约定，
             // 没有它，调用方的流永远不会完成。
+            //
+            // 正文必须走 chunk（finalChunk=false）：带上 finalChunk 的那一帧在通道那边被当成
+            // 结束信号、正文直接丢掉，用户只会看到连接断了、一个字没有，而且 done 会来两次。
             log.warn("这段对话还在处理上一句，这一路流式没等到：chatId={}", message.chatId());
-            onChunk.accept(OutboundMessage.of(message.chatId(), ConversationLane.BUSY_REPLY, null));
+            onChunk.accept(OutboundMessage.chunk(message.chatId(), ConversationLane.BUSY_REPLY));
             onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
         }
     }
@@ -432,7 +435,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         SlashCommands.Parsed parsed = commands.parse(message, owner, conversationKey);
         if (parsed.reply().isPresent()) {
             // 与"忙"那条同形：一帧正文 + 一帧空文本，调用方靠后者收尾。
-            onChunk.accept(OutboundMessage.of(message.chatId(), parsed.reply().get(), null));
+            // 正文那一帧不能带 finalChunk：通道看到它只发 done、不发正文（见 AgentPort#stream）。
+            onChunk.accept(OutboundMessage.chunk(message.chatId(), parsed.reply().get()));
             onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
             return;
         }

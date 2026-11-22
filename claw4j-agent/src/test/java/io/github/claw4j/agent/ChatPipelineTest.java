@@ -454,7 +454,13 @@ class ChatPipelineTest {
                 .isEmpty();
         assertThat(chunks).hasSize(2);
         assertThat(chunks.getFirst().text()).contains("跳过审批");
+        assertThat(chunks.getFirst().finalChunk())
+                .as("正文那一帧不能带 finalChunk：通道看到它就只发 done、正文直接丢掉")
+                .isFalse();
         assertThat(chunks.getLast().text()).as("最后一帧空文本是这一路结束的约定").isEmpty();
+        assertThat(chunks.getLast().finalChunk())
+                .as("结束信号恰好一次，而且只落在最后一帧")
+                .isTrue();
 
         // 当场办的意思是状态真的改了：再走一次流式问「现在是什么档」，回执要读到 full。
         List<OutboundMessage> again = new ArrayList<>();
