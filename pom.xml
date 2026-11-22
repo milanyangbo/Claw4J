@@ -241,7 +241,7 @@
                       gold 里的原句能不能落到 chunk 上，由 RetrievalGoldTest 守着
                       （不调模型、只读文件，进回归）。
 
-                      本机想跑：./mvnw test -Preal-cli、./mvnw test -Pdocker、./eval/rag/run.sh
+                      本机想跑：./mvnw test -Preal-cli、./scripts/test-bm25.sh、./eval/rag/run.sh
                     -->
                     <configuration>
                         <!-- 默认排除这几组；profile 里换成不存在的组名来放开。

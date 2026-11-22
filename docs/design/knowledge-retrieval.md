@@ -277,9 +277,16 @@ BM25 把分词、IDF、长度归一交给引擎，`A2`、`AB-12`、中文型号�
 语法错（`engine: bm2`）也在启动时抛：静默回落成 `substring` 的表现是"改了配置没反应"，
 而两条路的部署前提差一个镜像，这种错不能靠运气被人发现。
 
-真容器测试是 `claw4j-app` 的 `Bm25SearchTest`，**默认跳过**：
-`-Dclaw4j.test.paradedb=true` 才跑，镜像名走 `-Dclaw4j.test.paradedb.image`（内网填镜像站地址）。
-它验的是单测验不了的那一半——分词真的把 `A2` 当成一个词。
+真容器测试是 `claw4j-app` 的 `Bm25SearchTest`，带 `@Tag("docker")`，不在回归基线里
+（`scripts/verify.sh` 要求 `skipped == 0`，所以它是被 surefire **排除**，不是跑了再跳过）。
+按需跑走脚本，参数只有一个镜像名：
+
+```
+./scripts/test-bm25.sh                                    # 上游官方镜像
+./scripts/test-bm25.sh docker.m.daocloud.io/paradedb/paradedb:latest
+```
+
+镜像名做成参数是因为内网多半只能从镜像站拉。它验的是单测验不了的那一半——分词真的把 `A2` 当成一个词。
 
 ### 分数怎么来
 

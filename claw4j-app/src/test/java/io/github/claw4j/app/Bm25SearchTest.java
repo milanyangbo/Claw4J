@@ -5,8 +5,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingRequest;
@@ -25,22 +25,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * BM25 那一路的真容器测试。
  *
- * <p><b>默认跳过</b>，因为 ParadeDB 镜像不是每个人本地都有，而拉它比跑一遍单测贵得多。
- * 开关与镜像名都走系统属性：
+ * <p><b>不进回归基线</b>：ParadeDB 镜像不是每个人本机都有，拉它比跑一遍单测贵得多。所以它带
+ * {@code @Tag("docker")}，被 surefire 默认排除——<b>不是</b>"跑了但跳过"。跳过和通过在同一张
+ * 报表里长得一样，而 {@code scripts/verify.sh} 把 {@code skipped != 0} 判成失败；排除是"这次
+ * 没选它"，报表里根本不会出现。
+ *
+ * <p>按需跑走脚本（它封装了 {@code -Pdocker} 与 {@code -am}，只留镜像名一个参数）：
  *
  * <pre>
- * ./mvnw -pl claw4j-app test -Dtest=Bm25SearchTest \
- *     -Dclaw4j.test.paradedb=true \
- *     -Dclaw4j.test.paradedb.image=paradedb/paradedb:pg16
+ * ./scripts/test-bm25.sh
+ * ./scripts/test-bm25.sh docker.m.daocloud.io/paradedb/paradedb:latest
  * </pre>
  *
- * <p>镜像名做成属性而不是写死，是因为内网通常只能从镜像站拉；写死一个仓库地址会让这个测试
- * 只在一台机器上能跑。默认值是上游的官方名，不是某一家的镜像站。
+ * <p>镜像名做成参数而不是写死，是因为内网通常只能从镜像站拉；写死一个仓库地址会让这个测试
+ * 只在一台机器上能跑。默认值是上游的官方名，不是某一家的镜像站。真跑起来时守护进程要开着——
+ * 既然是自己选的这一组，没有容器就让它红，不做静默跳过。
  *
  * <p>它验证的是单测验证不了的那一半：<b>分词真的把「A2」当成一个词</b>。这是换引擎的全部理由，
  * 而 mock 一个 JdbcTemplate 只证明"SQL 发出去了"，证明不了"结果对了"。
  */
-@EnabledIfSystemProperty(named = "claw4j.test.paradedb", matches = "true")
+@Tag("docker")
 class Bm25SearchTest {
 
     /** 上游镜像名作默认值；内网一般要覆盖成镜像站的地址。 */
