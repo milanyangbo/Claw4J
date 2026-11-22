@@ -475,12 +475,17 @@ class SemanticCacheTest {
         };
     }
 
-    /** 改写后的第一条 system 消息。没有 system 时返回空串，让断言自己去红。 */
+    /**
+     * 改写后的全部 system 消息，按顺序拼起来。
+     *
+     * <p>票 03 之后提示词是两条：稳定段（人设 + 口径）与每轮段（现在的时间）。只取第一条的话，
+     * "时间也在提示词里"这条断言会看不到——而它确实在，只是换了一条消息。
+     */
     private static String systemTextOf(ChatClientRequest request) {
         return request.prompt().getInstructions().stream()
                 .filter(message -> message instanceof SystemMessage)
                 .map(message -> ((SystemMessage) message).getText())
-                .findFirst()
+                .reduce((left, right) -> left + "\n\n" + right)
                 .orElse("");
     }
 }

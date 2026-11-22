@@ -3,7 +3,13 @@ package io.github.claw4j.agent.turn;
 import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.goal.SessionGoal;
+import io.github.claw4j.agent.intent.IntentBlock;
+import io.github.claw4j.agent.intent.IntentMatcher;
+import io.github.claw4j.agent.intent.StandingIntent;
+import io.github.claw4j.agent.intent.StandingIntents;
 import io.github.claw4j.agent.goal.SessionGoalStore;
+import io.github.claw4j.agent.progress.ProgressCardCallback;
+import io.github.claw4j.agent.progress.ProgressCards;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.ContextKeys;
@@ -17,10 +23,15 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -34,6 +45,46 @@ import java.util.Map;
  * <b>把身份与会话键放进两条上下文</b>（工具读 ToolContext，审批与鉴权读 Advisor 上下文）。
  */
 final class PromptComposer {
+
+    private static final Logger log = LoggerFactory.getLogger(PromptComposer.class);
+
+    /**
+     * 命中就记一次触发，并把提醒拼进这一轮。
+     *
+     * <p>失败不阻塞回复（ADR-0036 决定四）：库抖一下的代价只能是"这次没提醒"，不能是
+     * "这条消息没人理"。所以整段包在 try 里，异常只记一行日志。
+     *
+     * @param principal 这一轮的身份
+     * @param message   入站消息，取频道做作用域
+     * @param text      用户这一句（已脱敏）
+     * @return 有界提醒块；没有命中或降级时为空串
+     */
+    private String reminderOf(Principal principal, InboundMessage message, String text) {
+        if (intents == null) {
+            return "";
+        }
+        try {
+            Instant now = clock.instant();
+            List<StandingIntent> candidates = intents.eligible(principal.userId(),
+                    message.channel(), principal.userId(), now, IntentMatcher.MAX_CANDIDATES);
+            List<StandingIntent> matched = IntentMatcher.match(candidates, text);
+            if (matched.isEmpty()) {
+                return "";
+            }
+            List<StandingIntent> fired = new ArrayList<>(matched.size());
+            for (StandingIntent intent : matched) {
+                // 记账在库里做（状态、冷却、预算都在那条 update 的 where 里），
+                // 记上了才算这次真的提醒了。
+                if (intents.fire(intent.id(), now)) {
+                    fired.add(intent);
+                }
+            }
+            return IntentBlock.of(fired);
+        } catch (RuntimeException degraded) {
+            log.warn("意图匹配降级：这一轮不提醒", degraded);
+            return "";
+        }
+    }
 
     /**
      * 注入的「活跃目标」那一行最多几个字。
@@ -71,6 +122,22 @@ final class PromptComposer {
     private final SessionGoalStore goals;
 
     /**
+     * 进度卡（票 01）。为 null 表示没装配会话存储：工具清单原样给。
+     *
+     * <p>它在这里而不是在 {@code ToolCatalog} 里：卡属于会话，而 catalog 属于能力层，
+     * 能力层不认识"会话"这件事。
+     */
+    private final ProgressCards progressCards;
+
+    /**
+     * 事件条件意图（票 02）。为 null 表示没装配会话存储：不做匹配。
+     *
+     * <p>匹配放在这一层而不是 Advisor：Advisor 的 before 拿到的是已经被记忆拼过历史的 prompt，
+     * 而意图该匹配的是<b>用户这一句</b>——历史里出现过的词不该让提醒反复触发。
+     */
+    private final StandingIntents intents;
+
+    /**
      * 一轮最多跑多久；{@link Duration#ZERO} 表示不设墙钟。
      *
      * <p>它兜的是次数管不住的那种：单次工具调用卡住时，{@code tool-call-limit} 还没数到，
@@ -89,11 +156,14 @@ final class PromptComposer {
      * @param compactor 压缩器，可以为 null
      * @param elevations 提权状态，可以为 null
      * @param goals 目标存储，可以为 null
+     * @param progressCards 进度卡存储，可以为 null（工具清单原样给）
+     * @param intents 意图存储，可以为 null（不做匹配）
      * @param turnTimeout 一轮最多跑多久，可以为 null（取默认值）
      * @param clock 算截止时刻的钟，可以为 null（取系统钟）
      */
     PromptComposer(ChatClient chatClient, ToolCatalog catalog, String providerKey,
                    SessionCompactor compactor, Elevations elevations, SessionGoalStore goals,
+                   ProgressCards progressCards, StandingIntents intents,
                    Duration turnTimeout, Clock clock) {
         this.chatClient = chatClient;
         this.catalog = catalog;
@@ -101,6 +171,8 @@ final class PromptComposer {
         this.compactor = compactor;
         this.elevations = elevations;
         this.goals = goals;
+        this.progressCards = progressCards;
+        this.intents = intents;
         this.turnTimeout = turnTimeout == null
                 ? io.github.claw4j.agent.persona.AgentProperties.DEFAULT_TURN_TIMEOUT : turnTimeout;
         this.clock = clock == null ? Clock.systemUTC() : clock;
@@ -181,12 +253,16 @@ final class PromptComposer {
             toolContext.put(ContextKeys.CHAT_REF, message.chatId());
         }
         ChatClient.ChatClientRequestSpec request =
-                chatClient.prompt(activeGoalLine(conversationKey) + masked).toolContext(toolContext);
+                chatClient.prompt(activeGoalLine(conversationKey) + reminderOf(principal, message, masked)
+                        + masked).toolContext(toolContext);
         if (catalog != null) {
             // 工具按这一轮的上下文现筛（ADR-0030 裁决二）：按模型 / 按发送者 / 子 Agent 角色那几层
             // 要靠"这一轮是谁、用的哪个模型"，而上下文只有这里拿得到——provider 展开时不带上下文。
-            request = request.toolCallbacks(catalog.toolsFor(
-                    ToolPolicyContext.of(message.channel(), principal.userId()).withProvider(providerKey)));
+            request = request.toolCallbacks(ProgressCardCallback.wrap(
+                    catalog.toolsFor(
+                            ToolPolicyContext.of(message.channel(), principal.userId())
+                                    .withProvider(providerKey)),
+                    progressCards));
         }
         return withTurnDeadline(request)
                 .advisors(spec -> {

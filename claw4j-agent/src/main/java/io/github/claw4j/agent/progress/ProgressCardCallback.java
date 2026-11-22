@@ -98,7 +98,7 @@ public final class ProgressCardCallback implements ToolCallback {
             return delegate.call(toolInput, toolContext);
         }
         try {
-            cards.save(sessionId, parse(toolInput));
+            cards.save(sessionId, new ProgressCards.Write(null, parse(toolInput), null));
         } catch (ProgressCards.Rejected rejected) {
             // 拒收要回给模型看：它会据此改写再交一次，而不是以为已经记下了。
             return "计划没有被记录：" + rejected.getMessage();
@@ -148,10 +148,11 @@ public final class ProgressCardCallback implements ToolCallback {
         }
         List<ProgressCards.Step> steps = new ArrayList<>(todos.size());
         for (JsonNode node : todos) {
+            // 卡的步骤只有两个字段：内容的 content 映射成 step，activeForm 不进卡
+            // （那是给模型看的措辞，不是进度）。
             steps.add(new ProgressCards.Step(
                     node.path("content").asString(""),
-                    statusOf(node.path("status").asString("")),
-                    node.path("activeForm").asString("")));
+                    statusOf(node.path("status").asString(""))));
         }
         return steps;
     }

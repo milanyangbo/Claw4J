@@ -2,8 +2,10 @@ package io.github.claw4j.agent.advisor;
 
 import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.persona.GlossarySection;
+import io.github.claw4j.persona.PromptBudget;
 import io.github.claw4j.persona.Persona;
 import io.github.claw4j.persona.PromptComposition;
+import io.github.claw4j.persona.PromptParts;
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
@@ -20,6 +22,9 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 每轮把系统提示词拼好放进去：人设、口径、现在的时间。
@@ -42,6 +47,12 @@ import java.util.Objects;
  * 「它怎么忘了前面说过的规矩」才发现。
  */
 public class AgentContextAdvisor implements CallAdvisor, StreamAdvisor {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentContextAdvisor.class);
+
+    /** 超限只报一次：每轮都刷一条 WARN，真正需要看的那条会被淹掉（票 03）。 */
+    private final java.util.concurrent.atomic.AtomicBoolean budgetWarned =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     private final Persona persona;
     private final List<GlossarySection> glossary;
@@ -81,13 +92,31 @@ public class AgentContextAdvisor implements CallAdvisor, StreamAdvisor {
         return chain.nextStream(withContext(request));
     }
 
+    /**
+     * 拼进两段：稳定段（人设 + 口径）在前，每轮段（现在的时间）在后。
+     *
+     * <p>分成两条 system 消息而不是拼成一条：供应商的前缀缓存按"从头逐字节相同"命中，稳定段在前
+     * 且跨天不变，日切只影响后面那条。合成一条的话，跨天之后缓存键全换（票 03）。
+     *
+     * <p>两段都过预算：超长时先截后面那条，稳定段是人设与口径，砍它等于换了个人。
+     *
+     * @param request 进来的请求
+     * @return 加上提示词的请求
+     */
     private ChatClientRequest withContext(ChatClientRequest request) {
-        String composed = PromptComposition.compose(persona, glossary, ZonedDateTime.now(clock));
+        PromptParts parts = PromptComposition.composeParts(persona, glossary, ZonedDateTime.now(clock));
+        PromptBudget.Result fitted = PromptBudget.defaults().fit(parts);
+        if (fitted.truncated() && budgetWarned.compareAndSet(false, true)) {
+            log.warn("提示词超预算已截断：{} → {} 字符（上限 {}），稳定段 {} 字符",
+                    fitted.original(), fitted.fitted(), PromptBudget.DEFAULT_TOTAL_MAX_CHARS,
+                    fitted.parts().stable().length());
+        }
         Prompt prompt = request.prompt();
         List<Message> instructions = prompt.getInstructions();
 
-        List<Message> replaced = new ArrayList<>(instructions.size() + 1);
-        replaced.add(new SystemMessage(composed));
+        List<Message> replaced = new ArrayList<>(instructions.size() + 2);
+        replaced.add(new SystemMessage(fitted.parts().stable()));
+        replaced.add(new SystemMessage(fitted.parts().variable()));
         for (Message message : instructions) {
             if (!(message instanceof SystemMessage)) {
                 replaced.add(message);

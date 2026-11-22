@@ -325,6 +325,20 @@ public class AgentAutoConfiguration {
     }
 
     /**
+     * {@code intent} 工具的画像：全部。
+     *
+     * <p>它只读写自己那张表、只按调用者的身份，不碰业务数据，所以没有"哪档该看不见"的理由。
+     * 真要收，用 {@code claw4j.tools.deny} 逐个部署收，而不是在这里分成几档。
+     *
+     * @return 意图工具的画像登记表
+     */
+    @Bean
+    public ToolTierRegistry intentTierRegistry() {
+        return ToolTierRegistry.allProfilesFor(
+                List.of(io.github.claw4j.agent.intent.IntentTools.NAME));
+    }
+
+    /**
      * 哪些工具要人先批（票 05、10）：名单来自 {@code claw4j.approval.required-tools}，默认空。
      *
      * <p>配在配置里而不是只靠模块自己注册 bean：MCP 工具是配置装进来的，"这个要人批"也该能
@@ -644,6 +658,8 @@ public class AgentAutoConfiguration {
                                ObjectProvider<SessionEntries> pointers,
                                ObjectProvider<ToolCallAudit> audit,
                                ObjectProvider<io.github.claw4j.agent.goal.SessionGoalStore> goals,
+                               ObjectProvider<io.github.claw4j.agent.progress.ProgressCards> progressCards,
+                               ObjectProvider<io.github.claw4j.agent.intent.StandingIntents> intents,
                                AgentProperties properties,
                                ToolCatalog catalog,
                                ModelProperties model,
@@ -668,6 +684,8 @@ public class AgentAutoConfiguration {
                 .lane(new ConversationLane(properties.laneWait()))
                 .audit(audit.getIfAvailable())
                 .goals(goals.getIfAvailable())
+                .progressCards(progressCards.getIfAvailable())
+                .intents(intents.getIfAvailable())
                 .catalog(catalog)
                 .providerKey(model.getPrimary())
                 .elevations(elevations)

@@ -1,6 +1,8 @@
 package io.github.claw4j.agent.progress;
 
+import io.github.claw4j.agent.session.SessionSchema;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -13,79 +15,177 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * 进度卡的唯一实现：一行，整卡替换。
+ * 进度卡的唯一实现：一行，整卡替换，写一次 {@code revision} 加一。
  *
  * <p>为什么是替换而不是增量：卡表达的是"现在是什么样"，不是"改过几次"。增量补丁一旦漏一条，
  * 后面所有人都按错的那份理解进度，而错的那份看起来完全正常。它自己也写明 "Every call is a
  * replacement, not a patch."
  *
- * <p>空计划 = 删行，而不是写一份空卡：读的一侧只需要处理"有卡 / 没卡"两种情况。
+ * <p>清空不删行：内容置 null、{@code revision + 1}。这与它的 "retain revision tombstones" 一致，
+ * 也是乐观并发能工作的前提——版本号不能因为"清空了"就回到原点。
  */
 public final class JdbcProgressCards implements ProgressCards {
 
-    private static final String UPSERT = """
-            insert into claw4j_session.progress_card
-                (session_id, plan_json, step_count, in_progress, updated_at)
-            values (?, ?, ?, ?, ?)
-            on conflict (session_id) do update
-               set plan_json   = excluded.plan_json,
-                   step_count  = excluded.step_count,
-                   in_progress = excluded.in_progress,
-                   updated_at  = excluded.updated_at
-            """;
+    private final String insertOrReplace;
 
-    private static final String DELETE = "delete from claw4j_session.progress_card where session_id = ?";
+    private final String insertOrReplaceIfRevision;
 
-    private static final String SELECT =
-            "select plan_json, updated_at from claw4j_session.progress_card where session_id = ?";
+    private final String clear;
+
+    private final String clearIfRevision;
+
+    private final String select;
 
     private final JdbcTemplate jdbc;
 
     private final ObjectMapper json = JsonMapper.builder().build();
 
     /**
-     * @param jdbc 主连接池；表名全限定，不依赖 {@code currentSchema}
+     * @param jdbc   主连接池
+     * @param schema 会话 schema 名（来自配置）。表名靠
+     *               {@link SessionSchema#qualifier(String)} 拼，不写死字面量——
+     *               写死之后改配会继续指向旧 schema，而症状是功能悄悄失效
      */
-    public JdbcProgressCards(JdbcTemplate jdbc) {
+    public JdbcProgressCards(JdbcTemplate jdbc, String schema) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
+        String table = SessionSchema.qualifier(schema) + "session_progress_cards";
+        this.insertOrReplace = """
+                insert into %s
+                    (session_key, markdown, steps_json, revision, created_at, updated_at)
+                values (?, ?, ?, 1, ?, ?)
+                on conflict (session_key) do update
+                   set markdown   = excluded.markdown,
+                       steps_json = excluded.steps_json,
+                       revision   = %s.revision + 1,
+                       updated_at = excluded.updated_at
+                """.formatted(table, table);
+        // 带期望版本的一版：版本不符时 where 不成立，影响 0 行。
+        this.insertOrReplaceIfRevision = insertOrReplace + " where %s.revision = ?".formatted(table);
+        this.clear = """
+                update %s
+                   set markdown = null, steps_json = null,
+                       revision = revision + 1, updated_at = ?
+                 where session_key = ?
+                """.formatted(table);
+        this.clearIfRevision = clear
+                + "   and revision = ?\n"
+                + "   and (markdown is not null or steps_json is not null)";
+        this.select = """
+                select session_key, markdown, steps_json, revision, created_at, updated_at
+                  from %s
+                 where session_key = ?
+                """.formatted(table);
     }
 
     @Override
-    public void save(String sessionId, List<Step> steps) {
-        Objects.requireNonNull(sessionId, "sessionId");
-        List<Step> checked = ProgressCards.checked(steps);
-        if (checked.isEmpty()) {
-            jdbc.update(DELETE, sessionId);
-            return;
+    public Outcome save(String sessionKey, Write write) {
+        Objects.requireNonNull(sessionKey, "sessionKey");
+        Objects.requireNonNull(write, "write");
+        String markdown = write.markdown() == null || write.markdown().isBlank()
+                ? null : write.markdown().strip();
+        List<Step> steps = ProgressCards.checked(write.steps());
+        Long expected = write.expectedRevision();
+        Timestamp now = Timestamp.from(Instant.now());
+
+        if (markdown == null && steps.isEmpty()) {
+            return clear(sessionKey, expected, now);
         }
-        long inProgress = checked.stream().filter(s -> s.status() == Status.IN_PROGRESS).count();
-        jdbc.update(UPSERT, sessionId, write(checked), checked.size(), (int) inProgress,
-                Timestamp.from(Instant.now()));
+        int changed = expected == null
+                ? jdbc.update(insertOrReplace, sessionKey, markdown, stepsJson(steps), now, now)
+                : jdbc.update(insertOrReplaceIfRevision, sessionKey, markdown, stepsJson(steps),
+                        now, now, expected);
+        if (changed == 0) {
+            return stale(sessionKey);
+        }
+        return new Outcome.Saved(read(sessionKey).orElseThrow(() -> new IllegalStateException(
+                "刚写进去就查不到：" + sessionKey)));
     }
 
     @Override
-    public Optional<Card> of(String sessionId) {
-        if (sessionId == null || sessionId.isBlank()) {
+    public Optional<Card> of(String sessionKey) {
+        return read(sessionKey).filter(JdbcProgressCards::visible);
+    }
+
+    /**
+     * 清空：置 null 并 +1，不删行。
+     *
+     * @param sessionKey 会话
+     * @param expected   期望版本，可为 null
+     * @param now        时间
+     * @return 结果
+     */
+    private Outcome clear(String sessionKey, Long expected, Timestamp now) {
+        int changed = expected == null
+                ? jdbc.update(clear, now, sessionKey)
+                : jdbc.update(clearIfRevision, now, sessionKey, expected);
+        if (changed == 0) {
+            // 两种可能：行不存在（本来就没有卡），或版本不符（含"已经清空过"）。
+            return read(sessionKey).isPresent() ? stale(sessionKey) : new Outcome.Cleared();
+        }
+        return new Outcome.Cleared();
+    }
+
+    /**
+     * 没写进去，把库里当前的返回去。
+     *
+     * @param sessionKey 会话
+     * @return {@link Outcome.Stale}；库里已无行时按"已清空"处理
+     */
+    private Outcome stale(String sessionKey) {
+        return read(sessionKey)
+                .<Outcome>map(Outcome.Stale::new)
+                .orElseGet(Outcome.Cleared::new);
+    }
+
+    /**
+     * 读一行（含墓碑）。
+     *
+     * @param sessionKey 会话
+     * @return 行在就有值，不判空内容
+     */
+    private Optional<Card> read(String sessionKey) {
+        if (sessionKey == null || sessionKey.isBlank()) {
             return Optional.empty();
         }
-        return jdbc.query(SELECT, (rs, row) -> {
-            OffsetDateTime at = rs.getObject("updated_at", OffsetDateTime.class);
-            return new Card(sessionId, read(rs.getString("plan_json")), at.toInstant());
-        }, sessionId).stream().findFirst();
+        RowMapper<Card> mapper = (rs, row) -> new Card(
+                rs.getString("session_key"),
+                rs.getLong("revision"),
+                rs.getString("markdown"),
+                parse(rs.getString("steps_json")),
+                instantOf(rs.getObject("created_at", OffsetDateTime.class)),
+                instantOf(rs.getObject("updated_at", OffsetDateTime.class)));
+        return jdbc.query(select, mapper, sessionKey).stream().findFirst();
     }
 
-    private String write(List<Step> steps) {
+    private static Instant instantOf(OffsetDateTime value) {
+        return value == null ? null : value.toInstant();
+    }
+
+    /**
+     * 有内容才算一张卡。它读出来时也是这个判据（{@code !markdown && !steps?.length → null}）。
+     *
+     * @param card 行
+     * @return 是否可见
+     */
+    private static boolean visible(Card card) {
+        boolean hasMarkdown = card.markdown() != null && !card.markdown().isBlank();
+        return hasMarkdown || !card.steps().isEmpty();
+    }
+
+    private String stepsJson(List<Step> steps) {
         try {
             return json.writeValueAsString(steps);
         } catch (JacksonException e) {
-            // 序列化失败不是模型的问题，不该变成一句"你的计划不合格"。
             throw new IllegalStateException("进度卡序列化失败", e);
         }
     }
 
-    private List<Step> read(String planJson) {
+    private List<Step> parse(String stepsJson) {
+        if (stepsJson == null || stepsJson.isBlank()) {
+            return List.of();
+        }
         try {
-            Step[] steps = json.readValue(planJson, Step[].class);
+            Step[] steps = json.readValue(stepsJson, Step[].class);
             return steps == null ? List.of() : List.of(steps);
         } catch (JacksonException e) {
             // 库里躺着一份读不出来的计划：当成没有，别让投递面整页 500。

@@ -10,6 +10,11 @@ import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
 import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.goal.SessionGoalStore;
+import io.github.claw4j.agent.intent.JdbcStandingIntents;
+import io.github.claw4j.agent.intent.StandingIntent;
+import io.github.claw4j.agent.intent.StandingIntents;
+import io.github.claw4j.agent.progress.JdbcProgressCards;
+import io.github.claw4j.agent.progress.ProgressCards;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 
@@ -98,6 +103,9 @@ class PersistenceSchemaTest {
         jdbc.update("delete from claw4j_run.audit_event");
         // allow-always 的条目是部署级配置，跨用例串起来会让"第一次要问"的断言直接绿掉。
         jdbc.update("delete from claw4j_run.exec_allowlist");
+        // 进度卡与意图跟着会话走：不清的话，上一条用例的卡会出现在下一条的读回里。
+        jdbc.update("delete from claw4j_session.session_progress_cards");
+        jdbc.update("delete from claw4j_session.standing_intents");
     }
 
     @Test
@@ -796,5 +804,135 @@ class PersistenceSchemaTest {
                         + " now() + interval '" + offset + "' - interval '10 minutes', now(),"
                         + " 'channel', 'approver-1', now() + interval '" + offset + "')",
                 id, owner, tool, digest);
+    }
+
+    // ---------------------------------------------------------------- 进度卡（票 01）
+
+    @Test
+    @DisplayName("进度卡整卡替换、revision 每次 +1（票 01）")
+    void progressCardIsReplacedWholesale() {
+        ProgressCards cards = new JdbcProgressCards(jdbc, "claw4j_session");
+
+        cards.save("s-1", new ProgressCards.Write(null, List.of(
+                new ProgressCards.Step("核对表结构", ProgressCards.Status.IN_PROGRESS)), null));
+        cards.save("s-1", new ProgressCards.Write(null, List.of(
+                new ProgressCards.Step("生成报告", ProgressCards.Status.IN_PROGRESS),
+                new ProgressCards.Step("交差", ProgressCards.Status.PENDING)), null));
+
+        ProgressCards.Card card = cards.of("s-1").orElseThrow();
+        assertThat(card.revision()).isEqualTo(2);
+        assertThat(card.steps()).hasSize(2);
+        assertThat(card.steps().getFirst().step())
+                .as("整卡替换：上一次那一步不该残留")
+                .isEqualTo("生成报告");
+    }
+
+    @Test
+    @DisplayName("清空保留墓碑：行还在、内容为空、revision 再 +1（票 01）")
+    void progressCardClearLeavesTombstone() {
+        ProgressCards cards = new JdbcProgressCards(jdbc, "claw4j_session");
+        cards.save("s-1", new ProgressCards.Write(null, List.of(
+                new ProgressCards.Step("核对表结构", ProgressCards.Status.PENDING)), null));
+
+        cards.save("s-1", new ProgressCards.Write(null, List.of(), null));
+
+        assertThat(cards.of("s-1")).as("读的一侧只看到\"没有卡\"").isEmpty();
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_session.session_progress_cards where session_key = 's-1'",
+                Integer.class))
+                .as("清空不是删行：墓碑留着，版本号才不会回到原点")
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "select revision from claw4j_session.session_progress_cards where session_key = 's-1'",
+                Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("版本不符不覆盖：第二个写入者拿到当前那份（票 01）")
+    void progressCardStaleRevisionIsNotOverwritten() {
+        ProgressCards cards = new JdbcProgressCards(jdbc, "claw4j_session");
+        cards.save("s-1", new ProgressCards.Write(null, List.of(
+                new ProgressCards.Step("第一步", ProgressCards.Status.PENDING)), null));
+
+        ProgressCards.Outcome first = cards.save("s-1", new ProgressCards.Write(null, List.of(
+                new ProgressCards.Step("第二步", ProgressCards.Status.PENDING)), 1L));
+        ProgressCards.Outcome second = cards.save("s-1", new ProgressCards.Write(null, List.of(
+                new ProgressCards.Step("第三步", ProgressCards.Status.PENDING)), 1L));
+
+        assertThat(first).isInstanceOf(ProgressCards.Outcome.Saved.class);
+        assertThat(second).isInstanceOf(ProgressCards.Outcome.Stale.class);
+        assertThat(cards.of("s-1").orElseThrow().steps().getFirst().step())
+                .as("过期的那个写入者不能覆盖新的一版")
+                .isEqualTo("第二步");
+    }
+
+    // ---------------------------------------------------------------- 意图（票 02）
+
+    @Test
+    @DisplayName("意图触发一次就进冷却，冷却内不再算候选（票 02）")
+    void intentFiresOnceThenCoolsDown() {
+        StandingIntents intents = new JdbcStandingIntents(jdbc, "claw4j_session");
+        Instant now = Instant.now();
+        StandingIntent created = intents.create(new StandingIntents.New("alice",
+                "确认是签约数还是活跃数", "客户数", null, null, "alice",
+                now.plus(Duration.ofDays(90)), 3, 86_400, "s-1"));
+
+        assertThat(intents.eligible("alice", "http", "alice", now, 256))
+                .as("刚建的直接 armed，能参与匹配")
+                .hasSize(1);
+        assertThat(intents.fire(created.id(), now)).isTrue();
+        assertThat(intents.eligible("alice", "http", "alice", now.plusSeconds(1), 256))
+                .as("冷却靠那条 update 的 where 判，不靠调用方记得")
+                .isEmpty();
+        assertThat(intents.fire(created.id(), now.plusSeconds(1)))
+                .as("冷却中再记一次必须失败：否则同一句话会提醒两遍")
+                .isFalse();
+        assertThat(intents.list("alice").getFirst().fireCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("预算用完转 done：max_fires=1 时触发一次就不再是候选（票 02）")
+    void intentStopsAfterFireBudget() {
+        StandingIntents intents = new JdbcStandingIntents(jdbc, "claw4j_session");
+        Instant now = Instant.now();
+        StandingIntent created = intents.create(new StandingIntents.New("alice",
+                "只提醒一次", "客户数", null, null, "alice",
+                now.plus(Duration.ofDays(90)), 1, 0, "s-1"));
+
+        assertThat(intents.fire(created.id(), now)).isTrue();
+
+        assertThat(intents.eligible("alice", "http", "alice", now.plusSeconds(1), 256))
+                .as("次数用完了就不该再参与匹配")
+                .isEmpty();
+        assertThat(intents.list("alice").getFirst().status())
+                .isEqualTo(StandingIntent.Status.DONE);
+    }
+
+    @Test
+    @DisplayName("过期就不参与匹配（票 02）")
+    void intentExpiresAtDeadline() {
+        StandingIntents intents = new JdbcStandingIntents(jdbc, "claw4j_session");
+        Instant now = Instant.now();
+        intents.create(new StandingIntents.New("alice", "已经过期了", "客户数", null, null, "alice",
+                now.minusSeconds(1), 3, 0, "s-1"));
+
+        assertThat(intents.eligible("alice", "http", "alice", now, 256))
+                .as("expires_at 在过去的行不该被捞出来")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("trigger_embedding 建了但恒为 null：本票只做关键词匹配（ADR-0036）")
+    void triggerEmbeddingStaysNull() {
+        StandingIntents intents = new JdbcStandingIntents(jdbc, "claw4j_session");
+        Instant now = Instant.now();
+        intents.create(new StandingIntents.New("alice", "确认口径", "客户数", null, null, "alice",
+                now.plus(Duration.ofDays(90)), 3, 86_400, "s-1"));
+
+        assertThat(jdbc.queryForObject(
+                "select count(*) from claw4j_session.standing_intents"
+                        + " where trigger_embedding is not null", Integer.class))
+                .as("写了 embedding 就等于多一次模型调用与一份延迟，这一票明确不做")
+                .isZero();
     }
 }

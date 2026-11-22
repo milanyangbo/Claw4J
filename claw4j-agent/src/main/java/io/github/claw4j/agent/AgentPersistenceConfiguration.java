@@ -134,6 +134,52 @@ public class AgentPersistenceConfiguration {
     }
 
     /**
+     * 进度卡（票 01）：每会话一行，整卡替换，清空保留墓碑。
+     *
+     * <p>它与会话存储同生共死：没有会话 id 就记不了卡，所以不需要单独的开关。
+     *
+     * @param jdbc    主连接池
+     * @param session 会话配置，取 schema 名（与 {@code JdbcCrossSessionEvents} 同一个来源）
+     * @return 进度卡存储
+     */
+    @Bean
+    @ConditionalOnMissingBean(io.github.claw4j.agent.progress.ProgressCards.class)
+    public io.github.claw4j.agent.progress.ProgressCards progressCards(
+            JdbcTemplate jdbc, io.github.claw4j.agent.session.SessionMemoryProperties session) {
+        return new io.github.claw4j.agent.progress.JdbcProgressCards(jdbc, session.schema());
+    }
+
+    /**
+     * 事件条件意图（票 02 / ADR-0036）：建、查、撤都在一张表上。
+     *
+     * @param jdbc    主连接池
+     * @param session 会话配置，取 schema 名
+     * @return 意图存储
+     */
+    @Bean
+    @ConditionalOnMissingBean(io.github.claw4j.agent.intent.StandingIntents.class)
+    public io.github.claw4j.agent.intent.StandingIntents standingIntents(
+            JdbcTemplate jdbc, io.github.claw4j.agent.session.SessionMemoryProperties session) {
+        return new io.github.claw4j.agent.intent.JdbcStandingIntents(jdbc, session.schema());
+    }
+
+    /**
+     * {@code intent} 工具：模型自己建、查、撤。
+     *
+     * <p>工具名进工具清单，所以它也要有画像归属——见 {@code AgentAutoConfiguration} 的
+     * {@code intentTierRegistry}。
+     *
+     * @param intents 意图存储
+     * @return 工具 provider
+     */
+    @Bean
+    @ConditionalOnMissingBean(io.github.claw4j.agent.intent.IntentTools.class)
+    public io.github.claw4j.agent.intent.IntentTools intentTools(
+            io.github.claw4j.agent.intent.StandingIntents intents) {
+        return new io.github.claw4j.agent.intent.IntentTools(intents);
+    }
+
+    /**
      * 审批：请求、裁决、记录三层都在 {@link JdbcApprovals} 一处（票 10）。
      *
      * <p>它原来分成四个 bean（审批门、账本、决定者、卡片门）加两个端口。合并的理由不是"少几个类"，

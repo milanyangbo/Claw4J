@@ -53,28 +53,45 @@ public final class PromptComposition {
      * @return 拼好的系统提示词
      */
     public static String compose(Persona persona, List<GlossarySection> glossary, ZonedDateTime now) {
+        PromptParts parts = composeParts(persona, glossary, now);
+        PromptBudget.Result fitted = PromptBudget.defaults().fit(parts);
+        return fitted.parts().stable() + fitted.parts().variable();
+    }
+
+    /**
+     * 拼成两段：稳定段（人设 + 口径）与每轮段（现在的时间）。
+     *
+     * <p>分开是为了前缀缓存：稳定段的字节跨天不变，变的只有后面那一小段。合成一整段的话，
+     * 日切之后缓存键全换，一整天的命中率归零。
+     *
+     * @param persona  人设
+     * @param glossary 口径；空表示没有额外口径
+     * @param now      这一轮的时间，必须带时区
+     * @return 两段
+     */
+    public static PromptParts composeParts(Persona persona, List<GlossarySection> glossary,
+                                           ZonedDateTime now) {
         Objects.requireNonNull(persona, "persona");
         Objects.requireNonNull(glossary, "glossary");
         Objects.requireNonNull(now, "now");
 
-        StringBuilder prompt = new StringBuilder(persona.systemPrompt().strip());
-
+        StringBuilder stable = new StringBuilder(persona.systemPrompt().strip());
         if (!glossary.isEmpty()) {
-            prompt.append("\n\n## 部门口径\n\n")
+            stable.append("\n\n## 部门口径\n\n")
                     .append("下面这些是这个部署统一的口径。回答里涉及这些数字时按它算，")
                     .append("不要按印象，也不要用你见过的别的公司的算法替它。\n");
             for (GlossarySection section : glossary) {
-                prompt.append("\n### 出处：").append(section.source()).append('\n')
+                stable.append("\n### 出处：").append(section.source()).append('\n')
                         .append(section.text())
                         .append('\n');
             }
         }
 
-        prompt.append("\n\n## 现在的时间\n\n")
-                .append("此刻是 ").append(format(now)).append("。\n")
-                .append("涉及“今天 / 昨天 / 上周 / 本月”这类相对时间时按这个算，")
-                .append("不要用你记忆里的日期——那是训练时的，不是现在的。\n");
-        return prompt.toString();
+        String variable = "\n\n## 现在的时间\n\n"
+                + "此刻是 " + format(now) + "。\n"
+                + "涉及“今天 / 昨天 / 上周 / 本月”这类相对时间时按这个算，"
+                + "不要用你记忆里的日期——那是训练时的，不是现在的。\n";
+        return new PromptParts(stable.toString(), variable);
     }
 
     /**

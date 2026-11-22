@@ -75,12 +75,12 @@ class ProgressCardTest {
     @DisplayName("工具参数里的 content 存成 step，activeForm 不进卡")
     void contentBecomesStepAndActiveFormDropped() {
         Recording store = new Recording();
-        ToolCallback todo = new ProgressCardCallbackForTest(store,
-                tool("TodoWrite", "{\"todos\":[{\"content\":\"核对表结构\","
-                        + "\"status\":\"in_progress\",\"activeForm\":\"正在核对\"}]}"));
+        ToolCallback todo = ProgressCardCallback.wrap(List.of(tool("TodoWrite",
+                "{\"todos\":[{\"content\":\"核对表结构\","
+                        + "\"status\":\"in_progress\",\"activeForm\":\"正在核对\"}]}")), store).getFirst();
 
-        todo.call("", context("s-1"));
-
+        todo.call("{\"todos\":[{\"content\":\"核对表结构\",\"status\":\"in_progress\","
+                + "\"activeForm\":\"正在核对\"}]}", context("s-1"));
         assertThat(store.saved).hasSize(1);
         assertThat(store.saved.getFirst().steps())
                 .containsExactly(new ProgressCards.Step("核对表结构", ProgressCards.Status.IN_PROGRESS));
@@ -90,10 +90,10 @@ class ProgressCardTest {
     @DisplayName("没有会话 id 就不记：不造一个假键，否则不同人的计划会混进同一张卡")
     void withoutSessionNothingIsSaved() {
         Recording store = new Recording();
-        ToolCallback todo = new ProgressCardCallbackForTest(store,
-                tool("TodoWrite", "{\"todos\":[{\"content\":\"甲\",\"status\":\"pending\"}]}"));
+        ToolCallback todo = ProgressCardCallback.wrap(List.of(tool("TodoWrite",
+                "{\"todos\":[{\"content\":\"甲\",\"status\":\"pending\"}]}")), store).getFirst();
 
-        todo.call("", new ToolContext(Map.of()));
+        todo.call("{\"todos\":[{\"content\":\"甲\",\"status\":\"pending\"}]}", new ToolContext(Map.of()));
 
         assertThat(store.saved).isEmpty();
     }
@@ -104,9 +104,9 @@ class ProgressCardTest {
         Recording store = new Recording();
         store.reject = "单步太长";
         ToolCallback delegate = tool("TodoWrite", "{\"todos\":[{\"content\":\"甲\"}]}");
-        ToolCallback todo = new ProgressCardCallbackForTest(store, delegate);
+        ToolCallback todo = ProgressCardCallback.wrap(List.of(delegate), store).getFirst();
 
-        String result = todo.call("", context("s-1"));
+        String result = todo.call("{\"todos\":[{\"content\":\"甲\"}]}", context("s-1"));
 
         assertThat(result).contains("计划没有被记录").contains("单步太长");
         assertThat(((FakeTool) delegate).calls).isZero();
@@ -203,23 +203,6 @@ class ProgressCardTest {
         public String call(String toolInput, ToolContext toolContext) {
             calls++;
             return output;
-        }
-    }
-
-    /**
-     * 让测试能直接构造包装类：它的构造器是私有的，走一次 {@code wrap} 也一样，
-     * 但那需要清单里恰好有一个同名工具，绕。
-     */
-    private static final class ProgressCardCallbackForTest {
-
-        private final ToolCallback callback;
-
-        private ProgressCardCallbackForTest(ProgressCards store, ToolCallback delegate) {
-            this.callback = ProgressCardCallback.wrap(List.of(delegate), store).getFirst();
-        }
-
-        private String call(String input, ToolContext context) {
-            return callback.call(input, context);
         }
     }
 }

@@ -3,6 +3,10 @@ package io.github.claw4j.agent;
 import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.schedule.Schedule;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
+import io.github.claw4j.agent.intent.IntentMatcher;
+import io.github.claw4j.agent.intent.IntentTools;
+import io.github.claw4j.agent.intent.StandingIntent;
+import io.github.claw4j.agent.intent.StandingIntents;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;
 import io.github.claw4j.agent.schedule.ScheduleStore;
 import io.github.claw4j.agent.schedule.ScheduleTools;
@@ -18,6 +22,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.execution.DefaultToolExecutionExceptionProcessor;
 import org.springframework.ai.tool.execution.ToolExecutionException;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
@@ -289,5 +294,96 @@ class ScheduleToolsTest {
         return new Schedule(task.id(), task.owner(), task.channel(), task.channelRef(), task.goal(),
                 task.cron(), task.zone(), task.notifyPolicy(), task.nextRunAt(), null, 3,
                 "模型服务 503", false, "连续 3 次没跑成");
+    }
+
+    // ---------------------------------------------------------------- 意图（票 02）
+
+    /**
+     * 一条意图：中文触发词、3 次预算、1 天冷却。
+     */
+    private static StandingIntent intent(String triggers) {
+        Instant now = Instant.now();
+        return new StandingIntent("abc12345", "alice", "确认是签约数还是活跃数", triggers,
+                null, null, "alice", StandingIntent.Status.ARMED,
+                now.plus(Duration.ofDays(90)), 3, 0, 86_400, null, now, "s-1");
+    }
+
+    private static ToolContext alice() {
+        return new ToolContext(Map.of(ContextKeys.PRINCIPAL, new Principal("alice"),
+                "claw4j.channel", "http"));
+    }
+
+    @Test
+    @DisplayName("中文触发词按子串命中，英文按整词（票 02）")
+    void cjkMatchesSubstringLatinMatchesWholeWord() {
+        assertThat(IntentMatcher.matches(intent("客户数"), "帮我看看客户数"))
+                .as("中文不靠空格分词，整词匹配等于永远不命中")
+                .isTrue();
+        assertThat(IntentMatcher.matches(intent("客户数"), "客户数量是多少"))
+                .as("子串：\"客户数\" 就在 \"客户数量\" 里")
+                .isTrue();
+        assertThat(IntentMatcher.matches(intent("客户数"), "帮我看看表结构"))
+                .as("没出现触发词就不该命中")
+                .isFalse();
+        assertThat(IntentMatcher.matches(intent("customer"), "how many customers"))
+                .as("英文整词：customer 不该命中 customers")
+                .isFalse();
+        assertThat(IntentMatcher.matches(intent("customer"), "one customer asked"))
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("没有身份就建不了意图：归属从上下文取，不从参数取")
+    void intentToolRefusesWithoutPrincipal() {
+        StandingIntents store = mock(StandingIntents.class);
+        IntentTools tools = new IntentTools(store);
+
+        String result = tools.intent("create", "提醒我", "客户数", 3, 86_400, 90, null, null);
+
+        assertThat(result).contains("没有携带身份");
+        verify(store, never()).create(any());
+    }
+
+    @Test
+    @DisplayName("建意图时 owner 与频道都取自这一轮的上下文")
+    void createTakesOwnerAndChannelFromContext() {
+        StandingIntents store = mock(StandingIntents.class);
+        when(store.create(any())).thenReturn(intent("客户数"));
+        IntentTools tools = new IntentTools(store);
+
+        String result = tools.intent("create", "确认是签约数还是活跃数", "客户数", 3, 86_400, 90,
+                null, alice());
+
+        ArgumentCaptor<StandingIntents.New> captor = ArgumentCaptor.forClass(StandingIntents.New.class);
+        verify(store).create(captor.capture());
+        assertThat(captor.getValue().owner()).isEqualTo("alice");
+        assertThat(captor.getValue().channelScope()).isEqualTo("http");
+        assertThat(captor.getValue().maxFires()).isEqualTo(3);
+        assertThat(result).contains("abc12345").contains("客户数");
+    }
+
+    @Test
+    @DisplayName("列出来时带编号、触发次数与预算：模型要靠编号才能撤销")
+    void listShowsIdAndBudget() {
+        StandingIntents store = mock(StandingIntents.class);
+        when(store.list("alice")).thenReturn(List.of(intent("客户数")));
+        IntentTools tools = new IntentTools(store);
+
+        String result = tools.intent("list", null, null, null, null, null, null, alice());
+
+        assertThat(result).contains("abc12345").contains("客户数").contains("0/3");
+    }
+
+    @Test
+    @DisplayName("取消按 owner 判：猜中别人的编号也撤不掉")
+    void cancelIsOwnerScoped() {
+        StandingIntents store = mock(StandingIntents.class);
+        when(store.cancel("alice", "abc12345")).thenReturn(true);
+        IntentTools tools = new IntentTools(store);
+
+        String result = tools.intent("cancel", null, null, null, null, null, "abc12345", alice());
+
+        verify(store).cancel("alice", "abc12345");
+        assertThat(result).contains("取消了");
     }
 }

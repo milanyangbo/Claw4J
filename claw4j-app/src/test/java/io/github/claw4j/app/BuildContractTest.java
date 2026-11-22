@@ -435,9 +435,13 @@ class BuildContractTest {
         //
         // 没有 4：V4 原来是语义缓存，那个能力改落 Redis 之后整张表连同 schema 一起删了，
         // 编号不复用（与 ADR 编号同一个口径）。
+        //
+        // 7 是进度卡（票 01）：每会话一张卡，整卡替换。
+        // 8 是事件条件意图（票 02 / ADR-0036）：遇到才做的那一档。
+        // 两张都落在已有的 claw4j_session 里，不新增 schema。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -454,13 +458,14 @@ class BuildContractTest {
                 .containsExactly("business", "claw4j_channel", "claw4j_rag",
                         "claw4j_run", "claw4j_session");
 
-        // 会话 schema 里是框架的两张加我们的四张。少了哪张说明有人把基线改坏了；多了哪张
+        // 会话 schema 里是框架的两张加我们的六张。少了哪张说明有人把基线改坏了；多了哪张
         // （比如一张平铺的 session_entry）说明有人在基线之外又摊了一张表。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables"
                         + " where table_schema = 'claw4j_session' order by table_name", String.class))
                 .containsExactly("ai_session", "ai_session_event", "conversations",
-                        "session_conversations", "session_nodes", "session_windows");
+                        "session_conversations", "session_nodes", "session_progress_cards",
+                        "session_windows", "standing_intents");
 
         // V1 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
         assertThat(jdbc.queryForObject("select count(*) from business.sales_order", Integer.class))

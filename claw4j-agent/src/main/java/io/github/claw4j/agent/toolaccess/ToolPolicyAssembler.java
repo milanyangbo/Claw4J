@@ -1,6 +1,7 @@
 package io.github.claw4j.agent.toolaccess;
 
 import io.github.claw4j.agent.schedule.ScheduleTools;
+import io.github.claw4j.capability.builtin.agenttools.AgentToolsAutoConfiguration;
 import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.domain.principal.ToolPolicyLayer;
@@ -48,7 +49,10 @@ public final class ToolPolicyAssembler {
      * 建出来的任务，谁来认领、谁来通知，都不成立。
      */
     private static final Set<String> SUBAGENT_ALWAYS_DENIED = Set.of(
-            ScheduleTools.CREATE, ScheduleTools.LIST, ScheduleTools.CANCEL);
+            ScheduleTools.CREATE, ScheduleTools.LIST, ScheduleTools.CANCEL,
+            // 进度卡（票 01）：卡属于"用户对话所在的那一段"，子代理写它就会覆盖父的那张。
+            // OpenClaw 的规则同一句："派生的子代理从不会收到 progress_card"。
+            AgentToolsAutoConfiguration.TODO_TOOL_NAME);
 
     /**
      * {@code leaf} 角色额外禁的：再开一个执行体。

@@ -121,4 +121,56 @@ class PromptCompositionTest {
         assertThrows(NullPointerException.class,
                 () -> PromptComposition.compose(persona("x"), List.of(), null));
     }
+
+    @Test
+    @DisplayName("稳定段跨天不变：同一天、跨天，字节都完全相同（票 03）")
+    void stableNeverChangesAcrossDays() {
+        PromptParts today = PromptComposition.composeParts(persona("你是销售助手。"), List.of(), NOV_3);
+        PromptParts tonight = PromptComposition.composeParts(persona("你是销售助手。"), List.of(),
+                NOV_3.withHour(23).withMinute(59));
+        PromptParts tomorrow = PromptComposition.composeParts(persona("你是销售助手。"), List.of(),
+                NOV_3.plusDays(1));
+
+        assertEquals(today.stable(), tonight.stable(), "同一天两次：稳定段必须逐字节相同");
+        assertEquals(today.stable(), tomorrow.stable(), "跨天：稳定段仍然不能变，否则前缀缓存全废");
+    }
+
+    @Test
+    @DisplayName("跨天只有每轮段变：日期进的是 variable，不是 stable")
+    void rolloverOnlyTouchesVariable() {
+        PromptParts today = PromptComposition.composeParts(persona("你是销售助手。"), List.of(), NOV_3);
+        PromptParts tomorrow = PromptComposition.composeParts(persona("你是销售助手。"), List.of(),
+                NOV_3.plusDays(1));
+
+        assertNotEquals(today.variable(), tomorrow.variable(), "跨天时每轮段必须换");
+        assertTrue(today.variable().contains("2026-11-03"), today.variable());
+        assertFalse(today.stable().contains("2026-11-03"), "稳定段里不该出现日期");
+    }
+
+    @Test
+    @DisplayName("超长的稳定段被截到上限，并带一句固定提示")
+    void overBudgetStableIsTruncatedWithNotice() {
+        String huge = "口径".repeat(12_000);
+        PromptParts parts = PromptComposition.composeParts(persona(huge), List.of(), NOV_3);
+
+        PromptBudget.Result fitted = PromptBudget.defaults().fit(parts);
+
+        assertTrue(fitted.truncated(), "两万四字符必须被截");
+        assertTrue(fitted.parts().stable().length() <= PromptBudget.DEFAULT_PART_MAX_CHARS);
+        assertTrue(fitted.parts().stable().endsWith(PromptBudget.TRUNCATED_NOTICE),
+                "截断必须带那句固定提示，否则模型不知道内容不全");
+    }
+
+    @Test
+    @DisplayName("合计超限时先截每轮段，稳定段保住")
+    void totalBudgetTrimsVariableFirst() {
+        PromptParts parts = new PromptParts("人设".repeat(300), "现在的时间".repeat(200));
+
+        PromptBudget.Result fitted = new PromptBudget(20_000, 1_200).fit(parts);
+
+        assertTrue(fitted.truncated());
+        assertEquals(parts.stable(), fitted.parts().stable(), "稳定段一个字都不该动");
+        assertTrue(fitted.parts().variable().length() < parts.variable().length());
+        assertTrue(fitted.parts().stable().length() + fitted.parts().variable().length() <= 1_200);
+    }
 }

@@ -106,7 +106,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         this.address = new SessionAddress(builder.pointers);
         this.commands = new SlashCommands(address, builder.goals, builder.elevations);
         this.composer = new PromptComposer(chatClient, builder.catalog, builder.providerKey,
-                builder.compactor, builder.elevations, builder.goals, builder.turnTimeout, builder.clock);
+                builder.compactor, builder.elevations, builder.goals, builder.progressCards, builder.intents,
+                builder.turnTimeout, builder.clock);
         this.recorder = new TurnRecorder(builder.tracer, builder.audit, builder.delivery, builder.goals);
         this.lane = builder.lane;
     }
@@ -137,6 +138,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         private ConversationLane lane;
         private ToolCallAudit audit;
         private SessionGoalStore goals;
+        private io.github.claw4j.agent.progress.ProgressCards progressCards;
+        private io.github.claw4j.agent.intent.StandingIntents intents;
         private ToolCatalog catalog;
         private String providerKey;
         private Elevations elevations;
@@ -207,6 +210,24 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
          */
         public Builder goals(SessionGoalStore value) {
             this.goals = value;
+            return this;
+        }
+
+        /**
+         * @param value 进度卡存储，可以为 null（这个部署没开会话存储：工具清单原样给）
+         * @return this
+         */
+        public Builder progressCards(io.github.claw4j.agent.progress.ProgressCards value) {
+            this.progressCards = value;
+            return this;
+        }
+
+        /**
+         * @param value 意图存储，可以为 null（这个部署不做匹配）
+         * @return this
+         */
+        public Builder intents(io.github.claw4j.agent.intent.StandingIntents value) {
+            this.intents = value;
             return this;
         }
 
