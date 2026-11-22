@@ -32,3 +32,7 @@ eval/rag/__pycache__/
 # Python 示例跑一次就会生成，不是源码
 __pycache__/
 *.pyc
+
+# 验收现场留下的原始日志：本地证据，几百 KB 的 DEBUG，不入库
+# （同目录的 README、SSE 帧、覆盖配置、超长人设都入库，是可以对着看的证据）
+docs/acceptance/**/*.log

@@ -28,6 +28,10 @@
 工具观测器（一个 `ToolCallListener` bean）的验法在
 [README-adding-capabilities.md](README-adding-capabilities.md) 第 9 节末尾。
 
+实测留下的东西（日志、每轮原始 SSE 帧、覆盖配置、G3 的超长人设）在
+[docs/acceptance/](docs/acceptance/README.md) —— 按日期分批（现有 2026-11-22 一批）。
+复跑前先看那份索引，里面有起实例命令、查库命令和上一轮记下的数（用来对形状，不是判据）。
+
 ---
 
 ## 0. 共同前提
@@ -1278,19 +1282,20 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ### G3 提示词预算：超了会喊一声，且只喊一次
 
-造一份超长人设（正文 3 万字，超过单段 20000 的上限），用它起一个实例：
+造一份超长人设（正文 3 万字，超过单段 20000 的上限），用它起一个实例。这一份**已经留在仓库里**：
+`docs/acceptance/2026-11-22/bigagent/big.md`。丢了就照下面重造：
 
 ```bash
-mkdir -p /tmp/bigagent
+mkdir -p docs/acceptance/2026-11-22/bigagent
 python3 - <<'PY'
 body = "\n".join("第%d条：占位口径，只为把提示词撑过两万字符。" % i for i in range(1, 900))
-open('/tmp/bigagent/big.md', 'w', encoding='utf-8').write(
+open('docs/acceptance/2026-11-22/bigagent/big.md', 'w', encoding='utf-8').write(
     "---\nname: big\ndescription: 超长人设，只为验提示词预算\ntier: full\n---\n\n# 你是谁\n\n" + body)
 PY
 ```
 
 起实例时把 0 节那条命令的 `--claw4j.agent.directory=examples/agents --claw4j.agent.default=ops`
-换成 `--claw4j.agent.directory=/tmp/bigagent --claw4j.agent.default=big`，其余照旧。随便问一句：
+换成 `--claw4j.agent.directory=docs/acceptance/2026-11-22/bigagent --claw4j.agent.default=big`，其余照旧。随便问一句：
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -1414,7 +1419,7 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
 
 ### H4 换家发生在首帧之前
 
-用 F2 那份 `model-404.yml`（主模型名写错），请求走 `/stream`：
+用 F2 那份 `model-404.yml`（主模型名写错；现成的一份在 `docs/acceptance/2026-11-22/model-404.yml`），请求走 `/stream`：
 
 ```bash
 curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \

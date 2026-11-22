@@ -563,10 +563,17 @@ psql "$DATABASE_URL" -c "select seq, actor, tool_name, status, left(args_digest,
   from claw4j_run.audit_event where run_id = '<runId>' order by seq"
 ```
 
-列：`seq / kind / action / status / error_code / run_id / session_key / actor / actor_role /
-channel / tool_name / args_digest / approval_id / redaction / schema_version / at`。
-**`actor_role` 这一列现在是死的**：它原来从身份的角色来，角色删了之后没人写它，查询里恒为 `NULL`
-——别写 `where actor_role = …`，那会得到空结果而且不报错。
+列：`seq / event_id / kind / action / status / error_code / run_id / session_key / agent_id /
+actor / channel / tool_name / args_digest / approval_id / source_id / source_sequence /
+redaction / schema_version / at`。
+
+**`(source_id, source_sequence)` 是幂等键**（ADR-0037 票 02，V9 迁移）：同一件事投两次只留第一行，
+第二次计入 `claw4j.audit.duplicates`——重复不是故障，是幂等在起作用。来源键的算法在
+`AuditEvent` 的四个工厂里：运行是 `run:<runId>`（1 开始 / 2 结束），工具是
+`tool:<runId>:<工具>:<指纹>`。
+
+**`actor_role` 在 V9 里删掉了**：它原来从身份的角色来，角色删了之后没有任何写入点，
+查询里恒为 `NULL`——留着只会让下一个人写 `where actor_role = …` 然后拿到空结果还不报错。
 
 四条口径都在库里的行上验，不看模型措辞：
 
