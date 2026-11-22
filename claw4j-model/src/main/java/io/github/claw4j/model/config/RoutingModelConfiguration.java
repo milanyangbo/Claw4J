@@ -74,6 +74,8 @@ public class RoutingModelConfiguration {
 
         Map<ModelRole, org.springframework.ai.chat.model.ChatModel> byRole = new LinkedHashMap<>();
         byRole.put(ModelRole.main, main);
+        // 独立链时它到底指到哪一行：只打「独立链」等于让人回去翻配置。
+        ModelRef utilityPrimary = null;
 
         ModelProperties.RoleSpec spec = properties.getRoles().get(ModelRole.utility.name());
         if (spec == null) {
@@ -87,6 +89,7 @@ public class RoutingModelConfiguration {
         else if (spec.getPrimary() == null || spec.getPrimary().isBlank()) {
             if (Boolean.TRUE.equals(spec.getAuto())) {
                 ModelRef cheapest = cheapestOf(catalog, mainRef.provider());
+                utilityPrimary = cheapest;
                 byRole.put(ModelRole.utility, routerFor(ModelRole.utility, cheapest, List.of(), catalog,
                         models, cooldowns, gate, probes, registry));
             }
@@ -96,6 +99,7 @@ public class RoutingModelConfiguration {
         }
         else {
             ModelRef explicit = ModelRef.parse(spec.getPrimary());
+            utilityPrimary = explicit;
             List<ModelRef> fallbacks = spec.getFallbacks() == null ? List.of()
                     : spec.getFallbacks().stream().map(ModelRef::parse).toList();
             byRole.put(ModelRole.utility, routerFor(ModelRole.utility, explicit, fallbacks, catalog,
@@ -104,7 +108,8 @@ public class RoutingModelConfiguration {
 
         log.info("模型角色：main={}；utility={}", mainRef,
                 byRole.get(ModelRole.utility) == main ? "继承 main"
-                        : byRole.get(ModelRole.utility) instanceof ModelRoles.Disabled ? "关闭" : "独立链");
+                        : byRole.get(ModelRole.utility) instanceof ModelRoles.Disabled ? "关闭"
+                                : "独立链 " + utilityPrimary);
         return new ModelRoles(byRole);
     }
 

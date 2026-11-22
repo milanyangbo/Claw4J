@@ -18,6 +18,14 @@ tools:
    （`filter (where …)` 或 `case when`）算出"本周 / 上周"两列，按区域分组。
    **不要一周查一条，更不要一个区查一条**：这一层单工具预算是 3 次（含自纠错），分着查一定撞墙。
    口径：`sum(order_item.amount)`、排除 `CANCELLED`、时间窗是半开区间 `[周一, 下周一)`。
+   两周的窗口直接抄这两行，别自己推：
+   ```
+   本周：order_date >=  date_trunc('week', current_date)
+      and order_date <   date_trunc('week', current_date) + interval '7 days'
+   上周：order_date >=  date_trunc('week', current_date) - interval '7 days'
+      and order_date <   date_trunc('week', current_date)
+   ```
+   "本周"从本周一算起（今天可能才周一，本周只有一天，这是对的）。
    **整个任务最多调 `querySales` 两次**：第一次取数、最多一次纠错。第二次还不对，就按
    "本周数据未取到"如实写，不要继续试——把预算耗在同一条 SQL 上，周报一样出不来。
 2. 如果手上还有更长的材料（会议记录、公告链接），先用 `Skill` 载入 `summarize` 拿到它的脚本路径，

@@ -42,6 +42,22 @@ class FailoverClassifierTest {
     }
 
     @Test
+    @DisplayName("Spring AI 的 NonTransientAiException 不都是 auth：4xx 按消息里的状态码与文案细分")
+    void springAiNonTransientIsNotAlwaysAuth() {
+        assertThat(classify(new NonTransientAiException(
+                "400 - {\"error\":{\"message\":\"The supported API model names are deepseek-chat, "
+                        + "but you passed no-such-model\"}}")))
+                .as("模型名写错被当成 auth 的代价是换家也不换——一次配置笔误让整条候选链停摆")
+                .isEqualTo(FailoverReason.model_not_found);
+        assertThat(classify(new NonTransientAiException("401 - unauthorized")))
+                .isEqualTo(FailoverReason.auth);
+        assertThat(classify(new NonTransientAiException("400 - maximum context length is 65536 tokens")))
+                .isEqualTo(FailoverReason.context_overflow);
+        assertThat(classify(new TransientAiException("503 - service unavailable")))
+                .isEqualTo(FailoverReason.overloaded);
+    }
+
+    @Test
     @DisplayName("工具参数坏 JSON 归 format（两个 Jackson 包名都认）")
     void unparseableArgumentsAreFormat() {
         assertThat(classify(new IllegalStateException("Conversion from JSON to java.util.Map failed",

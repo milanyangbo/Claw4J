@@ -15,6 +15,8 @@ import java.net.UnknownHostException;
 import java.net.http.HttpTimeoutException;
 import java.util.Locale;
 import java.util.concurrent.TimeoutException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 把一次失败翻成 {@link FailoverReason}。
@@ -40,6 +42,14 @@ public final class FailoverClassifier {
     private static final String[] CONTEXT_OVERFLOW_HINTS = {
             "maximum context length", "context length", "context_length_exceeded",
             "reduce the length", "too many tokens", "prompt is too long"};
+
+    /** 模型名不存在。两家都把它塞进 400，而 400 本身分不出是参数错还是模型名错。 */
+    private static final String[] MODEL_MISSING_HINTS = {
+            "supported api model", "model_not_found", "no such model", "unknown model",
+            "model does not exist", "模型不存在"};
+
+    /** Spring AI 把状态码拼在消息开头：{@code "400 - {...}"}。 */
+    private static final Pattern STATUS_PREFIX = Pattern.compile("^\\s*(\\d{3})\\b");
 
     /** 额度类文案：403 带这些词时是欠费，不是没权限。 */
     private static final String[] BILLING_HINTS = {
@@ -75,16 +85,24 @@ public final class FailoverClassifier {
     }
 
     private static FailoverReason classifySingle(Throwable failure, String text) {
-        // 一、Spring AI 自己的两类
-        if (failure instanceof NonTransientAiException) {
-            return FailoverReason.auth;
-        }
-        if (failure instanceof TransientAiException) {
-            return FailoverReason.rate_limit;
-        }
-        // 二、文本：上下文溢出与额度
+        // 一、先按文案分：4xx 里最需要细分的两类（上下文溢出、模型名不存在）都只在文案里，
+        //    状态码一律是 400。
         if (containsAny(text, CONTEXT_OVERFLOW_HINTS)) {
             return FailoverReason.context_overflow;
+        }
+        if (containsAny(text, MODEL_MISSING_HINTS)) {
+            return FailoverReason.model_not_found;
+        }
+        // 二、Spring AI 自己的两类：它把所有 4xx 都塞进 NonTransientAiException，
+        //    一概当 auth 会把"模型名写错"变成"换家也没用"（票 06 的 model_not_found 成了死词）。
+        //    状态码在消息开头，能取到就取，取不到才退回这一类原本的语义。
+        if (failure instanceof NonTransientAiException || failure instanceof TransientAiException) {
+            int status = statusOf(failure);
+            if (status > 0) {
+                return byStatus(status, text);
+            }
+            return failure instanceof TransientAiException
+                    ? FailoverReason.rate_limit : FailoverReason.auth;
         }
         // 三、状态码与错误码
         if (failure instanceof OpenAIServiceException service) {
@@ -101,6 +119,16 @@ public final class FailoverClassifier {
             return FailoverReason.billing;
         }
         return byNetwork(failure);
+    }
+
+    /** 消息开头那个状态码；取不到返回 -1。 */
+    private static int statusOf(Throwable failure) {
+        String message = failure.getMessage();
+        if (message == null) {
+            return -1;
+        }
+        Matcher matcher = STATUS_PREFIX.matcher(message);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
     }
 
     private static FailoverReason byStatus(int status, String message) {

@@ -58,6 +58,11 @@
   异常消息也带上原因。
 - `ModelFailures` 与其测试删除；`ModelFailuresTest` 的内容并入 `FailoverClassifierTest`（七条，含
   "17 项都有归宿"与"两张动作表"）。
+- **收票后补的一处**：`NonTransientAiException` 原来一律判 `auth`，而 DeepSeek 的"模型名不存在"
+  是 HTTP 400、被 Spring AI 包成这一类——于是 `model_not_found` 永远不出现，"一次配置笔误"会被当成
+  "换家也没用"直接 503。现在先按消息里的状态码（`400 - {…}`）与文案（`supported api model`、
+  `maximum context length`）细分，取不到状态码才退回这一类原本的语义。
+  验收里 F2 那条就是用这个形状验的（见 README-capability-tests.md）。
 - 偏差：`worthTryingAnother()` 只有 auth / auth_permanent / format / session_expired 返回 false，
   其余都换家——比 OpenClaw 的"按 reason 查表"粗一档，原因是它那张表里有若干项我们没有产生方；
   `PRODUCER_GAPS` 补齐时再逐项收紧。
