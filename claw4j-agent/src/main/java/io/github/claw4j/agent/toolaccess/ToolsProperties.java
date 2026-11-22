@@ -1,4 +1,4 @@
-package io.github.claw4j.agent;
+package io.github.claw4j.agent.toolaccess;
 
 import io.github.claw4j.domain.principal.ToolProfile;
 import io.github.claw4j.domain.principal.ToolTier;

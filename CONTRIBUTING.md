@@ -101,7 +101,7 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | `V3` | `claw4j-agent` | 会话六张表（`claw4j_session`）：框架的 `ai_session` / `ai_session_event`，加我们的 `session_nodes` / `conversations` / `session_windows` / `session_conversations` | `agent.session` / `agent.goal` / `channel.kernel` |
 | `V4` | `claw4j-agent` | 知识库的文件账 `source` 与索引身份 `index_meta`（`claw4j_rag`；块与向量在框架建的 `vector_store` 里）+ `vector` / `pg_trgm` 扩展 | `claw4j-rag` |
 | `V5` | `claw4j-agent` | 审批 / 定时任务 / 审计流水 / exec 白名单（`claw4j_run`） | `agent.approval` / `agent.schedule` / `agent.audit` / `agent.exec` |
-| `V6` | `claw4j-agent` | 入站队列（`claw4j_channel`） | `channel.kernel` / `agent.inbound` |
+| `V6` | `claw4j-agent` | 入站队列（`claw4j_channel`） | `channel.kernel` / `agent.channel` |
 
 **脚本不跟着代码分模块。** `V4` 建的是 `claw4j-rag` 的 schema，但文件留在 `claw4j-agent` 的迁移序列里：
 Flyway 的版本号是全局一条线，把 V4 拆到另一个 jar 之后，"先只部署 agent、后来才加 rag"的库里

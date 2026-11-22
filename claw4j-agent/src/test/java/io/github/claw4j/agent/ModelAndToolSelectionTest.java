@@ -1,5 +1,10 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolSearch;
+import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
+import io.github.claw4j.agent.turn.ChatClientAgentPort;
+import io.github.claw4j.agent.turn.ToolCallBudget;
 import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.model.catalog.ModelRef;
 import io.github.claw4j.model.failover.CooldownStore;
@@ -577,12 +582,17 @@ class ModelAndToolSelectionTest {
      * Advisor 在 SSE 上会被静默跳过——编译过、容器起得来、日志里一句没有，表现是这条约束在
      * 流式入口上根本不存在。而 HTTP 通道同时提供 call 与 SSE，少挂一条路径等于少一个入口的防线。
      *
+     * <p><b>按类型圈，不按包名圈</b>：这条规则原先写的是 {@code resideInAPackage("...agent.advisor..")}，
+     * 于是放在 {@code memory} 与 {@code persona} 里的三个自研 Advisor 根本不在闸内——它们碰巧
+     * 用的是 {@code BaseAdvisor}（它 extends 两个接口）所以没出事，但下一次有人在那两个包里的新
+     * Advisor 只写一个接口，闸不会响。边界由"实现了 Advisor"定义，不由"放在哪个目录"定义。
+     *
      * <p>做成规则而不是靠人记：漏实现一个接口不会有任何报错。
      */
     @Test
     @DisplayName("本仓库的 Advisor 两条路径都挂（架构闸）")
     void advisorsCoverBothPaths() {
-        classes().that().resideInAPackage("io.github.claw4j.agent.advisor..")
+        classes().that().resideInAPackage("io.github.claw4j.agent..")
                 .and().implement(Advisor.class)
                 .should().implement(CallAdvisor.class)
                 .andShould().implement(StreamAdvisor.class)

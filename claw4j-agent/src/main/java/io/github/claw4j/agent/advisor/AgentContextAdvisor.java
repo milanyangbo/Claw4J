@@ -1,5 +1,6 @@
-package io.github.claw4j.agent.persona;
+package io.github.claw4j.agent.advisor;
 
+import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.persona.GlossarySection;
 import io.github.claw4j.persona.Persona;
 import io.github.claw4j.persona.PromptComposition;
@@ -12,7 +13,6 @@ import org.springframework.ai.chat.client.advisor.api.StreamAdvisorChain;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.core.Ordered;
 import reactor.core.publisher.Flux;
 
 import java.time.Clock;
@@ -42,14 +42,6 @@ import java.util.Objects;
  * 「它怎么忘了前面说过的规矩」才发现。
  */
 public class AgentContextAdvisor implements CallAdvisor, StreamAdvisor {
-
-    /**
-     * 最前，但在入站拦截之后。
-     *
-     * <p>拦截器（{@code GuardAutoConfiguration}，{@code Ordered.HIGHEST_PRECEDENCE}）命中时
-     * 直接短路返回，根本不该拼提示词；它之后才是这条。
-     */
-    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 2;
 
     private final Persona persona;
     private final List<GlossarySection> glossary;
@@ -107,7 +99,7 @@ public class AgentContextAdvisor implements CallAdvisor, StreamAdvisor {
 
     @Override
     public int getOrder() {
-        return ORDER;
+        return AdvisorOrder.AGENT_CONTEXT;
     }
 
     @Override

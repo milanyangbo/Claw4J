@@ -1,5 +1,10 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolSearch;
+import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
+import io.github.claw4j.agent.toolaccess.ToolsProperties;
+import io.github.claw4j.agent.turn.ToolCallBudget;
 import io.github.claw4j.agent.schedule.ScheduleTools;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;

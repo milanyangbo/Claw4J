@@ -1,7 +1,7 @@
 package io.github.claw4j.app;
 
-import io.github.claw4j.agent.ChatClientAgentPort;
-import io.github.claw4j.agent.ToolCallBudget;
+import io.github.claw4j.agent.turn.ChatClientAgentPort;
+import io.github.claw4j.agent.turn.ToolCallBudget;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;

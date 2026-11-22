@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.memory;
 
+import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import org.slf4j.Logger;
@@ -9,7 +10,6 @@ import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
 import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
-import org.springframework.core.Ordered;
 
 import java.nio.file.Path;
 import java.util.Map;
@@ -41,19 +41,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class PrincipalMemoryAdvisor implements BaseAdvisor {
 
     private static final Logger log = LoggerFactory.getLogger(PrincipalMemoryAdvisor.class);
-
-    /**
-     * 在链上的位置：persona 之后、脱敏与缓存之前。
-     *
-     * <p>必须大于 {@code AgentContextAdvisor.ORDER}（{@code +2}）：记忆块拼在最终系统提示的尾部，
-     * persona 还没写进去时拼，会被它随后的改写盖掉。必须小于脱敏（{@code +200}）——虽然它没有
-     * {@code after}，但"记忆在脱敏里面"这个相对顺序是这条链的既定分工。
-     *
-     * <p><b>不能用库的默认值</b>：那份默认是 {@code HIGHEST_PRECEDENCE + 200}，在本仓正好撞上
-     * {@code PiiRedactionAdvisor.ORDER}。两个 advisor 同 order 时相对顺序由 bean 名字决定，
-     * 而这种"顺序靠巧合"的链最难查。
-     */
-    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 3;
 
     private final Path root;
 
@@ -90,7 +77,7 @@ public final class PrincipalMemoryAdvisor implements BaseAdvisor {
 
     @Override
     public int getOrder() {
-        return ORDER;
+        return AdvisorOrder.PRINCIPAL_MEMORY;
     }
 
     /**
@@ -110,7 +97,7 @@ public final class PrincipalMemoryAdvisor implements BaseAdvisor {
             return AutoMemoryToolsAdvisor.builder()
                     // 外面这层才是链上的位置；库那份的 order 只在它自己进链时才用得到，
                     // 传同一个值是为了"从这里看过去只有一个位置"。
-                    .order(ORDER)
+                    .order(AdvisorOrder.PRINCIPAL_MEMORY)
                     .memoriesRootDirectory(directory.toString())
                     .build();
         });

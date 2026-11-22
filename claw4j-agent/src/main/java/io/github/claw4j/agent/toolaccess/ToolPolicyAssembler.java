@@ -1,4 +1,4 @@
-package io.github.claw4j.agent;
+package io.github.claw4j.agent.toolaccess;
 
 import io.github.claw4j.agent.schedule.ScheduleTools;
 import io.github.claw4j.capability.sandbox.SandboxProperties;

@@ -1,4 +1,4 @@
-package io.github.claw4j.agent;
+package io.github.claw4j.agent.turn;
 
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.model.tool.ToolCallLimitBehavior;

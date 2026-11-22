@@ -1,22 +1,30 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.advisor.AdvisorOrder;
+import io.github.claw4j.agent.advisor.AgentContextAdvisor;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
-import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
 import io.github.claw4j.agent.approval.ApprovalProperties;
+import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
+import io.github.claw4j.agent.approval.ElevatedProperties;
+import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.ConversationDelivery;
-import io.github.claw4j.agent.elevated.ElevatedProperties;
-import io.github.claw4j.agent.elevated.Elevations;
 import io.github.claw4j.model.config.ModelConfiguration;
 import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.SpanTracer;
-import io.github.claw4j.agent.persona.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.session.SessionEntries;
+import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
+import io.github.claw4j.agent.toolaccess.ToolSearch;
+import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
+import io.github.claw4j.agent.toolaccess.ToolsProperties;
+import io.github.claw4j.agent.turn.ChatClientAgentPort;
+import io.github.claw4j.agent.turn.ConversationLane;
 import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.port.AgentPort;
@@ -580,7 +588,7 @@ public class AgentAutoConfiguration {
 
 
     /**
-     * 出站脱敏：order 排在工具循环外面（见 {@link PiiRedactionAdvisor#ORDER}），整通对话只在出站前
+     * 出站脱敏：order 排在工具循环外面（见 {@link AdvisorOrder#PII_REDACTION}），整通对话只在出站前
      * 做一次。它不认识任何具体通道，也不改调用方，只是多加一个 bean。
      *
      * @return 脱敏 Advisor
@@ -599,7 +607,7 @@ public class AgentAutoConfiguration {
      * <p>order 用框架默认的 0（{@code SimpleLoggerAdvisor}:130），也就是排在工具循环内部、紧贴
      * 模型调用，看到的是每一轮真正发给模型的东西（含工具返回的行）与模型的原始回复。想改成
      * 「只看用户最终看到的那一份」，得排到脱敏外层（order 小于
-     * {@link PiiRedactionAdvisor#ORDER}），代价是看不到工具往返。
+     * {@link AdvisorOrder#PII_REDACTION}），代价是看不到工具往返。
      *
      * <p>打开它之前先想清楚 PII：它 dump 的是模型入口与出口的原文，而脱敏在它外层，所以日志里是
      * 未脱敏的手机号与原始数据行。这也意味着它必须留在 DEBUG：{@code logging.level.org.springframework.ai.chat.client.advisor}

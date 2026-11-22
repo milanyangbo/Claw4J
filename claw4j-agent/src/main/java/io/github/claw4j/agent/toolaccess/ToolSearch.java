@@ -1,5 +1,6 @@
-package io.github.claw4j.agent;
+package io.github.claw4j.agent.toolaccess;
 
+import io.github.claw4j.agent.turn.ToolCallBudget;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
@@ -41,7 +42,7 @@ public final class ToolSearch {
      * <p>写死是有代价的：框架改名这里不会编译失败。兜住它的是"模型只看得见这一个工具"
      * 那条用例——名字变了它先红。权限登记表也按这个名登记，两处共用这一个常量。
      */
-    static final String TOOL_NAME = "toolSearchTool";
+    public static final String TOOL_NAME = "toolSearchTool";
 
     /**
      * 接在系统提示词后面的那段话。
@@ -59,7 +60,7 @@ public final class ToolSearch {
      * 自然语言说清要什么能力，不要求它自己拆关键词。提示词与索引必须一起改：只改索引不改提示词，
      * 等于留一段教模型绕开不存在的限制的话。
      */
-    static final String SYSTEM_SUFFIX = "\n\n"
+    public static final String SYSTEM_SUFFIX = "\n\n"
             + "**你现在只看得见一个叫 toolSearchTool 的「找工具」工具，其余能力按需检索。**\n"
             + "看不到合适的工具**不代表没有这个能力**，不要因此回答\"我没有工具\"或\"做不到\"——\n"
             + "先调用 toolSearchTool，它会把匹配到的工具交给你，下一轮就能直接调用。\n"

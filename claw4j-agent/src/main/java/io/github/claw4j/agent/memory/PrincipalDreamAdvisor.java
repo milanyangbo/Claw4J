@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.memory;
 
+import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import org.slf4j.Logger;
@@ -12,7 +13,6 @@ import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
 import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
-import org.springframework.core.Ordered;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -42,15 +42,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class PrincipalDreamAdvisor implements BaseAdvisor {
 
     private static final Logger log = LoggerFactory.getLogger(PrincipalDreamAdvisor.class);
-
-    /**
-     * 链上的位置：紧跟记忆那一层。
-     *
-     * <p>它的 {@code before} 是空的、{@code after} 只做"计数 + 也许派个后台任务"，所以这个值
-     * 唯一的作用是让"记忆相关的两件事"在链上挨着，读的人不用去两个地方找。取值本身不影响
-     * 任何判定。
-     */
-    public static final int ORDER = PrincipalMemoryAdvisor.ORDER + 1;
 
     private final Path root;
 
@@ -102,7 +93,7 @@ public final class PrincipalDreamAdvisor implements BaseAdvisor {
 
     @Override
     public int getOrder() {
-        return ORDER;
+        return AdvisorOrder.PRINCIPAL_DREAM;
     }
 
     /**
@@ -131,7 +122,7 @@ public final class PrincipalDreamAdvisor implements BaseAdvisor {
             log.debug("记忆整理：用户 {} 的 dream 状态与记忆在 {}", userId, directory);
             return Optional.of(AutoDreamAdvisor.builder()
                     // 外面这层才是链上的位置；库那份的 order 只在它自己进链时才用得到。
-                    .order(ORDER)
+                    .order(AdvisorOrder.PRINCIPAL_DREAM)
                     .memoriesRootDirectory(directory.toString())
                     .dreamTrigger(dreamTrigger)
                     .dreamService(dreamService)

@@ -1,8 +1,8 @@
 package io.github.claw4j.agent.subagent;
 
-import io.github.claw4j.agent.ToolCallBudget;
-import io.github.claw4j.agent.ToolSearch;
-import io.github.claw4j.agent.ToolSearchProperties;
+import io.github.claw4j.agent.turn.ToolCallBudget;
+import io.github.claw4j.agent.toolaccess.ToolSearch;
+import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.untrusted.PromptData;

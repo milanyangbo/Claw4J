@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.persona;
 
+import io.github.claw4j.agent.turn.ToolCallBudget;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.Name;
 
@@ -23,7 +24,7 @@ import java.time.ZoneId;
  * <p>默认 {@code Asia/Shanghai} 是业务口径，不是技术默认。海外部署要显式写自己的。
  *
  * <p>{@code tool-call-limit} 是一轮里最多调几次工具（默认 6，见
- * {@link io.github.claw4j.agent.ToolCallBudget}）。它不是额度：额度是目标上的 token 预算
+ * {@link io.github.claw4j.agent.turn.ToolCallBudget}）。它不是额度：额度是目标上的 token 预算
  * （ADR-0027 决定五）。放在这里是因为它是「这个部署的 Agent 怎么跑」的一个数。
  *
  * @param directory 人设目录；空表示用内置人设
@@ -76,14 +77,14 @@ public record AgentProperties(String directory,
         laneWait = laneWait == null || laneWait.isNegative() ? DEFAULT_LANE_WAIT : laneWait;
         // 0 与"没配"落到同一个默认值：0 在这里不是"不限"，那会让一轮可以无限绕。
         toolCallLimit = toolCallLimit <= 0
-                ? io.github.claw4j.agent.ToolCallBudget.MAX_TOTAL_CALLS : toolCallLimit;
+                ? io.github.claw4j.agent.turn.ToolCallBudget.MAX_TOTAL_CALLS : toolCallLimit;
         // 这里 0 有意义（不设墙钟），所以只归一 null 与负数。
         turnTimeout = turnTimeout == null || turnTimeout.isNegative() ? DEFAULT_TURN_TIMEOUT : turnTimeout;
     }
 
     /**
      * 造一份全默认的配置：没有人设目录、用内置的，时间是业务时区，lane 等 60 秒，
-     * 工具调用上限取 {@link io.github.claw4j.agent.ToolCallBudget#MAX_TOTAL_CALLS}，
+     * 工具调用上限取 {@link io.github.claw4j.agent.turn.ToolCallBudget#MAX_TOTAL_CALLS}，
      * 一轮最多跑 {@link #DEFAULT_TURN_TIMEOUT}。
      *
      * @return 全默认的配置

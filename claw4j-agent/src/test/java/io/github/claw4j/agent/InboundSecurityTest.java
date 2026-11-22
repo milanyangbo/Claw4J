@@ -1,14 +1,15 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.agent.advisor.PiiRedactionAdvisor;
 import io.github.claw4j.agent.guard.GuardAutoConfiguration;
 import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.guard.SensitiveWords;
-import io.github.claw4j.agent.session.SessionMemoryConfiguration;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.DisplayName;
@@ -158,10 +159,10 @@ class InboundSecurityTest {
     @Test
     @DisplayName("入站拦截排在会话记忆外面：排在里层的话，历史里的词会把会话永久锁死")
     void guardSitsOutsideSessionMemory() {
-        assertThat(GuardAutoConfiguration.ORDER)
+        assertThat(AdvisorOrder.GUARD)
                 .as("记忆的 before 会把历史拼进 prompt，而 SafeGuardAdvisor 检查的是 prompt 全文；"
                         + "排在它里层，只要历史里出现过一次某个词，之后每一轮都会被同一个词拦下")
-                .isLessThan(SessionMemoryConfiguration.ADVISOR_ORDER);
+                .isLessThan(AdvisorOrder.SESSION_MEMORY);
     }
 
     @Test
@@ -244,7 +245,7 @@ class InboundSecurityTest {
         return SafeGuardAdvisor.builder()
                 .sensitiveWords(List.of("系统提示词", "ignore previous instructions"))
                 .failureResponse(GuardProperties.DEFAULT_FAILURE_RESPONSE)
-                .order(GuardAutoConfiguration.ORDER)
+                .order(AdvisorOrder.GUARD)
                 .build();
     }
 

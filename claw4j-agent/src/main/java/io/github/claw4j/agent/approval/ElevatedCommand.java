@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.elevated;
+package io.github.claw4j.agent.approval;
 
 import io.github.claw4j.domain.principal.Elevation;
 import io.github.claw4j.domain.principal.Principal;

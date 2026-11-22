@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.inbound;
+package io.github.claw4j.agent.channel;
 
 import io.github.claw4j.domain.inbound.ClaimRef;
 import io.github.claw4j.domain.inbound.ClaimedInbound;

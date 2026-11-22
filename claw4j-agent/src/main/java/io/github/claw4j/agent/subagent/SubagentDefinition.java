@@ -1,6 +1,6 @@
 package io.github.claw4j.agent.subagent;
 
-import io.github.claw4j.agent.ToolPolicyAssembler;
+import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
 import io.github.claw4j.markdown.FrontMatter;
 import org.springaicommunity.agent.common.task.subagent.SubagentReference;
 import org.springframework.ai.tool.ToolCallback;

@@ -1,4 +1,4 @@
-package io.github.claw4j.agent;
+package io.github.claw4j.agent.toolaccess;
 
 import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 
@@ -76,7 +76,7 @@ public class ChineseToolIndex extends RegexToolIndex {
      * @return 匹配用的正则；空 query 与切不出 token 时返回 {@link #NEVER_MATCH}
      */
     @Override
-    protected String convertQueryToRegexPattern(String query) {
+    public String convertQueryToRegexPattern(String query) {
         if (query == null || query.isBlank()) {
             return NEVER_MATCH;
         }
@@ -101,7 +101,7 @@ public class ChineseToolIndex extends RegexToolIndex {
      * @param query 原始检索词
      * @return 去重后的 token，按首次出现顺序
      */
-    List<String> tokens(String query) {
+    public List<String> tokens(String query) {
         List<String> tokens = new ArrayList<>();
         List<String> raw = new ArrayList<>();
         StringBuilder ascii = new StringBuilder();

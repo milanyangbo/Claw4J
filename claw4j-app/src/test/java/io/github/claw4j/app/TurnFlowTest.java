@@ -1,6 +1,6 @@
 package io.github.claw4j.app;
 
-import io.github.claw4j.agent.ChatClientAgentPort;
+import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
 import io.github.claw4j.agent.goal.SessionGoalStore;

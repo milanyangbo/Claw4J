@@ -1,4 +1,4 @@
-package io.github.claw4j.agent;
+package io.github.claw4j.agent.turn;
 
 import io.github.claw4j.domain.port.InboundMessage;
 

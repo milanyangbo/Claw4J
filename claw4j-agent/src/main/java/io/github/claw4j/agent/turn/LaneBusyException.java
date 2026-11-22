@@ -1,4 +1,4 @@
-package io.github.claw4j.agent;
+package io.github.claw4j.agent.turn;
 
 /**
  * 等待上限内没拿到对话 lane 时抛出（ADR-0026 决定二）。

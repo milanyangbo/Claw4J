@@ -1,8 +1,10 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.turn.ChatClientAgentPort;
+import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.agent.cache.CacheAutoConfiguration;
 import io.github.claw4j.agent.cache.CacheProperties;
-import io.github.claw4j.agent.persona.AgentContextAdvisor;
+import io.github.claw4j.agent.advisor.AgentContextAdvisor;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.domain.ContextKeys;
@@ -288,7 +290,7 @@ class SemanticCacheTest {
 
         Fixture() {
             SemanticCacheAdvisor advisor = new SemanticCacheAdvisor(cache,
-                    CacheAutoConfiguration.ADVISOR_ORDER,
+                    AdvisorOrder.SEMANTIC_CACHE,
                     reactor.core.scheduler.Schedulers.boundedElastic());
             ChatClient chat = ChatPipelineTest.clientBuilder(model)
                     .defaultAdvisors(contextAdvisor(), advisor)

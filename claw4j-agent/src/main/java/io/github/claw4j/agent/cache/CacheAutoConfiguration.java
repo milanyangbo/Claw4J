@@ -1,10 +1,10 @@
 package io.github.claw4j.agent.cache;
 
+import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.model.config.EmbeddingAutoConfiguration;
 import io.github.claw4j.model.config.QwenModelCondition;
 import org.springframework.ai.chat.cache.semantic.SemanticCache;
 import org.springframework.ai.chat.cache.semantic.SemanticCacheAdvisor;
-import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.redis.RedisVectorStore;
 import org.springframework.ai.vectorstore.redis.cache.semantic.DefaultSemanticCache;
@@ -41,21 +41,6 @@ import redis.clients.jedis.RedisClient;
 @ConditionalOnProperty(value = "claw4j.advisor.cache.enabled", matchIfMissing = true)
 @EnableConfigurationProperties(CacheProperties.class)
 public class CacheAutoConfiguration {
-
-    /**
-     * 缓存 advisor 在链上的位置：记忆之后、工具循环与脱敏之前。
-     *
-     * <ul>
-     *   <li>比记忆大：记忆的 before 先把这条用户消息写进会话，命中时记忆的 after 照样会把
-     *       "（同上次）"这条回答写回去，会话是连续的。
-     *   <li>比工具循环小：整通对话只查一次，不会在每一轮工具迭代上重复查。
-     *   <li>比脱敏大：命中时出站仍然过脱敏。
-     * </ul>
-     *
-     * <p>必须显式传：框架 advisor 的默认 order 是 {@code -2147483448}，排在记忆之前，命中时那条
-     * 用户消息还没进会话，表现是"聊天记录里少了一轮"。
-     */
-    public static final int ADVISOR_ORDER = Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER + 50;
 
     /**
      * 缓存实例的客户端。jedis 7 的 {@code RedisClient.create(URI)} 接受 {@code redis://} 形式的地址。
@@ -98,12 +83,14 @@ public class CacheAutoConfiguration {
      * 框架的缓存 Advisor。注册成 bean 就会被 {@code AgentAutoConfiguration#chatClient} 的
      * {@code defaultAdvisors} 收走，调用方不需要知道有缓存这回事。
      *
+     * <p>order 见 {@link AdvisorOrder#SEMANTIC_CACHE}：比记忆大、比工具循环与脱敏小。
+     *
      * @param cache 语义缓存
      * @return 命中即返回上次答案的 advisor
      */
     @Bean
     @ConditionalOnMissingBean(SemanticCacheAdvisor.class)
     public SemanticCacheAdvisor semanticCacheAdvisor(SemanticCache cache) {
-        return new SemanticCacheAdvisor(cache, ADVISOR_ORDER, Schedulers.boundedElastic());
+        return new SemanticCacheAdvisor(cache, AdvisorOrder.SEMANTIC_CACHE, Schedulers.boundedElastic());
     }
 }

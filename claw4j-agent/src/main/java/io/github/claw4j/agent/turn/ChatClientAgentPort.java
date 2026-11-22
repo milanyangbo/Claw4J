@@ -1,4 +1,4 @@
-package io.github.claw4j.agent;
+package io.github.claw4j.agent.turn;
 
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.domain.untrusted.InboundText;
@@ -7,13 +7,13 @@ import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.channel.DeliveryTarget;
 import io.github.claw4j.agent.channel.ConversationDelivery;
-import io.github.claw4j.agent.TaskLauncher;
+import io.github.claw4j.agent.turn.TaskLauncher;
 import io.github.claw4j.agent.session.SessionEntries;
 import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
-import io.github.claw4j.agent.elevated.ElevatedCommand;
-import io.github.claw4j.agent.elevated.Elevations;
+import io.github.claw4j.agent.approval.ElevatedCommand;
+import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.goal.GoalStatus;
 import io.github.claw4j.agent.goal.SessionGoal;
@@ -133,7 +133,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * <p>只说「停了」不够：用户会以为是自己那句话有问题。要说清是这个动作被反复调了太多次，
      * 以及下一步能做什么（把要求说细一点）。
      */
-    static final String TOOL_CALL_CAPPED =
+    public static final String TOOL_CALL_CAPPED =
             "这一步做了太多次，我先停下。请把要求说得更具体一些（查哪张表、哪段时间），"
                     + "我再试一次。";
 

@@ -1,5 +1,7 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
+import io.github.claw4j.agent.toolaccess.ToolsProperties;
 import io.github.claw4j.agent.schedule.ScheduleTools;
 import io.github.claw4j.capability.sandbox.SandboxProperties;
 import io.github.claw4j.domain.principal.ToolPolicyContext;

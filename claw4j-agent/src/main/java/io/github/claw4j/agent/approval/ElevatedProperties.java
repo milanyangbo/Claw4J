@@ -1,4 +1,4 @@
-package io.github.claw4j.agent.elevated;
+package io.github.claw4j.agent.approval;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 

@@ -1,5 +1,7 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.turn.ChatClientAgentPort;
+import io.github.claw4j.agent.turn.ToolCallBudget;
 import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditEvent;

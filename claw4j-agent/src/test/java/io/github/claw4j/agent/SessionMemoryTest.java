@@ -1,5 +1,8 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.toolaccess.ToolsProperties;
+import io.github.claw4j.agent.turn.ChatClientAgentPort;
+import io.github.claw4j.agent.turn.ConversationLane;
 import io.github.claw4j.agent.memory.PrincipalMemoryAdvisor;
 import io.github.claw4j.agent.session.SessionEntryStore;
 import io.github.claw4j.agent.session.SessionEntries;
@@ -9,9 +12,9 @@ import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionMaintenance;
-import io.github.claw4j.agent.elevated.ElevatedCommand;
-import io.github.claw4j.agent.elevated.ElevatedProperties;
-import io.github.claw4j.agent.elevated.Elevations;
+import io.github.claw4j.agent.approval.ElevatedCommand;
+import io.github.claw4j.agent.approval.ElevatedProperties;
+import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.session.SessionCommand;
 import io.github.claw4j.agent.session.SessionMaintenanceProperties;

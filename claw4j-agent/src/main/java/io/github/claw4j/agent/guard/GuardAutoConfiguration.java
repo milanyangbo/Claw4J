@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.guard;
 
+import io.github.claw4j.agent.advisor.AdvisorOrder;
 import org.springframework.ai.chat.client.advisor.SafeGuardAdvisor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -7,7 +8,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
-import org.springframework.core.Ordered;
 
 import java.nio.file.Path;
 
@@ -36,24 +36,13 @@ import java.nio.file.Path;
 public class GuardAutoConfiguration {
 
     /**
-     * 全链最小，也就是 {@code before} 最先跑。
-     *
-     * <p>必须早于会话记忆（{@code SessionMemoryConfiguration.ADVISOR_ORDER}）。记忆在它的
-     * {@code before} 里把历史消息拼进 prompt，而 {@link SafeGuardAdvisor} 检查的是
-     * {@code prompt().getContents()} 的全部内容。排在记忆里层的话，只要历史里有一轮出现过某个
-     * 词，之后每一轮都会被同一个词拦下，会话就此锁死，而用户看到的只是「从某一句话开始，
-     * 怎么问都不理我了」。排在最外层，它看到的就是这一条用户消息本身。
-     *
-     * <p>代价是历史里已经存在的词不再被拦。这是有意的：历史只可能装着当时被放行的内容，而当时
-     * 放行的理由就是那一条不含词表里的词。要管住历史，该在写入时管，不是在读出来时管。
-     */
-    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE;
-
-    /**
      * 按配置装一个入站拦截器，词从文件读。
      *
      * <p>{@code properties.sensitiveWordsFile()} 在这里不会是 null：这条装配本身就挂在
      * {@link SensitiveWordsConfigured} 上，路径没配时它不会跑。
+     *
+     * <p>位置见 {@link AdvisorOrder#GUARD}：全链最外，看到的是这一条用户消息本身，而不是拼上历史
+     * 之后的整段 prompt。
      *
      * @param properties 词表文件与命中时的答复
      * @return 挂在全链最前的拦截器
@@ -64,7 +53,7 @@ public class GuardAutoConfiguration {
         return SafeGuardAdvisor.builder()
                 .sensitiveWords(SensitiveWords.load(Path.of(properties.sensitiveWordsFile())))
                 .failureResponse(properties.failureResponse())
-                .order(ORDER)
+                .order(AdvisorOrder.GUARD)
                 .build();
     }
 }

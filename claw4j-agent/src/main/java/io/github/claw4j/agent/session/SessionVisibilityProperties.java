@@ -7,7 +7,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *
  * <p>前缀挂在 {@code claw4j.tools} 下面，与 OpenClaw 的 {@code tools.sessions.visibility} 同位置。
  * 同一个前缀下的兄弟键（{@code profile} / {@code allow} / {@code deny} / {@code exec}）不受影响：
- * {@link io.github.claw4j.agent.ToolsProperties} 是构造器绑定，未知子键一律忽略，两棵子树各绑各的。
+ * {@link io.github.claw4j.agent.toolaccess.ToolsProperties} 是构造器绑定，未知子键一律忽略，两棵子树各绑各的。
  *
  * <p>字段是 String 而不是枚举：合法值只有四个，写错了要让启动失败并点名这四个。直接写枚举时，
  * 绑定层给的消息是"没有这个常量"，运维得去翻文档才知道能填什么；而这里写错的后果是授权范围，

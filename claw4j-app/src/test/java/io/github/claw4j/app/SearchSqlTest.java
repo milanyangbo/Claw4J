@@ -1,6 +1,6 @@
 package io.github.claw4j.app;
 
-import io.github.claw4j.agent.inbound.JdbcInboundStore;
+import io.github.claw4j.agent.channel.JdbcInboundStore;
 import io.github.claw4j.rag.retrieval.HybridDocumentRetriever;
 import io.github.claw4j.rag.retrieval.KeywordDocumentRetriever;
 import io.github.claw4j.rag.index.KnowledgeIndexer;

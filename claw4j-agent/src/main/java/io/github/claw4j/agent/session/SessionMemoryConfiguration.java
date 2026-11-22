@@ -1,6 +1,7 @@
 package io.github.claw4j.agent.session;
 
 import com.zaxxer.hikari.HikariDataSource;
+import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.agent.goal.GoalTools;
 import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
 import io.github.claw4j.agent.goal.SessionGoalStore;
@@ -32,7 +33,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import io.github.claw4j.model.catalog.ModelCatalog;
 import org.springframework.context.annotation.Bean;
-import org.springframework.core.Ordered;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -72,20 +72,6 @@ import java.util.Map;
 public class SessionMemoryConfiguration implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(SessionMemoryConfiguration.class);
-
-    /**
-     * 记忆 Advisor 的 order：除入站拦截外全链最小，也就是 {@code before} 第二早、{@code after} 最后。
-     *
-     * <p>"after 最后"是这里的要害：链的收尾按 order 降序跑，谁 order 小谁最后收尾。它最后收尾，
-     * 写进会话表的才是 {@link io.github.claw4j.agent.advisor.PiiRedactionAdvisor} 已经打过码的
-     * 文本。反过来写，出站是干净的、会话表里躺的是明文，而且没人会去看。
-     *
-     * <p>让出 {@code HIGHEST_PRECEDENCE} 这一个名额，是给 {@code SafeGuardAdvisor}：
-     * 它必须比记忆更外层，否则记忆拼上来的历史会被入站拦截一起检查，历史里出现过的词会把这个
-     * 会话永久锁死（判据在 {@code GuardAutoConfiguration#ORDER}）。记忆往后挪一格不影响
-     * "after 最后"——它仍然比脱敏（{@code HIGHEST_PRECEDENCE + 200}）小。
-     */
-    public static final int ADVISOR_ORDER = Ordered.HIGHEST_PRECEDENCE + 1;
 
     private volatile DataSource sessionDataSource;
 
@@ -144,6 +130,9 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * Advisor 会在整轮结束、且这一轮没请求工具调用时再调一次 {@code SessionService.compact}，
      * 与 {@link SessionCompactor} 在进模型之前的那一次重复。压缩只走一条路。
      *
+     * <p>order 见 {@link AdvisorOrder#SESSION_MEMORY}：排在入站拦截之后、其余一切之前，
+     * 于是 {@code after} 它最后收尾——写进会话表的才是脱敏之后的文本。
+     *
      * @param sessionService 会话服务，已包降级
      * @return 记忆 Advisor
      */
@@ -151,7 +140,7 @@ public class SessionMemoryConfiguration implements DisposableBean {
     @ConditionalOnMissingBean(SessionMemoryAdvisor.class)
     public SessionMemoryAdvisor sessionMemoryAdvisor(SessionService sessionService) {
         return SessionMemoryAdvisor.builder(sessionService)
-                .order(ADVISOR_ORDER)
+                .order(AdvisorOrder.SESSION_MEMORY)
                 .build();
     }
 
