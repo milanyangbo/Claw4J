@@ -5,6 +5,7 @@ import io.github.claw4j.channel.spi.PrincipalRejectedException;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.Approvals;
+import io.github.claw4j.domain.port.AuditQuery;
 import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -148,6 +149,44 @@ class HttpEndpointsTest {
     // ---------------------------------------------------------------- 夹具
 
     /** @param decider 为 null 表示容器里没有审批——那个 bean 缺席时端点仍要在。 */
+
+    /**
+     * 审计的只读端点（ADR-0037 票 03）。
+     *
+     * <p>判两件事：一页按 {@code seq} 倒序带出去、{@code nextCursor} 原样返回；没装配查询时
+     * 回 404 而不是 500——后者在客户端看来像"库坏了"，前者才是"这个部署没开"。
+     */
+    @Test
+    @DisplayName("审计：一页带出 nextCursor；没装配时 404")
+    void anAuditPageIsReadable() {
+        AuditQuery.Row row = new AuditQuery.Row(7L, "e-1", "agent_run", "agent.run.started",
+                "started", null, "run-1", "sk", "ops", "ethan", "http", null, null, null,
+                Instant.parse("2026-11-22T12:00:00Z"));
+        AuditQuery fixed = filter -> {
+            assertEquals(2, filter.limit());
+            assertEquals("run-1", filter.runId());
+            return new AuditQuery.Page(List.of(row), 7L);
+        };
+
+        ResponseEntity<AuditController.AuditView> response =
+                auditController(fixed).list("run-1", null, null, null, null, null, null, 2);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(1, response.getBody().events().size());
+        assertEquals(Long.valueOf(7L), response.getBody().nextCursor());
+        assertEquals(HttpStatus.NOT_FOUND,
+                auditController(null).list(null, null, null, null, null, null, null, 10).getStatusCode());
+    }
+
+    private static AuditController auditController(AuditQuery query) {
+        DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
+        if (query != null) {
+            beans.registerSingleton("auditQuery", query);
+        }
+        return new AuditController(beans.getBeanProvider(AuditQuery.class));
+    }
+
     private static ApprovalController approvalController(Approvals decider) {
         DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
         if (decider != null) {
