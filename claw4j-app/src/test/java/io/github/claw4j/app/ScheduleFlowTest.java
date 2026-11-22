@@ -516,8 +516,9 @@ class ScheduleFlowTest {
                                         ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS)))
                 .defaultToolCallbacks(metered)
                 .build();
-        return new ChatClientAgentPort(chat, null, null, null, null, null,
-                auditIntoDatabase(), null);
+        return ChatClientAgentPort.builder(chat)
+                .audit(auditIntoDatabase())
+                .build();
     }
 
     /** 真账本：定时任务那一轮的审计要真的落库，用例才查得到（ADR-0027）。 */
@@ -540,8 +541,9 @@ class ScheduleFlowTest {
                                 .toolCallingManager(ToolCallBudget.toolCallingManager(
                                         ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS)))
                 .build();
-        return new ChatClientAgentPort(chat, null, null, null, null, null,
-                auditIntoDatabase(), null);
+        return ChatClientAgentPort.builder(chat)
+                .audit(auditIntoDatabase())
+                .build();
     }
 
     private static void scanTogether(CyclicBarrier gate, ScheduleScanner scanner) {

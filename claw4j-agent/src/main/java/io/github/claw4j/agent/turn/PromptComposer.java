@@ -1,0 +1,282 @@
+package io.github.claw4j.agent.turn;
+
+import io.github.claw4j.agent.approval.Elevations;
+import io.github.claw4j.agent.advisor.PiiRedactor;
+import io.github.claw4j.agent.goal.SessionGoal;
+import io.github.claw4j.agent.goal.SessionGoalStore;
+import io.github.claw4j.agent.session.SessionCompactor;
+import io.github.claw4j.capability.tool.ToolCatalog;
+import io.github.claw4j.domain.ContextKeys;
+import io.github.claw4j.domain.port.InboundMessage;
+import io.github.claw4j.domain.principal.Elevation;
+import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.principal.ToolPolicyContext;
+import io.github.claw4j.domain.untrusted.InboundText;
+import org.springaicommunity.agent.advisors.InterruptAdvisor;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.session.advisor.SessionMemoryAdvisor;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * 拼出这一轮真正发给模型的请求：文本、工具清单、上下文、墙钟。
+ *
+ * <p>抽出来是因为门面里它占了一百多行，而它与「跑一轮的时序」（lane、审计、收尾）没有关系：
+ * 给它一段文本和几个键，它给一个待执行的请求。
+ *
+ * <p>三件事必须一起做，分开做会漏：<b>入站脱敏</b>（会话记忆在 before 就把用户消息写进库，
+ * 出站脱敏改不到它）、<b>按这一轮的身份筛工具</b>（provider 展开时拿不到这一轮是谁）、
+ * <b>把身份与会话键放进两条上下文</b>（工具读 ToolContext，审批与鉴权读 Advisor 上下文）。
+ */
+final class PromptComposer {
+
+    /**
+     * 注入的「活跃目标」那一行最多几个字。
+     *
+     * <p>与 OpenClaw 的 {@code MAX_ACTIVE_GOAL_OBJECTIVE_CHARS} 同值（200，
+     * {@code src/auto-reply/reply/inbound-meta.ts:29}），超出截断并加省略号。它只是一行提醒，
+     * 不是目标全文——要看全文走 {@code /goal} 或 {@code get_goal}。
+     */
+    private static final int GOAL_CHARS = 200;
+
+    private final ChatClient chatClient;
+
+    /**
+     * 这一轮该给模型看哪些工具。
+     *
+     * <p>它必须在这里而不是靠 {@code ChatClient} 的默认 provider：provider 展开时<b>拿不到</b>
+     * "这一轮谁在问、用的哪个模型"，而按发送者与按模型那几层正需要它（ADR-0030 裁决二）。
+     * 没有它时清单按"只有全局层"解析——安全但不精确，所以装配时一定会传。
+     */
+    private final ToolCatalog catalog;
+
+    /** 当前模型的供应商名，用于"按模型"那一层。降级到备模型时清单不重算，见 ADR 缺口。 */
+    private final String providerKey;
+
+    /**
+     * 压缩器。可以为 null：没装配会话存储就没有「历史」这回事，也就没有可压的。这不是配置错误，
+     * 是能力不在场，所以不造一个空实现去假装它存在。
+     */
+    private final SessionCompactor compactor;
+
+    /** 这一段会话的提权档（票 06）；没有时为 {@code null}，等同于"这一族命令没开"。 */
+    private final Elevations elevations;
+
+    /** 会话目标（ADR-0027）。为 null 表示没开目标存储：每回合少注入那一行。 */
+    private final SessionGoalStore goals;
+
+    /**
+     * 一轮最多跑多久；{@link Duration#ZERO} 表示不设墙钟。
+     *
+     * <p>它兜的是次数管不住的那种：单次工具调用卡住时，{@code tool-call-limit} 还没数到，
+     * 这一轮就永远不回来。判定在库的 {@code InterruptAdvisor} 里做（每次工具往返之后重查一遍），
+     * 这里只负责算截止时刻。
+     */
+    private final Duration turnTimeout;
+
+    /** 算截止时刻的钟。测试注入固定值，跑起来是系统钟。 */
+    private final Clock clock;
+
+    /**
+     * @param chatClient 对话客户端，必填
+     * @param catalog 工具清单，可以为 null（按"只有全局层"解析）
+     * @param providerKey 当前供应商名，可以为 null
+     * @param compactor 压缩器，可以为 null
+     * @param elevations 提权状态，可以为 null
+     * @param goals 目标存储，可以为 null
+     * @param turnTimeout 一轮最多跑多久，可以为 null（取默认值）
+     * @param clock 算截止时刻的钟，可以为 null（取系统钟）
+     */
+    PromptComposer(ChatClient chatClient, ToolCatalog catalog, String providerKey,
+                   SessionCompactor compactor, Elevations elevations, SessionGoalStore goals,
+                   Duration turnTimeout, Clock clock) {
+        this.chatClient = chatClient;
+        this.catalog = catalog;
+        this.providerKey = providerKey;
+        this.compactor = compactor;
+        this.elevations = elevations;
+        this.goals = goals;
+        this.turnTimeout = turnTimeout == null
+                ? io.github.claw4j.agent.persona.AgentProperties.DEFAULT_TURN_TIMEOUT : turnTimeout;
+        this.clock = clock == null ? Clock.systemUTC() : clock;
+    }
+
+    /**
+     * 拼出这一轮的请求：脱敏后的文本、工具上下文、Advisor 上下文、墙钟。
+     *
+     * <p>身份与会话 id 走 Advisor 的上下文，不走 ThreadLocal：上下文会跟着
+     * {@code ChatClientRequest} 走完工具循环的每一轮（每轮都把 {@code context} 原样带下去），也跟着
+     * Reactor 的订阅走；ThreadLocal 在「流式 + 换线程」的组合下会掉，而掉身份的失败姿势是放行。
+     *
+     * <p>会话 id 由 {@link io.github.claw4j.agent.session.SessionKeys} 从 Principal 派生，不是
+     * {@link InboundMessage#chatId()}：后者只是通道侧的寻址键，拿它当会话主键会让「换通道」变成
+     * 「换会话」。链上没有记忆 Advisor 时这些参数被安静地忽略。
+     *
+     * <p>{@code runId} 两处都要放：工具上下文给工具里的写操作（计划，A03），Advisor 上下文给鉴权
+     * 那一层（审批要挂起 run，P02）。只在工具上下文里放的话，Advisor 拦下工具调用时手里没有
+     * {@code runId}，这一等就只能挂在库里没有落点的位置上。
+     *
+     * @param message 入站消息
+     * @param owner 归属键
+     * @param sessionId 本轮的会话 id
+     * @param conversationKey 会话节点键（不含段）
+     * @param text 剥掉斜杠命令之后的原文（尚未脱敏）
+     * @param runId 这一轮的编号，可为 null
+     * @return 待执行的请求
+     */
+    ChatClient.ChatClientRequestSpec compose(InboundMessage message, String owner, String sessionId,
+                                             String conversationKey, String text, String runId) {
+        Principal principal = message.principal();
+        // 归属键与对话键都由调用方算好再传进来：一轮请求里 run 的 owner、会话 id
+        // 都要用，各算一遍的话，口径一改就可能只改到一半，而表现是"会话记得住、run 查不到"。
+        // 压缩必须发生在"这一轮拼提示词"之前：记忆 Advisor 在 before 阶段读事件，
+        // 压完紧接着就被读到。放在 after 里等于压给下一轮用，而下一轮可能已经超了。
+        if (compactor != null) {
+            compactor.compactIfNeeded(sessionId);
+        }
+        // 入站就脱敏（ADR-0011 里真模型测试抓到的那个缺陷）：
+        // 会话记忆是在 Advisor 链的 before 阶段最早那一步把用户消息写进库的，
+        // 而出站脱敏发生在 after——它改得到模型的回答，改不到已经落库的那条用户消息。
+        // 于是"出站是掩码、会话表里躺着明文"这种更持久的泄露就出现了，
+        // 而且没有任何一条假模型的测试会发现它：假模型时代的用例从不往用户消息里放号码。
+        //
+        // 代价要记账：模型从此看不到用户写的原始号码。当前没有"按手机号查订单"这类工具，
+        // 掩码不影响任何能力；哪天有了，得给那个工具开一条白名单，而不是把入站脱敏撤掉。
+        String masked = InboundText.neutralizeSystemTags(PiiRedactor.mask(text));
+        Map<String, Object> toolContext = new HashMap<>();
+        // 身份也放进工具上下文：委派（Subagent）发生在工具内部，
+        // 那里拿不到 Advisor 上下文，只能从 ToolContext 里取。
+        // 子 Agent 要用父这个身份继续鉴权——委派不提权，
+        // 而"子那边拿不到身份"的失败姿势必须是拒绝（见 SubagentDelegation）。
+        toolContext.put(ContextKeys.PRINCIPAL, principal);
+        // 这一轮的编号同理：工具在工具内部，它要知道"我这一轮属于哪一次回答"。
+        // 不放这个键时，工具那边读不到就是空——比放一个空串让它去猜清楚。
+        if (runId != null) {
+            toolContext.put(ContextKeys.RUN_ID, runId);
+        }
+        // 会话 id 也进工具上下文：recall_session 只查本段对话，它得知道"这一段"是哪一段。
+        // 键用框架的 ChatMemory.CONVERSATION_ID，与它自己的会话工具（SessionEventTools）
+        // 是同一个字符串——哪天换成框架那个工具，键名不必再改一次。
+        // 放这里而不是让工具自己按 principal 推：会话键里还有通道与 chatId，工具推不出来，
+        // 让它去猜就会退化成"这个人的所有会话"，而那正是私聊内容被带进群聊的那条路。
+        toolContext.put(ChatMemory.CONVERSATION_ID, sessionId);
+        // 会话节点键（不含段）也进工具上下文：目标挂在节点上，与记忆的按段隔离是两件事。
+        // 让工具自己去 sessionId 里切段是不行的——chatId 里可以有冒号（cron: 就是）。
+        toolContext.put(ContextKeys.CONVERSATION, conversationKey);
+        // 提权档也进工具上下文（票 06）：exec 的判定在工具那一层，它要知道"这一段刚 /elevated 过"。
+        // 状态在内存里、按会话键存；没开这一族命令时写 off，等于没提权。
+        toolContext.put(ContextKeys.ELEVATION,
+                (elevations == null ? Elevation.OFF : elevations.level(conversationKey)).id());
+        // 通道与地址也进工具上下文（ADR-0027）：审批要写"这条请求来自哪段对话"，
+        // 定时任务要写"结果推回哪里"。地址是这一轮的属性——不该绕一次库，也不该靠另一张表登记。
+        if (message.channel() != null && !message.channel().isBlank()) {
+            toolContext.put(ContextKeys.CHANNEL, message.channel());
+        }
+        if (message.chatId() != null && !message.chatId().isBlank()) {
+            toolContext.put(ContextKeys.CHAT_REF, message.chatId());
+        }
+        ChatClient.ChatClientRequestSpec request =
+                chatClient.prompt(activeGoalLine(conversationKey) + masked).toolContext(toolContext);
+        if (catalog != null) {
+            // 工具按这一轮的上下文现筛（ADR-0030 裁决二）：按模型 / 按发送者 / 子 Agent 角色那几层
+            // 要靠"这一轮是谁、用的哪个模型"，而上下文只有这里拿得到——provider 展开时不带上下文。
+            request = request.toolCallbacks(catalog.toolsFor(
+                    ToolPolicyContext.of(message.channel(), principal.userId()).withProvider(providerKey)));
+        }
+        return withTurnDeadline(request)
+                .advisors(spec -> {
+                    spec.param(ContextKeys.PRINCIPAL, principal)
+                            .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY, sessionId)
+                            // 外键用归属键而不是裸 userId：跨会话召回走 user_id 精确匹配，
+                            // 传裸 userId 的话"换角色即换会话"在召回那条路上等于没做（见 SessionKeys）。
+                            .param(SessionMemoryAdvisor.USER_ID_CONTEXT_KEY, owner);
+                    // 审批那一层读的是这份上下文，不是 ToolContext（README 的那条接缝）：
+                    // 它要写"这条请求来自哪段对话"，于是这三个键两边都要有。
+                    // 少了它们的表现是"批准之后说找不到来处"，而不是报错。
+                    spec.param(ChatMemory.CONVERSATION_ID, sessionId);
+                    if (message.channel() != null && !message.channel().isBlank()) {
+                        spec.param(ContextKeys.CHANNEL, message.channel());
+                    }
+                    if (message.chatId() != null && !message.chatId().isBlank()) {
+                        spec.param(ContextKeys.CHAT_REF, message.chatId());
+                    }
+                    // 鉴权那一层也要知道这是哪一轮（ADR-0027）：审批行上要记"这条请求是哪一轮发起的"，
+                    // 那个答案只在这一格上。两处都要放——它读的是 Advisor 上下文，不是 ToolContext。
+                    if (runId != null) {
+                        spec.param(ContextKeys.RUN_ID, runId);
+                    }
+                });
+    }
+
+    /**
+     * 给这一轮挂上墙钟。
+     *
+     * <p><b>每轮一个新的实例</b>，不挂在 {@code defaultAdvisors} 上：库的 signal 是构建期固定的
+     * {@code BooleanSupplier}，而截止时刻是每一轮算的。单例只能表达「全部署停」。
+     *
+     * <p>order 用库的默认值（工具循环内层），于是每次工具往返之后、下一次模型请求之前都会重查一遍。
+     * 这一条已核过框架：{@code DefaultAroundAdvisorChain.Builder#pushAll} 末尾的 {@code reOrder()}
+     * 会把 default 与 per-request 的 advisor 一起按 order 排序，两者一视同仁。
+     *
+     * @param request 这一轮的请求
+     * @return 挂上墙钟的请求；不设墙钟时原样返回
+     */
+    private ChatClient.ChatClientRequestSpec withTurnDeadline(ChatClient.ChatClientRequestSpec request) {
+        if (turnTimeout.isZero() || turnTimeout.isNegative()) {
+            return request;
+        }
+        Instant deadline = clock.instant().plus(turnTimeout);
+        return request.advisors(InterruptAdvisor.builder()
+                .interruptSignal(() -> !clock.instant().isBefore(deadline))
+                .build());
+    }
+
+    /**
+     * 每回合那一行「活跃目标」（ADR-0027 决定三，照 OpenClaw 的注入形态）。
+     *
+     * <p>只有 {@code active} 才注入（{@code src/auto-reply/reply/inbound-meta.ts:37}）。OpenClaw 的
+     * 原话是「已暂停、已阻塞、预算受限、用量受限和已完成的目标不会被注入，因此操作员的停止操作会
+     * 持续生效，直到目标恢复」。这一条是「叫停能生效」的唯一保证——注入只判有没有行的话，用户按了
+     * 暂停，下一轮模型还在往那个方向推进，而界面上写着「已暂停」。
+     *
+     * <p>四个分句逐句照原文（{@code English: Active goal: <objective> — advance; keep active until
+     * fully achieved; block only after the same blocker on 3 consecutive turns; after update_goal,
+     * provide the requested visible final.}，{@code docs/tools/goal.md:201}）：推进、达成前保持活跃、
+     * 同一个阻塞连续三轮才标 blocked、{@code update_goal} 之后仍要给最终回答。少一句就会长出对应的
+     * 坏行为，尤其最后一句：模型标完 {@code complete} 就收工，用户看到的是一个状态变了、但没有回答
+     * 的一轮。
+     *
+     * <p>折成一行：目标原文可能有七行，而这里要的是一行上下文。折行只影响注入，库里存的仍是原文。
+     *
+     * @param conversationKey 会话节点键
+     * @return 要注入的那一行；没有活跃目标时是空串
+     */
+    private String activeGoalLine(String conversationKey) {
+        if (goals == null || conversationKey == null) {
+            return "";
+        }
+        return goals.of(conversationKey)
+                .filter(SessionGoal::injected)
+                .map(goal -> "活跃目标：" + oneLine(goal.objective(), GOAL_CHARS)
+                        + " — 推进它；没完全达成之前保持活跃；同一个阻塞连续三个轮次都在才标 blocked；"
+                        + "update_goal 之后仍要给出用户要的最终回答。\n")
+                .orElse("");
+    }
+
+    /**
+     * 把多行折成一行再截断，连续空白压成一个空格，首尾不留。
+     *
+     * @param value 原文，可为 null
+     * @param max 字符上限
+     * @return 折好的一行
+     */
+    private static String oneLine(String value, int max) {
+        String flat = value == null ? "" : value.replaceAll("\\s+", " ").strip();
+        return flat.length() <= max ? flat : flat.substring(0, max) + "…";
+    }
+}

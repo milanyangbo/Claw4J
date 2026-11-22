@@ -35,7 +35,7 @@ claw4j.advisor.memory.directory  ← 配了才有，不配就没有（不给默�
 ```
 
 `PrincipalMemoryAdvisor` 只做分发：从 `request.context()` 取 `ContextKeys.PRINCIPAL`
-（`ChatClientAgentPort` 放进 `toolContext` 的就是同一个 map），取到就转给为那个人的目录建好的
+（`PromptComposer` 放进 `toolContext` 的就是同一个 map），取到就转给为那个人的目录建好的
 库 advisor，取不到就**原样返回**——没有身份就没有记忆，不 fallback 到公共目录。库那套逻辑
 （系统提示、工具注入、按名字去重、根目录渲染）一行没改。
 

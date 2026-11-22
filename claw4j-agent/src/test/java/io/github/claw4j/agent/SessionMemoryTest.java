@@ -817,7 +817,10 @@ class SessionMemoryTest {
                         .order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
                         .build())
                 .build();
-        return new ChatClientAgentPort(chat, null, null, null, pointers, lane);
+        return ChatClientAgentPort.builder(chat)
+                .pointers(pointers)
+                .lane(lane)
+                .build();
     }
 
     private static InboundMessage message(String chatId, String text) {

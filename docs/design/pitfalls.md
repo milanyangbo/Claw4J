@@ -142,7 +142,7 @@ PG 的子查询里不能是 `insert` / `update` / `delete`。
 与现有代码里有没有对应的调用点。这个仓库已经因为"看着像"踩过一次
 （`com.larksuite` 那条永不命中的 ArchUnit 规则）。
 
-**现在**：压缩走自己的 `SessionCompactor`，在 `ChatClientAgentPort` 进模型之前调一次。
+**现在**：压缩走自己的 `SessionCompactor`，在 `PromptComposer` 拼这一轮请求时、进模型之前调一次。
 `SessionMemoryAdvisor` 上刻意**不配**那两个参数——配了只会让读代码的人以为压缩已经生效。
 顺手把 `RecursiveSummarizationCompactionStrategy` 的一个约束记下来：
 `overlapSize`（默认 2）必须小于 `maxEventsToKeep`，配成 1 或 2 会在 `build()` 抛异常，

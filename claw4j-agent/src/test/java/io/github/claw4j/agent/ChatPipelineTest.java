@@ -2,6 +2,8 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import io.github.claw4j.agent.turn.ToolCallBudget;
+import io.github.claw4j.agent.approval.ElevatedProperties;
+import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditEvent;
@@ -255,10 +257,10 @@ class ChatPipelineTest {
         InMemoryGoals goals = new InMemoryGoals();
         RecordingTool tool = new RecordingTool("lookup", "还是不对");
         FixedChatModel model = new FixedChatModel(prompt -> requestTool("lookup", "{}"), List.of());
-        ChatClientAgentPort port = new ChatClientAgentPort(
-                client(model, List.of(),
-                        List.of(tool)),
-                null, null, null, null, null, null, goals);
+        ChatClientAgentPort port = ChatClientAgentPort.builder(client(model, List.of(),
+                        List.of(tool)))
+                .goals(goals)
+                .build();
 
         port.reply(message("chat-cap", "/goal 把三张表的口径对齐"));
         String text = port.reply(message("chat-cap", "一直查")).text();
@@ -427,6 +429,41 @@ class ChatPipelineTest {
     }
 
     /**
+     * 命令在两条入口上必须一致：{@code /elevated} 与 {@code /new}、{@code /goal} 同层，
+     * 认出来就当场办、不调模型。
+     *
+     * <p>这条钉的是一个真实的不对称：拆分之前同一套判断在 {@code reply} 与 {@code stream} 里各写
+     * 一遍，而流式那一份漏了 {@code /elevated}——用户走 SSE 发这句话，它被当成普通问题送给模型，
+     * 模型只能猜。判断现在只有 {@code SlashCommands} 一处，这条用例守的是「两个入口同一条结论」。
+     */
+    @Test
+    @DisplayName("流式入口上的命令也当场办：/elevated 不会被当成问题送给模型")
+    void commandsOnTheStreamPathDoNotReachTheModel() {
+        FixedChatModel model = new FixedChatModel(prompt -> answer("不该有人问我"));
+        Elevations elevations = new Elevations(
+                new ElevatedProperties(true, List.of("alice"), null), null);
+        ChatClientAgentPort port = ChatClientAgentPort.builder(clientBuilder(model).build())
+                .elevations(elevations)
+                .build();
+        List<OutboundMessage> chunks = new ArrayList<>();
+
+        port.stream(new InboundMessage(new Principal("alice"), "chat-7", "/elevated full"), chunks::add);
+
+        assertThat(model.prompts())
+                .as("命令不进模型：它连一次请求都不该发出去")
+                .isEmpty();
+        assertThat(chunks).hasSize(2);
+        assertThat(chunks.getFirst().text()).contains("跳过审批");
+        assertThat(chunks.getLast().text()).as("最后一帧空文本是这一路结束的约定").isEmpty();
+
+        // 当场办的意思是状态真的改了：再走一次流式问「现在是什么档」，回执要读到 full。
+        List<OutboundMessage> again = new ArrayList<>();
+        port.stream(new InboundMessage(new Principal("alice"), "chat-7", "/elevated"), again::add);
+        assertThat(again.getFirst().text()).contains("full");
+        assertThat(model.prompts()).as("两条命令都不该碰模型").isEmpty();
+    }
+
+    /**
      * 审计写不进去，回答照给。
      *
      * <p>审计是记账，不是回答的前置条件。库连不上、迁移没跑过时，正确的姿势是
@@ -555,16 +592,17 @@ class ChatPipelineTest {
 
     /** 一台把审计写进内存的门：这一层要验"记了哪几条"，不是"SQL 对不对"。 */
     private static ChatClientAgentPort port(FixedChatModel model, ToolCallAudit audit) {
-        return new ChatClientAgentPort(
-                client(model, List.of(), List.of()),
-                null, null, null, null, null, audit, null);
+        return ChatClientAgentPort.builder(client(model, List.of(), List.of()))
+                .audit(audit)
+                .build();
     }
 
     private static ChatClientAgentPort port(FixedChatModel model, ToolCallAudit audit,
                                             SessionGoalStore goals) {
-        return new ChatClientAgentPort(
-                client(model, List.of(), List.of()),
-                null, null, null, null, null, audit, goals);
+        return ChatClientAgentPort.builder(client(model, List.of(), List.of()))
+                .audit(audit)
+                .goals(goals)
+                .build();
     }
 
     @Test
@@ -1040,9 +1078,11 @@ class ChatPipelineTest {
     /** 带墙钟的门：钟可控，超时窗口由用例给。 */
     private static ChatClientAgentPort timedPort(ChatModel model, List<ToolCallback> tools,
                                                  MovableClock clock, Duration turnTimeout) {
-        return new ChatClientAgentPort(client(model, List.of(), tools),
-                null, null, null, null, null, new RecordingAudit().toolCallAudit(), null,
-                null, null, null, turnTimeout, clock);
+        return ChatClientAgentPort.builder(client(model, List.of(), tools))
+                .audit(new RecordingAudit().toolCallAudit())
+                .turnTimeout(turnTimeout)
+                .clock(clock)
+                .build();
     }
 
     /** 可推进的钟：截止时刻要能被按住，"跑到第几轮时到点"才是可断言的。 */

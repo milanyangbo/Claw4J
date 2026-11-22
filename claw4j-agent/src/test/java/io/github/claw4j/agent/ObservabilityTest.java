@@ -462,7 +462,10 @@ class ObservabilityTest {
         ChatClient client = ChatPipelineTest.clientBuilder(model)
                 .defaultToolCallbacks(wrapped)
                 .build();
-        return new ChatClientAgentPort(client, null, null, tracer, null, null, audit);
+        return ChatClientAgentPort.builder(client)
+                .tracer(tracer)
+                .audit(audit)
+                .build();
     }
 
     private SpanData spanOf(String name) {

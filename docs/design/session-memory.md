@@ -110,7 +110,7 @@ other agents' and other users' transcripts)"。默认值不因为"我们觉得�
 五点值得留意：
 
 1. **会话 id 由宿主写进工具上下文，模型没有参数可改。** 键是 `ChatMemory.CONVERSATION_ID`，
-   由 `ChatClientAgentPort` 塞进 `toolContext`。模型手上没有"换一段会话查"的入参——
+   由 `PromptComposer`（拼这一轮请求的那一层）塞进 `toolContext`。模型手上没有"换一段会话查"的入参——
    范围是部署配的，不是模型挑的。
    工具也不许自己按 principal 推会话 id——推出来只能是一个人，而"哪一段对话"这件事
    一个人身上装不下。

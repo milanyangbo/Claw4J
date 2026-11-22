@@ -627,7 +627,9 @@ class ApprovalFlowTest {
                         .defaultToolCallbacks(gated)
                         .build();
                 // 带上审计：这一层的断言读 audit_event 里的两条事件（ADR-0027）。
-                port = new ChatClientAgentPort(chat, null, null, null, null, null, audit, null);
+                port = ChatClientAgentPort.builder(chat)
+                        .audit(audit)
+                        .build();
             }
             return port;
         }

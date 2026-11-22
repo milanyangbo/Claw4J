@@ -660,13 +660,21 @@ public class AgentAutoConfiguration {
         //
         // lane 不是可选项：它是"一段对话同时只有一轮在跑"那条正确性保证本身。
         // 不装配它，并发两条消息就会各跑各的，而失败长相是"模型偶尔会忘事"。
-        return new ChatClientAgentPort(chatClient, compactor.getIfAvailable(),
-                delivery.getIfAvailable(),
-                tracer.getIfAvailable(() -> SpanTracer.NONE), pointers.getIfAvailable(),
-                new ConversationLane(properties.laneWait()), audit.getIfAvailable(),
-                goals.getIfAvailable(), catalog, model.getPrimary(), elevations,
+        return ChatClientAgentPort.builder(chatClient)
+                .compactor(compactor.getIfAvailable())
+                .delivery(delivery.getIfAvailable())
+                .tracer(tracer.getIfAvailable(() -> SpanTracer.NONE))
+                .pointers(pointers.getIfAvailable())
+                .lane(new ConversationLane(properties.laneWait()))
+                .audit(audit.getIfAvailable())
+                .goals(goals.getIfAvailable())
+                .catalog(catalog)
+                .providerKey(model.getPrimary())
+                .elevations(elevations)
                 // 墙钟：次数管不住的那一种（单次工具卡住）由它兜底。
                 // 0 = 不设，见 AgentProperties#turnTimeout 的那段论证。
-                properties.turnTimeout(), Clock.systemUTC());
+                .turnTimeout(properties.turnTimeout())
+                .clock(Clock.systemUTC())
+                .build();
     }
 }

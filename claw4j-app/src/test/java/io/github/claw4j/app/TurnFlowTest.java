@@ -462,10 +462,11 @@ class TurnFlowTest {
             }
         };
         // 带上真审计：这条用例要读"这一轮照常跑完了"那条事件（ADR-0027）。
-        return new ChatClientAgentPort(ChatClient.builder(model).build(), null,
-                null, null, pointers, null,
-                new ToolCallAudit(new AuditLedger(jdbc, null)),
-                new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null));
+        return ChatClientAgentPort.builder(ChatClient.builder(model).build())
+                .pointers(pointers)
+                .audit(new ToolCallAudit(new AuditLedger(jdbc, null)))
+                .goals(new JdbcSessionGoalStore(jdbc, SessionSchema.DEFAULT_SCHEMA, null))
+                .build();
     }
 
     /** 真的段解析器：走会话身份那几张表，与生产同一条路。 */
