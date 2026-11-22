@@ -88,6 +88,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      */
     private final ConversationLane lane;
 
+    /** 这一轮是哪个 agent 在跑，只用于审计归属（ADR-0037 票 01）。 */
+    private final String agentId;
+
     /**
      * 只连 ChatClient 的门：无压缩、无投递、无观测、无审计。
      *
@@ -110,6 +113,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                 builder.turnTimeout, builder.clock);
         this.recorder = new TurnRecorder(builder.tracer, builder.audit, builder.delivery, builder.goals);
         this.lane = builder.lane;
+        this.agentId = builder.agentId;
     }
 
     /**
@@ -144,6 +148,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         private String providerKey;
         private Elevations elevations;
         private Duration turnTimeout = AgentProperties.DEFAULT_TURN_TIMEOUT;
+
+        private String agentId = AuditEvent.Scope.UNKNOWN_AGENT;
         private Clock clock = Clock.systemUTC();
 
         private Builder(ChatClient chatClient) {
@@ -264,6 +270,21 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
          */
         public Builder turnTimeout(Duration value) {
             this.turnTimeout = value == null ? AgentProperties.DEFAULT_TURN_TIMEOUT : value;
+            return this;
+        }
+
+        /**
+         * 这一轮是哪个 agent 在跑，只用于审计归属（ADR-0037 票 01）。
+         *
+         * <p>空值落成 {@code unknown}：取不到也要留一个可数的值，与 OpenClaw 的
+         * {@code agentId} 必填同一个要求。
+         *
+         * @param value 部署级 agent 名，可为 null
+         * @return 这个 builder
+         */
+        public Builder agentId(String value) {
+            this.agentId = value == null || value.isBlank()
+                    ? AuditEvent.Scope.UNKNOWN_AGENT : value;
             return this;
         }
 
@@ -393,8 +414,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // 但没有任何"按 runId 取回一件事"的接口，因为一轮答完它就作废了。
         String runId = UUID.randomUUID().toString();
         // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
-                message.channel());
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, agentId,
+                message.principal(), message.channel());
         recorder.runStarted(auditScope);
         // 根 span 从"这一轮"开始，而不是从这次请求开始：模型轮与工具都发生在入池之后（见 RUN_SPAN）。
         try (SpanTracer.SpanScope run = recorder.tracer().open(TurnRecorder.RUN_SPAN,
@@ -442,8 +463,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         }
         String sessionId = address.sessionIdOf(message, owner, parsed.reset());
         String runId = UUID.randomUUID().toString();
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, message.principal(),
-                message.channel());
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, agentId,
+                message.principal(), message.channel());
         recorder.runStarted(auditScope);
         try (SpanTracer.SpanScope run = recorder.tracer().open(TurnRecorder.RUN_SPAN,
                 TurnRecorder.runAttributes(runId, message.principal()))) {

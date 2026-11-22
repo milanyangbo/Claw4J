@@ -1,5 +1,7 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.audit.AuditEvent;
+
 import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.model.usage.MeteredChatModel;
@@ -706,5 +708,17 @@ class ObservabilityTest {
         return ChatResponse.builder()
                 .generations(List.of(new Generation(new AssistantMessage(text))))
                 .build();
+    }
+
+    @Test
+    @DisplayName("审计归属：没接上写 unknown，接上了写 agent 名（ADR-0037 票 01）")
+    void auditScopeNeverLeavesAgentNull() {
+        assertThat(AuditEvent.Scope.of("run-1", "session-1", null, "http").agentId())
+                .as("OpenClaw 的 agentId 必填：取不到也要留一个可数的值")
+                .isEqualTo("unknown");
+        assertThat(AuditEvent.Scope.of("run-1", "session-1", "ops", null, "http").agentId())
+                .isEqualTo("ops");
+        assertThat(AuditEvent.Scope.of("run-1", "session-1", "  ", null, "http").agentId())
+                .isEqualTo("unknown");
     }
 }

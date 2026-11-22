@@ -53,8 +53,30 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
          * @param channel 通道名，可为 null
          * @return 事件作用域
          */
+        /** 没接上 agent 归属时的写法：写 {@code unknown} 而不是 null——null 让「谁干的」不可查。 */
+        public static final String UNKNOWN_AGENT = "unknown";
+
         public static Scope of(String runId, String sessionKey, Principal principal, String channel) {
-            return new Scope(runId, sessionKey, null,
+            return of(runId, sessionKey, UNKNOWN_AGENT, principal, channel);
+        }
+
+        /**
+         * 带 agent 归属的那一份。
+         *
+         * <p>{@code agentId} 为空白时落成 {@code unknown}：与 OpenClaw 的 {@code agentId} 必填
+         * （{@code audit.ts:53}）同一个要求，取不到也要留一个可数的值，而不是一格没人。
+         *
+         * @param runId 这一轮的编号
+         * @param sessionKey 会话键
+         * @param agentId 哪个 agent 干的
+         * @param principal 身份，可为 null
+         * @param channel 通道名，可为 null
+         * @return 事件作用域
+         */
+        public static Scope of(String runId, String sessionKey, String agentId, Principal principal,
+                               String channel) {
+            return new Scope(runId, sessionKey,
+                    agentId == null || agentId.isBlank() ? UNKNOWN_AGENT : agentId,
                     principal == null ? null : principal.userId(), channel);
         }
 

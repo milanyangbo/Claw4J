@@ -692,6 +692,9 @@ public class AgentAutoConfiguration {
                 // 墙钟：次数管不住的那一种（单次工具卡住）由它兜底。
                 // 0 = 不设，见 AgentProperties#turnTimeout 的那段论证。
                 .turnTimeout(properties.turnTimeout())
+                // 审计归属（ADR-0037 票 01）：部署级 agent 名，没配目录时是内置人设。
+                .agentId(properties.hasDirectory() && properties.defaultName() != null
+                        ? properties.defaultName() : "builtin")
                 .clock(Clock.systemUTC())
                 .build();
     }

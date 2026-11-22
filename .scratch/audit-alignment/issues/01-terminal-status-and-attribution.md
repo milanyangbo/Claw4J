@@ -38,8 +38,8 @@ Status: claimed
 | 判什么 | 用例名 | 先红的样子 | 结果 |
 | --- | --- | --- | --- |
 | 被权限拦下的工具写一行 blocked、不写 started | `ToolGovernanceTest#blockedToolWritesOnlyFinished` | 库里 0 行 → 期望 1 行 `blocked/tool_blocked` | ❌ 未接生产调用点 |
-| 工具事件带 agent 归属 | `ObservabilityTest#toolAuditCarriesAgentId` | `agent_id` 为 null → 期望 `unknown` 或绑定名 | ❌ turn 层拿不到 agent 绑定 |
-| 运行事件带 agent 归属 | `ObservabilityTest#runAuditCarriesAgentId` | 同上 | ❌ 同上 |
+| 工具事件带 agent 归属 | `ObservabilityTest#toolAuditCarriesAgentId` | `agent_id` 为 null → 期望 `unknown` 或绑定名 | ❌ 仍是 `unknown`：`AGENT_ID` 还没写进 ToolContext |
+| 运行事件带 agent 归属 | `ObservabilityTest#auditScopeNeverLeavesAgentNull` | 四参 `Scope.of` 写 null → 期望 `unknown` | ✅（接线在 `ChatClientAgentPort.Builder#agentId`，装配取 `claw4j.agent.default`，没配目录时 `builtin`） |
 | 客户端断流记 cancelled 而不是 failed | `ChatPipelineTest#cancelledStreamIsAuditedAsCancelled` | 现在写 `failed/run_failed` | ❌ 未做 |
 | 流超时记 timed_out | `ChatPipelineTest#timedOutStreamIsAuditedAsTimedOut` | 现在写 `failed/run_failed` | ❌ 未做 |
 | 库里拒绝 `kind` 与 `error_code` 不配的行 | `BuildContractTest#auditTerminalPairingIsEnforced` | 插一行 `agent_run + tool_failed` 现在能进库 | ❌ 未做 |
