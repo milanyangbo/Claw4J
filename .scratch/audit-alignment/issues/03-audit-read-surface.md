@@ -1,6 +1,6 @@
 # 票 03 读侧：一个只读端口，形状照 `audit.list`
 
-Status: resolved
+**Status:** resolved
 Blocked by: 01
 裁决来源：`docs/adr/0037-audit-alignment-with-openclaw.md`（决定 5）
 
@@ -28,7 +28,7 @@ Blocked by: 01
 | --- | --- | --- | --- |
 | 默认 newest-first、limit 生效 | `BuildContractTest#auditQueryReturnsNewestFirst` | 正序或 limit 不生效时断言直接红 | ✅ |
 | 游标翻页不重不漏 | 同上（第二页剩一条、`nextCursor` 为空） | 不判 `limit+1` 时第二页要么多一条要么少一条 | ✅ |
-| 过滤 runId / kind 生效 | `BuildContractTest#auditQueryFiltersAndClampsLimit` | 过滤条件不进 where 时命中数不对 | ✅ |
+| 过滤 runId / kind 生效 | `BuildContractTest#auditQueryReturnsNewestFirst` | 过滤条件不进 where 时命中数不对 | ✅ |
 | `limit>500` 截到 500 | 同上（`Filter` 紧凑构造里钳位） | 不钳位时 999 原样下去 | ✅ |
 | 端点返回 `{events,nextCursor}`，没装配时 404 | `HttpEndpointsTest#anAuditPageIsReadable` | 端点 404 / 500 | ✅ |
 

@@ -1,6 +1,6 @@
 # 票 02 幂等写入：重放只留一行
 
-Status: resolved
+**Status:** resolved
 裁决来源：`docs/adr/0037-audit-alignment-with-openclaw.md`（决定 6）；幂等口径同 ADR-0017
 
 ## 对照

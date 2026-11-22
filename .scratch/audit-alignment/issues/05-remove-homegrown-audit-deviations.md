@@ -1,6 +1,6 @@
 # 票 05 去掉自研：内存交接换持久事实，拿不到的标 blocked
 
-Status: resolved
+**Status:** resolved
 Blocked by: 01
 裁决来源：`docs/adr/0037-audit-alignment-with-openclaw.md`（「自己实现的要去除」三条 + 决定 3）
 

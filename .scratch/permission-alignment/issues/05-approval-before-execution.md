@@ -69,8 +69,8 @@
 
 | 判什么行为 | 用例名 | 落在哪 |
 | --- | --- | --- |
-| 被拒时模型在**同一回合**收到一条工具结果并继续 | `ApprovalRequiredToolCallbackTest#withoutApprovalItReturnsAResultInsteadOfThrowing` | ✅ 返回值里带编号与三句，delegate 一次没执行 |
-| 被拒的文案含"没跑 / 不要重跑 / 没有新输出" | `ApprovalRequiredToolCallbackTest#withoutApprovalItReturnsAResultInsteadOfThrowing` | ✅ |
+| 被拒时模型在**同一回合**收到一条工具结果并继续 | `ToolGovernanceTest#withoutApprovalItReturnsAResultInsteadOfThrowing` | ✅ 返回值里带编号与三句，delegate 一次没执行 |
+| 被拒的文案含"没跑 / 不要重跑 / 没有新输出" | `ToolGovernanceTest#withoutApprovalItReturnsAResultInsteadOfThrowing` | ✅ |
 | 异步批准完成后以 follow-up 注入同一会话 | `ApprovalFlowTest#approvingStartsTheNextTurnInTheSameConversation` | ✅ 原有那条覆盖（本轮不动它，04 重写） |
 | 子 Agent 会话的被拒不投递 | `ExecApprovalTest#denialForASubagentSessionIsNotDelivered` | ✅ |
 | cron 会话的被拒不投递 | `ExecApprovalTest#denialForACronSessionIsNotDelivered` | ✅ |
@@ -81,8 +81,8 @@
 | `askFallback=deny` 且没人能批 → 拒绝而不是放行 | `ExecToolTest#undecidedIsDeniedByDefault` | ✅ |
 | 兜底档不能比 `security` 更宽 | `ExecToolTest#fallbackCannotBeWiderThanSecurity`、`ExecPolicyTest#fallbackIsClampedBySecurity` | ✅ |
 | `askFallback=full` 且 `security=full` 时放行一次 | `ExecToolTest#fallbackFullRunsWithoutADecision` | ✅ |
-| 声明要审批的工具在**调用前**被拦住，拿到的是工具结果不是异常 | `ApprovalRequiredToolCallbackTest#withoutApprovalItReturnsAResultInsteadOfThrowing` | ✅ |
-| 读、检索类 core 工具没有这道闸 | `ApprovalRequiredToolCallbackTest#onlyListedToolsAreGated` | ✅ |
+| 声明要审批的工具在**调用前**被拦住，拿到的是工具结果不是异常 | `ToolGovernanceTest#withoutApprovalItReturnsAResultInsteadOfThrowing` | ✅ |
+| 读、检索类 core 工具没有这道闸 | `ToolGovernanceTest#onlyListedToolsAreGated` | ✅ |
 | `allow-always` 按段落的、第二次不再问 | `ExecApprovalTest#allowAlwaysWritesOneRowPerSegment` | ✅ |
 | `ask=always` 时不接受 `allow-always` | `ExecApprovalTest#askAlwaysRefusesThePersistentChoice` | ✅ 接口/服务侧；卡片上的第三个按钮同一条判断（`Pending#allowAlways`） |
 | 没有身份时 exec 不登记也不放行 | `ExecApprovalTest#withoutIdentityNothingIsRegistered` | ✅ |

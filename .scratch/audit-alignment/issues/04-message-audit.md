@@ -1,6 +1,6 @@
 # 票 04 消息审计：`kind=message`，收发各有终态
 
-Status: claimed
+**Status:** resolved
 Blocked by: 01, 02
 裁决来源：`docs/adr/0037-audit-alignment-with-openclaw.md`（决定 3、7）
 
@@ -30,30 +30,48 @@ Blocked by: 01, 02
 
 ## TDD 用例清单
 
-| 判什么 | 用例名 | 先红的样子 |
-| --- | --- | --- |
-| 入站一条写一行 `message/inbound/completed` | `InboundAuditTest#inboundMessageIsAudited` | 无该类 |
-| 去重跳过的入站记 `blocked/skipped/duplicate` | `InboundAuditTest#duplicateInboundIsSkipped` | 无 |
-| 出站成功记 `sent` | `OutboundAuditTest#sentMessageIsAudited` | 无 |
-| 出站失败记 `failed` + `failureStage` | `OutboundAuditTest#failedDeliveryCarriesStage` | 无 |
-| 身份引用是假名、且不含原文 | `InboundAuditTest#identityRefsArePseudonymized` | 无 |
-| 开关关掉不写消息行 | `OutboundAuditTest#messagesSwitchOffSkipsWrites` | 无 |
+| 判什么 | 用例名 | 先红的样子 | 结果 |
+| --- | --- | --- | --- |
+| 入站一条写一行 `message/inbound/completed` | `MessageAuditTest#inboundMessageIsAudited` | 无该类 | ✅ 带 runId 与时长 |
+| 去重跳过的入站记 `blocked/skipped/duplicate` | `MessageAuditTest#duplicateInboundIsSkipped`（映射）+ `InboundDispatchTest#duplicateInboundIsAuditedAsSkipped`（真去重路径） | 无 | ✅ 跳过不是 failed |
+| 出站成功记 `sent` | `MessageAuditTest#outboundCarriesStageAndKind` | 无 | ✅ 带 `delivery_kind` |
+| 出站失败记 `failed` + `failureStage` | 同上（第二条断言） | 无 | ✅ `platform_send` |
+| 身份引用是假名、且不含原文 | `MessageAuditTest#identityRefsArePseudonymized` | 无 | ✅ 同一原文算同一个假名 |
+| 开关关掉不写消息行 | `MessageAuditTest#messagesSwitchOffSkipsWrites` | 无 | ✅ 连密钥都不去取 |
+| 入站失败自带码 | `MessageAuditTest#failedInboundCarriesItsOwnCode` | 无 | ✅ `message_processing_failed` |
 
-## 门禁余量
+## 门禁余量（实际怎么落的）
 
-新增两个测试文件会顶穿 `claw4j-agent` / `claw4j-channel` 的文件上限。**先并**：
-`AskUserQuestionTest`（6）并进 `SubagentDelegationTest`（22 → 28，超 26，不行）→ 改并
-`SlackFlowTest`（2）进 `InboundSecurityTest`（10 → 12）；`ToolFilterBindingTest`（2）进
-`ModelAndToolSelectionTest`（12 → 14）。合并后空出的两个槽给本票。**合并前先在票里记一笔**，
-合并不改断言，只搬家。
+只新增了一个测试文件 `MessageAuditTest`（6 条），槽位来自把 `ApprovalRequiredToolCallbackTest`（6）
+并进 `ToolGovernanceTest`（19 → 26）——合并只搬家不改断言，另一条 blocked 用例也在那里。
+去重那条落在既有的 `InboundDispatchTest`（core，20 → 21）。
+
+原计划"两个新文件 + 并 SlackFlowTest / ToolFilterBindingTest"没有采纳：一个文件就够，
+没必要动那两个。
 
 ## 缺口
 
 - queued / platform-started 的"进度行"在 OpenClaw 里落在一个 lazy companion store，
   不进 `audit.activity.list`（`ledgers.md:132-136`）；本票只做终态行，进度行归缺口。
+- **HTTP 就地返回的那一侧不写消息行**：它的答案随那次请求回去了，没有"投递"这件事。
+  写 `sent` 是假的、写 `suppressed` 是撒谎，所以只留指标 `claw4j.run.delivery.polled`。
+  要补得先有一个"响应即投递"的接缝（`ConversationDelivery` 现在只管主动推）。
+- **`conversation_kind` 恒为 `unknown`**：这个仓库还没有"这段会话是私聊还是群"的判定，
+  闭集里本来就有 unknown，所以不编。
+- 读接口能按 `kind=message` / `status` / `channel` 查，但**还不能按 `direction` 过滤**：
+  `AuditQuery.Filter` 加一个字段要动三个调用点，本票没做，记在票 03 的缺口里。
 - "被 hook 吞掉"这类 suppressed 原因，我们目前没有 hook 接缝（ADR-0021 不做清单），
   先只写 `no_visible_payload`。
 
 ## 复核
 
-待实现后补：`复核：<日期> ./scripts/verify.sh 全绿`
+复核：2026-11-23 `./scripts/verify.sh` 全绿（失败 0 / 错误 0 / 跳过 0；V12 在 testcontainers 的真库上跑过）。
+
+实现要点（落地时定的）：
+
+- 词表扩到 12：消息那三个码来自 OpenClaw 的内部生产者契约（`audit-event-types.ts:157-215`），
+  对外 schema 还没有它们，所以票 02 的九值说法只覆盖运行与工具。
+- 假名 `hmac-sha256:v1:<keyId16hex>:<digest32hex>`：密钥单行落库，首启生成，
+  `on conflict do nothing` + 再读一次，避免两个实例各用一把。
+- 生产点三处：入口（`ChatClientAgentPort`，完成/失败）、派发器（重复跳过）、投递
+  （`ConversationDelivery`，送达/抑制/失败）。同一条消息只会有一行终态。

@@ -539,8 +539,10 @@ claw4j:
 
 出了事要能查清三件事：**这次调用是谁让做的、是哪次批准的、被拒的那次算不算一次调用**。
 
-审计是一个**事件流水**（`claw4j_run.audit_event`），不是"某个 run 的第几步"。四类 action：
-`agent.run.started`、`agent.run.finished`、`tool.action.started`、`tool.action.finished`。
+审计是一个**事件流水**（`claw4j_run.audit_event`），不是"某个 run 的第几步"。六类 action
+（前四类是最早的，后两类是 ADR-0037 票 04 加的消息审计）：
+`agent.run.started`、`agent.run.finished`、`tool.action.started`、`tool.action.finished`、
+`message.inbound.processed`、`message.outbound.finished`。
 形状照 OpenClaw 的 metadata-only ledger：**只记元数据**——身份、顺序、来源、动作、结局、归一化错误码；
 不记提示词、消息体、工具参数、工具结果、命令输出与原始错误文本。工具调用 id 只留单向指纹。
 
@@ -552,7 +554,7 @@ psql "$DATABASE_URL" -c "select actor, tool_name, action, status, at
   order by at desc limit 20"
 
 # 谁被审批拒了、想调什么：真相在审批表上，不在审计里
-# （被拒的调用没有执行，审计是"执行过的动作"的流水；`status='blocked'` 那一类行今天没有生产者）
+# （等审批的调用没有执行，审计里也没有它那一行；"再等也不会通过"的那种才有一行 blocked）
 psql "$DATABASE_URL" -c "select owner, tool_name, status, decision, terminal_reason, resolved_at
   from claw4j_run.approval_request
   where status in ('denied', 'expired') and requested_at > current_date order by requested_at desc"
@@ -565,7 +567,12 @@ psql "$DATABASE_URL" -c "select seq, actor, tool_name, status, left(args_digest,
 
 列：`seq / event_id / kind / action / status / error_code / run_id / session_key / agent_id /
 actor / channel / tool_name / args_digest / approval_id / source_id / source_sequence /
-redaction / schema_version / at`。
+redaction / schema_version / at`，消息行另加 `direction / conversation_kind / message_outcome /
+reason_code / delivery_kind / failure_stage / duration_ms / result_count / actor_type /
+account_ref / conversation_ref / message_ref / target_ref`（V12）。
+
+**`run_id` 只有消息行可以空**：入站消息在开跑之前就到了（可能被跳过、可能没认出身分）。
+运行与工具行仍然必填，库里有 `ck_audit_event_run_required` 挡着。
 
 **`(source_id, source_sequence)` 是幂等键**（ADR-0037 票 02，V9 迁移）：同一件事投两次只留第一行，
 第二次计入 `claw4j.audit.duplicates`——重复不是故障，是幂等在起作用。来源键的算法在
@@ -575,11 +582,30 @@ redaction / schema_version / at`。
 **`actor_role` 在 V9 里删掉了**：它原来从身份的角色来，角色删了之后没有任何写入点，
 查询里恒为 `NULL`——留着只会让下一个人写 `where actor_role = …` 然后拿到空结果还不报错。
 
+**`agent_id` 从 V11 起有值**（ADR-0037 票 01）：入口把部署级 agent 名（`claw4j.agent.default`，
+没配目录时 `builtin`）写进工具上下文与两条运行事件；取不到时落 `unknown` 而不是空——
+空格让"这条是哪个 agent 干的"在多 agent 部署里永远答不了，`unknown` 至少可数。
+
+**七个终态都有生产者**（同票）：`succeeded` / `failed` / `cancelled`（客户端断开、被取消）/
+`timed_out`（超时）/ `blocked`（再等也不会通过的拦截）/ `unknown`（跑了但结果不可知）/
+`started`（还在跑）。判据只看异常链（`RunOutcome`）：超时优先于取消，`IOException` 记取消
+（流式写回客户端最常见的那种）。V11 起 `kind × status × error_code` 必须配对——
+`agent_run` 配 `tool_failed` 进不去。
+
+**孤儿行会被补成 `unknown`**：我们是"开跑即落一行 started"，进程被杀时那一行没有下文。
+启动与每次清理时扫一遍"停在 started 且超过 30 分钟、来源内没有第 2 行"的，补一条终态；
+窗口值是估的（OpenClaw 靠两行原子落库避开孤儿，票 01 的缺口里写明）。
+
 四条口径都在库里的行上验，不看模型措辞：
 
 - **一个动作两条，只记真跑过的**：真正执行了的工具是 `started` + `finished`。被挡下的调用
-  （清单里没有、或者审批被拒）**一行都不写**——它没开始，写成 `finished/blocked` 会让
-  "想调但没调成"被算成"调过一次"，而这类行的真相在 `approval_request` 上。
+  只有一条 `finished / blocked / tool_blocked`，没有 `started`——两条都写会让"想调但没调成"
+  被算成"调过一次"。写它的只有两处：没有身份、或者审批登记不上（再等也不会通过）；
+  登记上了就不写，等审批的真相在 `approval_request` 上。
+- **消息审计默认关**（`claw4j.audit.messages=false`，与 OpenClaw 同默认）：打开之后，
+  一条入站一行（`completed` / `skipped` / `failed`）、一次投递一行（`sent` / `suppressed` /
+  `failed` / `unknown`）。身份是 HMAC 假名 `hmac-sha256:v1:<keyId>:<digest>`——密钥在
+  `claw4j_run.audit_identity_key` 单行表里，读接口不返回它。
 - **等审批不写审计**：那件事的真相在 `approval_request`（谁提的、批没批、谁批的、什么时候）。
   写两遍的第一个代价是"今天拒了几条"要 union 两张表，第二个代价是两张迟早对不上。
 - **只落指纹，不落参数**：`args_digest` 是 `sha256(工具名 + 规范化参数)`，与审批表那一列
@@ -592,9 +618,14 @@ redaction / schema_version / at`。
 > 审计回答"上一次是谁批的"（30 天，按行查）；评测回答"答得好不好"（A06）。
 > 三者混起来的第一个症状是"审计里查不到上个月"——那时通常已经有人拿它当过监控看板了。
 
-两处测试钉着这一节：`app/RunSchemaSqlTest`（视图答得出谁/何时/怎么、一条批准一条执行、
+读接口：`GET /api/audit?runId=&sessionKey=&agentId=&kind=&status=&channel=&cursor=&limit=`，
+按 `seq` 倒序、游标翻页、`limit` 1–500（越界钳位），没装查询时 404（能力不在场，不是库坏了）。
+
+测试钉着这一节：`app/RunSchemaSqlTest`（视图答得出谁/何时/怎么、一条批准一条执行、
 留存窗口删整件旧事）与 `app/ApprovalFlowTest`（执行那一行带着放行它的审批编号、
-旧审批记录仍读得出来）；写入侧的十三个用例在 `agent/ToolCallAuditTest`。
+旧审批记录仍读得出来）；写入侧的规则在 `agent/ToolGovernanceTest`（含被拦下只写一条 blocked）；
+库这一层的规则在 `app/BuildContractTest`（幂等、读侧翻页与过滤、终态配对、孤儿扫尾）；
+消息审计在 `agent/MessageAuditTest` 与 `core/InboundDispatchTest`（重复投递被跳过那一行）。
 
 ## 沙箱与提权（P17a / 票 06）
 

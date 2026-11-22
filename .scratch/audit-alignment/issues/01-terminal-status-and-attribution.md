@@ -1,6 +1,6 @@
 # 票 01 终态与归属：四个终态有生产者，`agentId` 不再为空
 
-Status: claimed
+**Status:** resolved
 裁决来源：`docs/adr/0037-audit-alignment-with-openclaw.md`（决定 1、2、3、4）
 
 ## 对照
@@ -37,13 +37,14 @@ Status: claimed
 
 | 判什么 | 用例名 | 先红的样子 | 结果 |
 | --- | --- | --- | --- |
-| 被权限拦下的工具写一行 blocked、不写 started | `ToolGovernanceTest#blockedToolWritesOnlyFinished` | 库里 0 行 → 期望 1 行 `blocked/tool_blocked` | ❌ 未接生产调用点 |
-| 工具事件带 agent 归属 | `ObservabilityTest#toolAuditCarriesAgentId` | `agent_id` 为 null → 期望 `unknown` 或绑定名 | ❌ 仍是 `unknown`：`AGENT_ID` 还没写进 ToolContext |
+| 被权限拦下的工具写一行 blocked、不写 started | `ToolGovernanceTest#blockedToolWritesOnlyFinished` | 库里 0 行 → 期望 1 行 `blocked/tool_blocked` | ✅ 审批闸两处「再等也不会通过」的分支都写；登记上了就不写（等审批的真相在审批表） |
+| 工具事件带 agent 归属 | `ObservabilityTest#toolAuditCarriesAgentId` | `agent_id` 为 null → 期望 `unknown` 或绑定名 | ✅ `PromptComposer` 往 ToolContext 写 `AGENT_ID`，回调读它；读不到落 `unknown` |
 | 运行事件带 agent 归属 | `ObservabilityTest#auditScopeNeverLeavesAgentNull` | 四参 `Scope.of` 写 null → 期望 `unknown` | ✅（接线在 `ChatClientAgentPort.Builder#agentId`，装配取 `claw4j.agent.default`，没配目录时 `builtin`） |
-| 客户端断流记 cancelled 而不是 failed | `ChatPipelineTest#cancelledStreamIsAuditedAsCancelled` | 现在写 `failed/run_failed` | ❌ 未做 |
-| 流超时记 timed_out | `ChatPipelineTest#timedOutStreamIsAuditedAsTimedOut` | 现在写 `failed/run_failed` | ❌ 未做 |
-| 库里拒绝 `kind` 与 `error_code` 不配的行 | `BuildContractTest#auditTerminalPairingIsEnforced` | 插一行 `agent_run + tool_failed` 现在能进库 | ❌ 未做 |
-| `actor_role` 已不存在 | `BuildContractTest#auditEventHasNoActorRole` | 列还在 | ✅ |
+| 客户端断流记 cancelled 而不是 failed | `ChatPipelineTest#cancelledStreamIsAuditedAsCancelled` | 现在写 `failed/run_failed` | ✅ 写失败的那一下抛 IOException（broken pipe），`RunOutcome` 归到取消 |
+| 流超时记 timed_out | `ChatPipelineTest#timedOutStreamIsAuditedAsTimedOut` | 现在写 `failed/run_failed` | ✅ 链上有 Timeout 类型就记超时，优先于取消（`SocketTimeoutException` 也是 IOException） |
+| 库里拒绝 `kind` 与 `error_code` 不配的行 | `BuildContractTest#auditTerminalRowsAreConsistent` | 插一行 `agent_run + tool_failed` 现在能进库 | ✅ V11 加了配对 check，历史行先归一 |
+| 有 started 没 finished 的超时行补成 unknown | 同上（`sweepOrphans` 那段） | 孤儿行永远是 started | ✅ 启动 + 每次清理各扫一次，30 分钟窗口是估的 |
+| `actor_role` 已不存在 | `BuildContractTest#auditReplayIsWrittenOnce` | 列还在 | ✅ |
 
 ## 缺口
 
@@ -54,4 +55,13 @@ Status: claimed
 
 ## 复核
 
-待实现后补：`复核：<日期> ./scripts/verify.sh 全绿`
+复核：2026-11-23 `./scripts/verify.sh` 全绿（失败 0 / 错误 0 / 跳过 0；V11 在 testcontainers 的真库上跑过）。
+
+实现要点（落地时定的，票面原先没有）：
+
+- 分类器是 `RunOutcome.of(Throwable)`：先看整条异常链，超时优先于取消（否则 `SocketTimeoutException`
+  会被记成取消），`IOException` 记取消（流式写回客户端最常见的那种失败，代价是模型侧网络错误也归到这里）。
+- `blocked` 只在「再等也不会通过」时写：没有身份、或者审批登记不上（没有审批设施）。等审批不写——
+  那件事的真相在 `approval_request` 一张表里。
+- 孤儿扫尾写成一条 `insert ... select ... where not exists`，`event_id` 由来源键算 `md5`，
+  跑两遍也只会补一行。
