@@ -10,9 +10,12 @@
 模型的自述**不能当证据**：它会说"我调用了"，也确实可能没调；它会把上一轮的回答记成这一轮的。
 下面每一条都写清"这次该看哪个数、哪行日志"。
 
+**I（审计）那一节是例外**：它验的不是"回答对不对"，而是 `/api/audit` 返回的那一行——模型说"我已经
+记录"完全不算，库里没有就是没有。
+
 ## 怎么用这一份
 
-按**验什么**分八类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
+按**验什么**分九类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
 
 | 类 | 验什么 | 加了什么之后看 |
 | --- | --- | --- |
@@ -24,6 +27,7 @@
 | **F 模型层** | 主备换家、冷却、白名单、角色、缓存命中（`claw4j-model`） | 模型 F1–F8 |
 | **G Agent 自管理** | 计划落库、嘱咐按事件触发、提示词超限会喊（票 01–03） | 进度卡 G1、意图 G2、预算 G3 |
 | **H 流式** | 分帧、命令不进模型、工具静默、换家、忙、断流 | SSE H1–H6 |
+| **I 审计** | 出事后答得出四问：谁干的、成没成、为什么被拦、东西送到没有 | 跑一轮查 I1、四种变体 I2、冲突 I3、分页 I4、幂等 I5、消息行 I6、调用编号 I7、子 Agent I8、写失败 I9 |
 
 工具观测器（一个 `ToolCallListener` bean）的验法在
 [README-adding-capabilities.md](README-adding-capabilities.md) 第 9 节末尾。
@@ -1490,6 +1494,266 @@ data:
 
 ---
 
+## I. 审计：出事后答得出四个问题
+
+审计不是日志。日志按"发生了什么"写，审计按**谁干的、成没成、为什么被拦、东西送到没有**四问组
+织，而且**只记元数据**——消息正文、工具参数、命令输出都不进来。所以这一节的判据全落在
+**接口那一行**上，一条都不落在模型的回答里：它会说"我已经记录"，而库里可能一行都没有。
+
+前提：`local` 带着库（`claw4j.persistence.enabled` 默认 `true`），`/api/audit` 就存在；没配库时
+它回 **404**——那是"能力不在场"，不是接口写错了（与 `/api/approvals` 没装审批时同一个判断）。
+
+### I1 跑一轮，看那几行
+
+一条会调工具的活（沿用 B1 那句），顺手把执行编号取出来：
+
+```bash
+EXEC=$(curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: t1' \
+  -d '{"text":"上周华东区的成交额是多少"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["executionId"])')
+
+curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC"
+```
+
+**期望**：`{"events":[…],"nextCursor":…}`，里面按 `sequence` **倒序**，正常是四行——两条 `agent_run`
+（`started` / `finished`）+ 两条 `tool_action`（`started` / `finished`）。一轮的数据长这样（节选）：
+
+```json
+{"events":[
+ {"eventType":"tool_action","schemaVersion":1,"eventId":"…","sequence":4,"sourceSequence":2,
+  "occurredAt":1795348800123,"kind":"tool_action","action":"tool.action.finished","status":"succeeded",
+  "actor":{"type":"agent","id":"ops"},"agentId":"ops","sessionKey":"…","sessionId":"…",
+  "executionId":"…","toolCallId":"sha256:…","toolName":"querySales","redaction":"metadata_only"},
+ …
+],"nextCursor":null}
+```
+
+五条判据，一条不对就是没对齐：
+
+- **`eventType` 是四种之一**（`agent_run` / `tool_action` / `inbound_message` / `outbound_message`），
+  不是 `run` / `tool`。它是**算出来的**，不是一列：库里只有 `kind` 与消息方向。
+- **`sequence` 递减**（4、3、2、1）。按时间倒序在"同一毫秒写了多条"时会重复或漏行，所以游标跟
+  的是 `sequence`，时间只是另一条索引。
+- **`occurredAt` 是 13 位毫秒整数**，不是 ISO 字符串、不是秒。
+- **`actor` 是对象**：`{"type":"agent","id":"ops"}`。`id` 是执行者——运行/工具行是 `agentId`，
+  入站消息行是发送者假名（与 `accountRef` 同值）。
+- **整段 JSON 里没有 `runId`**：`grep -c runId` 应为 0。那一格叫 `executionId`（ADR-0038）。
+
+### I2 四种变体，各自的必填格不同
+
+一条 `agent_run`、一条 `tool_action`、一条入站、一条出站逐格比：
+
+| 变体 | 必有 | 必定没有 |
+| --- | --- | --- |
+| `agent_run` | `eventType` `schemaVersion` `eventId` `sequence` `sourceSequence` `occurredAt` `kind` `action` `status` `actor` `redaction` | `toolName` `toolCallId` `direction` `channel` |
+| `tool_action` | 同上 + `toolName` | `direction` `channel` |
+| `inbound_message` | 同上 + `channel` `direction=inbound` `conversationKind` `outcome` | `toolName` `toolCallId` |
+| `outbound_message` | 同上 + `channel` `direction=outbound` `conversationKind` `outcome` `deliveryKind`（正常发出时） | `toolName` `toolCallId` |
+
+**空字段整格不出现**，不是写成 `null`：四个变体都是闭对象，多一格在严格客户端那里就是解析失败。
+`argsDigest` 与 `approvalId` 是我们的扩展列，**不进报文**——`grep -c argsDigest` 应为 0。
+
+### I3 参数自相矛盾：400，不是空页
+
+三种组合各试一次：
+
+```bash
+# ① 消息行没有会话键，所以 kind=message 不许带 sessionKey
+curl -s -o /dev/null -w '%{http_code} ' --noproxy '*' \
+  'localhost:8080/api/audit?kind=message&sessionKey=sk'
+
+# ② 方向与通道只属于消息行
+curl -s -o /dev/null -w '%{http_code} ' --noproxy '*' \
+  'localhost:8080/api/audit?kind=tool_action&direction=inbound'
+
+# ③ 不给 kind，却一边给 sessionKey、一边给 channel
+curl -s -o /dev/null -w '%{http_code}\n' --noproxy '*' \
+  'localhost:8080/api/audit?sessionKey=sk&channel=http'
+```
+
+**期望**：三个 `400`，且 `error` 说清是哪两个参数冲突
+（例：`kind=message 与 sessionKey 不能同时用：消息行没有会话键（只有 agent_run / tool_action 有）`）。
+
+**为什么不能回空页**：空页在客户端看来是"这段时间没有审计"，而真相是"这两个参数不该一起用"。
+两种结论，排查方向完全相反。
+
+坏游标也是 400（不是 500、不是悄悄从头来一页）：
+
+```bash
+curl -s --noproxy '*' 'localhost:8080/api/audit?cursor=abc'
+# {"error":"cursor 必须是上一页返回的 nextCursor：abc"}
+```
+
+### I4 翻页：游标是上一页的 `nextCursor`
+
+```bash
+P1=$(curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC&limit=2")
+echo "$P1" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(len(d["events"]),d["nextCursor"])'
+
+CUR=$(echo "$P1" | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextCursor"])')
+curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC&limit=2&cursor=$CUR"
+```
+
+**期望**：第一页 2 条、`nextCursor` 是**字符串**（那一页最后一行的 `sequence`，例 `"3"`）；
+第二页接着往后，与第一页**没有重叠**；最后一页的 `nextCursor` 是 `null`（不是 `"0"`——`"0"` 在游标
+里等于"从第 0 条往后"，会被当成还有一页）。
+
+`limit` 越界会被钳到 1–500 而不报错（`limit=0`、`limit=9999` 都照常返回一页）——这是钳位，不是静默
+截断：要的条数不对时先看自己传了什么。
+
+### I5 幂等：同一件事投两次只留一行
+
+幂等的落点是唯一键 `(source_id, source_sequence)`，重复投递走 `on conflict do nothing`。
+真实的重复来自平台重投（IM 通道把同一条事件再推一次），那件事不好手动造；下面用探针把
+"唯一键确实在挡"变成可重复的一条命令。（`DB` 换成 0 节起的那个库，下面几处同。）
+
+```bash
+DB=<临时库>
+
+# 第一次：插得进去
+docker exec -i claw4j-postgres psql -U claw4j -d $DB -c "
+insert into claw4j_run.audit_event
+  (event_id, kind, action, status, execution_id, actor, source_id, source_sequence)
+values ('dup-probe-1', 'agent_run', 'agent.run.started', 'started', '$EXEC', 'agent-1',
+        'probe:duplicate', 1);"
+
+# 第二次：换个 event_id，来源键一模一样
+docker exec -i claw4j-postgres psql -U claw4j -d $DB -c "
+insert into claw4j_run.audit_event
+  (event_id, kind, action, status, execution_id, actor, source_id, source_sequence)
+values ('dup-probe-2', 'agent_run', 'agent.run.started', 'started', '$EXEC', 'agent-1',
+        'probe:duplicate', 1)
+on conflict (source_id, source_sequence) do nothing;"
+```
+
+**期望**：第一条 `INSERT 0 1`，第二条 **`INSERT 0 0`**（没进去），下面这条查询返回空：
+
+```bash
+docker exec -i claw4j-postgres psql -U claw4j -d $DB -c "
+select source_id, source_sequence, count(*) from claw4j_run.audit_event
+ where source_id = 'probe:duplicate' group by 1,2 having count(*) > 1;"
+```
+
+**判据是"第二行不存在"，不是"报错"**：报错会让调用方以为写失败了，而正确行为是安静地只留一行。
+
+`claw4j.audit.duplicates` 记的是**应用侧**被挡下的次数——**手插这两行不会让它动**（那是 psql 干的，
+不经过账本）。所以：
+
+- 这个指标 404 是正常的，不代表幂等没生效；要让它涨，只能真的重放（IM 通道重投同一条事件）。
+- 想确认"重放只留一行"，看上面那条 `having count(*) > 1` 返回空就够了。
+
+验完收掉探针：
+
+```bash
+docker exec -i claw4j-postgres psql -U claw4j -d $DB -c \
+  "delete from claw4j_run.audit_event where event_id like 'dup-probe%'"
+```
+
+### I6 消息行：默认不记，打开才有
+
+`claw4j.audit.messages` **默认 `false`**（照 OpenClaw 的分工：运行与工具是运维账，默认记；消息多出
+"谁跟谁说了话"这种关系数据，默认关）。先确认现在是哪一种：
+
+```bash
+# 关着时：空页，不是 400、不是报错
+curl -s --noproxy '*' 'localhost:8080/api/audit?kind=message&limit=5'
+# {"events":[],"nextCursor":null}
+```
+
+要验消息行，起实例时加 `--claw4j.audit.messages=true`，再走 B1 那一句（发一条、收一条），然后：
+
+```bash
+curl -s --noproxy '*' 'localhost:8080/api/audit?kind=message&limit=5'
+```
+
+**期望**：两条——`inbound_message`（`outcome=completed`、`resultCount=1`）与
+`outbound_message`（`outcome=sent`、`deliveryKind=text`），都带 `channel` 与 `conversationKind`。
+
+| 判据 | 期望 | 为什么 |
+| --- | --- | --- |
+| `direction` | `inbound` / `outbound` 各一条 | 合成一列的话答不出"这条是进来的还是出去的" |
+| `channel` + `conversationKind` | 都有值 | 读侧四个变体里它们是必填，缺了客户端解析不了 |
+| 假名引用 | `accountRef` 形如 `hmac-sha256:v1:<keyId>:<digest>` | 原文不进库；同一人两轮相同、换人不同 |
+| `executionId` | 入站那条**可以没有** | 入站消息在开跑之前就到了（可能被跳过、可能没认出身分） |
+
+被抑制（`outcome=suppressed`）那条**没有 `deliveryKind`、但必有 `reasonCode`**。它手工不好造
+（要真的触到发送策略），所以由库里的 CHECK 钉着：`ck_audit_event_delivery_kind_absent` /
+`ck_audit_event_outbound_reason`，`\d claw4j_run.audit_event` 就看得到。要正面验它们，跑
+`PersistenceSchemaTest` 那一类——它会把每种非法组合都插一遍，插得进去就红。
+
+### I7 工具行带调用编号，运行与消息行不许有
+
+```bash
+curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC" | python3 -c '
+import sys,json
+for e in json.load(sys.stdin)["events"]:
+    print(e["eventType"], e.get("toolCallId","<无>"))'
+```
+
+**期望**：`tool_action` 两行有值、`agent_run` 两行是 `<无>`。形状是 `sha256:<64 hex>`，
+**不是 provider 的原值**——编号是 provider 的字节，能用来对账，但不是我们的档案。
+
+**这一格就是"同参数两次调用"的分辨办法**：`argsDigest` 相同、`toolCallId` 不同。取不到时留空、
+不编 id：没开观测的部署这一格就是空的，那时只能靠 `argsDigest` + `toolName`。
+
+### I8 子 Agent：每次委派是另一轮
+
+派一个（沿用 B5），再按子 Agent 的会话键查：
+
+```bash
+curl -s --noproxy '*' 'localhost:8080/api/audit?sessionKey=subagent:weekly-digest&limit=20'
+```
+
+**期望**：
+
+- `sessionKey` 是 `subagent:<定义名>`、`agentId` 是 `<定义名>`；
+- 每次委派一个**新的 `executionId`**，与父那一轮不同；子链的工具行挂在这个编号上，不是父的；
+- 父子之间**没有 lineage 列**：不从父编号编一个"看起来像"的关联，缺就缺着。
+
+**判据是"子那一轮的工具行落得下去"**：B5 那条如果只看到父的 `Task` 行、没有任何
+`sessionKey=subagent:` 的行，说明委派那一侧没把审计传下去。
+
+### I9 五个计数：哪一个涨了说明什么
+
+```bash
+for m in write_errors skipped duplicates purged link_errors; do
+  echo -n "$m: "; curl -s -o /dev/null -w '%{http_code}\n' --noproxy '*' \
+    "localhost:9090/actuator/metrics/claw4j.audit.$m"
+done
+```
+
+| 指标 | 有数说明什么 | 该不该有 |
+| --- | --- | --- |
+| `write_errors` | 写库失败（约束、连接、列对不上） | **不该有**；一有就说明这些天缺了记录 |
+| `skipped` | 没有执行编号，账本直接跳过（不是写失败，是"没有归属"） | 可以有；无归属的行不写 |
+| `duplicates` | 同一来源键投了两次，被幂等挡掉 | 可以有；重放时正常 |
+| `purged` | 超过 30 天 / 10 万行被清掉 | 老库会有 |
+| `link_errors` | 审批与执行的关联没写成 | **不该有** |
+
+**404 等于 0**（一次都没发生过就没有这个指标），与 `claw4j.tool.calls` 同一条读法。
+
+### I10 不对时先看哪里
+
+1. **整个接口 404**：没配库，或 `claw4j.persistence.enabled=false`——能力不在场，不是参数写错。
+2. **空页，但刚才确实跑过**：先看 `claw4j.audit.enabled`（默认 true）；再看是不是 `kind`/`direction`
+   把行挡在外面（消息行要 `kind=message`，运行/工具行不能带 `direction`/`channel`）。
+3. **400**：回到 I3 那三种组合——冲突是**参数**的问题，不是数据的问题。
+4. **行数比预期少**：`skipped` 涨了（无归属不写）、`duplicates` 涨了（重放被挡）、
+   还是 `write_errors` 涨了（写失败被吞成计数）。三个数指向三件不同的事。
+5. **时间对不上**：`occurredAt` 是**事件产生那一刻**，不是落库那一刻。入站消息用
+   `now - durationMs` 反推，所以它与"日志里看到接收"差一个处理耗时。
+6. **`occurredAt` 变成了 ISO 字符串**：报文翻译那层退化了——`at` 是 `timestamptz`，报文里必须是
+   毫秒整数。
+7. **谁都能查全量**：这一版 `/api/audit` **没有鉴权**，也没有 operator 身份。这是已知缺口
+   （ADR-0037 里唯一没对齐的那一条），不是配置错了。
+
+**这一节验不了的两条**：30 天 / 10 万行清理要等时钟（`purged` 到点才涨）；`audit.run.inspect`
+那一套（按 run 发现多个执行）**已经撤除**——我们没有"一次 run 下多个执行"，按 `executionId`
+筛时间线就是单次取证。
+
+---
+
 ## 一页速查
 
 完整命令都在对应小节里；这里只列"问什么、看什么"。
@@ -1528,3 +1792,10 @@ data:
 | 换家走流式（H4） | 模型名写错，发 `/stream` | 照常答 + `done` 一次 | `reason` 是 `unclassified`，不是 `model_not_found` |
 | 忙（H5） | `lane-wait=0`，同会话并发两条 | 一条忙话 + `done` | 默认 60 秒是排队，验不到忙 |
 | 断流（H6） | `stream-timeout=2s`，让它写长文 | 没有 `done`，耗时约等于超时值 | 没 `done` 的那段字不能当答案 |
+| 审计四问（I1/I2） | 跑一轮会调工具的活，按 `executionId` 查 `/api/audit` | 四行倒序、`eventType` 是四种之一、`occurredAt` 是毫秒；整段没有 `runId` | 模型说"我记了"不算；空字段是整格省掉，不是 `null` |
+| 审计参数（I3/I4） | 三种冲突组合、坏 cursor、`limit=2` 翻页 | 三个 400；`nextCursor` 是字符串，第二页不重叠 | 空页 ≠ 没有审计，冲突是参数的问题 |
+| 审计幂等（I5） | 用同一个来源键插两次 | 第一次 `INSERT 0 1`、第二次 `INSERT 0 0`；`having count(*)>1` 为空 | 手插不会让 `duplicates` 涨，那个计数只记应用侧被挡的次数 |
+| 消息审计（I6） | `--claw4j.audit.messages=true` 后发一条 | 进出各一条、带 `channel`/`conversationKind`、假名引用 | 默认关，不打开永远是空页 |
+| 调用编号（I7） | 看工具行有没有 `toolCallId` | `sha256:` 打头；运行行与消息行没有 | 原值不进报文，也不许现编 |
+| 子 Agent 审计（I8） | 派 `weekly-digest` 后按 `subagent:…` 查 | 自己的 `executionId`，工具行挂在它上面 | 父那一轮不会带上子的行 |
+| 审计写失败（I9） | 查五个 `claw4j.audit.*` 指标 | `write_errors` / `link_errors` 必须是 404 | 404 = 0，不是坏了 |

@@ -665,6 +665,8 @@ OpenClaw 在绑定时就按 kind 强制 null（`audit-event-store.ts:103`），�
 （参数名 `executionId` 是本仓的命名：它那张参数表里只有"跨轮共享的关联"那个名字，我们只有执行——ADR-0038 决定二），
 按 `sequence` 倒序、游标翻页（**字符串**，与 OpenClaw 同形）、`limit` 1–500（越界钳位），
 `after`/`before` 是 **Unix 毫秒闭区间**（`ledgers.md:25-26`）。没装查询时 404（能力不在场，不是库坏了）。
+手工验法（取执行编号、四种变体逐格比、三个 400、翻页、幂等探针、消息行开关、子 Agent 那一轮）
+在 `README-capability-tests.md` 的 I 节。
 `direction` 照 OpenClaw 的 `audit.activity.list`（`docs/gateway/protocol/ledgers.md:120-131`）——
 进来的与出去的混在一页里时，"今天发出去的送到没有"得先能只要 `outbound`。
 工具行在返回里带 `toolCallId`（可选，照 `audit-activity.ts:219`）；**没有按它过滤的参数**——
