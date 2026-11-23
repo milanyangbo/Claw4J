@@ -1,5 +1,6 @@
 package io.github.claw4j.app;
 
+import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.AuditLedger;
@@ -48,6 +49,9 @@ import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -453,11 +457,13 @@ class BuildContractTest {
         // 13 是工具调用编号（票 06）：照 OpenClaw 加 audit_event.tool_call_id，只有工具行有值。
         // 14 是归属与两把会话键（第三批）：actor/actor_type 换成执行者语义、加 session_id、
         // channel 只留给消息行。
-        // 前六张落在各自的 schema 里；7–14 都改已有 schema，只有假名密钥表是新增的一张。
+        // 15 是消息行的必填与互斥（第四批，票 13）：channel / conversationKind 必填，
+        // suppressed / unknown 不带 deliveryKind，failed / unknown 必带 failureStage。
+        // 前六张落在各自的 schema 里；7–15 都改已有 schema，只有假名密钥表是新增的一张。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
                 .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
-                        "13", "14");
+                        "13", "14", "15");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -821,6 +827,21 @@ class BuildContractTest {
                 null, null, null, null, null, 10)).rows())
                 .as("kind 不匹配时一行都不给")
                 .isEmpty();
+        // 事件时刻是事件自己的（票 12）：直接造一条"两小时前发生"的事件，落库后读回来还得是那个时刻。
+        // 不绑 at 时列默认值 now() 会把它改写成"刚刚"——而那正是这一票要修的那件事。
+        Instant twoHoursAgo = Instant.now().minus(2, ChronoUnit.HOURS).truncatedTo(ChronoUnit.MILLIS);
+        ledger.record(new AuditEvent(
+                new AuditEvent.Scope("run-qmoment", "session-q", null, "agent-qfilter", "u", null),
+                // 终态而不是 started：停在 started 的老行会被孤儿扫尾补成 unknown，
+                // 那会把这条用例变成"顺便验了扫尾"，而它要验的只有事件时刻。
+                AuditAction.AGENT_RUN_FINISHED, AuditStatus.SUCCEEDED, null, null, null, null, null,
+                "run:run-qmoment", 2, null, twoHoursAgo));
+        Instant stored = query.query(new AuditQuery.Filter("run-qmoment", null, null, null, null,
+                null, null, null, null, null, 10)).rows().getFirst().at();
+        assertThat(Duration.between(stored, twoHoursAgo).abs())
+                .as("写库不许把事件时刻改写成落库时刻")
+                .isLessThan(Duration.ofSeconds(1));
+
         assertThat(new AuditQuery.Filter(null, null, null, null, null, null, null, null, null, null,
                 999).limit())
                 .as("limit 截到 OpenClaw 的上限 500，而不是照单全收")
@@ -923,6 +944,40 @@ class BuildContractTest {
                 + " 'run-1', 'tool-channel:1', 1, 'agent-1', 'http')"))
                 .as("通道只属于消息行：OpenClaw 对非消息行强制写 null（audit-event-store.ts:103）")
                 .hasMessageContaining("ck_audit_event_channel_message_only");
+
+        // ⑤ 消息行的必填与互斥（第四批，票 13）：读侧消息变体里 channel / conversationKind 必填，
+        //    suppressed 与 unknown 不带 deliveryKind，failed 与 unknown 必带 failureStage。
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, actor, source_id, source_sequence, direction,"
+                + " conversation_kind, message_outcome)"
+                + " values ('e-msg-no-channel', 'message', 'message.inbound.processed', 'succeeded',"
+                + " 'agent-1', 'msg-no-channel:1', 1, 'inbound', 'direct', 'completed')"))
+                .as("消息行没有 channel：读侧必填格空着，严格客户端解析不了")
+                .hasMessageContaining("ck_audit_event_message_required");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, actor, source_id, source_sequence, direction,"
+                + " channel, conversation_kind, message_outcome, reason_code, delivery_kind)"
+                + " values ('e-msg-suppressed-text', 'message', 'message.outbound.finished', 'blocked',"
+                + " 'agent-1', 'msg-suppressed:1', 1, 'outbound', 'http', 'direct', 'suppressed',"
+                + " 'no_visible_payload', 'text')"))
+                .as("被抑制的投递没有交付形态（audit-activity.ts:373 的 withoutDeliveryKind）")
+                .hasMessageContaining("ck_audit_event_delivery_kind_absent");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, error_code, actor, source_id, source_sequence,"
+                + " direction, channel, conversation_kind, message_outcome)"
+                + " values ('e-msg-failed-no-stage', 'message', 'message.outbound.finished', 'failed',"
+                + " 'message_delivery_failed', 'agent-1', 'msg-failed-no-stage:1', 1, 'outbound',"
+                + " 'http', 'direct', 'failed')"))
+                .as("失败必须说清卡在哪一段（audit-activity.ts:380）")
+                .hasMessageContaining("ck_audit_event_failure_stage_required");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, actor, source_id, source_sequence, direction,"
+                + " channel, conversation_kind, message_outcome, reason_code)"
+                + " values ('e-msg-sent-reason', 'message', 'message.outbound.finished', 'succeeded',"
+                + " 'agent-1', 'msg-sent-reason:1', 1, 'outbound', 'http', 'direct', 'sent',"
+                + " 'no_visible_payload')"))
+                .as("送出去了就不该带原因码（audit-activity.ts:360 的 withoutReasonCode）")
+                .hasMessageContaining("ck_audit_event_outbound_reason");
 
         // ② 孤儿扫尾：两条停在 started 且已经过窗口的，补成 unknown；
         //    另有一条"刚开跑"的，它不该被补——补了就是把正在跑的一轮判成不知道结果。

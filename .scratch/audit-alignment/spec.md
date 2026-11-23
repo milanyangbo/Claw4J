@@ -26,6 +26,9 @@
 | 09 | 读侧报文：信封五格（`schemaVersion`/`sequence`/`sourceSequence`/`occurredAt`/`redaction`）、`actor` 对象、声明闭对象 | 11 | resolved |
 | 10 | 读接口参数：`after`/`before` 时间窗、冲突组合 400、`cursor` 改字符串 | 03 | resolved |
 | 11 | 写侧归属：`actor` 记执行者、两把会话键、`channel` 只属于消息行（V14） | 01 | resolved |
+| 12 | 事件时刻：`occurredAt` 记事件产生那一刻，不是落库那一刻 | 01 | resolved |
+| 13 | 消息行必填与互斥：`channel`/`conversationKind` 必填、`suppressed`/`unknown` 不带 `deliveryKind`、`failed`/`unknown` 带 `failureStage`（V15） | 04、11 | resolved |
+| 14 | `audit.run.inspect`：一次 run 的全景（审批 + 消息 + 决策事实，`identity` 照实报 `unsupported`） | 03、05、11 | resolved |
 
 **状态列与票面同源**：票面开头那行 `**Status:**` 是事实，这张表只是总览；收票时两处一起改。
 `scripts/check-ticket-cases.sh` 会比对（表里漏列一张票、或两处写的不是一个词，都会红）。

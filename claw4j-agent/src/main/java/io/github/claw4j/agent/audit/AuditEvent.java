@@ -7,6 +7,7 @@ import io.github.claw4j.domain.principal.Principal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HexFormat;
 
 /**
@@ -37,11 +38,16 @@ import java.util.HexFormat;
  *     {@code audit-event-store.ts:81-116}）
  * @param sourceSequence 来源内序号：1 = started，2 = finished
  * @param message 消息专有的那一组（方向、结果、假名引用）；运行与工具事件为空
+ * @param occurredAt 这件事**发生**的时刻，由工厂在构造时取（票 12）：入站消息是"到达那一刻"
+ *     （{@code now - durationMs}，那个字段量的就是处理耗时），其余是构造那一刻。它与
+ *     OpenClaw 的 {@code occurred_at} 同一个语义——绑的是事件自己的时钟，
+ *     {@code audit-event-store.ts:89} 直接拿 {@code input.occurredAt} 落库。写成"落库时刻"的话，
+ *     一条处理了八秒的消息会显示成"八秒之后才发生"，而 30 天保留期也按落库时刻算
  */
 public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
                          AuditErrorCode errorCode, String toolCallId, String toolName,
                          String argsDigest, String approvalId, String sourceId,
-                         int sourceSequence, Message message) {
+                         int sourceSequence, Message message, Instant occurredAt) {
 
     /**
      * 这一轮是谁、在哪段会话、从哪个通道来。
@@ -135,7 +141,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runStarted(Scope scope) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_STARTED, AuditStatus.STARTED,
-                null, null, null, null, null, runSource(scope), 1, null);
+                null, null, null, null, null, runSource(scope), 1, null, Instant.now());
     }
 
     /**
@@ -148,7 +154,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runFinished(Scope scope, AuditStatus status, AuditErrorCode errorCode) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_FINISHED, status,
-                errorCode, null, null, null, null, runSource(scope), 2, null);
+                errorCode, null, null, null, null, runSource(scope), 2, null, Instant.now());
     }
 
     /**
@@ -164,7 +170,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
                                          String argsDigest) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_STARTED, AuditStatus.STARTED,
                 null, hashedToolCallId(toolCallId), toolName, argsDigest, null,
-                toolSource(scope, toolName, argsDigest, toolCallId), 1, null);
+                toolSource(scope, toolName, argsDigest, toolCallId), 1, null, Instant.now());
     }
 
     /**
@@ -184,7 +190,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
                                           AuditErrorCode errorCode, String approvalId) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_FINISHED, status,
                 errorCode, hashedToolCallId(toolCallId), toolName, argsDigest, approvalId,
-                toolSource(scope, toolName, argsDigest, toolCallId), 2, null);
+                toolSource(scope, toolName, argsDigest, toolCallId), 2, null, Instant.now());
     }
 
     /**
@@ -295,8 +301,21 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent inboundMessage(Scope scope, AuditStatus status, AuditErrorCode errorCode,
                                             Message message, String sourceId) {
+        // 到达时刻 = 处理完那一刻往前退它自己量到的耗时：这个字段本来就是"从进来到出去"的毫秒数。
+        // 写成落库时刻的话，一条处理了八秒的消息在账本上会晚八秒，而保留期也按那个时刻算。
         return new AuditEvent(scope, AuditAction.MESSAGE_INBOUND_PROCESSED, status, errorCode,
-                null, null, null, null, sourceId, 1, message);
+                null, null, null, null, sourceId, 1, message, arrivalOf(message));
+    }
+
+    /**
+     * 入站那条消息的到达时刻。
+     *
+     * @param message 消息那一组
+     * @return {@code now - durationMs}
+     */
+    private static Instant arrivalOf(Message message) {
+        Integer duration = message == null ? null : message.durationMs();
+        return Instant.now().minusMillis(duration == null || duration < 0 ? 0 : duration);
     }
 
     /**
@@ -312,6 +331,6 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     public static AuditEvent outboundMessage(Scope scope, AuditStatus status, AuditErrorCode errorCode,
                                              Message message, String sourceId) {
         return new AuditEvent(scope, AuditAction.MESSAGE_OUTBOUND_FINISHED, status, errorCode,
-                null, null, null, null, sourceId, 1, message);
+                null, null, null, null, sourceId, 1, message, Instant.now());
     }
 }

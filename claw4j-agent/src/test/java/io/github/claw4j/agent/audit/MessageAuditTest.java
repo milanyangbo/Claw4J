@@ -147,6 +147,63 @@ class MessageAuditTest {
         verify(jdbc, never()).queryForList(anyString(), eq(byte[].class));
     }
 
+    /**
+     * 票 12：入站行的事件时刻是"到达那一刻"，比落库时刻早它自己量到的耗时。
+     *
+     * <p>判据是差值而不是绝对值：写成落库时刻时，这条断言会差 800 毫秒——而那正是"消息处理了
+     * 八秒、账本上却显示八秒之后才发生"的那个错误。
+     */
+    @Test
+    @DisplayName("入站行的事件时刻是到达时刻：早 durationMs 那么多（票 12）")
+    void inboundRowCarriesArrivalTime() {
+        long before = System.currentTimeMillis();
+        audit.inbound(new MessageAudit.Inbound("run-1", "ops", "feishu", "chat-1", "om-9",
+                "u-7", MessageOutcome.COMPLETED, null, 800, true));
+
+        AuditEvent event = capture();
+        long arrival = event.occurredAt().toEpochMilli();
+        assertThat(before - arrival)
+                .as("到达时刻早于落库时刻约 800 毫秒；写成落库时刻时它会在 [0,500] 里")
+                .isBetween(600L, 3000L);
+    }
+
+    /**
+     * 票 13：被抑制的投递没有交付形态，哪怕生产者给了 {@code text}。
+     *
+     * <p>据 OpenClaw 出站 {@code suppressed} 变体的 {@code withoutDeliveryKind}
+     * （{@code audit-activity.ts:373}）：那批字节没有交付形态。
+     */
+    @Test
+    @DisplayName("被抑制的出站行不带 deliveryKind（票 13）")
+    void suppressedRowHasNoDeliveryKind() {
+        audit.outbound(new MessageAudit.Outbound("run-4", "ops", "feishu", "chat-8", "chat-8",
+                MessageOutcome.SUPPRESSED, MessageReason.NO_VISIBLE_PAYLOAD, null, "text", 3, null));
+
+        AuditEvent event = capture();
+        assertThat(event.status()).isEqualTo(AuditStatus.BLOCKED);
+        assertThat(event.message().deliveryKind())
+                .as("被抑制的投递被当成一次文本发送，是这一票要修的那种脏数据")
+                .isNull();
+    }
+
+    /**
+     * 票 13：失败与"不知道"必须说清卡在哪一段；通道没给时写 {@code unknown}，不留空。
+     *
+     * <p>据 {@code audit-activity.ts:380,388}：{@code failed} 与 {@code unknown} 两个变体都要求
+     * {@code failureStage}。留空的话读的人分不清"没记"与"不知道卡在哪"。
+     */
+    @Test
+    @DisplayName("失败的出站行带 failureStage，缺了写 unknown（票 13）")
+    void failedRowSaysWhereItStopped() {
+        audit.outbound(new MessageAudit.Outbound("run-5", "ops", "feishu", "chat-9", "chat-9",
+                MessageOutcome.FAILED, null, null, null, 30, null));
+
+        AuditEvent event = capture();
+        assertThat(event.message().failureStage())
+                .as("没有阶段信息不是「没记」，是「不知道卡在哪」")
+                .isEqualTo("unknown");
+    }
+
     /** 最后记下来的那一条。用 atLeastOnce 是因为同一用例里可能记两条（成功一次、失败一次）。 */
     private AuditEvent capture() {
         ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);

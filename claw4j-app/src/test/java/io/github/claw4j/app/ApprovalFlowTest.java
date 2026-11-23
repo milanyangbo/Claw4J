@@ -6,6 +6,7 @@ import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.audit.AuditLedger;
+import io.github.claw4j.agent.audit.JdbcAuditRunInspect;
 import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
@@ -13,6 +14,7 @@ import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.port.Approvals;
+import io.github.claw4j.domain.port.AuditRunInspect;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
@@ -537,6 +539,70 @@ class ApprovalFlowTest {
                 .as("等审批不写审计：那件事的真相在 approval_request 上。"
                         + "被拦的那一轮一条工具事件都没有——它没开始，也不该假装有过一次调用")
                 .isZero();
+    }
+
+    /**
+     * 票 14：一次 run 的全景把审批与投递终态合成一页，顺序按时间倒序。
+     *
+     * <p>判据是"两边的回执都在、且谁也没被另一边的排序挤掉"：这类合并最容易出的错不是崩，
+     * 是只查了一张表——结果看着像一页，其实少了一半。
+     */
+    @Test
+    @DisplayName("全景：审批与投递终态合成一页，按时间倒序（票 14）")
+    void anInspectionMergesApprovalAndMessageReceipts() {
+        Harness harness = new Harness(requestTool(ARGS), answer("好的，等审批"), requestTool(ARGS),
+                answer("已发给张三"));
+        harness.withApprovalRequiredTool();
+
+        harness.port().reply(harness.mailer("发一封给张三的周报"));
+        String approvalId = onlyPendingId();
+        harness.decider().decide(approvalId, "approver-1", true, null);
+        String executedRunId = jdbc.queryForObject(
+                "select run_id from claw4j_run.audit_event"
+                        + " where kind = 'tool_action' and status = 'succeeded' limit 1", String.class);
+
+        // 投递终态那一类：消息审计默认关，这里直接落一行——验的是读侧合并，不是写侧开关。
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, run_id, agent_id, actor_type, actor, channel,"
+                + " direction, conversation_kind, message_outcome, delivery_kind, source_id,"
+                + " source_sequence, at)"
+                + " values ('e-run-inspect-msg', 'message', 'message.outbound.finished', 'succeeded',"
+                + " ?, 'ops', 'agent', 'ops', 'http', 'outbound', 'direct', 'sent', 'text',"
+                + " 'message:out:run-inspect', 1, now() + interval '5 seconds')", executedRunId);
+
+        AuditRunInspect.Report report = new JdbcAuditRunInspect(jdbc)
+                .inspect(executedRunId, 50, null).orElseThrow();
+
+        assertThat(report.runKnown()).as("这一轮在库里").isTrue();
+        var selectors = report.decisions().stream()
+                .map(AuditRunInspect.Decision::selectorId).toList();
+        assertThat(selectors)
+                .as("审批与投递两条都在，且投递（时刻更晚）排在前面")
+                .hasSize(2);
+        assertThat(selectors.getFirst()).startsWith("message-decision:");
+        assertThat(selectors.get(1))
+                .as("执行那一轮靠 audit_event.approval_id 接回发起那一轮的审批")
+                .isEqualTo("approval-decision:" + approvalId);
+        assertThat(report.decisions())
+                .filteredOn(decision -> decision.family().equals("approval"))
+                .singleElement()
+                .satisfies(decision -> {
+                    assertThat(decision.outcome()).isEqualTo("allowed");
+                    assertThat(decision.coverageState())
+                            .as("审批是真改了结果的闸：没有它那次调用不会跑")
+                            .isEqualTo("enforced");
+                    assertThat(decision.producer()).isEqualTo("operator-approval");
+                });
+        assertThat(report.decisions())
+                .filteredOn(decision -> decision.family().equals("message"))
+                .singleElement()
+                .satisfies(decision -> assertThat(decision.coverageState())
+                        .as("投递只留记录，不改结果")
+                        .isEqualTo("attribution-only"));
+
+        assertThat(new JdbcAuditRunInspect(jdbc).inspect(executedRunId, 50, "not-a-selector"))
+                .as("游标认不出来时回空，让端点回 400 而不是从头查")
+                .isEmpty();
     }
 
     /**

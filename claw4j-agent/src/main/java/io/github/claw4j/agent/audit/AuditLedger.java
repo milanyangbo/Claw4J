@@ -92,9 +92,9 @@ public class AuditLedger implements AuditSink {
                  approval_id, source_id, source_sequence,
                  direction, conversation_kind, message_outcome, reason_code, delivery_kind,
                  failure_stage, duration_ms, result_count,
-                 account_ref, conversation_ref, message_ref, target_ref)
+                 account_ref, conversation_ref, message_ref, target_ref, at)
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict (source_id, source_sequence) do nothing
             """;
 
@@ -249,7 +249,11 @@ public class AuditLedger implements AuditSink {
                     message == null ? null : message.accountRef(),
                     message == null ? null : message.conversationRef(),
                     message == null ? null : message.messageRef(),
-                    message == null ? null : message.targetRef());
+                    message == null ? null : message.targetRef(),
+                    // 事件自己的时刻（票 12）：列有默认值 now()，但那是"落库时刻"。
+                    // 显式绑上去，一条处理了八秒的入站消息才不会被记成"八秒之后才发生"。
+                    java.sql.Timestamp.from(event.occurredAt() == null
+                            ? java.time.Instant.now() : event.occurredAt()));
             if (written == 0) {
                 // 同一来源已经记过：幂等在起作用，不是故障。计自己的数，然后照常判清理。
                 count(DUPLICATES);

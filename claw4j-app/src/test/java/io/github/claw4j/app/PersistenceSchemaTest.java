@@ -763,12 +763,13 @@ class PersistenceSchemaTest {
         }
 
         // 消息失败码写进消息行：它不在 V5 那九个里，扩词表这件事本身要被钉住。
+        // 通道 / 对话类别 / 失败阶段三格从票 13 起必填（V15），所以夹具也照它的必填形状写。
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, error_code, actor, source_id, source_sequence,"
-                + " direction, message_outcome)"
+                + " direction, channel, conversation_kind, message_outcome, failure_stage)"
                 + " values ('e-msg-failed', 'message', 'message.outbound.finished', 'failed',"
                 + " 'message_delivery_failed', 'agent-1', 'code:message_delivery_failed', 1,"
-                + " 'outbound', 'failed')");
+                + " 'outbound', 'http', 'direct', 'failed', 'platform_send')");
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"

@@ -37,6 +37,9 @@ public class JdbcMessageAudit implements MessageAudit {
 
     private static final String DELIVERY_TEXT = "text";
 
+    /** 卡在哪一段不知道时的写法（闭集里的一个值，{@code audit-activity.ts:344}）。 */
+    private static final String FAILURE_STAGE_UNKNOWN = "unknown";
+
     private static final String CONVERSATION_DIRECT = "direct";
 
     private static final String CONVERSATION_GROUP = "group";
@@ -92,8 +95,8 @@ public class JdbcMessageAudit implements MessageAudit {
         AuditEvent.Message message = new AuditEvent.Message(
                 MessageDirection.OUTBOUND, record.outcome(), record.reasonCode(),
                 conversationKind(record.direct()),
-                record.deliveryKind() == null ? DELIVERY_TEXT : record.deliveryKind(),
-                record.failureStage(),
+                deliveryKindOf(record.outcome(), record.deliveryKind()),
+                failureStageOf(record.outcome(), record.failureStage()),
                 (int) Math.max(0, record.durationMs()), null, ACTOR_AGENT,
                 null, pseudonyms.ref(record.chatRef()), null, pseudonyms.ref(record.targetRef()));
         write(AuditEvent.outboundMessage(scope(record.runId(), record.agentId(), record.channel()),
@@ -123,6 +126,45 @@ public class JdbcMessageAudit implements MessageAudit {
         return runId == null || runId.isBlank()
                 ? "message:out:" + java.util.UUID.randomUUID()
                 : "message:out:" + runId + ':' + chatRef;
+    }
+
+    /**
+     * 交付形态：只有真的送出去了才有。
+     *
+     * <p>被抑制与"不知道送没送到"这两种结果下那一格必须是空的（{@code audit-activity.ts:373,392}
+     * 的 {@code withoutDeliveryKind}）：前者的字节没有交付形态，后者的形态连是否发生都不知道。
+     * 从前这里给所有出站行补 {@code text}，于是"被抑制的投递"在账本上看起来像一次文本发送。
+     *
+     * @param outcome 结果
+     * @param deliveryKind 通道给的形态，可为 null
+     * @return 落库的写法
+     */
+    private static String deliveryKindOf(MessageOutcome outcome, String deliveryKind) {
+        if (outcome == MessageOutcome.SUPPRESSED || outcome == MessageOutcome.UNKNOWN) {
+            return null;
+        }
+        if (deliveryKind == null || deliveryKind.isBlank()) {
+            // 送出去的那条一定是某种形态；通道没细分时按 text 记（与从前一致）。
+            return outcome == MessageOutcome.SENT ? DELIVERY_TEXT : null;
+        }
+        return deliveryKind;
+    }
+
+    /**
+     * 失败的阶段：失败与"不知道"都必须说清卡在哪一段（{@code audit-activity.ts:380,388}）。
+     *
+     * <p>通道没给时写 {@code unknown}——那也是它闭集里的一个值。"不知道卡在哪"与"没记"在读的人
+     * 那里是两件事，留空会把后者当成前者。
+     *
+     * @param outcome 结果
+     * @param failureStage 通道给的阶段，可为 null
+     * @return 落库的写法
+     */
+    private static String failureStageOf(MessageOutcome outcome, String failureStage) {
+        if (outcome != MessageOutcome.FAILED && outcome != MessageOutcome.UNKNOWN) {
+            return failureStage;
+        }
+        return failureStage == null || failureStage.isBlank() ? FAILURE_STAGE_UNKNOWN : failureStage;
     }
 
     /**

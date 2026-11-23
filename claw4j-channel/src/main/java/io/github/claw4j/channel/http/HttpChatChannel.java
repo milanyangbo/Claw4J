@@ -115,7 +115,9 @@ public class HttpChatChannel implements ChatChannel {
                        String failureStage, long startedAtNanos) {
         try {
             messageAudit.outbound(new MessageAudit.Outbound(runId, null, message.channel(),
-                    message.chatId(), message.chatId(), outcome, reason, failureStage, "text",
+                    // 形态交给记账那一层判（票 13）：被抑制 / 结果不明的行不该带它，
+                    // 而哪几种结果属于那两类，写在 JdbcMessageAudit 里一处。
+                    message.chatId(), message.chatId(), outcome, reason, failureStage, null,
                     Math.max(0, (System.nanoTime() - startedAtNanos) / 1_000_000L),
                     message.direct()));
         } catch (RuntimeException failure) {

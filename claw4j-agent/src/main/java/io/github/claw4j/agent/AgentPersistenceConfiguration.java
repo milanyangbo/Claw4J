@@ -8,10 +8,12 @@ import io.github.claw4j.agent.approval.JdbcExecAllowlist;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.AuditProperties;
 import io.github.claw4j.agent.audit.JdbcAuditQuery;
+import io.github.claw4j.agent.audit.JdbcAuditRunInspect;
 import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.agent.audit.JdbcMessageAudit;
 import io.github.claw4j.agent.audit.AuditPseudonyms;
 import io.github.claw4j.domain.port.AuditQuery;
+import io.github.claw4j.domain.port.AuditRunInspect;
 import io.github.claw4j.agent.audit.DecisionFacts;
 import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
@@ -167,6 +169,20 @@ public class AgentPersistenceConfiguration {
     @ConditionalOnMissingBean(AuditQuery.class)
     public AuditQuery auditQuery(JdbcTemplate jdbc) {
         return new JdbcAuditQuery(jdbc);
+    }
+
+    /**
+     * 一次 run 的全景（ADR-0037 票 14）：审批 + 投递终态 + 决策事实合成一页回执。
+     *
+     * <p>与 {@link #auditQuery} 同一个判断：没有持久化就没有这个能力，读接口回 404。
+     *
+     * @param jdbc 主连接池
+     * @return 全景查询
+     */
+    @Bean
+    @ConditionalOnMissingBean(AuditRunInspect.class)
+    public AuditRunInspect auditRunInspect(JdbcTemplate jdbc) {
+        return new JdbcAuditRunInspect(jdbc);
     }
 
     /**

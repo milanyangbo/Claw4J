@@ -36,8 +36,24 @@ false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展
 ③ **读接口参数**（票 10）：补 `after` / `before`（Unix 毫秒闭区间）；参数自相矛盾时回 400
 而不是空页（`findAuditActivityFilterConflict` 的三条）；`cursor` 改成不透明字符串。
 
-**仍然没对齐的两处，都是缺一整层、不是缺字段**：`operator.read` 授权（我们整个 http 层没有鉴权）；
-`run.inspect` / decision receipts（要 execution identity 那一套）。
+修订 2026-11-23（第四批）：把上一批留下的"缺一整层"再往前推一步，改三处。
+① **事件时刻**（票 12）：`occurred_at` 记**事件产生那一刻**，不是落库那一刻——它绑的是
+`input.occurredAt`（`audit-event-store.ts:89`）。入站消息用 `now - durationMs`（那个字段量的就是
+处理耗时），其余用构造那一刻；`INSERT` 显式绑 `at`，不再依赖列默认值 `now()`。
+② **消息行的必填与互斥**（票 13，V15）：`channel` / `conversationKind` 必填
+（`audit-activity.ts:122-133`）；`suppressed` / `unknown` 不带 `deliveryKind`（`:373,392` 的
+`withoutDeliveryKind`）；`failed` / `unknown` 必带 `failureStage`（`:380,388`）；
+出站被抑制必带原因码、其余终态不带（`:360-395`）。四条 CHECK 钉住，历史行先归一。
+③ **`audit.run.inspect`**（票 14）：`GET /api/audit/runs/{runId}`，报文照
+`AuditRunInspectResultSchema`（`audit-run.ts:313-330`）。回执合并 approval / message / generic
+三类（admission 与 cron 没有生产者，位置先留着），游标是上一页最后一条的 `selectorId`。
+`identity` **恒 `unsupported`**：它的 schema 为"没采集执行身份"留了这个状态（`:251-255`），
+写 `present` 等于声称知道"谁发起的、代表谁"。
+一条实现上的事实：**审批行挂在发起那一轮**（`approval_request.run_id`），执行发生在别的 run，
+所以全景两处都查——按 `run_id`，以及按执行行上的 `approval_id` 接回去。
+
+**仍然没对齐的只剩一处**：`operator.read` 授权（我们整个 http 层没有鉴权，也没有 operator
+身份与授权表）。`run.inspect` 本身已经落地，缺的是"谁能调它"。
 
 ## 背景
 
@@ -80,8 +96,9 @@ false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展
    TypeScript 联合类型，见 `audit-event-types.ts:75-110`；库是最后一道）。
 5. **读侧**：一个只读端口 `AuditQuery` + HTTP 端点呈 newest-first、seq 游标、
    `limit` 1–500、过滤 `agentId/sessionKey/runId/kind/status/direction/channel`，形状照
-   `AuditListParamsSchema`（`audit.ts:63-73`）与 `ledgers.md:11-30`。只读，不提供导出、不提供
-   `--explain`（`audit.run.inspect` 依赖 decision receipts，见票 05 缺口）。
+   `AuditListParamsSchema`（`audit.ts:63-73`）与 `ledgers.md:11-30`。只读，不提供导出。
+   **`run.inspect` 当时不在这一版里**（它要 decision receipts，而 receipts 要 execution identity），
+   2026-11-23 第四批已补：见票 14，`identity` 照实报 `unsupported`。
 6. **幂等**：`source_id + source_sequence` 唯一，重复投递 `on conflict do nothing`；与
    ADR-0017 同一个思路——重放不产生第二行。
 7. **消息审计**：`kind=message`，`direction`/`outcome`/`reasonCode`/`failureStage`/

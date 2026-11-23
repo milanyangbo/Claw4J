@@ -669,6 +669,28 @@ OpenClaw 那份参数表里也没有，多一个就是自创契约。
 `sessionKey` 与 `direction`/`channel`，三种都拒绝并说明哪两个冲突。空页在客户端看来是
 "这段时间没有审计"，而真相是"参数不该一起用"。
 
+**一次 run 的全景**：`GET /api/audit/runs/{runId}?decisionLimit=&decisionCursor=`（ADR-0037 票 14，
+照 `audit.run.inspect`）。返回 `{schemaVersion, run, identity, decisionDisplays, coverage,
+nextDecisionCursor?}`：`run.status` 是 `known` / `unknown`（找不到也回 200，回执为空）；回执把
+审批、投递终态、决策事实合成一页，按时间倒序、同一时刻按 `admission → approval → message →
+generic → cron`；游标是上一页最后一条的 `selectorId`，认不出来 400。
+
+```bash
+curl -s "localhost:8080/api/audit/runs/$RUN?decisionLimit=20" | jq '{run, identity, coverage,
+  decisions: [.decisionDisplays[] | {selectorId, family: .action.family, outcome: .decision.outcome}]}'
+```
+
+三处与它不同、**都是明说的**：`identity.state` 恒 `unsupported`（我们没有采集执行身份，
+它的 schema 为这种情况留了这个状态）；`executionId` 参数不支持（一次 run 就是一次执行），
+给了回 400 而不是静默忽略；`admission` 与 `cron` 两类回执没有生产者。
+
+**消息行的必填与互斥**（票 13，V15）：`channel` 与 `conversationKind` 必填；`suppressed` /
+`unknown` 不带 `deliveryKind`；`failed` / `unknown` 必带 `failureStage`；出站只有 `suppressed` 带
+原因码。四条 CHECK 钉着，历史行在迁移里按同一规则归一。
+
+**`occurredAt` 是事件时刻**（票 12）：列值由事件自己带（入站是 `now - durationMs`），
+`INSERT` 显式绑定，不靠列默认值 `now()`。所以一条处理了八秒的消息显示的是它到达的时刻。
+
 **报文是四个闭对象**（`additionalProperties: false`，`audit-activity.ts:135-142`）：每个变体必带
 `schemaVersion`（1）/ `sequence` / `sourceSequence` / `occurredAt`（毫秒整数）/ `redaction`
 （`metadata_only`）/ `actor`（`{type,id}` 对象）；空字段整格不出现。`args_digest` / `approval_id`
@@ -682,7 +704,9 @@ OpenClaw 那份参数表里也没有，多一个就是自创契约。
 测试钉着这一节：`app/RunSchemaSqlTest`（视图答得出谁/何时/怎么、一条批准一条执行、
 留存窗口删整件旧事）与 `app/ApprovalFlowTest`（执行那一行带着放行它的审批编号、
 旧审批记录仍读得出来）；写入侧的规则在 `agent/ToolGovernanceTest`（含被拦下只写一条 blocked）；
-库这一层的规则在 `app/BuildContractTest`（幂等、读侧翻页与过滤、终态配对、孤儿扫尾）；
+库这一层的规则在 `app/BuildContractTest`（幂等、读侧翻页与过滤、终态配对、孤儿扫尾、
+消息行必填与互斥）；一次 run 的全景在 `channel/AuditRunEndpointTest`（报文形状与参数拒绝）
+与 `app/ApprovalFlowTest`（真库里审批 + 投递合成一页）；
 消息审计在 `agent/MessageAuditTest` 与 `core/InboundDispatchTest`（重复投递被跳过那一行）。
 
 ## 沙箱与提权（P17a / 票 06）

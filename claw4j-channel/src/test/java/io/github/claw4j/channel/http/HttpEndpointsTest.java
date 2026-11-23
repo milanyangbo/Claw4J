@@ -6,6 +6,7 @@ import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.port.AuditQuery;
+import io.github.claw4j.domain.port.AuditRunInspect;
 import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -315,11 +316,19 @@ class HttpEndpointsTest {
     }
 
     private static AuditController auditController(AuditQuery query) {
+        return auditController(query, null);
+    }
+
+    private static AuditController auditController(AuditQuery query, AuditRunInspect inspect) {
         DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
         if (query != null) {
             beans.registerSingleton("auditQuery", query);
         }
-        return new AuditController(beans.getBeanProvider(AuditQuery.class));
+        if (inspect != null) {
+            beans.registerSingleton("auditRunInspect", inspect);
+        }
+        return new AuditController(beans.getBeanProvider(AuditQuery.class),
+                beans.getBeanProvider(AuditRunInspect.class));
     }
 
     private static ApprovalController approvalController(Approvals decider) {
