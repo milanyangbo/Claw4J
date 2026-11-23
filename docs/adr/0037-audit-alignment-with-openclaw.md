@@ -12,6 +12,15 @@
 `audit-event-store.ts:100` / `audit-activity.ts:463`）＋读接口输出该字段；`args_digest` **不退**，
 它承担审批绑定（`approval_request.args_digest`）与来源键，而 OpenClaw 没有这一列。见票 06。
 
+修订 2026-11-23（第二批）：补两处读/写面的对齐，都不动 schema。
+① **读侧 `eventType`**（票 07）：四个变体 `agent_run` / `tool_action` / `inbound_message` /
+`outbound_message` 各对应一份 schema（`audit-activity.ts:183,215,249,323`）。它由 `kind` 与消息
+方向推出、不落库——与它"持久层只存 kind/direction"一致；`kind` 与 `direction` 仍留给过滤。
+② **子 Agent 的审计**（票 08）：每次委派开自己的 `runId`，`session_key = subagent:<定义名>`、
+`agent_id = 定义名`。依据是 `docs/gateway/audit.md`："the child owns a new context; it never
+reuses or mutates the parent context"。**不造 lineage**：那条投影要精确父令牌，拿不到就明说缺失，
+我们也一样——没有 `parent_run_id` 这一列，就不从父 `runId` 编一个。
+
 ## 背景
 
 审计现在能写不能查，且七个终态只有三个有生产者。对照 OpenClaw `main`

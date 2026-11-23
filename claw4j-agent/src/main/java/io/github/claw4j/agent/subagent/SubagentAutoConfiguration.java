@@ -7,6 +7,7 @@ import io.github.claw4j.domain.principal.ToolPolicyContext;
 import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.toolaccess.ToolsProperties;
 import io.github.claw4j.agent.observability.SpanTracer;
@@ -93,15 +94,19 @@ public class SubagentAutoConfiguration {
                                              AgentProperties agent,
                                              ObjectProvider<Approvals> approvals,
                                              ObjectProvider<ApprovalRequiredTools> required,
+                                             ObjectProvider<ToolCallAudit> audit,
                                              @Qualifier("subagentTaskRepository")
                                              TaskRepository taskRepository) {
         var observations = observationRegistry.getIfUnique(() -> ObservationRegistry.NOOP);
-        var runner = new SubagentRunner(chatModel, observations,
+        // 审计缺席（没装持久化 / 没开审计）时传 null：委派照常工作，只是不记账（票 08）。
+        var auditSink = audit.getIfAvailable();
+        var runner = new SubagentRunner(chatModel, observations, auditSink,
                 () -> subagentToolCallbacks(toolCallbacks, toolCallbackProviders,
                         meterRegistry.getIfAvailable(), toolPolicy,
                         tierRegistries.orderedStream().toList(),
                         approvals.getIfAvailable(),
-                        required.getIfAvailable(ApprovalRequiredTools::none)),
+                        required.getIfAvailable(ApprovalRequiredTools::none),
+                        auditSink, observations),
                 toolIndex,
                 toolSearch,
                 agent.toolCallLimit());
@@ -163,33 +168,6 @@ public class SubagentAutoConfiguration {
     }
 
     /**
-     * 子 Agent 能用的工具集：与父同一个收集方法、同一份档位策略，只去掉 {@code Task} 自己。
-     *
-     * <p>抽成静态方法是为了让这条逻辑能被直接问（P09）：否则要验「子那边有没有被档位过滤」，
-     * 只能起一个完整的上下文再想办法从 runner 里把清单掏出来。可测性在这里不是副产品，它决定了
-     * 「父子两处过滤是否一致」能不能被钉住。
-     *
-     * <p>三个 {@code null} 的理由与父侧不同，逐条记在这里：
-     * <ul>
-     *   <li>预算：子的工具上下文里没有父这一轮的 runId（{@link SubagentRunner} 目前只把身份
-     *       传下去），传了也扣不到，「子调的工具扣父的额度」是 A10 的事；
-     *   <li>审计：同理，子链没有 runId，写不进任何一件事的审计行；
-     *   <li>指标：由调用方给，没有 actuator 时它就是 {@code null}。
-     * </ul>
-     *
-     * <p>trace 显式传空实现（P14）：子链没有自己的编号，画出来的 {@code tool.*} 会挂在
-     * {@code tool.Task} 那段下面却没有对应的审计，只有半截故事；而半截的 trace 比没有更费人，
-     * 看的人会以为「子工具没落审计」。要画全它得让 {@link SubagentRunner} 认识这一轮的编号，
-     * 那是 A10 的事。
-     *
-     * @param toolCallbacks 单回调形态的工具
-     * @param toolCallbackProviders provider 形态的工具
-     * @param meterRegistry 指标登记表，可为空
-     * @param toolPolicy 工具画像策略
-     * @param tierRegistries 各来源的档位登记表
-     * @return 子 Agent 的可用工具，已去掉委派工具自己
-     */
-    /**
      * 子 Agent 的角色。目前只有一个取值：它们都是叶子，不会再派一层。
      *
      * <p>留成字段而不是内联字符串，是因为策略层按角色名认领（{@code subagent:leaf}）——
@@ -228,13 +206,40 @@ public class SubagentAutoConfiguration {
             之后用 TaskOutput 拿结论。
             """;
 
+    /**
+     * 子 Agent 能用的工具集：与父同一个收集方法、同一份档位策略，只去掉 {@code Task} 自己。
+     *
+     * <p>抽成静态方法是为了让这条逻辑能被直接问（P09）：否则要验「子那边有没有被档位过滤」，
+     * 只能起一个完整的上下文再想办法从 runner 里把清单掏出来。可测性在这里不是副产品，它决定了
+     * 「父子两处过滤是否一致」能不能被钉住。
+     *
+     * <p>三个可空参数的理由与父侧不同，逐条记在这里：
+     * <ul>
+     *   <li>预算：子的工具上下文里没有父这一轮的 runId（子有自己的那一轮，见票 08），
+     *       传了也扣不到，「子调的工具扣父的额度」是 A10 的事；
+     *   <li>审计：由调用方给（票 08）。线上那一路传容器里的 {@code ToolCallAudit}，子 Agent 于是
+     *       有自己的 run 与自己的工具行；传 {@code null}（裁剪部署、没装持久化）时与以前一样不记账；
+     *   <li>指标：由调用方给，没有 actuator 时它就是 {@code null}。
+     * </ul>
+     *
+     * <p>trace 显式传空实现（P14）：子链没有自己的根 span，画出来的 {@code tool.*} 会挂在
+     * {@code tool.Task} 那段下面却没有对应的运行段，只有半截故事；而半截的 trace 比没有更费人。
+     * 要画全它得让 {@link SubagentRunner} 开自己的 span，那是 A10 的事。
+     *
+     * @param toolCallbacks 单回调形态的工具
+     * @param toolCallbackProviders provider 形态的工具
+     * @param meterRegistry 指标登记表，可为空
+     * @param toolPolicy 工具画像策略
+     * @param tierRegistries 各来源的档位登记表
+     * @return 子 Agent 的可用工具，已去掉委派工具自己
+     */
     public static List<ToolCallback> subagentToolCallbacks(ObjectProvider<ToolCallback> toolCallbacks,
                                                            ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
                                                            MeterRegistry meterRegistry,
                                                            ToolsProperties toolPolicy,
                                                            List<ToolTierRegistry> tierRegistries) {
         return subagentToolCallbacks(toolCallbacks, toolCallbackProviders, meterRegistry, toolPolicy,
-                tierRegistries, null, ApprovalRequiredTools.none());
+                tierRegistries, null, ApprovalRequiredTools.none(), null, ObservationRegistry.NOOP);
     }
 
     /**
@@ -249,7 +254,6 @@ public class SubagentAutoConfiguration {
      * @param meterRegistry 指标登记表，可为空
      * @param toolPolicy 工具画像策略
      * @param tierRegistries 各来源的档位登记表
-     * @param gate 审批门，可为 {@code null}
      * @param approvals 审批，可为 {@code null}（没有就不套闸）
      * @param required 要人批的名单，不可为 {@code null}（没有就是空）
      * @return 子 Agent 的可用工具
@@ -261,6 +265,37 @@ public class SubagentAutoConfiguration {
                                                            List<ToolTierRegistry> tierRegistries,
                                                            Approvals approvals,
                                                            ApprovalRequiredTools required) {
+        return subagentToolCallbacks(toolCallbacks, toolCallbackProviders, meterRegistry, toolPolicy,
+                tierRegistries, approvals, required, null, ObservationRegistry.NOOP);
+    }
+
+    /**
+     * 完整的那一份：加上审计与观测。
+     *
+     * <p>审计与观测是配套的两个参数（票 08）：审计给了、观测是 NOOP 时，工具行落得下去但
+     * {@code tool_call_id} 恒空（票 06 的坑：NOOP 下当前观测永远是 null）；观测给了、审计为
+     * {@code null} 时编号有值却没地方写。线上那一路两个都给。
+     *
+     * @param toolCallbacks 单回调形态的工具
+     * @param toolCallbackProviders provider 形态的工具
+     * @param meterRegistry 指标登记表，可为空
+     * @param toolPolicy 工具画像策略
+     * @param tierRegistries 各来源的档位登记表
+     * @param approvals 审批，可为 {@code null}
+     * @param required 要人批的名单，不可为 {@code null}
+     * @param audit 审计接缝，可为 {@code null}（不记账）
+     * @param observations 观测注册表，可为 {@code null}（按 NOOP 处理）
+     * @return 子 Agent 的可用工具
+     */
+    public static List<ToolCallback> subagentToolCallbacks(ObjectProvider<ToolCallback> toolCallbacks,
+                                                           ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
+                                                           MeterRegistry meterRegistry,
+                                                           ToolsProperties toolPolicy,
+                                                           List<ToolTierRegistry> tierRegistries,
+                                                           Approvals approvals,
+                                                           ApprovalRequiredTools required,
+                                                           ToolCallAudit audit,
+                                                           ObservationRegistry observations) {
         // 与 Agent 装配用的是同一个收集方法：工具回调与 provider 两种形态都要收。
         // 只收单回调形态时，querySales（来自 provider）在子那一侧就「没有这个工具」，
         // 而它明明在父的清单里。
@@ -278,15 +313,15 @@ public class SubagentAutoConfiguration {
                 : new ToolProfile(decision.profile(), profile.allow(), profile.deny(), profile.alsoAllow());
         List<ToolCallback> collected = AgentAutoConfiguration.collectToolCallbacks(
                 toolCallbacks, toolCallbackProviders,
-                // 调用编号（票 06）在子链上没有落点：下面 collect 的审计参数就是 null（子 Agent 的
-                // 调用记在父那一轮里），没有账本要写，读它也没有意义。哪天子链自己接了审计，
-                // 这里换成容器里的 ObservationRegistry 即可，其余不动。
-                meterRegistry, null, SpanTracer.NONE, ObservationRegistry.NOOP,
+                // 子链也有账本可写了（票 08）：每一次委派都是自己的一轮，工具的 started/finished
+                // 落在那个 runId 上。观测同时给真的，工具行才带得出这一次的调用编号。
+                meterRegistry, audit, SpanTracer.NONE,
+                observations == null ? ObservationRegistry.NOOP : observations,
                 effective, tierRegistries,
                 new ToolPolicyPipeline(decision.layers()),
                 selection -> { });
-        // 审计这一路子 Agent 不接（与上面 collect 时传 null 是同一个决定）：它的调用记在父那一轮里。
-        return AgentAutoConfiguration.withApprovalGate(collected, approvals, required, null)
+        // 审批闸也接同一个审计：被拒的子调用同样是"发生过的调用"，与父链一个口径。
+        return AgentAutoConfiguration.withApprovalGate(collected, approvals, required, audit)
                 .stream()
                 .filter(callback -> !DELEGATION_TOOLS.contains(callback.getToolDefinition().name()))
                 .toList();

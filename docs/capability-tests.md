@@ -597,6 +597,12 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
 没配目录时 `builtin`）写进工具上下文与两条运行事件；取不到时落 `unknown` 而不是空——
 空格让"这条是哪个 agent 干的"在多 agent 部署里永远答不了，`unknown` 至少可数。
 
+**子 Agent 的调用落在自己那一轮上**（票 08）：每次委派开一个新的 `runId`，`session_key` 是
+`subagent:<定义名>`、`agent_id` 是定义名、`actor` 还是父那一轮的人（委派不提权）。所以
+`/api/audit?sessionKey=subagent:alpha` 就是"这个子 Agent 干了什么"，按 `runId` 则是"这一次派活"。
+**父子之间没有 lineage 列**：OpenClaw 那条投影要父令牌，没有就明说缺失、不推断
+（`docs/gateway/audit.md`），我们也照这条——不从父 `runId` 编一个关联。
+
 **七个终态都有生产者**（同票）：`succeeded` / `failed` / `cancelled`（客户端断开、被取消）/
 `timed_out`（超时）/ `blocked`（再等也不会通过的拦截）/ `unknown`（跑了但结果不可知）/
 `started`（还在跑）。判据只看异常链（`RunOutcome`）：超时优先于取消，`IOException` 记取消
@@ -641,6 +647,11 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
 进来的与出去的混在一页里时，"今天发出去的送到没有"得先能只要 `outbound`。
 工具行在返回里带 `toolCallId`（可选，照 `audit-activity.ts:219`）；**没有按它过滤的参数**——
 OpenClaw 那份参数表里也没有，多一个就是自创契约。
+
+每行还带 `eventType`（票 07）：`agent_run` / `tool_action` / `inbound_message` / `outbound_message`，
+四个值各对应 OpenClaw 的一份读侧 schema（`audit-activity.ts:183,215,249,323`）。它是**算出来的**，
+不是一列——库里只有 `kind` 与 `direction`，判别由这两格拼（与它"持久层只存 kind/direction"同一个做法）。
+`kind` 与 `direction` 照样在，过滤仍用它们（那边参数表里也只有 `kind`）。
 
 测试钉着这一节：`app/RunSchemaSqlTest`（视图答得出谁/何时/怎么、一条批准一条执行、
 留存窗口删整件旧事）与 `app/ApprovalFlowTest`（执行那一行带着放行它的审批编号、

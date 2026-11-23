@@ -159,7 +159,8 @@ class HttpEndpointsTest {
     @Test
     @DisplayName("审计：一页带出 nextCursor；没装配时 404")
     void anAuditPageIsReadable() {
-        AuditQuery.Row row = new AuditQuery.Row(7L, "e-1", "tool_action", "tool.action.started",
+        AuditQuery.Row row = new AuditQuery.Row(7L, "e-1", "tool_action", "tool_action",
+                "tool.action.started",
                 "started", null, "run-1", "sk", "ops", "ethan", "http", "call-1", "Bash", null, null,
                 Instant.parse("2026-11-22T12:00:00Z"), null);
         AuditQuery fixed = filter -> {
@@ -181,6 +182,65 @@ class HttpEndpointsTest {
         assertEquals(HttpStatus.NOT_FOUND,
                 auditController(null).list(null, null, null, null, null, null, null, null, 10)
                         .getStatusCode());
+    }
+
+    /**
+     * 读侧的四个变体靠 {@code eventType} 判别（ADR-0037 票 07）。
+     *
+     * <p>它问的是"客户端能不能只按这一个字段分派"：四个值各对应一份 schema，
+     * 而 {@code kind} 与消息方向仍要在（它们负责过滤与展示，出处 {@code ledgers.md:31-33}）。
+     * 验序列化而不是只验 getter——这个字段存在的理由就是上线之后在报文里。
+     */
+    @Test
+    @DisplayName("审计：四种组合各出一个 eventType，kind 与方向都还在报文里（票 07）")
+    void anAuditPageCarriesTheVariantDiscriminator() {
+        AuditQuery.Page page = new AuditQuery.Page(List.of(
+                row(4L, "agent_run", "agent_run", null),
+                row(3L, "tool_action", "tool_action", null),
+                row(2L, "message", "inbound_message",
+                        new AuditQuery.MessageRow("inbound", "completed", null, "direct", null, null,
+                                12, 1, "agent", "acc", "conv", "msg", "target")),
+                row(1L, "message", "outbound_message",
+                        new AuditQuery.MessageRow("outbound", "sent", null, "direct", "text", null,
+                                30, 1, "agent", "acc", "conv", "msg", "target"))), null);
+
+        String json = tools.jackson.databind.json.JsonMapper.builder().build()
+                .writeValueAsString(new AuditController.AuditView(page.rows(), page.nextCursor()));
+
+        assertTrue(json.contains("\"eventType\":\"agent_run\""), json);
+        assertTrue(json.contains("\"eventType\":\"tool_action\""), json);
+        assertTrue(json.contains("\"eventType\":\"inbound_message\""), json);
+        assertTrue(json.contains("\"eventType\":\"outbound_message\""), json);
+        assertTrue(json.contains("\"kind\":\"message\""),
+                "kind 是过滤用的那一格，判别字段替不掉它：" + json);
+        assertTrue(json.contains("\"direction\":\"outbound\""), json);
+    }
+
+    /**
+     * 判别字段是推出来的，就不许和 {@code kind} + 方向说两套话（票 07）。
+     *
+     * <p>这一条防的是一种不会报错的脏数据：一行 {@code kind=message} 却自称
+     * {@code eventType=tool_action}，客户端会按工具那份 schema 去解析，缺的字段一律当空。
+     */
+    @Test
+    @DisplayName("审计：eventType 与 kind/方向对不上的行造不出来（票 07）")
+    void aRowCannotClaimTheWrongVariant() {
+        IllegalArgumentException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> row(1L, "message", "tool_action",
+                        new AuditQuery.MessageRow("inbound", "completed", null, "direct", null, null,
+                                1, 1, "agent", "acc", "conv", "msg", "target")));
+
+        assertTrue(failure.getMessage().contains("eventType"),
+                "要说清是哪一格推错了，而不是一句「参数不合法」：" + failure.getMessage());
+    }
+
+    /** 一行审计的夹具：只填这一批断言用得到的格子，其余留空。 */
+    private static AuditQuery.Row row(long seq, String kind, String eventType,
+                                      AuditQuery.MessageRow message) {
+        return new AuditQuery.Row(seq, "e-" + seq, kind, eventType,
+                kind + ".some.action", "started", null, "run-1", "sk", "ops", "ethan", "http",
+                null, null, null, null, Instant.parse("2026-11-22T12:00:00Z"), message);
     }
 
     private static AuditController auditController(AuditQuery query) {

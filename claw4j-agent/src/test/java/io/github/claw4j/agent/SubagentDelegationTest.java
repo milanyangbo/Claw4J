@@ -1,5 +1,10 @@
 package io.github.claw4j.agent;
 
+import io.github.claw4j.agent.audit.AuditAction;
+import io.github.claw4j.agent.audit.AuditErrorCode;
+import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.audit.AuditStatus;
+import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
@@ -37,6 +42,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -323,6 +329,99 @@ class SubagentDelegationTest {
                 .doesNotContain("先查数");
     }
 
+    /**
+     * 子 Agent 的工具调用落在**自己那一轮**上（ADR-0037 票 08）。
+     *
+     * <p>这一条盯的是一种三样都缺、却都不报错的状态：审计没接（一行都没有）、接了但没给 runId
+     * （账本直接跳过没有 run 的事件）、给了 runId 但归属还是父的（按 agent 查会查到父头上）。
+     */
+    @Test
+    @DisplayName("子 Agent 的工具调用落在自己那一轮：两条运行行 + 工具行都是同一个 runId（票 08）")
+    void subagentToolCallsAreAuditedInTheirOwnRun() {
+        List<AuditEvent> events = new ArrayList<>();
+        RecordingTool lookup = new RecordingTool("lookup", "原始行 128400");
+        AtomicInteger childCalls = new AtomicInteger();
+        FixedChatModel child = new FixedChatModel(
+                prompt -> switch (childCalls.getAndIncrement()) {
+                    case 0 -> ChatPipelineTest.requestTool(ToolSearch.TOOL_NAME, "{\"query\":\"lookup\"}");
+                    case 1 -> ChatPipelineTest.requestTool("lookup", "{}");
+                    default -> ChatPipelineTest.answer("结论：128400");
+                }, List.of());
+        // 工具走线上那条收集路径（不然拿到的是没被包过的桩，审计根本不会发生）：
+        // 这一条要验的正是"子链的工具被包上了、并且写到了子那一轮"。
+        ToolCallAudit audit = new ToolCallAudit(events::add);
+        List<ToolCallback> tools = SubagentAutoConfiguration.subagentToolCallbacks(
+                providerOf(List.of(lookup)), providerOf(List.of()),
+                null,
+                ToolsProperties.defaults(),
+                List.of(ToolTierRegistry.sameFor(Set.of("lookup"), ToolTier.MESSAGING)),
+                null, ApprovalRequiredTools.none(), audit, ObservationRegistry.NOOP);
+        SubagentDelegation delegation = delegation(List.of(definitionObject("alpha", "lookup")),
+                runner(child, tools, audit));
+        ToolContext identity = new ToolContext(Map.of(ContextKeys.PRINCIPAL, new Principal("u-1")));
+
+        delegation.call("{\"subagent_type\":\"alpha\",\"prompt\":\"上周华东成交额\"}", identity);
+
+        List<AuditEvent> runEvents = events.stream()
+                .filter(event -> event.action() == AuditAction.AGENT_RUN_STARTED
+                        || event.action() == AuditAction.AGENT_RUN_FINISHED)
+                .toList();
+        assertThat(runEvents)
+                .as("一次委派是自己的一轮：开始、结束各一条")
+                .hasSize(2);
+        assertThat(runEvents).extracting(AuditEvent::status)
+                .containsExactly(AuditStatus.STARTED, AuditStatus.SUCCEEDED);
+        AuditEvent.Scope scope = runEvents.getFirst().scope();
+        assertThat(scope.runId()).as("子那一轮有自己的编号，不与父共享").isNotBlank();
+        assertThat(scope.sessionKey()).isEqualTo("subagent:alpha");
+        assertThat(scope.agentId()).as("干活的是子 Agent，不是父那个部署级 agent").isEqualTo("alpha");
+        assertThat(scope.actor()).as("委派不提权：人还是那个人").isEqualTo("u-1");
+
+        List<AuditEvent> lookupEvents = events.stream()
+                .filter(event -> "lookup".equals(event.toolName()))
+                .toList();
+        assertThat(lookupEvents)
+                .as("子链调了 lookup：开始与结束各一条（没有 runId 时账本会整条跳过）")
+                .hasSize(2);
+        assertThat(lookupEvents).extracting(AuditEvent::status)
+                .containsExactly(AuditStatus.STARTED, AuditStatus.SUCCEEDED);
+        assertThat(lookupEvents).allSatisfy(event -> {
+            assertThat(event.scope().runId()).as("工具行挂在这个子 run 上").isEqualTo(scope.runId());
+            assertThat(event.scope().agentId()).isEqualTo("alpha");
+            assertThat(event.scope().sessionKey()).isEqualTo("subagent:alpha");
+        });
+    }
+
+    /**
+     * 子 Agent 挂了，结束那一条要写清楚（票 08）。
+     *
+     * <p>只写开始不写结束的话，30 分钟后它会被孤儿扫尾补成 {@code unknown}——那是"不知道结果"，
+     * 而这里明明知道。归一用父链那套判据（超时 / 取消 / 普通失败），不另写一份。
+     */
+    @Test
+    @DisplayName("子 Agent 挂了也留一条 failed 的结束行，runId 与开始那条相同（票 08）")
+    void subagentRunFailureIsRecorded() {
+        List<AuditEvent> events = new ArrayList<>();
+        FixedChatModel child = new FixedChatModel(prompt -> {
+            throw new IllegalStateException("模型挂了");
+        }, List.of());
+        SubagentRunner runner = runner(child, List.of(new RecordingTool("lookup", "1")),
+                new ToolCallAudit(events::add));
+
+        assertThatThrownBy(() -> runner.delegate(definitionObject("alpha", "lookup"), "查数",
+                new Principal("u-1")))
+                .as("模型挂了要往上抛，不能被吞成一句「没有结论」")
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(events).extracting(AuditEvent::action)
+                .containsExactly(AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
+        AuditEvent finished = events.getLast();
+        assertThat(finished.status()).isEqualTo(AuditStatus.FAILED);
+        assertThat(finished.errorCode()).as("与父链同一套归一：普通失败记 run_failed")
+                .isEqualTo(AuditErrorCode.RUN_FAILED);
+        assertThat(finished.scope().runId()).isEqualTo(events.getFirst().scope().runId());
+    }
+
     @Test
     @DisplayName("工具形状来自库：参数是 TaskCall 那一组，描述里的注册表由库拼")
     void toolShapeComesFromTheLibrary() {
@@ -410,6 +509,8 @@ class SubagentDelegationTest {
                 AgentProperties.defaults(),
                 beans.getBeanProvider(Approvals.class),
                 beans.getBeanProvider(ApprovalRequiredTools.class),
+                // 审计：这个容器里没有持久化那一层，于是执行器拿到 null——裁剪部署的常态（票 08）
+                beans.getBeanProvider(ToolCallAudit.class),
                 new SubagentTaskRepository());
 
         assertThat(task.getToolDefinition().name()).isEqualTo(SubagentDelegation.TOOL_NAME);
@@ -484,7 +585,19 @@ class SubagentDelegationTest {
     }
 
     private SubagentRunner runner(ChatModel model, List<ToolCallback> tools) {
-        return new SubagentRunner(model, ObservationRegistry.NOOP, () -> tools,
+        return runner(model, tools, null);
+    }
+
+    /**
+     * 带审计的执行器。
+     *
+     * @param model 子链用的模型
+     * @param tools 子链能用的工具
+     * @param audit 审计接缝；{@code null} 表示这个部署没装（裁剪部署那一条要它）
+     * @return 执行器
+     */
+    private SubagentRunner runner(ChatModel model, List<ToolCallback> tools, ToolCallAudit audit) {
+        return new SubagentRunner(model, ObservationRegistry.NOOP, audit, () -> tools,
                 new ChineseToolIndex(),
                 ToolSearchProperties.defaults(),
                 ToolCallBudget.MAX_TOTAL_CALLS);

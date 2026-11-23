@@ -27,24 +27,33 @@ public class JdbcAuditQuery implements AuditQuery {
             + " failure_stage, duration_ms, result_count, actor_type,"
             + " account_ref, conversation_ref, message_ref, target_ref";
 
-    private static final RowMapper<Row> MAPPER = (rs, rowNum) -> new Row(
-            rs.getLong("seq"),
-            rs.getString("event_id"),
-            rs.getString("kind"),
-            rs.getString("action"),
-            rs.getString("status"),
-            rs.getString("error_code"),
-            rs.getString("run_id"),
-            rs.getString("session_key"),
-            rs.getString("agent_id"),
-            rs.getString("actor"),
-            rs.getString("channel"),
-            rs.getString("tool_call_id"),
-            rs.getString("tool_name"),
-            rs.getString("args_digest"),
-            rs.getString("approval_id"),
-            rs.getTimestamp("at").toInstant(),
-            messageOf(rs));
+    /**
+     * 行映射。{@code eventType} 在这里算：它是 {@code kind} 与消息方向的函数，库里没有那一列
+     * （票 07）。放在映射里而不是让每个读的人自己拼，是因为"进还是出"只该有一处判断。
+     */
+    private static final RowMapper<Row> MAPPER = (rs, rowNum) -> {
+        String kind = rs.getString("kind");
+        MessageRow message = messageOf(rs);
+        return new Row(
+                rs.getLong("seq"),
+                rs.getString("event_id"),
+                kind,
+                AuditQuery.eventTypeOf(kind, message == null ? null : message.direction()),
+                rs.getString("action"),
+                rs.getString("status"),
+                rs.getString("error_code"),
+                rs.getString("run_id"),
+                rs.getString("session_key"),
+                rs.getString("agent_id"),
+                rs.getString("actor"),
+                rs.getString("channel"),
+                rs.getString("tool_call_id"),
+                rs.getString("tool_name"),
+                rs.getString("args_digest"),
+                rs.getString("approval_id"),
+                rs.getTimestamp("at").toInstant(),
+                message);
+    };
 
     /**
      * 消息那几列。不是 message 行时整组为 null——读的人一眼就知道这一行没有那种字段，

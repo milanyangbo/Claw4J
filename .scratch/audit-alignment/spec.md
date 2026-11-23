@@ -21,6 +21,8 @@
 | 04 | 消息审计：`kind=message`，inbound/outbound 终态 + 假名身份引用 | 01、02 | resolved |
 | 05 | 去掉自研：内存审批交接 → 持久事实；`tool_call_id` 留到票 06 | 01 | resolved |
 | 06 | 工具调用编号：从观测上下文取到，进 `ToolContext`，落 `audit_event.tool_call_id`（V13） | 01 | resolved |
+| 07 | 读侧 `eventType`：四个变体的判别字段（`inbound_message` / `outbound_message` 由方向分出） | 03、04 | resolved |
+| 08 | 子 Agent 的审计：每次委派开自己的 run，工具行落在这一轮上 | 01、06 | resolved |
 
 **状态列与票面同源**：票面开头那行 `**Status:**` 是事实，这张表只是总览；收票时两处一起改。
 `scripts/check-ticket-cases.sh` 会比对（表里漏列一张票、或两处写的不是一个词，都会红）。

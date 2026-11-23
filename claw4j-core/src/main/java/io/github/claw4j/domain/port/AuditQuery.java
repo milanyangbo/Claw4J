@@ -64,11 +64,47 @@ public interface AuditQuery {
     }
 
     /**
+     * 这一行属于 OpenClaw 的哪一个读侧变体（ADR-0037 票 07）。
+     *
+     * <p>四个变体各有自己的 schema，靠 {@code eventType} 判别：{@code agent_run} / {@code tool_action} /
+     * {@code inbound_message} / {@code outbound_message}
+     * （{@code packages/gateway-protocol/src/schema/audit-activity.ts:183,215,249,323}）。
+     * {@code kind} 与消息的 {@code direction} 照样留在响应里——它们负责过滤与展示，判别交给这个字段
+     * （{@code docs/gateway/protocol/ledgers.md:31-33}）。
+     *
+     * <p>它是<b>算出来的</b>，不是一列：库里只有 {@code kind} 与 {@code direction}，OpenClaw 的持久投影
+     * 也一样（{@code audit-event-store.ts:94-114}），{@code eventType} 是读的时候按这两格拼的。
+     * 所以推导只此一处，任何"再写一份"的分支都会漂。
+     *
+     * @param kind {@code agent_run} / {@code tool_action} / {@code message}，不可为 null
+     * @param direction 消息方向 {@code inbound} / {@code outbound}；非消息行传 null
+     * @return 四个判别值之一；{@code kind} 不认识时返回 null（库里被 CHECK 约束挡着，走不到）
+     */
+    public static String eventTypeOf(String kind, String direction) {
+        if (kind == null) {
+            return null;
+        }
+        return switch (kind) {
+            case "agent_run" -> "agent_run";
+            case "tool_action" -> "tool_action";
+            case "message" -> "inbound".equals(direction) ? "inbound_message"
+                    : "outbound".equals(direction) ? "outbound_message" : null;
+            default -> null;
+        };
+    }
+
+    /**
      * 一行审计。字段与表一一对应，不做加工——加工放在读的人那边。
+     *
+     * <p>唯一的例外是 {@code eventType}：它是 {@link #eventTypeOf} 从 {@code kind} 与消息方向推出来的
+     * 判别字段，表里没有这一列（票 07）。它留在这一层而不是交给每个读的人自己拼，是因为"进还是出"
+     * 与"是运行还是工具"这两格一旦各拼一次，两边迟早对不上，而那种不一致不会报错，只会让客户端
+     * 少认出一个变体。
      *
      * @param seq 账本序号，翻页游标就是它
      * @param eventId 事件编号
-     * @param kind {@code agent_run} / {@code tool_action}
+     * @param kind {@code agent_run} / {@code tool_action} / {@code message}
+     * @param eventType 读侧变体判别，由 {@code kind} + 消息方向推出（票 07）
      * @param action 四个动作之一
      * @param status 结局
      * @param errorCode 归一化错误码，成功时为 null
@@ -85,10 +121,21 @@ public interface AuditQuery {
      * @param at 发生时刻
      * @param message 消息专有的那一组；运行与工具事件为 null
      */
-    record Row(long seq, String eventId, String kind, String action, String status,
+    record Row(long seq, String eventId, String kind, String eventType, String action, String status,
                String errorCode, String runId, String sessionKey, String agentId,
                String actor, String channel, String toolCallId, String toolName, String argsDigest,
                String approvalId, Instant at, MessageRow message) {
+
+        public Row {
+            // 判别字段是推出来的，就不允许它和 kind + direction 说两套话：那种行看起来正常，
+            // 客户端却会按错的变体去解析。写入侧有 not-null 与闭集约束，这里再钉一次读侧那份。
+            String direction = message == null ? null : message.direction();
+            String derived = eventTypeOf(kind, direction);
+            if (!java.util.Objects.equals(eventType, derived)) {
+                throw new IllegalArgumentException("eventType 由 kind + 方向推出，不是一列："
+                        + kind + " / " + direction + " 应当是 " + derived + "，实际是 " + eventType);
+            }
+        }
     }
 
     /**
