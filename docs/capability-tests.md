@@ -570,9 +570,12 @@ psql "$DATABASE_URL" -c "select seq, actor_type, actor, requested_by, tool_call_
 agent_id / actor_type / actor / requested_by / channel / tool_call_id / tool_name / args_digest /
 approval_id / source_id / source_sequence / redaction / schema_version / at`，消息行另加
 `direction / conversation_kind / message_outcome / reason_code / delivery_kind / failure_stage /
-duration_ms / result_count / account_ref / conversation_ref / message_ref / target_ref`（V12、V14）。
+duration_ms / result_count / account_ref / conversation_ref / message_ref / target_ref`。
 
-**`tool_call_id` 从 V13 起有值**（票 06）：包装层从当前观测取框架给的调用编号
+表的完整形状在基线里——`claw4j-agent` 的 `V3__session.sql` / `V5__run.sql` 等六份，一份一个 schema，
+没有"某次改了什么"的补丁可读（`CONTRIBUTING.md`「迁移与种子」）。
+
+**`tool_call_id` 有值**（票 06）：包装层从当前观测取框架给的调用编号
 （`ToolCallingObservationContext#getToolCallId`，Spring AI 调工具前把它放进了 scope），
 写进 `ToolContext` 再落到这一列。**落库形状是 `sha256:<64 hex>`，不是 provider 的原值**——
 照 OpenClaw 的 `auditToolCallId`（`agent-event-audit.ts`）：编号是 provider 的字节，能用来对账，
@@ -584,7 +587,7 @@ duration_ms / result_count / account_ref / conversation_ref / message_ref / targ
 **`execution_id` 只有消息行可以空**：入站消息在开跑之前就到了（可能被跳过、可能没认出身分）。
 运行与工具行仍然必填，库里有 `ck_audit_event_execution_required` 挡着。
 
-**`(source_id, source_sequence)` 是幂等键**（ADR-0037 票 02，V9 迁移）：同一件事投两次只留第一行，
+**`(source_id, source_sequence)` 是幂等键**（ADR-0037 票 02）：同一件事投两次只留第一行，
 第二次计入 `claw4j.audit.duplicates`——重复不是故障，是幂等在起作用。来源键的算法在
 `AuditEvent` 的四个工厂里：运行是 `exec:<executionId>`（1 开始 / 2 结束），工具是
 `tool:<executionId>:<编号哈希>`（1 开始 / 2 结束）。**工具键不含工具名与参数**——照 OpenClaw 的
@@ -592,10 +595,10 @@ duration_ms / result_count / account_ref / conversation_ref / message_ref / targ
 拿不到编号时才退回 `tool:<executionId>:<工具>:<指纹>`，那时同参数两次会被合并成一行（票 02 记着的代价）。
 改名之前写进去的旧行前缀是 `run:`，前缀不参与查询，不影响去重（ADR-0038）。
 
-**`actor_role` 在 V9 里删掉了**：它原来从身份的角色来，角色删了之后没有任何写入点，
+**`actor_role` 不存在**：它原来从身份的角色来，角色删了之后没有任何写入点，
 查询里恒为 `NULL`——留着只会让下一个人写 `where actor_role = …` 然后拿到空结果还不报错。
 
-**`agent_id` 从 V11 起有值**（ADR-0037 票 01）：入口把部署级 agent 名（`claw4j.agent.default`，
+**`agent_id` 有值**（ADR-0037 票 01）：入口把部署级 agent 名（`claw4j.agent.default`，
 没配目录时 `builtin`）写进工具上下文与两条运行事件；取不到时落 `unknown` 而不是空——
 空格让"这条是哪个 agent 干的"在多 agent 部署里永远答不了，`unknown` 至少可数。
 
@@ -623,7 +626,7 @@ OpenClaw 在绑定时就按 kind 强制 null（`audit-event-store.ts:103`），�
 **七个终态都有生产者**（同票）：`succeeded` / `failed` / `cancelled`（客户端断开、被取消）/
 `timed_out`（超时）/ `blocked`（再等也不会通过的拦截）/ `unknown`（跑了但结果不可知）/
 `started`（还在跑）。判据只看异常链（`RunOutcome`）：超时优先于取消，`IOException` 记取消
-（流式写回客户端最常见的那种）。V11 起 `kind × status × error_code` 必须配对——
+（流式写回客户端最常见的那种）。`kind × status × error_code` 必须配对——
 `agent_run` 配 `tool_failed` 进不去。
 
 **孤儿行会被补成 `unknown`**：我们是"开跑即落一行 started"，进程被杀时那一行没有下文。
@@ -672,7 +675,7 @@ OpenClaw 那份参数表里也没有，多一个就是自创契约。
 `sessionKey` 与 `direction`/`channel`，三种都拒绝并说明哪两个冲突。空页在客户端看来是
 "这段时间没有审计"，而真相是"参数不该一起用"。
 
-**消息行的必填与互斥**（票 13，V15）：`channel` 与 `conversationKind` 必填；`suppressed` /
+**消息行的必填与互斥**（票 13）：`channel` 与 `conversationKind` 必填；`suppressed` /
 `unknown` 不带 `deliveryKind`；`failed` / `unknown` 必带 `failureStage`；出站只有 `suppressed` 带
 原因码。四条 CHECK 钉着，历史行在迁移里按同一规则归一。
 

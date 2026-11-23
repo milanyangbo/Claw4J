@@ -4,7 +4,7 @@
 重排用 `DocumentPostProcessor`** —— 能力是新的，接口全是框架的。
 
 这篇文档只讲"为什么是这个形状"。表结构、索引器与权限那部分在 `P10a` 票面与
-`V5__rag.sql` 的注释里，每条判据由哪条用例守在同票的「TDD 用例清单」一节。
+`V4__rag.sql` 的注释里，每条判据由哪条用例守在同票的「TDD 用例清单」一节。
 
 ## 一、先摆能力边界：框架给了什么、没给什么
 
@@ -337,7 +337,7 @@ where content ilike '%' || ? || '%' escape '\'
 `vector_store` 由 `PgVectorStore` 建（`initializeSchema(true)`），所以**迁移里建不出这个索引**
 ——迁移跑的时候表还不存在。顺序只能是：
 
-1. `V5__rag.sql`：`create extension if not exists pg_trgm;`
+1. `V4__rag.sql`：`create extension if not exists pg_trgm;`
 2. `RagAutoConfiguration` 的 `ApplicationRunner` 里、**同步之前**：
    `create index if not exists ix_rag_vector_store_content_trgm on claw4j_rag.vector_store using gin (content gin_trgm_ops);`
 

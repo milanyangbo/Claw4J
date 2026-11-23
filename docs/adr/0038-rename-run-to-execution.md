@@ -40,10 +40,9 @@ ADR-0027 当时定的"run 只是个句柄、不落表"仍然成立，但它没�
 
 ## 代价
 
-- **一次 schema 迁移**（V16）：三张表 `rename column run_id → execution_id`，索引
-  `ix_audit_event_run → ix_audit_event_execution`，约束
-  `ck_audit_event_run_required → ck_audit_event_execution_required`。历史行不迁移（值一直是对的）。
-  外部手写 SQL 若引用了 `run_id` 要跟着改。
+- **一次 schema 改动**（并入基线 `V5__run.sql`）：三张表的那一列直接叫 `execution_id`，索引叫
+  `ix_audit_event_execution`，约束叫 `ck_audit_event_execution_required`。外部手写 SQL 若引用了
+  `run_id` 要跟着改。
 - **工具上下文里的键名**：`claw4j.runId` → `claw4j.executionId`（`ContextKeys.EXECUTION_ID`）。
   自定义工具若直接读这个字符串，要跟着改；读常量（`ContextKeys`）的不用。
 - **来源键前缀 `run:` → `exec:`**（`source_id`）：旧行保持旧前缀。它是内部去重键，不进报文，

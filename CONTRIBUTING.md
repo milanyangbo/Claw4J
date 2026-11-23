@@ -98,24 +98,27 @@ cp claw4j-app/src/main/resources/application-local.yml.example \
 | 版本 | 在哪 | 建什么 | 谁在用 |
 | --- | --- | --- | --- |
 | `V1` `V2` | `claw4j-example-sales` | 业务表与种子（`business`） | 示例插件自己的工具 |
-| `V3` | `claw4j-agent` | 会话六张表（`claw4j_session`）：框架的 `ai_session` / `ai_session_event`，加我们的 `session_nodes` / `conversations` / `session_windows` / `session_conversations` | `agent.session` / `agent.goal` / `channel.kernel` |
+| `V3` | `claw4j-agent` | 会话八张表（`claw4j_session`）：框架的 `ai_session` / `ai_session_event`，加我们的 `session_nodes` / `conversations` / `session_windows` / `session_conversations` / `session_progress_cards` / `standing_intents` | `agent.session` / `agent.goal` / `agent.progress` / `agent.intent` / `channel.kernel` |
 | `V4` | `claw4j-agent` | 知识库的文件账 `source` 与索引身份 `index_meta`（`claw4j_rag`；块与向量在框架建的 `vector_store` 里）+ `vector` / `pg_trgm` 扩展 | `claw4j-rag` |
-| `V5` | `claw4j-agent` | 审批 / 定时任务 / 审计流水 / exec 白名单（`claw4j_run`） | `agent.approval` / `agent.schedule` / `agent.audit` / `agent.exec` |
+| `V5` | `claw4j-agent` | 审批 / 定时任务 / 审计流水 / 执行决策事实 / exec 白名单 / 假名密钥（`claw4j_run`） | `agent.approval` / `agent.schedule` / `agent.audit` / `agent.exec` |
 | `V6` | `claw4j-agent` | 入站队列（`claw4j_channel`） | `channel.kernel` / `agent.channel` |
 
 **脚本不跟着代码分模块。** `V4` 建的是 `claw4j-rag` 的 schema，但文件留在 `claw4j-agent` 的迁移序列里：
 Flyway 的版本号是全局一条线，把 V4 拆到另一个 jar 之后，"先只部署 agent、后来才加 rag"的库里
 V4 会变成 out-of-order，默认直接报错。脚本集中、代码分模块，两边不冲突。
 
-**这六份是基线，不是历史。** 三轮合并：
+**这六份是基线，不是历史。** 四轮合并：
 
-- 2026-11-09：把 `claw4j-agent` 侧 25 个迁移（V3..V27）按 schema 合成五份。那一轮的大半内容在
+- 2026-11-09：把 `claw4j-agent` 侧二十几个迁移按 schema 合成五份。那一轮的大半内容在
   反复改同一批表，而 `agent_run` / `agent_step` / `agent_run_delivery` 三张表与 `audit_trail` 视图
   最后整体删掉了。
 - 2026-11-10：把随后新增的三份（会话并表、删缓存、索引身份）并回各自的基线。
-- 2026-11-19：把 `V8`..`V13` 并回四份基线，并删掉两张没人读的表
+- 2026-11-19：把当时新增的几份并回四份基线，并删掉两张没人读的表
   （`session_entry_snapshots`、`session_key_contract`）与它们的触发器、以及为已删的 doctor 建的
   `session_nodes_entry_valid_idx`。这一轮**不只是挪文件**：它改了一次形状，依据是代码里零引用。
+- 2026-11-23：把审计对齐那一串（`V7`..`V16`）并回基线——进度卡与意图进 `V3`，审批执行的交接、
+  审计的十二个错误码与消息列、假名密钥进 `V5`。同样的形状：中途九份都在给 `audit_event` 叠补丁
+  （加列、改约束、改列名），读十份文件才拼得出这张表现在长什么样。
 
 合并只删历史、不改设计——每一轮前后各 `pg_dump -s` 比过一次，差异只有明确要删的那些对象。
 代价：**已经跑过旧迁移的库要重建**（旧版本号在本地已经不存在，Flyway 校验会直接失败），

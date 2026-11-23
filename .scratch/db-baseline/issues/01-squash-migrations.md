@@ -29,10 +29,14 @@ Blocked by: —
 
 ## 复核
 
-复核：2026-11-23 `./scripts/verify.sh` 全绿（失败 0 / 错误 0 / 跳过 0）。**形状比对**：整理前的库
-（`claw4j_squash`）与整理后的库（`claw4j_squash2`）各查一次 `information_schema` / `pg_constraint` /
-`pg_indexes` / `pg_description`，差异只有本轮有意改写的注释；比对中发现并补回两处漏写
-（`ck_audit_event_actor_present`、`ck_audit_event_channel_message_only`），补完后四类对象逐项一致。
+复核：2026-11-23 `./scripts/verify.sh` 全绿（失败 0 / 错误 0 / 跳过 0）。**跑过反例**：塞一份
+`V7__probe.sql`（`select 1`），`migrationsFromEveryModuleLandInOneHistory` 红在
+「but some elements were not expected」（多出 7）；删掉后绿——**注意要连着删
+`claw4j-agent/target/classes/db/migration/V7__probe.sql`**，Maven 不会删掉旧资源，不删会继续红。
+**形状比对**：整理前的库（`claw4j_squash`）与整理后的库（`claw4j_squash2`）各查一次
+`information_schema` / `pg_constraint` / `pg_indexes` / `pg_description`，差异只有本轮有意改写的
+注释；比对中发现并补回两处漏写（`ck_audit_event_actor_present`、
+`ck_audit_event_channel_message_only`），补完后四类对象逐项一致。
 
 ## 缺口
 

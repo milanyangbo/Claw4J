@@ -8,7 +8,7 @@
 那句话仍然成立，但 id 就在同一条调用链的观测上下文里——`DefaultToolCallingManager` 调工具之前
 把 `toolCall.id()` 放进了 `ToolCallingObservationContext` 并在它的 scope 里执行回调
 （2.0.2 `:313-328`）。包装层因此取得到，不需要包装 `ToolCallingManager`、也不需要自己生成 id。
-落地：`audit_event.tool_call_id`（V13，列名与"只有工具行有值"都照 OpenClaw 的
+落地：`audit_event.tool_call_id`（基线 `V5__run.sql`，列名与"只有工具行有值"都照 OpenClaw 的
 `audit-event-store.ts:100` / `audit-activity.ts:463`）＋读接口输出该字段；`args_digest` **不退**，
 它承担审批绑定（`approval_request.args_digest`）与来源键，而 OpenClaw 没有这一列。见票 06。
 
@@ -22,7 +22,7 @@ reuses or mutates the parent context"。**不造 lineage**：那条投影要精�
 我们也一样——没有 `parent_execution_id` 这一列，就不从父执行编号编一个。
 
 修订 2026-11-23（第三批）：读侧的**报文**与写侧的**归属**按它的字段逐项对完，改三处。
-① **写侧归属**（票 11，V14）：`actor_type` / `actor` 记**执行者**——它的
+① **写侧归属**（票 11，基线 `V5__run.sql`）：`actor_type` / `actor` 记**执行者**——它的
 `projectExplicitAttribution` 是 `actorType = agentId ? "agent" : "system"`、`actorId = agentId`
 （`agent-event-audit.ts`）。所以我们把人从 `actor` 挪到扩展列 `requested_by`（不进读接口），
 运行/工具行写 `agent` + agentId，入站消息写 `channel_sender` + 发送者假名。
@@ -40,7 +40,7 @@ false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展
 ① **事件时刻**（票 12）：`occurred_at` 记**事件产生那一刻**，不是落库那一刻——它绑的是
 `input.occurredAt`（`audit-event-store.ts:89`）。入站消息用 `now - durationMs`（那个字段量的就是
 处理耗时），其余用构造那一刻；`INSERT` 显式绑 `at`，不再依赖列默认值 `now()`。
-② **消息行的必填与互斥**（票 13，V15）：`channel` / `conversationKind` 必填
+② **消息行的必填与互斥**（票 13，基线 `V5__run.sql`）：`channel` / `conversationKind` 必填
 （`audit-activity.ts:122-133`）；`suppressed` / `unknown` 不带 `deliveryKind`（`:373,392` 的
 `withoutDeliveryKind`）；`failed` / `unknown` 必带 `failureStage`（`:380,388`）；
 出站被抑制必带原因码、其余终态不带（`:360-395`）。四条 CHECK 钉住，历史行先归一。
@@ -50,7 +50,7 @@ false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展
 这回事，照抄出来的端点只覆盖它的 `executionId` 分支、名字却叫 run。撤除的裁决与代价见 ADR-0038。
 
 **命名已按 ADR-0038 改**：我们把"一轮"叫 `executionId`，OpenClaw 把每轮外层请求也叫 `executionId`，
-而它的 `runId` 留给"可能跨轮共享的会话/路由/恢复关联"（`docs/cli/audit.md:102-106`）。库里（V16）、
+而它的 `runId` 留给"可能跨轮共享的会话/路由/恢复关联"（`docs/cli/audit.md:102-106`）。库里（基线 `V5__run.sql`）、
 Java、报文与查询参数现在都是这一个名字（票 16）。**线格式因此偏离它的 `audit.activity`**：它的
 `agent_run` / `tool_action` 变体里那一格叫 `runId`（`audit-activity.ts:112-120`），我们叫
 `executionId`——它的名字对应的是我们没有的那一层，留着会让读报文的人以为它存在。
@@ -91,7 +91,7 @@ Java、报文与查询参数现在都是这一个名字（票 16）。**线格�
    进程内已无收尾，启动扫尾把它补成 `tool_outcome_unknown`）。
 2. **`agentId` 必填**：`Scope` 增加 agent 归属，运行与工具两侧都写入；取不到时写
    `unknown`（字符串），**不允许为 null**——`null` 让"谁干的"变成不可查，`unknown` 至少可数。
-3. **Schema V9**：加 `source_id / source_sequence / session_id / tool_call_id / actor_type /
+3. **Schema**：加 `source_id / source_sequence / session_id / tool_call_id / actor_type /
    outcome / reason_code / delivery_kind / failure_stage / duration_ms / result_count /
    account_ref / conversation_ref / message_ref / target_ref`，`kind` 允许 `message`；
    删 `actor_role`；`(source_id, source_sequence)` 唯一。
