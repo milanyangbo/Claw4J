@@ -36,7 +36,11 @@ agent 模块那份 `ToolGovernanceTest` 用的是记录型 sink，验不到表�
 
 ## 缺口
 
-- **`tool_call_id`：blocked（上游没有接缝；2026-11-23 查到字节码这一层，结论没变）**。
+- ~~**`tool_call_id`：blocked（上游没有接缝）**~~ **已由票 06 解除（2026-11-23）**：编号确实不在
+  `ToolContext` 里，但框架调工具之前把它放进了 `ToolCallingObservationContext` 并在那个 scope 里
+  执行回调，包装层取得到。列已按 OpenClaw 加上（`V13`），读接口也带出来了。
+  下面这段是当时的判据，留作历史：
+
   缺的是 Spring AI 在 `ToolContext` 里给出一次调用的稳定 id（哪怕是一个 `toolCallId` 键）。
   在 Spring AI 2.0.2 上把 `spring-ai-model-2.0.2.jar` 拆开核过：
 

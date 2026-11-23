@@ -1,6 +1,7 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.audit.AuditEvent;
+import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.AuditLedger;
 import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.domain.port.AuditQuery;
@@ -702,6 +703,29 @@ class BuildContractTest {
                 .as("重复要单独计数，不能混进 write_errors")
                 .isEqualTo(1.0);
 
+        // 同参数、两次不同的调用（票 06）：编号不同 → 来源键不同 → 四行都在。
+        // 改之前这里只会有两行：第二次那一对被唯一键挡成"重复"，而它其实是另一次真实调用。
+        var toolScope = AuditEvent.Scope.of("run-tool-twice", "session-replay", null, "http");
+        String sameArgs = "digest-same";
+        for (String callId : List.of("call-a", "call-b")) {
+            ledger.record(AuditEvent.toolStarted(toolScope, callId, "querySales", sameArgs));
+            ledger.record(AuditEvent.toolFinished(toolScope, callId, "querySales", sameArgs,
+                    AuditStatus.SUCCEEDED, null, null));
+        }
+        var callIds = jdbc.queryForList("select tool_call_id from claw4j_run.audit_event"
+                + " where run_id = 'run-tool-twice' order by seq", String.class);
+        assertThat(callIds)
+                .as("同参数两次调用 = 四行")
+                .hasSize(4)
+                .doesNotContainNull();
+        assertThat(callIds.stream().distinct().count())
+                .as("两个编号哈希后互不相同，各占两行")
+                .isEqualTo(2);
+        assertThat(jdbc.queryForList("select distinct args_digest from claw4j_run.audit_event"
+                + " where run_id = 'run-tool-twice'", String.class))
+                .as("前提：两组的参数指纹完全一样——正是改之前会被合并的那种情形")
+                .containsExactly("digest-same");
+
         // 同一张表的另一条形状约束（原 auditEventHasNoActorRole）：死列留着会被下一个人拿去过滤，
         // 而它恒为 NULL——那种过滤查出来永远是空，且不报错。
         assertThat(jdbc.queryForList(
@@ -782,8 +806,8 @@ class BuildContractTest {
                 .hasSize(1);
         assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action", null,
                 null, null, null, 10)).rows().getFirst().toolCallId())
-                .as("工具行带得回调用编号（票 06）：没有它，同参数两次调用读出来长得一样")
-                .isEqualTo("call-qfilter");
+                .as("工具行带得回调用编号（票 06）：落库形状是哈希，不是 provider 的原值")
+                .matches("sha256:[0-9a-f]{64}");
         assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "agent_run", null,
                 null, null, null, 10)).rows())
                 .as("kind 不匹配时一行都不给")

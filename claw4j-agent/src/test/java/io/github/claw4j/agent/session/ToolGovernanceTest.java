@@ -112,9 +112,23 @@ class ToolGovernanceTest {
                 .isNotNull()
                 .isEqualTo(events.get(1).argsDigest());
         assertThat(events.get(0).toolCallId())
-                .as("同一次调用的两条事件带同一个编号（票 06）")
-                .isEqualTo("call_1");
-        assertThat(events.get(1).toolCallId()).isEqualTo("call_1");
+                .as("编号进账本前哈希（OpenClaw 的 auditToolCallId）：provider 的字节不原样落库")
+                .startsWith("sha256:")
+                .isEqualTo(events.get(1).toolCallId())
+                .doesNotContain("call_1");
+        assertThat(events.get(1).toolCallId()).isEqualTo(events.get(0).toolCallId());
+
+        // 同参数、两个不同的调用：来源键必须不同，否则第二对会撞唯一键被丢掉（票 06）。
+        events.clear();
+        audit.toolStarted(scope(), TOOL, "{\"region\":\"华东\"}", "call_1");
+        audit.toolStarted(scope(), TOOL, "{\"region\":\"华东\"}", "call_2");
+        assertThat(events.get(0).argsDigest())
+                .as("前提：两次的参数指纹相同")
+                .isEqualTo(events.get(1).argsDigest());
+        assertThat(events.get(0).sourceId())
+                .as("来源键按调用编号算：靠指纹的话第二次那两行根本进不了库")
+                .isNotEqualTo(events.get(1).sourceId())
+                .startsWith("tool:" + RUN + ":sha256:");
         assertThat(events.get(1).scope().actor()).isEqualTo("u-analyst");
         assertThat(events.get(1).toolName()).isEqualTo(TOOL);
     }

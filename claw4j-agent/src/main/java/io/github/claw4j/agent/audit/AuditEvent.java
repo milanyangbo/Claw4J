@@ -4,6 +4,11 @@ import io.github.claw4j.domain.audit.MessageDirection;
 import io.github.claw4j.domain.audit.MessageOutcome;
 import io.github.claw4j.domain.principal.Principal;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+
 /**
  * 一条审计事件（ADR-0027 决定二）。
  *
@@ -19,9 +24,10 @@ import io.github.claw4j.domain.principal.Principal;
  * @param action 四类之一
  * @param status 闭合词表里的结局
  * @param errorCode 归一化错误码（{@link AuditErrorCode}），不是异常消息原文
- * @param toolCallId 这次调用在模型侧的编号（票 06）。只有工具类事件有值；取不到时为空。
- *     与 OpenClaw 的 {@code tool_call_id} 同一列同名（{@code audit-event-store.ts:100}）——
- *     它标识「这一次」调用，而 {@code argsDigest} 标识「这组参数」，同参数连调两次只有它能分开
+ * @param toolCallId 这次调用在模型侧的编号，**落库形状是 {@code sha256:<64 hex>}**（票 06）：
+ *     原值只在 {@code ToolContext} 里流转，进账本前哈希，照 OpenClaw 的
+ *     {@code auditToolCallId}（provider 的字节不进我们的档案）。只有工具类事件有值；
+ *     取不到时为空。它标识「这一次」调用，而 {@code argsDigest} 标识「这组参数」
  * @param toolName 工具名；运行类事件为空
  * @param argsDigest 参数指纹；运行类事件为空
  * @param approvalId 放行这次调用的审批编号；没有审批时为空
@@ -133,8 +139,8 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     public static AuditEvent toolStarted(Scope scope, String toolCallId, String toolName,
                                          String argsDigest) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_STARTED, AuditStatus.STARTED,
-                null, toolCallId, toolName, argsDigest, null,
-                toolSource(scope, toolName, argsDigest), 1, null);
+                null, hashedToolCallId(toolCallId), toolName, argsDigest, null,
+                toolSource(scope, toolName, argsDigest, toolCallId), 1, null);
     }
 
     /**
@@ -153,8 +159,8 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
                                           String argsDigest, AuditStatus status,
                                           AuditErrorCode errorCode, String approvalId) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_FINISHED, status,
-                errorCode, toolCallId, toolName, argsDigest, approvalId,
-                toolSource(scope, toolName, argsDigest), 2, null);
+                errorCode, hashedToolCallId(toolCallId), toolName, argsDigest, approvalId,
+                toolSource(scope, toolName, argsDigest, toolCallId), 2, null);
     }
 
     /**
@@ -167,15 +173,55 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     }
 
     /**
-     * 工具类事件的来源键：{@code tool:<runId>:<工具名>:<指纹>}。
+     * 工具类事件的来源键：{@code tool:<runId>:<调用编号的哈希>}。
      *
-     * <p>同参数连调两次会得到同一个键（框架拿不到调用 id，见 ADR-0037 的 blocked 项），
-     * 于是第二对 started/finished 会被唯一键挡成重复——这是有意的：宁可少记一行，
-     * 也不让同一件事在账本里数成两次。
+     * <p>形状照 OpenClaw 的 {@code legacyAuditSourceId}（{@code src/audit/agent-event-audit.ts}）：
+     * 它是 {@code <runId>:<sourceSequence>:<occurredAt>:<action>}——**不含工具名、不含参数**，
+     * 唯一的成分是"哪一轮 + 流里的第几个事件 + 什么时候 + 什么动作"。两次不同的调用之所以分得开，
+     * 靠的是事件流的序号与生产时刻。
+     *
+     * <p>我们没有那条事件流：审计是在工具回调里直接写的，没有稳定 seq，{@code occurredAt} 是
+     * 写库那一刻（重投时不同，带上它反而会破坏去重）。所以把它的 {@code sourceSequence} 那一段
+     * 换成**这次调用的编号**——作用相同：同一次调用重投是同一个值，两次不同调用必然不同。
+     *
+     * <p>取不到编号时退回 {@code <工具>:<指纹>}：那时只能按"一类事"近似，代价是同参数两次合并成
+     * 一行（票 02 的缺口，仍然记着）。
      */
-    private static String toolSource(Scope scope, String toolName, String argsDigest) {
+    private static String toolSource(Scope scope, String toolName, String argsDigest,
+                                     String toolCallId) {
         String runId = scope == null ? null : scope.runId();
-        return "tool:" + (runId == null ? "" : runId) + ':' + toolName + ':' + argsDigest;
+        String call = hashedToolCallId(toolCallId);
+        return "tool:" + (runId == null ? "" : runId) + ':'
+                + (call == null ? toolName + ':' + argsDigest : call);
+    }
+
+    /**
+     * 调用编号进库前的形状：{@code sha256:<hex>}。
+     *
+     * <p>照 OpenClaw 的 {@code auditToolCallId}（{@code agent-event-audit.ts}），它的原话是
+     * "call ids remain useful for correlation, but their provider-owned bytes are not operator
+     * metadata and must never enter the ledger verbatim"——编号是 provider 的字节，能用来对账，
+     * 但不是我们的档案，原样落库等于把第三方内部标识当成了自己的数据。
+     *
+     * <p>于是同一个编号在两处形状不同：{@code ToolContext} 里是原值（工具与将来的审批要用它去对），
+     * 账本里是哈希。这不是两套语义，是同一件事在两个边界上的两种表示。
+     *
+     * @param toolCallId 调用编号，可为 null
+     * @return {@code sha256:<64 hex>}；没有编号时返回 null
+     */
+    private static String hashedToolCallId(String toolCallId) {
+        if (toolCallId == null || toolCallId.isBlank()) {
+            return null;
+        }
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(toolCallId.getBytes(StandardCharsets.UTF_8));
+            return "sha256:" + HexFormat.of().formatHex(digest);
+        }
+        catch (NoSuchAlgorithmException impossible) {
+            // 每个 JRE 都必须有 SHA-256；没有的话整个审批链都不该继续。
+            throw new IllegalStateException("JRE 不支持 SHA-256", impossible);
+        }
     }
 
     /**

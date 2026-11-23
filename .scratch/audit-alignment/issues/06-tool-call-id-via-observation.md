@@ -42,6 +42,15 @@ Blocked by: —
 6. 读侧：`AuditQuery.Row` 加 `toolCallId`、`JdbcAuditQuery` 选出来、`/api/audit` 原样带出去
    （OpenClaw 的 activity 里它就是可选字段）。**不加过滤参数**——OpenClaw 的 `audit.activity.list`
    参数表里没有它。
+7. **按 OpenClaw 的原文修两处**（2026-11-23 对着 `src/audit/agent-event-audit.ts` 核完）：
+   - **编号落库前哈希**：它的是 `auditToolCallId: sha256:<hex>`，理由是 "provider-owned bytes are
+     not operator metadata and must never enter the ledger verbatim"。我们照做：`ToolContext` 里是
+     原值，账本里是 `sha256:<64 hex>`。
+   - **来源键不用参数指纹**：它的是 `legacyAuditSourceId = <runId>:<sourceSequence>:<occurredAt>:
+     <action>`，唯一性来自"哪一轮 + 流里第几个事件"，压根不含工具名与参数。我们没有那条事件流
+     （审计在回调里写，没有稳定 seq，`occurredAt` 是写库那一刻），所以把 `sourceSequence` 那一段
+     换成**调用编号的哈希**：`tool:<runId>:<编号哈希>`。取不到编号才退回 `<工具>:<指纹>`。
+     这一步同时把票 02 的缺口收口——改之前同参数两次调用会被唯一键挡成"重复"。
 
 ## TDD 用例清单
 
@@ -55,6 +64,9 @@ Blocked by: —
 | 只有工具行能有：运行行带它被 CHECK 挡下 | `BuildContractTest#auditTerminalRowsAreConsistent` | 去掉 CHECK 时那条 insert 会成功 | ✅ |
 | 孤儿补出来的终态跟着 started 行的编号走 | 同上 | 补写不 select 它就得到 null | ✅ |
 | `/api/audit` 把编号带得出去 | `HttpEndpointsTest#anAuditPageIsReadable` | `Row` 里没有这个组件时序列化不出该字段 | ✅ |
+| 编号落库前哈希，两行同值、不含原值 | `ToolGovernanceTest#anExecutedCallLandsAsTwoEvents` | 不哈希时断言 `startsWith("sha256:")` 与 `doesNotContain("call_1")` 双红 | ✅ |
+| 同参数、不同编号 → 来源键不同（否则第二对被唯一键挡掉） | 同上 | 来源键还含指纹时两条相同，`isNotEqualTo` 红 | ✅ |
+| 真实库：同参数两次调用落四行、两个编号各两行 | `BuildContractTest#auditReplayIsWrittenOnce` | 把编号从来源键里拿掉，实际只有 2 行（**实测红过**） | ✅ |
 
 ## 踩到的坑（2026-11-23，写下来省下一次）
 
@@ -96,3 +108,10 @@ Micrometer 的 `ObservationRegistry.create()` 在**一个 handler 都没有**时
 第一次跑 `BuildContractTest` 时 `auditQueryReturnsNewestFirst` 与 `auditReplayIsWrittenOnce`
 红在"一行都没落"：`INSERT` 的列从 28 加到 29 时占位符只写了 28 个，全表写入失败被账本吞成
 `write_errors`。补上 29 个后全绿——这两个既有用例正好替新列证明了"写不进去"会被发现。
+
+按 OpenClaw 修那两处（编号哈希、来源键换成编号哈希）之后又补了一轮：
+`ToolGovernanceTest#anExecutedCallLandsAsTwoEvents` 断言落库形如 `sha256:[0-9a-f]{64}`、两条同值、
+不含原值，并新增"同参数两个编号 → `sourceId` 必须不同"；
+`BuildContractTest#auditReplayIsWrittenOnce` 在真库上断言四行。
+**跑过反例**：把 `AuditEvent#toolSource` 里的编号临时置 null（等于改之前的形状），
+`auditReplayIsWrittenOnce` 红在「同参数两次调用 = 四行」（实际 2 行），改回来绿。

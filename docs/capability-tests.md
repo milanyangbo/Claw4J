@@ -573,7 +573,9 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
 
 **`tool_call_id` 从 V13 起有值**（票 06）：包装层从当前观测取框架给的调用编号
 （`ToolCallingObservationContext#getToolCallId`，Spring AI 调工具前把它放进了 scope），
-写进 `ToolContext` 再落到这一列。**只有工具行有值**——运行行或消息行带它会被
+写进 `ToolContext` 再落到这一列。**落库形状是 `sha256:<64 hex>`，不是 provider 的原值**——
+照 OpenClaw 的 `auditToolCallId`（`agent-event-audit.ts`）：编号是 provider 的字节，能用来对账，
+但不是我们的档案。原值只在 `ToolContext` 里流转。**只有工具行有值**——运行行或消息行带它会被
 `ck_audit_event_tool_call_id` 挡下，因为读侧 schema 里消息变体是 `toolCallId?: never`
 （`audit-activity.ts:463`）。取不到就留空、不编 id：没开观测的部署这一列就是空的，
 `args_digest` 仍然负责"这组参数"。
@@ -584,7 +586,9 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
 **`(source_id, source_sequence)` 是幂等键**（ADR-0037 票 02，V9 迁移）：同一件事投两次只留第一行，
 第二次计入 `claw4j.audit.duplicates`——重复不是故障，是幂等在起作用。来源键的算法在
 `AuditEvent` 的四个工厂里：运行是 `run:<runId>`（1 开始 / 2 结束），工具是
-`tool:<runId>:<工具>:<指纹>`。
+`tool:<runId>:<编号哈希>`（1 开始 / 2 结束）。**工具键不含工具名与参数**——照 OpenClaw 的
+`legacyAuditSourceId`（`<runId>:<seq>:<occurredAt>:<action>`），唯一性的成分是"哪一轮 + 这一次调用"；
+拿不到编号时才退回 `tool:<runId>:<工具>:<指纹>`，那时同参数两次会被合并成一行（票 02 记着的代价）。
 
 **`actor_role` 在 V9 里删掉了**：它原来从身份的角色来，角色删了之后没有任何写入点，
 查询里恒为 `NULL`——留着只会让下一个人写 `where actor_role = …` 然后拿到空结果还不报错。
