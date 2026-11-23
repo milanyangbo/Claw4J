@@ -45,7 +45,7 @@ class MessageAuditTest {
     }
 
     @Test
-    @DisplayName("入站处理完：一条 message/inbound/completed，带 runId 与时长")
+    @DisplayName("入站处理完：一条 message/inbound/completed，带 executionId 与时长")
     void inboundMessageIsAudited() {
         audit.inbound(new MessageAudit.Inbound("run-1", "ops", "feishu", "chat-1", "om-1",
                 "u-7", MessageOutcome.COMPLETED, null, 42, true));
@@ -56,7 +56,7 @@ class MessageAuditTest {
         assertThat(event.message().direction()).isEqualTo(MessageDirection.INBOUND);
         assertThat(event.message().outcome()).isEqualTo(MessageOutcome.COMPLETED);
         assertThat(event.message().durationMs()).isEqualTo(42);
-        assertThat(event.scope().runId()).as("这条消息是被哪一轮答的").isEqualTo("run-1");
+        assertThat(event.scope().executionId()).as("这条消息是被哪一轮答的").isEqualTo("run-1");
         assertThat(event.scope().agentId()).isEqualTo("ops");
         assertThat(event.message().conversationKind())
                 .as("私聊/群来自通道的判定（ADR-0029），审计只传不猜")

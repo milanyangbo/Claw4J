@@ -362,18 +362,18 @@ class ChatPipelineTest {
      * 连续性靠会话键。
      */
     @Test
-    @DisplayName("一次提问两条审计事件：started 与 finished 成对，runId 跟着回答出去")
+    @DisplayName("一次提问两条审计事件：started 与 finished 成对，executionId 跟着回答出去")
     void replyLeavesTwoAuditEvents() {
         RecordingAudit audit = new RecordingAudit();
         ChatClientAgentPort port = port(new FixedChatModel("华东上周成交 128400"), audit.toolCallAudit());
 
         OutboundMessage answer = port.reply(message("chat-1", "上周华东成交额"));
 
-        assertThat(answer.runId()).isNotNull();
+        assertThat(answer.executionId()).isNotNull();
         assertThat(audit.actions()).containsExactly(
                 AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
         assertThat(audit.events).allSatisfy(event -> {
-            assertThat(event.scope().runId()).as("两条事件属于同一轮").isEqualTo(answer.runId());
+            assertThat(event.scope().executionId()).as("两条事件属于同一轮").isEqualTo(answer.executionId());
             assertThat(event.scope().sessionKey()).as("会话键进门就算好了").isNotNull();
             assertThat(event.scope().requestedBy()).as("谁发起的").isEqualTo("u-1");
         });
@@ -390,7 +390,7 @@ class ChatPipelineTest {
                 new ToolCallAudit(broken));
         OutboundMessage stillAnswered = brokenPort.reply(message("chat-1", "上周华东成交额"));
         assertThat(stillAnswered.text()).isEqualTo("华东上周成交 128400");
-        assertThat(stillAnswered.runId()).as("编号本地生成，不依赖任何存储").isNotNull();
+        assertThat(stillAnswered.executionId()).as("编号本地生成，不依赖任何存储").isNotNull();
     }
 
     /** 失败也要留下痕迹：没有这一条，崩掉的那一轮在系统里等于没发生过。 */
@@ -410,9 +410,9 @@ class ChatPipelineTest {
         assertThat(audit.events.getLast().status()).isEqualTo(AuditStatus.FAILED);
     }
 
-    /** 流式每一块都带同一个 runId：只收到中间块的调用方也要能认出同一批。 */
+    /** 流式每一块都带同一个 executionId：只收到中间块的调用方也要能认出同一批。 */
     @Test
-    @DisplayName("流式：每一块都带同一个 runId，结束事件只发生一次")
+    @DisplayName("流式：每一块都带同一个 executionId，结束事件只发生一次")
     void streamChunksShareOneTurnId() {
         RecordingAudit audit = new RecordingAudit();
         List<OutboundMessage> chunks = new ArrayList<>();
@@ -423,8 +423,8 @@ class ChatPipelineTest {
         port.stream(message("chat-1", "讲一下"), chunks::add);
 
         assertThat(chunks).isNotEmpty();
-        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.runId()).isNotNull());
-        assertThat(chunks.stream().map(OutboundMessage::runId).distinct()).hasSize(1);
+        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.executionId()).isNotNull());
+        assertThat(chunks.stream().map(OutboundMessage::executionId).distinct()).hasSize(1);
         assertThat(audit.actions()).containsExactly(
                 AuditAction.AGENT_RUN_STARTED, AuditAction.AGENT_RUN_FINISHED);
 
@@ -1184,9 +1184,9 @@ class ChatPipelineTest {
         return environment;
     }
 
-    /** 带着 runId 再说一句：客户端把上一轮回答里的 runId 带回来（A02 的 resume 入口）。 */
-    private static InboundMessage continuation(String chatId, String text, String runId) {
-        return new InboundMessage(new Principal("u-1"), chatId, text, Instant.now(), null, runId);
+    /** 带着 executionId 再说一句：客户端把上一轮回答里的 executionId 带回来（A02 的 resume 入口）。 */
+    private static InboundMessage continuation(String chatId, String text, String executionId) {
+        return new InboundMessage(new Principal("u-1"), chatId, text, Instant.now(), null, executionId);
     }
 
     static ChatResponse answer(String text) {

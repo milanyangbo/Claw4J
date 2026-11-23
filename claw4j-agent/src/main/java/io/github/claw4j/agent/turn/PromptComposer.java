@@ -196,20 +196,20 @@ final class PromptComposer {
      * {@link InboundMessage#chatId()}：后者只是通道侧的寻址键，拿它当会话主键会让「换通道」变成
      * 「换会话」。链上没有记忆 Advisor 时这些参数被安静地忽略。
      *
-     * <p>{@code runId} 两处都要放：工具上下文给工具里的写操作（计划，A03），Advisor 上下文给鉴权
+     * <p>{@code executionId} 两处都要放：工具上下文给工具里的写操作（计划，A03），Advisor 上下文给鉴权
      * 那一层（审批要挂起 run，P02）。只在工具上下文里放的话，Advisor 拦下工具调用时手里没有
-     * {@code runId}，这一等就只能挂在库里没有落点的位置上。
+     * {@code executionId}，这一等就只能挂在库里没有落点的位置上。
      *
      * @param message 入站消息
      * @param owner 归属键
      * @param sessionId 本轮的会话 id
      * @param conversationKey 会话节点键（不含段）
      * @param text 剥掉斜杠命令之后的原文（尚未脱敏）
-     * @param runId 这一轮的编号，可为 null
+     * @param executionId 这一轮的编号，可为 null
      * @return 待执行的请求
      */
     ChatClient.ChatClientRequestSpec compose(InboundMessage message, String owner, String sessionId,
-                                             String conversationKey, String text, String runId) {
+                                             String conversationKey, String text, String executionId) {
         Principal principal = message.principal();
         // 归属键与对话键都由调用方算好再传进来：一轮请求里 run 的 owner、会话 id
         // 都要用，各算一遍的话，口径一改就可能只改到一半，而表现是"会话记得住、run 查不到"。
@@ -235,11 +235,11 @@ final class PromptComposer {
         toolContext.put(ContextKeys.PRINCIPAL, principal);
         // 这一轮的编号同理：工具在工具内部，它要知道"我这一轮属于哪一次回答"。
         // 不放这个键时，工具那边读不到就是空——比放一个空串让它去猜清楚。
-        if (runId != null) {
-            toolContext.put(ContextKeys.RUN_ID, runId);
+        if (executionId != null) {
+            toolContext.put(ContextKeys.EXECUTION_ID, executionId);
         }
         // 哪个 agent 在跑也进工具上下文（ADR-0037 票 01）：工具事件的审计归属从这里读。
-        // 与 runId 同一个理由——工具回调拿不到 Advisor 上下文，只能从 ToolContext 取。
+        // 与 executionId 同一个理由——工具回调拿不到 Advisor 上下文，只能从 ToolContext 取。
         toolContext.put(ContextKeys.AGENT_ID, agentId);
         // 会话 id 也进工具上下文：recall_session 只查本段对话，它得知道"这一段"是哪一段。
         // 键用框架的 ChatMemory.CONVERSATION_ID，与它自己的会话工具（SessionEventTools）
@@ -293,8 +293,8 @@ final class PromptComposer {
                     }
                     // 鉴权那一层也要知道这是哪一轮（ADR-0027）：审批行上要记"这条请求是哪一轮发起的"，
                     // 那个答案只在这一格上。两处都要放——它读的是 Advisor 上下文，不是 ToolContext。
-                    if (runId != null) {
-                        spec.param(ContextKeys.RUN_ID, runId);
+                    if (executionId != null) {
+                        spec.param(ContextKeys.EXECUTION_ID, executionId);
                     }
                 });
     }

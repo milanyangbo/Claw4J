@@ -28,7 +28,7 @@ import java.util.Objects;
  * <p>会话键从工具上下文来，模型没有参数可改：键是 {@link ContextKeys#CONVERSATION}
  * （会话节点，不含段），值由 {@code ChatClientAgentPort} 算好。模型手上没有「给别的会话定目标」
  * 的入参，于是那条路径不存在，而不是存在但被拒绝。这也正是目标必须挂会话的原因：挂 run 的话，
- * 同一句话换个 runId 就看不见自己的目标了。
+ * 同一句话换个 executionId 就看不见自己的目标了。
  */
 public final class GoalTools implements ToolCallbackProvider {
 

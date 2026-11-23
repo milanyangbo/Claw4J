@@ -32,16 +32,17 @@ public final class ContextKeys {
      * <p>它是句柄，不是一件事：一轮答完就作废，没有状态、没有后续，也没有"按 id 接上它"那条路。
      * 它只用于把同一轮的三样东西对起来——审计的两条事件、trace 的一段 span、返回给调用方的回执。
      *
-     * <p>名字照 OpenClaw：它的 {@code runId} 也是这个角色，{@code chat.send} 返回它、
+     * <p>角色照 OpenClaw：它那个位置的字段叫 {@code runId}，{@code chat.send} 返回它、
      * {@code chat.abort} 收它、{@code audit --run} 按它过滤，原话是"a possibly shared routing,
      * session, or recovery correlation"（docs/gateway/audit.md:106）。这边更窄，没有 recovery，
-     * 也没有跨请求续跑，所以一轮就是一个 {@code runId}。同一个概念两边同名，客户端不用改字段。
+     * 也没有跨请求续跑，所以一轮就是一个执行。**字段名两边不同**：我们叫 {@code executionId}
+     * （ADR-0038），因为它的 {@code runId} 是"可能跨轮共享"的那一层，我们没有。
      *
      * <p>入口写进去，不是模型传进来的：工具不接这个参数，模型因此没有"往别人的轮次上写东西"
      * 这条路径。放在这里而不是入口那个类上，是因为键名只有一处定义才不会漂移，而漂移的表现是
      * 工具读到 null，看起来像"这一轮没有编号"。
      */
-    public static final String RUN_ID = "claw4j.runId";
+    public static final String EXECUTION_ID = "claw4j.executionId";
 
     /**
      * 这一轮是哪个 agent 在跑，在工具上下文里的键名（ADR-0037 票 01）。
@@ -62,7 +63,7 @@ public final class ContextKeys {
      * {@code toolCall.id()} 放进了 {@code ToolCallingObservationContext}，回调执行时它就在 scope 上。
      * 所以模型没有参数能改它，「把这次调用记成另一次」这条路不存在。
      *
-     * <p>为什么不叫 {@code claw4j.tool_call_id}：与同族的 {@code runId} / {@code agentId} 一样用
+     * <p>为什么不叫 {@code claw4j.tool_call_id}：与同族的 {@code executionId} / {@code agentId} 一样用
      * 驼峰，读的人一眼看出这是「我们加的键」，不是 Spring AI 的保留名。
      *
      * <p>与 OpenClaw 的 {@code toolCallId} 同一个语义：标识<b>一次</b>调用，而不是一组参数。区别是
@@ -76,7 +77,7 @@ public final class ContextKeys {
      *
      * <p>两个键解决同一类问题：审批要写"这条请求来自哪段对话"（批准之后回到那里开新一轮），
      * 定时任务要写"这个任务的结果推回哪里"。地址跟着这一轮走——它就写在入站消息上，
-     * 不需要另一张表按 {@code runId} 去反查。
+     * 不需要另一张表按 {@code executionId} 去反查。
      *
      * <p>入口写进去，工具只读，与 {@link #PRINCIPAL} 同一处理方式。模型没有参数能改它们，
      * 于是"给别人的对话发审批卡片"这条路径不存在。

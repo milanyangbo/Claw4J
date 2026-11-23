@@ -6,7 +6,6 @@ import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.port.AuditQuery;
-import io.github.claw4j.domain.port.AuditRunInspect;
 import io.github.claw4j.domain.principal.Principal;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -162,7 +161,7 @@ class HttpEndpointsTest {
     void anAuditPageIsReadable() {
         AuditQuery fixed = filter -> {
             assertEquals(2, filter.limit());
-            assertEquals("run-1", filter.runId());
+            assertEquals("run-1", filter.executionId());
             assertEquals("inbound", filter.direction(), "方向过滤要传下去");
             assertEquals(Long.valueOf(1000L), filter.after(), "时间窗下界要传下去");
             assertEquals(Long.valueOf(9000L), filter.before(), "时间窗上界要传下去");
@@ -316,19 +315,11 @@ class HttpEndpointsTest {
     }
 
     private static AuditController auditController(AuditQuery query) {
-        return auditController(query, null);
-    }
-
-    private static AuditController auditController(AuditQuery query, AuditRunInspect inspect) {
         DefaultListableBeanFactory beans = new DefaultListableBeanFactory();
         if (query != null) {
             beans.registerSingleton("auditQuery", query);
         }
-        if (inspect != null) {
-            beans.registerSingleton("auditRunInspect", inspect);
-        }
-        return new AuditController(beans.getBeanProvider(AuditQuery.class),
-                beans.getBeanProvider(AuditRunInspect.class));
+        return new AuditController(beans.getBeanProvider(AuditQuery.class));
     }
 
     private static ApprovalController approvalController(Approvals decider) {

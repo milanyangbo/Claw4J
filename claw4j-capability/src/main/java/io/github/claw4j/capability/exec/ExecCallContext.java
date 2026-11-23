@@ -21,7 +21,7 @@ import io.github.claw4j.domain.principal.Principal;
  * @param sessionKey 这一轮属于哪段对话，可以为 {@code null}
  * @param channel    卡片往哪个通道发，可以为 {@code null}
  * @param chatRef    通道内的会话地址，可以为 {@code null}
- * @param runId      这一轮是哪一轮，可以为 {@code null}
+ * @param executionId      这一轮是哪一轮，可以为 {@code null}
  * @param elevation  这一段会话的提权档（票 06 的 {@code /elevated}），{@code null} 按不提权
  * @param toolName   这一次调的是哪个工具（{@code Bash} / {@code BashOutput} / {@code KillShell}），
  *                   可以为 {@code null}：审批行记的是工具名，不该由端口写死一个
@@ -29,7 +29,7 @@ import io.github.claw4j.domain.principal.Principal;
  *                   而配对的键是参数指纹——这一份是唯一能算出来的地方
  */
 public record ExecCallContext(Principal principal, String sessionKey, String channel, String chatRef,
-                              String runId, Elevation elevation, String toolName, String argsJson) {
+                              String executionId, Elevation elevation, String toolName, String argsJson) {
 
     /** 当前线程上这一次工具调用的上下文。没有绑定时是 {@code null}，表示"这次调用没有身份"。 */
     private static final ThreadLocal<ExecCallContext> CURRENT = new ThreadLocal<>();
@@ -46,12 +46,12 @@ public record ExecCallContext(Principal principal, String sessionKey, String cha
      * @param sessionKey 这一轮属于哪段对话，可以为 {@code null}
      * @param channel    卡片往哪个通道发，可以为 {@code null}
      * @param chatRef    通道内的会话地址，可以为 {@code null}
-     * @param runId      这一轮是哪一轮，可以为 {@code null}
+     * @param executionId      这一轮是哪一轮，可以为 {@code null}
      * @param elevation  这一段会话的提权档，{@code null} 按不提权
      */
     public ExecCallContext(Principal principal, String sessionKey, String channel, String chatRef,
-                           String runId, Elevation elevation) {
-        this(principal, sessionKey, channel, chatRef, runId, elevation, null, null);
+                           String executionId, Elevation elevation) {
+        this(principal, sessionKey, channel, chatRef, executionId, elevation, null, null);
     }
 
     /**

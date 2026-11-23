@@ -215,7 +215,7 @@ public class SubagentAutoConfiguration {
      *
      * <p>三个可空参数的理由与父侧不同，逐条记在这里：
      * <ul>
-     *   <li>预算：子的工具上下文里没有父这一轮的 runId（子有自己的那一轮，见票 08），
+     *   <li>预算：子的工具上下文里没有父这一轮的 executionId（子有自己的那一轮，见票 08），
      *       传了也扣不到，「子调的工具扣父的额度」是 A10 的事；
      *   <li>审计：由调用方给（票 08）。线上那一路传容器里的 {@code ToolCallAudit}，子 Agent 于是
      *       有自己的 run 与自己的工具行；传 {@code null}（裁剪部署、没装持久化）时与以前一样不记账；
@@ -314,7 +314,7 @@ public class SubagentAutoConfiguration {
         List<ToolCallback> collected = AgentAutoConfiguration.collectToolCallbacks(
                 toolCallbacks, toolCallbackProviders,
                 // 子链也有账本可写了（票 08）：每一次委派都是自己的一轮，工具的 started/finished
-                // 落在那个 runId 上。观测同时给真的，工具行才带得出这一次的调用编号。
+                // 落在那个 executionId 上。观测同时给真的，工具行才带得出这一次的调用编号。
                 meterRegistry, audit, SpanTracer.NONE,
                 observations == null ? ObservationRegistry.NOOP : observations,
                 effective, tierRegistries,

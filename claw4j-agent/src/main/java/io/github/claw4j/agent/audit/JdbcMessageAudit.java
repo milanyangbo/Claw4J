@@ -77,7 +77,7 @@ public class JdbcMessageAudit implements MessageAudit {
                 (int) Math.max(0, record.durationMs()), 1, ACTOR_CHANNEL_SENDER,
                 pseudonyms.ref(record.actorId()), pseudonyms.ref(record.chatRef()),
                 pseudonyms.ref(record.messageRef()), null);
-        write(AuditEvent.inboundMessage(scope(record.runId(), record.agentId(), record.channel()),
+        write(AuditEvent.inboundMessage(scope(record.executionId(), record.agentId(), record.channel()),
                 statusOf(record.outcome()), errorOf(record.outcome(), true),
                 message, inboundSource(record)));
     }
@@ -99,7 +99,7 @@ public class JdbcMessageAudit implements MessageAudit {
                 failureStageOf(record.outcome(), record.failureStage()),
                 (int) Math.max(0, record.durationMs()), null, ACTOR_AGENT,
                 null, pseudonyms.ref(record.chatRef()), null, pseudonyms.ref(record.targetRef()));
-        write(AuditEvent.outboundMessage(scope(record.runId(), record.agentId(), record.channel()),
+        write(AuditEvent.outboundMessage(scope(record.executionId(), record.agentId(), record.channel()),
                 statusOf(record.outcome()), errorOf(record.outcome(), false),
                 message, outboundSource(record)));
     }
@@ -119,13 +119,13 @@ public class JdbcMessageAudit implements MessageAudit {
     }
 
     private static String outboundSource(Outbound record) {
-        String runId = record.runId();
+        String executionId = record.executionId();
         String chatRef = record.chatRef() == null ? "" : record.chatRef();
-        // 一轮对一段对话只投递一次，所以 (runId, 地址) 就是这条投递的身份；
-        // 没有 runId（定时任务、审批续跑）时只能一次性的——退回时间戳会让重放多出一行。
-        return runId == null || runId.isBlank()
+        // 一轮对一段对话只投递一次，所以 (executionId, 地址) 就是这条投递的身份；
+        // 没有 executionId（定时任务、审批续跑）时只能一次性的——退回时间戳会让重放多出一行。
+        return executionId == null || executionId.isBlank()
                 ? "message:out:" + java.util.UUID.randomUUID()
-                : "message:out:" + runId + ':' + chatRef;
+                : "message:out:" + executionId + ':' + chatRef;
     }
 
     /**
@@ -185,9 +185,9 @@ public class JdbcMessageAudit implements MessageAudit {
         return direct ? CONVERSATION_DIRECT : CONVERSATION_GROUP;
     }
 
-    private static AuditEvent.Scope scope(String runId, String agentId, String channel) {
+    private static AuditEvent.Scope scope(String executionId, String agentId, String channel) {
         // 消息行两把会话键都是空的：OpenClaw 对 kind=message 强制写 null（audit-event-store.ts:97-98）。
-        return AuditEvent.Scope.of(runId, null, null, agentId, null, channel);
+        return AuditEvent.Scope.of(executionId, null, null, agentId, null, channel);
     }
 
     /**

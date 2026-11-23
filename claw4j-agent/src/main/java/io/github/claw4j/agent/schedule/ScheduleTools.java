@@ -343,12 +343,12 @@ public final class ScheduleTools implements ToolCallbackProvider {
     }
 
     /** 这一轮 run 的编号，从工具上下文里取；取不到返回 null。 */
-    private static String runIdOf(ToolContext toolContext) {
+    private static String executionIdOf(ToolContext toolContext) {
         if (toolContext == null) {
             return null;
         }
-        Object value = toolContext.getContext().get(ContextKeys.RUN_ID);
-        return value instanceof String runId && !runId.isBlank() ? runId : null;
+        Object value = toolContext.getContext().get(ContextKeys.EXECUTION_ID);
+        return value instanceof String executionId && !executionId.isBlank() ? executionId : null;
     }
 
     private static Map<String, Object> parse(String toolInput, ToolDefinition definition) {

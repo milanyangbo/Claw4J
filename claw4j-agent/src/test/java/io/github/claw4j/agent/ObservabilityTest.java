@@ -216,9 +216,9 @@ class ObservabilityTest {
                 ? ChatPipelineTest.requestTool("querySales", "{}")
                 : withUsage(12, 34));
 
-        String runId = tracedPort(model, tracer, new RecordingTool("querySales", "128400"))
+        String executionId = tracedPort(model, tracer, new RecordingTool("querySales", "128400"))
                 .reply(new InboundMessage(new Principal("u-1"), "chat-1", "上周华东成交额"))
-                .runId();
+                .executionId();
 
         SpanData run = spanOf("run");
         SpanData turn = spanOf("model.turn");
@@ -230,8 +230,8 @@ class ObservabilityTest {
                 .isEqualTo(turn.getSpanId());
         assertThat(tool.getTraceId()).isEqualTo(turn.getTraceId()).isEqualTo(run.getTraceId());
         assertThat(run.getAttributes().get(AttributeKey.stringKey("claw4j.run.id")))
-                .as("属性名沿用 OTel 的 run.id 约定，值就是这一轮的 runId")
-                .isEqualTo(runId);
+                .as("属性名沿用 OTel 的 run.id 约定，值就是这一轮的 executionId")
+                .isEqualTo(executionId);
         assertThat(tool.getAttributes().get(AttributeKey.stringKey("claw4j.tool"))).isEqualTo("querySales");
         assertThat(registry.getMeters()).extracting(meter -> meter.getId().getName())
                 .as("trace 不新增计数器：同一次工具调用不该被 counter 与 span 各记一遍，两份口径迟早会漂")
@@ -250,7 +250,7 @@ class ObservabilityTest {
         }, null, new ToolCallAudit(event -> { }), tracer);
 
         assertThatThrownBy(() -> failing.call("{}",
-                new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"))))
+                new ToolContext(Map.of(ContextKeys.EXECUTION_ID, "run-1"))))
                 .isInstanceOf(IllegalStateException.class);
 
         SpanData tool = spanOf("tool.querySales");
@@ -280,7 +280,7 @@ class ObservabilityTest {
                 null, new ToolCallAudit(events::add));
         metered.call("{\"region\":\"east\"}",
                 new ToolContext(Map.of(
-                        ContextKeys.RUN_ID, "run-1",
+                        ContextKeys.EXECUTION_ID, "run-1",
                         ContextKeys.AGENT_ID, "ops",
                         ContextKeys.CHANNEL, "feishu",
                         ChatMemory.CONVERSATION_ID, "claw4j:user:u-1:feishu:chat-1")));
@@ -295,7 +295,7 @@ class ObservabilityTest {
         // 「这条是哪个 agent 干的」在多 agent 部署里永远答不了。
         events.clear();
         metered.call("{\"region\":\"east\"}",
-                new ToolContext(Map.of(ContextKeys.RUN_ID, "run-2")));
+                new ToolContext(Map.of(ContextKeys.EXECUTION_ID, "run-2")));
         assertThat(events).allSatisfy(event ->
                 assertThat(event.scope().agentId()).isEqualTo(AuditEvent.Scope.UNKNOWN_AGENT));
     }
@@ -801,7 +801,7 @@ class ObservabilityTest {
             assertThat(observations.getCurrentObservation().getContext())
                     .as("装置自检：上下文要是 tool 那一种（没挂 handler 时 Micrometer 会给 NoopContext）")
                     .isInstanceOf(ToolCallingObservationContext.class);
-            wrapped.call("{}", new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1")));
+            wrapped.call("{}", new ToolContext(Map.of(ContextKeys.EXECUTION_ID, "run-1")));
         }
         finally {
             observation.stop();
@@ -842,7 +842,7 @@ class ObservabilityTest {
         };
         // 旧构造 = NOOP 注册表：与没有 actuator 的部署同一条路径
         ToolCallback wrapped = new MeteredToolCallback(tool, null);
-        ToolContext original = new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"));
+        ToolContext original = new ToolContext(Map.of(ContextKeys.EXECUTION_ID, "run-1"));
 
         wrapped.call("{}", original);
 

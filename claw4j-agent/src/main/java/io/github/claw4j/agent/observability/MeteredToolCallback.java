@@ -152,7 +152,7 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /**
-     * 单参重载：这一层拿不到 {@code runId}，于是不会有审计行。span 照开——它记的是这个工具被调了多久，
+     * 单参重载：这一层拿不到 {@code executionId}，于是不会有审计行。span 照开——它记的是这个工具被调了多久，
      * 与有没有 run 无关。
      *
      * @param toolInput 模型给出的工具参数
@@ -178,7 +178,7 @@ public class MeteredToolCallback implements ToolCallback {
     }
 
     /**
-     * 带上下文的那一个重载：{@code runId} 与审计的 scope 只在它这里拿得到。
+     * 带上下文的那一个重载：{@code executionId} 与审计的 scope 只在它这里拿得到。
      *
      * <p>这一层没有「额度不够就不执行」的分支（ADR-0027 决定五）：成本上限在目标的 token 预算上，
      * 按轮记账；这一轮绕了太多次由工具循环在上限处截断。工具回调只回答「这次调用发生了什么」。
@@ -190,7 +190,7 @@ public class MeteredToolCallback implements ToolCallback {
      * 账本序号留在账本里，给排序、翻页与上限淘汰用。
      *
      * @param toolInput 模型给出的工具参数
-     * @param toolContext 工具上下文，{@code runId} 与身份从这里取
+     * @param toolContext 工具上下文，{@code executionId} 与身份从这里取
      * @return 工具的返回内容
      */
     @Override
@@ -265,12 +265,12 @@ public class MeteredToolCallback implements ToolCallback {
     /**
      * 这一条事件的身份与位置。
      *
-     * <p>身份从工具上下文里取：入口把 principal 与 {@code runId} 一起放进去了，而这里拿不到 Advisor
-     * 的上下文。取不到 principal 时照样写（那一格没人）；取不到 {@code runId} 时这一行落不下去——
+     * <p>身份从工具上下文里取：入口把 principal 与 {@code executionId} 一起放进去了，而这里拿不到 Advisor
+     * 的上下文。取不到 principal 时照样写（那一格没人）；取不到 {@code executionId} 时这一行落不下去——
      * 没有轮次的事件不属于任何一次运行，与 OpenClaw 的必填同口径。
      *
      * <p>通道留空：工具上下文里没有它，而为了填这一格去加一个 key，会让审计与投递两条本来无关的线互相
-     * 拉扯。按 {@code runId} 与 {@code sessionKey} 关联已经够查。
+     * 拉扯。按 {@code executionId} 与 {@code sessionKey} 关联已经够查。
      *
      * <p>{@code agentId} 从工具上下文读（ADR-0037 票 01）：入口把部署级 agent 名放进去了。读不到时
      * 落 {@code unknown}——那一格空着的话，「这条是哪个 agent 干的」在多 agent 部署里就永远答不了。
@@ -291,7 +291,7 @@ public class MeteredToolCallback implements ToolCallback {
         // 子链只塞了后者，那时退回它——它至少能唯一定位这一轮。
         String sessionId = textOf(toolContext, ChatMemory.CONVERSATION_ID);
         String sessionKey = textOf(toolContext, ContextKeys.CONVERSATION);
-        return AuditEvent.Scope.of(runIdOf(toolContext), sessionKey == null ? sessionId : sessionKey,
+        return AuditEvent.Scope.of(executionIdOf(toolContext), sessionKey == null ? sessionId : sessionKey,
                 sessionId, agentIdOf(toolContext), principalOf(toolContext), channelOf(toolContext));
     }
 
@@ -338,13 +338,13 @@ public class MeteredToolCallback implements ToolCallback {
         return value instanceof Principal principal ? principal : null;
     }
 
-    /** 与计划工具那个读法一致：runId 由入口放进工具上下文，模型点名不了别人的 run。 */
-    private static String runIdOf(ToolContext toolContext) {
+    /** 与计划工具那个读法一致：executionId 由入口放进工具上下文，模型点名不了别人的 run。 */
+    private static String executionIdOf(ToolContext toolContext) {
         if (toolContext == null) {
             return null;
         }
-        Object value = toolContext.getContext().get(ContextKeys.RUN_ID);
-        return value instanceof String runId && !runId.isBlank() ? runId : null;
+        Object value = toolContext.getContext().get(ContextKeys.EXECUTION_ID);
+        return value instanceof String executionId && !executionId.isBlank() ? executionId : null;
     }
 
     /**

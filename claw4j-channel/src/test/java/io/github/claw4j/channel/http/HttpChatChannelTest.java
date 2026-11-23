@@ -122,7 +122,7 @@ class HttpChatChannelTest {
         new HttpChatChannel(broken, Runnable::run, audit).stream(inboundOnHttp("讲一下"), chunk -> { });
         assertEquals(io.github.claw4j.domain.audit.MessageOutcome.UNKNOWN, audited.get(0).outcome());
         assertEquals("platform_send", audited.get(0).failureStage());
-        assertEquals("run-9", audited.get(0).runId());
+        assertEquals("run-9", audited.get(0).executionId());
     }
 
     @Test

@@ -126,6 +126,17 @@ class PersistenceSchemaTest {
                 .as("run 只是一轮的句柄（ADR-0027），不落表")
                 .containsExactly("agent_schedule", "approval_request", "audit_event",
                         "audit_identity_key", "exec_allowlist", "execution_decision_fact");
+
+        // 名字也是契约（ADR-0038）：这一格是"哪一次执行"，不是"哪一个 run"。
+        // 三张表都叫 execution_id，run_id 一个都不剩——留着旧名的话，读的人会以为那是
+        // 它那个"可能跨轮共享的 runId"，而我们从没有过那一层。
+        assertThat(jdbc.queryForList(
+                "select table_name || '.' || column_name from information_schema.columns"
+                        + " where table_schema = 'claw4j_run' and column_name in ('run_id', 'execution_id')"
+                        + " order by table_name", String.class))
+                .as("三张表都是 execution_id，run_id 一个都不剩")
+                .containsExactly("approval_request.execution_id", "audit_event.execution_id",
+                        "execution_decision_fact.execution_id");
     }
 
     @Test
@@ -690,11 +701,11 @@ class PersistenceSchemaTest {
     @DisplayName("审计按 30 天与 10 万行清：一个按时钟，一个按账本序号")
     void theAuditLedgerPrunesByAgeAndSize() {
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, actor, run_id, source_id, source_sequence, at)"
+                + " (event_id, kind, action, status, actor, execution_id, source_id, source_sequence, at)"
                 + " values ('e-old', 'agent_run', 'agent.run.started',"
                 + " 'started', 'u-1', 'run-1', 'legacy:e-old', 1, now() - interval '31 days')");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, actor, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, actor, execution_id, source_id, source_sequence)"
                 + " values ('e-fresh', 'agent_run', 'agent.run.started',"
                 + " 'started', 'u-1', 'run-2', 'legacy:e-fresh', 1)");
 
@@ -707,7 +718,7 @@ class PersistenceSchemaTest {
         // ---- 10 万行上限。一条 SQL 插进去，比循环十万次快得多。
         jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, actor, source_id, source_sequence)"
+                + " (event_id, kind, action, status, execution_id, actor, source_id, source_sequence)"
                 + " select 'bulk-' || g, 'agent_run', 'agent.run.started',"
                 + " 'started', 'run-bulk', 'agent-bulk', 'bulk:' || g, 1"
                 + " from generate_series(1, 100001) g");
@@ -751,7 +762,7 @@ class PersistenceSchemaTest {
                     : code.column().endsWith("_blocked") ? "blocked"
                     : "unknown";
             jdbc.update("insert into claw4j_run.audit_event"
-                            + " (event_id, kind, action, status, error_code, run_id, actor,"
+                            + " (event_id, kind, action, status, error_code, execution_id, actor,"
                             + " source_id, source_sequence)"
                             + " values (?, ?, ?, ?, ?, 'run-1', 'agent-1', ?, 1)",
                     "e-" + code.column(),
@@ -772,7 +783,7 @@ class PersistenceSchemaTest {
                 + " 'outbound', 'http', 'direct', 'failed', 'platform_send')");
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " (event_id, kind, action, status, error_code, execution_id, source_id, source_sequence,"
                 + " actor)"
                 + " values ('e-old-word', 'tool_action', 'tool.action.finished',"
                 + " 'blocked', 'policy_denied', 'run-1', 'code:policy_denied', 1, 'agent-1')"))
@@ -789,14 +800,14 @@ class PersistenceSchemaTest {
     }
 
     @Test
-    @DisplayName("run_id 必填：没有轮次的事件落不下去，账本连 SQL 都不发")
-    void anAuditEventWithoutARunIdDoesNotLand() {
+    @DisplayName("execution_id 必填：没有轮次的事件落不下去，账本连 SQL 都不发")
+    void anAuditEventWithoutAnExecutionIdDoesNotLand() {
         // OpenClaw 的 {@code AuditEventSchema.runId} 是 NonEmptyString
         // （{@code packages/gateway-protocol/src/schema/audit.ts:56}）。这一条两头都验：
         // 库拒绝空值；账本在没有编号时直接跳过，否则每一行都撞约束，write_errors 会一直涨，
         // 把没有归属错报成库坏了。
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, actor, source_id, source_sequence)"
+                + " (event_id, kind, action, status, execution_id, actor, source_id, source_sequence)"
                 + " values ('e-with-run', 'agent_run', 'agent.run.started',"
                 + " 'started', 'run-1', 'agent-1', 'legacy:e-with-run', 1)");
 
@@ -804,8 +815,8 @@ class PersistenceSchemaTest {
                 + " (event_id, kind, action, status, actor, source_id, source_sequence)"
                 + " values ('e-no-run', 'agent_run', 'agent.run.started', 'started',"
                 + " 'agent-1', 'legacy:e-no-run', 1)"))
-                .as("没有 run_id 的运行行会被库拒绝（消息行是唯一允许没有 run_id 的）")
-                .hasMessageContaining("ck_audit_event_run_required");
+                .as("没有 execution_id 的运行行会被库拒绝（消息行是唯一允许没有 execution_id 的）")
+                .hasMessageContaining("ck_audit_event_execution_required");
 
         // 断言计数而不是行数：行数在"跳过"和"撞约束失败"两种情况下都一样（都是 1），
         // 只有 skipped 与 write_errors 的分布能说明是哪一种。这条区分就是"没有归属"与"库坏了"的边界。

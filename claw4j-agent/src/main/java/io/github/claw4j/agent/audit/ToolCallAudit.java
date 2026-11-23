@@ -126,7 +126,7 @@ public class ToolCallAudit {
         write(AuditEvent.toolFinished(scope, toolCallId, toolName, digest,
                 failure == null ? AuditStatus.SUCCEEDED : AuditStatus.FAILED,
                 failure == null ? null : AuditErrorCode.TOOL_FAILED,
-                take(scope == null ? null : scope.runId(), toolName, digest)));
+                take(scope == null ? null : scope.executionId(), toolName, digest)));
     }
 
     /**
@@ -154,18 +154,18 @@ public class ToolCallAudit {
     /**
      * 记下「这一条批准刚刚被兑现了」，等执行那一下把它写进结束事件。
      *
-     * <p>没有 runId 时不记：不在一个 run 里的调用本来也不会落审计，记下来只占一个永远不会被取走的槽。
+     * <p>没有 executionId 时不记：不在一个 run 里的调用本来也不会落审计，记下来只占一个永远不会被取走的槽。
      *
-     * @param runId 这一轮的编号
+     * @param executionId 这一轮的编号
      * @param toolName 工具名
      * @param argsDigest 参数指纹
      * @param approvalId 审批编号
      */
-    public void granted(String runId, String toolName, String argsDigest, String approvalId) {
+    public void granted(String executionId, String toolName, String argsDigest, String approvalId) {
         if (facts == null) {
             return;
         }
-        facts.grant(runId, toolName, argsDigest, approvalId);
+        facts.grant(executionId, toolName, argsDigest, approvalId);
     }
 
     /** 写一条。写不进去只记一条 debug：审计缺一行不该把一次调用打成失败。 */
@@ -182,11 +182,11 @@ public class ToolCallAudit {
     }
 
     /** 取走那条"刚兑现的批准"。取一次就没了：同一条批准不为第二次执行放行。 */
-    private String take(String runId, String toolName, String digest) {
+    private String take(String executionId, String toolName, String digest) {
         if (facts == null) {
             return null;
         }
-        return facts.take(runId, toolName, digest);
+        return facts.take(executionId, toolName, digest);
     }
 
     /**
@@ -201,7 +201,7 @@ public class ToolCallAudit {
      * {@link java.math.BigDecimal#stripTrailingZeros()} 归一：{@code 1} / {@code 1.0} / {@code 1.00}
      * 在 JSON 里是同一个数。
      *
-     * <p>不含 {@code runId}、不含序号：批准要跨执行复用（与幂等键口径相反）。把 {@code runId}
+     * <p>不含 {@code executionId}、不含序号：批准要跨执行复用（与幂等键口径相反）。把 {@code executionId}
      * 混进来，跨任务复用批准就悄悄没了。
      *
      * @param toolName 工具名

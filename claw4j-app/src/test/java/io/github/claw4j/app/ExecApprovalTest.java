@@ -347,7 +347,7 @@ class ExecApprovalTest {
                 new Principal(OWNER), "http"), "Bash", args, null, null);
 
         assertThat(jdbc.queryForObject("select approval_id from claw4j_run.audit_event"
-                        + " where run_id = ? and tool_name = 'Bash'"
+                        + " where execution_id = ? and tool_name = 'Bash'"
                         + " and action = 'tool.action.finished'",
                 String.class, "run-audit"))
                 .as("这次执行是哪次批准的：审计那一行要答得出来")

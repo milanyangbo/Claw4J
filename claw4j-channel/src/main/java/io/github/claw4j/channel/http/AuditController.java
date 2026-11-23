@@ -1,12 +1,10 @@
 package io.github.claw4j.channel.http;
 
 import io.github.claw4j.domain.port.AuditQuery;
-import io.github.claw4j.domain.port.AuditRunInspect;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -39,18 +37,15 @@ public class AuditController {
 
     private final ObjectProvider<AuditQuery> queries;
 
-    private final ObjectProvider<AuditRunInspect> inspections;
-
-    public AuditController(ObjectProvider<AuditQuery> queries,
-                           ObjectProvider<AuditRunInspect> inspections) {
+    public AuditController(ObjectProvider<AuditQuery> queries) {
         this.queries = queries;
-        this.inspections = inspections;
     }
 
     /**
      * 查一页审计。
      *
-     * @param runId 这一轮的编号
+     * @param executionId 这一轮的编号。**参数名沿线格式是 {@code runId}**（它的参数表里只有这个名，
+ *     {@code audit-activity.ts:410-420}）：值是我们的执行编号，ADR-0038
      * @param sessionKey 会话键
      * @param agentId 哪个 agent 干的
      * @param kind {@code agent_run} / {@code tool_action} / {@code message}
@@ -65,7 +60,7 @@ public class AuditController {
      */
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> list(
-            @RequestParam(value = "runId", required = false) String runId,
+            @RequestParam(value = "runId", required = false) String executionId,
             @RequestParam(value = "sessionKey", required = false) String sessionKey,
             @RequestParam(value = "agentId", required = false) String agentId,
             @RequestParam(value = "kind", required = false) String kind,
@@ -90,7 +85,7 @@ public class AuditController {
                         .body(new Problem("cursor 必须是上一页返回的 nextCursor：" + cursor));
             }
         }
-        AuditQuery.Filter filter = new AuditQuery.Filter(runId, sessionKey, agentId, kind, direction,
+        AuditQuery.Filter filter = new AuditQuery.Filter(executionId, sessionKey, agentId, kind, direction,
                 status, channel, after, before, beforeSeq, limit);
         Optional<String> conflict = filter.conflict();
         if (conflict.isPresent()) {
@@ -100,49 +95,6 @@ public class AuditController {
         List<AuditEventView> events = page.rows().stream().map(AuditEventView::of).toList();
         return ResponseEntity.ok(new AuditView(events,
                 page.nextCursor() == null ? null : String.valueOf(page.nextCursor())));
-    }
-
-    /**
-     * 一次 run 的全景（ADR-0037 票 14）：照 {@code audit.run.inspect}。
-     *
-     * <p>三个参数各有各的拒绝方式，都不是"猜一个"：
-     *
-     * <ul>
-     *   <li>{@code executionId}：我们没有执行编号这一层，所以不静默忽略它（忽略之后客户端会以为
-     *       自己查的是那次执行，其实查的是整轮），回 400 说清它不支持。</li>
-     *   <li>{@code decisionCursor} 认不出来：400。它的语义是"游标的属主行过期了就拒"
-     *       （{@code docs/cli/audit.md:368-370}）；静默从头查会让客户端把同一页看成新的一页。</li>
-     *   <li>{@code decisionLimit} 越界：钳到 1–100，与列表接口同一个处理。</li>
-     * </ul>
-     *
-     * @param runId 这一轮的编号
-     * @param executionId 执行编号；我们不支持，给了就 400
-     * @param decisionLimit 回执条数，1–100
-     * @param decisionCursor 上一页的 {@code nextDecisionCursor}
-     * @return 200 加全景；参数不认识时 400；没装查询时 404
-     */
-    @GetMapping(value = "/runs/{runId}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> inspect(
-            @PathVariable("runId") String runId,
-            @RequestParam(value = "executionId", required = false) String executionId,
-            @RequestParam(value = "decisionLimit",
-                    defaultValue = "" + AuditRunInspect.DEFAULT_LIMIT) int decisionLimit,
-            @RequestParam(value = "decisionCursor", required = false) String decisionCursor) {
-        AuditRunInspect inspector = inspections.getIfAvailable();
-        if (inspector == null) {
-            return ResponseEntity.notFound().build();
-        }
-        if (executionId != null && !executionId.isBlank()) {
-            return ResponseEntity.badRequest().body(new Problem(
-                    "executionId 这个部署不支持：一次 run 就是一次执行，没有单独的执行编号"));
-        }
-        Optional<AuditRunInspect.Report> report =
-                inspector.inspect(runId, decisionLimit, decisionCursor);
-        if (report.isEmpty()) {
-            return ResponseEntity.badRequest().body(new Problem(
-                    "decisionCursor 认不出来，或它的那一行已经过期：" + decisionCursor));
-        }
-        return ResponseEntity.ok(AuditRunView.of(runId, report.get()));
     }
 
     /**

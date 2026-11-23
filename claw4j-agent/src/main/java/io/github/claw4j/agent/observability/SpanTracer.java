@@ -36,7 +36,7 @@ public interface SpanTracer {
      * @param name 动作名。用 OTel 的语义约定写成 {@code run} / {@code model.turn} /
      *     {@code tool.<工具名>}——后端按名字分组，改名字等于改仪表盘
      * @param attributes 开始时就知道的属性。允许为空；值为 null 的条目会被忽略（{@code Map.of}
-     *     装不下 null，而 {@code runId} 在没装存储时确实是 null）
+     *     装不下 null，而 {@code executionId} 在没装存储时确实是 null）
      * @return 这段 span 的句柄，关闭即结束
      */
     SpanScope open(String name, Map<String, String> attributes);

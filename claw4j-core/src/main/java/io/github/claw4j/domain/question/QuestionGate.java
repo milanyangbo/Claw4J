@@ -94,11 +94,11 @@ public interface QuestionGate {
      * @param channel 通道标识，与 {@code OutboundDelivery#channel()} 同口径
      * @param chatRef 通道内的会话地址；HTTP 是请求头里那个 chatId
      * @param creator 提问人。答复的人要与它权限一致
-     * @param runId 这一轮的编号，进日志
+     * @param executionId 这一轮的编号，进日志
      * @param questions 一到四个问题
      * @param timeout 最多等人多久；{@code null} 表示用部署的默认值（{@code claw4j.tools.ask.timeout-seconds}）
      */
-    record Ask(String channel, String chatRef, Principal creator, String runId,
+    record Ask(String channel, String chatRef, Principal creator, String executionId,
                List<Question> questions, Duration timeout) {
 
         public Ask {

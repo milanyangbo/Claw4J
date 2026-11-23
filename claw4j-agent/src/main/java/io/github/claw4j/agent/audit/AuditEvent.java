@@ -32,8 +32,8 @@ import java.util.HexFormat;
  * @param toolName 工具名；运行类事件为空
  * @param argsDigest 参数指纹；运行类事件为空
  * @param approvalId 放行这次调用的审批编号；没有审批时为空
- * @param sourceId 来源键：同一件事的多次投递共用它（{@code run:<runId>} 或
- *     {@code tool:<runId>:<工具>:<指纹>}）。与 {@code sourceSequence} 组成唯一键，
+ * @param sourceId 来源键：同一件事的多次投递共用它（{@code exec:<executionId>} 或
+ *     {@code tool:<executionId>:<工具>:<指纹>}）。与 {@code sourceSequence} 组成唯一键，
  *     重复投递靠 {@code on conflict do nothing} 只留第一行（OpenClaw 同名同义，
  *     {@code audit-event-store.ts:81-116}）
  * @param sourceSequence 来源内序号：1 = started，2 = finished
@@ -52,15 +52,15 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     /**
      * 这一轮是谁、在哪段会话、从哪个通道来。
      *
-     * <p>只有 {@code runId} 是必需的：没有它这一行落不下去（{@link AuditLedger} 直接跳过），因为它
-     * 不属于任何一次运行——按 {@code runId} 查永远查不到，留着只会让计数虚高。OpenClaw 的
+     * <p>只有 {@code executionId} 是必需的：没有它这一行落不下去（{@link AuditLedger} 直接跳过），因为它
+     * 不属于任何一次运行——按 {@code executionId} 查永远查不到，留着只会让计数虚高。OpenClaw 的
      * {@code AuditEventSchema.runId} 同样是必填
      * （{@code packages/gateway-protocol/src/schema/audit.ts:56}）。
      *
      * <p>其余四个字段可空：审计不能因为取不到身份就不写——「有个工具跑了」本身就是事实，只是那一格
      * 没人。为一行缺字段的审计去拒绝整个工具调用，是把记账当成了前置条件。
      *
-     * @param runId 这一轮的编号
+     * @param executionId 这一轮的编号
      * @param sessionKey 会话键（不含段）
      * @param sessionId 那一段（含段的 id）；与 OpenClaw 的同名两列一致（{@code audit-event-store.ts:97-98}）
      * @param agentId 哪个 agent 干的
@@ -68,7 +68,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      *     decision 那一层），我们放在库里供 SQL 追；读接口不返回
      * @param channel 通道名；只有消息行会落库（{@code audit-event-store.ts:103}）
      */
-    public record Scope(String runId, String sessionKey, String sessionId, String agentId,
+    public record Scope(String executionId, String sessionKey, String sessionId, String agentId,
                         String requestedBy, String channel) {
 
         /** 没接上 agent 归属时的写法：写 {@code unknown} 而不是 null——null 让「谁干的」不可查。 */
@@ -77,14 +77,14 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
         /**
          * 从身份与位置组一份（没有段号）。{@code principal} 为空时只留位置。
          *
-         * @param runId 这一轮的编号
+         * @param executionId 这一轮的编号
          * @param sessionKey 会话键
          * @param principal 身份，可为 null
          * @param channel 通道名，可为 null
          * @return 事件作用域
          */
-        public static Scope of(String runId, String sessionKey, Principal principal, String channel) {
-            return of(runId, sessionKey, null, UNKNOWN_AGENT, principal, channel);
+        public static Scope of(String executionId, String sessionKey, Principal principal, String channel) {
+            return of(executionId, sessionKey, null, UNKNOWN_AGENT, principal, channel);
         }
 
         /**
@@ -93,22 +93,22 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
          * <p>{@code agentId} 为空白时落成 {@code unknown}：与 OpenClaw 的 {@code agentId} 必填
          * （{@code audit.ts:53}）同一个要求，取不到也要留一个可数的值，而不是一格没人。
          *
-         * @param runId 这一轮的编号
+         * @param executionId 这一轮的编号
          * @param sessionKey 会话键
          * @param agentId 哪个 agent 干的
          * @param principal 身份，可为 null
          * @param channel 通道名，可为 null
          * @return 事件作用域
          */
-        public static Scope of(String runId, String sessionKey, String agentId, Principal principal,
+        public static Scope of(String executionId, String sessionKey, String agentId, Principal principal,
                                String channel) {
-            return of(runId, sessionKey, null, agentId, principal, channel);
+            return of(executionId, sessionKey, null, agentId, principal, channel);
         }
 
         /**
          * 完整的一份：两把会话键都在。
          *
-         * @param runId 这一轮的编号
+         * @param executionId 这一轮的编号
          * @param sessionKey 会话键（不含段）
          * @param sessionId 那一段（含段的 id）
          * @param agentId 哪个 agent 干的
@@ -116,9 +116,9 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
          * @param channel 通道名，可为 null
          * @return 事件作用域
          */
-        public static Scope of(String runId, String sessionKey, String sessionId, String agentId,
+        public static Scope of(String executionId, String sessionKey, String sessionId, String agentId,
                                Principal principal, String channel) {
-            return new Scope(runId, sessionKey, sessionId,
+            return new Scope(executionId, sessionKey, sessionId,
                     agentId == null || agentId.isBlank() ? UNKNOWN_AGENT : agentId,
                     principal == null ? null : principal.userId(), channel);
         }
@@ -141,7 +141,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runStarted(Scope scope) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_STARTED, AuditStatus.STARTED,
-                null, null, null, null, null, runSource(scope), 1, null, Instant.now());
+                null, null, null, null, null, executionSource(scope), 1, null, Instant.now());
     }
 
     /**
@@ -154,7 +154,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runFinished(Scope scope, AuditStatus status, AuditErrorCode errorCode) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_FINISHED, status,
-                errorCode, null, null, null, null, runSource(scope), 2, null, Instant.now());
+                errorCode, null, null, null, null, executionSource(scope), 2, null, Instant.now());
     }
 
     /**
@@ -194,19 +194,19 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     }
 
     /**
-     * 运行类事件的来源键。没有 runId 时给一个空归属的键——账本本来就会跳过这种行
-     * （{@code AuditLedger} 见 runId 为空即计 skipped），键长什么样都不影响。
+     * 运行类事件的来源键。没有 executionId 时给一个空归属的键——账本本来就会跳过这种行
+     * （{@code AuditLedger} 见 executionId 为空即计 skipped），键长什么样都不影响。
      */
-    private static String runSource(Scope scope) {
-        String runId = scope == null ? null : scope.runId();
-        return "run:" + (runId == null ? "" : runId);
+    private static String executionSource(Scope scope) {
+        String executionId = scope == null ? null : scope.executionId();
+        return "exec:" + (executionId == null ? "" : executionId);
     }
 
     /**
-     * 工具类事件的来源键：{@code tool:<runId>:<调用编号的哈希>}。
+     * 工具类事件的来源键：{@code tool:<executionId>:<调用编号的哈希>}。
      *
      * <p>形状照 OpenClaw 的 {@code legacyAuditSourceId}（{@code src/audit/agent-event-audit.ts}）：
-     * 它是 {@code <runId>:<sourceSequence>:<occurredAt>:<action>}——**不含工具名、不含参数**，
+     * 它是 {@code <executionId>:<sourceSequence>:<occurredAt>:<action>}——**不含工具名、不含参数**，
      * 唯一的成分是"哪一轮 + 流里的第几个事件 + 什么时候 + 什么动作"。两次不同的调用之所以分得开，
      * 靠的是事件流的序号与生产时刻。
      *
@@ -219,9 +219,9 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     private static String toolSource(Scope scope, String toolName, String argsDigest,
                                      String toolCallId) {
-        String runId = scope == null ? null : scope.runId();
+        String executionId = scope == null ? null : scope.executionId();
         String call = hashedToolCallId(toolCallId);
-        return "tool:" + (runId == null ? "" : runId) + ':'
+        return "tool:" + (executionId == null ? "" : executionId) + ':'
                 + (call == null ? toolName + ':' + argsDigest : call);
     }
 
@@ -292,7 +292,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      * <p>来源键用消息自己的编号（{@code message_ref} 的原文）：平台重投同一条消息时，这个键相同，
      * 唯一键于是把第二次投递挡成重复——那正是"平台重推三次，我们只记一次"的落点。
      *
-     * @param scope 这一轮的身份与位置（可能没有 runId：入站可能在开跑之前就结束了）
+     * @param scope 这一轮的身份与位置（可能没有 executionId：入站可能在开跑之前就结束了）
      * @param status 通用结局：succeeded / blocked / failed
      * @param errorCode 失败时的归一化错误码
      * @param message 消息专有的一组

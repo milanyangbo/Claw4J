@@ -9,13 +9,14 @@ import java.util.Objects;
  * @param text       要发出去的内容
  * @param finalChunk 流式场景里标记这是最后一块，是唯一的正常结束信号（契约见
  *                   {@link AgentPort#stream}）
- * @param runId      这一轮的编号（ADR-0027），与 OpenClaw 的 {@code runId} 同名同义
- *                   （docs/gateway/audit.md:106）：这一轮运行的句柄，不是可以接着续的实体，
+ * @param executionId      这一轮的编号（ADR-0027）；OpenClaw 在那个位置叫 {@code runId}，
+ *                   而它的事件里 {@code executionId} 与 {@code runId} 是两层（ADR-0038）。
+ *                   我们只有执行这一层：这一轮运行的句柄，不是可以接着续的实体，
  *                   答完即作废，没有状态，也没有"按它接上这一轮"的路。用途只有两个：串日志，
  *                   以及让调用方把同一次回答的前后几块认成一批。命令类的回执（{@code /new}、
  *                   {@code /goal}）没有编号，那是 null
  */
-public record OutboundMessage(String chatId, String text, boolean finalChunk, String runId) {
+public record OutboundMessage(String chatId, String text, boolean finalChunk, String executionId) {
 
     public OutboundMessage {
         Objects.requireNonNull(chatId, "chatId");
@@ -38,11 +39,11 @@ public record OutboundMessage(String chatId, String text, boolean finalChunk, St
      *
      * @param chatId 回哪条会话
      * @param text   要发出去的内容
-     * @param runId  这一轮的编号，可以为 {@code null}
+     * @param executionId  这一轮的编号，可以为 {@code null}
      * @return 出站消息
      */
-    public static OutboundMessage of(String chatId, String text, String runId) {
-        return new OutboundMessage(chatId, text, true, runId);
+    public static OutboundMessage of(String chatId, String text, String executionId) {
+        return new OutboundMessage(chatId, text, true, executionId);
     }
 
     /**
@@ -61,10 +62,10 @@ public record OutboundMessage(String chatId, String text, boolean finalChunk, St
      *
      * @param chatId 回哪条会话
      * @param text   这一块的内容
-     * @param runId  这一轮的编号，可以为 {@code null}
+     * @param executionId  这一轮的编号，可以为 {@code null}
      * @return 出站消息，{@code finalChunk} 为 false
      */
-    public static OutboundMessage chunk(String chatId, String text, String runId) {
-        return new OutboundMessage(chatId, text, false, runId);
+    public static OutboundMessage chunk(String chatId, String text, String executionId) {
+        return new OutboundMessage(chatId, text, false, executionId);
     }
 }

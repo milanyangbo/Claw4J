@@ -118,7 +118,7 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
             return redeemed(granted.get(), plan);
         }
         Optional<String> approvalId = approvals.ask(new Approvals.Ask(
-                context.runId(), context.owner(), toolName, plan.digest(), plan.summary(),
+                context.executionId(), context.owner(), toolName, plan.digest(), plan.summary(),
                 originOf(context), FrozenPlanJson.encode(plan), allowsAlways(properties, plan)));
         if (approvalId.isEmpty()) {
             return Decision.undecided(null,
@@ -160,11 +160,11 @@ public class AgentExecApprovalPort implements ExecApprovalPort {
      * @param grant 刚兑现的批准
      */
     private void handoff(ExecCallContext context, String toolName, Approvals.Grant grant) {
-        if (audit == null || context.argsJson() == null || context.runId() == null) {
+        if (audit == null || context.argsJson() == null || context.executionId() == null) {
             return;
         }
         ToolCallAudit.digest(toolName, context.argsJson())
-                .ifPresent(digest -> audit.granted(context.runId(), toolName, digest, grant.id()));
+                .ifPresent(digest -> audit.granted(context.executionId(), toolName, digest, grant.id()));
     }
 
     @Override

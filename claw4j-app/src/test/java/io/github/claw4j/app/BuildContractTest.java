@@ -459,11 +459,12 @@ class BuildContractTest {
         // channel 只留给消息行。
         // 15 是消息行的必填与互斥（第四批，票 13）：channel / conversationKind 必填，
         // suppressed / unknown 不带 deliveryKind，failed / unknown 必带 failureStage。
-        // 前六张落在各自的 schema 里；7–15 都改已有 schema，只有假名密钥表是新增的一张。
+        // 16 是改名（票 15，ADR-0038）：三张表的 run_id → execution_id，只改名字不改值。
+        // 前六张落在各自的 schema 里；7–16 都改已有 schema，只有假名密钥表是新增的一张。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
                 .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
-                        "13", "14", "15");
+                        "13", "14", "15", "16");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -703,7 +704,7 @@ class BuildContractTest {
         ledger.record(event);
 
         assertThat(jdbc.queryForObject(
-                "select count(*) from claw4j_run.audit_event where run_id = 'run-replay-1'",
+                "select count(*) from claw4j_run.audit_event where execution_id = 'run-replay-1'",
                 Integer.class))
                 .as("第二次投递不该多出一行")
                 .isEqualTo(1);
@@ -721,7 +722,7 @@ class BuildContractTest {
                     AuditStatus.SUCCEEDED, null, null));
         }
         var callIds = jdbc.queryForList("select tool_call_id from claw4j_run.audit_event"
-                + " where run_id = 'run-tool-twice' order by seq", String.class);
+                + " where execution_id = 'run-tool-twice' order by seq", String.class);
         assertThat(callIds)
                 .as("同参数两次调用 = 四行")
                 .hasSize(4)
@@ -730,7 +731,7 @@ class BuildContractTest {
                 .as("两个编号哈希后互不相同，各占两行")
                 .isEqualTo(2);
         assertThat(jdbc.queryForList("select distinct args_digest from claw4j_run.audit_event"
-                + " where run_id = 'run-tool-twice'", String.class))
+                + " where execution_id = 'run-tool-twice'", String.class))
                 .as("前提：两组的参数指纹完全一样——正是改之前会被合并的那种情形")
                 .containsExactly("digest-same");
 
@@ -765,7 +766,7 @@ class BuildContractTest {
         facts.grant("run-df2", "Bash", "digest-df2", "ap-old");
         facts.grant("run-df2", "Bash", "digest-df2", "ap-new");
         assertThat(jdbc.queryForObject("select count(*) from claw4j_run.execution_decision_fact"
-                + " where run_id = 'run-df2'", Integer.class)).isEqualTo(1);
+                + " where execution_id = 'run-df2'", Integer.class)).isEqualTo(1);
         assertThat(facts.take("run-df2", "Bash", "digest-df2")).isEqualTo("ap-new");
 
         // 过期清理按 created_at：把"现在"当成过期点，刚写的那条也该被清掉。
@@ -811,11 +812,13 @@ class BuildContractTest {
                 "call-qfilter", "Bash", "digest-qfilter"));
         var toolPage = query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action",
                 null, null, null, null, null, null, 10));
-        assertThat(toolPage.rows()).as("按 runId + kind 命中那一行").hasSize(1);
+        assertThat(toolPage.rows()).as("按 executionId + kind 命中那一行").hasSize(1);
         var toolRow = toolPage.rows().getFirst();
         assertThat(toolRow.toolCallId())
                 .as("工具行带得回调用编号（票 06）：落库形状是哈希，不是 provider 的原值")
                 .matches("sha256:[0-9a-f]{64}");
+        assertThat(toolRow.executionId()).as("执行编号读得回来（ADR-0038 之后列叫 execution_id）")
+                .isEqualTo("run-qfilter");
         assertThat(toolRow.schemaVersion()).as("版本号读得回来（第三批）").isEqualTo(1);
         assertThat(toolRow.sourceSequence()).as("来源内序号读得回来").isEqualTo(1);
         assertThat(toolRow.sessionId()).as("两把会话键都在").isEqualTo("session-q-seg");
@@ -835,7 +838,7 @@ class BuildContractTest {
                 // 终态而不是 started：停在 started 的老行会被孤儿扫尾补成 unknown，
                 // 那会把这条用例变成"顺便验了扫尾"，而它要验的只有事件时刻。
                 AuditAction.AGENT_RUN_FINISHED, AuditStatus.SUCCEEDED, null, null, null, null, null,
-                "run:run-qmoment", 2, null, twoHoursAgo));
+                "exec:run-qmoment", 2, null, twoHoursAgo));
         Instant stored = query.query(new AuditQuery.Filter("run-qmoment", null, null, null, null,
                 null, null, null, null, null, 10)).rows().getFirst().at();
         assertThat(Duration.between(stored, twoHoursAgo).abs())
@@ -888,27 +891,27 @@ class BuildContractTest {
         var jdbc = new JdbcTemplate(dataSource());
         // ① 配对：先证明合法的那一对能进——这条用例不能因为整张表都写不进去而"绿"。
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " (event_id, kind, action, status, error_code, execution_id, source_id, source_sequence,"
                 + " actor)"
                 + " values ('e-pair-ok', 'agent_run', 'agent.run.finished', 'failed',"
                 + " 'run_failed', 'run-pair', 'run:run-pair', 2, 'agent-1')");
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " (event_id, kind, action, status, error_code, execution_id, source_id, source_sequence,"
                 + " actor)"
                 + " values ('e-pair-bad', 'agent_run', 'agent.run.finished', 'failed',"
                 + " 'tool_failed', 'run-pair', 'run:run-pair-2', 2, 'agent-1')"))
                 .as("运行级事件配工具级的码：两层混在一起，按错误码统计就把两件事加成一个数")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " (event_id, kind, action, status, error_code, execution_id, source_id, source_sequence,"
                 + " actor)"
                 + " values ('e-pair-none', 'tool_action', 'tool.action.finished', 'failed',"
                 + " null, 'run-pair', 'tool:run-pair:Bash:d1', 2, 'agent-1')"))
                 .as("failed 不带错误码：查「为什么失败」时那一格是空的")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " (event_id, kind, action, status, error_code, execution_id, source_id, source_sequence,"
                 + " actor)"
                 + " values ('e-pair-started', 'tool_action', 'tool.action.started', 'started',"
                 + " 'tool_failed', 'run-pair', 'tool:run-pair:Bash:d2', 1, 'agent-1')"))
@@ -918,12 +921,12 @@ class BuildContractTest {
         // ③ 编号只属于工具行（票 06）：消息变体在读侧是 `toolCallId?: never`
         //    （audit-activity.ts:463），这条 CHECK 是它在写侧的落点。
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, tool_call_id, source_id, source_sequence,"
+                + " (event_id, kind, action, status, execution_id, tool_call_id, source_id, source_sequence,"
                 + " actor)"
                 + " values ('e-tcid-ok', 'tool_action', 'tool.action.started', 'started', 'run-tcid',"
                 + " 'call-1', 'tool:run-tcid:Bash:d1', 1, 'agent-1')");
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, tool_call_id, source_id, source_sequence,"
+                + " (event_id, kind, action, status, execution_id, tool_call_id, source_id, source_sequence,"
                 + " actor)"
                 + " values ('e-tcid-bad', 'agent_run', 'agent.run.started', 'started', 'run-tcid',"
                 + " 'call-1', 'run:run-tcid', 1, 'agent-1')"))
@@ -932,13 +935,13 @@ class BuildContractTest {
 
         // ④ 归属与通道（第三批）：actor 必填；channel 只属于消息行
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, execution_id, source_id, source_sequence)"
                 + " values ('e-no-actor', 'agent_run', 'agent.run.started', 'started', 'run-1',"
                 + " 'no-actor:1', 1)"))
                 .as("归属是读侧四个变体的必填格（commonProperties + agentProperties），空着客户端解析不了")
                 .hasMessageContaining("ck_audit_event_actor_present");
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, source_id, source_sequence, actor,"
+                + " (event_id, kind, action, status, execution_id, source_id, source_sequence, actor,"
                 + " channel)"
                 + " values ('e-tool-channel', 'tool_action', 'tool.action.started', 'started',"
                 + " 'run-1', 'tool-channel:1', 1, 'agent-1', 'http')"))
@@ -983,18 +986,18 @@ class BuildContractTest {
         //    另有一条"刚开跑"的，它不该被补——补了就是把正在跑的一轮判成不知道结果。
         var ledger = new AuditLedger(jdbc, null);
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, session_key, agent_id,"
+                + " (event_id, kind, action, status, execution_id, session_key, agent_id,"
                 + " source_id, source_sequence, at, actor)"
                 + " values ('e-orphan-run', 'agent_run', 'agent.run.started', 'started', 'run-orphan',"
                 + " 'sk-orphan', 'ops', 'run:run-orphan', 1, now() - interval '2 hours', 'ops')");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, tool_call_id, tool_name, args_digest,"
+                + " (event_id, kind, action, status, execution_id, tool_call_id, tool_name, args_digest,"
                 + " source_id, source_sequence, at, actor)"
                 + " values ('e-orphan-tool', 'tool_action', 'tool.action.started', 'started', 'run-orphan',"
                 + " 'call-orphan', 'Bash', 'd-orphan', 'tool:run-orphan:Bash:d-orphan', 1,"
                 + " now() - interval '2 hours', 'ops')");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, source_id, source_sequence, actor)"
+                + " (event_id, kind, action, status, execution_id, source_id, source_sequence, actor)"
                 + " values ('e-fresh-start', 'agent_run', 'agent.run.started', 'started', 'run-fresh',"
                 + " 'run:run-fresh', 1, 'ops')");
 

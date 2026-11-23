@@ -28,7 +28,8 @@
 | 11 | 写侧归属：`actor` 记执行者、两把会话键、`channel` 只属于消息行（V14） | 01 | resolved |
 | 12 | 事件时刻：`occurredAt` 记事件产生那一刻，不是落库那一刻 | 01 | resolved |
 | 13 | 消息行必填与互斥：`channel`/`conversationKind` 必填、`suppressed`/`unknown` 不带 `deliveryKind`、`failed`/`unknown` 带 `failureStage`（V15） | 04、11 | resolved |
-| 14 | `audit.run.inspect`：一次 run 的全景（审批 + 消息 + 决策事实，`identity` 照实报 `unsupported`） | 03、05、11 | resolved |
+| 14 | `audit.run.inspect`：建了又撤（我们没有 run 这一层，ADR-0038） | 03、05、11 | wontfix |
+| 15 | 改名：`run_id` → `execution_id`（V16），边界照它的 `executionId`（每轮外层请求）；线格式保持 `runId` | 03、14 | resolved |
 
 **状态列与票面同源**：票面开头那行 `**Status:**` 是事实，这张表只是总览；收票时两处一起改。
 `scripts/check-ticket-cases.sh` 会比对（表里漏列一张票、或两处写的不是一个词，都会红）。

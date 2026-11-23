@@ -87,7 +87,7 @@ public class AuditLedger implements AuditSink {
 
     private static final String INSERT = """
             insert into claw4j_run.audit_event
-                (event_id, kind, action, status, error_code, run_id, session_key, session_id, agent_id,
+                (event_id, kind, action, status, error_code, execution_id, session_key, session_id, agent_id,
                  actor_type, actor, requested_by, channel, tool_call_id, tool_name, args_digest,
                  approval_id, source_id, source_sequence,
                  direction, conversation_kind, message_outcome, reason_code, delivery_kind,
@@ -123,7 +123,7 @@ public class AuditLedger implements AuditSink {
      */
     private static final String SWEEP_ORPHANS = """
             insert into claw4j_run.audit_event
-                (event_id, kind, action, status, error_code, run_id, session_key, session_id, agent_id,
+                (event_id, kind, action, status, error_code, execution_id, session_key, session_id, agent_id,
                  actor_type, actor, requested_by, channel, tool_call_id, tool_name, args_digest,
                  approval_id, source_id, source_sequence)
             select 'orphan-' || md5(s.source_id || ':' || s.source_sequence),
@@ -132,7 +132,7 @@ public class AuditLedger implements AuditSink {
                                else 'tool.action.finished' end,
                    'unknown',
                    case s.kind when 'agent_run' then null else 'tool_outcome_unknown' end,
-                   s.run_id, s.session_key, s.session_id, s.agent_id,
+                   s.execution_id, s.session_key, s.session_id, s.agent_id,
                    s.actor_type, s.actor, s.requested_by, s.channel,
                    -- 编号跟着 started 那一行走：补出来的终态说的是「同一次调用没了下文」，
                    -- 换一个编号就成了另一次调用
@@ -187,7 +187,7 @@ public class AuditLedger implements AuditSink {
      *
      * <p>没有轮次编号就不写：OpenClaw 的 {@code AuditEventSchema.runId} 是必填
      * （{@code packages/gateway-protocol/src/schema/audit.ts:56}），事件必须属于一次已准入的运行。
-     * 一行查不到轮次的审计，按 {@code runId} 查永远命中不了，留着只会让「这个月跑了多少次」的数字比
+     * 一行查不到轮次的审计，按 {@code executionId} 查永远命中不了，留着只会让「这个月跑了多少次」的数字比
      * 能查到的多。它们计入 {@value #SKIPPED}（不是 {@value #WRITE_ERRORS}，那不是写失败，是没有归属）。
      *
      * @param event 要落库的事件
@@ -199,10 +199,10 @@ public class AuditLedger implements AuditSink {
             return;
         }
         AuditEvent.Scope scope = event.scope() == null ? AuditEvent.Scope.empty() : event.scope();
-        // 消息行可以没有 runId（ADR-0037 票 04）：入站消息在开跑之前就到了，而它可能根本没开跑。
-        // 运行与工具事件仍然必须有——那一格空着的行按 runId 永远命中不了，留着只让计数虚高。
+        // 消息行可以没有 executionId（ADR-0037 票 04）：入站消息在开跑之前就到了，而它可能根本没开跑。
+        // 运行与工具事件仍然必须有——那一格空着的行按 executionId 永远命中不了，留着只让计数虚高。
         if (event.action().kind() != ACTION_KIND_MESSAGE
-                && (scope.runId() == null || scope.runId().isBlank())) {
+                && (scope.executionId() == null || scope.executionId().isBlank())) {
             countSkipped();
             return;
         }
@@ -220,7 +220,7 @@ public class AuditLedger implements AuditSink {
                     event.status().column(),
                     // 词表是枚举，落库时才变成字符串——写一个词表外的值，在编译期就不成立。
                     event.errorCode() == null ? null : event.errorCode().column(),
-                    scope.runId(),
+                    scope.executionId(),
                     scope.sessionKey(),
                     scope.sessionId(),
                     scope.agentId(),

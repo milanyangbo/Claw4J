@@ -85,7 +85,7 @@ public final class ExecContextToolCallback implements ToolCallback {
                 text(values, ChatMemory.CONVERSATION_ID),
                 text(values, ContextKeys.CHANNEL),
                 text(values, ContextKeys.CHAT_REF),
-                text(values, ContextKeys.RUN_ID),
+                text(values, ContextKeys.EXECUTION_ID),
                 // 提权档由对话那一层写进来（/elevated）；读不出来就是不提权，不猜。
                 Elevation.parse(text(values, ContextKeys.ELEVATION)).orElse(Elevation.OFF),
                 getToolDefinition().name(),

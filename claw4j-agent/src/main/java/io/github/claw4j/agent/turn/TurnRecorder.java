@@ -39,7 +39,7 @@ final class TurnRecorder {
      * 就断了，而模型轮与工具调用都发生在入池之后。根放在这一轮上，trace 的边界才与审计里那两条
      * {@code agent_run} 事件之间是同一段。
      *
-     * <p>编号只活一轮（ADR-0027）：{@code runId} 是这一轮的身份，不是能接上的把手，下一轮是新编号，
+     * <p>编号只活一轮（ADR-0027）：{@code executionId} 是这一轮的身份，不是能接上的把手，下一轮是新编号，
      * 同一段对话靠 {@code sessionKey} 连起来。
      */
     static final String RUN_SPAN = "run";
@@ -48,10 +48,10 @@ final class TurnRecorder {
     static final String TURN_SPAN = "model.turn";
 
     /**
-     * 这一轮是哪一轮。trace 与审计之间只有这一把键：拿它去 {@code audit_event.run_id} 查，
+     * 这一轮是哪一轮。trace 与审计之间只有这一把键：拿它去 {@code audit_event.execution_id} 查，
      * 这一轮的全部事件都在。
      */
-    private static final String ATTR_RUN_ID = "claw4j.run.id";
+    private static final String ATTR_EXECUTION_ID = "claw4j.run.id";
 
     /**
      * 谁的这件事——只放权限指纹，不放 {@code userId}。
@@ -272,14 +272,14 @@ final class TurnRecorder {
      *
      * <p>为空时不写这一格：写一个空串会让「有编号」与「没有」在图上长得一样。
      *
-     * @param runId 这一轮的编号，可为 null
+     * @param executionId 这一轮的编号，可为 null
      * @param principal 这一轮的身份，可为 null
      * @return 按插入顺序排列的属性表
      */
-    static Map<String, String> runAttributes(String runId, Principal principal) {
+    static Map<String, String> runAttributes(String executionId, Principal principal) {
         Map<String, String> attributes = new LinkedHashMap<>();
-        if (runId != null) {
-            attributes.put(ATTR_RUN_ID, runId);
+        if (executionId != null) {
+            attributes.put(ATTR_EXECUTION_ID, executionId);
         }
         if (principal != null) {
             attributes.put(ATTR_OWNER, principal.userId());

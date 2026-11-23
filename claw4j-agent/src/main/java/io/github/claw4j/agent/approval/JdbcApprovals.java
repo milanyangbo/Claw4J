@@ -87,7 +87,7 @@ public class JdbcApprovals implements Approvals {
 
     /** 资格判定要 owner，落不下去时要状态与过期与否，批准时要拿来处。一次读全。 */
     private static final String ROW_SQL =
-            "select status, expires_at <= now() as expired, run_id, owner, tool_name,"
+            "select status, expires_at <= now() as expired, execution_id, owner, tool_name,"
                     + " session_key, channel, chat_ref, principal_snapshot, frozen_plan"
                     + " from claw4j_run.approval_request where id = ?";
 
@@ -115,14 +115,14 @@ public class JdbcApprovals implements Approvals {
      */
     private static final String ASK_SQL =
             "insert into claw4j_run.approval_request"
-                    + " (id, run_id, owner, tool_name, args_digest, args_summary, status,"
+                    + " (id, execution_id, owner, tool_name, args_digest, args_summary, status,"
                     + " session_key, channel, chat_ref, principal_snapshot, frozen_plan,"
                     + " requested_at, expires_at)"
                     + " values (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?::jsonb, now(),"
                     + " now() + (? * interval '1 millisecond'))";
 
     private static final String PENDING_SQL =
-            "select id, run_id, owner, tool_name, args_summary, status, frozen_plan,"
+            "select id, execution_id, owner, tool_name, args_summary, status, frozen_plan,"
                     + " expires_at <= now() as expired, expires_at"
                     + " from claw4j_run.approval_request where id = ?";
 
@@ -221,7 +221,7 @@ public class JdbcApprovals implements Approvals {
         String id = UUID.randomUUID().toString();
         Origin origin = ask.origin();
         try {
-            jdbc.update(ASK_SQL, id, ask.runId(), ask.owner(), ask.toolName(), ask.argsDigest(),
+            jdbc.update(ASK_SQL, id, ask.executionId(), ask.owner(), ask.toolName(), ask.argsDigest(),
                     summary(ask.argsText()),
                     origin == null ? null : origin.sessionKey(),
                     origin == null ? null : origin.channel(),
@@ -358,7 +358,7 @@ public class JdbcApprovals implements Approvals {
         if (origin == null || origin.channel() == null || origin.chatRef() == null) {
             return;
         }
-        Pending card = new Pending(approvalId, ask.runId(), ask.owner(), ask.toolName(),
+        Pending card = new Pending(approvalId, ask.executionId(), ask.owner(), ask.toolName(),
                 summary(ask.argsText()), "pending", false, null, ask.allowAlways());
         for (ApprovalCards sender : cards) {
             if (!sender.channel().equals(origin.channel())) {
@@ -705,7 +705,7 @@ public class JdbcApprovals implements Approvals {
     }
 
     private Pending pendingOf(ResultSet row, int index) throws SQLException {
-        return new Pending(row.getString("id"), row.getString("run_id"), row.getString("owner"),
+        return new Pending(row.getString("id"), row.getString("execution_id"), row.getString("owner"),
                 row.getString("tool_name"), row.getString("args_summary"), row.getString("status"),
                 row.getBoolean("expired"),
                 row.getObject("expires_at", java.time.OffsetDateTime.class).toInstant(),

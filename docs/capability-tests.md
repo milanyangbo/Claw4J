@@ -9,10 +9,11 @@
 
 | 接口 | 用途 |
 | --- | --- |
-| `POST /api/chat` | 同步，返回 `{"chatId":"...","text":"...","runId":"..."}` |
+| `POST /api/chat` | 同步，返回 `{"chatId":"...","text":"...","executionId":"..."}` |
 | `POST /api/chat/stream` | 流式，返回 SSE（`event:chunk` … `event:done`） |
 
-`runId` 是**这一轮**的编号（ADR-0027）：本地生成，只用于串日志与认批次。
+`executionId` 是**这一轮**的编号（ADR-0027、ADR-0038）：本地生成，只用于串日志与认批次。它对应 OpenClaw 的
+`executionId`（每轮外层请求一个）；那个"可能跨轮共享的 `runId`"我们没有。
 **它不是续跑令牌**——拿它回来接不上任何东西。连续性靠会话：同一段对话里再说一句，
 模型看到的就是前文（`X-Claw4j-Chat-Id` 决定是不是同一段）。
 
@@ -40,7 +41,7 @@ psql "$DATABASE_URL" -c "select channel, channel_ref, goal from claw4j_run.agent
 
 ```bash
 # 那一轮从哪段对话来、成没成：审计里那两条事件带 session_key 与 actor
-psql "$DATABASE_URL" -c "select run_id, action, status, session_key, actor, at \
+psql "$DATABASE_URL" -c "select execution_id, action, status, session_key, actor, at \
   from claw4j_run.audit_event order by seq desc limit 10"
 ```
 
@@ -160,7 +161,7 @@ psql "$DATABASE_URL" -c "select id, owner, tool_name, left(args_digest,12) as di
 # 读一条请求现在的样子：卡片上有什么，这里就有什么（身份同样取自请求头）
 curl -s --noproxy '*' localhost:8080/api/approvals/<id> \
   -H 'X-Claw4j-User: ethan'
-# {"id":"...","runId":"...","owner":"ethan","toolName":"mail_send",
+# {"id":"...","executionId":"...","owner":"ethan","toolName":"mail_send",
 #  "argsSummary":"to=...","status":"pending","expired":false,"expiresAt":"..."}
 
 # 批 / 拒。请求体里没有"谁"——点按钮的人由通道认出来
@@ -501,7 +502,7 @@ claw4j:
 
 | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- |
-| 同步返回 | `t '用 systemStatus 查一下这个应用进程的堆上限与线程数'` | 一个 JSON：`{"chatId":"http:ethan","text":"...","runId":"..."}` |
+| 同步返回 | `t '用 systemStatus 查一下这个应用进程的堆上限与线程数'` | 一个 JSON：`{"chatId":"http:ethan","text":"...","executionId":"..."}` |
 | 流式返回 | `ts '用 systemStatus 查一下这个应用进程的堆上限与线程数'` | 若干 `event:chunk` + 一个 `event:done`，**`done` 只出现一次** |
 | 两条路径都能触发工具 | 上面两条各跑一次 | `hit systemStatus` **+2**（只涨 1 说明有一条路径没有把工具交给模型） |
 | 流式下清单同样生效 | 把 `claw4j.tools.profile` 调成 `messaging` 后 `ts '这个进程堆内存多少'` | 清单里没有 `systemStatus`，模型说"没有这个工具"；`hit systemStatus` 不涨 |
@@ -562,10 +563,10 @@ psql "$DATABASE_URL" -c "select owner, tool_name, status, decision, terminal_rea
 # 这次调用是哪次批准的：结束事件上的 approval_id 与审批表同一个编号
 psql "$DATABASE_URL" -c "select seq, actor_type, actor, requested_by, tool_call_id, tool_name,
   status, left(args_digest,12) as digest, approval_id, at
-  from claw4j_run.audit_event where run_id = '<runId>' order by seq"
+  from claw4j_run.audit_event where execution_id = '<executionId>' order by seq"
 ```
 
-列：`seq / event_id / kind / action / status / error_code / run_id / session_key / session_id /
+列：`seq / event_id / kind / action / status / error_code / execution_id / session_key / session_id /
 agent_id / actor_type / actor / requested_by / channel / tool_call_id / tool_name / args_digest /
 approval_id / source_id / source_sequence / redaction / schema_version / at`，消息行另加
 `direction / conversation_kind / message_outcome / reason_code / delivery_kind / failure_stage /
@@ -580,15 +581,16 @@ duration_ms / result_count / account_ref / conversation_ref / message_ref / targ
 （`audit-activity.ts:463`）。取不到就留空、不编 id：没开观测的部署这一列就是空的，
 `args_digest` 仍然负责"这组参数"。
 
-**`run_id` 只有消息行可以空**：入站消息在开跑之前就到了（可能被跳过、可能没认出身分）。
-运行与工具行仍然必填，库里有 `ck_audit_event_run_required` 挡着。
+**`execution_id` 只有消息行可以空**：入站消息在开跑之前就到了（可能被跳过、可能没认出身分）。
+运行与工具行仍然必填，库里有 `ck_audit_event_execution_required` 挡着。
 
 **`(source_id, source_sequence)` 是幂等键**（ADR-0037 票 02，V9 迁移）：同一件事投两次只留第一行，
 第二次计入 `claw4j.audit.duplicates`——重复不是故障，是幂等在起作用。来源键的算法在
-`AuditEvent` 的四个工厂里：运行是 `run:<runId>`（1 开始 / 2 结束），工具是
-`tool:<runId>:<编号哈希>`（1 开始 / 2 结束）。**工具键不含工具名与参数**——照 OpenClaw 的
+`AuditEvent` 的四个工厂里：运行是 `exec:<executionId>`（1 开始 / 2 结束），工具是
+`tool:<executionId>:<编号哈希>`（1 开始 / 2 结束）。**工具键不含工具名与参数**——照 OpenClaw 的
 `legacyAuditSourceId`（`<runId>:<seq>:<occurredAt>:<action>`），唯一性的成分是"哪一轮 + 这一次调用"；
-拿不到编号时才退回 `tool:<runId>:<工具>:<指纹>`，那时同参数两次会被合并成一行（票 02 记着的代价）。
+拿不到编号时才退回 `tool:<executionId>:<工具>:<指纹>`，那时同参数两次会被合并成一行（票 02 记着的代价）。
+改名之前写进去的旧行前缀是 `run:`，前缀不参与查询，不影响去重（ADR-0038）。
 
 **`actor_role` 在 V9 里删掉了**：它原来从身份的角色来，角色删了之后没有任何写入点，
 查询里恒为 `NULL`——留着只会让下一个人写 `where actor_role = …` 然后拿到空结果还不报错。
@@ -612,11 +614,12 @@ duration_ms / result_count / account_ref / conversation_ref / message_ref / targ
 **`channel` 只属于消息行**：非消息行写 null，`ck_audit_event_channel_message_only` 钉着。
 OpenClaw 在绑定时就按 kind 强制 null（`audit-event-store.ts:103`），所以按 channel 过滤带不出工具行。
 
-**子 Agent 的调用落在自己那一轮上**（票 08）：每次委派开一个新的 `runId`，`session_key` 是
+**子 Agent 的调用落在自己那一轮上**（票 08）：每次委派开一个新的执行编号，`session_key` 是
 `subagent:<定义名>`、`agent_id` 是定义名、`requested_by` 还是父那一轮的人（委派不提权）。所以
-`/api/audit?sessionKey=subagent:alpha` 就是"这个子 Agent 干了什么"，按 `runId` 则是"这一次派活"。
+`/api/audit?sessionKey=subagent:alpha` 就是"这个子 Agent 干了什么"，按执行编号则是"这一次派活"
+（接口参数名沿用它的 `runId`，见下）。
 **父子之间没有 lineage 列**：OpenClaw 那条投影要父令牌，没有就明说缺失、不推断
-（`docs/gateway/audit.md`），我们也照这条——不从父 `runId` 编一个关联。
+（`docs/gateway/audit.md`），我们也照这条——不从父执行编号编一个关联。
 
 **七个终态都有生产者**（同票）：`succeeded` / `failed` / `cancelled`（客户端断开、被取消）/
 `timed_out`（超时）/ `blocked`（再等也不会通过的拦截）/ `unknown`（跑了但结果不可知）/
@@ -656,7 +659,8 @@ OpenClaw 在绑定时就按 kind 强制 null（`audit-event-store.ts:103`），�
 > 审计回答"上一次是谁批的"（30 天，按行查）；评测回答"答得好不好"（A06）。
 > 三者混起来的第一个症状是"审计里查不到上个月"——那时通常已经有人拿它当过监控看板了。
 
-读接口：`GET /api/audit?runId=&sessionKey=&agentId=&kind=&direction=&status=&channel=&after=&before=&cursor=&limit=`，
+读接口：`GET /api/audit?runId=&sessionKey=&agentId=&kind=&direction=&status=&channel=&after=&before=&cursor=&limit=`
+（参数名 `runId` 是它的线格式：它的参数表里只有这个名，值是我们的执行编号——ADR-0038 决定二），
 按 `sequence` 倒序、游标翻页（**字符串**，与 OpenClaw 同形）、`limit` 1–500（越界钳位），
 `after`/`before` 是 **Unix 毫秒闭区间**（`ledgers.md:25-26`）。没装查询时 404（能力不在场，不是库坏了）。
 `direction` 照 OpenClaw 的 `audit.activity.list`（`docs/gateway/protocol/ledgers.md:120-131`）——
@@ -668,21 +672,6 @@ OpenClaw 那份参数表里也没有，多一个就是自创契约。
 `kind=message` 配 `sessionKey`、`kind≠message` 配 `direction`/`channel`、不给 `kind` 却同时给
 `sessionKey` 与 `direction`/`channel`，三种都拒绝并说明哪两个冲突。空页在客户端看来是
 "这段时间没有审计"，而真相是"参数不该一起用"。
-
-**一次 run 的全景**：`GET /api/audit/runs/{runId}?decisionLimit=&decisionCursor=`（ADR-0037 票 14，
-照 `audit.run.inspect`）。返回 `{schemaVersion, run, identity, decisionDisplays, coverage,
-nextDecisionCursor?}`：`run.status` 是 `known` / `unknown`（找不到也回 200，回执为空）；回执把
-审批、投递终态、决策事实合成一页，按时间倒序、同一时刻按 `admission → approval → message →
-generic → cron`；游标是上一页最后一条的 `selectorId`，认不出来 400。
-
-```bash
-curl -s "localhost:8080/api/audit/runs/$RUN?decisionLimit=20" | jq '{run, identity, coverage,
-  decisions: [.decisionDisplays[] | {selectorId, family: .action.family, outcome: .decision.outcome}]}'
-```
-
-三处与它不同、**都是明说的**：`identity.state` 恒 `unsupported`（我们没有采集执行身份，
-它的 schema 为这种情况留了这个状态）；`executionId` 参数不支持（一次 run 就是一次执行），
-给了回 400 而不是静默忽略；`admission` 与 `cron` 两类回执没有生产者。
 
 **消息行的必填与互斥**（票 13，V15）：`channel` 与 `conversationKind` 必填；`suppressed` /
 `unknown` 不带 `deliveryKind`；`failed` / `unknown` 必带 `failureStage`；出站只有 `suppressed` 带
@@ -705,9 +694,7 @@ curl -s "localhost:8080/api/audit/runs/$RUN?decisionLimit=20" | jq '{run, identi
 留存窗口删整件旧事）与 `app/ApprovalFlowTest`（执行那一行带着放行它的审批编号、
 旧审批记录仍读得出来）；写入侧的规则在 `agent/ToolGovernanceTest`（含被拦下只写一条 blocked）；
 库这一层的规则在 `app/BuildContractTest`（幂等、读侧翻页与过滤、终态配对、孤儿扫尾、
-消息行必填与互斥）；一次 run 的全景在 `channel/AuditRunEndpointTest`（报文形状与参数拒绝）
-与 `app/ApprovalFlowTest`（真库里审批 + 投递合成一页）；
-消息审计在 `agent/MessageAuditTest` 与 `core/InboundDispatchTest`（重复投递被跳过那一行）。
+消息行必填与互斥）；消息审计在 `agent/MessageAuditTest` 与 `core/InboundDispatchTest`（重复投递被跳过那一行）。
 
 ## 沙箱与提权（P17a / 票 06）
 

@@ -25,15 +25,15 @@ public class JdbcDecisionFacts implements DecisionFacts {
 
     private static final String GRANT = """
             insert into claw4j_run.execution_decision_fact
-                (run_id, tool_name, args_digest, approval_id)
+                (execution_id, tool_name, args_digest, approval_id)
             values (?, ?, ?, ?)
-            on conflict (run_id, tool_name, args_digest)
+            on conflict (execution_id, tool_name, args_digest)
             do update set approval_id = excluded.approval_id, created_at = now()
             """;
 
     private static final String TAKE = """
             delete from claw4j_run.execution_decision_fact
-             where run_id = ? and tool_name = ? and args_digest = ?
+             where execution_id = ? and tool_name = ? and args_digest = ?
             returning approval_id
             """;
 
@@ -54,12 +54,12 @@ public class JdbcDecisionFacts implements DecisionFacts {
     }
 
     @Override
-    public void grant(String runId, String toolName, String argsDigest, String approvalId) {
-        if (blank(runId) || blank(toolName) || blank(argsDigest) || blank(approvalId)) {
+    public void grant(String executionId, String toolName, String argsDigest, String approvalId) {
+        if (blank(executionId) || blank(toolName) || blank(argsDigest) || blank(approvalId)) {
             return;
         }
         try {
-            jdbc.update(GRANT, runId, toolName, argsDigest, approvalId);
+            jdbc.update(GRANT, executionId, toolName, argsDigest, approvalId);
         }
         catch (RuntimeException failure) {
             warn("记审批交接", failure);
@@ -67,12 +67,12 @@ public class JdbcDecisionFacts implements DecisionFacts {
     }
 
     @Override
-    public String take(String runId, String toolName, String argsDigest) {
-        if (blank(runId) || blank(toolName) || blank(argsDigest)) {
+    public String take(String executionId, String toolName, String argsDigest) {
+        if (blank(executionId) || blank(toolName) || blank(argsDigest)) {
             return null;
         }
         try {
-            List<String> taken = jdbc.queryForList(TAKE, String.class, runId, toolName, argsDigest);
+            List<String> taken = jdbc.queryForList(TAKE, String.class, executionId, toolName, argsDigest);
             return taken.isEmpty() ? null : taken.getFirst();
         }
         catch (RuntimeException failure) {

@@ -105,7 +105,7 @@ public final class OtelSpanTracer implements SpanTracer, AutoCloseable {
         Span span = tracer.spanBuilder(name).startSpan();
         if (attributes != null) {
             attributes.forEach((key, value) -> {
-                // null 值不设：runId 在没装 run 存储的部署里确实是 null，
+                // null 值不设：executionId 在没装 run 存储的部署里确实是 null，
                 // 而 OTel 的 setAttribute 收到 null 会抛 NPE——埋点不该因此打断一次回答。
                 if (key != null && value != null) {
                     span.setAttribute(key, value);

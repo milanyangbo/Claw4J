@@ -89,7 +89,7 @@ public interface Approvals {
     /**
      * 一条待批请求。
      *
-     * @param runId 哪一轮发起的，可以为 {@code null}
+     * @param executionId 哪一轮发起的，可以为 {@code null}
      * @param owner 发起人
      * @param toolName 工具名
      * @param argsDigest 参数指纹（exec 是冻结件的摘要，其他工具是规范化参数的摘要）
@@ -98,13 +98,13 @@ public interface Approvals {
      * @param frozenPlan 冻结件（JSON），只有 exec 会写
      * @param allowAlways 这条请求接不接受"以后都放行"
      */
-    record Ask(String runId, String owner, String toolName, String argsDigest, String argsText,
+    record Ask(String executionId, String owner, String toolName, String argsDigest, String argsText,
                Origin origin, String frozenPlan, boolean allowAlways) {
 
         /**
          * 不接受"以后都放行"的那一档：没有持久放行落点的审批都走它。
          *
-         * @param runId 哪一轮发起的，可以为 {@code null}
+         * @param executionId 哪一轮发起的，可以为 {@code null}
          * @param owner 发起人
          * @param toolName 工具名
          * @param argsDigest 参数指纹
@@ -112,24 +112,24 @@ public interface Approvals {
          * @param origin 来处，可以为 {@code null}
          * @param frozenPlan 冻结件，可以为 {@code null}
          */
-        public Ask(String runId, String owner, String toolName, String argsDigest, String argsText,
+        public Ask(String executionId, String owner, String toolName, String argsDigest, String argsText,
                    Origin origin, String frozenPlan) {
-            this(runId, owner, toolName, argsDigest, argsText, origin, frozenPlan, false);
+            this(executionId, owner, toolName, argsDigest, argsText, origin, frozenPlan, false);
         }
 
         /**
          * 既没有冻结件、也不接受长期放行的那一档。
          *
-         * @param runId 哪一轮发起的，可以为 {@code null}
+         * @param executionId 哪一轮发起的，可以为 {@code null}
          * @param owner 发起人
          * @param toolName 工具名
          * @param argsDigest 参数指纹
          * @param argsText 给人看的原文
          * @param origin 来处，可以为 {@code null}
          */
-        public Ask(String runId, String owner, String toolName, String argsDigest, String argsText,
+        public Ask(String executionId, String owner, String toolName, String argsDigest, String argsText,
                    Origin origin) {
-            this(runId, owner, toolName, argsDigest, argsText, origin, null, false);
+            this(executionId, owner, toolName, argsDigest, argsText, origin, null, false);
         }
     }
 
@@ -166,7 +166,7 @@ public interface Approvals {
      * 一条请求现在的样子（给接口与卡片渲染用）。
      *
      * @param id 审批编号
-     * @param runId 哪一轮发起的，可空
+     * @param executionId 哪一轮发起的，可空
      * @param owner 发起人
      * @param toolName 工具名
      * @param argsSummary 参数摘要（已脱敏、已截断）
@@ -175,14 +175,14 @@ public interface Approvals {
      * @param expiresAt 有效期
      * @param allowAlways 这条请求接不接受"以后都放行"
      */
-    record Pending(String id, String runId, String owner, String toolName, String argsSummary,
+    record Pending(String id, String executionId, String owner, String toolName, String argsSummary,
                    String status, boolean expired, Instant expiresAt, boolean allowAlways) {
 
         /**
          * 不接受"以后都放行"的那一档：除 exec 之外的审批都没有持久放行的落点。
          *
          * @param id 审批编号
-         * @param runId 哪一轮发起的，可空
+         * @param executionId 哪一轮发起的，可空
          * @param owner 发起人
          * @param toolName 工具名
          * @param argsSummary 参数摘要
@@ -190,9 +190,9 @@ public interface Approvals {
          * @param expired 是否已过期
          * @param expiresAt 有效期
          */
-        public Pending(String id, String runId, String owner, String toolName, String argsSummary,
+        public Pending(String id, String executionId, String owner, String toolName, String argsSummary,
                        String status, boolean expired, Instant expiresAt) {
-            this(id, runId, owner, toolName, argsSummary, status, expired, expiresAt, false);
+            this(id, executionId, owner, toolName, argsSummary, status, expired, expiresAt, false);
         }
     }
 }

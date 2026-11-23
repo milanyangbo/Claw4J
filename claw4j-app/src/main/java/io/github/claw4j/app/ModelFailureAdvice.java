@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * 这条 advice 只认这一个类型，不要扩成 {@code RuntimeException}。
  *
  * <p>body 里不放内部异常原文：那里面有供应商名、状态码与栈信息，对调用方没用，
- * 对攻击者有用。原文进日志，配 {@code runId} 可查。
+ * 对攻击者有用。原文进日志，配 {@code executionId} 可查。
  */
 @RestControllerAdvice
 public class ModelFailureAdvice {

@@ -6,7 +6,6 @@ import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.approval.JdbcApprovals;
 import io.github.claw4j.agent.audit.AuditLedger;
-import io.github.claw4j.agent.audit.JdbcAuditRunInspect;
 import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
@@ -14,7 +13,6 @@ import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.port.Approvals;
-import io.github.claw4j.domain.port.AuditRunInspect;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
@@ -74,7 +72,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>指纹那两条是变异验证的着力点：{@link #aChangedArgumentDoesNotRideOnAnEarlierGrant}
  * 在指纹退化成只算工具名时红；{@link #theApprovalFingerprintIsNotAnIdempotencyKey}
- * 在把 runId 或序号混进指纹时红。这两个改动都看起来更严格，所以需要被钉住。
+ * 在把 executionId 或序号混进指纹时红。这两个改动都看起来更严格，所以需要被钉住。
  */
 @Testcontainers
 class ApprovalFlowTest {
@@ -134,7 +132,7 @@ class ApprovalFlowTest {
 
         assertThat(tool.calls()).as("没有批准，工具一次都不该执行").isZero();
 
-        assertThat(finishStatusOf(reply.runId()))
+        assertThat(finishStatusOf(reply.executionId()))
                 .as("这一轮确实结束了：它回给用户的是「我需要你批准」。等审批不是一种能跨请求的状态")
                 .isEqualTo("succeeded");
         assertThat(pendingApprovals()).as("这一轮登记了一条待批请求，工具一次没跑").hasSize(1);
@@ -154,7 +152,7 @@ class ApprovalFlowTest {
     }
 
     /**
-     * 验收 2：批准之后服务端续跑同一 runId，模型拿到的是"这件事做到哪儿了"而不是一句空白。
+     * 验收 2：批准之后服务端续跑同一 executionId，模型拿到的是"这件事做到哪儿了"而不是一句空白。
      *
      * <p>第二次模型调用的<b>入参</b>要看：里面必须有目标，以及"卡在等审批"那一步的痕迹。
      * 只断言"工具最后执行了"的话，"续跑时模型从头猜"这件事永远不会红。
@@ -170,7 +168,7 @@ class ApprovalFlowTest {
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.GRANTED);
         assertThat(tool.calls()).as("批准之后那一次调用真的执行了").isEqualTo(1);
-        assertThat(finishStatusOf(first.runId()))
+        assertThat(finishStatusOf(first.executionId()))
                 .as("旧的那一轮不会因为一条迟到的批准被拉起来重跑")
                 .isEqualTo("succeeded");
 
@@ -234,7 +232,7 @@ class ApprovalFlowTest {
                 + " where action = 'agent.run.started'", Integer.class))
                 .as("拒绝不是终态收尾，而是同一段对话里的新一轮（模型要去向用户解释）")
                 .isEqualTo(2);
-        assertThat(finishStatusOf(first.runId()))
+        assertThat(finishStatusOf(first.executionId()))
                 .as("被拦的那一轮早就以 done 收尾了，拒绝不改它")
                 .isEqualTo("succeeded");
     }
@@ -263,7 +261,7 @@ class ApprovalFlowTest {
 
         assertThat(result.verdict()).isEqualTo(ApprovalVerdict.EXPIRED);
         assertThat(tool.calls()).isZero();
-        assertThat(finishStatusOf(first.runId()))
+        assertThat(finishStatusOf(first.executionId()))
                 .as("过期的批准不能补点；而这一轮本来就是 done（它回给用户的是「我需要你批准」）")
                 .isEqualTo("succeeded");
         // 过期要落终态，与 OpenClaw 的审批五态一致（{@code src/gateway/operator-approval-store.types.ts:15}）：
@@ -307,7 +305,7 @@ class ApprovalFlowTest {
                 String.class, approvalId))
                 .as("自批不落结论：那条请求还挂着等人批，不是被点废")
                 .isEqualTo("pending");
-        assertThat(finishStatusOf(first.runId())).isEqualTo("succeeded");
+        assertThat(finishStatusOf(first.executionId())).isEqualTo("succeeded");
 
         Approvals.Result other = harness.decider(roster).decide(approvalId, "approver-1", true, null);
 
@@ -340,7 +338,7 @@ class ApprovalFlowTest {
                 String.class, approvalId))
                 .as("连 resolver_id 都不该被写上：那一行还是没人碰过的样子")
                 .isNull();
-        assertThat(finishStatusOf(first.runId())).isEqualTo("succeeded");
+        assertThat(finishStatusOf(first.executionId())).isEqualTo("succeeded");
     }
 
     /**
@@ -367,7 +365,7 @@ class ApprovalFlowTest {
                 "select args_digest from claw4j_run.approval_request order by requested_at", String.class);
         assertThat(digests).as("两次调用是两个指纹，不是一条记录被复用").hasSize(2);
         assertThat(digests.get(0)).isNotEqualTo(digests.get(1));
-        assertThat(finishStatusOf(first.runId()))
+        assertThat(finishStatusOf(first.executionId()))
                 .as("第二次又卡住了：那一轮的结局仍是 done，新的一轮落在同一段对话里")
                 .isEqualTo("succeeded");
     }
@@ -376,14 +374,14 @@ class ApprovalFlowTest {
      * 变异验证的第二条：幂等键与指纹混用，两个方向的用例都必须变红。
      *
      * <p>两个哈希长得像、口径相反，而 ADR-0017 的幂等键还没落代码，所以这里用它的口径当对照物。
-     * 幂等键含 runId 与序号，同一件事里同一个调用重放两次要认得出是同一次；审批指纹不含它们，
+     * 幂等键含 executionId 与序号，同一件事里同一个调用重放两次要认得出是同一次；审批指纹不含它们，
      * 一次点头要覆盖这类操作，否则每件新事都要重批。
      *
-     * <p>第一条断言把审批指纹不含 runId 钉死，第二条把幂等键必须随 run 变钉死。混成一个函数的话，
+     * <p>第一条断言把审批指纹不含 executionId 钉死，第二条把幂等键必须随 run 变钉死。混成一个函数的话，
      * 同参数换个 run 会被当成已经做过，那是漏执行。
      */
     @Test
-    @DisplayName("审批指纹不含 runId 与序号：与幂等键口径相反，混用会双向出事")
+    @DisplayName("审批指纹不含 executionId 与序号：与幂等键口径相反，混用会双向出事")
     void theApprovalFingerprintIsNotAnIdempotencyKey() {
         String fingerprint = ToolCallAudit.digest(TOOL, ARGS).orElseThrow();
 
@@ -429,7 +427,7 @@ class ApprovalFlowTest {
     /**
      * 验收 3 的前半：一条批准只放行一次执行，但<b>能跨 run 复用</b>。
      *
-     * <p>这两件事看起来相反，其实是同一个口径的两面：指纹不含 runId（所以换一件事还能用），
+     * <p>这两件事看起来相反，其实是同一个口径的两面：指纹不含 executionId（所以换一件事还能用），
      * 但兑现过就作废（所以同一份参数不能连放两次）。
      *
      * <p>第一次批准在这里刻意<b>没有被消耗</b>——续跑时模型没再发起工具调用，
@@ -450,7 +448,7 @@ class ApprovalFlowTest {
         OutboundMessage reply = second.port().reply(second.mailer("发一封给张三的周报"));
 
         assertThat(secondTool.calls())
-                .as("指纹不含 runId：上一件事里批过的这一类操作，这一件事不用再批一次")
+                .as("指纹不含 executionId：上一件事里批过的这一类操作，这一件事不用再批一次")
                 .isEqualTo(1);
         assertThat(pendingApprovals()).as("直接放行，没有登记新的待批请求").isEmpty();
 
@@ -510,11 +508,11 @@ class ApprovalFlowTest {
 
         assertThat(tool.calls()).isEqualTo(1);
         String executedRunId = jdbc.queryForObject(
-                "select run_id from claw4j_run.audit_event"
+                "select execution_id from claw4j_run.audit_event"
                         + " where kind = 'tool_action' and status = 'succeeded' limit 1", String.class);
         assertThat(executedRunId)
                 .as("执行落在批准之后那一轮：那是新的一行 run，不是被拦的那一条被拉起来了")
-                .isNotEqualTo(first.runId());
+                .isNotEqualTo(first.executionId());
         Map<String, Object> executed = onlyAuditRow(executedRunId, "succeeded");
         assertThat(executed.get("tool_name")).isEqualTo(TOOL);
         // 归属分两格（ADR-0037 第三批）：actor 记执行者（agent），人记在 requested_by 这个扩展列上。
@@ -535,74 +533,10 @@ class ApprovalFlowTest {
 
         assertThat(jdbc.queryForObject(
                 "select count(*) from claw4j_run.audit_event"
-                        + " where run_id = ? and kind = 'tool_action'", Integer.class, first.runId()))
+                        + " where execution_id = ? and kind = 'tool_action'", Integer.class, first.executionId()))
                 .as("等审批不写审计：那件事的真相在 approval_request 上。"
                         + "被拦的那一轮一条工具事件都没有——它没开始，也不该假装有过一次调用")
                 .isZero();
-    }
-
-    /**
-     * 票 14：一次 run 的全景把审批与投递终态合成一页，顺序按时间倒序。
-     *
-     * <p>判据是"两边的回执都在、且谁也没被另一边的排序挤掉"：这类合并最容易出的错不是崩，
-     * 是只查了一张表——结果看着像一页，其实少了一半。
-     */
-    @Test
-    @DisplayName("全景：审批与投递终态合成一页，按时间倒序（票 14）")
-    void anInspectionMergesApprovalAndMessageReceipts() {
-        Harness harness = new Harness(requestTool(ARGS), answer("好的，等审批"), requestTool(ARGS),
-                answer("已发给张三"));
-        harness.withApprovalRequiredTool();
-
-        harness.port().reply(harness.mailer("发一封给张三的周报"));
-        String approvalId = onlyPendingId();
-        harness.decider().decide(approvalId, "approver-1", true, null);
-        String executedRunId = jdbc.queryForObject(
-                "select run_id from claw4j_run.audit_event"
-                        + " where kind = 'tool_action' and status = 'succeeded' limit 1", String.class);
-
-        // 投递终态那一类：消息审计默认关，这里直接落一行——验的是读侧合并，不是写侧开关。
-        jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, agent_id, actor_type, actor, channel,"
-                + " direction, conversation_kind, message_outcome, delivery_kind, source_id,"
-                + " source_sequence, at)"
-                + " values ('e-run-inspect-msg', 'message', 'message.outbound.finished', 'succeeded',"
-                + " ?, 'ops', 'agent', 'ops', 'http', 'outbound', 'direct', 'sent', 'text',"
-                + " 'message:out:run-inspect', 1, now() + interval '5 seconds')", executedRunId);
-
-        AuditRunInspect.Report report = new JdbcAuditRunInspect(jdbc)
-                .inspect(executedRunId, 50, null).orElseThrow();
-
-        assertThat(report.runKnown()).as("这一轮在库里").isTrue();
-        var selectors = report.decisions().stream()
-                .map(AuditRunInspect.Decision::selectorId).toList();
-        assertThat(selectors)
-                .as("审批与投递两条都在，且投递（时刻更晚）排在前面")
-                .hasSize(2);
-        assertThat(selectors.getFirst()).startsWith("message-decision:");
-        assertThat(selectors.get(1))
-                .as("执行那一轮靠 audit_event.approval_id 接回发起那一轮的审批")
-                .isEqualTo("approval-decision:" + approvalId);
-        assertThat(report.decisions())
-                .filteredOn(decision -> decision.family().equals("approval"))
-                .singleElement()
-                .satisfies(decision -> {
-                    assertThat(decision.outcome()).isEqualTo("allowed");
-                    assertThat(decision.coverageState())
-                            .as("审批是真改了结果的闸：没有它那次调用不会跑")
-                            .isEqualTo("enforced");
-                    assertThat(decision.producer()).isEqualTo("operator-approval");
-                });
-        assertThat(report.decisions())
-                .filteredOn(decision -> decision.family().equals("message"))
-                .singleElement()
-                .satisfies(decision -> assertThat(decision.coverageState())
-                        .as("投递只留记录，不改结果")
-                        .isEqualTo("attribution-only"));
-
-        assertThat(new JdbcAuditRunInspect(jdbc).inspect(executedRunId, 50, "not-a-selector"))
-                .as("游标认不出来时回空，让端点回 400 而不是从头查")
-                .isEmpty();
     }
 
     /**
@@ -619,7 +553,7 @@ class ApprovalFlowTest {
                 + "\"tables\":[\"sales_order\"],\"actions\":[\"read\",\"send_email\"]}";
         String digest = ToolCallAudit.digest("sendEmail", "{}").orElseThrow();
         jdbc.update("insert into claw4j_run.approval_request"
-                + " (id, run_id, owner, tool_name, args_digest, args_summary, status, session_key,"
+                + " (id, execution_id, owner, tool_name, args_digest, args_summary, status, session_key,"
                 + " channel, chat_ref, principal_snapshot, requested_at, expires_at)"
                 + " values ('ap-legacy', 'run-legacy', 'u-mailer', 'sendEmail', ?, 'to=张三', 'pending',"
                 + " 'claw4j:user:u-mailer:http:chat-ap', 'http', 'chat-ap', ?::jsonb, now(),"
@@ -795,11 +729,11 @@ class ApprovalFlowTest {
      * <p>查的是 {@code claw4j_run.audit_trail} 而不是 {@code agent_step}：
      * 那一层视图就是"审计"在库里的形状（P07），用例跟着读的人走。
      */
-    private static Map<String, Object> onlyAuditRow(String runId, String status) {
+    private static Map<String, Object> onlyAuditRow(String executionId, String status) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "select * from claw4j_run.audit_event"
-                        + " where run_id = ? and action = 'tool.action.finished' and status = ?"
-                        + " order by seq", runId, status);
+                        + " where execution_id = ? and action = 'tool.action.finished' and status = ?"
+                        + " order by seq", executionId, status);
         assertThat(rows).as("这一件事应当正好有一条 %s 的结束事件", status).hasSize(1);
         return rows.getFirst();
     }
@@ -810,10 +744,10 @@ class ApprovalFlowTest {
      * <p>它是"这一轮结束了"唯一的落点（ADR-0027）。{@code succeeded} 在这里的含义是
      * "这一轮正常跑完了"——回给用户一句"我需要你批准"也是一次正常收尾。
      */
-    private static String finishStatusOf(String runId) {
+    private static String finishStatusOf(String executionId) {
         return jdbc.queryForObject(
                 "select status from claw4j_run.audit_event where action = 'agent.run.finished'"
-                        + " and run_id = ? order by seq desc limit 1", String.class, runId);
+                        + " and execution_id = ? order by seq desc limit 1", String.class, executionId);
     }
 
     private static String onlyPendingId() {
@@ -826,9 +760,9 @@ class ApprovalFlowTest {
      * ADR-0017 的幂等键口径，<b>只在这个测试里存在</b>：它还没有实现，
      * 写在这里是为了让"两个哈希口径相反"被一条断言钉住，而不是靠读者记住。
      */
-    private static String idempotencyKey(String runId, int stepSeq, String toolName, String args) {
+    private static String idempotencyKey(String executionId, int stepSeq, String toolName, String args) {
         String canonical = ToolCallAudit.canonicalArgs(args).orElseThrow();
-        return sha256(runId + '|' + stepSeq + '|' + toolName + '|' + canonical);
+        return sha256(executionId + '|' + stepSeq + '|' + toolName + '|' + canonical);
     }
 
     /**

@@ -38,7 +38,9 @@ import io.github.claw4j.domain.port.AuditQuery;
  * @param agentId 哪个 agent
  * @param sessionKey 会话键（不含段）
  * @param sessionId 那一段
- * @param runId 这一轮的编号
+ * @param runId 报文里的执行编号。**这一格沿线格式叫 {@code runId}**：它的 agent_run / tool_action
+ *     变体里 {@code runId} 是必填的（{@code audit-activity.ts:112-120}），闭对象又不允许多一格，
+ *     所以库里叫 {@code execution_id}（ADR-0038）、报文里仍叫 {@code runId}——翻译只在这一处
  * @param toolCallId 调用编号（已哈希）
  * @param toolName 工具名
  * @param channel 通道名；只有消息行
@@ -99,7 +101,7 @@ record AuditEventView(String eventType, int schemaVersion, String eventId, long 
                 row.agentId(),
                 row.sessionKey(),
                 row.sessionId(),
-                row.runId(),
+                row.executionId(),
                 row.toolCallId(),
                 row.toolName(),
                 row.channel(),

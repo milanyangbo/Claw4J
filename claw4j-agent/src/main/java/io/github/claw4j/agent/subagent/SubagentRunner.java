@@ -44,7 +44,7 @@ import java.util.function.Supplier;
  * {@link Principal}——身份由委派时的入站请求给，不由 Subagent 定义给。父看不到的表，
  * 派个 Subagent 去看这条路从设计上不存在。
  *
- * <p>审计上它是<b>另一轮</b>（票 08）：每次委派生成自己的 {@code runId}，两条运行事件与子链那些
+ * <p>审计上它是<b>另一轮</b>（票 08）：每次委派生成自己的 {@code executionId}，两条运行事件与子链那些
  * 工具事件都挂在这一个编号上，{@code sessionKey} 是 {@code subagent:<定义名>}、{@code agentId} 是
  * 定义名。与父的关系不做推断——OpenClaw 的 lineage 投影要精确父令牌，拿不到就明说缺失，我们也一样。
  * 这样按 {@code sessionKey} 就能问"这个子 Agent 干了什么"，而不必先知道它属于哪一次对话。
@@ -177,11 +177,11 @@ public final class SubagentRunner implements SubagentExecutor {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(principal, "principal");
 
-        // 子 Agent 是另一个执行体，开的是**自己那一轮**（票 08）：不与父共享 runId。OpenClaw 的原话是
+        // 子 Agent 是另一个执行体，开的是**自己那一轮**（票 08）：不与父共享 executionId。OpenClaw 的原话是
         // "the child owns a new context; it never reuses or mutates the parent context"，它与父的关系
         // 只由 lineage 投影表达——而那条投影要的父令牌我们没有，于是不编一个（见票 08 的缺口）。
-        String runId = UUID.randomUUID().toString();
-        AuditEvent.Scope scope = AuditEvent.Scope.of(runId, SESSION_PREFIX + definition.name(),
+        String executionId = UUID.randomUUID().toString();
+        AuditEvent.Scope scope = AuditEvent.Scope.of(executionId, SESSION_PREFIX + definition.name(),
                 null, definition.name(), principal, null);
         if (audit != null) {
             audit.runStarted(scope);
@@ -217,7 +217,7 @@ public final class SubagentRunner implements SubagentExecutor {
      * @param definition 派哪一个
      * @param task 交给子 Agent 的任务描述
      * @param principal 父这一轮的身份
-     * @param scope 子这一轮的作用域（runId / 会话 / 归属）
+     * @param scope 子这一轮的作用域（executionId / 会话 / 归属）
      * @return 子的结论
      */
     private String run(SubagentDefinition definition, String task, Principal principal,
@@ -256,8 +256,8 @@ public final class SubagentRunner implements SubagentExecutor {
      * 原来只放了 Advisor 参数。后果不是报错，是那些工具按"没有身份"拒绝（委派里的再委派、
      * exec 要审批时找人批，都读这个键）。
      *
-     * <p>编号与归属是票 08 补的：工具的审计事件从这两格取 {@code runId} 与 {@code agentId}。
-     * 缺 {@code runId} 的后果不是"记成父那一轮"，而是**账本直接跳过**（没有 run 的事件不属于任何一次
+     * <p>编号与归属是票 08 补的：工具的审计事件从这两格取 {@code executionId} 与 {@code agentId}。
+     * 缺 {@code executionId} 的后果不是"记成父那一轮"，而是**账本直接跳过**（没有 run 的事件不属于任何一次
      * 运行，写完也查不回来）——这正是子链的调用以前一行审计都没有的原因。
      *
      * <p>会话键与 Advisor 那一侧同一个值：两处各算一遍的话，审批行上的来处与工具读到的会话
@@ -272,7 +272,7 @@ public final class SubagentRunner implements SubagentExecutor {
         java.util.Map<String, Object> context = new java.util.HashMap<>();
         context.put(ContextKeys.PRINCIPAL, principal);
         context.put(ChatMemory.CONVERSATION_ID, scope.sessionKey());
-        context.put(ContextKeys.RUN_ID, scope.runId());
+        context.put(ContextKeys.EXECUTION_ID, scope.executionId());
         context.put(ContextKeys.AGENT_ID, scope.agentId());
         return context;
     }

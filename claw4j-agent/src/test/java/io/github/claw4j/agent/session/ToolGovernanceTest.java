@@ -163,7 +163,7 @@ class ToolGovernanceTest {
      * "这次调用是哪次批准的"：兑现那一侧记下的编号必须落到执行事件上。
      *
      * <p>三条断言各拦一种写法：① 编号根本不落；② 同一轮里两次同参数调用双双带上同一个编号；
-     * ③ 键里不带 {@code runId}（批准从另一轮漏过来，看起来完全正常）。
+     * ③ 键里不带 {@code executionId}（批准从另一轮漏过来，看起来完全正常）。
      */
     @Test
     @DisplayName("兑现过的批准只落在它自己那一轮的执行事件上，而且只落一次")
@@ -183,7 +183,7 @@ class ToolGovernanceTest {
                 .as("第二条同参数调用不该再搭上那条批准")
                 .isNull();
         assertThat(events.get(2).approvalId())
-                .as("兑换记在别的 run 上不串味：键里带 runId")
+                .as("兑换记在别的 run 上不串味：键里带 executionId")
                 .isNull();
     }
 
@@ -244,7 +244,7 @@ class ToolGovernanceTest {
         audit.toolFinished(AuditEvent.Scope.empty(), TOOL, "{}", null, null);
 
         assertThat(events).hasSize(1);
-        assertThat(events.getFirst().scope().runId()).isNull();
+        assertThat(events.getFirst().scope().executionId()).isNull();
         assertThat(events.getFirst().toolName()).isEqualTo(TOOL);
     }
 
@@ -860,13 +860,13 @@ class ToolGovernanceTest {
         private final java.util.Map<String, String> facts = new java.util.HashMap<>();
 
         @Override
-        public void grant(String runId, String toolName, String argsDigest, String approvalId) {
-            facts.put(runId + '|' + toolName + '|' + argsDigest, approvalId);
+        public void grant(String executionId, String toolName, String argsDigest, String approvalId) {
+            facts.put(executionId + '|' + toolName + '|' + argsDigest, approvalId);
         }
 
         @Override
-        public String take(String runId, String toolName, String argsDigest) {
-            return facts.remove(runId + '|' + toolName + '|' + argsDigest);
+        public String take(String executionId, String toolName, String argsDigest) {
+            return facts.remove(executionId + '|' + toolName + '|' + argsDigest);
         }
 
         @Override
@@ -905,7 +905,7 @@ class ToolGovernanceTest {
         assertThat(blocked.status()).isEqualTo(AuditStatus.BLOCKED);
         assertThat(blocked.errorCode()).isEqualTo(AuditErrorCode.TOOL_BLOCKED);
         assertThat(blocked.toolName()).isEqualTo(TOOL);
-        assertThat(blocked.scope().runId()).isEqualTo("run-gate");
+        assertThat(blocked.scope().executionId()).isEqualTo("run-gate");
         assertThat(blocked.scope().agentId()).as("工具事件也带 agent 归属").isEqualTo("ops");
 
         // ② 登记不上审批也一样：它同样永远不会被放行。
@@ -1015,7 +1015,7 @@ class ToolGovernanceTest {
     private static ToolContext gateContext() {
         return new ToolContext(Map.of(
                 ContextKeys.PRINCIPAL, new Principal("u-mailer"),
-                ContextKeys.RUN_ID, "run-gate",
+                ContextKeys.EXECUTION_ID, "run-gate",
                 ContextKeys.AGENT_ID, "ops",
                 ContextKeys.CHANNEL, "http",
                 ContextKeys.CHAT_REF, "chat-ap",
@@ -1024,7 +1024,7 @@ class ToolGovernanceTest {
 
     private static ToolContext gateContextWithoutPrincipal() {
         return new ToolContext(Map.of(
-                ContextKeys.RUN_ID, "run-gate",
+                ContextKeys.EXECUTION_ID, "run-gate",
                 ContextKeys.AGENT_ID, "ops",
                 ChatMemory.CONVERSATION_ID, "claw4j:user:u-mailer:http:chat-ap"));
     }

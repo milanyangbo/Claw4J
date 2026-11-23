@@ -171,7 +171,7 @@ public class ScheduleScanner {
     /**
      * 组装交给 Agent 的那一条提问。
      *
-     * <p>{@code runId} 是 null：每次到点都是新的一件，而不是接着上一件，定时任务的每一步
+     * <p>{@code executionId} 是 null：每次到点都是新的一件，而不是接着上一件，定时任务的每一步
      * 都该是一份独立的记录。
      *
      * <p>两个 id 是两件事（ADR-0026 决定三）：{@code chatId} 是「结果送到哪儿」，审批卡片、

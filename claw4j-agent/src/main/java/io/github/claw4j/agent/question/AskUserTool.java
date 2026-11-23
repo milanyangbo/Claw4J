@@ -112,7 +112,7 @@ final class AskUserTool {
             return blanks;
         }
         QuestionGate.Ask ask = new QuestionGate.Ask(call.channel(), call.chatRef(), call.who(),
-                call.runId(), translate(questions), null);
+                call.executionId(), translate(questions), null);
         QuestionGate.Outcome outcome;
         try {
             outcome = gate.ask(ask);
@@ -191,11 +191,11 @@ final class AskUserTool {
             return null;
         }
         Object channel = context.get(ContextKeys.CHANNEL);
-        Object runId = context.get(ContextKeys.RUN_ID);
+        Object executionId = context.get(ContextKeys.EXECUTION_ID);
         // timeout 给 null：由登记表按 claw4j.tools.ask.timeout-seconds 决定。工具这一层不持有配置，
         // 两处各有一份默认值的话，"实际等了多久"这两边迟早不一样。
         return new Call(channel == null ? null : channel.toString(), chatRef.toString(), who,
-                runId == null ? null : runId.toString());
+                executionId == null ? null : executionId.toString());
     }
 
     /**
@@ -204,8 +204,8 @@ final class AskUserTool {
      * @param channel 通道标识，可能为 {@code null}（没有通道名的内部调用）
      * @param chatRef 通道内的会话地址
      * @param who 提问人
-     * @param runId 这一轮的编号
+     * @param executionId 这一轮的编号
      */
-    private record Call(String channel, String chatRef, Principal who, String runId) {
+    private record Call(String channel, String chatRef, Principal who, String executionId) {
     }
 }

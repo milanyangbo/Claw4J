@@ -85,10 +85,10 @@ public class HttpChatController {
                            @RequestHeader(value = HttpPrincipalResolver.USER_HEADER, required = false) String user,
                            @RequestHeader(value = HttpPrincipalResolver.CHAT_ID_HEADER, required = false) String chatId) {
         OutboundMessage answer = channel.ask(inbound(request, user, chatId));
-        // runId 跟着回答一起出去：它是这一轮的编号，用来串日志（ADR-0027）。
+        // executionId 跟着回答一起出去：它是这一轮的编号，用来串日志（ADR-0027）。
         // 它不是续跑令牌：拿它回来接不上任何东西，连续性靠会话，不靠这个 id。
         // 命令类回执没有编号，那是 null。
-        return new AskResponse(answer.chatId(), answer.text(), answer.runId());
+        return new AskResponse(answer.chatId(), answer.text(), answer.executionId());
     }
 
     /**
@@ -296,7 +296,7 @@ public class HttpChatController {
     /**
      * 一轮问答的请求体。
      *
-     * <p>没有 {@code runId}（ADR-0027）：客户端不能带着上一轮的 id 回来接着做。那种能力要求
+     * <p>没有 {@code executionId}（ADR-0027）：客户端不能带着上一轮的 id 回来接着做。那种能力要求
      * 一件事能跨请求活着，而连续性靠会话：同一段对话自然有上下文（OpenClaw 也按会话聚合，
      * {@code docs/concepts/session.md:141}）。留着这个字段的话，它会静默变成一个没人读的摆设，
      * 下一个人会以为带上它就能续。
@@ -317,9 +317,9 @@ public class HttpChatController {
      *
      * @param chatId 这轮所属的会话标识
      * @param text 回答的整段文本
-     * @param runId 这一轮的编号（ADR-0027），串日志用，不能用来续跑
+     * @param executionId 这一轮的编号（ADR-0027），串日志用，不能用来续跑
      */
-    public record AskResponse(String chatId, String text, String runId) {
+    public record AskResponse(String chatId, String text, String executionId) {
     }
 
     /**

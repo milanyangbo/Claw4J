@@ -202,12 +202,12 @@ public class ApprovalController {
      *
      * @param allowAlways 这一条接不接受"以后都放行"；为 false 时调用方不该给那个按钮
      */
-    public record ApprovalView(String id, String runId, String owner, String toolName,
+    public record ApprovalView(String id, String executionId, String owner, String toolName,
                                String argsSummary, String status, boolean expired, Instant expiresAt,
                                boolean allowAlways) {
 
         static ApprovalView of(Approvals.Pending pending) {
-            return new ApprovalView(pending.id(), pending.runId(), pending.owner(), pending.toolName(),
+            return new ApprovalView(pending.id(), pending.executionId(), pending.owner(), pending.toolName(),
                     pending.argsSummary(), pending.status(), pending.expired(), pending.expiresAt(),
                     pending.allowAlways());
         }

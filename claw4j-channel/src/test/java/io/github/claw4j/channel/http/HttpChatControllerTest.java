@@ -112,10 +112,10 @@ class HttpChatControllerTest {
     }
 
     /**
-     * 请求体里没有 {@code runId}（ADR-0027）。
+     * 请求体里没有 {@code executionId}（ADR-0027）。
      *
      * <p>留着它，它会静默变成一个没人读的摆设，下一个看接口文档的人会以为带上它就能接着做，
-     * 而那条路要求一件事能跨请求活着。这条用反射钉住参数名：把 runId 加回去的那一刻它就红。
+     * 而那条路要求一件事能跨请求活着。这条用反射钉住参数名：把 executionId 加回去的那一刻它就红。
      */
     @Test
     @DisplayName("/api/chat 的请求体只有 text 与 notifyPolicy：没有续跑令牌")
@@ -123,7 +123,7 @@ class HttpChatControllerTest {
         assertEquals(List.of("text", "notifyPolicy"),
                 Arrays.stream(AskRequest.class.getRecordComponents())
                         .map(RecordComponent::getName).toList(),
-                "加回 runId 就等于把「一件事能跨请求活着」重新引进来，而它正是这一版要拆掉的");
+                "加回 executionId 就等于把「一件事能跨请求活着」重新引进来，而它正是这一版要拆掉的");
     }
 
     @Test

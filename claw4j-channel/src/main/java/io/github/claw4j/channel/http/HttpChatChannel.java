@@ -83,7 +83,7 @@ public class HttpChatChannel implements ChatChannel {
         long startedAt = System.nanoTime();
         OutboundMessage answer = agentPort.reply(message);
         // 同步接口的"投递"就是这次方法返回：调用方拿到的就是它。
-        audit(message, answer.runId(), answer.text(), startedAt);
+        audit(message, answer.executionId(), answer.text(), startedAt);
         return answer;
     }
 
@@ -95,11 +95,11 @@ public class HttpChatChannel implements ChatChannel {
      * 对方收到没有我们不知道，编一个 {@code failed} 就是在替客户端下结论。
      *
      * @param message 入站消息（用来取通道、地址与私聊/群）
-     * @param runId 这一轮的编号，可为 null
+     * @param executionId 这一轮的编号，可为 null
      * @param text 交出去的正文，可为 null
      * @param startedAtNanos 开始那一刻（{@link System#nanoTime()}）
      */
-    private void audit(InboundMessage message, String runId, String text, long startedAtNanos) {
+    private void audit(InboundMessage message, String executionId, String text, long startedAtNanos) {
         MessageOutcome outcome;
         String reason = null;
         if (text == null || text.isBlank()) {
@@ -108,13 +108,13 @@ public class HttpChatChannel implements ChatChannel {
         } else {
             outcome = MessageOutcome.SENT;
         }
-        audit(message, runId, outcome, reason, null, startedAtNanos);
+        audit(message, executionId, outcome, reason, null, startedAtNanos);
     }
 
-    private void audit(InboundMessage message, String runId, MessageOutcome outcome, String reason,
+    private void audit(InboundMessage message, String executionId, MessageOutcome outcome, String reason,
                        String failureStage, long startedAtNanos) {
         try {
-            messageAudit.outbound(new MessageAudit.Outbound(runId, null, message.channel(),
+            messageAudit.outbound(new MessageAudit.Outbound(executionId, null, message.channel(),
                     // 形态交给记账那一层判（票 13）：被抑制 / 结果不明的行不该带它，
                     // 而哪几种结果属于那两类，写在 JdbcMessageAudit 里一处。
                     message.chatId(), message.chatId(), outcome, reason, failureStage, null,
@@ -154,12 +154,12 @@ public class HttpChatChannel implements ChatChannel {
         // 有没有真的吐出过字：只有结束帧（空文本）时这一路是"模型什么都没说"，
         // 那是被抑制，不是送达——与同步那条的 blank 判断同一个口径。
         AtomicBoolean sawText = new AtomicBoolean();
-        AtomicReference<String> runId = new AtomicReference<>();
+        AtomicReference<String> executionId = new AtomicReference<>();
         // 先交付、再记账：写不出去的那一块不算送到。最后那一帧到了才算这一路送完。
         Consumer<OutboundMessage> deliveredThenCounted = chunk -> {
             onChunk.accept(chunk);
-            if (chunk.runId() != null) {
-                runId.set(chunk.runId());
+            if (chunk.executionId() != null) {
+                executionId.set(chunk.executionId());
             }
             if (chunk.text() != null && !chunk.text().isBlank()) {
                 sawText.set(true);
@@ -186,15 +186,15 @@ public class HttpChatChannel implements ChatChannel {
                 try {
                     agentPort.stream(message, deliveredThenCounted);
                     if (delivered.get() && sawText.get()) {
-                        audit(message, runId.get(), MessageOutcome.SENT, null, null, startedAt);
+                        audit(message, executionId.get(), MessageOutcome.SENT, null, null, startedAt);
                     } else if (delivered.get()) {
-                        audit(message, runId.get(), MessageOutcome.SUPPRESSED,
+                        audit(message, executionId.get(), MessageOutcome.SUPPRESSED,
                                 MessageReason.NO_VISIBLE_PAYLOAD, null, startedAt);
                     }
                     future.complete(null);
                 } catch (Throwable error) {
                     // 断在半路：已经出去的那几帧对方收到没有，我们不知道——记 unknown 而不是 failed。
-                    audit(message, runId.get(), MessageOutcome.UNKNOWN, null, "platform_send", startedAt);
+                    audit(message, executionId.get(), MessageOutcome.UNKNOWN, null, "platform_send", startedAt);
                     if (!future.isCancelled()) {
                         future.completeExceptionally(error);
                     }

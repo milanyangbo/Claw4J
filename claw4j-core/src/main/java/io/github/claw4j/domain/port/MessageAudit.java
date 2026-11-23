@@ -58,11 +58,11 @@ public interface MessageAudit {
     /**
      * 一条入站消息。
      *
-     * <p>{@code runId} 可空：入站消息在开跑之前就到了，而它可能根本没开跑（重复、没认出身分、
+     * <p>{@code executionId} 可空：入站消息在开跑之前就到了，而它可能根本没开跑（重复、没认出身分、
      * 被跳过）。能填的时候一定要填——"这条消息是被哪一轮答的"只有它能连起来。OpenClaw 的消息输入
-     * 同样是 {@code runId} 可选（{@code src/audit/audit-event-types.ts:133}）。
+     * 同样是 {@code executionId} 可选（{@code src/audit/audit-event-types.ts:133}）。
      *
-     * @param runId 这一轮的编号，可为 null
+     * @param executionId 这一轮的编号，可为 null
      * @param agentId 哪个 agent 处理的，可为 null（落 unknown）
      * @param channel 通道名
      * @param chatRef 通道内的会话地址（原文，实现负责假名化）
@@ -75,7 +75,7 @@ public interface MessageAudit {
      *     这个事实在通道解析时就有了（ADR-0029：Slack 看 {@code channel_type}、飞书看
      *     {@code chat_type}），审计只是把它传下去，不自己猜
      */
-    record Inbound(String runId, String agentId, String channel, String chatRef, String messageRef,
+    record Inbound(String executionId, String agentId, String channel, String chatRef, String messageRef,
                    String actorId, MessageOutcome outcome, String reasonCode, long durationMs,
                    Boolean direct) {
     }
@@ -83,7 +83,7 @@ public interface MessageAudit {
     /**
      * 一条出站消息。
      *
-     * @param runId 这一轮的编号，可为 null（定时任务、审批续跑没有入站那一轮）
+     * @param executionId 这一轮的编号，可为 null（定时任务、审批续跑没有入站那一轮）
      * @param agentId 哪个 agent 产出的，可为 null（落 unknown）
      * @param channel 通道名
      * @param chatRef 投递到哪段会话（原文）
@@ -95,7 +95,7 @@ public interface MessageAudit {
      * @param durationMs 从开始投递算起的毫秒数
      * @param direct 是不是私聊；null 表示不知道（落 {@code unknown}）
      */
-    record Outbound(String runId, String agentId, String channel, String chatRef, String targetRef,
+    record Outbound(String executionId, String agentId, String channel, String chatRef, String targetRef,
                     MessageOutcome outcome, String reasonCode, String failureStage,
                     String deliveryKind, long durationMs, Boolean direct) {
     }

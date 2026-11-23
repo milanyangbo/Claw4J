@@ -301,7 +301,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
          * 消息审计的落点（ADR-0037 票 04）。
          *
          * <p>只在这一层记「这条消息处理完了 / 没处理成」：它是入站消息真正开始跑的地方，
-         * 而 runId 也在这里才有。被跳过的那种（重复投递）在入站派发器那一侧记。
+         * 而 executionId 也在这里才有。被跳过的那种（重复投递）在入站派发器那一侧记。
          *
          * @param value 消息审计，null 表示不写消息行
          * @return 这个 builder
@@ -345,7 +345,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * 内容出现两次；定时任务与审批续跑没有人等，才按通知策略推出去。
      *
      * @param message 入站消息
-     * @return 出站消息，带这一轮的 {@code runId}
+     * @return 出站消息，带这一轮的 {@code executionId}
      */
     @Override
     public OutboundMessage reply(InboundMessage message) {
@@ -353,7 +353,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         Turn turn = inLane(message, () -> answer(message, TurnRecorder.addressOf(message)));
         // 出站剥离：包装头、数据块标签、纯文本工具调用块都不该让用户读到（票 02）。
         // 存进会话记忆的仍是原文——模型下一轮需要知道那段内容从哪来。
-        return OutboundMessage.of(message.chatId(), OutboundText.clean(turn.text()), turn.runId());
+        return OutboundMessage.of(message.chatId(), OutboundText.clean(turn.text()), turn.executionId());
     }
 
     /**
@@ -405,7 +405,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     }
 
     /** 这一轮的结果：编号与回答。两个都可能为空——命令类回执既没有编号，也没有调模型。 */
-    private record Turn(String runId, String text) {
+    private record Turn(String executionId, String text) {
     }
 
     /**
@@ -414,7 +414,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * @param message 入站消息
      * @param answeredAt 这一轮已经就地回答过的地址；null 表示没有人在等结果（定时任务、服务端续跑），
      *     于是按策略推给每一个登记过的地址
-     * @return 这一轮的回答；命令类回执没有 {@code runId}
+     * @return 这一轮的回答；命令类回执没有 {@code executionId}
      */
     private Turn answer(InboundMessage message, DeliveryTarget answeredAt) {
         String owner = SessionKeys.ownerOf(message.principal());
@@ -436,19 +436,20 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         String sessionId = address.sessionIdOf(message, owner, parsed.reset());
         // 这一轮的编号（ADR-0027）：本地生成，不落任何表。它只在三处用——审计的两条事件、
         // trace 的一段 span、返回给调用方的回执。
-        // OpenClaw 的 runId 也是这个角色：agent RPC 返回它，agent.wait 可以等它，
-        // 但没有任何"按 runId 取回一件事"的接口，因为一轮答完它就作废了。
-        String runId = UUID.randomUUID().toString();
+        // OpenClaw 的 runId 也是这个角色：agent RPC 返回它，agent.wait 可以等它。
+        // 我们叫 executionId：它那个"可能跨轮共享的 run"我们没有（ADR-0038），
+        // 但没有任何"按 executionId 取回一件事"的接口，因为一轮答完它就作废了。
+        String executionId = UUID.randomUUID().toString();
         // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
         // 两把会话键都带进审计（ADR-0037 第三批）：session_key 是会话键（不含段），
         // session_id 是这一段。OpenClaw 两列都在（audit-event-store.ts:97-98），
         // 只写含段的那一个的话，"同一段对话"与"这一轮"再也分不开。
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, conversationKey, sessionId, agentId,
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(executionId, conversationKey, sessionId, agentId,
                 message.principal(), message.channel());
         recorder.runStarted(auditScope);
         // 根 span 从"这一轮"开始，而不是从这次请求开始：模型轮与工具都发生在入池之后（见 RUN_SPAN）。
         try (SpanTracer.SpanScope run = recorder.tracer().open(TurnRecorder.RUN_SPAN,
-                TurnRecorder.runAttributes(runId, message.principal()))) {
+                TurnRecorder.runAttributes(executionId, message.principal()))) {
             try {
                 ChatResponse response;
                 String text;
@@ -457,22 +458,22 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                 // 与审计的关联键只有 claw4j.run.id 一个。
                 try (SpanTracer.SpanScope turn = recorder.tracer().open(TurnRecorder.TURN_SPAN, Map.of())) {
                     response = composer.compose(message, owner, sessionId, conversationKey,
-                                    parsed.text(), runId)
+                                    parsed.text(), executionId)
                             .call()
                             .chatResponse();
                     text = cappedText(response);
                     // 日志敢打全文，是因为脱敏已经在 Advisor 链上做完；哪天有人在链路之外打日志，
                     // 这里会立刻出现原始值。
-                    log.debug("出站回答 chatId={} runId={} text={}", message.chatId(), runId, text);
+                    log.debug("出站回答 chatId={} executionId={} text={}", message.chatId(), executionId, text);
                     recorder.closeTurn(auditScope, conversationKey, text,
                             TurnRecorder.pushTargetOf(answeredAt, message), message.notifyPolicy(),
                             TurnRecorder.tokensOf(response));
                     TurnRecorder.stampTurn(turn, response);
                 }
-                auditInbound(message, runId, MessageOutcome.COMPLETED, null, inboundAt);
-                return new Turn(runId, text);
+                auditInbound(message, executionId, MessageOutcome.COMPLETED, null, inboundAt);
+                return new Turn(executionId, text);
             } catch (RuntimeException | Error failure) {
-                auditInbound(message, runId, MessageOutcome.FAILED, null, inboundAt);
+                auditInbound(message, executionId, MessageOutcome.FAILED, null, inboundAt);
                 run.failed(failure);
                 // 取消 / 超时 / 客户端走了各记各的（ADR-0037 票 01）：一律记 failed 的话，
                 // 「这轮是被谁掐掉的」「是不是模型太慢」在审计里问不出来。
@@ -487,21 +488,21 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * 记一条「这条入站消息处理完了」。
      *
      * <p>放在轮次的收尾，而不是入口：入口还不知道结局。代价是这一行晚一点落库，
-     * 换来的是它带着 runId——"这条消息是被哪一轮答的"只有这一个键连得起来。
+     * 换来的是它带着 executionId——"这条消息是被哪一轮答的"只有这一个键连得起来。
      *
      * <p>消息编号传 null：{@link InboundMessage} 上没有这个字段（它是通道侧的寻址键，
      * 不是平台的消息 id）。代价是这类行不参与来源键去重——平台重投时靠入站派发器那一侧的
      * {@code duplicate} 挡住，这里不必再挡一次。
      *
      * @param message 入站消息
-     * @param runId 这一轮的编号，命令类回执没有
+     * @param executionId 这一轮的编号，命令类回执没有
      * @param outcome 结果
      * @param reasonCode 原因码，没有时为 null
      * @param startedAtNanos 到达时刻（{@link System#nanoTime()}）
      */
-    private void auditInbound(InboundMessage message, String runId, MessageOutcome outcome,
+    private void auditInbound(InboundMessage message, String executionId, MessageOutcome outcome,
                               String reasonCode, long startedAtNanos) {
-        messageAudit.inbound(new MessageAudit.Inbound(runId, agentId, message.channel(),
+        messageAudit.inbound(new MessageAudit.Inbound(executionId, agentId, message.channel(),
                 message.chatId(), null,
                 message.principal() == null ? null : message.principal().userId(),
                 outcome, reasonCode, (System.nanoTime() - startedAtNanos) / 1_000_000L,
@@ -523,39 +524,39 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             return;
         }
         String sessionId = address.sessionIdOf(message, owner, parsed.reset());
-        String runId = UUID.randomUUID().toString();
+        String executionId = UUID.randomUUID().toString();
         // 两把会话键都带进审计（ADR-0037 第三批）：session_key 是会话键（不含段），
         // session_id 是这一段。OpenClaw 两列都在（audit-event-store.ts:97-98），
         // 只写含段的那一个的话，"同一段对话"与"这一轮"再也分不开。
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, conversationKey, sessionId, agentId,
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(executionId, conversationKey, sessionId, agentId,
                 message.principal(), message.channel());
         recorder.runStarted(auditScope);
         try (SpanTracer.SpanScope run = recorder.tracer().open(TurnRecorder.RUN_SPAN,
-                TurnRecorder.runAttributes(runId, message.principal()))) {
+                TurnRecorder.runAttributes(executionId, message.principal()))) {
             StringBuilder answer = new StringBuilder();
             // 流式的出站剥离必须有状态：标记可能被切在两片之间。三种收尾（正常/异常/超时）
             // 都要 flush，否则最后半句永远发不出去（票 02）。
             OutboundText.StreamStripper stripper = new OutboundText.StreamStripper();
             try (SpanTracer.SpanScope turn = recorder.tracer().open(TurnRecorder.TURN_SPAN, Map.of())) {
                 try {
-                    composer.compose(message, owner, sessionId, conversationKey, parsed.text(), runId)
+                    composer.compose(message, owner, sessionId, conversationKey, parsed.text(), executionId)
                             .stream()
                             .content()
-                            // 每一块都带 runId：调用方可能只收到最后一块，收到中间块的也要能认出同一批
+                            // 每一块都带 executionId：调用方可能只收到最后一块，收到中间块的也要能认出同一批
                             .doOnNext(chunk -> {
-                                log.debug("出站分块 chatId={} runId={} chunk={}", message.chatId(), runId, chunk);
+                                log.debug("出站分块 chatId={} executionId={} chunk={}", message.chatId(), executionId, chunk);
                                 answer.append(chunk == null ? "" : chunk);
                                 String out = stripper.feed(chunk);
                                 if (!out.isEmpty()) {
-                                    onChunk.accept(OutboundMessage.chunk(message.chatId(), out, runId));
+                                    onChunk.accept(OutboundMessage.chunk(message.chatId(), out, executionId));
                                 }
                             })
                             .doOnComplete(() -> {
                                 String tail = stripper.flush();
                                 if (!tail.isEmpty()) {
-                                    onChunk.accept(OutboundMessage.chunk(message.chatId(), tail, runId));
+                                    onChunk.accept(OutboundMessage.chunk(message.chatId(), tail, executionId));
                                 }
-                                onChunk.accept(OutboundMessage.of(message.chatId(), "", runId));
+                                onChunk.accept(OutboundMessage.of(message.chatId(), "", executionId));
                             })
                             .blockLast();
                     // 流式这一路手上没有 ChatResponse（汇总 usage 在最后一帧，未必到得了），
@@ -564,19 +565,19 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     recorder.closeTurn(auditScope, conversationKey, answer.toString(),
                             TurnRecorder.pushTargetOf(TurnRecorder.addressOf(message), message),
                             message.notifyPolicy(), null);
-                    auditInbound(message, runId, MessageOutcome.COMPLETED, null, inboundAt);
+                    auditInbound(message, executionId, MessageOutcome.COMPLETED, null, inboundAt);
                 } catch (RuntimeException | Error failure) {
                     // 入站这一行只分完成/失败两种：取消与超时的细分在 run 那一行上（RunOutcome）。
-                    auditInbound(message, runId, MessageOutcome.FAILED, null, inboundAt);
+                    auditInbound(message, executionId, MessageOutcome.FAILED, null, inboundAt);
                     // 断流也要把暂存的那截吐出来，否则用户看到"话说到一半没了"。
                     // 发不出去就算了：原始失败更重要，别被它盖掉。
                     try {
                         String tail = stripper.flush();
                         if (!tail.isEmpty()) {
-                            onChunk.accept(OutboundMessage.chunk(message.chatId(), tail, runId));
+                            onChunk.accept(OutboundMessage.chunk(message.chatId(), tail, executionId));
                         }
                     } catch (RuntimeException ignored) {
-                        log.debug("断流时暂存的那截没发出去：chatId={} runId={}", message.chatId(), runId);
+                        log.debug("断流时暂存的那截没发出去：chatId={} executionId={}", message.chatId(), executionId);
                     }
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
                     turn.failed(failure);
@@ -601,7 +602,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      *
      * @param message 入站消息
      * @param work 要跑的这一轮
-     * @return 这一轮的结果；拿不到锁时是一句忙的回复，{@code runId} 为 null
+     * @return 这一轮的结果；拿不到锁时是一句忙的回复，{@code executionId} 为 null
      */
     private Turn inLane(InboundMessage message, Supplier<Turn> work) {
         if (lane == null) {

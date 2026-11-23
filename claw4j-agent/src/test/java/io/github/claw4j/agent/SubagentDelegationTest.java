@@ -332,11 +332,11 @@ class SubagentDelegationTest {
     /**
      * 子 Agent 的工具调用落在**自己那一轮**上（ADR-0037 票 08）。
      *
-     * <p>这一条盯的是一种三样都缺、却都不报错的状态：审计没接（一行都没有）、接了但没给 runId
-     * （账本直接跳过没有 run 的事件）、给了 runId 但归属还是父的（按 agent 查会查到父头上）。
+     * <p>这一条盯的是一种三样都缺、却都不报错的状态：审计没接（一行都没有）、接了但没给 executionId
+     * （账本直接跳过没有 run 的事件）、给了 executionId 但归属还是父的（按 agent 查会查到父头上）。
      */
     @Test
-    @DisplayName("子 Agent 的工具调用落在自己那一轮：两条运行行 + 工具行都是同一个 runId（票 08）")
+    @DisplayName("子 Agent 的工具调用落在自己那一轮：两条运行行 + 工具行都是同一个 executionId（票 08）")
     void subagentToolCallsAreAuditedInTheirOwnRun() {
         List<AuditEvent> events = new ArrayList<>();
         RecordingTool lookup = new RecordingTool("lookup", "原始行 128400");
@@ -372,7 +372,7 @@ class SubagentDelegationTest {
         assertThat(runEvents).extracting(AuditEvent::status)
                 .containsExactly(AuditStatus.STARTED, AuditStatus.SUCCEEDED);
         AuditEvent.Scope scope = runEvents.getFirst().scope();
-        assertThat(scope.runId()).as("子那一轮有自己的编号，不与父共享").isNotBlank();
+        assertThat(scope.executionId()).as("子那一轮有自己的编号，不与父共享").isNotBlank();
         assertThat(scope.sessionKey()).isEqualTo("subagent:alpha");
         assertThat(scope.agentId()).as("干活的是子 Agent，不是父那个部署级 agent").isEqualTo("alpha");
         assertThat(scope.requestedBy()).as("委派不提权：人还是那个人").isEqualTo("u-1");
@@ -381,12 +381,12 @@ class SubagentDelegationTest {
                 .filter(event -> "lookup".equals(event.toolName()))
                 .toList();
         assertThat(lookupEvents)
-                .as("子链调了 lookup：开始与结束各一条（没有 runId 时账本会整条跳过）")
+                .as("子链调了 lookup：开始与结束各一条（没有 executionId 时账本会整条跳过）")
                 .hasSize(2);
         assertThat(lookupEvents).extracting(AuditEvent::status)
                 .containsExactly(AuditStatus.STARTED, AuditStatus.SUCCEEDED);
         assertThat(lookupEvents).allSatisfy(event -> {
-            assertThat(event.scope().runId()).as("工具行挂在这个子 run 上").isEqualTo(scope.runId());
+            assertThat(event.scope().executionId()).as("工具行挂在这个子 run 上").isEqualTo(scope.executionId());
             assertThat(event.scope().agentId()).isEqualTo("alpha");
             assertThat(event.scope().sessionKey()).isEqualTo("subagent:alpha");
         });
@@ -399,7 +399,7 @@ class SubagentDelegationTest {
      * 而这里明明知道。归一用父链那套判据（超时 / 取消 / 普通失败），不另写一份。
      */
     @Test
-    @DisplayName("子 Agent 挂了也留一条 failed 的结束行，runId 与开始那条相同（票 08）")
+    @DisplayName("子 Agent 挂了也留一条 failed 的结束行，executionId 与开始那条相同（票 08）")
     void subagentRunFailureIsRecorded() {
         List<AuditEvent> events = new ArrayList<>();
         FixedChatModel child = new FixedChatModel(prompt -> {
@@ -419,7 +419,7 @@ class SubagentDelegationTest {
         assertThat(finished.status()).isEqualTo(AuditStatus.FAILED);
         assertThat(finished.errorCode()).as("与父链同一套归一：普通失败记 run_failed")
                 .isEqualTo(AuditErrorCode.RUN_FAILED);
-        assertThat(finished.scope().runId()).isEqualTo(events.getFirst().scope().runId());
+        assertThat(finished.scope().executionId()).isEqualTo(events.getFirst().scope().executionId());
     }
 
     @Test

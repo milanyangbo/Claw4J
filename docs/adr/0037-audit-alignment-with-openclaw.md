@@ -44,16 +44,19 @@ false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展
 （`audit-activity.ts:122-133`）；`suppressed` / `unknown` 不带 `deliveryKind`（`:373,392` 的
 `withoutDeliveryKind`）；`failed` / `unknown` 必带 `failureStage`（`:380,388`）；
 出站被抑制必带原因码、其余终态不带（`:360-395`）。四条 CHECK 钉住，历史行先归一。
-③ **`audit.run.inspect`**（票 14）：`GET /api/audit/runs/{runId}`，报文照
-`AuditRunInspectResultSchema`（`audit-run.ts:313-330`）。回执合并 approval / message / generic
-三类（admission 与 cron 没有生产者，位置先留着），游标是上一页最后一条的 `selectorId`。
-`identity` **恒 `unsupported`**：它的 schema 为"没采集执行身份"留了这个状态（`:251-255`），
-写 `present` 等于声称知道"谁发起的、代表谁"。
-一条实现上的事实：**审批行挂在发起那一轮**（`approval_request.run_id`），执行发生在别的 run，
-所以全景两处都查——按 `run_id`，以及按执行行上的 `approval_id` 接回去。
+③ **`audit.run.inspect`：建了又撤**（票 14 改为 wontfix）。它原本照 `audit-run.ts:313-330`
+实现了 `GET /api/audit/runs/{runId}`，但那是 **run 级**语义——传 `runId` 是"发现这次 run 下的多个执行"，
+多条时只回 `ambiguous` 并要你选 `executionId`（`ledgers.md:124-127`）。我们没有"一次 run 下多个执行"
+这回事，照抄出来的端点只覆盖它的 `executionId` 分支、名字却叫 run。撤除的裁决与代价见 ADR-0038。
+
+**命名已按 ADR-0038 改**：我们把"一轮"叫 `runId`，而 OpenClaw 把每轮外层请求叫 `executionId`、
+把 `runId` 留给"可能跨轮共享的会话/路由/恢复关联"（`docs/cli/audit.md:102-106`）。现在库里与
+代码里统一叫 `executionId`（V16），**线格式保持 `runId`**——它的 `agent_run` / `tool_action` 变体里
+`runId` 是必填（`audit-activity.ts:112-120`）、四个变体都是闭对象，改了就不是它的实例；
+参数表里也只有 `runId`。翻译只在 `AuditEventView` 与 `AuditController` 两处。
 
 **仍然没对齐的只剩一处**：`operator.read` 授权（我们整个 http 层没有鉴权，也没有 operator
-身份与授权表）。`run.inspect` 本身已经落地，缺的是"谁能调它"。
+身份与授权表）。这一条与 `run.inspect` 无关——后者已按 ADR-0038 撤除。
 
 ## 背景
 
@@ -97,8 +100,8 @@ false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展
 5. **读侧**：一个只读端口 `AuditQuery` + HTTP 端点呈 newest-first、seq 游标、
    `limit` 1–500、过滤 `agentId/sessionKey/runId/kind/status/direction/channel`，形状照
    `AuditListParamsSchema`（`audit.ts:63-73`）与 `ledgers.md:11-30`。只读，不提供导出。
-   **`run.inspect` 当时不在这一版里**（它要 decision receipts，而 receipts 要 execution identity），
-   2026-11-23 第四批已补：见票 14，`identity` 照实报 `unsupported`。
+   **`run.inspect` 当时不在这一版里**（它要 decision receipts，而 receipts 要 execution identity）；
+   2026-11-23 第四批补过一版，同一天又按 ADR-0038 撤除——它是 run 级语义，我们没有 run。
 6. **幂等**：`source_id + source_sequence` 唯一，重复投递 `on conflict do nothing`；与
    ADR-0017 同一个思路——重放不产生第二行。
 7. **消息审计**：`kind=message`，`direction`/`outcome`/`reasonCode`/`failureStage`/

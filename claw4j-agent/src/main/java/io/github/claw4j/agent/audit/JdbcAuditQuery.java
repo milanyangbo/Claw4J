@@ -22,7 +22,7 @@ import java.util.StringJoiner;
 public class JdbcAuditQuery implements AuditQuery {
 
     private static final String COLUMNS = "seq, schema_version, event_id, source_sequence, kind,"
-            + " action, status, error_code, redaction, run_id, session_key, session_id, agent_id,"
+            + " action, status, error_code, redaction, execution_id, session_key, session_id, agent_id,"
             + " actor_type, actor, channel, tool_call_id, tool_name, args_digest, approval_id, at,"
             + " direction, message_outcome, reason_code, conversation_kind, delivery_kind,"
             + " failure_stage, duration_ms, result_count,"
@@ -46,7 +46,7 @@ public class JdbcAuditQuery implements AuditQuery {
                 rs.getString("status"),
                 rs.getString("error_code"),
                 rs.getString("redaction"),
-                rs.getString("run_id"),
+                rs.getString("execution_id"),
                 rs.getString("session_key"),
                 rs.getString("session_id"),
                 rs.getString("agent_id"),
@@ -93,7 +93,7 @@ public class JdbcAuditQuery implements AuditQuery {
         Filter effective = filter == null ? Filter.page(null, Filter.DEFAULT_LIMIT) : filter;
         StringJoiner where = new StringJoiner(" and ", " where ", "");
         List<Object> args = new ArrayList<>();
-        eq(where, args, "run_id", effective.runId());
+        eq(where, args, "execution_id", effective.executionId());
         eq(where, args, "session_key", effective.sessionKey());
         eq(where, args, "agent_id", effective.agentId());
         eq(where, args, "kind", effective.kind());

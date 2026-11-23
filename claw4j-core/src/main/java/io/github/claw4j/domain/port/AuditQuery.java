@@ -32,7 +32,7 @@ public interface AuditQuery {
      * 它**报错**而不是返回空页——空页在客户端看来是"这段时间没有审计"，而真相是"这两个参数不该一起用"。
      * 判据在 {@link #conflict()}。
      *
-     * @param runId 这一轮的编号
+     * @param executionId 这一轮的编号
      * @param sessionKey 会话键
      * @param agentId 哪个 agent 干的
      * @param kind {@code agent_run} / {@code tool_action} / {@code message}
@@ -45,7 +45,7 @@ public interface AuditQuery {
      * @param beforeSeq 游标：只取比它小的（翻页用，来自上一页的 {@link Page#nextCursor()}）
      * @param limit 每页条数，1–500，越界按 {@code audit.ts:71} 截断
      */
-    record Filter(String runId, String sessionKey, String agentId, String kind, String direction,
+    record Filter(String executionId, String sessionKey, String agentId, String kind, String direction,
                   String status, String channel, Long after, Long before, Long beforeSeq,
                   int limit) {
 
@@ -145,7 +145,7 @@ public interface AuditQuery {
      * @param status 结局
      * @param errorCode 归一化错误码，成功时为 null
      * @param redaction 恒为 {@code metadata_only}：让读的人一眼看见"这行没有内容"
-     * @param runId 这一轮的编号
+     * @param executionId 这一轮的编号
      * @param sessionKey 会话键（不含段）
      * @param sessionId 那一段（含段的 id）；与 OpenClaw 的同名两列一致
      * @param agentId 哪个 agent 干的
@@ -162,7 +162,7 @@ public interface AuditQuery {
      */
     record Row(long seq, int schemaVersion, String eventId, int sourceSequence, String eventType,
                String kind, String action, String status, String errorCode, String redaction,
-               String runId, String sessionKey, String sessionId, String agentId,
+               String executionId, String sessionKey, String sessionId, String agentId,
                String actorType, String actor, String channel,
                String toolCallId, String toolName, String argsDigest, String approvalId,
                Instant at, MessageRow message) {

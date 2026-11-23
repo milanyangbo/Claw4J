@@ -62,7 +62,7 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
      * 包一层，并把"这次执行是哪条批准放行的"交给审计。
      *
      * <p>这个配对只有这一处知道：兑现发生在闸里，兑出来的是哪条批准，而写审计要的是
-     * 这一轮的 runId——两样都在这里合得上。曾经住在鉴权 Advisor 上，那个类在 ADR-0030
+     * 这一轮的 executionId——两样都在这里合得上。曾经住在鉴权 Advisor 上，那个类在 ADR-0030
      * 里下线时这一段跟着不见了，结果是审计里那些行再也没带过 {@code approval_id}
      * （"这次执行是哪次批准的"整条链断在中间，且不报错）。
      *
@@ -122,13 +122,13 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
         if (redeemed.isPresent()) {
             // 把"这条批准放行了这次执行"交给审计，紧挨着执行那一下。分开写就会有人只改一边。
             if (audit != null) {
-                audit.granted(text(toolContext, ContextKeys.RUN_ID), toolName, digest.get(),
+                audit.granted(text(toolContext, ContextKeys.EXECUTION_ID), toolName, digest.get(),
                         redeemed.get().id());
             }
             return delegate.call(toolInput, toolContext);
         }
         Optional<String> approvalId = approvals.ask(new Approvals.Ask(
-                text(toolContext, ContextKeys.RUN_ID), principal.userId(), toolName, digest.get(),
+                text(toolContext, ContextKeys.EXECUTION_ID), principal.userId(), toolName, digest.get(),
                 toolInput, originOf(toolContext, principal)));
         if (approvalId.isEmpty()) {
             // 登记都没登记上：这一条在修好之前同样永远不会被放行，与"没有身份"同一个结局。

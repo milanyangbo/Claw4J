@@ -18,22 +18,22 @@ public interface DecisionFacts {
     /**
      * 记下一条刚兑现的批准。
      *
-     * @param runId 这一轮的编号
+     * @param executionId 这一轮的编号
      * @param toolName 工具名
      * @param argsDigest 参数指纹
      * @param approvalId 审批编号
      */
-    void grant(String runId, String toolName, String argsDigest, String approvalId);
+    void grant(String executionId, String toolName, String argsDigest, String approvalId);
 
     /**
      * 取走那条批准。取一次就没了——同一次批准不该为第二次执行放行。
      *
-     * @param runId 这一轮的编号
+     * @param executionId 这一轮的编号
      * @param toolName 工具名
      * @param argsDigest 参数指纹
      * @return 审批编号；没有或已过期时为 null
      */
-    String take(String runId, String toolName, String argsDigest);
+    String take(String executionId, String toolName, String argsDigest);
 
     /**
      * 清掉过期的交接。默认与审批有效期同一个量级，由调用方的定时任务顺手做。
