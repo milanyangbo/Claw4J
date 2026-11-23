@@ -431,12 +431,12 @@ class BuildContractTest {
 
     // ---------------------------------------------------------------- 迁移合成一套 schema
 
-    /** 和 {@code SearchSqlTest} 用同一个镜像：{@code V5} 要 {@code create extension vector}。 */
+    /** 和 {@code SearchSqlTest} 用同一个镜像：{@code V4} 要 {@code create extension vector}。 */
     @Container
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：八份基线全跑到，五个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：六份基线全跑到，五个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -444,34 +444,19 @@ class BuildContractTest {
         // 断言跑完之后历史里有什么，而不是这一次执行了几条：同一份容器被两条用例共用，
         // 谁先跑都会把迁移做完。
         //
-        // 没有 4：V4 原来是语义缓存，那个能力改落 Redis 之后整张表连同 schema 一起删了，
-        // 编号不复用（与 ADR 编号同一个口径）。
-        //
-        // 7 是进度卡（票 01）：每会话一张卡，整卡替换。
-        // 8 是事件条件意图（票 02 / ADR-0036）：遇到才做的那一档。
-        // 9 是审计的来源键（ADR-0037 票 02）：幂等靠 (source_id, source_sequence) 唯一，
-        //   顺带删掉从来没写过的 actor_role。
-        // 10 是审批与执行的交接（ADR-0037 票 05）：从进程内 Map 换成一张表，重启还在。
-        // 11 是审计的终态配对（ADR-0037 票 01）：agent_run 不许带 tool_* 的码，反之亦然。
-        // 12 是消息审计（ADR-0037 票 04）：kind=message 的列 + 假名密钥表。
-        // 13 是工具调用编号（票 06）：照 OpenClaw 加 audit_event.tool_call_id，只有工具行有值。
-        // 14 是归属与两把会话键（第三批）：actor/actor_type 换成执行者语义、加 session_id、
-        // channel 只留给消息行。
-        // 15 是消息行的必填与互斥（第四批，票 13）：channel / conversationKind 必填，
-        // suppressed / unknown 不带 deliveryKind，failed / unknown 必带 failureStage。
-        // 16 是改名（票 15，ADR-0038）：三张表的 run_id → execution_id，只改名字不改值。
-        // 前六张落在各自的 schema 里；7–16 都改已有 schema，只有假名密钥表是新增的一张。
+        // 六份基线，一个 schema 一份：会话（含进度卡与事件条件意图）、知识库、审批/定时/审计/白名单、
+        // 入站队列、以及示例插件的业务库（V1 建表 + V2 种子）。改表结构的地方直接改对应的那一份，
+        // 不往上叠补丁——补丁串读不出"现在的形状"，而这张表正是为了让人一眼看见它。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
-                        "13", "14", "15", "16");
+                .containsExactly("1", "2", "3", "4", "5", "6");
 
         var jdbc = new JdbcTemplate(dataSource());
 
         // 五个 schema 各自的归属：business 是示例插件的，其余是 agent 的（会话 claw4j_session、
         // 调度/审批/审计在 claw4j_run、知识库在 claw4j_rag、入站队列在 claw4j_channel）。
         // 缓存不在其中：它一旦重新出现在这里，就是有人又把缓存往库里写了。
-        // 入站队列单独一个是因为它跟着通道走（V7）：它是平台把消息交给宿主这件事的账，
+        // 入站队列单独一个是因为它跟着通道走：它是平台把消息交给宿主这件事的账，
         // 与一次 agent 运行没有父子关系。
         assertThat(jdbc.queryForList(
                 "select schema_name from information_schema.schemata"
@@ -490,7 +475,7 @@ class BuildContractTest {
                         "session_conversations", "session_nodes", "session_progress_cards",
                         "session_windows", "standing_intents");
 
-        // V1 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
+        // V2 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
         assertThat(jdbc.queryForObject("select count(*) from business.sales_order", Integer.class))
                 .isPositive();
     }

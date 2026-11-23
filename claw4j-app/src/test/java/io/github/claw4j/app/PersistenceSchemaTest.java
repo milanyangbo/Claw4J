@@ -59,12 +59,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 状态受 check 约束，同一 run 内 {@code seq} 唯一。这几条错了都不报错，写错 schema 是插入失败
  * 被降级吞掉，写错约束是什么状态都存得进去，而审计存在的理由恰恰是能答出做到第几步。
  *
- * <p>迁移也由这里跑：表是 {@code V6} 建的，用 {@link Flyway} 而不是手写 DDL。
+ * <p>迁移也由这里跑：表是那几份基线建的，用 {@link Flyway} 而不是手写 DDL。
  */
 @Testcontainers
 class PersistenceSchemaTest {
 
-    /** 用 pgvector 镜像：同一批迁移里的 {@code V5__rag.sql} 要 {@code create extension vector}。 */
+    /** 用 pgvector 镜像：同一批迁移里的 {@code V4__rag.sql} 要 {@code create extension vector}。 */
     @Container
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
@@ -109,9 +109,9 @@ class PersistenceSchemaTest {
     }
 
     @Test
-    @DisplayName("V24 之后 claw4j_run 里只剩四张表：run 与 step 都不在了")
+    @DisplayName("claw4j_run 里只有这几张表：run 与 step 都不在")
     void migrationLeavesOnlyTheTablesThatSurvived() {
-        // 审计视图长在 step 上，随 step 一起删（V24）；agent_session_budget 在 V22 已经删了。
+        // 审计视图长在 step 上，随 step 一起删；会话级额度表也没有了。
         // 这条断言存在的理由是"兼容层"那个诱惑：留一张空表"以防有人要查历史"，
         // 下一个人就会往里加一列。历史在 audit_event 上，不在 step 上。
         // exec_allowlist：它不属于"某一轮"，是部署级的 allow-always 条目
@@ -520,19 +520,18 @@ class PersistenceSchemaTest {
     }
 
     /**
-     * V22：会话级额度表没了（ADR-0027 决定五）。
+     * 会话级额度表不该存在（ADR-0027 决定五）。
      *
      * <p>这条判据存在的理由是"兼容层"那个诱惑：留着这张表"以防有人要查历史用量"，
-     * 下一个人就会往里加一列。历史用量在 {@code audit_event} 的
-     * {@code agent.run.finished} 上（票 01 已经把 token 带上）。
+     * 下一个人就会往里加一列。历史用量在 {@code audit_event} 的资源事件上。
      */
     @Test
-    @DisplayName("额度不再按会话累计：V22 之后 agent_session_budget 这张表不存在")
+    @DisplayName("额度不再按会话累计：agent_session_budget 这张表不存在")
     void theSessionBudgetTableIsGone() {
         assertThat(jdbc.queryForObject(
                 "select count(*) from information_schema.tables where table_schema = 'claw4j_run'"
                         + " and table_name = 'agent_session_budget'", Integer.class))
-                .as("表还在就说明有人又把它建回来了，或者 V22 没跑")
+                .as("表还在就说明有人又把它建回来了")
                 .isZero();
     }
 
@@ -753,7 +752,7 @@ class PersistenceSchemaTest {
                 continue;
             }
             boolean runLevel = code.column().startsWith("run_");
-            // 状态由码推出来，而不是一律 blocked：V11 起终态与码必须配对（ADR-0037 票 01），
+            // 状态由码推出来，而不是一律 blocked：终态与码必须配对（ADR-0037 票 01），
             // 一律写 blocked 的话除了 run_blocked / tool_blocked 全都撞约束。
             String status = code.column().endsWith("_failed") ? "failed"
                     : code.column().endsWith("_cancelled") ? "cancelled"
@@ -772,8 +771,8 @@ class PersistenceSchemaTest {
                     "code:" + code.column());
         }
 
-        // 消息失败码写进消息行：它不在 V5 那九个里，扩词表这件事本身要被钉住。
-        // 通道 / 对话类别 / 失败阶段三格从票 13 起必填（V15），所以夹具也照它的必填形状写。
+        // 消息失败码写进消息行：它不在运行/工具那九个里，扩词表这件事本身要被钉住。
+        // 通道 / 对话类别 / 失败阶段三格在消息行上必填，所以夹具也照它的必填形状写。
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, error_code, actor, source_id, source_sequence,"
                 + " direction, channel, conversation_kind, message_outcome, failure_stage)"

@@ -6,7 +6,7 @@ import java.util.Set;
 
 /**
  * 入站事件的落点：先落库、再 ACK、然后认领执行。状态机照 OpenClaw 的
- * {@code channel_ingress_events}（表结构与判断写在 {@code V7__channel.sql} 的注释里）。
+ * {@code channel_ingress_events}（表结构与判断写在 {@code V6__channel.sql} 的注释里）。
  *
  * <p>它存在的理由是一句话：平台已经收到 ACK、不会重投，而那条消息只在内存里——进程一退，
  * 用户的话就永久消失。留一份去重表在内存里解决的是"多实例之间不重复"，那件事在单实例形态下

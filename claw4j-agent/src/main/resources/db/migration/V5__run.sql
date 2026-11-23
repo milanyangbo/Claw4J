@@ -1,8 +1,7 @@
--- 审批、定时任务、审计流水与 exec 白名单（四张表，都在 claw4j_run）。
+-- 审批、定时任务、审计流水、执行决策事实、exec 白名单、假名密钥（六张表，都在 claw4j_run）。
 --
--- 一句话说清这几张表的共同前提：run 不是实体，是一轮的句柄——它答完就作废，跨请求不活。
--- 于是"某事做完了没有"这个概念不存在，审计是**自己的事件流水**，目标挂到会话上，
--- 审批与投递按对话地址定位。
+-- 这几张表的共同前提：一轮就是一次执行，答完就作废，跨请求不活。于是"某事做完了没有"这个概念
+-- 不存在——审计是**自己的事件流水**，目标挂到会话上，审批与投递按对话地址定位。
 create schema if not exists claw4j_run;
 
 -- 审批（P01，ADR-0020）：权限从"能不能"变成"能不能 + 要不要批"。
@@ -19,9 +18,10 @@ create schema if not exists claw4j_run;
 -- expired / deny / timeout / resolver_kind = system。
 create table claw4j_run.approval_request (
     id           varchar(64)  not null,
-    -- 发起这一轮时的编号（runId，与 OpenClaw 同名）。**不是外键、不指向任何表**：
-    -- 一轮答完就作废，而审批的留存比它长。为空表示这次调用不在一个 run 里。
-    run_id       varchar(64),
+    -- 发起这次审批的执行编号。**不是外键、不指向任何表**：一次执行答完就作废，而审批的留存
+    -- 比它长。为空表示这次调用不在一次执行里。一次"被拦 → 批准 → 执行"会跨两次执行，
+    -- 执行那一侧靠审计行的 approval_id 接回来。
+    execution_id varchar(64),
     -- 提请求的人。批准是批给某个人的，不是批给某个动作：
     -- 同一句话换一个没被批过的人来问，仍然要重新批一遍。
     owner        varchar(128) not null,
@@ -53,14 +53,13 @@ create table claw4j_run.approval_request (
     -- 参数指纹 sha256(工具名 + 规范化参数)，对象 key 递归排序、数字归一（见 CallFingerprint）。
     -- 参数变了就是另一次，要重新批。
     --
-    -- **不含 runId、不含序号**：这与幂等键（ADR-0017）刚好相反，且是最容易被"顺手改对"的一处。
-    -- 幂等键要区分每一次执行（否则重复发一封邮件），审批指纹要跨执行复用一次批准
+    -- **不含执行编号、不含序号**：这与幂等键（ADR-0017）刚好相反，且是最容易被"顺手改对"
+    -- 的一处。幂等键要区分每一次执行（否则重复发一封邮件），审批指纹要跨执行复用一次批准
     -- （否则每件新事都要重批，人会开始闭眼点）。两个哈希形状相似、口径相反。
     --
-    -- **这一列是 OpenClaw 没有的**（它按 tool_call_id 绑定一次调用，用 standing grants 表达"长期"）。
-    -- 我们拿不到 tool_call_id（框架的 ToolContext 里没有），于是用"同一工具同一参数"近似
-    -- "同一次调用"。代价写在语义上：同参数连调两次，一次批准能兑现两次——所以兑现是
-    -- 一次性的（consumed_at），不是"批准了就永久放行"。
+    -- **这一列是 OpenClaw 没有的**（它按 tool_call_id 绑定一次调用，用 standing grants 表达
+    -- "长期"）。同参数连调两次时一次批准能兑现两次——所以兑现是一次性的（consumed_at），
+    -- 不是"批准了就永久放行"。
     args_digest  varchar(64)  not null default '',
     -- 给人看的参数摘要（已脱敏、已截断）。审批人看不到自己批的是什么时，点下去等于盖章。
     -- 存的是**摘要**不是原文。
@@ -68,11 +67,11 @@ create table claw4j_run.approval_request (
     -- 一次性：兑现过的批准不再有效。列一个 consumed_at 而不是删行，
     -- 因为"这条批准被谁用过、什么时候用掉的"正是事后要追的东西（P07）。
     consumed_at  timestamptz,
-    -- 谁兑现的（同 owner 的哪一轮）。与 consumed_at 成对：只知道时间不知道人，
+    -- 谁兑现的（同 owner 的哪次执行）。与 consumed_at 成对：只知道时间不知道人，
     -- 出事时还是要翻日志。
     consumed_by  varchar(128),
     -- 回到哪一段对话（含段）。批准之后用它在原会话里开新一轮：
-    -- 上下文与 goal 都在那段对话里，不用我们从 step 拼一段 recap。
+    -- 上下文与 goal 都在那段对话里，不用从别处拼一段 recap。
     session_key  varchar(255),
     -- 卡片往哪个通道发、通道内的哪个会话。与 OutboundDelivery#channel() 同口径。
     -- 这两个值写在请求自己身上，不从别处反查：一条请求只可能来自一段对话。
@@ -158,10 +157,10 @@ create index ix_approval_request_due
 
 comment on table claw4j_run.approval_request is
     '审批请求（P01）：一条请求 = 某人要执行某个工具。allowed 只代表有人同意过，不替代鉴权；过期与中断由清扫落成终态';
+comment on column claw4j_run.approval_request.execution_id is
+    '发起这次审批的执行编号。不是外键、不指向任何表：一次执行答完就作废；执行那一侧靠审计行的 approval_id 接回来';
 comment on column claw4j_run.approval_request.tool_name is
     '要执行的工具名（不是动作名）：动作是权限的口径，批准的对象是这一次会跑起来的那个工具';
-comment on column claw4j_run.approval_request.run_id is
-    '发起这一轮时的编号（runId，与 OpenClaw 同名）。不是外键、不指向任何表：一轮答完就作废';
 comment on column claw4j_run.approval_request.status is
     '生命周期五态（照 operator_approvals）：pending/allowed/denied/expired/cancelled。后两个记的是「没人做决定」，denied 是「有人做了决定」';
 comment on column claw4j_run.approval_request.decision is
@@ -175,7 +174,7 @@ comment on column claw4j_run.approval_request.resolved_at is
 comment on column claw4j_run.approval_request.resolver_kind is
     '谁把结论送进来的：channel（人在卡片上点）/ system（清扫判超时）。device 与 runtime 我们还没有入口';
 comment on column claw4j_run.approval_request.args_digest is
-    '参数指纹 sha256(工具名 + 规范化参数)。不含 runId 与序号：批准要跨执行复用（与幂等键口径相反）。openclaw 没有这一列，它按 tool_call_id 绑定单次调用——我们拿不到 tool_call_id';
+    '参数指纹 sha256(工具名 + 规范化参数)。不含执行编号与序号：批准要跨执行复用（与幂等键口径相反）。openclaw 没有这一列，它按 tool_call_id 绑定单次调用';
 comment on column claw4j_run.approval_request.args_summary is
     '给人看的参数摘要（脱敏 + 截断）。不存原文，但也不该让人盲签';
 comment on column claw4j_run.approval_request.consumed_at is
@@ -207,11 +206,11 @@ comment on column claw4j_run.approval_request.frozen_plan is
 -- 补跑三次等于在重启后补三份账单，而人要看的是现在这一份。
 create table claw4j_run.agent_schedule (
     id                 varchar(64)  not null primary key,
-    -- 归属键沿用会话/run 的口径（SessionKeys.ownerOf：userId@权限指纹）。
+    -- 归属键沿用会话的口径（SessionKeys.ownerOf：userId@权限指纹）。
     -- "我的定时任务"与"我说的那段话"是同一个人的东西，两处用不同的键会让它们对不上。
     owner              varchar(255) not null,
     -- 结果送回哪儿。与审批行的 channel / chat_ref 同口径；为空表示这个任务不推结果，
-    -- 只能靠 GET /api/runs/{id} 取。
+    -- 只能到审计里按执行编号查那一次跑成什么样。
     channel            varchar(32),
     channel_ref        varchar(255),
     -- 每次到点要问的那句话，原样交给模型。它不是"计划"——计划属于某一次执行，
@@ -274,9 +273,9 @@ create index ix_agent_schedule_owner
     on claw4j_run.agent_schedule (owner, created_at desc);
 
 comment on table claw4j_run.agent_schedule is
-    '定时任务（P04）：一条 = 某人每隔一段时间让助手做同一件事。到点创建一次运行，其余全部复用现有路径';
+    '定时任务（P04）：一条 = 某人每隔一段时间让助手做同一件事。到点创建一次执行，其余全部复用现有路径';
 comment on column claw4j_run.agent_schedule.goal is
-    '每次到点要问模型的那句话。与一次运行的 goal 不是同一个东西：那条属于某一次运行，这条属于任务本身';
+    '每次到点要问模型的那句话。与一次执行的 goal 不是同一个东西：那条属于某一次执行，这条属于任务本身';
 comment on column claw4j_run.agent_schedule.cron is
     'cron 原文（6 段：秒 分 时 日 月 周）。存日历上的点而不是间隔：人说"每天早上九点"';
 comment on column claw4j_run.agent_schedule.zone is
@@ -294,8 +293,8 @@ comment on column claw4j_run.agent_schedule.failures is
 
 -- 审计是一个事件流水，不是"某件事的第几步"（P07，ADR-0027 决定二）。
 --
--- 形状照 OpenClaw 的 metadata-only ledger：
---   · 四类 action：agent.run.started / agent.run.finished / tool.action.started / tool.action.finished
+-- 形状照 OpenClaw 的 metadata-only ledger（ADR-0037）：
+--   · 三类 kind：agent_run / tool_action / message，动作各半（开始与结束）或单条终态
 --   · 记 identity、ordering、provenance、action、status、归一化错误码
 --   · **不记**提示词、消息体、工具参数、工具结果、命令输出、原始错误文本
 --   · 30 天 + 10 万行，启动时 / 每小时 / 每次写之后各清一次
@@ -310,7 +309,7 @@ create table claw4j_run.audit_event (
     -- 账本序号，同时是主键。单调递增，只用于排序、翻页与上限淘汰。
     seq              bigserial    not null primary key,
     event_id         varchar(64)  not null,
-    -- agent_run | tool_action，与四类 action 一一对应（见下面的 check）。
+    -- agent_run | tool_action | message（见下面的 check）。
     kind             varchar(16)  not null,
     action           varchar(32)  not null,
     -- 闭合词表：多一个拼错的拼法，按 status 过滤时会被安静地漏掉，
@@ -319,34 +318,38 @@ create table claw4j_run.audit_event (
     -- 归一化错误码（闭合词表，见下面的 check），**不是**异常消息原文。
     -- 原文里常有数据：一条贴了 SQL 的报错就够搬走一张表。
     error_code       varchar(48),
-    -- 这一轮的编号（runId，与 OpenClaw 同名，必填）。事件必须属于一次已准入的运行：
-    -- 一行查不到轮次的审计，按 runId 查永远命中不了，留着只会让"这个月跑了多少次"的数字
-    -- 比能查到的多。写入侧同时收紧——AuditLedger 在没有 runId 时直接跳过，
-    -- 计入 claw4j.audit.skipped（不是 write_errors：那不是写失败，是"没有归属"）。
-    run_id           varchar(64)  not null,
+    -- 哪一次执行（一轮一条消息）。运行/工具行必填；消息行可以空——入站消息在开跑之前就到了
+    -- （它可能被跳过、可能没认出身分）。一行查不到执行的审计按执行编号永远命中不了，
+    -- 留着只会让"这个月跑了多少次"的数字比能查到的多，所以写入侧也不写它
+    -- （AuditLedger 在没有编号时直接跳过，计入 claw4j.audit.skipped）。
+    execution_id     varchar(64),
+    -- 会话键（不含段）。
     session_key      varchar(255),
+    -- 会话的那一段（含段的 id）。与 session_key 是两把键：一把问"哪段对话"，一把问"这一世"。
+    session_id       varchar(255),
+    -- 哪个 agent 干的。取不到时写 unknown 而不是留空：空格让多 agent 部署里
+    -- "这条是谁干的"永远答不了，unknown 至少可数。
     agent_id         varchar(64),
-    -- 谁让这件事发生的（提问的人）。**与 openclaw 的 actor 不是同一个东西**：
-    -- 它的 actor 是执行者（agent / system），人的身份走 account_ref（HMAC 假名）。
-    -- 我们只做了一侧——记人，执行者就是本进程。要照抄它那一套，得先有假名化密钥表，
-    -- 那是另一件事，记在 docs/design/pitfalls 的偏差里。
+    -- 执行者的 id：agent 行是 agentId，channel_sender 行是发送者假名（与 account_ref 同值）。
+    -- 必填（见 ck_audit_event_actor_present）：读侧四个变体里 actor 是必填格，空着客户端解析不了。
     actor            varchar(128),
-    -- 这个人当时的角色。openclaw 没有这一列（它的人身份在 account_ref 里）。
-    -- 保留的理由：它的 actor 记执行者，我们的 actor 记人，而"谁"在人这一侧必须带上角色
-    -- 才答得出"是不是越权"。它是当时的快照，只用于事后追溯，绝不回头拿去授权。
-    actor_role       varchar(64),
+    -- 执行者的类别：agent（有 agentId 时）/ system / channel_sender。
+    actor_type       varchar(24),
+    -- 触发这一轮的人（扩展列，OpenClaw 没有）：不进读接口，只供 SQL 追"谁让这件事发生"。
+    requested_by     varchar(128),
+    -- 只有消息行有（见 ck_audit_event_channel_message_only）：按 channel 过滤时不该带出工具行。
     channel          varchar(32),
     -- 工具名必须是模型可见的紧凑名；认不出来的写 unknown，不写原始调用名。
     tool_name        varchar(128),
     -- 参数指纹 sha256(工具名 + 规范化参数)，与审批的 args_digest 同一个函数——
-    -- 于是"这次执行是哪次批准的"能直接对上，而参数原文不进库。
-    --
-    -- **openclaw 这一列是 tool_call_id**（标识"这一次调用"）。我们拿不到：框架的 ToolContext
-    -- 只是一个自由 Map，没有调用 id。所以这里只能放"这组参数"的指纹，代价是
-    -- 同参数连调两次在审计里长得一样，数不出"调了几次"——要数就按 seq 数行。
+    -- 于是"这次执行是哪次批准的"能直接对上，而参数原文不进库。代价是同参数连调两次在这张表里
+    -- 长得一样；要分开得看 tool_call_id。
     args_digest      varchar(64),
-    -- 放行这次调用的审批编号。openclaw 没有这一列（它用 execution_decision_facts 关联），
-    -- 我们没做那张表，所以留在这里——它是"这次执行是哪次批准的"唯一的落点。
+    -- 这一次工具调用在模型侧的编号。只有 tool_action 行有值：消息行带它是读侧 schema
+    -- 明确禁止的形状。取不到时留空，不编 UUID——编出来的会让"同参数两次调用"看起来可分、
+    -- 实际每次都不同，按它做的统计全是假数。
+    tool_call_id     varchar(128),
+    -- 放行这次调用的审批编号。它是"这次执行是哪次批准的"唯一的落点。
     approval_id      varchar(64),
     -- 恒为 metadata_only：这一列存在的理由不是分类，是让读的人一眼看见"这行没有内容"。
     redaction        varchar(24)  not null default 'metadata_only',
@@ -354,26 +357,144 @@ create table claw4j_run.audit_event (
     -- 记录格式版本，恒为 1。存在的理由不是分类，是让将来加字段时旧行仍能按第 1 版解释——
     -- 没有它，加列之后所有历史行都被当成新格式解释，而那种错不会报错，只会让统计数字悄悄偏掉。
     schema_version   smallint     not null default 1,
+    -- 来源键：同一件事的多次投递共用一个值（`exec:<执行编号>` 或 `tool:<执行编号>:<编号哈希>`）。
+    source_id        varchar(255) not null,
+    -- 来源内序号：1 = started，2 = finished。唯一键 (source_id, source_sequence) 就是幂等本身。
+    source_sequence  smallint     not null,
+    -- inbound | outbound。只有 message 行有。
+    direction        varchar(16),
+    -- direct | group | channel | unknown：同一段会话是私聊还是群，决定"泄露半径"。
+    conversation_kind varchar(16),
+    -- completed | skipped | sent | suppressed | failed | unknown。与 status 分开：
+    -- status 是通用生命周期，outcome 是这一层的具体结果。
+    message_outcome  varchar(24),
+    -- 为什么是这个结果（闭集见下面的 check）。自由文本在这里的代价是"按原因统计"永远统计不全。
+    reason_code      varchar(48),
+    -- text | media | other。被抑制或结果不明时没有它（那批字节没有交付形态）。
+    delivery_kind    varchar(16),
+    -- queue | platform_send | unknown：失败发生在排队还是在平台发送。
+    failure_stage    varchar(24),
+    duration_ms      integer,
+    result_count     integer,
+    -- 四个假名引用，不含原文：hmac-sha256:v1:<keyId>:<digest>。
+    account_ref      varchar(96),
+    conversation_ref varchar(96),
+    message_ref      varchar(96),
+    target_ref       varchar(96),
     constraint uq_audit_event_event_id unique (event_id),
-    constraint ck_audit_event_kind check (kind in ('agent_run', 'tool_action')),
+    constraint uq_audit_event_source unique (source_id, source_sequence),
+    constraint ck_audit_event_kind check (
+        kind in ('agent_run', 'tool_action', 'message')),
     constraint ck_audit_event_action check (action in (
         'agent.run.started', 'agent.run.finished',
-        'tool.action.started', 'tool.action.finished')),
+        'tool.action.started', 'tool.action.finished',
+        -- 消息只做终态：queued / platform-started 那种进度行在 OpenClaw 里也不进活动清单。
+        'message.inbound.processed', 'message.outbound.finished')),
     constraint ck_audit_event_status check (status in (
         'started', 'succeeded', 'failed', 'cancelled', 'timed_out', 'blocked', 'unknown')),
     -- 动作与状态不能随便配：agent.run.started 只可能是 started，
-    -- 而 tool.action.started 也不该带着 succeeded 出现。这条挡的是"字段填错但没人发现"。
+    -- 而 tool.action.started 也不该带着 succeeded 出现。消息行是"一次处理完就一条终态"，
+    -- 没有 started 那一半。
     constraint ck_audit_event_action_status check (
         (action like '%.started' and status = 'started')
-        or (action like '%.finished' and status <> 'started')),
+        or (action like '%.finished' and status <> 'started')
+        or (action = 'message.inbound.processed'
+            and status in ('succeeded', 'blocked', 'failed'))
+        or (action = 'message.outbound.finished'
+            and status in ('succeeded', 'blocked', 'failed', 'unknown'))),
     constraint ck_audit_event_schema_version check (schema_version = 1),
-    -- 九个值与 OpenClaw 的 AuditEventErrorCodeSchema 逐字相同。词表不是"顺便写上的几个字符串"，
+    -- 运行/工具行必须有执行编号，消息行可以没有。
+    constraint ck_audit_event_execution_required check (
+        kind = 'message' or execution_id is not null),
+    -- 十二个值与 OpenClaw 的 AuditEventErrorCodeSchema 逐字相同。词表不是"顺便写上的几个字符串"，
     -- 它是按 error_code 过滤时能被命中的全部：换个词表，同一个问题问出来的答案就不一样。
+    -- 入站处理失败与两种投递失败各有自己的码：合成一个 message_failed 的话，
+    -- "是消息没处理成，还是没送出去"在审计里分不开——而这两个问题的处置完全不同。
     constraint ck_audit_event_error_code check (
         error_code is null or error_code in (
             'run_failed', 'run_cancelled', 'run_timed_out', 'run_blocked',
             'tool_failed', 'tool_cancelled', 'tool_timed_out', 'tool_blocked',
-            'tool_outcome_unknown'))
+            'tool_outcome_unknown',
+            'message_processing_failed', 'message_delivery_failed',
+            'message_delivery_partial_failure')),
+    -- 终态与错误码必须配对：agent_run 不会带 tool_* 的码，反之亦然。
+    -- 两张词表之间没有关系的话，按 error_code 统计会把两层的数混在一起。
+    constraint ck_audit_event_terminal_pairing check (
+        -- 开始与成功都没有错误码：成功了还带一个错误码，读的人会以为这轮出过事。
+        (status = 'started' and error_code is null)
+        or (status = 'succeeded' and error_code is null)
+        -- 运行级：五个终态各配自己的码；unknown 没有对应的运行级码，留空。
+        or (kind = 'agent_run' and status = 'failed' and coalesce(error_code, '') = 'run_failed')
+        or (kind = 'agent_run' and status = 'cancelled' and coalesce(error_code, '') = 'run_cancelled')
+        or (kind = 'agent_run' and status = 'timed_out' and coalesce(error_code, '') = 'run_timed_out')
+        or (kind = 'agent_run' and status = 'blocked' and coalesce(error_code, '') = 'run_blocked')
+        or (kind = 'agent_run' and status = 'unknown' and error_code is null)
+        -- 工具级：同上，unknown 配 tool_outcome_unknown（工具跑了但结果不可知，这件事本身有码）。
+        or (kind = 'tool_action' and status = 'failed' and coalesce(error_code, '') = 'tool_failed')
+        or (kind = 'tool_action' and status = 'cancelled' and coalesce(error_code, '') = 'tool_cancelled')
+        or (kind = 'tool_action' and status = 'timed_out' and coalesce(error_code, '') = 'tool_timed_out')
+        or (kind = 'tool_action' and status = 'blocked' and coalesce(error_code, '') = 'tool_blocked')
+        or (kind = 'tool_action' and status = 'unknown'
+            and coalesce(error_code, '') = 'tool_outcome_unknown')
+        -- 消息行：成功了没有错误码；被跳过（blocked）不是错误；失败必带三个码之一；
+        -- 不知道结果时那一格空着。
+        or (kind = 'message' and status = 'succeeded' and error_code is null)
+        or (kind = 'message' and status = 'blocked' and error_code is null)
+        or (kind = 'message' and status = 'failed' and coalesce(error_code, '') in (
+                'message_processing_failed', 'message_delivery_failed',
+                'message_delivery_partial_failure'))
+        or (kind = 'message' and status = 'unknown' and error_code is null)),
+    -- 消息行必须交代方向与结果：两列都空着的话，这一行回答不了"这条是进来的还是出去的"。
+    constraint ck_audit_event_message_shape check (
+        kind <> 'message' or (direction is not null and message_outcome is not null)),
+    -- 消息行的必填与互斥（读侧四个变体里它们是必填/禁填）：
+    -- 有通道与对话类别；被抑制或结果不明时没有交付形态；失败或结果不明时说清卡在哪一段。
+    constraint ck_audit_event_message_required check (
+        kind <> 'message' or (channel is not null and conversation_kind is not null)),
+    constraint ck_audit_event_delivery_kind_absent check (
+        kind <> 'message' or message_outcome not in ('suppressed', 'unknown')
+        or delivery_kind is null),
+    constraint ck_audit_event_failure_stage_required check (
+        kind <> 'message' or message_outcome not in ('failed', 'unknown')
+        or failure_stage is not null),
+    -- 出站的原因码与结果一一对应：被抑制必有原因，送出去了/失败了/不知道都不该带原因。
+    constraint ck_audit_event_outbound_reason check (
+        kind <> 'message' or direction <> 'outbound'
+        or (message_outcome = 'suppressed' and reason_code is not null)
+        or (message_outcome <> 'suppressed' and reason_code is null)),
+    -- 原因码是闭集，照抄 OpenClaw 的四组：入站完成、入站跳过、入站失败、出站被抑制。
+    constraint ck_audit_event_reason_code check (
+        reason_code is null or reason_code in (
+            -- 入站：处理完成
+            'fast_abort', 'plugin_bound_handled', 'plugin_bound_unavailable',
+            'plugin_bound_declined', 'before_dispatch_handled', 'acp_dispatch_completed',
+            'acp_dispatch_empty', 'active_run_injected',
+            -- 入站：跳过
+            'duplicate', 'reply_operation_active', 'reply_operation_aborted', 'acp_dispatch_aborted',
+            -- 入站：失败
+            'acp_dispatch_failed', 'plugin_bound_error',
+            -- 出站：被抑制
+            'cancelled_by_message_sending_hook', 'cancelled_by_reply_payload_sending_hook',
+            'empty_after_message_sending_hook', 'empty_after_reply_payload_sending_hook',
+            'no_visible_payload')),
+    constraint ck_audit_event_delivery_kind check (
+        delivery_kind is null or delivery_kind in ('text', 'media', 'other')),
+    constraint ck_audit_event_failure_stage check (
+        failure_stage is null or failure_stage in ('queue', 'platform_send', 'unknown')),
+    constraint ck_audit_event_conversation_kind check (
+        conversation_kind is null or conversation_kind in ('direct', 'group', 'channel', 'unknown')),
+    constraint ck_audit_event_direction check (
+        direction is null or direction in ('inbound', 'outbound')),
+    -- 三个值逐字照 OpenClaw 的两种 actor 变体。
+    constraint ck_audit_event_actor_type check (
+        actor_type is null or actor_type in ('agent', 'system', 'channel_sender')),
+    -- 归属必须落下来：读侧四个变体里 actor 是必填格，空着的话客户端解析不了。
+    constraint ck_audit_event_actor_present check (actor is not null),
+    -- channel 只属于消息行：按 channel 过滤时不该带出工具行。
+    constraint ck_audit_event_channel_message_only check (kind = 'message' or channel is null),
+    -- 消息行不许带工具调用编号：读侧消息变体是 toolCallId?: never。
+    constraint ck_audit_event_tool_call_id check (
+        tool_call_id is null or kind = 'tool_action')
 );
 
 -- 索引照 openclaw 的形状：每个查询维度上都跟 **seq**，不是跟 at。
@@ -385,7 +506,9 @@ create index ix_audit_event_actor on claw4j_run.audit_event (actor, seq desc);
 
 create index ix_audit_event_session on claw4j_run.audit_event (session_key, seq desc);
 
-create index ix_audit_event_run on claw4j_run.audit_event (run_id, seq desc);
+create index ix_audit_event_session_id on claw4j_run.audit_event (session_id, seq desc);
+
+create index ix_audit_event_execution on claw4j_run.audit_event (execution_id, seq desc);
 
 -- kind 与 channel 是排障时最先问的两句："只看工具动作""只看某个通道来的"。
 create index ix_audit_event_kind on claw4j_run.audit_event (kind, seq desc);
@@ -394,24 +517,80 @@ create index ix_audit_event_channel on claw4j_run.audit_event (channel, seq desc
 
 create index ix_audit_event_status on claw4j_run.audit_event (status, seq desc);
 
+-- 消息的读法与运行/工具不同：按方向 + 时间翻页（"今天进来的都送到了吗"）。
+create index ix_audit_event_message on claw4j_run.audit_event (direction, seq desc);
+
 comment on table claw4j_run.audit_event is
-    '审计事件流水（ADR-0027）：一行 = 一次动作的开始或结束。只记元数据，不记内容';
+    '审计事件流水（ADR-0027）：一行 = 一次动作的开始或结束，或一条消息的终态。只记元数据，不记内容';
 comment on column claw4j_run.audit_event.seq is
     '账本序号，单调递增。排序、翻页与 10 万行上限淘汰都按它；与 event_id（去重用）分开';
+comment on column claw4j_run.audit_event.execution_id is
+    '哪一次执行（一轮一条消息）。运行与工具行必填，消息行可空（入站消息在开跑之前就到了）';
 comment on column claw4j_run.audit_event.error_code is
     '归一化错误码，闭合词表，与 OpenClaw 的 AuditEventErrorCodeSchema 逐字相同。不存异常消息原文：原文里常有数据，一条贴了 SQL 的报错就够搬走一张表';
 comment on column claw4j_run.audit_event.args_digest is
-    '参数指纹 sha256(工具名 + 规范化参数)，与审批 args_digest 同一个函数。openclaw 这一列是 tool_call_id（标识单次调用），我们拿不到，只能放参数指纹——同参数连调两次分不开';
+    '参数指纹 sha256(工具名 + 规范化参数)，与审批 args_digest 同一个函数。要分开同参数的两次调用得看 tool_call_id';
+comment on column claw4j_run.audit_event.tool_call_id is
+    '这一次工具调用在模型侧的编号（OpenClaw 同名同义）。只有 tool_action 行有值：消息行带它是读侧 schema 明确禁止的形状。取不到时留空，不编 UUID';
 comment on column claw4j_run.audit_event.actor is
-    '谁让这件事发生（提问的人）。与 openclaw 的 actor（执行者 agent/system）不是同一个语义：我们只记人这一侧';
+    '执行者的 id：agent 行是 agentId，channel_sender 行是发送者假名（与 account_ref 同值）';
+comment on column claw4j_run.audit_event.requested_by is
+    '触发这一轮的人（扩展列，OpenClaw 没有）：不进读接口，只供 SQL 追"谁让这件事发生"';
 comment on column claw4j_run.audit_event.approval_id is
-    '放行这次调用的审批编号。openclaw 用 execution_decision_facts 关联，我们没做那张表，所以留在这里';
+    '放行这次调用的审批编号：这是"这次执行是哪次批准的"唯一的落点';
+comment on column claw4j_run.audit_event.source_id is
+    '来源键：同一件事的多次投递共用一个值（exec:<执行编号> 或 tool:<执行编号>:<哈希>）';
+comment on column claw4j_run.audit_event.source_sequence is
+    '来源内序号：1 = started，2 = finished。唯一键 (source_id, source_sequence) 是幂等的落点';
 comment on column claw4j_run.audit_event.redaction is
     '恒为 metadata_only。存在的理由不是分类，是让读的人一眼看见这一行没有内容';
 comment on column claw4j_run.audit_event.schema_version is
     '记录格式版本，恒为 1。存在的理由不是分类，是让将来加字段时旧行仍能按第 1 版解释';
-comment on column claw4j_run.audit_event.run_id is
-    '这一轮的编号（runId，与 OpenClaw 同名，必填）。事件必须属于一次已准入的运行；与 span 上的 claw4j.run.id 同值，一轮答完即作废';
+comment on column claw4j_run.audit_event.direction is
+    'inbound | outbound：只有 kind=message 的行有';
+comment on column claw4j_run.audit_event.message_outcome is
+    'completed / skipped / sent / suppressed / failed / unknown：与 status 分开的"具体结果"';
+comment on column claw4j_run.audit_event.account_ref is
+    'HMAC 假名引用，不含原文：hmac-sha256:v1:<keyId>:<digest>';
+comment on constraint ck_audit_event_terminal_pairing on claw4j_run.audit_event is
+    '终态与错误码必须配对：agent_run 不会带 tool_* 的码，反之亦然';
+comment on constraint ck_audit_event_message_required on claw4j_run.audit_event is
+    '消息行必须有 channel 与 conversation_kind：读侧四个变体里它们是必填';
+comment on constraint ck_audit_event_delivery_kind_absent on claw4j_run.audit_event is
+    'suppressed / unknown 不带 deliveryKind：那批字节没有交付形态';
+comment on constraint ck_audit_event_failure_stage_required on claw4j_run.audit_event is
+    'failed / unknown 必带 failureStage：读的人要分清卡在队列还是平台';
+comment on constraint ck_audit_event_outbound_reason on claw4j_run.audit_event is
+    '出站被抑制必有原因码，其余终态不带原因码';
+
+-- 审批与执行的交接：一条事实 = 某次执行依据了哪一条批准（ADR-0037 票 05）。
+--
+-- 形状照 OpenClaw 的 execution_decision_facts：主键就是"这一次调用"，所以同一件事只留一行。
+-- 取走用 delete ... returning：同一批准不为第二次执行放行。
+--
+-- **为什么落库而不是留在进程里**：进程内那份 Map 有上限与 TTL，超了整份清掉，只在单进程成立。
+-- 后果不是"少一条线索"，是审计里的 approval_id 会成批、静默地消失——丢的时候不报错。
+create table claw4j_run.execution_decision_fact (
+    -- 这次执行依据了哪条批准：与审批、审计同一个编号。
+    execution_id varchar(64)  not null,
+    tool_name    varchar(128) not null,
+    -- 参数指纹 sha256(工具名 + 规范化参数)，与审批、审计同一个函数。
+    args_digest  varchar(64)  not null,
+    approval_id  varchar(64)  not null,
+    -- 只用来清过期行：审批过期之后这条线索也没有意义了。
+    created_at   timestamptz  not null default now(),
+    constraint pk_execution_decision_fact primary key (execution_id, tool_name, args_digest)
+);
+
+create index ix_execution_decision_fact_age
+    on claw4j_run.execution_decision_fact (created_at);
+
+comment on table claw4j_run.execution_decision_fact is
+    '审批与执行的交接：一次执行依据了哪条批准。取走即删，不为第二次执行放行';
+comment on column claw4j_run.execution_decision_fact.execution_id is
+    '这次执行依据了哪条批准：与审批、审计同一个编号';
+comment on column claw4j_run.execution_decision_fact.args_digest is
+    '与 approval_request.args_digest、audit_event.args_digest 同一个函数算出来';
 
 -- exec 的"以后这个可执行文件都放行"（ADR-0030 裁决四的三态之一：allow-always）。
 --
@@ -456,3 +635,18 @@ comment on column claw4j_run.exec_allowlist.last_resolved_path is
 
 create unique index uq_exec_allowlist_pattern
     on claw4j_run.exec_allowlist (pattern, coalesce(arg_pattern, ''));
+
+-- 消息审计的假名密钥：单行表，只在首次写消息审计时生成，读接口永远不返回它。
+-- 为什么落库而不是读配置：多实例要算出同一个假名，密钥必须在共享存储里；
+-- 放配置里则换一次部署就换一套假名，历史行再也对不上同一个人。
+create table claw4j_run.audit_identity_key (
+    -- 单行：id 恒为 1，多一行就说明有人塞了第二个密钥，而那时假名会分裂成两套。
+    id         smallint    not null primary key check (id = 1),
+    -- 32 字节随机。keyId 取它的前 8 字节 hex，写在假名前缀里——换密钥时旧行还认得出是哪一把。
+    secret     bytea       not null,
+    created_at timestamptz not null default now(),
+    constraint ck_audit_identity_key_length check (octet_length(secret) = 32)
+);
+
+comment on table claw4j_run.audit_identity_key is
+    '消息审计的假名密钥（ADR-0037 票 04）：单行，只在首次使用时生成，读接口不返回';
