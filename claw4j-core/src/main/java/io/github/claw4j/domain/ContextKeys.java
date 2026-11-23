@@ -55,6 +55,23 @@ public final class ContextKeys {
     public static final String AGENT_ID = "claw4j.agentId";
 
     /**
+     * 这一次工具调用在框架里的编号，在工具上下文里的键名（票 06）。
+     *
+     * <p>谁写进来：包装在工具回调外面的 {@code MeteredToolCallback}。它不从模型、也不从参数里取，
+     * 只在框架已经建好的那次观测里读——{@code DefaultToolCallingManager} 调工具之前把
+     * {@code toolCall.id()} 放进了 {@code ToolCallingObservationContext}，回调执行时它就在 scope 上。
+     * 所以模型没有参数能改它，「把这次调用记成另一次」这条路不存在。
+     *
+     * <p>为什么不叫 {@code claw4j.tool_call_id}：与同族的 {@code runId} / {@code agentId} 一样用
+     * 驼峰，读的人一眼看出这是「我们加的键」，不是 Spring AI 的保留名。
+     *
+     * <p>与 OpenClaw 的 {@code toolCallId} 同一个语义：标识<b>一次</b>调用，而不是一组参数。区别是
+     * 那边由网关生成并一路带着，这边只能从观测层取；取不到（没开观测、非标准 provider）时键不存在，
+     * 消费方按 {@code args_digest} 退回今天的行为。
+     */
+    public static final String TOOL_CALL_ID = "claw4j.toolCallId";
+
+    /**
      * 这一轮从哪个通道来、通道内的哪段会话（ADR-0027）。
      *
      * <p>两个键解决同一类问题：审批要写"这条请求来自哪段对话"（批准之后回到那里开新一轮），

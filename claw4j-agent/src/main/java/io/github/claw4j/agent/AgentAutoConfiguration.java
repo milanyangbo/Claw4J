@@ -136,6 +136,8 @@ public class AgentAutoConfiguration {
      * @param meterRegistry 指标注册表，可能不存在
      * @param audit 审计接缝，可能不存在
      * @param tracer 埋点入口，可能不存在
+     * @param observations 观测注册表，可能不存在；给它是因为工具回调要从当前观测里读这一次的
+     *     调用编号（票 06）。取不到就是没有这个能力，不影响调用
      * @param tierRegistries 各模块声明的档位登记表
      * @param toolPolicy 全局档位策略；人设文件里的 {@code tier} 覆盖它（只覆盖档位，不覆盖
      *     allow / deny）
@@ -151,6 +153,7 @@ public class AgentAutoConfiguration {
                                    ObjectProvider<MeterRegistry> meterRegistry,
                                    ObjectProvider<ToolCallAudit> audit,
                                    ObjectProvider<SpanTracer> tracer,
+                                   ObjectProvider<ObservationRegistry> observations,
                                    ObjectProvider<ToolTierRegistry> tierRegistries,
                                    ToolsProperties toolPolicy,
                                    PersonaCatalog.Catalog personas,
@@ -189,7 +192,9 @@ public class AgentAutoConfiguration {
                             profile.alsoAllow());
             List<ToolCallback> tools = collectToolCallbacks(toolCallbacks, toolCallbackProviders,
                     meterRegistry.getIfAvailable(), audit.getIfAvailable(),
-                    tracer.getIfAvailable(() -> SpanTracer.NONE), effective, registries,
+                    tracer.getIfAvailable(() -> SpanTracer.NONE),
+                    observations.getIfAvailable(() -> ObservationRegistry.NOOP),
+                    effective, registries,
                     new ToolPolicyPipeline(decision.layers()),
                     selection -> {
                         String signature = signatureOf(selection);
@@ -379,6 +384,8 @@ public class AgentAutoConfiguration {
      * @param registry 指标注册表，可以为 null
      * @param audit 审计接缝，可以为 null：没有装配持久化那一层时没有可写的落点，工具照常调用
      * @param tracer 埋点入口。没开观测时传 {@link SpanTracer#NONE}，不要传 null 让它去猜
+     * @param observations 观测注册表；工具回调从中读这一次的调用编号（票 06）。没有就传
+     *     {@link ObservationRegistry#NOOP}
      * @param profile 这个部署的工具策略（P09），必填：给它一个「不过滤」的默认值，等于让某条装配
      *     路径漏传参数时静默全开，而这条路径正是父子两个 Agent 共用的那一条
      * @param tierRegistries 各模块声明的档位登记表。查不到档位的工具会让这次收集直接失败
@@ -389,10 +396,11 @@ public class AgentAutoConfiguration {
                                                           MeterRegistry registry,
                                                           ToolCallAudit audit,
                                                           SpanTracer tracer,
+                                                          ObservationRegistry observations,
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries) {
-        return collectToolCallbacks(callbacks, providers, registry, audit, tracer, profile, tierRegistries,
-                ToolPolicyPipeline.none(), selection -> report(profile, selection));
+        return collectToolCallbacks(callbacks, providers, registry, audit, tracer, observations, profile,
+                tierRegistries, ToolPolicyPipeline.none(), selection -> report(profile, selection));
     }
     /**
      * 同上，但把「这次筛完的结论」交给调用方处置。
@@ -406,6 +414,8 @@ public class AgentAutoConfiguration {
      * @param registry 指标注册表，可以为 null
      * @param audit 审计接缝，可以为 null
      * @param tracer 埋点入口，没开观测时传 {@link SpanTracer#NONE}
+     * @param observations 观测注册表；工具回调从中读这一次的调用编号（票 06）。没有就传
+     *     {@link ObservationRegistry#NOOP}
      * @param profile 这个部署的工具策略（P09），必填
      * @param tierRegistries 各模块声明的档位登记表
      * @param onSelection 筛完之后的回调，拿得到留下了哪些、挡掉了哪些
@@ -416,11 +426,12 @@ public class AgentAutoConfiguration {
                                                           MeterRegistry registry,
                                                           ToolCallAudit audit,
                                                           SpanTracer tracer,
+                                                          ObservationRegistry observations,
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries,
                                                           Consumer<ToolProfile.Selection> onSelection) {
-        return collectToolCallbacks(callbacks, providers, registry, audit, tracer, profile, tierRegistries,
-                ToolPolicyPipeline.none(), onSelection);
+        return collectToolCallbacks(callbacks, providers, registry, audit, tracer, observations, profile,
+                tierRegistries, ToolPolicyPipeline.none(), onSelection);
     }
 
     /**
@@ -435,6 +446,7 @@ public class AgentAutoConfiguration {
      * @param registry 指标注册表，可以为 null
      * @param audit 审计接缝，可以为 null
      * @param tracer 埋点入口
+     * @param observations 观测注册表；工具回调从中读这一次的调用编号（票 06）
      * @param profile 画像与全局白/黑
      * @param tierRegistries 各模块声明的画像登记表
      * @param pipeline 在全局之后继续收窄的层；{@link ToolPolicyPipeline#none()} 表示没有
@@ -446,6 +458,7 @@ public class AgentAutoConfiguration {
                                                           MeterRegistry registry,
                                                           ToolCallAudit audit,
                                                           SpanTracer tracer,
+                                                          ObservationRegistry observations,
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries,
                                                           ToolPolicyPipeline pipeline,
@@ -478,7 +491,8 @@ public class AgentAutoConfiguration {
                 .filter(callback -> kept.contains(callback.getToolDefinition().name()))
                 // 显式转型，否则 stream 的元素类型被推断成 MeteredToolCallback，
                 // 与返回类型 List<ToolCallback> 对不上（它不是泛型类，推断不出父类型）。
-                .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, audit, tracer))
+                .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, audit, tracer,
+                        observations))
                 .toList();
     }
 

@@ -21,6 +21,9 @@ import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.principal.Principal;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.sdk.common.CompletableResultCode;
@@ -46,6 +49,7 @@ import org.springaicommunity.agent.tools.ToolCallListener;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.execution.ToolExecutionException;
+import org.springframework.ai.tool.observation.ToolCallingObservationContext;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import reactor.core.publisher.Flux;
@@ -58,6 +62,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -737,6 +742,115 @@ class ObservabilityTest {
         return ChatResponse.builder()
                 .generations(List.of(new Generation(new AssistantMessage(text))))
                 .build();
+    }
+
+    @Test
+    @DisplayName("工具调用编号：从观测上下文取到，写进工具上下文再交给工具（票 06）")
+    void toolCallIdReachesToolContext() {
+        ObservationRegistry observations = ObservationRegistry.create();
+        // Micrometer 的 registry 在**一个 handler 都没有**时整体退化成 noop：连 context 都被换成
+        // NoopContext（`Observation.getContext()` 读不到我们自己那份）。挂一个什么都不做的 handler，
+        // 才等价于「部署里开了观测」的那种 registry。
+        observations.observationConfig().observationHandler(new ObservationHandler<Observation.Context>() {
+
+            @Override
+            public boolean supportsContext(Observation.Context context) {
+                return true;
+            }
+        });
+        List<String> seen = new CopyOnWriteArrayList<>();
+        ToolDefinition definition = ToolDefinition.builder()
+                .name("querySales")
+                .description("看得到调用编号的工具")
+                .inputSchema("{\"type\":\"object\"}")
+                .build();
+        ToolCallback tool = new ToolCallback() {
+
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return definition;
+            }
+
+            @Override
+            public String call(String toolInput) {
+                return "128400";
+            }
+
+            @Override
+            public String call(String toolInput, ToolContext toolContext) {
+                Object id = toolContext == null ? null : toolContext.getContext().get(ContextKeys.TOOL_CALL_ID);
+                seen.add(id == null ? "<none>" : id.toString());
+                return "128400";
+            }
+        };
+        ToolCallback wrapped = new MeteredToolCallback(tool, null, null, SpanTracer.NONE, observations);
+
+        // 模拟框架：建好带 toolCallId 的观测上下文，并在它的 scope 里调工具
+        // （DefaultToolCallingManager 就是这么做的，2.0.2 `:313-328`）。
+        ToolCallingObservationContext callContext = ToolCallingObservationContext.builder()
+                .toolDefinition(definition)
+                .toolCallId("call_abc")
+                .build();
+        Observation observation = Observation.createNotStarted("tool.call",
+                (Supplier<ToolCallingObservationContext>) () -> callContext, observations);
+        observation.start();
+        try (Observation.Scope ignored = observation.openScope()) {
+            assertThat(observations.getCurrentObservation())
+                    .as("装置自检：观测必须在 scope 里可见，否则下面测的不是实现")
+                    .isNotNull();
+            assertThat(observations.getCurrentObservation().getContext())
+                    .as("装置自检：上下文要是 tool 那一种（没挂 handler 时 Micrometer 会给 NoopContext）")
+                    .isInstanceOf(ToolCallingObservationContext.class);
+            wrapped.call("{}", new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1")));
+        }
+        finally {
+            observation.stop();
+        }
+
+        assertThat(seen)
+                .as("工具读不到编号的话，同参数两次调用在审计里仍然分不开")
+                .containsExactly("call_abc");
+    }
+
+    @Test
+    @DisplayName("没有观测时不留空键，且原样透传同一个上下文（票 06）")
+    void noObservationMeansNoToolCallId() {
+        List<ToolContext> seen = new CopyOnWriteArrayList<>();
+        ToolCallback tool = new ToolCallback() {
+
+            private final ToolDefinition definition = ToolDefinition.builder()
+                    .name("querySales")
+                    .description("没有观测时的工具")
+                    .inputSchema("{\"type\":\"object\"}")
+                    .build();
+
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return definition;
+            }
+
+            @Override
+            public String call(String toolInput) {
+                return "128400";
+            }
+
+            @Override
+            public String call(String toolInput, ToolContext toolContext) {
+                seen.add(toolContext);
+                return "128400";
+            }
+        };
+        // 旧构造 = NOOP 注册表：与没有 actuator 的部署同一条路径
+        ToolCallback wrapped = new MeteredToolCallback(tool, null);
+        ToolContext original = new ToolContext(Map.of(ContextKeys.RUN_ID, "run-1"));
+
+        wrapped.call("{}", original);
+
+        assertThat(seen).containsExactly(original);
+        assertThat(seen.get(0))
+                .as("拿不到就原样传，不新建一层、也不留一个值为 null 的键")
+                .isSameAs(original);
+        assertThat(seen.get(0).getContext()).doesNotContainKey(ContextKeys.TOOL_CALL_ID);
     }
 
     @Test

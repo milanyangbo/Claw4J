@@ -5,6 +5,7 @@ import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.guard.SensitiveWords;
 import io.github.claw4j.model.routing.ModelFallbackExhaustedException;
 import io.github.claw4j.agent.observability.SpanTracer;
+import io.micrometer.observation.ObservationRegistry;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
@@ -199,6 +200,16 @@ class ApplicationAssemblyTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    /**
+     * 观测注册表：不是每条断言都用到，但它必须在（票 06）。
+     *
+     * <p>Micrometer 的 registry 在<b>一个 handler 都没有</b>时整体退化为 noop，那时
+     * {@code getCurrentObservation()} 恒为 null——工具调用编号永远读不到，而没有任何报错。
+     * 注入它 + 下面那条 {@code isNoop} 断言，一起钉住"真实装配不是那种状态"。
+     */
+    @Autowired
+    private ObservationRegistry observationRegistry;
 
     /** 到点跑一轮的那条腿（P04）：真模型闭环那条直接调它，不等 30 秒的扫描。 */
     @Autowired
@@ -425,12 +436,20 @@ class ApplicationAssemblyTest {
      * 一条证明该挡的挡掉了、不该挡的还在，一条证明没声明档不是默认放行。
      */
     @Test
+    @DisplayName("观测注册表是真的一份：noop 时工具调用编号恒为空且不报错（票 06）")
+    void observationRegistryIsNotNoop() {
+        assertThat(observationRegistry.isNoop())
+                .as("noop 时工具回调读不到 tool_call_id，静默退化成\"没有这个能力\"")
+                .isFalse();
+    }
+
+    @Test
     @DisplayName("messaging 画像：脚本类不在清单里，地基与查数工具都在（P09）")
     void messagingProfileFiltersTheManifestNotTheExecution() {
         List<ToolCallback> manifest = AgentAutoConfiguration.collectToolCallbacks(
                 providerOf(List.of(tool("toolSearchTool"), tool("querySales"), tool("run_script"))),
                 providerOf(List.of()),
-                null, null, SpanTracer.NONE,
+                null, null, SpanTracer.NONE, ObservationRegistry.NOOP,
                 new ToolProfile(ToolTier.MESSAGING, Set.of(), Set.of()),
                 List.of(ToolTierRegistry.allProfilesFor(Set.of("toolSearchTool")),
                         ToolTierRegistry.external(Set.of("querySales"),
@@ -449,7 +468,7 @@ class ApplicationAssemblyTest {
         assertThatThrownBy(() -> AgentAutoConfiguration.collectToolCallbacks(
                 providerOf(List.of(tool("mystery"))),
                 providerOf(List.of()),
-                null, null, SpanTracer.NONE,
+                null, null, SpanTracer.NONE, ObservationRegistry.NOOP,
                 ToolProfile.unrestricted(),
                 List.of()))
                 .as("默认出现正是这套机制要避免的事：没声明就起不来，full 是\"不筛\"不是\"不要求声明\"")

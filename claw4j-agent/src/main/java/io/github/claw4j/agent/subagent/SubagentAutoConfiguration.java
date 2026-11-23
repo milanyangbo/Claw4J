@@ -278,7 +278,10 @@ public class SubagentAutoConfiguration {
                 : new ToolProfile(decision.profile(), profile.allow(), profile.deny(), profile.alsoAllow());
         List<ToolCallback> collected = AgentAutoConfiguration.collectToolCallbacks(
                 toolCallbacks, toolCallbackProviders,
-                meterRegistry, null, SpanTracer.NONE,
+                // 调用编号（票 06）子链暂不接：这个 id 目前只进 ToolContext、还没有落点，
+                // 等审计表那一列定了再一起接（票 06 的「缺口」）。接的时候把 NOOP 换成容器里的
+                // ObservationRegistry，其余不动。
+                meterRegistry, null, SpanTracer.NONE, ObservationRegistry.NOOP,
                 effective, tierRegistries,
                 new ToolPolicyPipeline(decision.layers()),
                 selection -> { });

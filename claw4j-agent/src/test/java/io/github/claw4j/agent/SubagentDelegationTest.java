@@ -424,6 +424,8 @@ class SubagentDelegationTest {
                 null,
                 // trace 也同理：这一条问的是清单，不是 span（P14）
                 SpanTracer.NONE,
+                // 调用编号同理：这一条不验观测（票 06）
+                ObservationRegistry.NOOP,
                 // 档位用默认（full）：这条验的是"两种形态都被收到"，不是"怎么筛"
                 ToolsProperties.defaults().toProfile(),
                 beans.getBeanProvider(ToolTierRegistry.class).orderedStream().toList()))

@@ -6,12 +6,16 @@ import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
+import org.springframework.ai.tool.observation.ToolCallingObservationContext;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -75,13 +79,22 @@ public class MeteredToolCallback implements ToolCallback {
     private final SpanTracer tracer;
 
     /**
+     * 观测注册表，只用来读「当前这次调用是哪个 {@code toolCallId}」（票 06）。
+     *
+     * <p>它必须是<b>框架那个</b>注册表：{@code DefaultToolCallingManager} 调工具之前会先建
+     * {@code ToolCallingObservationContext} 并把它推进 scope（Spring AI 2.0.2 `:313-328`），
+     * 换一个注册表就读不到。为 {@link ObservationRegistry#NOOP} 时等于关闭这个能力。
+     */
+    private final ObservationRegistry observations;
+
+    /**
      * 只加计量的包装。
      *
      * @param delegate 被包装的工具，必填
      * @param registry 指标注册表；为 null 表示调用方没装 actuator，照常记录调用，只是没有指标可报
      */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry) {
-        this(delegate, registry, null, SpanTracer.NONE);
+        this(delegate, registry, null, SpanTracer.NONE, ObservationRegistry.NOOP);
     }
 
     /**
@@ -92,7 +105,7 @@ public class MeteredToolCallback implements ToolCallback {
      * @param audit 为 null 表示没装配审计：计量照常，只是这一次调用不会留下一行审计
      */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry, ToolCallAudit audit) {
-        this(delegate, registry, audit, SpanTracer.NONE);
+        this(delegate, registry, audit, SpanTracer.NONE, ObservationRegistry.NOOP);
     }
 
     /**
@@ -105,10 +118,26 @@ public class MeteredToolCallback implements ToolCallback {
      */
     public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry,
                                ToolCallAudit audit, SpanTracer tracer) {
+        this(delegate, registry, audit, tracer, ObservationRegistry.NOOP);
+    }
+
+    /**
+     * 完整包装，并且能读到工具调用编号。
+     *
+     * @param delegate 被包装的工具，必填
+     * @param registry 指标注册表，可为 null
+     * @param audit 审计接缝，可为 null
+     * @param tracer 为 null 时按空实现处理
+     * @param observations 框架那个观测注册表；为 null 按
+     *     {@link ObservationRegistry#NOOP} 处理——少传一个参数不该让调用失败，只是拿不到编号
+     */
+    public MeteredToolCallback(ToolCallback delegate, MeterRegistry registry,
+                               ToolCallAudit audit, SpanTracer tracer, ObservationRegistry observations) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.registry = registry;
         this.audit = audit;
         this.tracer = tracer == null ? SpanTracer.NONE : tracer;
+        this.observations = observations == null ? ObservationRegistry.NOOP : observations;
         this.toolName = delegate.getToolDefinition().name();
     }
 
@@ -166,14 +195,15 @@ public class MeteredToolCallback implements ToolCallback {
      */
     @Override
     public String call(String toolInput, ToolContext toolContext) {
-        String runId = runIdOf(toolContext);
+        // 编号必须在 openSpan() 之前读：span 一开，当前观测就换成它自己了（见 toolCallId 的注释）。
+        ToolContext context = withToolCallId(toolContext, toolCallId());
         try (SpanTracer.SpanScope span = openSpan()) {
             // 开始那一条先写，结束那一条在两条出口各写一次：只有结束的话，
             // 「这个工具跑了多久」和「两个并发调用谁先开始」都只能靠时间戳猜。
-            AuditEvent.Scope scope = scopeOf(toolContext);
+            AuditEvent.Scope scope = scopeOf(context);
             toolStarted(scope, toolInput);
             try {
-                String result = delegate.call(toolInput, toolContext);
+                String result = delegate.call(toolInput, context);
                 toolFinished(scope, toolInput, null);
                 span.attribute(ATTR_OUTCOME, "ok");
                 count("ok");
@@ -283,6 +313,59 @@ public class MeteredToolCallback implements ToolCallback {
         }
         Object value = toolContext.getContext().get(ContextKeys.RUN_ID);
         return value instanceof String runId && !runId.isBlank() ? runId : null;
+    }
+
+    /**
+     * 这次调用在框架里的编号（票 06）。
+     *
+     * <p>从<b>当前观测</b>取，不从参数、不从上下文取：Spring AI 2.0.2 的
+     * {@code DefaultToolCallingManager} 建 {@code ToolCallingObservationContext} 时把
+     * {@code toolCall.id()} 放了进去（`:313-316`），然后在它的 {@code observe(...)} 里调工具
+     * （`:321-328`）。所以回调执行时，那一条就在 scope 上——它是框架已经给出的东西，我们只读。
+     *
+     * <p>走这条而不是去包装 {@code ToolCallingManager}：包装 manager 得把「逐条解析工具调用」
+     * 自己写一遍（找 callback、限流、组返回值、拼会话历史），那正是 ADR-0037 要去的方向的反面。
+     *
+     * <p>取不到就返回 {@code null}，**不编一个 UUID**：编出来的 id 会让「同参数两次调用」看起来
+     * 可分，实际每次都不一样，任何按它做的统计都是假数。取不到的情形有三种——部署没开观测
+     * （NOOP）、provider 没给 id、回调不是从框架的工具循环里进来的。
+     *
+     * <p>必须在 {@link #openSpan()} <b>之前</b>调：这段 span 一旦开起来，当前观测就换成了它自己，
+     * 再读只能读到自己——那种错不报错，只是编号永远为空。
+     *
+     * @return 调用编号；读不到时为 null
+     */
+    private String toolCallId() {
+        Observation current = observations.getCurrentObservation();
+        // 编号在 context 上，不在 Observation 对象上：框架建的是 ToolCallingObservationContext。
+        if (current == null || !(current.getContext() instanceof ToolCallingObservationContext toolCall)) {
+            return null;
+        }
+        String id = toolCall.getToolCallId();
+        return id == null || id.isBlank() ? null : id;
+    }
+
+    /**
+     * 把编号放进上下文再往内传。
+     *
+     * <p>必须新建一个 {@link ToolContext}：它的 map 在构造时就被 {@code unmodifiableMap} 包住了
+     * （Spring AI `ToolContext:52-54`），往原实例里 put 会抛。
+     *
+     * <p>取不到编号时返回<b>同一个实例</b>：不新建一层、也不留一个值为 null 的键——那会让
+     * 「没有这个能力」与「这次调用没有编号」在下游看起来一样。
+     *
+     * @param toolContext 框架传进来的上下文，可为 null（单参路径不会走到这里）
+     * @param toolCallId 调用编号，可为 null
+     * @return 带编号的上下文
+     */
+    private static ToolContext withToolCallId(ToolContext toolContext, String toolCallId) {
+        if (toolCallId == null) {
+            return toolContext;
+        }
+        Map<String, Object> merged = new HashMap<>(
+                toolContext == null ? Map.of() : toolContext.getContext());
+        merged.put(ContextKeys.TOOL_CALL_ID, toolCallId);
+        return new ToolContext(merged);
     }
 
     private void count(String outcome) {

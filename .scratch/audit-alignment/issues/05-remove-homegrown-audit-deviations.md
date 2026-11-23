@@ -18,6 +18,8 @@ Blocked by: 01
    `ToolCallAudit.granted` 改写它、`take` 删行并返回 `approval_id`；内存 Map 整体删除。
 2. 过期清理：超过审批有效期（默认 30 分钟）的行由已有每小时任务顺手删（同 `prune`）。
 3. `tool_call_id` 列先建、恒为 null，注释写明"等 Spring AI 给接缝"，**不编调用 id**。
+   （2026-11-23 核：**V9 里没有这一列**，`grep tool_call_id db/migration/*.sql` 只命中 V5 的注释。
+   加列是持久化改动，当时没有走这一步；编号的取法见票 06，落库仍在票 06 的「缺口」里等裁决。）
 
 ## TDD 用例清单
 
