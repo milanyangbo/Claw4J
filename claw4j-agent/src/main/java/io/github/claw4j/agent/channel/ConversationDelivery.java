@@ -29,8 +29,8 @@ import java.util.Objects;
  */
 public class ConversationDelivery {
 
-    /** 投递指标的前缀。与 {@code claw4j.run.*} 同一条纪律：判据回读，不问措辞。 */
-    public static final String METRIC = "claw4j.run.delivery";
+    /** 投递指标的前缀。与 {@code claw4j.execution.*} 同一条纪律：判据回读，不问措辞。 */
+    public static final String METRIC = "claw4j.execution.delivery";
 
     private static final Logger log = LoggerFactory.getLogger(ConversationDelivery.class);
 

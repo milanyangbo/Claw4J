@@ -446,15 +446,15 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         AuditEvent.Scope auditScope = AuditEvent.Scope.of(executionId, conversationKey, sessionId, agentId,
                 message.principal(), message.channel());
         recorder.runStarted(auditScope);
-        // 根 span 从"这一轮"开始，而不是从这次请求开始：模型轮与工具都发生在入池之后（见 RUN_SPAN）。
-        try (SpanTracer.SpanScope run = recorder.tracer().open(TurnRecorder.RUN_SPAN,
+        // 根 span 从"这一轮"开始，而不是从这次请求开始：模型轮与工具都发生在入池之后（见 EXECUTION_SPAN）。
+        try (SpanTracer.SpanScope execution = recorder.tracer().open(TurnRecorder.EXECUTION_SPAN,
                 TurnRecorder.runAttributes(executionId, message.principal()))) {
             try {
                 ChatResponse response;
                 String text;
                 // 一轮的 span 包住 call() 与收尾，所以它量的是"这一轮从开跑到答完"的整段时长，
                 // 含收尾那一次审计 INSERT（几十毫秒）。span 上不写账本行号：
-                // 与审计的关联键只有 claw4j.run.id 一个。
+                // 与审计的关联键只有 claw4j.execution.id 一个。
                 try (SpanTracer.SpanScope turn = recorder.tracer().open(TurnRecorder.TURN_SPAN, Map.of())) {
                     response = composer.compose(message, owner, sessionId, conversationKey,
                                     parsed.text(), executionId)
@@ -473,7 +473,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                 return new Turn(executionId, text);
             } catch (RuntimeException | Error failure) {
                 auditInbound(message, executionId, MessageOutcome.FAILED, null, inboundAt);
-                run.failed(failure);
+                execution.failed(failure);
                 // 取消 / 超时 / 客户端走了各记各的（ADR-0037 票 01）：一律记 failed 的话，
                 // 「这轮是被谁掐掉的」「是不是模型太慢」在审计里问不出来。
                 RunOutcome outcome = RunOutcome.of(failure);
@@ -530,7 +530,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         AuditEvent.Scope auditScope = AuditEvent.Scope.of(executionId, conversationKey, sessionId, agentId,
                 message.principal(), message.channel());
         recorder.runStarted(auditScope);
-        try (SpanTracer.SpanScope run = recorder.tracer().open(TurnRecorder.RUN_SPAN,
+        try (SpanTracer.SpanScope execution = recorder.tracer().open(TurnRecorder.EXECUTION_SPAN,
                 TurnRecorder.runAttributes(executionId, message.principal()))) {
             StringBuilder answer = new StringBuilder();
             // 流式的出站剥离必须有状态：标记可能被切在两片之间。三种收尾（正常/异常/超时）
@@ -580,7 +580,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     }
                     // 流断在这里：两段 span 都要标失败，否则图上它是一轮"正常结束"的回答。
                     turn.failed(failure);
-                    run.failed(failure);
+                    execution.failed(failure);
                     RunOutcome outcome = RunOutcome.of(failure);
                     recorder.runFinished(auditScope, outcome.status(), outcome.errorCode());
                     throw failure;

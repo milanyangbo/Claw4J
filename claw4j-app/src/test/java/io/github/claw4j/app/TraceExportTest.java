@@ -67,7 +67,7 @@ class TraceExportTest {
     @DisplayName("导出真的发出：collector 在 /v1/traces 上收到一段 protobuf（P14）")
     void spansReachTheCollectorAsOtlpHttp() {
         try (OtelSpanTracer tracer = OtelSpanTracer.start(properties(1.0))) {
-            try (SpanTracer.SpanScope span = tracer.open("run", Map.of("claw4j.run.id", "run-1"))) {
+            try (SpanTracer.SpanScope span = tracer.open("execution", Map.of("claw4j.execution.id", "exec-1"))) {
                 span.attribute("claw4j.outcome", "ok");
             }
         }
@@ -86,7 +86,7 @@ class TraceExportTest {
         // 默认的批次间隔是 5 秒，而这一段在毫秒内就结束了——不 flush 的话它们全丢。
         try (OtelSpanTracer tracer = OtelSpanTracer.start(properties(1.0))) {
             for (int i = 0; i < 3; i++) {
-                try (SpanTracer.SpanScope span = tracer.open("model.turn", Map.of("claw4j.run.id",
+                try (SpanTracer.SpanScope span = tracer.open("model.turn", Map.of("claw4j.execution.id",
                         "run-" + (i + 1)))) {
                     span.attribute("claw4j.tokens", "34");
                 }
@@ -101,7 +101,7 @@ class TraceExportTest {
     @DisplayName("采样比例 0：一条都不导，队列里也不留（P14）")
     void aZeroRatioExportsNothing() {
         try (OtelSpanTracer tracer = OtelSpanTracer.start(properties(0.0))) {
-            try (SpanTracer.SpanScope span = tracer.open("run", Map.of())) {
+            try (SpanTracer.SpanScope span = tracer.open("execution", Map.of())) {
                 span.attribute("claw4j.outcome", "ok");
             }
         }

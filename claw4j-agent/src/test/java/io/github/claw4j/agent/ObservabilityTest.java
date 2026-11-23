@@ -220,17 +220,17 @@ class ObservabilityTest {
                 .reply(new InboundMessage(new Principal("u-1"), "chat-1", "上周华东成交额"))
                 .executionId();
 
-        SpanData run = spanOf("run");
+        SpanData execution = spanOf("execution");
         SpanData turn = spanOf("model.turn");
         SpanData tool = spanOf("tool.querySales");
 
-        assertThat(turn.getParentSpanId()).isEqualTo(run.getSpanId());
+        assertThat(turn.getParentSpanId()).isEqualTo(execution.getSpanId());
         assertThat(tool.getParentSpanId())
                 .as("工具要挂在它那一轮下面，不是与它并列——只数个数的话，三个都挂根上也能绿")
                 .isEqualTo(turn.getSpanId());
-        assertThat(tool.getTraceId()).isEqualTo(turn.getTraceId()).isEqualTo(run.getTraceId());
-        assertThat(run.getAttributes().get(AttributeKey.stringKey("claw4j.run.id")))
-                .as("属性名沿用 OTel 的 run.id 约定，值就是这一轮的 executionId")
+        assertThat(tool.getTraceId()).isEqualTo(turn.getTraceId()).isEqualTo(execution.getTraceId());
+        assertThat(execution.getAttributes().get(AttributeKey.stringKey("claw4j.execution.id")))
+                .as("属性名与工具上下文同一个词，值就是这一轮的 executionId")
                 .isEqualTo(executionId);
         assertThat(tool.getAttributes().get(AttributeKey.stringKey("claw4j.tool"))).isEqualTo("querySales");
         assertThat(registry.getMeters()).extracting(meter -> meter.getId().getName())
@@ -267,7 +267,7 @@ class ObservabilityTest {
         assertThatThrownBy(() -> port.reply(new InboundMessage(new Principal("u-1"), "chat-1", "问")))
                 .isInstanceOf(IllegalStateException.class);
 
-        assertThat(spanOf("run").getStatus().getStatusCode())
+        assertThat(spanOf("execution").getStatus().getStatusCode())
                 .as("回答失败的那一轮，这件事本身要标失败；否则图上它是一次正常结束")
                 .isEqualTo(StatusCode.ERROR);
     }

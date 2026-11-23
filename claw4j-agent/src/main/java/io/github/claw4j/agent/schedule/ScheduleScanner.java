@@ -43,7 +43,7 @@ import java.util.Optional;
  */
 public class ScheduleScanner {
 
-    /** 计数前缀，与 {@code claw4j.run.*} 同一条纪律：判据回读，不问措辞。 */
+    /** 计数前缀，与 {@code claw4j.execution.*} 同一条纪律：判据回读，不问措辞。 */
     public static final String METRIC = "claw4j.schedule.fired";
 
     private static final Logger log = LoggerFactory.getLogger(ScheduleScanner.class);

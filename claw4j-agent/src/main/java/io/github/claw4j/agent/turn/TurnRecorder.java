@@ -42,7 +42,7 @@ final class TurnRecorder {
      * <p>编号只活一轮（ADR-0027）：{@code executionId} 是这一轮的身份，不是能接上的把手，下一轮是新编号，
      * 同一段对话靠 {@code sessionKey} 连起来。
      */
-    static final String RUN_SPAN = "run";
+    static final String EXECUTION_SPAN = "execution";
 
     /** 一轮动作的 span：包住 {@code call()} 与收尾。工具 span 都挂在它下面。 */
     static final String TURN_SPAN = "model.turn";
@@ -50,8 +50,11 @@ final class TurnRecorder {
     /**
      * 这一轮是哪一轮。trace 与审计之间只有这一把键：拿它去 {@code audit_event.execution_id} 查，
      * 这一轮的全部事件都在。
+     *
+     * <p>名字与工具上下文里那把（{@link io.github.claw4j.domain.ContextKeys#EXECUTION_ID}）同一个词：
+     * 同一个编号在 trace、审计、工具参数三处出现时，不该有两个名字——读的人会以为它们指两件事。
      */
-    private static final String ATTR_EXECUTION_ID = "claw4j.run.id";
+    private static final String ATTR_EXECUTION_ID = "claw4j.execution.id";
 
     /**
      * 谁的这件事——只放权限指纹，不放 {@code userId}。

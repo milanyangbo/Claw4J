@@ -183,7 +183,7 @@ public class MeteredToolCallback implements ToolCallback {
      * <p>这一层没有「额度不够就不执行」的分支（ADR-0027 决定五）：成本上限在目标的 token 预算上，
      * 按轮记账；这一轮绕了太多次由工具循环在上限处截断。工具回调只回答「这次调用发生了什么」。
      *
-     * <p>span 上不挂审计行号：审计与 trace 是两条独立的管道，共同的键是 {@code claw4j.run.id}——拿它
+     * <p>span 上不挂审计行号：审计与 trace 是两条独立的管道，共同的键是 {@code claw4j.execution.id}——拿它
      * 去库里查，一次运行的每条事件都在。挂一个「第几行」既不比它多回答什么，又把两条本可以各自演进的
      * 管道钉在一起。OpenClaw 也是这个分法：run span 的属性只有 outcome / channel / provider / model
      * 与 agent，出错时多一个 errorCategory（{@code docs/gateway/opentelemetry/spans-and-events.md:37}），

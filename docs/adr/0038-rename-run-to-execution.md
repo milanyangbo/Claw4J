@@ -45,6 +45,11 @@ ADR-0027 当时定的"run 只是个句柄、不落表"仍然成立，但它没�
   `run_id` 要跟着改。
 - **工具上下文里的键名**：`claw4j.runId` → `claw4j.executionId`（`ContextKeys.EXECUTION_ID`）。
   自定义工具若直接读这个字符串，要跟着改；读常量（`ContextKeys`）的不用。
+- **观测层同样只有这一个词**（票 17）：根 span 名 `run` → `execution`，属性 `claw4j.run.id` →
+  `claw4j.execution.id`，投递指标 `claw4j.run.delivery` → `claw4j.execution.delivery`。
+  它同样是"一轮的编号只有一个名字"的必要条件——同一个 id 在 trace、审计、工具参数三处出现却有两个
+  名字，读的人会以为它们指两件事。代价：**看板与告警里按旧名写的查询会查不到数据**（不报错，只是
+  静默变空），上线前要一起改。
 - **来源键前缀 `run:` → `exec:`**（`source_id`）：旧行保持旧前缀。它是内部去重键，不进报文，
   但两份前缀会同时存在——查历史时按值与时间，不按前缀。
 - **公开契约**：审计接口的参数名与报文那一格都改成了 `executionId`（决定二）；`/api/chat` 的
