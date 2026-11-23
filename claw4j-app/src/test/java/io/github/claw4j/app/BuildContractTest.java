@@ -451,11 +451,13 @@ class BuildContractTest {
         // 11 是审计的终态配对（ADR-0037 票 01）：agent_run 不许带 tool_* 的码，反之亦然。
         // 12 是消息审计（ADR-0037 票 04）：kind=message 的列 + 假名密钥表。
         // 13 是工具调用编号（票 06）：照 OpenClaw 加 audit_event.tool_call_id，只有工具行有值。
-        // 前六张落在各自的 schema 里；7–13 都改已有 schema，只有假名密钥表是新增的一张。
+        // 14 是归属与两把会话键（第三批）：actor/actor_type 换成执行者语义、加 session_id、
+        // channel 只留给消息行。
+        // 前六张落在各自的 schema 里；7–14 都改已有 schema，只有假名密钥表是新增的一张。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
                 .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
-                        "13");
+                        "13", "14");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -777,11 +779,11 @@ class BuildContractTest {
         // 用 agentId 当判别列：同一个容器被十几条用例共用，不带过滤的"最新三条"分不清是谁写的。
         for (int i = 1; i <= 3; i++) {
             ledger.record(AuditEvent.runStarted(
-                    new AuditEvent.Scope("run-qpage" + i, "session-q", "agent-qpage", "u", "http")));
+                    new AuditEvent.Scope("run-qpage" + i, "session-q", null, "agent-qpage", "u", "http")));
         }
 
         var page1 = query.query(new AuditQuery.Filter(null, null, "agent-qpage", null, null,
-                null, null, null, 2));
+                null, null, null, null, null, 2));
         assertThat(page1.rows()).as("每页两条").hasSize(2);
         assertThat(page1.rows().get(0).seq())
                 .as("倒序：第一条的序号比第二条大")
@@ -789,7 +791,7 @@ class BuildContractTest {
         assertThat(page1.nextCursor()).as("还有第三条，所以有下一页").isNotNull();
 
         var page2 = query.query(new AuditQuery.Filter(null, null, "agent-qpage", null, null,
-                null, null, page1.nextCursor(), 2));
+                null, null, null, null, page1.nextCursor(), 2));
         assertThat(page2.rows()).as("第二页剩一条").hasSize(1);
         assertThat(page2.rows().getFirst().seq())
                 .as("下一页的起点严格小于游标")
@@ -798,21 +800,29 @@ class BuildContractTest {
 
         // 过滤与钳位在同一条用例里验：它们共用同一张表、同一份数据，拆开只是多一步准备。
         ledger.record(AuditEvent.toolStarted(
-                new AuditEvent.Scope("run-qfilter", "session-q", "agent-qfilter", "u", "http"),
+                new AuditEvent.Scope("run-qfilter", "session-q", "session-q-seg", "agent-qfilter",
+                        "u", "http"),
                 "call-qfilter", "Bash", "digest-qfilter"));
-        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action", null,
-                null, null, null, 10)).rows())
-                .as("按 runId + kind 命中那一行")
-                .hasSize(1);
-        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action", null,
-                null, null, null, 10)).rows().getFirst().toolCallId())
+        var toolPage = query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action",
+                null, null, null, null, null, null, 10));
+        assertThat(toolPage.rows()).as("按 runId + kind 命中那一行").hasSize(1);
+        var toolRow = toolPage.rows().getFirst();
+        assertThat(toolRow.toolCallId())
                 .as("工具行带得回调用编号（票 06）：落库形状是哈希，不是 provider 的原值")
                 .matches("sha256:[0-9a-f]{64}");
+        assertThat(toolRow.schemaVersion()).as("版本号读得回来（第三批）").isEqualTo(1);
+        assertThat(toolRow.sourceSequence()).as("来源内序号读得回来").isEqualTo(1);
+        assertThat(toolRow.sessionId()).as("两把会话键都在").isEqualTo("session-q-seg");
+        assertThat(toolRow.actorType()).as("运行/工具行的执行者是 agent（第三批）").isEqualTo("agent");
+        assertThat(toolRow.actor()).as("actor 记执行者：agentId").isEqualTo("agent-qfilter");
+        assertThat(toolRow.channel()).as("channel 只属于消息行（OpenClaw 对非消息行强制 null）").isNull();
+        assertThat(toolRow.redaction()).isEqualTo("metadata_only");
         assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "agent_run", null,
-                null, null, null, 10)).rows())
+                null, null, null, null, null, 10)).rows())
                 .as("kind 不匹配时一行都不给")
                 .isEmpty();
-        assertThat(new AuditQuery.Filter(null, null, null, null, null, null, null, null, 999).limit())
+        assertThat(new AuditQuery.Filter(null, null, null, null, null, null, null, null, null, null,
+                999).limit())
                 .as("limit 截到 OpenClaw 的上限 500，而不是照单全收")
                 .isEqualTo(AuditQuery.Filter.MAX_LIMIT);
 
@@ -820,91 +830,118 @@ class BuildContractTest {
         // 消息审计等于只写不查——"这个客户的消息送到没有"还是得自己写 SQL。
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, agent_id, source_id, source_sequence,"
-                + " direction, message_outcome, conversation_kind, duration_ms, actor_type,"
-                + " account_ref)"
+                + " direction, channel, message_outcome, conversation_kind, duration_ms, actor_type,"
+                + " actor, account_ref)"
                 + " values ('e-qmsg', 'message', 'message.inbound.processed', 'succeeded',"
-                + " 'agent-qpage', 'message:in:q1', 1, 'inbound', 'completed', 'direct', 42,"
-                + " 'channel_sender', 'hmac-sha256:v1:0011223344556677:abc')");
+                + " 'agent-qpage', 'message:in:q1', 1, 'inbound', 'http', 'completed', 'direct', 42,"
+                + " 'channel_sender', 'hmac-sha256:v1:0011223344556677:abc',"
+                + " 'hmac-sha256:v1:0011223344556677:abc')");
         var messages = query.query(new AuditQuery.Filter(null, null, "agent-qpage", "message", "inbound",
-                null, null, null, 10));
+                null, null, null, null, null, 10));
         assertThat(messages.rows()).as("按 kind=message 只取消息行").hasSize(1);
         assertThat(messages.rows().getFirst().message().outcome()).isEqualTo("completed");
         assertThat(messages.rows().getFirst().message().durationMs()).isEqualTo(42);
         assertThat(messages.rows().getFirst().message().accountRef()).startsWith("hmac-sha256:v1:");
+        assertThat(messages.rows().getFirst().actor())
+                .as("入站消息的 actor 就是发送者假名（与 account_ref 同值，第三批）")
+                .isEqualTo(messages.rows().getFirst().message().accountRef());
+        assertThat(messages.rows().getFirst().actorType()).isEqualTo("channel_sender");
+        assertThat(messages.rows().getFirst().channel()).isEqualTo("http");
         // 方向过滤（照 audit.activity.list）：进来的与出去的混在一页里，问"今天发出去的送到没有"
         // 就得先能只要 outbound。这一条同时钉住 Filter 里那个字段真的进了 where。
         assertThat(query.query(new AuditQuery.Filter(null, null, "agent-qpage", "message",
-                "outbound", null, null, null, 10)).rows())
+                "outbound", null, null, null, null, null, 10)).rows())
                 .as("那一条是 inbound，按 outbound 过滤一行都不给")
                 .isEmpty();
         assertThat(messages.rows().getFirst().message().conversationKind())
                 .as("私聊/群那一列也读得回来").isEqualTo("direct");
         // 运行与工具行没有那一组：读的人不必面对十二个空格去猜"是没记还是记了空"。
         assertThat(query.query(new AuditQuery.Filter(null, null, "agent-qpage", "agent_run", null,
-                null, null, null, 10)).rows())
+                null, null, null, null, null, 10)).rows())
                 .allSatisfy(row -> assertThat(row.message()).isNull());
     }
 
     @Test
-    @DisplayName("审计终态在库里的两条规则：码与状态必须配对、孤儿补成 unknown（ADR-0037 票 01）")
+    @DisplayName("审计在库里的几条规则：码与状态必须配对、编号/归属/通道的形状、孤儿补成 unknown")
     void auditTerminalRowsAreConsistent() {
         var jdbc = new JdbcTemplate(dataSource());
         // ① 配对：先证明合法的那一对能进——这条用例不能因为整张表都写不进去而"绿"。
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " actor)"
                 + " values ('e-pair-ok', 'agent_run', 'agent.run.finished', 'failed',"
-                + " 'run_failed', 'run-pair', 'run:run-pair', 2)");
+                + " 'run_failed', 'run-pair', 'run:run-pair', 2, 'agent-1')");
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " actor)"
                 + " values ('e-pair-bad', 'agent_run', 'agent.run.finished', 'failed',"
-                + " 'tool_failed', 'run-pair', 'run:run-pair-2', 2)"))
+                + " 'tool_failed', 'run-pair', 'run:run-pair-2', 2, 'agent-1')"))
                 .as("运行级事件配工具级的码：两层混在一起，按错误码统计就把两件事加成一个数")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " actor)"
                 + " values ('e-pair-none', 'tool_action', 'tool.action.finished', 'failed',"
-                + " null, 'run-pair', 'tool:run-pair:Bash:d1', 2)"))
+                + " null, 'run-pair', 'tool:run-pair:Bash:d1', 2, 'agent-1')"))
                 .as("failed 不带错误码：查「为什么失败」时那一格是空的")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " actor)"
                 + " values ('e-pair-started', 'tool_action', 'tool.action.started', 'started',"
-                + " 'tool_failed', 'run-pair', 'tool:run-pair:Bash:d2', 1)"))
+                + " 'tool_failed', 'run-pair', 'tool:run-pair:Bash:d2', 1, 'agent-1')"))
                 .as("开始那一条带错误码：它还没结束，有什么错")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
 
         // ③ 编号只属于工具行（票 06）：消息变体在读侧是 `toolCallId?: never`
         //    （audit-activity.ts:463），这条 CHECK 是它在写侧的落点。
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, tool_call_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, run_id, tool_call_id, source_id, source_sequence,"
+                + " actor)"
                 + " values ('e-tcid-ok', 'tool_action', 'tool.action.started', 'started', 'run-tcid',"
-                + " 'call-1', 'tool:run-tcid:Bash:d1', 1)");
+                + " 'call-1', 'tool:run-tcid:Bash:d1', 1, 'agent-1')");
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, tool_call_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, run_id, tool_call_id, source_id, source_sequence,"
+                + " actor)"
                 + " values ('e-tcid-bad', 'agent_run', 'agent.run.started', 'started', 'run-tcid',"
-                + " 'call-1', 'run:run-tcid', 1)"))
+                + " 'call-1', 'run:run-tcid', 1, 'agent-1')"))
                 .as("运行行带调用编号：那一列是工具行的，读侧也按这个形状区分")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        // ④ 归属与通道（第三批）：actor 必填；channel 只属于消息行
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, run_id, source_id, source_sequence)"
+                + " values ('e-no-actor', 'agent_run', 'agent.run.started', 'started', 'run-1',"
+                + " 'no-actor:1', 1)"))
+                .as("归属是读侧四个变体的必填格（commonProperties + agentProperties），空着客户端解析不了")
+                .hasMessageContaining("ck_audit_event_actor_present");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, run_id, source_id, source_sequence, actor,"
+                + " channel)"
+                + " values ('e-tool-channel', 'tool_action', 'tool.action.started', 'started',"
+                + " 'run-1', 'tool-channel:1', 1, 'agent-1', 'http')"))
+                .as("通道只属于消息行：OpenClaw 对非消息行强制写 null（audit-event-store.ts:103）")
+                .hasMessageContaining("ck_audit_event_channel_message_only");
 
         // ② 孤儿扫尾：两条停在 started 且已经过窗口的，补成 unknown；
         //    另有一条"刚开跑"的，它不该被补——补了就是把正在跑的一轮判成不知道结果。
         var ledger = new AuditLedger(jdbc, null);
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, run_id, session_key, agent_id,"
-                + " source_id, source_sequence, at)"
+                + " source_id, source_sequence, at, actor)"
                 + " values ('e-orphan-run', 'agent_run', 'agent.run.started', 'started', 'run-orphan',"
-                + " 'sk-orphan', 'ops', 'run:run-orphan', 1, now() - interval '2 hours')");
+                + " 'sk-orphan', 'ops', 'run:run-orphan', 1, now() - interval '2 hours', 'ops')");
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, run_id, tool_call_id, tool_name, args_digest,"
-                + " source_id, source_sequence, at)"
+                + " source_id, source_sequence, at, actor)"
                 + " values ('e-orphan-tool', 'tool_action', 'tool.action.started', 'started', 'run-orphan',"
                 + " 'call-orphan', 'Bash', 'd-orphan', 'tool:run-orphan:Bash:d-orphan', 1,"
-                + " now() - interval '2 hours')");
+                + " now() - interval '2 hours', 'ops')");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, run_id, source_id, source_sequence, actor)"
                 + " values ('e-fresh-start', 'agent_run', 'agent.run.started', 'started', 'run-fresh',"
-                + " 'run:run-fresh', 1)");
+                + " 'run:run-fresh', 1, 'ops')");
 
         assertThat(ledger.sweepOrphans(AuditLedger.ORPHAN_AGE)).as("补了两条").isEqualTo(2);
         assertThat(jdbc.queryForList("select status from claw4j_run.audit_event"

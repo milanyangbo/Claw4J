@@ -547,10 +547,10 @@ claw4j:
 不记提示词、消息体、工具参数、工具结果、命令输出与原始错误文本。工具调用 id 只留单向指纹。
 
 ```bash
-# 按人：这个人这一周让工具做过什么
-psql "$DATABASE_URL" -c "select actor, tool_name, action, status, at
+# 按人：这个人这一周让工具做过什么（人记在 requested_by，actor 记执行者）
+psql "$DATABASE_URL" -c "select requested_by, actor, tool_name, action, status, at
   from claw4j_run.audit_event
-  where actor = 'ethan' and at > now() - interval '7 days'
+  where requested_by = 'ethan' and at > now() - interval '7 days'
   order by at desc limit 20"
 
 # 谁被审批拒了、想调什么：真相在审批表上，不在审计里
@@ -560,16 +560,16 @@ psql "$DATABASE_URL" -c "select owner, tool_name, status, decision, terminal_rea
   where status in ('denied', 'expired') and requested_at > current_date order by requested_at desc"
 
 # 这次调用是哪次批准的：结束事件上的 approval_id 与审批表同一个编号
-psql "$DATABASE_URL" -c "select seq, actor, tool_call_id, tool_name, status,
-  left(args_digest,12) as digest, approval_id, at
+psql "$DATABASE_URL" -c "select seq, actor_type, actor, requested_by, tool_call_id, tool_name,
+  status, left(args_digest,12) as digest, approval_id, at
   from claw4j_run.audit_event where run_id = '<runId>' order by seq"
 ```
 
-列：`seq / event_id / kind / action / status / error_code / run_id / session_key / agent_id /
-actor / channel / tool_call_id / tool_name / args_digest / approval_id / source_id / source_sequence /
-redaction / schema_version / at`，消息行另加 `direction / conversation_kind / message_outcome /
-reason_code / delivery_kind / failure_stage / duration_ms / result_count / actor_type /
-account_ref / conversation_ref / message_ref / target_ref`（V12）。
+列：`seq / event_id / kind / action / status / error_code / run_id / session_key / session_id /
+agent_id / actor_type / actor / requested_by / channel / tool_call_id / tool_name / args_digest /
+approval_id / source_id / source_sequence / redaction / schema_version / at`，消息行另加
+`direction / conversation_kind / message_outcome / reason_code / delivery_kind / failure_stage /
+duration_ms / result_count / account_ref / conversation_ref / message_ref / target_ref`（V12、V14）。
 
 **`tool_call_id` 从 V13 起有值**（票 06）：包装层从当前观测取框架给的调用编号
 （`ToolCallingObservationContext#getToolCallId`，Spring AI 调工具前把它放进了 scope），
@@ -597,8 +597,23 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
 没配目录时 `builtin`）写进工具上下文与两条运行事件；取不到时落 `unknown` 而不是空——
 空格让"这条是哪个 agent 干的"在多 agent 部署里永远答不了，`unknown` 至少可数。
 
+**归属记执行者，不记人**（ADR-0037 第三批，V14）：`actor_type` / `actor` 是 OpenClaw 的两格——
+`agent` + agentId（没有 agentId 时 `system` + `unknown`），入站消息是 `channel_sender` + 发送者假名
+（与 `account_ref` 同值），出站是 `agent` + agentId。它的原文是
+`actorType = eventAgentId ? "agent" : "system"`、`actorId = eventAgentId`（`agent-event-audit.ts`）。
+**"谁触发的"不在事件里**（它放在 execution decision 那一层），我们放在扩展列 `requested_by`
+（`varchar`，**不进读接口**）：只为消息审计默认关时仍答得出"这一轮谁触发的"。
+库里有 `ck_audit_event_actor_present`（必填）与 `ck_audit_event_actor_type`（三值闭集）。
+
+**两把会话键**（同批）：`session_key` 是会话键（不含段），`session_id` 是那一段。以前把含段的 id
+写进了 `session_key`，于是"同一段对话"与"这一轮"合成了一把；现在按 OpenClaw 分成两列
+（`audit-event-store.ts:97-98`）。历史行的 `session_id` 是空的——段号无从还原，不回填。
+
+**`channel` 只属于消息行**：非消息行写 null，`ck_audit_event_channel_message_only` 钉着。
+OpenClaw 在绑定时就按 kind 强制 null（`audit-event-store.ts:103`），所以按 channel 过滤带不出工具行。
+
 **子 Agent 的调用落在自己那一轮上**（票 08）：每次委派开一个新的 `runId`，`session_key` 是
-`subagent:<定义名>`、`agent_id` 是定义名、`actor` 还是父那一轮的人（委派不提权）。所以
+`subagent:<定义名>`、`agent_id` 是定义名、`requested_by` 还是父那一轮的人（委派不提权）。所以
 `/api/audit?sessionKey=subagent:alpha` 就是"这个子 Agent 干了什么"，按 `runId` 则是"这一次派活"。
 **父子之间没有 lineage 列**：OpenClaw 那条投影要父令牌，没有就明说缺失、不推断
 （`docs/gateway/audit.md`），我们也照这条——不从父 `runId` 编一个关联。
@@ -641,12 +656,23 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
 > 审计回答"上一次是谁批的"（30 天，按行查）；评测回答"答得好不好"（A06）。
 > 三者混起来的第一个症状是"审计里查不到上个月"——那时通常已经有人拿它当过监控看板了。
 
-读接口：`GET /api/audit?runId=&sessionKey=&agentId=&kind=&direction=&status=&channel=&cursor=&limit=`，
-按 `seq` 倒序、游标翻页、`limit` 1–500（越界钳位），没装查询时 404（能力不在场，不是库坏了）。
+读接口：`GET /api/audit?runId=&sessionKey=&agentId=&kind=&direction=&status=&channel=&after=&before=&cursor=&limit=`，
+按 `sequence` 倒序、游标翻页（**字符串**，与 OpenClaw 同形）、`limit` 1–500（越界钳位），
+`after`/`before` 是 **Unix 毫秒闭区间**（`ledgers.md:25-26`）。没装查询时 404（能力不在场，不是库坏了）。
 `direction` 照 OpenClaw 的 `audit.activity.list`（`docs/gateway/protocol/ledgers.md:120-131`）——
 进来的与出去的混在一页里时，"今天发出去的送到没有"得先能只要 `outbound`。
 工具行在返回里带 `toolCallId`（可选，照 `audit-activity.ts:219`）；**没有按它过滤的参数**——
 OpenClaw 那份参数表里也没有，多一个就是自创契约。
+
+**参数自相矛盾时回 400**（`findAuditActivityFilterConflict`，`audit-activity.ts:30-53`）：
+`kind=message` 配 `sessionKey`、`kind≠message` 配 `direction`/`channel`、不给 `kind` 却同时给
+`sessionKey` 与 `direction`/`channel`，三种都拒绝并说明哪两个冲突。空页在客户端看来是
+"这段时间没有审计"，而真相是"参数不该一起用"。
+
+**报文是四个闭对象**（`additionalProperties: false`，`audit-activity.ts:135-142`）：每个变体必带
+`schemaVersion`（1）/ `sequence` / `sourceSequence` / `occurredAt`（毫秒整数）/ `redaction`
+（`metadata_only`）/ `actor`（`{type,id}` 对象）；空字段整格不出现。`args_digest` / `approval_id`
+是我们的扩展列，**不进报文**——多带一格就不是那份 schema 的实例了，要查它们用 SQL。
 
 每行还带 `eventType`（票 07）：`agent_run` / `tool_action` / `inbound_message` / `outbound_message`，
 四个值各对应 OpenClaw 的一份读侧 schema（`audit-activity.ts:183,215,249,323`）。它是**算出来的**，

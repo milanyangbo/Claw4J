@@ -13,18 +13,19 @@ import java.util.StringJoiner;
  *
  * <p>翻页用 {@code seq} 而不是 {@code at}：同一毫秒里可以有好几条，按时间排会重复或漏行
  * （{@code V5__run.sql:379-381} 就是这么定的）。索引也都在 {@code (维度, seq desc)} 上，
- * 所以六个过滤条件里任意组合都不需要新建索引。
+ * 所以各个过滤条件任意组合都不需要新建索引（时间窗走的是 `ix_audit_event_time`，
+ * 它正好是 {@code (at desc, seq desc)}）。
  *
  * <p>没有缓存、没有视图：这是"事后查一次"的路径，不是热路径。给它加缓存，第一个代价是
  * "刚发生的事查不到"——而那正是查它的理由。
  */
 public class JdbcAuditQuery implements AuditQuery {
 
-    private static final String COLUMNS = "seq, event_id, kind, action, status, error_code, run_id,"
-            + " session_key, agent_id, actor, channel, tool_call_id, tool_name, args_digest,"
-            + " approval_id, at,"
+    private static final String COLUMNS = "seq, schema_version, event_id, source_sequence, kind,"
+            + " action, status, error_code, redaction, run_id, session_key, session_id, agent_id,"
+            + " actor_type, actor, channel, tool_call_id, tool_name, args_digest, approval_id, at,"
             + " direction, message_outcome, reason_code, conversation_kind, delivery_kind,"
-            + " failure_stage, duration_ms, result_count, actor_type,"
+            + " failure_stage, duration_ms, result_count,"
             + " account_ref, conversation_ref, message_ref, target_ref";
 
     /**
@@ -36,15 +37,20 @@ public class JdbcAuditQuery implements AuditQuery {
         MessageRow message = messageOf(rs);
         return new Row(
                 rs.getLong("seq"),
+                rs.getInt("schema_version"),
                 rs.getString("event_id"),
-                kind,
+                rs.getInt("source_sequence"),
                 AuditQuery.eventTypeOf(kind, message == null ? null : message.direction()),
+                kind,
                 rs.getString("action"),
                 rs.getString("status"),
                 rs.getString("error_code"),
+                rs.getString("redaction"),
                 rs.getString("run_id"),
                 rs.getString("session_key"),
+                rs.getString("session_id"),
                 rs.getString("agent_id"),
+                rs.getString("actor_type"),
                 rs.getString("actor"),
                 rs.getString("channel"),
                 rs.getString("tool_call_id"),
@@ -68,7 +74,7 @@ public class JdbcAuditQuery implements AuditQuery {
                 rs.getString("reason_code"), rs.getString("conversation_kind"),
                 rs.getString("delivery_kind"), rs.getString("failure_stage"),
                 rs.getObject("duration_ms", Integer.class),
-                rs.getObject("result_count", Integer.class), rs.getString("actor_type"),
+                rs.getObject("result_count", Integer.class),
                 rs.getString("account_ref"), rs.getString("conversation_ref"),
                 rs.getString("message_ref"), rs.getString("target_ref"));
     }
@@ -94,6 +100,17 @@ public class JdbcAuditQuery implements AuditQuery {
         eq(where, args, "direction", effective.direction());
         eq(where, args, "status", effective.status());
         eq(where, args, "channel", effective.channel());
+        // 时间窗是闭区间，单位是 Unix 毫秒（与 OpenClaw 的 after/before 同义，
+        // ledgers.md:25-26）。at 是 timestamptz，所以把毫秒换算过去再比，而不是在 Java 里算时刻——
+        // 算在库里，seq 索引与时间条件才落在同一条语句里。
+        if (effective.after() != null) {
+            where.add("at >= to_timestamp(?::double precision / 1000)");
+            args.add(effective.after());
+        }
+        if (effective.before() != null) {
+            where.add("at <= to_timestamp(?::double precision / 1000)");
+            args.add(effective.before());
+        }
         if (effective.beforeSeq() != null) {
             where.add("seq < ?");
             args.add(effective.beforeSeq());

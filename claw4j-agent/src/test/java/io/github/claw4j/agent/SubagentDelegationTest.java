@@ -375,7 +375,7 @@ class SubagentDelegationTest {
         assertThat(scope.runId()).as("子那一轮有自己的编号，不与父共享").isNotBlank();
         assertThat(scope.sessionKey()).isEqualTo("subagent:alpha");
         assertThat(scope.agentId()).as("干活的是子 Agent，不是父那个部署级 agent").isEqualTo("alpha");
-        assertThat(scope.actor()).as("委派不提权：人还是那个人").isEqualTo("u-1");
+        assertThat(scope.requestedBy()).as("委派不提权：人还是那个人").isEqualTo("u-1");
 
         List<AuditEvent> lookupEvents = events.stream()
                 .filter(event -> "lookup".equals(event.toolName()))

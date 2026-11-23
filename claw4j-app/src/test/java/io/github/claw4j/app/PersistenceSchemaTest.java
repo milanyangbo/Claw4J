@@ -707,9 +707,10 @@ class PersistenceSchemaTest {
         // ---- 10 万行上限。一条 SQL 插进去，比循环十万次快得多。
         jdbc.update("delete from claw4j_run.audit_event");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, run_id, actor, source_id, source_sequence)"
                 + " select 'bulk-' || g, 'agent_run', 'agent.run.started',"
-                + " 'started', 'run-bulk', 'bulk:' || g, 1 from generate_series(1, 100001) g");
+                + " 'started', 'run-bulk', 'agent-bulk', 'bulk:' || g, 1"
+                + " from generate_series(1, 100001) g");
 
         Long highest = jdbc.queryForObject("select max(seq) from claw4j_run.audit_event", Long.class);
 
@@ -750,9 +751,9 @@ class PersistenceSchemaTest {
                     : code.column().endsWith("_blocked") ? "blocked"
                     : "unknown";
             jdbc.update("insert into claw4j_run.audit_event"
-                            + " (event_id, kind, action, status, error_code, run_id,"
+                            + " (event_id, kind, action, status, error_code, run_id, actor,"
                             + " source_id, source_sequence)"
-                            + " values (?, ?, ?, ?, ?, 'run-1', ?, 1)",
+                            + " values (?, ?, ?, ?, ?, 'run-1', 'agent-1', ?, 1)",
                     "e-" + code.column(),
                     runLevel ? "agent_run" : "tool_action",
                     runLevel ? "agent.run.finished" : "tool.action.finished",
@@ -763,15 +764,17 @@ class PersistenceSchemaTest {
 
         // 消息失败码写进消息行：它不在 V5 那九个里，扩词表这件事本身要被钉住。
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, source_id, source_sequence,"
+                + " (event_id, kind, action, status, error_code, actor, source_id, source_sequence,"
                 + " direction, message_outcome)"
                 + " values ('e-msg-failed', 'message', 'message.outbound.finished', 'failed',"
-                + " 'message_delivery_failed', 'code:message_delivery_failed', 1, 'outbound', 'failed')");
+                + " 'message_delivery_failed', 'agent-1', 'code:message_delivery_failed', 1,"
+                + " 'outbound', 'failed')");
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, error_code, run_id, source_id, source_sequence,"
+                + " actor)"
                 + " values ('e-old-word', 'tool_action', 'tool.action.finished',"
-                + " 'blocked', 'policy_denied', 'run-1', 'code:policy_denied', 1)"))
+                + " 'blocked', 'policy_denied', 'run-1', 'code:policy_denied', 1, 'agent-1')"))
                 .as("这是换词表之前的值，现在不在词表里")
                 .hasMessageContaining("ck_audit_event_error_code");
 
@@ -792,14 +795,14 @@ class PersistenceSchemaTest {
         // 库拒绝空值；账本在没有编号时直接跳过，否则每一行都撞约束，write_errors 会一直涨，
         // 把没有归属错报成库坏了。
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, source_id, source_sequence)"
+                + " (event_id, kind, action, status, run_id, actor, source_id, source_sequence)"
                 + " values ('e-with-run', 'agent_run', 'agent.run.started',"
-                + " 'started', 'run-1', 'legacy:e-with-run', 1)");
+                + " 'started', 'run-1', 'agent-1', 'legacy:e-with-run', 1)");
 
         assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, source_id, source_sequence)"
+                + " (event_id, kind, action, status, actor, source_id, source_sequence)"
                 + " values ('e-no-run', 'agent_run', 'agent.run.started', 'started',"
-                + " 'legacy:e-no-run', 1)"))
+                + " 'agent-1', 'legacy:e-no-run', 1)"))
                 .as("没有 run_id 的运行行会被库拒绝（消息行是唯一允许没有 run_id 的）")
                 .hasMessageContaining("ck_audit_event_run_required");
 

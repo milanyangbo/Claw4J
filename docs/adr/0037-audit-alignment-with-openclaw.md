@@ -21,6 +21,24 @@
 reuses or mutates the parent context"。**不造 lineage**：那条投影要精确父令牌，拿不到就明说缺失，
 我们也一样——没有 `parent_run_id` 这一列，就不从父 `runId` 编一个。
 
+修订 2026-11-23（第三批）：读侧的**报文**与写侧的**归属**按它的字段逐项对完，改三处。
+① **写侧归属**（票 11，V14）：`actor_type` / `actor` 记**执行者**——它的
+`projectExplicitAttribution` 是 `actorType = agentId ? "agent" : "system"`、`actorId = agentId`
+（`agent-event-audit.ts`）。所以我们把人从 `actor` 挪到扩展列 `requested_by`（不进读接口），
+运行/工具行写 `agent` + agentId，入站消息写 `channel_sender` + 发送者假名。
+同时补 `session_id`（那一段），`session_key` 改成不含段的会话键（`audit-event-store.ts:97-98`）；
+`channel` 只在消息行落值，非消息行一律 null 并加 CHECK（`audit-event-store.ts:103`）。
+② **读侧报文**（票 09）：补齐它每个变体必填的信封五格 `schemaVersion` / `sequence` /
+`sourceSequence` / `occurredAt`（**Unix 毫秒整数**）/ `redaction`；`actor` 从字符串改成
+`{type,id}` 对象；消息字段从嵌套摊平；响应从"多带字段"改成**闭对象**（`additionalProperties:
+false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展列不再进报文**：
+`args_digest` / `approval_id` 留在库里供审批绑定与 SQL 查询。
+③ **读接口参数**（票 10）：补 `after` / `before`（Unix 毫秒闭区间）；参数自相矛盾时回 400
+而不是空页（`findAuditActivityFilterConflict` 的三条）；`cursor` 改成不透明字符串。
+
+**仍然没对齐的两处，都是缺一整层、不是缺字段**：`operator.read` 授权（我们整个 http 层没有鉴权）；
+`run.inspect` / decision receipts（要 execution identity 那一套）。
+
 ## 背景
 
 审计现在能写不能查，且七个终态只有三个有生产者。对照 OpenClaw `main`

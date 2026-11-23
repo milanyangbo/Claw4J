@@ -144,7 +144,8 @@ public class JdbcMessageAudit implements MessageAudit {
     }
 
     private static AuditEvent.Scope scope(String runId, String agentId, String channel) {
-        return AuditEvent.Scope.of(runId, null, agentId, null, channel);
+        // 消息行两把会话键都是空的：OpenClaw 对 kind=message 强制写 null（audit-event-store.ts:97-98）。
+        return AuditEvent.Scope.of(runId, null, null, agentId, null, channel);
     }
 
     /**

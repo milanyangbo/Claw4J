@@ -182,7 +182,7 @@ public final class SubagentRunner implements SubagentExecutor {
         // 只由 lineage 投影表达——而那条投影要的父令牌我们没有，于是不编一个（见票 08 的缺口）。
         String runId = UUID.randomUUID().toString();
         AuditEvent.Scope scope = AuditEvent.Scope.of(runId, SESSION_PREFIX + definition.name(),
-                definition.name(), principal, null);
+                null, definition.name(), principal, null);
         if (audit != null) {
             audit.runStarted(scope);
         }

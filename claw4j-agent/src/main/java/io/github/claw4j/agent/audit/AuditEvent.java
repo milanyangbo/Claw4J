@@ -53,12 +53,23 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      *
      * <p>其余四个字段可空：审计不能因为取不到身份就不写——「有个工具跑了」本身就是事实，只是那一格
      * 没人。为一行缺字段的审计去拒绝整个工具调用，是把记账当成了前置条件。
+     *
+     * @param runId 这一轮的编号
+     * @param sessionKey 会话键（不含段）
+     * @param sessionId 那一段（含段的 id）；与 OpenClaw 的同名两列一致（{@code audit-event-store.ts:97-98}）
+     * @param agentId 哪个 agent 干的
+     * @param requestedBy 触发这一轮的人。**扩展字段**：OpenClaw 的事件里没有它（人放在 execution
+     *     decision 那一层），我们放在库里供 SQL 追；读接口不返回
+     * @param channel 通道名；只有消息行会落库（{@code audit-event-store.ts:103}）
      */
-    public record Scope(String runId, String sessionKey, String agentId,
-                        String actor, String channel) {
+    public record Scope(String runId, String sessionKey, String sessionId, String agentId,
+                        String requestedBy, String channel) {
+
+        /** 没接上 agent 归属时的写法：写 {@code unknown} 而不是 null——null 让「谁干的」不可查。 */
+        public static final String UNKNOWN_AGENT = "unknown";
 
         /**
-         * 从身份与位置组一份。{@code principal} 为空时只留位置。
+         * 从身份与位置组一份（没有段号）。{@code principal} 为空时只留位置。
          *
          * @param runId 这一轮的编号
          * @param sessionKey 会话键
@@ -66,11 +77,8 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
          * @param channel 通道名，可为 null
          * @return 事件作用域
          */
-        /** 没接上 agent 归属时的写法：写 {@code unknown} 而不是 null——null 让「谁干的」不可查。 */
-        public static final String UNKNOWN_AGENT = "unknown";
-
         public static Scope of(String runId, String sessionKey, Principal principal, String channel) {
-            return of(runId, sessionKey, UNKNOWN_AGENT, principal, channel);
+            return of(runId, sessionKey, null, UNKNOWN_AGENT, principal, channel);
         }
 
         /**
@@ -88,7 +96,23 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
          */
         public static Scope of(String runId, String sessionKey, String agentId, Principal principal,
                                String channel) {
-            return new Scope(runId, sessionKey,
+            return of(runId, sessionKey, null, agentId, principal, channel);
+        }
+
+        /**
+         * 完整的一份：两把会话键都在。
+         *
+         * @param runId 这一轮的编号
+         * @param sessionKey 会话键（不含段）
+         * @param sessionId 那一段（含段的 id）
+         * @param agentId 哪个 agent 干的
+         * @param principal 身份，可为 null（消息行没有"请求的人"这一说，它是通道来的人）
+         * @param channel 通道名，可为 null
+         * @return 事件作用域
+         */
+        public static Scope of(String runId, String sessionKey, String sessionId, String agentId,
+                               Principal principal, String channel) {
+            return new Scope(runId, sessionKey, sessionId,
                     agentId == null || agentId.isBlank() ? UNKNOWN_AGENT : agentId,
                     principal == null ? null : principal.userId(), channel);
         }
@@ -99,7 +123,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
          * @return 全空的作用域
          */
         public static Scope empty() {
-            return new Scope(null, null, null, null, null);
+            return new Scope(null, null, null, null, null, null);
         }
     }
 

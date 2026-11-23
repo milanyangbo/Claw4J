@@ -94,7 +94,7 @@ class ToolGovernanceTest {
     }
 
     private static AuditEvent.Scope scope() {
-        return new AuditEvent.Scope(RUN, SESSION, null, "u-analyst", "web");
+        return new AuditEvent.Scope(RUN, SESSION, null, null, "u-analyst", "web");
     }
 
     @Test
@@ -129,7 +129,7 @@ class ToolGovernanceTest {
                 .as("来源键按调用编号算：靠指纹的话第二次那两行根本进不了库")
                 .isNotEqualTo(events.get(1).sourceId())
                 .startsWith("tool:" + RUN + ":sha256:");
-        assertThat(events.get(1).scope().actor()).isEqualTo("u-analyst");
+        assertThat(events.get(1).scope().requestedBy()).isEqualTo("u-analyst");
         assertThat(events.get(1).toolName()).isEqualTo(TOOL);
     }
 
@@ -174,7 +174,7 @@ class ToolGovernanceTest {
         audit.granted(RUN, "sendEmail", digest, "approval-7");
         audit.toolFinished(scope(), "sendEmail", args, null, null);
         audit.toolFinished(scope(), "sendEmail", args, null, null);
-        audit.toolFinished(new AuditEvent.Scope("run-2", SESSION, null, "u-analyst", "web"),
+        audit.toolFinished(new AuditEvent.Scope("run-2", SESSION, null, null, "u-analyst", "web"),
                 "sendEmail", args, null, null);
 
         assertThat(events).hasSize(3);
@@ -198,7 +198,7 @@ class ToolGovernanceTest {
         assertThat(event.status()).isEqualTo(AuditStatus.BLOCKED);
         assertThat(event.errorCode()).isEqualTo(AuditErrorCode.TOOL_BLOCKED);
         assertThat(event.toolName()).isEqualTo(TOOL);
-        assertThat(event.scope().actor()).isEqualTo("u-analyst");
+        assertThat(event.scope().requestedBy()).isEqualTo("u-analyst");
     }
 
     /**

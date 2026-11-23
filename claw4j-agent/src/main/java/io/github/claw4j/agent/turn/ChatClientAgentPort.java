@@ -440,7 +440,10 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         // 但没有任何"按 runId 取回一件事"的接口，因为一轮答完它就作废了。
         String runId = UUID.randomUUID().toString();
         // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, agentId,
+        // 两把会话键都带进审计（ADR-0037 第三批）：session_key 是会话键（不含段），
+        // session_id 是这一段。OpenClaw 两列都在（audit-event-store.ts:97-98），
+        // 只写含段的那一个的话，"同一段对话"与"这一轮"再也分不开。
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, conversationKey, sessionId, agentId,
                 message.principal(), message.channel());
         recorder.runStarted(auditScope);
         // 根 span 从"这一轮"开始，而不是从这次请求开始：模型轮与工具都发生在入池之后（见 RUN_SPAN）。
@@ -521,7 +524,10 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         }
         String sessionId = address.sessionIdOf(message, owner, parsed.reset());
         String runId = UUID.randomUUID().toString();
-        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, sessionId, agentId,
+        // 两把会话键都带进审计（ADR-0037 第三批）：session_key 是会话键（不含段），
+        // session_id 是这一段。OpenClaw 两列都在（audit-event-store.ts:97-98），
+        // 只写含段的那一个的话，"同一段对话"与"这一轮"再也分不开。
+        AuditEvent.Scope auditScope = AuditEvent.Scope.of(runId, conversationKey, sessionId, agentId,
                 message.principal(), message.channel());
         recorder.runStarted(auditScope);
         try (SpanTracer.SpanScope run = recorder.tracer().open(TurnRecorder.RUN_SPAN,

@@ -87,14 +87,14 @@ public class AuditLedger implements AuditSink {
 
     private static final String INSERT = """
             insert into claw4j_run.audit_event
-                (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
-                 actor, channel, tool_call_id, tool_name, args_digest, approval_id,
-                 source_id, source_sequence,
+                (event_id, kind, action, status, error_code, run_id, session_key, session_id, agent_id,
+                 actor_type, actor, requested_by, channel, tool_call_id, tool_name, args_digest,
+                 approval_id, source_id, source_sequence,
                  direction, conversation_kind, message_outcome, reason_code, delivery_kind,
-                 failure_stage, duration_ms, result_count, actor_type,
+                 failure_stage, duration_ms, result_count,
                  account_ref, conversation_ref, message_ref, target_ref)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict (source_id, source_sequence) do nothing
             """;
 
@@ -123,16 +123,17 @@ public class AuditLedger implements AuditSink {
      */
     private static final String SWEEP_ORPHANS = """
             insert into claw4j_run.audit_event
-                (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
-                 actor, channel, tool_call_id, tool_name, args_digest, approval_id,
-                 source_id, source_sequence)
+                (event_id, kind, action, status, error_code, run_id, session_key, session_id, agent_id,
+                 actor_type, actor, requested_by, channel, tool_call_id, tool_name, args_digest,
+                 approval_id, source_id, source_sequence)
             select 'orphan-' || md5(s.source_id || ':' || s.source_sequence),
                    s.kind,
                    case s.kind when 'agent_run' then 'agent.run.finished'
                                else 'tool.action.finished' end,
                    'unknown',
                    case s.kind when 'agent_run' then null else 'tool_outcome_unknown' end,
-                   s.run_id, s.session_key, s.agent_id, s.actor, s.channel,
+                   s.run_id, s.session_key, s.session_id, s.agent_id,
+                   s.actor_type, s.actor, s.requested_by, s.channel,
                    -- 编号跟着 started 那一行走：补出来的终态说的是「同一次调用没了下文」，
                    -- 换一个编号就成了另一次调用
                    s.tool_call_id, s.tool_name, s.args_digest, null,
@@ -206,6 +207,8 @@ public class AuditLedger implements AuditSink {
             return;
         }
         AuditEvent.Message message = event.message();
+        // 归属按 OpenClaw 的规则算一次（见 attributionOf）：事件里记执行者，不记人。
+        Attribution attribution = attributionOf(message, scope.agentId());
         try {
             int written = jdbc.update(INSERT,
                     // event_id 单独生成而不是复用主键：OpenClaw 用它去重（同一条事件重复投递只留一行）。
@@ -219,9 +222,14 @@ public class AuditLedger implements AuditSink {
                     event.errorCode() == null ? null : event.errorCode().column(),
                     scope.runId(),
                     scope.sessionKey(),
+                    scope.sessionId(),
                     scope.agentId(),
-                    scope.actor(),
-                    scope.channel(),
+                    attribution.type(),
+                    attribution.id(),
+                    scope.requestedBy(),
+                    // 通道只属于消息行：OpenClaw 对非消息行强制写 null（audit-event-store.ts:103），
+                    // 库里还有 ck_audit_event_channel_message_only 钉着。
+                    message == null ? null : scope.channel(),
                     // 工具调用编号（票 06）：只有 tool_action 有值，其余 kind 落 null——
                     // 消息行带它是 OpenClaw 读侧 schema 明确禁止的形状（toolCallId?: never）。
                     event.toolCallId(),
@@ -238,7 +246,6 @@ public class AuditLedger implements AuditSink {
                     message == null ? null : message.failureStage(),
                     message == null ? null : message.durationMs(),
                     message == null ? null : message.resultCount(),
-                    message == null ? null : message.actorType(),
                     message == null ? null : message.accountRef(),
                     message == null ? null : message.conversationRef(),
                     message == null ? null : message.messageRef(),
@@ -390,5 +397,49 @@ public class AuditLedger implements AuditSink {
         public int total() {
             return expired + overLimit;
         }
+    }
+
+    /**
+     * 一行审计的「谁执行的」：{@code type} 与 {@code id} 两格，落 {@code actor_type} / {@code actor}。
+     *
+     * @param type {@code agent} / {@code system} / {@code channel_sender}
+     * @param id agent 行是 agentId，通道来的人是发送者假名
+     */
+    private record Attribution(String type, String id) {
+    }
+
+    /**
+     * 按 OpenClaw 的规则算归属（{@code src/audit/agent-event-audit.ts} 的
+     * {@code projectExplicitAttribution}：{@code actorType = eventAgentId ? "agent" : "system"}、
+     * {@code actorId = agentId}）。
+     *
+     * <p><b>它记的是执行者，不是提问的人</b>：人在 OpenClaw 那边属于 execution decision 那一层，
+     * 我们放在 {@code requested_by}（扩展列，读接口不返回）。这一格以前装的是人，与它同名不同义——
+     * 那正是"看起来对齐、字段含义对不上"最难查的一种。
+     *
+     * <p>消息行按它的消息投影：入站是 {@code channel_sender} + 发送者假名（与 {@code account_ref}
+     * 同值），出站是 {@code agent} + agentId；入站却拿不到假名时降级成 {@code system}——它的
+     * schema 里 {@code channel_sender} 必须带 hmac 引用，写不出那引用就不能自称是某个通道里的人。
+     *
+     * @param message 消息行专有的那组；运行与工具行为 null
+     * @param agentId 这一轮的 agent
+     * @return 归属两格，都不为 null
+     */
+    private static Attribution attributionOf(AuditEvent.Message message, String agentId) {
+        if (message != null) {
+            String ref = message.accountRef();
+            if (ref != null && !ref.isBlank()) {
+                return new Attribution("channel_sender", ref);
+            }
+            String type = message.actorType();
+            if ("channel_sender".equals(type)) {
+                return new Attribution("system", "unknown");
+            }
+            return new Attribution(type == null ? "agent" : type,
+                    agentId == null || agentId.isBlank() ? "unknown" : agentId);
+        }
+        return agentId == null || agentId.isBlank()
+                ? new Attribution("system", "unknown")
+                : new Attribution("agent", agentId);
     }
 }

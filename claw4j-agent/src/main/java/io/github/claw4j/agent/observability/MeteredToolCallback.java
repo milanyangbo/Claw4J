@@ -286,10 +286,19 @@ public class MeteredToolCallback implements ToolCallback {
         if (toolContext == null) {
             return AuditEvent.Scope.empty();
         }
-        Object session = toolContext.getContext().get(ChatMemory.CONVERSATION_ID);
-        String sessionKey = session instanceof String value && !value.isBlank() ? value : null;
-        return AuditEvent.Scope.of(runIdOf(toolContext), sessionKey, agentIdOf(toolContext),
-                principalOf(toolContext), channelOf(toolContext));
+        // 两把会话键（ADR-0037 第三批）：session_key 是会话键（不含段），session_id 是那一段。
+        // 工具上下文里两个都在（PromptComposer 塞的 CONVERSATION 与框架的 CONVERSATION_ID）；
+        // 子链只塞了后者，那时退回它——它至少能唯一定位这一轮。
+        String sessionId = textOf(toolContext, ChatMemory.CONVERSATION_ID);
+        String sessionKey = textOf(toolContext, ContextKeys.CONVERSATION);
+        return AuditEvent.Scope.of(runIdOf(toolContext), sessionKey == null ? sessionId : sessionKey,
+                sessionId, agentIdOf(toolContext), principalOf(toolContext), channelOf(toolContext));
+    }
+
+    /** 从工具上下文取一格非空白字符串。 */
+    private static String textOf(ToolContext toolContext, String key) {
+        Object value = toolContext.getContext().get(key);
+        return value instanceof String text && !text.isBlank() ? text : null;
     }
 
     private static String agentIdOf(ToolContext toolContext) {

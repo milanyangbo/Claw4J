@@ -515,7 +515,9 @@ class ApprovalFlowTest {
                 .isNotEqualTo(first.runId());
         Map<String, Object> executed = onlyAuditRow(executedRunId, "succeeded");
         assertThat(executed.get("tool_name")).isEqualTo(TOOL);
-        assertThat(executed.get("actor")).isEqualTo("u-mailer");
+        // 归属分两格（ADR-0037 第三批）：actor 记执行者（agent），人记在 requested_by 这个扩展列上。
+        assertThat(executed.get("actor_type")).isEqualTo("agent");
+        assertThat(executed.get("requested_by")).isEqualTo("u-mailer");
         assertThat(executed.get("approval_id")).isEqualTo(approvalId);
         assertThat(executed.get("args_digest"))
                 .as("指纹与审批那条同一个函数，于是「这次执行是哪次批准的」能直接对上")

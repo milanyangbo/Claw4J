@@ -137,14 +137,16 @@ class ScheduleFlowTest {
 
         scannerWith(new ScriptedModel("上周华东 128400"), delivery).scan();
 
+        // 归属分两格（ADR-0037 第三批）：actor 记执行者（agent），人记在 requested_by 上。
         Map<String, Object> started = jdbc.queryForMap(
-                "select session_key, actor from claw4j_run.audit_event"
-                        + " where action = 'agent.run.started'");
+                "select session_key, session_id, actor, actor_type, requested_by"
+                        + " from claw4j_run.audit_event where action = 'agent.run.started'");
         assertThat(started)
                 .as("跑在任务主人身上：不是「第一个点了启用的人」，也不是一个管理员身份")
-                .containsEntry("actor", OWNER_PRINCIPAL.userId());
-        assertThat((String) started.get("session_key"))
-                .as("定时任务的会话是 cron:<taskId>:<时刻>：不往用户那段对话里塞记录")
+                .containsEntry("requested_by", OWNER_PRINCIPAL.userId())
+                .containsEntry("actor_type", "agent");
+        assertThat((String) started.get("session_id"))
+                .as("定时任务的段是 cron:<taskId>:<时刻>：不往用户那段对话里塞记录")
                 .contains("cron:");
         assertThat(count("select count(*) from claw4j_run.audit_event"
                 + " where action = 'agent.run.finished' and status = 'succeeded'"))
@@ -388,16 +390,18 @@ class ScheduleFlowTest {
         makeDue(id);
         toolCallingScanner(delivery).scan();
 
-        List<String> sessionKeys = jdbc.queryForList(
-                "select session_key from claw4j_run.audit_event"
+        // 两次到点共用同一个会话键（都是这个任务的）但**段不同**——"各走各的会话"落在段上
+        // （ADR-0037 第三批把两把键拆开了）。
+        List<String> segments = jdbc.queryForList(
+                "select session_id from claw4j_run.audit_event"
                         + " where action = 'agent.run.started' order by seq", String.class);
-        assertThat(sessionKeys).as("每次到点都是一轮").hasSize(2);
-        assertThat(sessionKeys).as("两次到点各走各的会话：借用创建者那段对话的话，两次会落在同一段上下文里")
+        assertThat(segments).as("每次到点都是一轮").hasSize(2);
+        assertThat(segments).as("两次到点各走各的段：借用创建者那段对话的话，两次会落在同一段上下文里")
                 .doesNotHaveDuplicates()
-                .allSatisfy(key -> assertThat(key).startsWith("claw4j:user:").contains("cron:"));
-        assertThat(jdbc.queryForList("select distinct actor from claw4j_run.audit_event"
+                .allSatisfy(segment -> assertThat(segment).startsWith("claw4j:user:").contains("cron:"));
+        assertThat(jdbc.queryForList("select distinct requested_by from claw4j_run.audit_event"
                         + " where action = 'agent.run.started'", String.class))
-                .as("跑在任务主人的身份上")
+                .as("跑在任务主人的身份上（人记在 requested_by）")
                 .containsExactly(OWNER_PRINCIPAL.userId());
         assertThat(seenPrincipals).as("工具在谁的身份下被放行")
                 .hasSize(2).containsOnly(OWNER_PRINCIPAL.userId());
@@ -414,21 +418,32 @@ class ScheduleFlowTest {
         port(model).reply(new InboundMessage(OWNER_PRINCIPAL, "oc_sched", "早上好"));
         scannerWith(model, delivery).scan();
 
-        List<String> sessions = jdbc.queryForList(
+        // 两把键分开之后（ADR-0037 第三批）：session_key 是会话键，session_id 是那一段。
+        // 原来的断言只有一把，验的是"任务没借创建者那一段"；现在两把都要各自成立。
+        List<String> keys = jdbc.queryForList(
                 "select session_key from claw4j_run.audit_event"
                         + " where action = 'agent.run.started' order by seq", String.class);
-        assertThat(sessions)
+        List<String> segments = jdbc.queryForList(
+                "select session_id from claw4j_run.audit_event"
+                        + " where action = 'agent.run.started' order by seq", String.class);
+        assertThat(keys)
                 .as("两条 run 落在两段会话里：一条是用户的，一条是任务自己的")
                 .hasSize(2)
                 .doesNotHaveDuplicates();
-        assertThat(sessions)
-                .filteredOn(session -> session.contains(":cron:"))
-                .as("任务那条的会话形如 …:cron:<taskId>:<触发时刻>。"
-                        + "它会话里出现 oc_sched 的话，就还是借用创建者那段对话")
+        assertThat(segments)
+                .as("段号也必须不同：借用了创建者那一段的话，这两个值会相等")
+                .hasSize(2)
+                .doesNotHaveDuplicates();
+        assertThat(keys)
+                .filteredOn(key -> key.contains(":cron:"))
+                .as("任务那条的会话键形如 …:cron:<taskId>（触发时刻在段号里）")
                 .singleElement()
-                .satisfies(session -> assertThat(session)
-                        .contains(":cron:" + id + ":")
-                        .doesNotContain("oc_sched"));
+                .satisfies(key -> assertThat(key).contains(":cron:" + id));
+        assertThat(segments)
+                .filteredOn(segment -> segment.contains(":cron:"))
+                .as("任务那条的段号形如 …:cron:<taskId>:<触发时刻>")
+                .singleElement()
+                .satisfies(segment -> assertThat(segment).contains(":cron:" + id + ":"));
 
         assertThat(jdbc.queryForObject(
                 "select channel_ref from claw4j_run.agent_schedule where id = ?", String.class, id))

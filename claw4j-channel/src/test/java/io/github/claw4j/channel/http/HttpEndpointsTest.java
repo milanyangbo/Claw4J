@@ -153,67 +153,84 @@ class HttpEndpointsTest {
     /**
      * 审计的只读端点（ADR-0037 票 03）。
      *
-     * <p>判两件事：一页按 {@code seq} 倒序带出去、{@code nextCursor} 原样返回；没装配查询时
+     * <p>判两件事：一页按 {@code sequence} 倒序带出去、{@code nextCursor} 原样返回；没装配查询时
      * 回 404 而不是 500——后者在客户端看来像"库坏了"，前者才是"这个部署没开"。
      */
     @Test
-    @DisplayName("审计：一页带出 nextCursor；没装配时 404")
+    @DisplayName("审计：一页带出 nextCursor（字符串）；没装配时 404")
     void anAuditPageIsReadable() {
-        AuditQuery.Row row = new AuditQuery.Row(7L, "e-1", "tool_action", "tool_action",
-                "tool.action.started",
-                "started", null, "run-1", "sk", "ops", "ethan", "http", "call-1", "Bash", null, null,
-                Instant.parse("2026-11-22T12:00:00Z"), null);
         AuditQuery fixed = filter -> {
             assertEquals(2, filter.limit());
             assertEquals("run-1", filter.runId());
             assertEquals("inbound", filter.direction(), "方向过滤要传下去");
-            return new AuditQuery.Page(List.of(row), 7L);
+            assertEquals(Long.valueOf(1000L), filter.after(), "时间窗下界要传下去");
+            assertEquals(Long.valueOf(9000L), filter.before(), "时间窗上界要传下去");
+            return new AuditQuery.Page(List.of(row(7L, "tool_action", "tool_action", null)), 7L);
         };
 
-        ResponseEntity<AuditController.AuditView> response =
-                auditController(fixed).list("run-1", null, null, null, "inbound", null, null, null, 2);
+        ResponseEntity<?> response = auditController(fixed)
+                .list("run-1", null, null, null, "inbound", null, null, 1000L, 9000L, null, 2);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals(1, response.getBody().events().size());
-        assertEquals(Long.valueOf(7L), response.getBody().nextCursor());
-        assertEquals("call-1", response.getBody().events().getFirst().toolCallId(),
+        AuditController.AuditView page = (AuditController.AuditView) response.getBody();
+        assertNotNull(page);
+        assertEquals(1, page.events().size());
+        assertEquals("7", page.nextCursor(), "游标与 OpenClaw 同形：字符串，不是数字");
+        assertEquals("call-7", page.events().getFirst().toolCallId(),
                 "调用编号要带得出去（票 06）：没有它，同参数两次调用在客户端看来是同一行");
         assertEquals(HttpStatus.NOT_FOUND,
-                auditController(null).list(null, null, null, null, null, null, null, null, 10)
+                auditController(null)
+                        .list(null, null, null, null, null, null, null, null, null, null, 10)
                         .getStatusCode());
     }
 
     /**
-     * 读侧的四个变体靠 {@code eventType} 判别（ADR-0037 票 07）。
+     * 四个变体靠 {@code eventType} 判别，**外围那五格必填字段一个不能少**（ADR-0037 第三批）。
      *
-     * <p>它问的是"客户端能不能只按这一个字段分派"：四个值各对应一份 schema，
-     * 而 {@code kind} 与消息方向仍要在（它们负责过滤与展示，出处 {@code ledgers.md:31-33}）。
-     * 验序列化而不是只验 getter——这个字段存在的理由就是上线之后在报文里。
+     * <p>OpenClaw 的变体是闭对象，{@code commonProperties} 里 {@code schemaVersion} /
+     * {@code eventId} / {@code sequence} / {@code sourceSequence} / {@code occurredAt} /
+     * {@code redaction} 全必填（{@code audit-activity.ts:105-112}）。少一格，严格客户端解析不了；
+     * 多一格（比如非消息行上的 {@code channel}、我们的 {@code argsDigest}）同样解析不了——
+     * 所以这条同时钉"该来的在"与"不该来的不在"。
      */
     @Test
-    @DisplayName("审计：四种组合各出一个 eventType，kind 与方向都还在报文里（票 07）")
+    @DisplayName("审计：四种变体各自的必填格都在，空字段不出现（第三批）")
     void anAuditPageCarriesTheVariantDiscriminator() {
-        AuditQuery.Page page = new AuditQuery.Page(List.of(
+        List<AuditQuery.Row> rows = List.of(
                 row(4L, "agent_run", "agent_run", null),
                 row(3L, "tool_action", "tool_action", null),
                 row(2L, "message", "inbound_message",
                         new AuditQuery.MessageRow("inbound", "completed", null, "direct", null, null,
-                                12, 1, "agent", "acc", "conv", "msg", "target")),
+                                12, 1, "acc", "conv", "msg", "target")),
                 row(1L, "message", "outbound_message",
                         new AuditQuery.MessageRow("outbound", "sent", null, "direct", "text", null,
-                                30, 1, "agent", "acc", "conv", "msg", "target"))), null);
+                                30, 1, "acc", "conv", "msg", "target")));
+        List<AuditEventView> views = rows.stream().map(AuditEventView::of).toList();
 
         String json = tools.jackson.databind.json.JsonMapper.builder().build()
-                .writeValueAsString(new AuditController.AuditView(page.rows(), page.nextCursor()));
+                .writeValueAsString(new AuditController.AuditView(views, "4"));
 
         assertTrue(json.contains("\"eventType\":\"agent_run\""), json);
         assertTrue(json.contains("\"eventType\":\"tool_action\""), json);
         assertTrue(json.contains("\"eventType\":\"inbound_message\""), json);
         assertTrue(json.contains("\"eventType\":\"outbound_message\""), json);
+        assertTrue(json.contains("\"schemaVersion\":1"), "版本号是必填：" + json);
+        assertTrue(json.contains("\"sequence\":4"), "序号改名成 sequence：" + json);
+        assertTrue(json.contains("\"sourceSequence\":1"), json);
+        assertTrue(json.contains("\"occurredAt\":" + OCCURRED_AT.toEpochMilli()),
+                "时间要给 Unix 毫秒整数，不是 ISO 字符串：" + json);
+        assertTrue(json.contains("\"redaction\":\"metadata_only\""), json);
+        assertTrue(json.contains("\"actor\":{\"type\":\"agent\",\"id\":\"ops\"}"),
+                "actor 是对象，不是字符串：" + json);
+        assertTrue(json.contains("\"actor\":{\"type\":\"channel_sender\",\"id\":\"acc\"}"),
+                "入站消息的执行者是通道里那个人（假名）：" + json);
         assertTrue(json.contains("\"kind\":\"message\""),
                 "kind 是过滤用的那一格，判别字段替不掉它：" + json);
         assertTrue(json.contains("\"direction\":\"outbound\""), json);
+        assertTrue(!json.contains(":null"),
+                "空字段必须整格省掉（闭对象里多一格就是多一个非法字段）：" + json);
+        assertTrue(!json.contains("argsDigest") && !json.contains("approvalId"),
+                "扩展列不进报文，否则就不是它那份 schema 的实例了：" + json);
     }
 
     /**
@@ -229,18 +246,72 @@ class HttpEndpointsTest {
                 IllegalArgumentException.class,
                 () -> row(1L, "message", "tool_action",
                         new AuditQuery.MessageRow("inbound", "completed", null, "direct", null, null,
-                                1, 1, "agent", "acc", "conv", "msg", "target")));
+                                1, 1, "acc", "conv", "msg", "target")));
 
         assertTrue(failure.getMessage().contains("eventType"),
                 "要说清是哪一格推错了，而不是一句「参数不合法」：" + failure.getMessage());
     }
 
+    /**
+     * 自相矛盾的过滤组合要 400（ADR-0037 第三批，照 {@code findAuditActivityFilterConflict}，
+     * {@code audit-activity.ts:30-53}）。
+     *
+     * <p>静默返回空页是最坏的一种"对齐"：字段名对了，行为还是两套。客户端看到空页会以为
+     * "这段时间没有审计"，而真相是"这两个参数不该一起用"。
+     */
+    @Test
+    @DisplayName("审计：消息/非消息的参数组合互斥，冲突时 400 而不是空页（第三批）")
+    void conflictingFiltersAreRejected() {
+        AuditQuery never = filter -> {
+            throw new AssertionError("参数冲突时不该查库：" + filter);
+        };
+        AuditController controller = auditController(never);
+
+        ResponseEntity<?> toolWithChannel = controller.list(null, null, null, "tool_action", null,
+                null, "http", null, null, null, 10);
+        assertEquals(HttpStatus.BAD_REQUEST, toolWithChannel.getStatusCode());
+        assertTrue(((AuditController.Problem) toolWithChannel.getBody()).error()
+                .contains("direction 或 channel"));
+
+        ResponseEntity<?> messageWithSession = controller.list(null, "sk", null, "message", null,
+                null, null, null, null, null, 10);
+        assertEquals(HttpStatus.BAD_REQUEST, messageWithSession.getStatusCode());
+        assertTrue(((AuditController.Problem) messageWithSession.getBody()).error()
+                .contains("sessionKey"));
+
+        ResponseEntity<?> sessionAndChannel = controller.list(null, "sk", null, null, null, null,
+                "http", null, null, null, 10);
+        assertEquals(HttpStatus.BAD_REQUEST, sessionAndChannel.getStatusCode(), "没指定 kind 时两边互斥");
+    }
+
+    /** 游标是上一页给的那个字符串；认不出来的要给 400，而不是当成"从头查"。 */
+    @Test
+    @DisplayName("审计：cursor 认不出来时 400，不当成从头查（第三批）")
+    void anUnknownCursorIsRejected() {
+        AuditQuery never = filter -> {
+            throw new AssertionError("游标不合法时不该查库");
+        };
+
+        ResponseEntity<?> response = auditController(never)
+                .list(null, null, null, null, null, null, null, null, null, "not-a-cursor", 10);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertTrue(((AuditController.Problem) response.getBody()).error().contains("cursor"));
+    }
+
+    /** 这一批夹具用的时刻：毫秒断言靠它算，不写死数字。 */
+    private static final Instant OCCURRED_AT = Instant.parse("2026-11-22T12:00:00Z");
+
     /** 一行审计的夹具：只填这一批断言用得到的格子，其余留空。 */
     private static AuditQuery.Row row(long seq, String kind, String eventType,
                                       AuditQuery.MessageRow message) {
-        return new AuditQuery.Row(seq, "e-" + seq, kind, eventType,
-                kind + ".some.action", "started", null, "run-1", "sk", "ops", "ethan", "http",
-                null, null, null, null, Instant.parse("2026-11-22T12:00:00Z"), message);
+        boolean messageRow = message != null;
+        return new AuditQuery.Row(seq, 1, "e-" + seq, 1, eventType, kind,
+                kind + ".some.action", "started", null, "metadata_only",
+                "run-1", messageRow ? null : "sk", messageRow ? null : "s-1", "ops",
+                messageRow ? "channel_sender" : "agent", messageRow ? "acc" : "ops",
+                messageRow ? "http" : null,
+                messageRow ? null : "call-" + seq, null, null, null, OCCURRED_AT, message);
     }
 
     private static AuditController auditController(AuditQuery query) {

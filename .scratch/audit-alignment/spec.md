@@ -23,6 +23,9 @@
 | 06 | 工具调用编号：从观测上下文取到，进 `ToolContext`，落 `audit_event.tool_call_id`（V13） | 01 | resolved |
 | 07 | 读侧 `eventType`：四个变体的判别字段（`inbound_message` / `outbound_message` 由方向分出） | 03、04 | resolved |
 | 08 | 子 Agent 的审计：每次委派开自己的 run，工具行落在这一轮上 | 01、06 | resolved |
+| 09 | 读侧报文：信封五格（`schemaVersion`/`sequence`/`sourceSequence`/`occurredAt`/`redaction`）、`actor` 对象、声明闭对象 | 11 | resolved |
+| 10 | 读接口参数：`after`/`before` 时间窗、冲突组合 400、`cursor` 改字符串 | 03 | resolved |
+| 11 | 写侧归属：`actor` 记执行者、两把会话键、`channel` 只属于消息行（V14） | 01 | resolved |
 
 **状态列与票面同源**：票面开头那行 `**Status:**` 是事实，这张表只是总览；收票时两处一起改。
 `scripts/check-ticket-cases.sh` 会比对（表里漏列一张票、或两处写的不是一个词，都会红）。

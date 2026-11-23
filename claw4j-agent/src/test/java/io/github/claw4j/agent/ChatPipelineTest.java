@@ -375,7 +375,7 @@ class ChatPipelineTest {
         assertThat(audit.events).allSatisfy(event -> {
             assertThat(event.scope().runId()).as("两条事件属于同一轮").isEqualTo(answer.runId());
             assertThat(event.scope().sessionKey()).as("会话键进门就算好了").isNotNull();
-            assertThat(event.scope().actor()).as("谁发起的").isEqualTo("u-1");
+            assertThat(event.scope().requestedBy()).as("谁发起的").isEqualTo("u-1");
         });
         assertThat(audit.events.getLast().status()).isEqualTo(AuditStatus.SUCCEEDED);
 
@@ -775,7 +775,9 @@ class ChatPipelineTest {
         assertThat(audit.events)
                 .as("按通道+chatId 派生会得到「无段」的那个键：段一丢，上下文与 goal 都不在这段里")
                 .isNotEmpty()
-                .allSatisfy(event -> assertThat(event.scope().sessionKey())
+                // 两把会话键分开之后（ADR-0037 第三批），"显式给的那一段"落在 session_id 上；
+                // session_key 是不含段的那个键。原来这里断言的是 sessionKey —— 那时两者被合成了一把。
+                .allSatisfy(event -> assertThat(event.scope().sessionId())
                         .isEqualTo("claw4j:u-1@fp-1:feishu:chat-1:seg-fixed"));
     }
 
