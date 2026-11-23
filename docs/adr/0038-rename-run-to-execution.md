@@ -24,12 +24,13 @@ ADR-0027 当时定的"run 只是个句柄、不落表"仍然成立，但它没�
 **一、把"一轮"的标识统一改名为 `executionId`**（库里 `execution_id`，Java 里 `executionId`，
 上下文键 `ContextKeys.EXECUTION_ID`，内部端口与文档同）。只改名字，不改值也不改语义。
 
-**二、线格式保持 `runId`**。`audit.activity` 的 `agent_run` / `tool_action` 变体里 `runId` 是
-必填字段（`packages/gateway-protocol/src/schema/audit-activity.ts:112-120`），而四个变体都是闭对象
-（`:135-142`）——把报文改叫 `executionId`，要么少一个必填格、要么多一个非法格，两种都解析不了。
-查询参数同理（它的参数表里只有 `runId`，`:410-420`）。翻译只在一处：`AuditEventView` 与
-`AuditController` 把 `row.executionId()` 放到报文/参数的 `runId` 上，和 `seq → sequence`、
-`at → occurredAt` 是同一类转换。
+**二、线格式也改，叫 `executionId`**（票 16，推翻本 ADR 初稿的"线格式保持 `runId`"）。
+初稿的理由是"它的闭对象里那一格必填、参数表里只有 `runId`"（`audit-activity.ts:112-120`、
+`:410-420`）——那是对**照抄它的 schema** 成立的理由，但那一格装的是**我们的**执行编号，它的
+`runId` 是"可能跨轮共享的关联"，我们没有那一层。名字留在边界上，读报文的人就会以为我们也有一层
+叫 run 的东西，正是本文背景里那个"同名不同物"。所以 `AuditEventView` 的组件与 `AuditController`
+的参数都叫 `executionId`（与 `/api/chat` 的 `AskResponse`、`/api/approvals` 的 `ApprovalView` 一致）。
+代价：报文不再是它 `audit.activity` 的实例，要按它那份 schema 解析的客户端得自己映射一次。
 
 **三、撤除 `audit.run.inspect` 那一套**（原票 14）。它是 run 级的语义：传 `runId` 是"发现这次 run
 下的多个执行"，一个 run 对应多条时只回 `ambiguous`、要求选 `executionId`
@@ -47,11 +48,13 @@ ADR-0027 当时定的"run 只是个句柄、不落表"仍然成立，但它没�
   自定义工具若直接读这个字符串，要跟着改；读常量（`ContextKeys`）的不用。
 - **来源键前缀 `run:` → `exec:`**（`source_id`）：旧行保持旧前缀。它是内部去重键，不进报文，
   但两份前缀会同时存在——查历史时按值与时间，不按前缀。
-- **公开契约**：审计接口的参数名与报文那一格**不变**（见决定二）；但 `/api/chat` 的同步/流式
-  回执里那个字段跟着 Java 记录一起改名（`runId` → `executionId`），以及审批卡片载荷里的同名字段。
-  这两处是我们自己的契约，不是 OpenClaw 的线格式，改名是为了"一轮的编号"只有一个名字。
+- **公开契约**：审计接口的参数名与报文那一格都改成了 `executionId`（决定二）；`/api/chat` 的
+  同步/流式回执、审批卡片载荷里的同名字段更早一步跟着 Java 记录一起改了（`runId` → `executionId`）。
+  四处都是"一轮的编号"，只有一个名字。
+- **不再是 OpenClaw 的实例**：`audit.activity` 的报文与参数表里那一格叫 `runId`，我们不再照抄。
+  要按它那份 schema 解析的客户端得自己映射一次。
 - **少了一个能力**：`GET /api/audit/runs/{runId}` 撤除。单次取证的替代是
-  `GET /api/audit?runId=<执行编号>`（时间线里筛这一轮），以及库里的 `approval_request` /
+  `GET /api/audit?executionId=<执行编号>`（时间线里筛这一轮），以及库里的 `approval_request` /
   `execution_decision_fact` 两张表。要"按决策类型合并 + 覆盖度"这一层，得先有执行身份与
   决策回执的属主，不是读侧能补的。
 

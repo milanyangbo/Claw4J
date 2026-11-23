@@ -12,8 +12,8 @@
 | `POST /api/chat` | 同步，返回 `{"chatId":"...","text":"...","executionId":"..."}` |
 | `POST /api/chat/stream` | 流式，返回 SSE（`event:chunk` … `event:done`） |
 
-`executionId` 是**这一轮**的编号（ADR-0027、ADR-0038）：本地生成，只用于串日志与认批次。它对应 OpenClaw 的
-`executionId`（每轮外层请求一个）；那个"可能跨轮共享的 `runId`"我们没有。
+`executionId` 是**这一轮**的编号（ADR-0027、ADR-0038）：本地生成，只用于串日志与认批次。名字与
+OpenClaw 的 `executionId` 同义（每轮外层请求一个）——它上面还有一层"可能跨轮共享的关联"，我们没有。
 **它不是续跑令牌**——拿它回来接不上任何东西。连续性靠会话：同一段对话里再说一句，
 模型看到的就是前文（`X-Claw4j-Chat-Id` 决定是不是同一段）。
 
@@ -588,7 +588,7 @@ duration_ms / result_count / account_ref / conversation_ref / message_ref / targ
 第二次计入 `claw4j.audit.duplicates`——重复不是故障，是幂等在起作用。来源键的算法在
 `AuditEvent` 的四个工厂里：运行是 `exec:<executionId>`（1 开始 / 2 结束），工具是
 `tool:<executionId>:<编号哈希>`（1 开始 / 2 结束）。**工具键不含工具名与参数**——照 OpenClaw 的
-`legacyAuditSourceId`（`<runId>:<seq>:<occurredAt>:<action>`），唯一性的成分是"哪一轮 + 这一次调用"；
+`legacyAuditSourceId`（`<执行编号>:<seq>:<occurredAt>:<action>`），唯一性的成分是"哪一轮 + 这一次调用"；
 拿不到编号时才退回 `tool:<executionId>:<工具>:<指纹>`，那时同参数两次会被合并成一行（票 02 记着的代价）。
 改名之前写进去的旧行前缀是 `run:`，前缀不参与查询，不影响去重（ADR-0038）。
 
@@ -616,8 +616,7 @@ OpenClaw 在绑定时就按 kind 强制 null（`audit-event-store.ts:103`），�
 
 **子 Agent 的调用落在自己那一轮上**（票 08）：每次委派开一个新的执行编号，`session_key` 是
 `subagent:<定义名>`、`agent_id` 是定义名、`requested_by` 还是父那一轮的人（委派不提权）。所以
-`/api/audit?sessionKey=subagent:alpha` 就是"这个子 Agent 干了什么"，按执行编号则是"这一次派活"
-（接口参数名沿用它的 `runId`，见下）。
+`/api/audit?sessionKey=subagent:alpha` 就是"这个子 Agent 干了什么"，按执行编号则是"这一次派活"。
 **父子之间没有 lineage 列**：OpenClaw 那条投影要父令牌，没有就明说缺失、不推断
 （`docs/gateway/audit.md`），我们也照这条——不从父执行编号编一个关联。
 
@@ -659,8 +658,8 @@ OpenClaw 在绑定时就按 kind 强制 null（`audit-event-store.ts:103`），�
 > 审计回答"上一次是谁批的"（30 天，按行查）；评测回答"答得好不好"（A06）。
 > 三者混起来的第一个症状是"审计里查不到上个月"——那时通常已经有人拿它当过监控看板了。
 
-读接口：`GET /api/audit?runId=&sessionKey=&agentId=&kind=&direction=&status=&channel=&after=&before=&cursor=&limit=`
-（参数名 `runId` 是它的线格式：它的参数表里只有这个名，值是我们的执行编号——ADR-0038 决定二），
+读接口：`GET /api/audit?executionId=&sessionKey=&agentId=&kind=&direction=&status=&channel=&after=&before=&cursor=&limit=`
+（参数名 `executionId` 是本仓的命名：它那张参数表里只有"跨轮共享的关联"那个名字，我们只有执行——ADR-0038 决定二），
 按 `sequence` 倒序、游标翻页（**字符串**，与 OpenClaw 同形）、`limit` 1–500（越界钳位），
 `after`/`before` 是 **Unix 毫秒闭区间**（`ledgers.md:25-26`）。没装查询时 404（能力不在场，不是库坏了）。
 `direction` 照 OpenClaw 的 `audit.activity.list`（`docs/gateway/protocol/ledgers.md:120-131`）——

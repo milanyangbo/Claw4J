@@ -49,11 +49,11 @@ false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展
 多条时只回 `ambiguous` 并要你选 `executionId`（`ledgers.md:124-127`）。我们没有"一次 run 下多个执行"
 这回事，照抄出来的端点只覆盖它的 `executionId` 分支、名字却叫 run。撤除的裁决与代价见 ADR-0038。
 
-**命名已按 ADR-0038 改**：我们把"一轮"叫 `runId`，而 OpenClaw 把每轮外层请求叫 `executionId`、
-把 `runId` 留给"可能跨轮共享的会话/路由/恢复关联"（`docs/cli/audit.md:102-106`）。现在库里与
-代码里统一叫 `executionId`（V16），**线格式保持 `runId`**——它的 `agent_run` / `tool_action` 变体里
-`runId` 是必填（`audit-activity.ts:112-120`）、四个变体都是闭对象，改了就不是它的实例；
-参数表里也只有 `runId`。翻译只在 `AuditEventView` 与 `AuditController` 两处。
+**命名已按 ADR-0038 改**：我们把"一轮"叫 `executionId`，OpenClaw 把每轮外层请求也叫 `executionId`，
+而它的 `runId` 留给"可能跨轮共享的会话/路由/恢复关联"（`docs/cli/audit.md:102-106`）。库里（V16）、
+Java、报文与查询参数现在都是这一个名字（票 16）。**线格式因此偏离它的 `audit.activity`**：它的
+`agent_run` / `tool_action` 变体里那一格叫 `runId`（`audit-activity.ts:112-120`），我们叫
+`executionId`——它的名字对应的是我们没有的那一层，留着会让读报文的人以为它存在。
 
 **仍然没对齐的只剩一处**：`operator.read` 授权（我们整个 http 层没有鉴权，也没有 operator
 身份与授权表）。这一条与 `run.inspect` 无关——后者已按 ADR-0038 撤除。
@@ -98,7 +98,7 @@ false`，`audit-activity.ts:135-142`），空字段整格省掉。为此**扩展
 4. **终态配对进库**：`error_code` 与 `kind`/`status` 的配对由 CHECK 表达（OpenClaw 用
    TypeScript 联合类型，见 `audit-event-types.ts:75-110`；库是最后一道）。
 5. **读侧**：一个只读端口 `AuditQuery` + HTTP 端点呈 newest-first、seq 游标、
-   `limit` 1–500、过滤 `agentId/sessionKey/runId/kind/status/direction/channel`，形状照
+   `limit` 1–500、过滤 `executionId/sessionKey/agentId/kind/status/direction/channel`，形状照
    `AuditListParamsSchema`（`audit.ts:63-73`）与 `ledgers.md:11-30`。只读，不提供导出。
    **`run.inspect` 当时不在这一版里**（它要 decision receipts，而 receipts 要 execution identity）；
    2026-11-23 第四批补过一版，同一天又按 ADR-0038 撤除——它是 run 级语义，我们没有 run。
