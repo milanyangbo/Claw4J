@@ -560,16 +560,23 @@ psql "$DATABASE_URL" -c "select owner, tool_name, status, decision, terminal_rea
   where status in ('denied', 'expired') and requested_at > current_date order by requested_at desc"
 
 # 这次调用是哪次批准的：结束事件上的 approval_id 与审批表同一个编号
-psql "$DATABASE_URL" -c "select seq, actor, tool_name, status, left(args_digest,12) as digest,
-  approval_id, at
+psql "$DATABASE_URL" -c "select seq, actor, tool_call_id, tool_name, status,
+  left(args_digest,12) as digest, approval_id, at
   from claw4j_run.audit_event where run_id = '<runId>' order by seq"
 ```
 
 列：`seq / event_id / kind / action / status / error_code / run_id / session_key / agent_id /
-actor / channel / tool_name / args_digest / approval_id / source_id / source_sequence /
+actor / channel / tool_call_id / tool_name / args_digest / approval_id / source_id / source_sequence /
 redaction / schema_version / at`，消息行另加 `direction / conversation_kind / message_outcome /
 reason_code / delivery_kind / failure_stage / duration_ms / result_count / actor_type /
 account_ref / conversation_ref / message_ref / target_ref`（V12）。
+
+**`tool_call_id` 从 V13 起有值**（票 06）：包装层从当前观测取框架给的调用编号
+（`ToolCallingObservationContext#getToolCallId`，Spring AI 调工具前把它放进了 scope），
+写进 `ToolContext` 再落到这一列。**只有工具行有值**——运行行或消息行带它会被
+`ck_audit_event_tool_call_id` 挡下，因为读侧 schema 里消息变体是 `toolCallId?: never`
+（`audit-activity.ts:463`）。取不到就留空、不编 id：没开观测的部署这一列就是空的，
+`args_digest` 仍然负责"这组参数"。
 
 **`run_id` 只有消息行可以空**：入站消息在开跑之前就到了（可能被跳过、可能没认出身分）。
 运行与工具行仍然必填，库里有 `ck_audit_event_run_required` 挡着。
@@ -628,6 +635,8 @@ account_ref / conversation_ref / message_ref / target_ref`（V12）。
 按 `seq` 倒序、游标翻页、`limit` 1–500（越界钳位），没装查询时 404（能力不在场，不是库坏了）。
 `direction` 照 OpenClaw 的 `audit.activity.list`（`docs/gateway/protocol/ledgers.md:120-131`）——
 进来的与出去的混在一页里时，"今天发出去的送到没有"得先能只要 `outbound`。
+工具行在返回里带 `toolCallId`（可选，照 `audit-activity.ts:219`）；**没有按它过滤的参数**——
+OpenClaw 那份参数表里也没有，多一个就是自创契约。
 
 测试钉着这一节：`app/RunSchemaSqlTest`（视图答得出谁/何时/怎么、一条批准一条执行、
 留存窗口删整件旧事）与 `app/ApprovalFlowTest`（执行那一行带着放行它的审批编号、

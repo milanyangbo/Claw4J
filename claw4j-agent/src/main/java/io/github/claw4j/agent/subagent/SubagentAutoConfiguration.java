@@ -278,9 +278,9 @@ public class SubagentAutoConfiguration {
                 : new ToolProfile(decision.profile(), profile.allow(), profile.deny(), profile.alsoAllow());
         List<ToolCallback> collected = AgentAutoConfiguration.collectToolCallbacks(
                 toolCallbacks, toolCallbackProviders,
-                // 调用编号（票 06）子链暂不接：这个 id 目前只进 ToolContext、还没有落点，
-                // 等审计表那一列定了再一起接（票 06 的「缺口」）。接的时候把 NOOP 换成容器里的
-                // ObservationRegistry，其余不动。
+                // 调用编号（票 06）在子链上没有落点：下面 collect 的审计参数就是 null（子 Agent 的
+                // 调用记在父那一轮里），没有账本要写，读它也没有意义。哪天子链自己接了审计，
+                // 这里换成容器里的 ObservationRegistry 即可，其余不动。
                 meterRegistry, null, SpanTracer.NONE, ObservationRegistry.NOOP,
                 effective, tierRegistries,
                 new ToolPolicyPipeline(decision.layers()),

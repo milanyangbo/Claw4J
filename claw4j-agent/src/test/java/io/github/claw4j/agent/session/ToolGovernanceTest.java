@@ -100,8 +100,8 @@ class ToolGovernanceTest {
     @Test
     @DisplayName("真跑了一次：两条事件（开始 + 成功），同一次调用指纹相同")
     void anExecutedCallLandsAsTwoEvents() {
-        audit.toolStarted(scope(), TOOL, "{\"region\":\"华东\"}");
-        audit.toolFinished(scope(), TOOL, "{\"region\":\"华东\"}", null);
+        audit.toolStarted(scope(), TOOL, "{\"region\":\"华东\"}", "call_1");
+        audit.toolFinished(scope(), TOOL, "{\"region\":\"华东\"}", null, "call_1");
 
         assertThat(events).hasSize(2);
         assertThat(events.get(0).action()).isEqualTo(AuditAction.TOOL_ACTION_STARTED);
@@ -111,6 +111,10 @@ class ToolGovernanceTest {
                 .as("两条是同一次调用：指纹算的是同一份参数")
                 .isNotNull()
                 .isEqualTo(events.get(1).argsDigest());
+        assertThat(events.get(0).toolCallId())
+                .as("同一次调用的两条事件带同一个编号（票 06）")
+                .isEqualTo("call_1");
+        assertThat(events.get(1).toolCallId()).isEqualTo("call_1");
         assertThat(events.get(1).scope().actor()).isEqualTo("u-analyst");
         assertThat(events.get(1).toolName()).isEqualTo(TOOL);
     }
@@ -126,8 +130,8 @@ class ToolGovernanceTest {
     void theRawArgumentsNeverLand() {
         String verbatim = "{\"phone\":\"13800138000\",\"note\":\"" + "华东区".repeat(120) + "\"}";
 
-        audit.toolStarted(scope(), TOOL, verbatim);
-        audit.toolFinished(scope(), TOOL, verbatim, null);
+        audit.toolStarted(scope(), TOOL, verbatim, null);
+        audit.toolFinished(scope(), TOOL, verbatim, null, null);
 
         assertThat(events).allSatisfy(event -> {
             assertThat(event.toolName()).isEqualTo(TOOL);
@@ -154,10 +158,10 @@ class ToolGovernanceTest {
         String digest = ToolCallAudit.digest("sendEmail", args).orElseThrow();
 
         audit.granted(RUN, "sendEmail", digest, "approval-7");
-        audit.toolFinished(scope(), "sendEmail", args, null);
-        audit.toolFinished(scope(), "sendEmail", args, null);
+        audit.toolFinished(scope(), "sendEmail", args, null, null);
+        audit.toolFinished(scope(), "sendEmail", args, null, null);
         audit.toolFinished(new AuditEvent.Scope("run-2", SESSION, null, "u-analyst", "web"),
-                "sendEmail", args, null);
+                "sendEmail", args, null, null);
 
         assertThat(events).hasSize(3);
         assertThat(events.get(0).approvalId()).isEqualTo("approval-7");
@@ -172,7 +176,7 @@ class ToolGovernanceTest {
     @Test
     @DisplayName("被拒：一条 blocked，没有「开始」那一条，理由是错误码不是文案")
     void aRejectedCallIsOneBlockedEvent() {
-        audit.rejected(scope(), TOOL, "{\"region\":\"华东\"}");
+        audit.rejected(scope(), TOOL, "{\"region\":\"华东\"}", null);
 
         assertThat(events).hasSize(1);
         AuditEvent event = events.getFirst();
@@ -201,7 +205,7 @@ class ToolGovernanceTest {
     @Test
     @DisplayName("工具抛异常：结束事件是 failed + tool_failed，异常类型名不进库")
     void aFailingToolIsStillAnExecution() {
-        audit.toolFinished(scope(), TOOL, "{}", "IllegalStateException");
+        audit.toolFinished(scope(), TOOL, "{}", "IllegalStateException", null);
 
         AuditEvent event = events.getFirst();
         assertThat(event.status()).isEqualTo(AuditStatus.FAILED);
@@ -214,7 +218,7 @@ class ToolGovernanceTest {
     @Test
     @DisplayName("参数收不全（流式被拦在授权那一道）：指纹留空，事件照写")
     void aHalfReceivedArgumentLeavesNoFingerprint() {
-        audit.rejected(scope(), TOOL, "{\"region\":");
+        audit.rejected(scope(), TOOL, "{\"region\":", null);
 
         assertThat(events.getFirst().argsDigest()).isNull();
         assertThat(events.getFirst().status()).isEqualTo(AuditStatus.BLOCKED);
@@ -223,7 +227,7 @@ class ToolGovernanceTest {
     @Test
     @DisplayName("没有轮次编号也写：「发生过」比字段齐全重要，只是那一格空")
     void anEventWithoutARunIsStillWritten() {
-        audit.toolFinished(AuditEvent.Scope.empty(), TOOL, "{}", null);
+        audit.toolFinished(AuditEvent.Scope.empty(), TOOL, "{}", null, null);
 
         assertThat(events).hasSize(1);
         assertThat(events.getFirst().scope().runId()).isNull();
@@ -235,9 +239,9 @@ class ToolGovernanceTest {
     void withoutALedgerItSimplyWritesNothing() {
         ToolCallAudit withoutLedger = new ToolCallAudit(null);
 
-        assertThatCode(() -> withoutLedger.toolFinished(scope(), TOOL, "{}", null))
+        assertThatCode(() -> withoutLedger.toolFinished(scope(), TOOL, "{}", null, null))
                 .doesNotThrowAnyException();
-        assertThatCode(() -> withoutLedger.rejected(scope(), TOOL, "{}"))
+        assertThatCode(() -> withoutLedger.rejected(scope(), TOOL, "{}", null))
                 .doesNotThrowAnyException();
     }
 
@@ -251,7 +255,7 @@ class ToolGovernanceTest {
             throw new IllegalStateException("库挂了");
         });
 
-        assertThatCode(() -> broken.toolFinished(scope(), TOOL, "{}", null))
+        assertThatCode(() -> broken.toolFinished(scope(), TOOL, "{}", null, null))
                 .doesNotThrowAnyException();
     }
 

@@ -449,10 +449,12 @@ class BuildContractTest {
         // 10 是审批与执行的交接（ADR-0037 票 05）：从进程内 Map 换成一张表，重启还在。
         // 11 是审计的终态配对（ADR-0037 票 01）：agent_run 不许带 tool_* 的码，反之亦然。
         // 12 是消息审计（ADR-0037 票 04）：kind=message 的列 + 假名密钥表。
-        // 前六张落在各自的 schema 里；7–12 都改已有 schema，只有假名密钥表是新增的一张。
+        // 13 是工具调用编号（票 06）：照 OpenClaw 加 audit_event.tool_call_id，只有工具行有值。
+        // 前六张落在各自的 schema 里；7–13 都改已有 schema，只有假名密钥表是新增的一张。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+                        "13");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -773,11 +775,15 @@ class BuildContractTest {
         // 过滤与钳位在同一条用例里验：它们共用同一张表、同一份数据，拆开只是多一步准备。
         ledger.record(AuditEvent.toolStarted(
                 new AuditEvent.Scope("run-qfilter", "session-q", "agent-qfilter", "u", "http"),
-                "Bash", "digest-qfilter"));
+                "call-qfilter", "Bash", "digest-qfilter"));
         assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action", null,
                 null, null, null, 10)).rows())
                 .as("按 runId + kind 命中那一行")
                 .hasSize(1);
+        assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "tool_action", null,
+                null, null, null, 10)).rows().getFirst().toolCallId())
+                .as("工具行带得回调用编号（票 06）：没有它，同参数两次调用读出来长得一样")
+                .isEqualTo("call-qfilter");
         assertThat(query.query(new AuditQuery.Filter("run-qfilter", null, null, "agent_run", null,
                 null, null, null, 10)).rows())
                 .as("kind 不匹配时一行都不给")
@@ -844,6 +850,19 @@ class BuildContractTest {
                 .as("开始那一条带错误码：它还没结束，有什么错")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
 
+        // ③ 编号只属于工具行（票 06）：消息变体在读侧是 `toolCallId?: never`
+        //    （audit-activity.ts:463），这条 CHECK 是它在写侧的落点。
+        jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, run_id, tool_call_id, source_id, source_sequence)"
+                + " values ('e-tcid-ok', 'tool_action', 'tool.action.started', 'started', 'run-tcid',"
+                + " 'call-1', 'tool:run-tcid:Bash:d1', 1)");
+        assertThatThrownBy(() -> jdbc.update("insert into claw4j_run.audit_event"
+                + " (event_id, kind, action, status, run_id, tool_call_id, source_id, source_sequence)"
+                + " values ('e-tcid-bad', 'agent_run', 'agent.run.started', 'started', 'run-tcid',"
+                + " 'call-1', 'run:run-tcid', 1)"))
+                .as("运行行带调用编号：那一列是工具行的，读侧也按这个形状区分")
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
         // ② 孤儿扫尾：两条停在 started 且已经过窗口的，补成 unknown；
         //    另有一条"刚开跑"的，它不该被补——补了就是把正在跑的一轮判成不知道结果。
         var ledger = new AuditLedger(jdbc, null);
@@ -853,10 +872,11 @@ class BuildContractTest {
                 + " values ('e-orphan-run', 'agent_run', 'agent.run.started', 'started', 'run-orphan',"
                 + " 'sk-orphan', 'ops', 'run:run-orphan', 1, now() - interval '2 hours')");
         jdbc.update("insert into claw4j_run.audit_event"
-                + " (event_id, kind, action, status, run_id, tool_name, args_digest,"
+                + " (event_id, kind, action, status, run_id, tool_call_id, tool_name, args_digest,"
                 + " source_id, source_sequence, at)"
                 + " values ('e-orphan-tool', 'tool_action', 'tool.action.started', 'started', 'run-orphan',"
-                + " 'Bash', 'd-orphan', 'tool:run-orphan:Bash:d-orphan', 1, now() - interval '2 hours')");
+                + " 'call-orphan', 'Bash', 'd-orphan', 'tool:run-orphan:Bash:d-orphan', 1,"
+                + " now() - interval '2 hours')");
         jdbc.update("insert into claw4j_run.audit_event"
                 + " (event_id, kind, action, status, run_id, source_id, source_sequence)"
                 + " values ('e-fresh-start', 'agent_run', 'agent.run.started', 'started', 'run-fresh',"
@@ -872,6 +892,11 @@ class BuildContractTest {
                 String.class))
                 .as("工具级孤儿带 tool_outcome_unknown：它跑了，但结果不可知")
                 .isEqualTo("tool_outcome_unknown");
+        assertThat(jdbc.queryForObject("select tool_call_id from claw4j_run.audit_event"
+                + " where source_id = 'tool:run-orphan:Bash:d-orphan' and source_sequence = 2",
+                String.class))
+                .as("补出来的终态跟着同一次调用的编号走，不是另一次（票 06）")
+                .isEqualTo("call-orphan");
         assertThat(jdbc.queryForList("select status from claw4j_run.audit_event"
                 + " where source_id = 'run:run-fresh'", String.class))
                 .as("刚开跑的那一轮不动")

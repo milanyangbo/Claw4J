@@ -344,7 +344,7 @@ class ExecApprovalTest {
 
         ExecCallContext.with(context, () -> port(ask, null, audit).decide(request("echo hi")));
         audit.toolFinished(AuditEvent.Scope.of("run-audit", context.sessionKey(),
-                new Principal(OWNER), "http"), "Bash", args, null);
+                new Principal(OWNER), "http"), "Bash", args, null, null);
 
         assertThat(jdbc.queryForObject("select approval_id from claw4j_run.audit_event"
                         + " where run_id = ? and tool_name = 'Bash'"

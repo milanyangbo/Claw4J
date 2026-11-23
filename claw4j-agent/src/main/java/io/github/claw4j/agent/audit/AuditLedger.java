@@ -88,11 +88,13 @@ public class AuditLedger implements AuditSink {
     private static final String INSERT = """
             insert into claw4j_run.audit_event
                 (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
-                 actor, channel, tool_name, args_digest, approval_id, source_id, source_sequence,
+                 actor, channel, tool_call_id, tool_name, args_digest, approval_id,
+                 source_id, source_sequence,
                  direction, conversation_kind, message_outcome, reason_code, delivery_kind,
                  failure_stage, duration_ms, result_count, actor_type,
                  account_ref, conversation_ref, message_ref, target_ref)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict (source_id, source_sequence) do nothing
             """;
 
@@ -122,7 +124,8 @@ public class AuditLedger implements AuditSink {
     private static final String SWEEP_ORPHANS = """
             insert into claw4j_run.audit_event
                 (event_id, kind, action, status, error_code, run_id, session_key, agent_id,
-                 actor, channel, tool_name, args_digest, approval_id, source_id, source_sequence)
+                 actor, channel, tool_call_id, tool_name, args_digest, approval_id,
+                 source_id, source_sequence)
             select 'orphan-' || md5(s.source_id || ':' || s.source_sequence),
                    s.kind,
                    case s.kind when 'agent_run' then 'agent.run.finished'
@@ -130,7 +133,9 @@ public class AuditLedger implements AuditSink {
                    'unknown',
                    case s.kind when 'agent_run' then null else 'tool_outcome_unknown' end,
                    s.run_id, s.session_key, s.agent_id, s.actor, s.channel,
-                   s.tool_name, s.args_digest, null,
+                   -- 编号跟着 started 那一行走：补出来的终态说的是「同一次调用没了下文」，
+                   -- 换一个编号就成了另一次调用
+                   s.tool_call_id, s.tool_name, s.args_digest, null,
                    s.source_id, 2
               from claw4j_run.audit_event s
              where s.status = 'started'
@@ -217,6 +222,9 @@ public class AuditLedger implements AuditSink {
                     scope.agentId(),
                     scope.actor(),
                     scope.channel(),
+                    // 工具调用编号（票 06）：只有 tool_action 有值，其余 kind 落 null——
+                    // 消息行带它是 OpenClaw 读侧 schema 明确禁止的形状（toolCallId?: never）。
+                    event.toolCallId(),
                     event.toolName(),
                     event.argsDigest(),
                     event.approvalId(),

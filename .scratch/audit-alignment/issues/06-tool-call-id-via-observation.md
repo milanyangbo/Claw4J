@@ -32,8 +32,16 @@ Blocked by: —
    取 id，`new ToolContext(merged)` 再往内传；取不到（NOOP / 非 tool 观测 / 空白）时原样透传同一个实例。
 3. 装配：`AgentAutoConfiguration#toolCatalog` 把容器里的 `ObservationRegistry` 传下去
    （没有则 `ObservationRegistry.NOOP`）；4 个重载的旧调用点显式传 NOOP，行为不变。
-   子链（`SubagentAutoConfiguration`）也传 NOOP：id 目前只进 `ToolContext`、还没有落点，
-   等「缺口」里那一列定了再一起接。
+4. **落库（V13）**：照 OpenClaw 加 `audit_event.tool_call_id`——列名、可空、**只有 `tool_action`
+   行有值**都照原文（`audit-event-store.ts:100`），并加一条 CHECK 把"运行行/消息行带它"挡掉
+   （读侧 schema 里消息变体是 `toolCallId?: never`，`audit-activity.ts:463`）。不建索引：
+   OpenClaw 的查询维度里没有它。
+5. `AuditEvent` 加组件、`AuditLedger` 的 INSERT 与孤儿补写带上、`ToolCallAudit` 三个入口多一个参数。
+   孤儿补写那一条 `select s.tool_call_id`：补出来的终态说的是"同一次调用没了下文"，换一个编号
+   就成了另一次调用。
+6. 读侧：`AuditQuery.Row` 加 `toolCallId`、`JdbcAuditQuery` 选出来、`/api/audit` 原样带出去
+   （OpenClaw 的 activity 里它就是可选字段）。**不加过滤参数**——OpenClaw 的 `audit.activity.list`
+   参数表里没有它。
 
 ## TDD 用例清单
 
@@ -42,6 +50,11 @@ Blocked by: —
 | 在 tool 观测里执行时，被包装的工具能从 `ToolContext` 读到 `call_abc` | `ObservabilityTest#toolCallIdReachesToolContext` | 不注入时工具读到 null（实测 `["<none>"]` vs `["call_abc"]`） | ✅ |
 | 没有观测（NOOP）时 `ToolContext` 里**没有这个键**，同一个实例原样透传 | `ObservabilityTest#noObservationMeansNoToolCallId` | 无条件 put 时 map 里出现值为 null 的键，`containsKey` 为真 | ✅ |
 | 真实装配里观测注册表**不是** noop（noop 时编号恒空且不报错） | `ApplicationAssemblyTest#observationRegistryIsNotNoop` | 装配退化成 noop 时 `isNoop()` 为真；这条的红法是"代码没坏、环境变了" | ✅ |
+| 同一次调用的 started / finished 两条事件带同一个编号 | `ToolGovernanceTest#anExecutedCallLandsAsTwoEvents` | 不往 `AuditEvent` 传编号时两条都是 null | ✅ |
+| 库里读得回来（工具行） | `BuildContractTest#auditQueryReturnsNewestFirst` | 读侧不加这一列时拿到 null | ✅ |
+| 只有工具行能有：运行行带它被 CHECK 挡下 | `BuildContractTest#auditTerminalRowsAreConsistent` | 去掉 CHECK 时那条 insert 会成功 | ✅ |
+| 孤儿补出来的终态跟着 started 行的编号走 | 同上 | 补写不 select 它就得到 null | ✅ |
+| `/api/audit` 把编号带得出去 | `HttpEndpointsTest#anAuditPageIsReadable` | `Row` 里没有这个组件时序列化不出该字段 | ✅ |
 
 ## 踩到的坑（2026-11-23，写下来省下一次）
 
@@ -61,19 +74,25 @@ Micrometer 的 `ObservationRegistry.create()` 在**一个 handler 都没有**时
 
 ## 缺口
 
-- **落库：blocked，等裁决。** 现在 id 只到 `ToolContext`，审计表里没有它的位置：
-  - `audit_event` 没有 `tool_call_id` 列（`args_digest` 是它的替身，`V5:344`）；
-  - `approval_request` 绑的是 `args_digest`，OpenClaw 绑的是 `toolCallId`（`V5:60`）；
-  - `execution_decision_fact` 的主键是 `(run_id, tool_name, args_digest)`（`V10:19`）。
-  三处都要加列或改主键，属于 schema / 持久化改动，按 `AGENTS.md` 先问再动。改的时候位置固定：
-  `AuditEvent.Scope` 加字段 → 一条新迁移加列 → `ToolCallAudit` 三个入口多传一个参数。
-- **`ApprovalRequiredToolCallback` 不在本票**：它拦下调用时也要组作用域，但把 id 绑进审批要等上面那条。
+- **`approval_request` 与 `execution_decision_fact` 不改，这是决定不是遗漏。** 两处都还绑
+  `args_digest`（`V5:60`、`V10:19`），看起来"应该换成 toolCallId"，但**没有原文依据**：
+  OpenClaw 的这两张表只有文字描述（`docs_cli_audit.md:156-188` 讲的是审批绑定是
+  "immutable owner-local binding"，以及三种 mismatch 码），没有 DDL 可对。照着想象换主键，
+  是把"对齐"变成"我猜它大概长这样"；要改先拿到它的表结构。
+  `args_digest` 在审批链上也不是替身而是真键：同一组参数的批准要能被下一次执行复用
+  （`V10` 的注释），这一点 `tool_call_id` 表达不了。
+- **子链（子 Agent）的工具审计本来就为空**：`SubagentAutoConfiguration` 调 `collectToolCallbacks`
+  时审计传 null（"它的调用记在父那一轮里"），没有账本可写，编号也就没有落点。这是早于本票的
+  缺口（OpenClaw 的子 Agent 有自己的 run 与自己的审计行），要补是另一张票。
 - 流式路径下 ThreadLocal 可能丢（靠 `ObservationThreadLocalAccessor` 传播）。当前链路是阻塞的，
   取不到就透传，行为与今天一致；不为了它加一条旁路。
 
 ## 复核
 
 复核：2026-11-23 `./scripts/verify.sh` 全绿（失败 0 / 错误 0 / 跳过 0；agent 14 文件 / 26 方法、
-覆盖 61.1%；app 14 / 26、覆盖 88.4%）。三条用例逐条跑过：`toolCallIdReachesToolContext` 在没注入时
-实测红（`["<none>"]` vs `["call_abc"]`），`noObservationMeansNoToolCallId` 与
-`observationRegistryIsNotNoop` 绿。
+覆盖 61.1%；core 22 方法 / 83.5%；channel 20 方法 / 79.3%；app 14 / 26、覆盖 88.4%）。
+`toolCallIdReachesToolContext` 在没注入时实测红过（`["<none>"]` vs `["call_abc"]`）。
+
+第一次跑 `BuildContractTest` 时 `auditQueryReturnsNewestFirst` 与 `auditReplayIsWrittenOnce`
+红在"一行都没落"：`INSERT` 的列从 28 加到 29 时占位符只写了 28 个，全表写入失败被账本吞成
+`write_errors`。补上 29 个后全绿——这两个既有用例正好替新列证明了"写不进去"会被发现。

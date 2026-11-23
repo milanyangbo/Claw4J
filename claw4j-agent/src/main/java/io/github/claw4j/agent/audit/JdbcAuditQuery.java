@@ -21,7 +21,8 @@ import java.util.StringJoiner;
 public class JdbcAuditQuery implements AuditQuery {
 
     private static final String COLUMNS = "seq, event_id, kind, action, status, error_code, run_id,"
-            + " session_key, agent_id, actor, channel, tool_name, args_digest, approval_id, at,"
+            + " session_key, agent_id, actor, channel, tool_call_id, tool_name, args_digest,"
+            + " approval_id, at,"
             + " direction, message_outcome, reason_code, conversation_kind, delivery_kind,"
             + " failure_stage, duration_ms, result_count, actor_type,"
             + " account_ref, conversation_ref, message_ref, target_ref";
@@ -38,6 +39,7 @@ public class JdbcAuditQuery implements AuditQuery {
             rs.getString("agent_id"),
             rs.getString("actor"),
             rs.getString("channel"),
+            rs.getString("tool_call_id"),
             rs.getString("tool_name"),
             rs.getString("args_digest"),
             rs.getString("approval_id"),

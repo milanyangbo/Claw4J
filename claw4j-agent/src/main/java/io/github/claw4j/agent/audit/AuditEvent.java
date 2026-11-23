@@ -19,6 +19,9 @@ import io.github.claw4j.domain.principal.Principal;
  * @param action 四类之一
  * @param status 闭合词表里的结局
  * @param errorCode 归一化错误码（{@link AuditErrorCode}），不是异常消息原文
+ * @param toolCallId 这次调用在模型侧的编号（票 06）。只有工具类事件有值；取不到时为空。
+ *     与 OpenClaw 的 {@code tool_call_id} 同一列同名（{@code audit-event-store.ts:100}）——
+ *     它标识「这一次」调用，而 {@code argsDigest} 标识「这组参数」，同参数连调两次只有它能分开
  * @param toolName 工具名；运行类事件为空
  * @param argsDigest 参数指纹；运行类事件为空
  * @param approvalId 放行这次调用的审批编号；没有审批时为空
@@ -30,9 +33,9 @@ import io.github.claw4j.domain.principal.Principal;
  * @param message 消息专有的那一组（方向、结果、假名引用）；运行与工具事件为空
  */
 public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
-                         AuditErrorCode errorCode, String toolName, String argsDigest,
-                         String approvalId, String sourceId, int sourceSequence,
-                         Message message) {
+                         AuditErrorCode errorCode, String toolCallId, String toolName,
+                         String argsDigest, String approvalId, String sourceId,
+                         int sourceSequence, Message message) {
 
     /**
      * 这一轮是谁、在哪段会话、从哪个通道来。
@@ -102,7 +105,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runStarted(Scope scope) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_STARTED, AuditStatus.STARTED,
-                null, null, null, null, runSource(scope), 1, null);
+                null, null, null, null, null, runSource(scope), 1, null);
     }
 
     /**
@@ -115,26 +118,30 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      */
     public static AuditEvent runFinished(Scope scope, AuditStatus status, AuditErrorCode errorCode) {
         return new AuditEvent(scope, AuditAction.AGENT_RUN_FINISHED, status,
-                errorCode, null, null, null, runSource(scope), 2, null);
+                errorCode, null, null, null, null, runSource(scope), 2, null);
     }
 
     /**
      * 一个工具开始执行。被策略挡住的调用没有这一条——它根本没开始。
      *
      * @param scope 这一轮的身份与位置
+     * @param toolCallId 这次调用的编号，可为 null（没开观测 / 非标准 provider）
      * @param toolName 工具名
      * @param argsDigest 参数指纹
      * @return 开始事件
      */
-    public static AuditEvent toolStarted(Scope scope, String toolName, String argsDigest) {
+    public static AuditEvent toolStarted(Scope scope, String toolCallId, String toolName,
+                                         String argsDigest) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_STARTED, AuditStatus.STARTED,
-                null, toolName, argsDigest, null, toolSource(scope, toolName, argsDigest), 1, null);
+                null, toolCallId, toolName, argsDigest, null,
+                toolSource(scope, toolName, argsDigest), 1, null);
     }
 
     /**
      * 一个工具结束。成功、失败、被拒、超时都走这一条，用 {@code status} 分开。
      *
      * @param scope 这一轮的身份与位置
+     * @param toolCallId 这次调用的编号，可为 null
      * @param toolName 工具名
      * @param argsDigest 参数指纹
      * @param status 结局
@@ -142,10 +149,11 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      * @param approvalId 放行这次调用的审批编号，没有审批时为 null
      * @return 结束事件
      */
-    public static AuditEvent toolFinished(Scope scope, String toolName, String argsDigest,
-                                          AuditStatus status, AuditErrorCode errorCode, String approvalId) {
+    public static AuditEvent toolFinished(Scope scope, String toolCallId, String toolName,
+                                          String argsDigest, AuditStatus status,
+                                          AuditErrorCode errorCode, String approvalId) {
         return new AuditEvent(scope, AuditAction.TOOL_ACTION_FINISHED, status,
-                errorCode, toolName, argsDigest, approvalId,
+                errorCode, toolCallId, toolName, argsDigest, approvalId,
                 toolSource(scope, toolName, argsDigest), 2, null);
     }
 
@@ -218,7 +226,7 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     public static AuditEvent inboundMessage(Scope scope, AuditStatus status, AuditErrorCode errorCode,
                                             Message message, String sourceId) {
         return new AuditEvent(scope, AuditAction.MESSAGE_INBOUND_PROCESSED, status, errorCode,
-                null, null, null, sourceId, 1, message);
+                null, null, null, null, sourceId, 1, message);
     }
 
     /**
@@ -234,6 +242,6 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
     public static AuditEvent outboundMessage(Scope scope, AuditStatus status, AuditErrorCode errorCode,
                                              Message message, String sourceId) {
         return new AuditEvent(scope, AuditAction.MESSAGE_OUTBOUND_FINISHED, status, errorCode,
-                null, null, null, sourceId, 1, message);
+                null, null, null, null, sourceId, 1, message);
     }
 }

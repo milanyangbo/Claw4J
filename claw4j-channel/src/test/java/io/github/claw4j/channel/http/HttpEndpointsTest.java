@@ -159,8 +159,8 @@ class HttpEndpointsTest {
     @Test
     @DisplayName("审计：一页带出 nextCursor；没装配时 404")
     void anAuditPageIsReadable() {
-        AuditQuery.Row row = new AuditQuery.Row(7L, "e-1", "agent_run", "agent.run.started",
-                "started", null, "run-1", "sk", "ops", "ethan", "http", null, null, null,
+        AuditQuery.Row row = new AuditQuery.Row(7L, "e-1", "tool_action", "tool.action.started",
+                "started", null, "run-1", "sk", "ops", "ethan", "http", "call-1", "Bash", null, null,
                 Instant.parse("2026-11-22T12:00:00Z"), null);
         AuditQuery fixed = filter -> {
             assertEquals(2, filter.limit());
@@ -176,6 +176,8 @@ class HttpEndpointsTest {
         assertNotNull(response.getBody());
         assertEquals(1, response.getBody().events().size());
         assertEquals(Long.valueOf(7L), response.getBody().nextCursor());
+        assertEquals("call-1", response.getBody().events().getFirst().toolCallId(),
+                "调用编号要带得出去（票 06）：没有它，同参数两次调用在客户端看来是同一行");
         assertEquals(HttpStatus.NOT_FOUND,
                 auditController(null).list(null, null, null, null, null, null, null, null, 10)
                         .getStatusCode());

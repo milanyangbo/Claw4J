@@ -77,6 +77,8 @@ public interface AuditQuery {
      * @param agentId 哪个 agent 干的
      * @param actor 谁让这件事发生
      * @param channel 通道名
+     * @param toolCallId 这次调用的编号（票 06）；只有工具行有值，取不到时 null。与 OpenClaw 的
+     *     {@code toolCallId} 同名同义（{@code audit-activity.ts:219}）
      * @param toolName 工具名，运行类事件为 null
      * @param argsDigest 参数指纹，运行类事件为 null
      * @param approvalId 放行这次调用的审批编号
@@ -85,7 +87,7 @@ public interface AuditQuery {
      */
     record Row(long seq, String eventId, String kind, String action, String status,
                String errorCode, String runId, String sessionKey, String agentId,
-               String actor, String channel, String toolName, String argsDigest,
+               String actor, String channel, String toolCallId, String toolName, String argsDigest,
                String approvalId, Instant at, MessageRow message) {
     }
 

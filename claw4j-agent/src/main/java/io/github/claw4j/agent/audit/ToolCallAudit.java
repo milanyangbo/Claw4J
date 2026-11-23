@@ -96,12 +96,15 @@ public class ToolCallAudit {
      * @param scope 这一轮的身份与位置
      * @param toolName 工具名，空白时不写
      * @param argsJson 工具参数原文，只用来算指纹
+     * @param toolCallId 这次调用的编号（票 06），可为 null——没开观测或 provider 不给 id 时就是没有，
+     *     不编一个来顶
      */
-    public void toolStarted(AuditEvent.Scope scope, String toolName, String argsJson) {
+    public void toolStarted(AuditEvent.Scope scope, String toolName, String argsJson,
+                            String toolCallId) {
         if (isBlank(toolName)) {
             return;
         }
-        write(AuditEvent.toolStarted(scope, toolName, fingerprint(toolName, argsJson)));
+        write(AuditEvent.toolStarted(scope, toolCallId, toolName, fingerprint(toolName, argsJson)));
     }
 
     /**
@@ -112,14 +115,15 @@ public class ToolCallAudit {
      * @param argsJson 工具参数原文，只用来算指纹
      * @param failure 工具抛出的异常类型名；null 表示正常返回。只用来判「成没成」，类型名本身不落库
      *     ——那一列是归一化错误码，而类型名是开放的。要查是哪个异常，trace 的 span 上有
+     * @param toolCallId 这次调用的编号，可为 null
      */
     public void toolFinished(AuditEvent.Scope scope, String toolName, String argsJson,
-                             String failure) {
+                             String failure, String toolCallId) {
         if (isBlank(toolName)) {
             return;
         }
         String digest = fingerprint(toolName, argsJson);
-        write(AuditEvent.toolFinished(scope, toolName, digest,
+        write(AuditEvent.toolFinished(scope, toolCallId, toolName, digest,
                 failure == null ? AuditStatus.SUCCEEDED : AuditStatus.FAILED,
                 failure == null ? null : AuditErrorCode.TOOL_FAILED,
                 take(scope == null ? null : scope.runId(), toolName, digest)));
@@ -135,12 +139,15 @@ public class ToolCallAudit {
      * @param scope 这一轮的身份与位置
      * @param toolName 工具名，空白时不写
      * @param argsJson 工具参数原文，只用来算指纹
+     * @param toolCallId 这次调用的编号，可为 null。审批闸在计量层之外，拦下时 {@code ToolContext}
+     *     里通常还没有这个键——那是顺序决定的，不是漏传
      */
-    public void rejected(AuditEvent.Scope scope, String toolName, String argsJson) {
+    public void rejected(AuditEvent.Scope scope, String toolName, String argsJson,
+                         String toolCallId) {
         if (isBlank(toolName)) {
             return;
         }
-        write(AuditEvent.toolFinished(scope, toolName, fingerprint(toolName, argsJson),
+        write(AuditEvent.toolFinished(scope, toolCallId, toolName, fingerprint(toolName, argsJson),
                 AuditStatus.BLOCKED, AuditErrorCode.TOOL_BLOCKED, null));
     }
 

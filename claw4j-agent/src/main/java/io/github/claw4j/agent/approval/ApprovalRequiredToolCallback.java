@@ -149,7 +149,11 @@ public class ApprovalRequiredToolCallback implements ToolCallback {
      */
     private void blocked(ToolContext toolContext, String toolName, String toolInput) {
         if (audit != null) {
-            audit.rejected(MeteredToolCallback.scopeOf(toolContext), toolName, toolInput);
+            // 编号通常在这是 null：这一层在计量层之外，键还没被写进上下文（见
+            // MeteredToolCallback#toolCallIdOf 的注释）。仍然读一次而不是写死 null——
+            // 哪天顺序变了，这里自动就对了。
+            audit.rejected(MeteredToolCallback.scopeOf(toolContext), toolName, toolInput,
+                    MeteredToolCallback.toolCallIdOf(toolContext));
         }
     }
 

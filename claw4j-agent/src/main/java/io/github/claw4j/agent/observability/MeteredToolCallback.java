@@ -196,15 +196,16 @@ public class MeteredToolCallback implements ToolCallback {
     @Override
     public String call(String toolInput, ToolContext toolContext) {
         // 编号必须在 openSpan() 之前读：span 一开，当前观测就换成它自己了（见 toolCallId 的注释）。
-        ToolContext context = withToolCallId(toolContext, toolCallId());
+        String toolCallId = toolCallId();
+        ToolContext context = withToolCallId(toolContext, toolCallId);
         try (SpanTracer.SpanScope span = openSpan()) {
             // 开始那一条先写，结束那一条在两条出口各写一次：只有结束的话，
             // 「这个工具跑了多久」和「两个并发调用谁先开始」都只能靠时间戳猜。
             AuditEvent.Scope scope = scopeOf(context);
-            toolStarted(scope, toolInput);
+            toolStarted(scope, toolInput, toolCallId);
             try {
                 String result = delegate.call(toolInput, context);
-                toolFinished(scope, toolInput, null);
+                toolFinished(scope, toolInput, null, toolCallId);
                 span.attribute(ATTR_OUTCOME, "ok");
                 count("ok");
                 return result;
@@ -212,7 +213,7 @@ public class MeteredToolCallback implements ToolCallback {
             catch (RuntimeException failure) {
                 // 抛异常也是一次「发生过的调用」：审计里它是 finished + failed，
                 // 与被拒绝（根本没执行）是两件事——修法与改配置完全不同。
-                toolFinished(scope, toolInput, failure.getClass().getSimpleName());
+                toolFinished(scope, toolInput, failure.getClass().getSimpleName(), toolCallId);
                 span.attribute(ATTR_OUTCOME, "error");
                 span.attribute(ATTR_ERROR_TYPE, failure.getClass().getSimpleName());
                 span.failed(failure);
@@ -238,10 +239,11 @@ public class MeteredToolCallback implements ToolCallback {
      *
      * @param scope 审计作用域
      * @param toolInput 工具参数原文，只用来算指纹
+     * @param toolCallId 这次调用的编号，可为 null
      */
-    private void toolStarted(AuditEvent.Scope scope, String toolInput) {
+    private void toolStarted(AuditEvent.Scope scope, String toolInput, String toolCallId) {
         if (audit != null) {
-            audit.toolStarted(scope, toolName, toolInput);
+            audit.toolStarted(scope, toolName, toolInput, toolCallId);
         }
     }
 
@@ -251,10 +253,12 @@ public class MeteredToolCallback implements ToolCallback {
      * @param scope 审计作用域
      * @param toolInput 工具参数原文，只用来算指纹
      * @param failure 异常类型名；null 表示正常返回
+     * @param toolCallId 这次调用的编号，可为 null
      */
-    private void toolFinished(AuditEvent.Scope scope, String toolInput, String failure) {
+    private void toolFinished(AuditEvent.Scope scope, String toolInput, String failure,
+                              String toolCallId) {
         if (audit != null) {
-            audit.toolFinished(scope, toolName, toolInput, failure);
+            audit.toolFinished(scope, toolName, toolInput, failure, toolCallId);
         }
     }
 
@@ -296,6 +300,25 @@ public class MeteredToolCallback implements ToolCallback {
     private static String channelOf(ToolContext toolContext) {
         Object value = toolContext.getContext().get(ContextKeys.CHANNEL);
         return value instanceof String channel && !channel.isBlank() ? channel : null;
+    }
+
+    /**
+     * 从工具上下文读这次调用的编号（票 06）。
+     *
+     * <p>公开是因为审批闸那一侧也要用（它拦下调用时写 {@code blocked} 事件）。取不到返回 null，
+     * 而那在今天是常态：这个键由本类写进上下文，而审批闸在计量层<b>之外</b>——被拦下的调用走到
+     * 那里时键还不存在。这是包装顺序决定的，不是漏传；不为了填这一格去改顺序——把计量提到最外
+     * 会让「被审批拒掉」也算进「被调了几次」。
+     *
+     * @param toolContext 工具上下文，可为 null
+     * @return 调用编号；没有时返回 null
+     */
+    public static String toolCallIdOf(ToolContext toolContext) {
+        if (toolContext == null) {
+            return null;
+        }
+        Object value = toolContext.getContext().get(ContextKeys.TOOL_CALL_ID);
+        return value instanceof String toolCallId && !toolCallId.isBlank() ? toolCallId : null;
     }
 
     private static Principal principalOf(ToolContext toolContext) {

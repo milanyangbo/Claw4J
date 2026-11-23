@@ -4,6 +4,14 @@
 取代：无
 关联：ADR-0027（审计挂载点、只记元数据）、ADR-0017（幂等与重放）
 
+修订 2026-11-23：`tool_call_id` 原先判为 blocked（"Spring AI 的 `ToolContext` 里没有调用 id"），
+那句话仍然成立，但 id 就在同一条调用链的观测上下文里——`DefaultToolCallingManager` 调工具之前
+把 `toolCall.id()` 放进了 `ToolCallingObservationContext` 并在它的 scope 里执行回调
+（2.0.2 `:313-328`）。包装层因此取得到，不需要包装 `ToolCallingManager`、也不需要自己生成 id。
+落地：`audit_event.tool_call_id`（V13，列名与"只有工具行有值"都照 OpenClaw 的
+`audit-event-store.ts:100` / `audit-activity.ts:463`）＋读接口输出该字段；`args_digest` **不退**，
+它承担审批绑定（`approval_request.args_digest`）与来源键，而 OpenClaw 没有这一列。见票 06。
+
 ## 背景
 
 审计现在能写不能查，且七个终态只有三个有生产者。对照 OpenClaw `main`
