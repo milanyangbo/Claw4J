@@ -16,10 +16,10 @@
 ① **读侧 `eventType`**（票 07）：四个变体 `agent_run` / `tool_action` / `inbound_message` /
 `outbound_message` 各对应一份 schema（`audit-activity.ts:183,215,249,323`）。它由 `kind` 与消息
 方向推出、不落库——与它"持久层只存 kind/direction"一致；`kind` 与 `direction` 仍留给过滤。
-② **子 Agent 的审计**（票 08）：每次委派开自己的 `runId`，`session_key = subagent:<定义名>`、
+② **子 Agent 的审计**（票 08）：每次委派开自己的执行编号，`session_key = subagent:<定义名>`、
 `agent_id = 定义名`。依据是 `docs/gateway/audit.md`："the child owns a new context; it never
 reuses or mutates the parent context"。**不造 lineage**：那条投影要精确父令牌，拿不到就明说缺失，
-我们也一样——没有 `parent_run_id` 这一列，就不从父 `runId` 编一个。
+我们也一样——没有 `parent_execution_id` 这一列，就不从父执行编号编一个。
 
 修订 2026-11-23（第三批）：读侧的**报文**与写侧的**归属**按它的字段逐项对完，改三处。
 ① **写侧归属**（票 11，V14）：`actor_type` / `actor` 记**执行者**——它的
