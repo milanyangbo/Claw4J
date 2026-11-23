@@ -13,13 +13,18 @@
 
 ## 做哪几件（一票一件，按依赖排序）
 
-| 票 | 做什么 | 依赖 |
-| --- | --- | --- |
-| 01 | 终态与归属：四个终态生产者、`agentId` 必填、删 `actor_role`、终态配对 CHECK | — |
-| 02 | 幂等写入：`source_id + source_sequence` 唯一，重放只留一行 | 01（同一份 V9） |
-| 03 | 读侧：`AuditQuery` 端口 + HTTP 端点（seq 游标、limit 1–500、六个过滤） | 01 |
-| 04 | 消息审计：`kind=message`，inbound/outbound 终态 + 假名身份引用 | 01、02 |
-| 05 | 去掉自研：内存审批交接 → 持久事实；`tool_call_id` 拿不到的部分标 blocked | 01 |
+| 票 | 做什么 | 依赖 | 状态 |
+| --- | --- | --- | --- |
+| 01 | 终态与归属：四个终态生产者、`agentId` 必填、删 `actor_role`、终态配对 CHECK | — | resolved |
+| 02 | 幂等写入：`source_id + source_sequence` 唯一，重放只留一行 | 01（同一份 V9） | resolved |
+| 03 | 读侧：`AuditQuery` 端口 + HTTP 端点（seq 游标、limit 1–500、六个过滤） | 01 | resolved |
+| 04 | 消息审计：`kind=message`，inbound/outbound 终态 + 假名身份引用 | 01、02 | resolved |
+| 05 | 去掉自研：内存审批交接 → 持久事实；`tool_call_id` 留到票 06 | 01 | resolved |
+| 06 | 工具调用编号：从观测上下文取到，进 `ToolContext`，落 `audit_event.tool_call_id`（V13） | 01 | resolved |
+
+**状态列与票面同源**：票面开头那行 `**Status:**` 是事实，这张表只是总览；收票时两处一起改。
+`scripts/check-ticket-cases.sh` 会比对（表里漏列一张票、或两处写的不是一个词，都会红）。
+取值用票面那套词（`resolved` / `in progress` / `open`），不另造图标。
 
 ## 不做
 

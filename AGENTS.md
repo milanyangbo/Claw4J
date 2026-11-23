@@ -116,6 +116,14 @@ Authority and safety）与 `read approval checkpoint before schema ... changes`�
 3. **代码**：先写用例看它红，再写实现让它绿。**没跑过反例等于没验证**；一时补不上的，
    在票里单列一节写"缺口"，不许勾在验收里（勾了就是文档承诺比代码走得远）。
 
+**票的状态要能被一眼看见（2026-11-23 加）**：`issues/<编号>-*.md` 开头那行 `**Status:** <词>` 是
+事实来源；同目录 `spec.md` 的票表必须有「状态」列，值与票面**同一个词**（`resolved` /
+`in progress` / `open`），且 `issues/` 下的票**一张都不能漏列**——漏列等于从总览上消失，而
+"做完没有"正是总览唯一要回答的问题。收票时两处一起改。判据：只看 `spec.md` 那张表就能说出
+"哪几张完了、还剩哪张"。2026-11-23 漏的就是这个：六张票全 `resolved`，总览表还停在五张、
+连状态列都没有，看目录看不出做完没有。`scripts/check-ticket-cases.sh` 会比对（只查这次改到的
+spec，历史那几十份形状各异的照旧不追）。
+
 票面长什么样见 `docs/agents/issue-tracker.md`，用例该不该留见 `docs/agents/testing.md`。
 
 ## 按你要做什么，读那一份

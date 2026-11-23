@@ -21,6 +21,10 @@
 #
 # 用法：./scripts/check-ticket-cases.sh
 # 退出码：0 = 全部对得上；非 0 = 有引用找不到（会把每一条打出来）。
+#
+# 除了用例名，这一步还查两件"票面与总览对不对得上"的事（2026-11-20 / 11-23 加）：
+#   - 新写的票必须有「TDD 用例清单」与 ADR 指针，标了 resolved 的还要一条「复核：<日期> <命令>」；
+#   - 这次改到的 spec.md：票表要有「状态」列、issues/ 下的票一张不漏、状态与票面同一个词。
 
 set -uo pipefail
 
@@ -138,13 +142,107 @@ fi
 
 echo "票面引用 ${total} 条，全部对得上仓库里的测试。"
 
+# 4. spec 的票表要能一眼看出做完没有（2026-11-23 加）。
+#
+# 为什么：票面的 `**Status:**` 是事实，`spec.md` 那张总览表是给"现在还剩哪张"看的。两处各写一遍
+# 就一定会漂——2026-11-23 的实际状态是六张票全 resolved，而总览表还停在五张、连状态列都没有，
+# 看目录完全看不出做完没有。这一步把"漂"变成红。
+#
+# 边界与「新票才查」同口径：**只查已经入规的**（表里已有「状态」列）与**还没提交的** spec。
+# 历史上那几十份没有状态列的 spec 不追——要求全仓合规就是几十处红，红完没人补。
+spec_bad=0
+for spec in .scratch/*/spec.md; do
+    [ -f "$spec" ] || continue
+    dir=$(dirname "$spec")
+    ls "$dir"/issues/*.md >/dev/null 2>&1 || continue
+
+    # 表头是第一个以 | 开头的行。用整行判「有状态列」，避免只匹配到正文里出现"状态"二字。
+    has_status=0
+    awk -F'|' '
+        !header && /^\|/ {
+            header = 1
+            for (i = 1; i <= NF; i++) {
+                cell = $i
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", cell)
+                if (cell == "状态") found = 1
+            }
+        }
+        END { exit(found ? 0 : 1) }' "$spec" && has_status=1
+
+    pending=0
+    if git status --porcelain -uall -- "$spec" 2>/dev/null | grep -qE '^(A[A-Z]? |\?\?| M|M )'; then
+        pending=1
+    fi
+
+    # 只查本次改到的 spec，与上面「新票才查」同一个边界。历史那几十份形状各异（有的第一列是
+    # 编号、有的用文件名、有的分成好几张表），强加一套解析规则只会误伤它们；而"没改就不追"
+    # 正好对上这次的漏法——漏是因为改票时没同步总览，那种改动本来就把 spec 带在身边。
+    [ "$pending" -eq 1 ] || continue
+
+    if [ "$has_status" -eq 0 ]; then
+        echo "红：$spec 的票表没有「状态」列——总览上看不出哪张做完。"
+        spec_bad=$((spec_bad + 1))
+        continue
+    fi
+
+    # 表里列了编号，就得有那张票；issues/ 下的票，也都得在表里。
+    for num in $(awk -F'|' '
+            /^\|/ {
+                cell = $2
+                gsub(/[^0-9]/, "", cell)
+                if (cell != "") print cell
+            }' "$spec" | sort -u); do
+        if ! ls "$dir/issues/${num}-"*.md >/dev/null 2>&1; then
+            echo "红：$spec 的表里列了票 ${num}，但 $dir/issues 下没有 ${num}-*.md"
+            spec_bad=$((spec_bad + 1))
+        fi
+    done
+
+    for ticket in "$dir"/issues/*.md; do
+        base=$(basename "$ticket")
+        num=${base%%-*}
+        want=$(awk '/^\*\*Status:\*\*/ { sub(/^\*\*Status:\*\*[[:space:]]*/, ""); print; exit }' "$ticket")
+        row=$(awk -F'|' -v n="$num" '
+                /^\|/ {
+                    cell = $2
+                    gsub(/[^0-9]/, "", cell)
+                    if (cell == n) { print; exit }
+                }' "$spec")
+        if [ -z "$row" ]; then
+            echo "红：$dir 里的票没进总览表（总览上看不见它做没做完）：$base"
+            spec_bad=$((spec_bad + 1))
+            continue
+        fi
+        got=$(printf '%s' "$row" | awk -F'|' '
+                {
+                    cell = $(NF - 1)
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", cell)
+                    print cell
+                }')
+        if [ "${want:-<空>}" != "$got" ]; then
+            echo "红：$base 的状态两处不一致：票面 ${want:-<空>} / 总览 ${got:-<空>}"
+            spec_bad=$((spec_bad + 1))
+        fi
+    done
+done
+
+if [ "$spec_bad" -ne 0 ]; then
+    echo
+    echo "总览表（spec.md）要能直接回答「哪几张完了、还剩哪张」（AGENTS.md「ADR → 票 → 代码」那节）："
+    echo "  1. 票表加「状态」列，取值与票面的 \`**Status:**\` 是同一个词（resolved / in progress / open）；"
+    echo "  2. issues/ 下的票一张都不能漏列——漏列等于从总览上消失；"
+    echo "  3. 收票时两处一起改，别只改一处。"
+    exit 1
+fi
+
+
 # 引用数为 0 只有一种解释：提取规则没命中（票面换了写法），不是"都通过"。
 # 这种闸最坏的状态是永远绿，所以说出来。
 if [ "$total" -eq 0 ]; then
     echo "注意：一条引用都没提出来。多半是票面写法变了（用例名没放进反引号），这一步现在什么也没验。"
 fi
 
-# 4. 新增的票必须交代两件事：裁决在哪（ADR）、以及「TDD 用例清单」（2026-11-20 起）。历史票不追。
+# 5. 新增的票必须交代两件事：裁决在哪（ADR）、以及「TDD 用例清单」（2026-11-20 起）。历史票不追。
 #
 # 为什么只看新增：仓库里 126 张 resolved 的票有 101 张没有这张表、也没有 ADR 指针
 # （07 之前是"验收"小节，不是这三列）。要求全仓合规就是 101 张红，红完没人补。
