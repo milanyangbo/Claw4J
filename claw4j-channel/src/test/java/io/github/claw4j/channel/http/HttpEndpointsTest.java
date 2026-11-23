@@ -161,7 +161,7 @@ class HttpEndpointsTest {
     void anAuditPageIsReadable() {
         AuditQuery fixed = filter -> {
             assertEquals(2, filter.limit());
-            assertEquals("run-1", filter.executionId());
+            assertEquals("exec-1", filter.executionId());
             assertEquals("inbound", filter.direction(), "方向过滤要传下去");
             assertEquals(Long.valueOf(1000L), filter.after(), "时间窗下界要传下去");
             assertEquals(Long.valueOf(9000L), filter.before(), "时间窗上界要传下去");
@@ -169,7 +169,7 @@ class HttpEndpointsTest {
         };
 
         ResponseEntity<?> response = auditController(fixed)
-                .list("run-1", null, null, null, "inbound", null, null, 1000L, 9000L, null, 2);
+                .list("exec-1", null, null, null, "inbound", null, null, 1000L, 9000L, null, 2);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         AuditController.AuditView page = (AuditController.AuditView) response.getBody();
@@ -216,6 +216,9 @@ class HttpEndpointsTest {
         assertTrue(json.contains("\"eventType\":\"outbound_message\""), json);
         assertTrue(json.contains("\"schemaVersion\":1"), "版本号是必填：" + json);
         assertTrue(json.contains("\"sequence\":4"), "序号改名成 sequence：" + json);
+        assertTrue(json.contains("\"executionId\":\""), "执行编号沿线格式就叫 executionId：" + json);
+        assertTrue(!json.contains("runId"),
+                "旧名一个都不留，否则读报文的人会以为我们还有那一层：" + json);
         assertTrue(json.contains("\"sourceSequence\":1"), json);
         assertTrue(json.contains("\"occurredAt\":" + OCCURRED_AT.toEpochMilli()),
                 "时间要给 Unix 毫秒整数，不是 ISO 字符串：" + json);
@@ -308,7 +311,7 @@ class HttpEndpointsTest {
         boolean messageRow = message != null;
         return new AuditQuery.Row(seq, 1, "e-" + seq, 1, eventType, kind,
                 kind + ".some.action", "started", null, "metadata_only",
-                "run-1", messageRow ? null : "sk", messageRow ? null : "s-1", "ops",
+                "exec-1", messageRow ? null : "sk", messageRow ? null : "s-1", "ops",
                 messageRow ? "channel_sender" : "agent", messageRow ? "acc" : "ops",
                 messageRow ? "http" : null,
                 messageRow ? null : "call-" + seq, null, null, null, OCCURRED_AT, message);

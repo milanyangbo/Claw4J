@@ -436,9 +436,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         String sessionId = address.sessionIdOf(message, owner, parsed.reset());
         // 这一轮的编号（ADR-0027）：本地生成，不落任何表。它只在三处用——审计的两条事件、
         // trace 的一段 span、返回给调用方的回执。
-        // OpenClaw 的 runId 也是这个角色：agent RPC 返回它，agent.wait 可以等它。
-        // 我们叫 executionId：它那个"可能跨轮共享的 run"我们没有（ADR-0038），
-        // 但没有任何"按 executionId 取回一件事"的接口，因为一轮答完它就作废了。
+        // 名字叫 executionId（ADR-0038）：它上面那层"可能跨轮共享的关联"我们没有，
+        // 也没有任何"按 executionId 取回一件事"的接口，因为一轮答完它就作废了。
         String executionId = UUID.randomUUID().toString();
         // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
         // 两把会话键都带进审计（ADR-0037 第三批）：session_key 是会话键（不含段），

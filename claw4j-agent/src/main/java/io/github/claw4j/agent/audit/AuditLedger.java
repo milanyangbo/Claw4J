@@ -185,7 +185,7 @@ public class AuditLedger implements AuditSink {
     /**
      * 写一条事件。
      *
-     * <p>没有轮次编号就不写：OpenClaw 的 {@code AuditEventSchema.runId} 是必填
+     * <p>没有轮次编号就不写：那一格在它的事件 schema 里也是必填
      * （{@code packages/gateway-protocol/src/schema/audit.ts:56}），事件必须属于一次已准入的运行。
      * 一行查不到轮次的审计，按 {@code executionId} 查永远命中不了，留着只会让「这个月跑了多少次」的数字比
      * 能查到的多。它们计入 {@value #SKIPPED}（不是 {@value #WRITE_ERRORS}，那不是写失败，是没有归属）。

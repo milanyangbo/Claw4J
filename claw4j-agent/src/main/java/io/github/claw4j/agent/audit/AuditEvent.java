@@ -53,9 +53,8 @@ public record AuditEvent(Scope scope, AuditAction action, AuditStatus status,
      * 这一轮是谁、在哪段会话、从哪个通道来。
      *
      * <p>只有 {@code executionId} 是必需的：没有它这一行落不下去（{@link AuditLedger} 直接跳过），因为它
-     * 不属于任何一次运行——按 {@code executionId} 查永远查不到，留着只会让计数虚高。OpenClaw 的
-     * {@code AuditEventSchema.runId} 同样是必填
-     * （{@code packages/gateway-protocol/src/schema/audit.ts:56}）。
+     * 不属于任何一次运行——按 {@code executionId} 查永远查不到，留着只会让计数虚高。它的事件 schema
+     * 里这一格同样是必填（{@code packages/gateway-protocol/src/schema/audit.ts:56}）。
      *
      * <p>其余四个字段可空：审计不能因为取不到身份就不写——「有个工具跑了」本身就是事实，只是那一格
      * 没人。为一行缺字段的审计去拒绝整个工具调用，是把记账当成了前置条件。

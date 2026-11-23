@@ -15,8 +15,8 @@ import io.github.claw4j.domain.port.AuditQuery;
  *       而"空字段写 null 也算多带一个字段"，所以必须整个省掉。</li>
  *   <li>名字与类型要对上：它的 {@code sequence} / {@code occurredAt}（Unix 毫秒整数）/
  *       {@code actor}（{@code {type,id}} 对象）/ {@code outcome}，与库里的 {@code seq} /
- *       {@code at}（timestamptz）/ {@code actor_type}+{@code actor} / {@code message_outcome}
- *       不是同一个形状。翻译只在这一处发生。</li>
+ *       {@code at}（timestamptz）/ {@code actor_type}+{@code actor} / {@code message_outcome} /
+ *       {@code execution_id} 不是同一个形状。翻译只在这一处发生。</li>
  * </ul>
  *
  * <p>两类字段**故意不外带**：{@code args_digest} 与 {@code approval_id} 是我们的扩展列
@@ -38,9 +38,10 @@ import io.github.claw4j.domain.port.AuditQuery;
  * @param agentId 哪个 agent
  * @param sessionKey 会话键（不含段）
  * @param sessionId 那一段
- * @param runId 报文里的执行编号。**这一格沿线格式叫 {@code runId}**：它的 agent_run / tool_action
- *     变体里 {@code runId} 是必填的（{@code audit-activity.ts:112-120}），闭对象又不允许多一格，
- *     所以库里叫 {@code execution_id}（ADR-0038）、报文里仍叫 {@code runId}——翻译只在这一处
+ * @param executionId 报文里的执行编号。**这一格沿线格式叫 {@code executionId}**（票 16）：它的
+ *     {@code audit-activity.ts:112-120} 在同一格写的是"跨轮共享的关联"那个名字，而那是它多出来的
+ *     一层（ADR-0038）——我们没有，所以不在边界上留它的名字。拼法与本仓其他线格式一致
+ *     （{@code /api/chat} 的 {@code AskResponse}、{@code /api/approvals} 的 {@code ApprovalView}）
  * @param toolCallId 调用编号（已哈希）
  * @param toolName 工具名
  * @param channel 通道名；只有消息行
@@ -62,7 +63,7 @@ import io.github.claw4j.domain.port.AuditQuery;
 record AuditEventView(String eventType, int schemaVersion, String eventId, long sequence,
                       int sourceSequence, long occurredAt, String kind, String action,
                       String status, String errorCode, ActorView actor, String agentId,
-                      String sessionKey, String sessionId, String runId, String toolCallId,
+                      String sessionKey, String sessionId, String executionId, String toolCallId,
                       String toolName, String channel, String direction, String conversationKind,
                       String outcome, String reasonCode, String deliveryKind, String failureStage,
                       Integer durationMs, Integer resultCount, String accountRef,

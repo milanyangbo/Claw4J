@@ -44,8 +44,9 @@ public class AuditController {
     /**
      * 查一页审计。
      *
-     * @param executionId 这一轮的编号。**参数名沿线格式是 {@code runId}**（它的参数表里只有这个名，
- *     {@code audit-activity.ts:410-420}）：值是我们的执行编号，ADR-0038
+     * @param executionId 这一轮的编号。**参数名沿线格式是 {@code executionId}**（票 16）：它的参数表里
+     *     只有"跨轮共享的关联"那个名字（{@code audit-activity.ts:410-420}），我们只有执行（ADR-0038）
+     *     ——所以参数跟着我们的名字走
      * @param sessionKey 会话键
      * @param agentId 哪个 agent 干的
      * @param kind {@code agent_run} / {@code tool_action} / {@code message}
@@ -60,7 +61,7 @@ public class AuditController {
      */
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> list(
-            @RequestParam(value = "runId", required = false) String executionId,
+            @RequestParam(value = "executionId", required = false) String executionId,
             @RequestParam(value = "sessionKey", required = false) String sessionKey,
             @RequestParam(value = "agentId", required = false) String agentId,
             @RequestParam(value = "kind", required = false) String kind,

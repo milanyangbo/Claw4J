@@ -32,11 +32,10 @@ public final class ContextKeys {
      * <p>它是句柄，不是一件事：一轮答完就作废，没有状态、没有后续，也没有"按 id 接上它"那条路。
      * 它只用于把同一轮的三样东西对起来——审计的两条事件、trace 的一段 span、返回给调用方的回执。
      *
-     * <p>角色照 OpenClaw：它那个位置的字段叫 {@code runId}，{@code chat.send} 返回它、
-     * {@code chat.abort} 收它、{@code audit --run} 按它过滤，原话是"a possibly shared routing,
-     * session, or recovery correlation"（docs/gateway/audit.md:106）。这边更窄，没有 recovery，
-     * 也没有跨请求续跑，所以一轮就是一个执行。**字段名两边不同**：我们叫 {@code executionId}
-     * （ADR-0038），因为它的 {@code runId} 是"可能跨轮共享"的那一层，我们没有。
+     * <p>形状照 OpenClaw，名字不照：它把"每轮外层请求"和"可能跨轮共享的路由/会话/恢复关联"
+     * 分成两层（ADR-0038），这边更窄——没有 recovery，也没有跨请求续跑，所以一轮就是一个执行，
+     * 这一格就叫 {@code executionId}，不留它上面那一层的名字。工具不接这个参数，模型因此没有
+     * "往别人的轮次上写东西"这条路径。
      *
      * <p>入口写进去，不是模型传进来的：工具不接这个参数，模型因此没有"往别人的轮次上写东西"
      * 这条路径。放在这里而不是入口那个类上，是因为键名只有一处定义才不会漂移，而漂移的表现是

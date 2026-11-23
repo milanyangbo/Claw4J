@@ -127,9 +127,8 @@ class PersistenceSchemaTest {
                 .containsExactly("agent_schedule", "approval_request", "audit_event",
                         "audit_identity_key", "exec_allowlist", "execution_decision_fact");
 
-        // 名字也是契约（ADR-0038）：这一格是"哪一次执行"，不是"哪一个 run"。
-        // 三张表都叫 execution_id，run_id 一个都不剩——留着旧名的话，读的人会以为那是
-        // 它那个"可能跨轮共享的 runId"，而我们从没有过那一层。
+        // 名字也是契约（ADR-0038）：这一格是"哪一次执行"。三张表都叫 execution_id，
+        // 旧名一个都不剩——留着的话，读的人会以为我们也有一层"可能跨轮共享的关联"。
         assertThat(jdbc.queryForList(
                 "select table_name || '.' || column_name from information_schema.columns"
                         + " where table_schema = 'claw4j_run' and column_name in ('run_id', 'execution_id')"
@@ -802,7 +801,7 @@ class PersistenceSchemaTest {
     @Test
     @DisplayName("execution_id 必填：没有轮次的事件落不下去，账本连 SQL 都不发")
     void anAuditEventWithoutAnExecutionIdDoesNotLand() {
-        // OpenClaw 的 {@code AuditEventSchema.runId} 是 NonEmptyString
+        // 它的事件 schema 里这一格是 NonEmptyString
         // （{@code packages/gateway-protocol/src/schema/audit.ts:56}）。这一条两头都验：
         // 库拒绝空值；账本在没有编号时直接跳过，否则每一行都撞约束，write_errors 会一直涨，
         // 把没有归属错报成库坏了。

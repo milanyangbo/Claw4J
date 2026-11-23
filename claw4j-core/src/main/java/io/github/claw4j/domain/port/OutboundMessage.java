@@ -9,9 +9,7 @@ import java.util.Objects;
  * @param text       要发出去的内容
  * @param finalChunk 流式场景里标记这是最后一块，是唯一的正常结束信号（契约见
  *                   {@link AgentPort#stream}）
- * @param executionId      这一轮的编号（ADR-0027）；OpenClaw 在那个位置叫 {@code runId}，
- *                   而它的事件里 {@code executionId} 与 {@code runId} 是两层（ADR-0038）。
- *                   我们只有执行这一层：这一轮运行的句柄，不是可以接着续的实体，
+ * @param executionId      这一轮的编号（ADR-0027）：这一轮运行的句柄，不是可以接着续的实体，
  *                   答完即作废，没有状态，也没有"按它接上这一轮"的路。用途只有两个：串日志，
  *                   以及让调用方把同一次回答的前后几块认成一批。命令类的回执（{@code /new}、
  *                   {@code /goal}）没有编号，那是 null
