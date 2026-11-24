@@ -1,0 +1,6 @@
+event:chunk
+data:好，这是一段新对话。刚才那些不会再被带进来。
+
+event:done
+data:
+

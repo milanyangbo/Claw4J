@@ -1,0 +1,4 @@
+claw4j:
+  model:
+    policy:
+      allow: [qwen/*]

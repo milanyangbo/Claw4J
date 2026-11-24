@@ -1,0 +1,6 @@
+event:chunk
+data:现在有点忙，请稍后再问一次。
+
+event:done
+data:
+
