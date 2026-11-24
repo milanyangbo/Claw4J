@@ -1,6 +1,7 @@
 package io.github.claw4j.channel.http;
 
 import io.github.claw4j.domain.port.AgentPort;
+import io.github.claw4j.domain.port.AuditQuery;
 import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.Approvals;
 import io.github.claw4j.domain.question.QuestionGate;
@@ -101,5 +102,18 @@ public class HttpChannelAutoConfiguration {
     public ApprovalController approvalController(ObjectProvider<Approvals> deciders,
                                                  HttpPrincipalResolver principalResolver) {
         return new ApprovalController(deciders, principalResolver);
+    }
+
+    /**
+     * {@code /api/audit} 的只读入口（票 03，注册是票 18 补的）。
+     *
+     * <p>{@link AuditQuery} 走 {@code ObjectProvider}，与审批同一个理由：没有装配查询的部署里
+     * 端点仍在、只是 404。反过来，这个 bean 一旦漏注册（票 18 就是），端点连 404 的解释都没有——
+     * 它压根不在路由表里，与"没装能力"从外面看一模一样，排查要先怀疑代码。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AuditController auditController(ObjectProvider<AuditQuery> queries) {
+        return new AuditController(queries);
     }
 }

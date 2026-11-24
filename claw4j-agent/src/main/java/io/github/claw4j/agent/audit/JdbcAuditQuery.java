@@ -91,7 +91,10 @@ public class JdbcAuditQuery implements AuditQuery {
     @Override
     public Page query(Filter filter) {
         Filter effective = filter == null ? Filter.page(null, Filter.DEFAULT_LIMIT) : filter;
-        StringJoiner where = new StringJoiner(" and ", " where ", "");
+        // 前缀不能挂在 StringJoiner 上：一个条件都没有时它的 toString() 仍是 emptyValue
+        // （默认就是 prefix + suffix），拼出来是 `… audit_event where  order by`——语法错、500。
+        // 空过滤恰恰是最常用的那一种（I 节第一条就是不带参数打开这一页）。
+        StringJoiner where = new StringJoiner(" and ");
         List<Object> args = new ArrayList<>();
         eq(where, args, "execution_id", effective.executionId());
         eq(where, args, "session_key", effective.sessionKey());
@@ -117,8 +120,9 @@ public class JdbcAuditQuery implements AuditQuery {
         }
         // 多取一条判"还有没有下一页"：比 count(*) 便宜，也不会在两页之间被新写入骗到。
         args.add(effective.limit() + 1);
+        String whereClause = where.length() == 0 ? "" : " where " + where;
         List<Row> rows = jdbc.query(
-                "select " + COLUMNS + " from claw4j_run.audit_event" + where
+                "select " + COLUMNS + " from claw4j_run.audit_event" + whereClause
                         + " order by seq desc limit ?",
                 MAPPER, args.toArray());
         if (rows.size() <= effective.limit()) {

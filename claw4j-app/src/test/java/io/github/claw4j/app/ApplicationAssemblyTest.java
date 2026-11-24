@@ -645,6 +645,80 @@ class ApplicationAssemblyTest {
                 .doesNotContain("deepseek", "Conversion from JSON");
     }
 
+    /**
+     * 审计的读接口（票 18）：{@code /api/audit} 必须在真端口上挂着。
+     *
+     * <p>这条用例存在的唯一理由是"controller 写对了"与"controller 被注册了"是两件事。
+     * 2026-11-23 全量复跑时 {@code HttpChannelAutoConfiguration} 里少了这个 bean，
+     * 接口从启动起就 404，而所有直接 {@code new} 控制器的用例照旧全绿。
+     *
+     * <p>所以这条走真 HTTP、不 {@code new}：要钉的正是容器这一层。
+     */
+    @Test
+    @DisplayName("审计读接口挂在真端口上：/api/audit 回一页，不是 404")
+    void theAuditEndpointIsMountedAndServesAPage() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/audit"))
+                .header("X-Claw4j-User", "assembly-audit")
+                .GET()
+                .timeout(Duration.ofSeconds(20))
+                .build();
+
+        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode())
+                .as("404 是「这条路上没有 handler」：controller 没注册，或者查询能力不在场")
+                .isEqualTo(HttpStatus.OK.value());
+        assertThat(response.body())
+                .as("形状是 {events, nextCursor}（照 OpenClaw 的 audit.activity.list）")
+                .contains("\"events\"");
+    }
+
+    /**
+     * 参数名与线格式（票 18、ADR-0038 决定二）：按 {@code executionId} 过滤要生效，
+     * 报文那一格也得叫 {@code executionId}。
+     *
+     * <p>两行数据直接插库，不依赖模型这一轮愿不愿意调工具——过滤是读侧的事，
+     * 与那一轮跑了什么无关。
+     */
+    @Test
+    @DisplayName("按 executionId 过滤生效，且报文用我们自己的名字与形状（ADR-0038）")
+    void theAuditEndpointFiltersByExecutionIdAndUsesTheWireShape() throws Exception {
+        String mine = "assembly-audit-mine";
+        String other = "assembly-audit-other";
+        insertStartedEvent("assembly-audit-1", mine);
+        insertStartedEvent("assembly-audit-2", other);
+
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port
+                        + "/api/audit?executionId=" + mine))
+                .header("X-Claw4j-User", "assembly-audit")
+                .GET()
+                .timeout(Duration.ofSeconds(20))
+                .build();
+        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        String body = response.body();
+
+        assertThat(response.statusCode()).isEqualTo(HttpStatus.OK.value());
+        assertThat(body)
+                .as("参数名写错时过滤不生效，两条都会回来")
+                .contains(mine)
+                .doesNotContain(other);
+        assertThat(body)
+                .as("报文那一格叫 executionId；留着旧名会让读的人以为我们有一层 run")
+                .doesNotContain("runId");
+        assertThat(body).as("四变体判别（票 07）").contains("agent_run");
+        assertThat(body).as("occurredAt 是 13 位毫秒，不是 ISO 串").containsPattern("\"occurredAt\":\\d{13}");
+        assertThat(body).as("actor 摊成对象（票 11）").containsPattern("\"actor\":\\{\"type\":");
+    }
+
+    /** 插一条最小可用的 {@code agent.run.started}，只为验读接口的过滤与翻译。 */
+    private void insertStartedEvent(String eventId, String executionId) {
+        jdbc.update("insert into claw4j_run.audit_event"
+                        + " (event_id, kind, action, status, execution_id, actor, source_id, source_sequence)"
+                        + " values (?, 'agent_run', 'agent.run.started', 'started', ?, 'assembly', ?, 1)"
+                        + " on conflict (source_id, source_sequence) do nothing",
+                eventId, executionId, "probe:" + eventId);
+    }
+
     /** 金额可能被写成 128,400 或 ￥128400：去掉分隔符再比，比的就是那个数。 */
     private static boolean mentions(String answer, String amount) {        String normalized = answer.replace(",", "").replace("，", "").replace(" ", "");
         return normalized.contains(amount);
