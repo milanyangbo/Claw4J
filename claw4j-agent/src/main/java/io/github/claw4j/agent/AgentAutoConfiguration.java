@@ -13,6 +13,7 @@ import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.model.config.ModelConfiguration;
 import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
@@ -487,13 +488,40 @@ public class AgentAutoConfiguration {
 
         // 一律包一层：没有 registry 时它只记"这一轮调过哪些工具"，不报指标。
         // 语义缓存判断副作用靠的就是这份记录，所以它不能跟着 actuator 一起缺席。
+        //
+        // 已经包过的原样返回（票 19）：子链走的也是这条收集路径，而它拿到的 provider 交出来的
+        // 工具**本身已经带一层包装**。再包一次会让同一次调用写两遍审计——第二遍被唯一键挡住，
+        // 于是不报错、只是 duplicates 涨，而"每条子链调用都涨 2"从外面看像重放。
         return collected.stream()
                 .filter(callback -> kept.contains(callback.getToolDefinition().name()))
                 // 显式转型，否则 stream 的元素类型被推断成 MeteredToolCallback，
                 // 与返回类型 List<ToolCallback> 对不上（它不是泛型类，推断不出父类型）。
-                .map(callback -> (ToolCallback) new MeteredToolCallback(callback, registry, audit, tracer,
-                        observations))
+                .map(callback -> alreadyMetered(callback)
+                        ? callback
+                        : (ToolCallback) new MeteredToolCallback(callback, registry, audit, tracer,
+                                observations))
                 .toList();
+    }
+
+    /**
+     * 这份清单里已经带过计量了吗（票 19）。
+     *
+     * <p>必须穿透装饰器：{@code Sanitizing(MeteredToolCallback(…))} 的最外层是净化器，
+     * 只看最外层类型会漏，于是又包一层——同一次工具调用写两遍审计，第二遍被唯一键挡住，
+     * 表现成 {@code duplicates} 每委派一次涨 2，不报错。
+     *
+     * @param callback 待收集的工具
+     * @return 里外任意一层是 {@link MeteredToolCallback} 时为 true
+     */
+    private static boolean alreadyMetered(ToolCallback callback) {
+        ToolCallback current = callback;
+        while (current != null) {
+            if (current instanceof MeteredToolCallback) {
+                return true;
+            }
+            current = UntrustedToolCallback.unwrap(current);
+        }
+        return false;
     }
 
     /**

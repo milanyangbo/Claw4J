@@ -70,6 +70,26 @@ public final class UntrustedToolCallback implements ToolCallback {
         return new Sanitizing(delegate);
     }
 
+    /**
+     * 穿透这一层装饰器，拿到里面那个工具（票 19）。
+     *
+     * <p>给收集侧用：判断"这份清单是不是已经被包过"，必须能穿过装饰器看懂里面。
+     * 只看最外层的类型会漏——{@code Sanitizing(MeteredToolCallback(…))} 的最外层是净化器，
+     * 收集侧于是又包一层计量，同一次调用就写两遍审计。
+     *
+     * @param callback 任意工具回调
+     * @return 里面的那个；这一层不是装饰器时返回 {@code null}
+     */
+    public static ToolCallback unwrap(ToolCallback callback) {
+        if (callback instanceof Sanitizing sanitizing) {
+            return sanitizing.delegate;
+        }
+        if (callback instanceof UntrustedToolCallback untrusted) {
+            return untrusted.delegate;
+        }
+        return null;
+    }
+
     @Override
     public ToolDefinition getToolDefinition() {
         return delegate.getToolDefinition();

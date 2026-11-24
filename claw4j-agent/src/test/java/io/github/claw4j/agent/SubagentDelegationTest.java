@@ -21,8 +21,11 @@ import io.github.claw4j.agent.subagent.SubagentDefinition;
 import io.github.claw4j.agent.subagent.SubagentDelegation;
 import io.github.claw4j.agent.subagent.SubagentRunner;
 import io.github.claw4j.agent.subagent.SubagentTaskRepository;
+import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
+import io.github.claw4j.domain.principal.ToolPolicyPipeline;
+import io.github.claw4j.domain.principal.ToolProfile;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -327,6 +330,46 @@ class SubagentDelegationTest {
                 .contains("alpha")
                 .contains("管销售")
                 .doesNotContain("先查数");
+    }
+
+    /**
+     * 收集是幂等的：已经包过的工具不再包第二层（票 19）。
+     *
+     * <p>子链与父链走同一条收集路径，但两边拿到的输入不同——提供给子链的那个
+     * {@code ToolCallbackProvider} 交出来的工具本身已经带着一层包装。于是同一次工具调用被写两遍
+     * 审计，第二遍被唯一键挡住（落在 {@code duplicates} 上）。这一条钉的就是"收集不该改层数"。
+     */
+    @Test
+    @DisplayName("收集是幂等的：已经包过的工具不再包第二层（票 19）")
+    void collectToolCallbacksDoesNotWrapAnAlreadyMeteredTool() {
+        ToolCallAudit audit = new ToolCallAudit(event -> { });
+        ToolProfile profile = ToolsProperties.defaults().toProfile();
+        List<ToolTierRegistry> tiers = List.of(ToolTierRegistry.sameFor(Set.of("lookup"), ToolTier.MESSAGING));
+        List<ToolCallback> once = AgentAutoConfiguration.collectToolCallbacks(
+                providerOf(List.of(new RecordingTool("lookup", "1"))), providerOf(List.of()),
+                null, audit, SpanTracer.NONE, ObservationRegistry.NOOP, profile,
+                tiers, ToolPolicyPipeline.none(), selection -> { });
+        List<ToolCallback> twice = AgentAutoConfiguration.collectToolCallbacks(
+                providerOf(once), providerOf(List.of()),
+                null, audit, SpanTracer.NONE, ObservationRegistry.NOOP, profile,
+                tiers, ToolPolicyPipeline.none(), selection -> { });
+
+        assertThat(twice).hasSize(1);
+        assertThat(twice.getFirst())
+                .as("再收集一次不该再造一个包装：那会让同一次调用写两遍审计")
+                .isSameAs(once.getFirst());
+
+        // 线上那条路径还多一层净化器：子链拿到的 provider 交出来的是 Sanitizing(Metered(…))。
+        // 只看最外层类型会漏，所以要穿透装饰器判。
+        List<ToolCallback> sanitized = providerOf(List.of(
+                UntrustedToolCallback.sanitizing(once.getFirst()))).orderedStream().toList();
+        List<ToolCallback> again = AgentAutoConfiguration.collectToolCallbacks(
+                providerOf(sanitized), providerOf(List.of()),
+                null, audit, SpanTracer.NONE, ObservationRegistry.NOOP, profile,
+                tiers, ToolPolicyPipeline.none(), selection -> { });
+        assertThat(again.getFirst())
+                .as("净化器里面已经有计量：再包一层就是两遍审计")
+                .isSameAs(sanitized.getFirst());
     }
 
     /**
