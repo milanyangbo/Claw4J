@@ -72,4 +72,4 @@ channel 11 文件 / 20 方法，配额没抬）。两次反例都验过：
 | I7 | `tool_action` 102/102 有 `sha256:` 71 位；`agent_run` 112/112 空 |
 | I8 | 两个子 Agent 各 4 行、各 1 个 executionId；无 `parent*` 列 |
 | I9 | 五个计数全 404（= 0） |
-| I10 | 第 1 条现在能区分了：404 只剩"没装查询"这一种（controller 已注册） |
+| I10 | 404 只剩「没装查询」这一种解释（controller 已注册） |

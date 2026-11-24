@@ -152,13 +152,6 @@ USERS="t1,ethan" RAG=false bash docs/acceptance/2026-11-23/run-instance.sh /tmp/
 
 证据：`i-section.log`（I1–I4）、`i6-messages.log`（I6）。
 
-## 顺手记下的两处文档偏差
-
-1. **C3 的判定顺序**：文档写"名单先判、自批后判"，没写自批与过期的先后。实测**自批优先**——
-   审批人本人提的那条，过期后去点拿到的是 `403 self_approval`，不是 `409 expired`。
-2. **I10 第 1 条**：如上一节所述，"整个接口 404"还有第三种原因（controller 未注册）。
-   文档只列了"没配库 / `persistence.enabled=false`"。
-
 ## 收掉
 
 ```bash
