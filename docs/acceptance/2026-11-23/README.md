@@ -3,9 +3,11 @@
 对应文档：仓库根 `README-capability-tests.md` 的 **A–I 九节全部**。这一批是"从头到尾跑一遍"，
 不是只补某几节——所以除了文档要求的几个专项实例，其余都在同一个主实例上跑完。
 
-**结论先放这里**：A / B / C / D / E / F / G / H 全部通过，判据与文档写的一致；
-**I（审计）的库侧判据通过，HTTP 侧全部 404**——`AuditController` 没有被注册成 bean，
-`/api/audit` 从启动起就不存在。根因与证据见文末"阻断"一节。
+**结论先放这里**：A / B / C / D / E / F / G / H 全部通过，判据与文档写的一致。
+
+**I（审计）当天 HTTP 侧全部 404**——`AuditController` 没有被注册成 bean，`/api/audit` 从启动起就不存在；
+库侧（I5/I7/I8/I9）当天就过了。**2026-11-24 已修**（票 18：补注册 + 修空 `where` 的拼接），
+修完把 I 节十条全部补跑，逐条结果见文末"当天的阻断与修复"。
 
 ## 材料清单
 
@@ -26,7 +28,9 @@
 | `h5-busy.log` / `h6-timeout.log` | H5（`lane-wait=0`）/ H6（`stream-timeout=2s`） |
 | `stream-*.txt` | 原始 SSE 帧：basic / new / tool / failover / busy-a / busy-b / timeout |
 | `mcp-java-http.log` | E1 用的 `claw4j-example-mcp-server`，含被 kill 与重启两次的完整日志 |
-| 库 `claw4j_accept_all` | 全程共用的一个库（303 条审计、3 张进度卡、1 条意图、6 条审批） |
+| `i-section.log` | 2026-11-24 修复后补跑 I1–I4 的那一轮（`RAG=false`） |
+| `i6-messages.log` | I6 后半段：`--claw4j.audit.messages=true` |
+| 库 `claw4j_accept_all` | 全程共用的一个库（复跑前 303 条审计、3 张进度卡、1 条意图、6 条审批；补跑后 308 条） |
 
 ## 复跑
 
@@ -91,9 +95,9 @@ USERS="t1,ethan" RAG=false bash docs/acceptance/2026-11-23/run-instance.sh /tmp/
 | I8 | 子 Agent | `subagent:capacity-triage` / `subagent:weekly-digest` 各 4 行、各 1 个 executionId；工具行挂子编号；无 `parent*` 列 |
 | I9 | 五个计数 | 全 404（= 0） |
 
-## 阻断：`/api/audit` 从来没被注册
+## 当天的阻断与修复：`/api/audit` 从来没被注册
 
-**现象**：`/api/audit`、`/api/audit?executionId=…` 一律 404，`/api/approvals`（根路径）、
+**现象**（2026-11-23 实测）：`/api/audit`、`/api/audit?executionId=…` 一律 404，`/api/approvals`（根路径）、
 `/api/schedules` 也 404——但那两个是**没有对应映射**（审批只有 `/{id}`），不是缺陷。
 
 **排除掉的**：
@@ -122,9 +126,31 @@ USERS="t1,ethan" RAG=false bash docs/acceptance/2026-11-23/run-instance.sh /tmp/
 在当前代码上不成立。**I1 / I2 / I3 / I4 / I6 五条全部跑不了**，`I10` 的第 1 条排查指引
 （"整个接口 404 = 没配库"）在这个案例上也是误导——404 也可能是 controller 没注册。
 
-**修法（未实施，等确认）**：在 `HttpChannelAutoConfiguration` 里照 `approvalController` 的形状加一个
-bean，并把 `HttpEndpointsTest` 改成经容器取（或加一条断言 `context.getBean(AuditController.class)`），
-否则同类遗漏还会发生。
+**修法（2026-11-24 已实施，票 18）**：在 `HttpChannelAutoConfiguration` 里照 `approvalController`
+的形状加一个 `auditController` bean；并把用例放进 `ApplicationAssemblyTest`——那里起真端口、
+走真 HTTP，钉的正是容器这一层（`HttpEndpointsTest` 是 `new` 的，加断言也钉不住注册）。
+
+补注册之后**又露出来一层**：不带任何参数打开这一页（I1 就是）返回 500。
+根因是 `JdbcAuditQuery` 用 `new StringJoiner(" and ", " where ", "")`，一个条件都没有时
+`toString()` 仍是 `emptyValue`，拼出 `… audit_event where  order by seq desc`。改成最后再决定
+要不要加 `where`。两处都修完，`./scripts/verify.sh` 全绿。
+
+### 修复后的 I 节复跑（2026-11-24）
+
+| 条 | 结果 |
+| --- | --- |
+| I1 | 一轮 4 行、`sequence` 倒序（314→311）、`occurredAt` 13 位毫秒、`actor` 是 `{type,id}`、整页无 `runId` / `argsDigest` / `approvalId` |
+| I2 | 四变体逐格符合（`agent_run` 无工具三格；`tool_action` 有 `toolName`/`toolCallId`/`redaction`；`inbound` 有 `accountRef` 与 `resultCount=1`、无 `deliveryKind`；`outbound` 有 `deliveryKind=text`、无 `resultCount`；消息行没有 `sessionKey`） |
+| I3 | 三条冲突全 400，文案与文档一致；坏游标 400 |
+| I4 | `limit=2` 两页不重叠、游标严格更小；`limit=0` 钳成 1 条。`limit=1000` 钳到 500 **没验到**：库里只有 308 行 |
+| I5 | `INSERT 0 1` / `INSERT 0 0`；`having count(*)>1` 空 |
+| I6 | 默认关时空页、库里 0 行；打开后进出各一条，字段同 I2 |
+| I7 | 工具行 102/102 有 `sha256:` 71 位；运行行 112/112 空 |
+| I8 | 两个子 Agent 各 4 行、各 1 个 executionId；无 `parent*` 列 |
+| I9 | 五个计数全 404（= 0） |
+| I10 | 404 现在只剩"没装查询"一种解释（controller 已注册） |
+
+证据：`i-section.log`（I1–I4）、`i6-messages.log`（I6）。
 
 ## 顺手记下的两处文档偏差
 

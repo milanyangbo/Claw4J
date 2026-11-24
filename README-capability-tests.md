@@ -820,6 +820,9 @@ docker exec claw4j-postgres psql -U claw4j -d claw4j \
 **禁自批要看顺序**：名单先判、自批后判。拿一个不在名单里的人去批自己的请求，拿到的是
 `not_approver`——想验 `self_approval`，得让 `approvers` 里的人自己发一条。
 
+**自批又排在过期之前**（2026-11-23 实测）：审批人本人提的那条，过了 `ttl` 再去点，拿到的是
+`403 self_approval` 而不是 `409 expired`。所以要验过期，得用**别人**提的那条。
+
 **过期不用干等**：`--claw4j.approval.ttl=60s` 起实例，触发一条、不去管它。清扫按
 `claw4j.approval.sweep-interval`（默认 `PT1M`）把到点的行落成 `expired`，日志是
 `审批清扫：1 条超时未处理，已落成 expired`。清扫**只改状态、不通知那段对话**。
@@ -1735,7 +1738,12 @@ done
 
 ### I10 不对时先看哪里
 
-1. **整个接口 404**：没配库，或 `claw4j.persistence.enabled=false`——能力不在场，不是参数写错。
+1. **整个接口 404**：两种原因，别只查第一种。
+   - 没配库，或 `claw4j.persistence.enabled=false`——能力不在场，不是参数写错；
+   - **controller 压根没注册**（2026-11-23 就是这样：`HttpChannelAutoConfiguration` 少了
+     `auditController`，接口从启动起 404，而直接 `new` 控制器的用例照旧全绿）。
+     分界点：`/api/chat` 能用、`/api/approvals/{id}` 能开，但 `/api/audit` 404 —— 先看构建日志里
+     有没有 `HttpChannelAutoConfiguration` 这个类，别急着怀疑库。
 2. **空页，但刚才确实跑过**：先看 `claw4j.audit.enabled`（默认 true）；再看是不是 `kind`/`direction`
    把行挡在外面（消息行要 `kind=message`，运行/工具行不能带 `direction`/`channel`）。
 3. **400**：回到 I3 那三种组合——冲突是**参数**的问题，不是数据的问题。

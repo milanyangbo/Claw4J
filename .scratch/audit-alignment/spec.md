@@ -32,6 +32,7 @@
 | 15 | 改名：`run_id` → `execution_id`（V16），边界照它的 `executionId`（每轮外层请求）；线格式当时留了 `runId`，票 16 推翻 | 03、14 | resolved |
 | 16 | 线格式改名：报文那一格与 `/api/audit` 的参数都叫 `executionId`（我们只有执行这一层，不留它的名字） | 15 | resolved |
 | 17 | 观测层改名：span 名 `run` → `execution`、属性 `claw4j.run.id`、指标 `claw4j.run.delivery` 一并换 | 15 | resolved |
+| 18 | `/api/audit` 补注册，外加空 `where` 的拼接修复：`HttpChannelAutoConfiguration` 少了 `auditController`（404）、`JdbcAuditQuery` 无过滤时拼出 `where  order by`（500），A–I 复跑发现 | 03、16 | resolved |
 
 **状态列与票面同源**：票面开头那行 `**Status:**` 是事实，这张表只是总览；收票时两处一起改。
 `scripts/check-ticket-cases.sh` 会比对（表里漏列一张票、或两处写的不是一个词，都会红）。
