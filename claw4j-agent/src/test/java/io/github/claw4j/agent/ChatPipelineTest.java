@@ -471,7 +471,7 @@ class ChatPipelineTest {
     }
 
     /**
-     * 命令在两条入口上必须一致：{@code /elevated} 与 {@code /new}、{@code /goal} 同层，
+     * 命令在两条入口上必须一致：{@code /elevated} 与已经下线的 {@code /new} 同层，
      * 认出来就当场办、不调模型。
      *
      * <p>这条钉的是一个真实的不对称：拆分之前同一套判断在 {@code reply} 与 {@code stream} 里各写

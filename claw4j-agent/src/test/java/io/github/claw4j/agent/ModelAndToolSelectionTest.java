@@ -398,7 +398,12 @@ class ModelAndToolSelectionTest {
                 ToolReference.builder().toolName("scheduleMeeting")
                         .summary("预约会议室，安排日程与参会人").build(),
                 ToolReference.builder().toolName("runScript")
-                        .summary("在沙箱里执行脚本，用于批量处理数据").build());
+                        .summary("在沙箱里执行脚本，用于批量处理数据").build(),
+                // 描述照抄框架那一份：全英文。这正是网页这一族要跨语言搭桥的原因。
+                ToolReference.builder().toolName("WebFetch")
+                        .summary("Fetches content from a specified URL and processes it using an AI "
+                                + "model. Takes a URL and a prompt, fetches the URL content using "
+                                + "HTTP GET method, converts HTML to markdown.").build());
 
         // 一、整句命中。不切词的话整句是一个 token，当子串去描述里找什么都找不到。
         index.indexTools("chat-1", tools);
@@ -424,6 +429,16 @@ class ModelAndToolSelectionTest {
                 .containsExactlyInAnyOrder(
                         "回忆", "忆以", "以前", "前说", "说过", "过的", "的话", "历史", "会话");
 
+        // 四之二、网页那一族（票 04）：用户说"打开这个网页""这个链接讲什么"，而 WebFetch 的描述
+        //     只有英文（框架自带）。不给 fetch/url 这座桥，中文二元组一个都匹配不上——
+        //     实测四问四否，模型每次都答"我没有能抓网页的工具"。
+        assertThat(foundTools(index, "chat-1", "打开这个网页看看 https://example.com"))
+                .as("中文问网页要能落到 WebFetch 上，不能靠 query 里那个 URL 碰巧命中")
+                .contains("WebFetch");
+        assertThat(foundTools(index, "chat-1", "这个链接讲了什么"))
+                .as("只有中文、连 URL 都没有的时候才最能说明问题")
+                .contains("WebFetch");
+
         // 五、空 query 不能返回全部。父类返回 .* 会把五个工具一起交出去，
         //     模型随便发个空查询就把渐进式披露静默关掉了，而日志上一切正常。
         assertThat(foundTools(index, "chat-1", ""))
@@ -436,7 +451,11 @@ class ModelAndToolSelectionTest {
                 .as("索引能认整句之后，提示词里不该还要求模型自己分词")
                 .doesNotContain("空格")
                 .as("但“看不到工具不代表没有这个能力”必须留着——不写它模型会直接答“我没有工具”")
-                .contains("不代表没有这个能力");
+                .contains("不代表没有这个能力")
+                .as("检索的触发条件不能只挂在“业务问题”上：看网页、读文件同样是动手做事，"
+                        + "限定成业务问题会让它直接答“我没有这个工具”（票 04 实测四问四否）")
+                .contains("网址")
+                .contains("文件路径");
 
         // 七、默认 bean 真的换掉了。只改测试构造等于测的还是旧实现。
         //     "容器里没有 VectorStore" 用空工厂的 provider 表示：默认那一档不读它。

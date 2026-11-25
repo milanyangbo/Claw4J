@@ -23,7 +23,6 @@ import io.github.claw4j.domain.untrusted.OutboundText;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.session.SessionService;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.model.tool.ToolCallLimitExceededException;
 
@@ -112,7 +111,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     private ChatClientAgentPort(Builder builder) {
         ChatClient chatClient = Objects.requireNonNull(builder.chatClient, "chatClient");
         this.address = new SessionAddress(builder.scopes);
-        this.commands = new SlashCommands(builder.sessions, builder.elevations);
+        this.commands = new SlashCommands(builder.elevations);
         this.composer = new PromptComposer(chatClient, builder.catalog, builder.providerKey,
                 builder.elevations, builder.progressCards, builder.intents,
                 builder.turnTimeout, builder.clock, builder.agentId);
@@ -146,7 +145,6 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         private SessionScopeProperties scopes;
         private ConversationLane lane;
         private ToolCallAudit audit;
-        private SessionService sessions;
         private io.github.claw4j.agent.progress.ProgressCards progressCards;
         private io.github.claw4j.agent.intent.StandingIntents intents;
         private ToolCatalog catalog;
@@ -205,15 +203,6 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
          */
         public Builder audit(ToolCallAudit value) {
             this.audit = value;
-            return this;
-        }
-
-        /**
-         * @param value 会话存储，可以为 null（没装会话层时 {@code /new} 清不了历史）
-         * @return this
-         */
-        public Builder sessions(SessionService value) {
-            this.sessions = value;
             return this;
         }
 
@@ -408,14 +397,13 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     private Turn answer(InboundMessage message, DeliveryTarget answeredAt) {
         String owner = SessionKeys.ownerOf(message.principal());
         String conversationKey = address.conversationKeyOf(message, owner);
-        // 会话 id 就是会话键（ADR-0026 修订）：没有段，先算它没有副作用；而 /new 要删的正是这个 id，
-        // 所以命令层需要它先存在。含段时代是反过来的——那时规矩是"先判命令、再算 id"，因为换段
-        // 那个副作用在命令里。
+        // 会话 id 就是会话键（ADR-0026 修订）：没有段，先算它没有副作用。
         String sessionId = address.sessionIdOf(message, owner);
-        // /new、/elevated 这一族与"跑一轮"同层：认出来就当场办、回一句话，不进模型也不开 run
-        // （OpenClaw：纯命令消息绕过队列和模型）。
+        // /elevated 与"跑一轮"同层：认出来就当场办、回一句话，不进模型也不开 run
+        // （OpenClaw：纯命令消息绕过队列和模型）。它改的是"这条对话"的档，所以传 conversationKey
+        // 而不是 sessionId——定时任务那一轮的 sessionId 是它自己的一次性键，给提权不该落在那里。
         long inboundAt = System.nanoTime();
-        SlashCommands.Parsed parsed = commands.parse(message, sessionId);
+        SlashCommands.Parsed parsed = commands.parse(message, conversationKey);
         if (parsed.reply().isPresent()) {
             // 命令也是"处理完了"：它没调模型，但它确实是这条消息的结局。
             auditInbound(message, null, MessageOutcome.COMPLETED, null, inboundAt);
@@ -500,7 +488,7 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         String conversationKey = address.conversationKeyOf(message, owner);
         String sessionId = address.sessionIdOf(message, owner);
         long inboundAt = System.nanoTime();
-        SlashCommands.Parsed parsed = commands.parse(message, sessionId);
+        SlashCommands.Parsed parsed = commands.parse(message, conversationKey);
         if (parsed.reply().isPresent()) {
             auditInbound(message, null, MessageOutcome.COMPLETED, null, inboundAt);
             // 与"忙"那条同形：一帧正文 + 一帧空文本，调用方靠后者收尾。

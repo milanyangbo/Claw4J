@@ -12,7 +12,7 @@ import java.util.Optional;
 /**
  * 消息里的 {@code /elevated} 命令（ADR-0030 裁决六）。
  *
- * <p>与 {@code /new}、{@code /goal} 同层：做成消息而不是通道侧注册的命令，三条通道自动都有；
+ * <p>与已经下线的 {@code /new} 同层：做成消息而不是通道侧注册的命令，三条通道自动都有；
  * 命令本身不进提示词、不占一次模型调用。
  *
  * <p>四个词：{@code on} / {@code off} / {@code ask} / {@code full}。{@code ask} 是 {@code on}
@@ -22,7 +22,7 @@ import java.util.Optional;
  * <ol>
  *   <li>部署开着（{@code claw4j.tools.elevated.enabled}）；</li>
  *   <li>发送者在 {@code allow-from} 里——名单为空时谁都不许；</li>
- *   <li>只改这一段会话（键是会话目标键，{@code /new} 之后跟着走）。</li>
+ *   <li>只改这一段会话（键是会话目标键）。</li>
  * </ol>
  * 这不是"多一层小心"：{@code full} 的效果是"这一段不问了"，任何能发消息的人都发得出来的话，
  * 审批那一层就等于不存在。
@@ -105,7 +105,7 @@ public final class ElevatedCommand {
             case ON -> "好，这一段跑到沙箱外，但审批照旧"
                     + (until == null ? "。" : "（到 " + UNTIL.format(until) + " 自动失效）。");
             case FULL -> "好，这一段跳过审批" + (until == null ? "。" : "（到 " + UNTIL.format(until) + " 自动失效）。")
-                    + "只对这一段有效，/new 之后也还是这一段。";
+                    + "只对这一条对话有效。";
         };
     }
 

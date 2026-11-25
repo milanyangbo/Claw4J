@@ -9,7 +9,6 @@ import io.github.claw4j.agent.session.JdbcSessionQuery;
 import io.github.claw4j.agent.approval.ElevatedCommand;
 import io.github.claw4j.agent.approval.ElevatedProperties;
 import io.github.claw4j.agent.approval.Elevations;
-import io.github.claw4j.agent.session.SessionCommand;
 import io.github.claw4j.agent.session.SessionMemoryConfiguration;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
 import io.github.claw4j.agent.session.SessionSchema;
@@ -253,31 +252,24 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("/new 清掉历史但 id 不变：侧边栏不会因为「开了新对话」多出一行")
-    void newCommandClearsHistoryAndKeepsTheId() {
+    @DisplayName("/new 不再是命令：它像任何一句普通正文一样进模型（票 03）")
+    void newIsNoLongerACommand() {
         MapSessionService sessions = new MapSessionService();
-        FixedChatModel model = new FixedChatModel("记住了");
+        FixedChatModel model = new FixedChatModel("你说的 /new 我收到了");
         ChatClientAgentPort port = port(model, sessions);
-        Principal principal = new Principal("u-1");
 
-        port.reply(new InboundMessage(principal, "web-chat", "我叫 Ethan"));
-        String before = sessions.createdIds().getFirst();
+        String answered = port.reply(new InboundMessage(new Principal("u-1"), "web-chat", "/new")).text();
 
-        String acknowledged = port.reply(new InboundMessage(principal, "web-chat", "/new")).text();
-        port.reply(new InboundMessage(principal, "web-chat", "我叫什么"));
-
-        String afterCommand = model.prompts().getLast().getInstructions().stream()
+        String sentToModel = model.prompts().getLast().getInstructions().stream()
                 .map(Message::getText)
                 .collect(Collectors.joining("\n"));
-        assertThat(acknowledged)
-                .as("单独 /new 回一句确认，而不是把命令本身送进模型")
-                .isEqualTo(SessionCommand.ACK);
-        assertThat(sessions.createdIds())
-                .as("/new 不再换会话：id 与之前同一个，侧边栏不会多一行")
-                .containsOnly(before);
-        assertThat(afterCommand)
-                .as("这就是用户按 /new 的理由：上下文污染之后，唯一有效的动作是清掉重说")
-                .doesNotContain("我叫 Ethan");
+        assertThat(answered)
+                .as("回的是模型那句，不是「历史已经清空」——那套文案随功能下线了")
+                .isEqualTo("你说的 /new 我收到了");
+        assertThat(sentToModel)
+                .as("命令若还被吃掉，用户以为清过了、其实模型根本没看见这行；"
+                        + "而真清了的话历史是整条会话蒸发，不是「不再带进来」")
+                .contains("/new");
     }
 
     @Test
@@ -491,27 +483,6 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("/new 的解析：整词匹配，剩下的内容才是清空之后要问的话")
-    void newCommandParsesItsTwoShapes() {
-        assertThat(SessionCommand.parse("/new"))
-                .as("单独一个 /new：只清历史，回一句确认（不跑模型）")
-                .isEqualTo(new SessionCommand.Parsed("", true));
-        assertThat(SessionCommand.parse("  /NEW  ").reset())
-                .as("大小写不敏感：用户不该为了清个上下文去猜大小写")
-                .isTrue();
-        assertThat(SessionCommand.parse("/reset 帮我查华南回款"))
-                .as("/reset 是别名，后面那句才是清空之后的第一句")
-                .isEqualTo(new SessionCommand.Parsed("帮我查华南回款", true));
-        assertThat(SessionCommand.parse("/newer 怎么说"))
-                .as("前缀匹配会让「问一个新问题」被当成「清空上下文」，而且没有任何报错")
-                .isEqualTo(new SessionCommand.Parsed("/newer 怎么说", false));
-        assertThat(SessionCommand.parse("/etc 的权限"))
-                .as("不是命令的斜杠开头一律当普通问题：别的命令不归我们解释")
-                .isEqualTo(new SessionCommand.Parsed("/etc 的权限", false));
-        assertThat(SessionCommand.parse("上周成交额").reset()).isFalse();
-    }
-
-    @Test
     @DisplayName("压缩由记忆 Advisor 自己在轮末触发：事件不再线性增长")
     void theAdvisorCompactsWhenItsTriggerFires() {
         MapSessionService sessions = new MapSessionService();
@@ -682,7 +653,6 @@ class SessionMemoryTest {
                         .build())
                 .build();
         return ChatClientAgentPort.builder(chat)
-                .sessions(sessions)
                 .lane(lane)
                 .build();
     }

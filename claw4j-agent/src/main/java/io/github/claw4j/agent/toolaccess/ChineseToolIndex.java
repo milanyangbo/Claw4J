@@ -53,17 +53,26 @@ public class ChineseToolIndex extends RegexToolIndex {
      *
      * <p>它不解决「描述得模糊」，那要靠向量检索。这里只处理用户与工具描述在说同一件事、
      * 只是用词不同的情况。
+     *
+     * <p>网页那三组是跨语言的，扩展词是<b>英文</b>：{@code WebFetch} 这一类工具来自框架，
+     * 描述只有英文（"Fetches content from a specified URL … HTTP GET … markdown"），
+     * 中文二元组一个都匹配不上。实测（票 04）用户说「打开这个网页」「这个链接讲了什么」都空手而归，
+     * 说「抓一下…」才碰巧命中——靠的是 query 里那个 URL 的 ASCII 段，不是中文说对了。
      */
-    private static final Map<String, List<String>> SYNONYMS = Map.of(
-            "回忆", List.of("历史", "会话"),
-            "想不起", List.of("历史", "会话"),
-            "之前说过", List.of("历史", "会话"),
-            "退货", List.of("无理由", "售后"),
-            "退换", List.of("无理由", "售后"),
-            "成交额", List.of("销售", "金额"),
-            "卖了多少钱", List.of("销售", "金额"),
-            "审批", List.of("权限", "负责人"),
-            "谁批", List.of("权限", "负责人"));
+    private static final Map<String, List<String>> SYNONYMS = Map.ofEntries(
+            Map.entry("回忆", List.of("历史", "会话")),
+            Map.entry("想不起", List.of("历史", "会话")),
+            Map.entry("之前说过", List.of("历史", "会话")),
+            Map.entry("退货", List.of("无理由", "售后")),
+            Map.entry("退换", List.of("无理由", "售后")),
+            Map.entry("成交额", List.of("销售", "金额")),
+            Map.entry("卖了多少钱", List.of("销售", "金额")),
+            Map.entry("审批", List.of("权限", "负责人")),
+            Map.entry("谁批", List.of("权限", "负责人")),
+            Map.entry("页", List.of("fetch", "url")),
+            Map.entry("链接", List.of("fetch", "url")),
+            Map.entry("网址", List.of("fetch", "url")),
+            Map.entry("浏览", List.of("fetch", "url")));
 
     /**
      * 把 query 变成父类那一套形状的正则：{@code (?i)(token1|token2|...)}。

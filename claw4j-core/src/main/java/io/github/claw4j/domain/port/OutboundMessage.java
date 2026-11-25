@@ -11,8 +11,8 @@ import java.util.Objects;
  *                   {@link AgentPort#stream}）
  * @param executionId      这一轮的编号（ADR-0027）：这一轮运行的句柄，不是可以接着续的实体，
  *                   答完即作废，没有状态，也没有"按它接上这一轮"的路。用途只有两个：串日志，
- *                   以及让调用方把同一次回答的前后几块认成一批。命令类的回执（{@code /new}、
- *                   {@code /goal}）没有编号，那是 null
+ *                   以及让调用方把同一次回答的前后几块认成一批。命令类的回执（{@code /elevated}）
+ *                   没有编号，那是 null
  */
 public record OutboundMessage(String chatId, String text, boolean finalChunk, String executionId) {
 

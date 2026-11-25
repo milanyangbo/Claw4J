@@ -681,7 +681,6 @@ public class AgentAutoConfiguration {
      * 就能驱动 Agent，不需要知道 ChatClient 的存在。
      *
      * @param chatClient 对话客户端
-     * @param sessions 会话存储，可能不存在（{@code /new} 清不了历史）
      * @param delivery 结果投递，可能不存在
      * @param tracer 埋点入口，没开观测时用 {@link SpanTracer#NONE}
      * @param scopes 键的分段规则，可能不存在
@@ -692,7 +691,6 @@ public class AgentAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(AgentPort.class)
     public AgentPort agentPort(ChatClient chatClient,
-                               ObjectProvider<org.springframework.ai.session.SessionService> sessions,
                                ObjectProvider<ConversationDelivery> delivery,
                                ObjectProvider<SpanTracer> tracer,
                                ObjectProvider<SessionScopeProperties> scopes,
@@ -717,7 +715,6 @@ public class AgentAutoConfiguration {
         // lane 不是可选项：它是"一段对话同时只有一轮在跑"那条正确性保证本身。
         // 不装配它，并发两条消息就会各跑各的，而失败长相是"模型偶尔会忘事"。
         return ChatClientAgentPort.builder(chatClient)
-                .sessions(sessions.getIfAvailable())
                 .delivery(delivery.getIfAvailable())
                 .tracer(tracer.getIfAvailable(() -> SpanTracer.NONE))
                 .scopes(scopes.getIfAvailable())
