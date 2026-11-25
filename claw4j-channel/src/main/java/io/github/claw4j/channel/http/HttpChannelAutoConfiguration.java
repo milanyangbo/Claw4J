@@ -4,6 +4,7 @@ import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.AuditQuery;
 import io.github.claw4j.domain.port.MessageAudit;
 import io.github.claw4j.domain.port.Approvals;
+import io.github.claw4j.domain.port.SessionQuery;
 import io.github.claw4j.domain.question.QuestionGate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -115,5 +116,23 @@ public class HttpChannelAutoConfiguration {
     @ConditionalOnMissingBean
     public AuditController auditController(ObjectProvider<AuditQuery> queries) {
         return new AuditController(queries);
+    }
+
+    /**
+     * {@code /api/sessions} 的两个读入口（票 02）：列会话、看某一条里的每一轮。
+     *
+     * <p>与审计同一条教训（票 18）：controller 写对了不等于它挂在路由表上，漏注册的表现是
+     * 从启动起就 404，而直接 {@code new} 控制器的用例照旧全绿。所以这里必须有一个 bean，
+     * 用例也必须走真端口。
+     *
+     * @param queries 会话的只读查询，可能不存在（没装配会话层的最小部署）
+     * @param principalResolver 认人
+     * @return 入口
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SessionController sessionController(ObjectProvider<SessionQuery> queries,
+                                               HttpPrincipalResolver principalResolver) {
+        return new SessionController(queries, principalResolver);
     }
 }

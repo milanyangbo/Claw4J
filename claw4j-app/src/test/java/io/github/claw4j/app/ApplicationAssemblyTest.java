@@ -15,6 +15,7 @@ import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.capability.mcp.McpServerProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.channel.http.HttpChatController;
+import io.github.claw4j.channel.http.HttpPrincipalResolver;
 import io.github.claw4j.channel.dingtalk.DingtalkReplySender;
 import io.github.claw4j.channel.dingtalk.client.DingtalkChannel;
 import io.github.claw4j.channel.wecom.WecomReplySender;
@@ -30,6 +31,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.session.CreateSessionRequest;
+import org.springframework.ai.session.SessionEvent;
+import org.springframework.ai.session.SessionService;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.beans.factory.ObjectProvider;
@@ -214,6 +221,15 @@ class ApplicationAssemblyTest {
     /** 到点跑一轮的那条腿（P04）：真模型闭环那条直接调它，不等 30 秒的扫描。 */
     @Autowired
     private ScheduleScanner scheduleScanner;
+
+    /**
+     * 会话服务（票 02）：读侧那两个端点的种子数据由它写进去。
+     *
+     * <p>注入它本身就是一条守卫——{@code SessionMemoryConfiguration} 整份哪天不装配了，
+     * 会话端点会一律 404，而"端点写对了"那几条用例仍然能红得莫名其妙。
+     */
+    @Autowired
+    private SessionService sessions;
 
     /**
      * 工具清单（P11）：模型那一侧与 MCP 那一侧吃同一份。
@@ -717,6 +733,151 @@ class ApplicationAssemblyTest {
                         + " values (?, 'agent_run', 'agent.run.started', 'started', ?, 'assembly', ?, 1)"
                         + " on conflict (source_id, source_sequence) do nothing",
                 eventId, executionId, "probe:" + eventId);
+    }
+
+    // ---------------------------------------------------------------- 会话读侧（票 02）
+
+    /**
+     * 侧边栏只该看见自己的会话，且最近聊过的在前（票 02）。
+     *
+     * <p>种子数据直接进会话表（走框架的 {@code SessionService}，不自己拼 SQL）：这里要问的是
+     * 读侧的路通不通，不是写侧写得对不对——后者有 {@code SessionMemoryTest}。
+     *
+     * <p>调用者必须是 HTTP 白名单里那个人（{@link #GUARD_USER}）：不在名单里连 401 都过不去，
+     * 而这条用例要证的是过滤与排序，不是准入。另一个人不在名单里也没关系——他不会有请求。
+     *
+     * <p>两条会话的 id 刻意让"后聊的那条在字典序上也更大"（{@code -z-} 对 {@code -a-}）：
+     * 排序的次序键是最后活动时间，同一毫秒时按 id 倒序，这样两种口径下断言都成立，
+     * 不会因为种子数据落在同一微秒上偶发变红。
+     */
+    @Test
+    @DisplayName("会话列表只回调用者自己的，且最近聊过的在前（票 02）")
+    void listsOnlyTheCallersSessions() throws Exception {
+        String older = "claw4j:user:" + GUARD_USER + ":sessions-a-older";
+        String mine = "claw4j:user:" + GUARD_USER + ":sessions-z-mine";
+        String theirs = "claw4j:user:assembly-sessions-stranger:sessions-theirs";
+        seedConversation(older, GUARD_USER, "早一点开的对话", "好的");
+        seedConversation(mine, GUARD_USER, "我自己开的对话", "好的");
+        seedConversation(theirs, "assembly-sessions-stranger", "别人开的对话", "好的");
+
+        HttpResponse<String> response = get("/api/sessions", GUARD_USER);
+
+        assertThat(response.statusCode())
+                .as("404 是「这条路上没有 handler」：controller 没注册，或者查询能力不在场")
+                .isEqualTo(HttpStatus.OK.value());
+        assertThat(response.body())
+                .as("形状是 {sessions, nextCursor}")
+                .contains("\"sessions\"")
+                .contains(mine)
+                .doesNotContain(theirs);
+        assertThat(response.body().indexOf(mine))
+                .as("最后活动的排前面：按 createdAt 排的话，聊了三天的会话会一直沉底")
+                .isLessThan(response.body().indexOf(older));
+    }
+
+    /**
+     * 标题取首条用户消息、截断 40 字（票 02）：不调模型、也不用整段正文。
+     *
+     * <p>断言落在两件事上：开头那段在（不是空、不是"新对话"），尾巴那半截不在（不是整段）。
+     * 记尾巴那一句就是为了这条——只判"包含开头"的话，把整段正文塞进 title 也照样绿。
+     */
+    @Test
+    @DisplayName("标题是首条用户消息的前 40 字，不是整段正文（票 02）")
+    void theTitleComesFromTheFirstUserMessage() throws Exception {
+        String session = "claw4j:user:" + GUARD_USER + ":sessions-title";
+        String opening = "帮我核对一下二〇二五年第三季度华东区的成交额与退货率";
+        String tail = "另外把口径写清楚";
+        String first = opening + "，" + "这一段够长了所以标题里不会出现它" + "，"
+                + tail;
+        seedConversation(session, GUARD_USER, first, "好的");
+
+        String body = get("/api/sessions", GUARD_USER).body();
+
+        assertThat(body)
+                .as("首条用户消息的开头就该是标题")
+                .contains("帮我核对一下二〇二五年第三季度");
+        assertThat(body)
+                .as("标题是截断的那 40 字，不是整段正文：整段塞进去同样是 200，客户端却要自己截")
+                .doesNotContain(tail);
+    }
+
+    /**
+     * 逐轮按时间正序（票 02）：翻页窗口是"最近 N 轮"，但回过来的顺序必须是越早越前。
+     *
+     * <p>判据是四句话在报文里出现的先后，而不是条数：顺序反了、或者混进别的会话，
+     * 后面几种断言都会红，而条数断言不会。
+     */
+    @Test
+    @DisplayName("一条会话的逐轮按时间正序，且不混入别的会话（票 02）")
+    void returnsTurnsOfOneSessionInOrder() throws Exception {
+        String session = "claw4j:user:" + GUARD_USER + ":sessions-turns";
+        String other = "claw4j:user:" + GUARD_USER + ":sessions-turns-other";
+        seedConversation(session, GUARD_USER, "第一问", "第一答", "第二问", "第二答");
+        seedConversation(other, GUARD_USER, "另一个会话里的问", "另一个会话里的答");
+
+        String body = get("/api/sessions/" + session + "/messages", GUARD_USER).body();
+
+        assertThat(body).contains("\"turns\"");
+        assertThat(body.indexOf("第一问"))
+                .as("越早的越靠前")
+                .isLessThan(body.indexOf("第一答"));
+        assertThat(body.indexOf("第一答")).isLessThan(body.indexOf("第二问"));
+        assertThat(body.indexOf("第二问")).isLessThan(body.indexOf("第二答"));
+        assertThat(body)
+                .as("逐轮只回这一条会话：带 sessionId 的查询范围是钉死的")
+                .doesNotContain("另一个会话里的问");
+        assertThat(body)
+                .as("角色要分得出来：侧边栏的对话气泡靠它决定左右")
+                .contains("\"role\":\"user\"")
+                .contains("\"role\":\"assistant\"");
+    }
+
+    /**
+     * 拿别人的会话 id 查逐轮：404，而不是 200 加正文（票 02）。
+     *
+     * <p>这里正是"两个端点各管一层"最容易漏的地方——列表按人过滤了，逐轮只看 id 的话，
+     * 任何知道 id 的人都能读到别人的对话，而列表那条用例照样全绿。
+     */
+    @Test
+    @DisplayName("拿别人的会话 id 查逐轮：404，不是「存在但不是你的」（票 02）")
+    void rejectsAnotherUsersSession() throws Exception {
+        String theirs = "claw4j:user:assembly-sessions-stranger:sessions-private";
+        seedConversation(theirs, "assembly-sessions-stranger", "别人的私事", "别人的回答");
+
+        HttpResponse<String> response = get("/api/sessions/" + theirs + "/messages", GUARD_USER);
+
+        assertThat(response.statusCode())
+                .as("404 而不是 403：403 等于确认「这个 id 存在」")
+                .isEqualTo(HttpStatus.NOT_FOUND.value());
+        assertThat(response.body()).doesNotContain("别人的私事");
+    }
+
+    /**
+     * 种一条会话：偶数条按用户说、奇数条按助手答。
+     *
+     * <p>只用框架的写入口（建会话 + 追加事件），不拼 SQL：会话表的列名是框架契约，
+     * 而这条用例要证的都在读侧。
+     *
+     * @param sessionId 会话 id（就是键，ADR-0026 修订之后没有段）
+     * @param userId 归属人，等于会话键里那一段 owner
+     * @param turns 交替的正文
+     */
+    private void seedConversation(String sessionId, String userId, String... turns) {
+        sessions.create(CreateSessionRequest.builder().id(sessionId).userId(userId).build());
+        for (int i = 0; i < turns.length; i++) {
+            Message message = (i % 2 == 0) ? new UserMessage(turns[i]) : new AssistantMessage(turns[i]);
+            sessions.appendEvent(SessionEvent.builder().sessionId(sessionId).message(message).build());
+        }
+    }
+
+    /** 带 {@code X-Claw4j-User} 发一个 GET，走真端口。 */
+    private HttpResponse<String> get(String path, String user) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .header(HttpPrincipalResolver.USER_HEADER, user)
+                .GET()
+                .timeout(Duration.ofSeconds(20))
+                .build();
+        return http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     }
 
     /** 金额可能被写成 128,400 或 ￥128400：去掉分隔符再比，比的就是那个数。 */

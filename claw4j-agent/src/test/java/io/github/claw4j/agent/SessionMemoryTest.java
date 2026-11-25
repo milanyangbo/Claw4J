@@ -5,6 +5,7 @@ import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import io.github.claw4j.agent.turn.ConversationLane;
 import io.github.claw4j.agent.memory.PrincipalMemoryAdvisor;
 import io.github.claw4j.agent.session.SessionKeys;
+import io.github.claw4j.agent.session.JdbcSessionQuery;
 import io.github.claw4j.agent.approval.ElevatedCommand;
 import io.github.claw4j.agent.approval.ElevatedProperties;
 import io.github.claw4j.agent.approval.Elevations;
@@ -20,6 +21,7 @@ import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.port.OutboundMessage;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.principal.ToolTier;
+import io.github.claw4j.domain.port.SessionQuery;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
@@ -35,7 +37,9 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.session.CreateSessionRequest;
+import org.springframework.ai.session.DefaultSessionService;
 import org.springframework.ai.session.EventFilter;
+import org.springframework.ai.session.InMemorySessionRepository;
 import org.springframework.ai.session.Session;
 import org.springframework.ai.session.SessionEvent;
 import org.springframework.ai.session.SessionService;
@@ -286,6 +290,150 @@ class SessionMemoryTest {
         port.reply(new InboundMessage(new Principal("u-2"), "chat", "乙说的话"));
 
         assertThat(sessions.createdIds()).hasSize(2).doesNotHaveDuplicates();
+    }
+
+    // ---------------------------------------------------------------- 侧边栏读侧（票 02）
+
+    /**
+     * 标题只从首条用户消息里截 40 字（票 02）。
+     *
+     * <p>这里用框架自己的内存仓储（{@code InMemorySessionRepository} + {@code DefaultSessionService}），
+     * 不自己写替身：读侧依赖的正是 {@code EventFilter} 的窗口语义（{@code lastN} / 分页 /
+     * 按消息类型筛），替身若不实现它，这里测到的就是替身自己的行为。
+     *
+     * <p>断言同时钉住两件事：开头在（不是"新对话"）、整段不在（不是把正文塞进标题）。
+     */
+    @Test
+    @DisplayName("侧边栏标题取首条用户消息的前 40 字，没有消息时是「新对话」（票 02）")
+    void theSidebarTitleIsTheFirstUserMessageTruncated() {
+        SessionService sessions = inMemorySessions();
+        String sidebar = "claw4j:user:u-1:sidebar";
+        String opening = "帮我把二〇二五年第三季度的回款按渠道拆一下";
+        sessions.create(CreateSessionRequest.builder().id(sidebar).userId("u-1").build());
+        sessions.appendEvent(SessionEvent.builder().sessionId(sidebar)
+                .message(new UserMessage(opening + "，顺带标出超过三十天还没到账的那几笔，最后按金额倒序")).build());
+        sessions.appendEvent(SessionEvent.builder().sessionId(sidebar)
+                .message(new UserMessage("第二句：这句不该当标题")).build());
+        String empty = "claw4j:user:u-1:empty";
+        sessions.create(CreateSessionRequest.builder().id(empty).userId("u-1").build());
+
+        Map<String, String> titles = new JdbcSessionQuery(sessions).list("u-1", 10, null).sessions().stream()
+                .collect(Collectors.toMap(SessionQuery.Summary::id, SessionQuery.Summary::title));
+
+        assertThat(titles.get(sidebar))
+                .as("标题是首条用户消息，不是最后一条，也不是「新对话」")
+                .startsWith(opening.substring(0, 10))
+                .endsWith("…")
+                .hasSizeLessThanOrEqualTo(41)
+                .doesNotContain("最后按金额倒序")
+                .doesNotContain("第二句");
+        assertThat(titles.get(empty))
+                .as("一条消息都没有时也要有名字：空标题会让侧边栏出现一行空白")
+                .isEqualTo(SessionQuery.UNTITLED);
+    }
+
+    /**
+     * 列表按最后活动倒序、游标翻页、定时任务的会话不进列表（票 02）。
+     *
+     * <p>时间戳是显式给的：靠 {@code Instant.now()} 的先后判排序，在快的机器上两条会落在
+     * 同一微秒，那种红不是每次都出现。用 {@code max(…) limit 1} 的成本已经在票面上写明，
+     * 这里只验"排序用的是它"。
+     */
+    @Test
+    @DisplayName("侧边栏按最后活动倒序、游标能翻页，定时任务的会话不进列表（票 02）")
+    void theSidebarIsOrderedByLastActivityAndPagesWithACursor() {
+        SessionService sessions = inMemorySessions();
+        Instant base = Instant.parse("2026-11-20T09:00:00Z");
+        String older = "claw4j:user:u-2:a-older";
+        String newer = "claw4j:user:u-2:b-newer";
+        String cron = "cron:nightly-report";
+        seedAt(sessions, older, "u-2", base, "早上那条");
+        seedAt(sessions, newer, "u-2", base.plus(Duration.ofHours(2)), "刚才那条");
+        seedAt(sessions, cron, "u-2", base.plus(Duration.ofHours(3)), "定时任务自己的提示词");
+
+        SessionQuery query = new JdbcSessionQuery(sessions);
+        SessionQuery.Page first = query.list("u-2", 1, null);
+
+        assertThat(first.sessions())
+                .as("最近活动的排前面，而且定时任务那条不算「我在跟谁说话」")
+                .extracting(SessionQuery.Summary::id)
+                .containsExactly(newer);
+        assertThat(first.nextCursor())
+                .as("还有一条没给，得给得出下一页的游标")
+                .isNotNull();
+        assertThat(query.list("u-2", 1, first.nextCursor()).sessions())
+                .as("第二页接着上一页往下，不是从头再来一遍")
+                .extracting(SessionQuery.Summary::id)
+                .containsExactly(older);
+        assertThat(query.list("u-2", 10, null).sessions())
+                .as("一页装得下时不该有下一页；cron 那条到哪儿都不出现")
+                .extracting(SessionQuery.Summary::id)
+                .containsExactly(newer, older);
+    }
+
+    /**
+     * 逐轮：不属于这个人的会话当作不存在，自己的按时间正序（票 02）。
+     *
+     * <p>"当作不存在"不是客气话：把别人的会话 id 回 403，等于确认这个 id 存在。
+     */
+    @Test
+    @DisplayName("逐轮只给会话主人看，且按时间正序（票 02）")
+    void onlyTheOwnerSeesTheTurnsOfASession() {
+        SessionService sessions = inMemorySessions();
+        String mine = "claw4j:user:u-3:main";
+        String theirs = "claw4j:user:u-4:main";
+        sessions.create(CreateSessionRequest.builder().id(mine).userId("u-3").build());
+        sessions.create(CreateSessionRequest.builder().id(theirs).userId("u-4").build());
+        for (String text : List.of("第一问", "第一答", "第二问", "第二答")) {
+            sessions.appendEvent(SessionEvent.builder().sessionId(mine).message(new UserMessage(text)).build());
+        }
+        sessions.appendEvent(SessionEvent.builder().sessionId(theirs)
+                .message(new UserMessage("别人的私事")).build());
+
+        SessionQuery query = new JdbcSessionQuery(sessions);
+
+        assertThat(query.conversation("u-3", theirs, 10))
+                .as("别人的会话与不存在的会话是同一个答案")
+                .isEmpty();
+        assertThat(query.conversation("u-3", "claw4j:user:u-3:nope", 10)).isEmpty();
+        assertThat(query.conversation("u-3", mine, 10))
+                .hasValueSatisfying(conversation -> {
+                    assertThat(conversation.turns()).extracting(SessionQuery.Turn::text)
+                            .as("越早的越靠前：翻页窗口取的是最近几轮，但回过来的顺序是时间正序")
+                            .containsExactly("第一问", "第一答", "第二问", "第二答");
+                    assertThat(conversation.hasMore()).as("全都给了，后面没有更早的").isFalse();
+                });
+        assertThat(query.conversation("u-3", mine, 2))
+                .hasValueSatisfying(conversation -> {
+                    assertThat(conversation.turns()).hasSize(2);
+                    assertThat(conversation.hasMore()).as("只给了最近两轮，更早的还在").isTrue();
+                });
+    }
+
+    /**
+     * 真 {@code SessionService} 配内存仓储：过滤器语义是框架自己的，不是替身。
+     *
+     * @return 会话服务
+     */
+    private static SessionService inMemorySessions() {
+        return DefaultSessionService.builder()
+                .sessionRepository(InMemorySessionRepository.builder().build())
+                .build();
+    }
+
+    /**
+     * 种一条会话，只放一条用户消息，时间戳显式给。
+     *
+     * @param sessions 会话服务
+     * @param sessionId 会话 id
+     * @param userId 归属人
+     * @param at 这条消息的时刻
+     * @param text 正文
+     */
+    private static void seedAt(SessionService sessions, String sessionId, String userId, Instant at, String text) {
+        sessions.create(CreateSessionRequest.builder().id(sessionId).userId(userId).build());
+        sessions.appendEvent(SessionEvent.builder().sessionId(sessionId).timestamp(at)
+                .message(new UserMessage(text)).build());
     }
 
     @Test

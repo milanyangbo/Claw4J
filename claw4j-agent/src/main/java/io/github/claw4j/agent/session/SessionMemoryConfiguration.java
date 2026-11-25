@@ -5,6 +5,7 @@ import io.github.claw4j.agent.advisor.AdvisorOrder;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
+import io.github.claw4j.domain.port.SessionQuery;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import org.slf4j.Logger;
@@ -159,6 +160,20 @@ public class SessionMemoryConfiguration implements DisposableBean {
                                 request.session().id(), request.currentEventCount()))
                         .build())
                 .build();
+    }
+
+    /**
+     * 侧边栏读侧（票 02）：列表与逐轮都走框架那两个读入口，不新增存储。
+     *
+     * <p>端口在 core、实现在这里、入口在通道，与审计那条线同一个安排（ADR-0010）。
+     *
+     * @param sessions 会话服务
+     * @return 只读查询
+     */
+    @Bean
+    @ConditionalOnMissingBean(SessionQuery.class)
+    public SessionQuery sessionQuery(SessionService sessions) {
+        return new JdbcSessionQuery(sessions);
     }
 
     /**
