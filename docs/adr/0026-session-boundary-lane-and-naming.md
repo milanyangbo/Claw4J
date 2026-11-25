@@ -168,3 +168,19 @@ returning segment;
 - 新增 `created_at`（跨段不变）、`previous_segment`（= 它的 `previousSessionId`）、
   `total_tokens`（段级累计，换段清零；目标预算按 `total_tokens - goal_token_start` 算）。
 - `touched_at` 改名 `last_interaction_at`，与它的 `lastInteractionAt` 同名同义。
+
+**2026-11-25（`session-simplify` 票 01）：决策一作废——不再换段。**
+
+一条会话永远只有一段。跨天、空闲 `idle-minutes`、`/new` 都不再产生新段：
+`sessionId` 就是会话键，没有 `<epochMilli>-<4 位随机>` 后缀，`session_nodes` /
+`session_windows` 随之删除。会话身份交回框架：id 由我们拼、`CreateSessionRequest.id` 落库、
+`SessionService.findByUserId` 列会话。
+
+三条代价，认下来：
+
+- **用户没有"开一段新对话"的手段**。`/new` 与 `/reset` 改为清空当前会话的历史，id 不变。
+- **"结束"与"忘记"重新合流**。本 ADR 当初把它们分开（结束=换段、忘记=删数据），现在只剩后者。
+- **上下文只靠压缩控制**。压缩交给 `SessionMemoryAdvisor` 的 `compactionTrigger`。
+
+决策二（一段对话一个 run、按对话地址取 lane）不变：lane 的键本来就是"对话地址"而不是
+sessionId，去掉段对它没有影响。

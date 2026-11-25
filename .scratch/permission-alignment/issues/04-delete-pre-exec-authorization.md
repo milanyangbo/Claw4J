@@ -118,7 +118,7 @@ McpToolProvider#install                    callbacks 与 declared 两处同步
 | --- | --- | --- |
 | 全仓 grep 不到那十个词 | `scripts/verify.sh` 第 1 步（逐词 `grep -Hn`，不走 `\|` 交替） | ✅ |
 | 被 `toolsBySender` 收窄的人看不到写工具 | `ToolPolicyAssemblerTest#senderFallsBackToIdThenWildcard`、`#noSenderConfigMeansNoNarrowing` | ⏳ 只到策略层，没有"清单里真的少一个工具"那一条 |
-| 会话键不再带权限指纹 | `SessionMemoryTest#sessionIdFollowsIdentity`（断言以 `u-1:` 开头）、`#sessionUserIdCarriesTheOwnerKey` | ✅ |
+| 会话键不再带权限指纹 | `SessionMemoryTest#sessionIdCarriesNoSegmentSuffix`（断言以 `u-1:` 开头）、`#sessionUserIdCarriesTheOwnerKey` | ✅ |
 | 同一用户配置变化后不换会话 | —— | ⏳ 没有"配置"这个概念了，这条判据失去对象（降权不重置会话已进缺口） |
 | 只带 `X-Claw4j-User` 能正常对话 | `HttpChatChannelTest#userHeaderAloneIsEnough` | ✅ |
 | 缺用户标识仍然拒 | `HttpChatChannelTest#missingOrBlankUserIsRejected`、`#unlistedUserIsRejected` | ✅ |

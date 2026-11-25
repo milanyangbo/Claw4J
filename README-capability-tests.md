@@ -1163,7 +1163,7 @@ docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
 
 （本机没有 `psql` 时用 `docker exec`，库名换成 0 节起的那个临时库；有 `psql` 就直接连。）
 
-**本机实测**（用户 `td1`、chat `card-1`）：
+**本机实测**（用户 `td1`、chat `card-1`；这是 2026-11-22 段下线之前的形状，现在尾部没有那一截）：
 
 ```
                      session_key                     | revision | steps_json
@@ -1178,8 +1178,9 @@ docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
   说明卡住了**——那是它只写了计划没做事。
 - **没有 `activeForm`、`content` 变成了 `step`**：卡上只有"做什么"和"到哪了"，`activeForm`（"正在核对"）
   是给模型看的措辞，不进卡。
-- **`session_key` 尾部带一段后缀**（`:1795348016149-e212`）：那是"这一段对话"的段标识。换 `/new`
-  之后是**新的键**，旧卡不会再被读到——这正是"一段对话一张卡"。
+- **`session_key` 就是会话键**（`claw4j:user:<owner>:<peer>`）：段那层已经下线（ADR-0026 修订），
+  尾部不再挂 `:<epochMilli>-<四位十六进制>`。`/new` 不再换键——它清掉这条会话的历史、id 不变，
+  所以"一段对话一张卡"仍然成立，只是换了个实现。
 
 | 看到 | 含义 |
 | --- | --- |

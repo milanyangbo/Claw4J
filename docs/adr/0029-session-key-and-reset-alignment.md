@@ -146,3 +146,26 @@ V8 把 `session_entry` 那张单表换成它那套分层（`src/state/openclaw-a
 - incognito 会话（`:224-238`）、自动会话命名（`:130-137`）、跨会话召回开关（`:240-259`）。
 - 主会话的"watch 群活动、心跳"那一套（`main-session.md:52-80`）：它依赖 gateway 的调度与通知队列，
   本仓库没有对应物。
+
+## 修订记录
+
+**2026-11-25（`session-simplify` 票 01）：裁决三缩减为一层、裁决四作废。**
+
+裁决三那张分层表（`session_nodes` / `session_windows` / `conversations` /
+`session_conversations`）整体下线，迁移里 drop。会话身份回到框架那一对表：
+
+- id 仍由我们拼（`claw4j:user:<owner>:<channel>:<chatId>`），经 `CreateSessionRequest.id` 落库；
+- 列会话用 `SessionService.findByUserId`，逐轮历史用 `getEvents`，压缩用
+  `SessionMemoryAdvisor` 的 `compactionTrigger`，生命周期用 `deleteExpiredSessions`；
+- 裁决一的"键按 peer 类型分段"不变——peer 段仍由 `dmScope` 决定，只是不再往后接段。
+
+裁决四（通道会话要真的登记）作废：`conversations` / `session_conversations` 一起删，
+"这一段收过哪几条通道"不再可查。`dmScope: main` 仍靠键表达（所有私聊的 peer 段都是 `main`）。
+
+代价两条：
+
+- **清理判据退化成"建行时间"**。`deleteExpiredSessions` 看 `expires_at`，而它在建行时写死、
+  不随活动刷新——天天在用的会话也会在第 N 天被删。这与 ADR-0026 修订里"结束与忘记合流"
+  是同一件事的两面。
+- **"谁建的、从哪来"没有落点**。`created_via` / `created_actor_id` 随表删除，排查"这个会话
+  怎么冒出来的"只能看审计。

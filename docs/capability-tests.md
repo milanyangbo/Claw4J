@@ -48,16 +48,6 @@ psql "$DATABASE_URL" -c "select execution_id, action, status, session_key, actor
 两个请求头：`X-Claw4j-User`（必填，且必须在 `claw4j.channel.http.users` 白名单里）、
 `X-Claw4j-Chat-Id`（可选，不填按用户分）。角色头已经没有了——权限只剩清单与审批两层（ADR-0030）。
 
-**一件事最多烧多少**：额度是**目标**的属性（ADR-0027 决定五），不是会话的：
-
-```bash
-# 让模型建一个带预算的目标（只有 create_goal 能带 token_budget，/goal start 不收）
-# 然后正常提问；每轮收尾把 usage 记到目标上，撞上预算就进 budget_limited。
-psql "$DATABASE_URL" -c "select goal_id, goal_objective, goal_status, goal_token_budget, goal_tokens_used from claw4j_session.session_entry where goal_id is not null"
-# 额度用完的目标不再注入提示词（下一条消息的提示词里没有"活跃目标："），
-# 由人决定要不要接着做：/goal resume —— 开一个新的预算窗口（tokens_used 归零，预算不变）。
-```
-
 **一轮最多调几次工具**：`claw4j.agent.tool-call-limit`（默认 6；单个工具 3 次，不可配）。
 它是**熔断**不是额度：到点就停、**不改任何持久状态**，也不动目标的状态。
 注意：到点时回给用户的是框架原文 `Total tool call limit (N) exceeded for this turn.`
@@ -311,11 +301,6 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | 4 | 同上 | 记忆按「人 + 这一段对话」隔离（**不再按权限分区**：会话键回到只有 `userId`，降权不重置会话） | `t '用 recall_session 查一下我早些时候问过哪些口径'` | 能列出上一轮那条；`hit recall_session` +1 |
 | 4 | 同上 | **配 `self` 时召回不跨对话**：私聊里的数字不会被群聊取走（先设 `claw4j.tools.sessions.visibility=self` 再起服务） | `t '记住：上周华东成交额 128,400，先别外传'`，再换一段对话：`t '用 recall_session 查一下华东成交额'`（换 `-H 'X-Claw4j-Chat-Id: group-a'`） | 第二段答"本段对话里没有找到（范围：只有当前这一段对话）"；**回答里不出现 128,400** |
 | 4 | 同上 | **默认 `all` 时跨对话召得回来，且带出处**（不配 `visibility`，即默认） | 同上两句，仍是换一段对话问 | 第二段能召回 128,400；结果里每条带它来自哪一段（`claw4j:user:…`） |
-| 6 | `create_goal` | 目标挂在会话上，跨轮可见 | `t '给这段对话定个目标：让 CI 变绿并推送修复'` | `select goal_objective, goal_status from claw4j_session.session_entry where goal_id is not null` 有一行 `active`；`hit create_goal` +1 |
-| 6 | `get_goal` | 读状态、内容、用量、预算 | `t '现在这个目标是什么、用了多少 token'` | 回答里有状态与用量；`hit get_goal` +1 |
-| 6 | `update_goal` | 模型只能标达成或阻塞 | `t '目标达成了，标一下'` | 状态变 `complete`；`hit update_goal` +1。再说 `t '把它暂停'` → 模型应回"暂停不归我"，状态不变 |
-| 6 | 同上 | **暂停之后不再注入**（叫停能生效） | `t '/goal pause 等 CI'`，再 `t '继续推进那个目标'` | 第二条的提示词里没有 `活跃目标：`；换一个新会话（`-H 'X-Claw4j-Chat-Id: c-2'`）也看不到 |
-| 6 | 同上 | 换段即无目标，旧段那一行还在 | `t '/goal 让 CI 变绿'` 后 `t '/new'` | 新段 `t '/goal'` 回"还没有目标"；旧段那一行仍在库里 |
 | 21 | `schedule_task` | 从对话里建一条定时任务（P05） | `t '每天九点帮我出一份上周各区成交额'` | 回答里有 8 位编号；`hit schedule_task` +1；`select count(*) from claw4j_run.agent_schedule` +1 |
 | 22 | `list_schedules` | 列出自己名下的任务 | `t '我定了哪些定时任务'` | 列出刚建的那条；`hit list_schedules` +1 |
 | 23 | `cancel_schedule` | 软停用：记录留着，只是不再跑 | `t '把 <前 8 位> 那条取消掉'` | `enabled=false` 而行还在；`hit cancel_schedule` +1 |
@@ -324,7 +309,6 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 - 三个调度工具跟着 `claw4j.schedule.enabled` 一起进退：关掉调度时它们从工具清单里消失，不是被拒。
 - 上表默认按 `full` 档跑（`claw4j.tools.profile` 的默认值）。**看不到某个工具**不再靠"换个角色被拒"来验：
   权限只剩清单级，看不见就是清单里没有（`claw4j.tools.profile` / `deny` / 按发送者的 `toolsBySender`）。
-- 三个目标工具（`get_goal` / `create_goal` / `update_goal`）**不跟着 `claw4j.persistence.enabled` 进退**：目标是会话状态，关掉记账照样该有。
 - `querySales` 三条时间窗的数是种子数据故意错开的，只对上第一条说明不了时间窗写对。
 
 ## 2. MCP：自己实现的 server（10 个）

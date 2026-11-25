@@ -1,6 +1,6 @@
 # 票 01：拆掉会话身份层，会话交回框架
 
-**Status:** in progress
+**Status:** resolved
 
 ## 由来
 
@@ -82,4 +82,25 @@
 
 ## 复核
 
-（收票时填）
+复核：2026-11-25 `./scripts/verify.sh` 全绿（失败 0、错误 0、跳过 0；agent 14 文件 / 26 方法、
+app 14 / 26，配额没抬）。
+
+六条 TDD 用例的去向与实测：
+
+| 用例 | 结果 |
+| --- | --- |
+| `SessionMemoryTest#sessionIdCarriesNoSegmentSuffix` | ✅ 键以 `:web:c-1` 结尾，`doesNotContainPattern("-\\d{4}$")` |
+| `SessionMemoryTest#newCommandClearsHistoryAndKeepsTheId` | ✅ `/new` 后 `createdIds()` 仍只有原来那个 id，提示词里没有上一轮 |
+| `SessionMemoryTest#sessionStorageFailureFailsTheTurn` | ✅ `findById` 抛 `DataAccessResourceFailureException` 时整轮抛出，不再降级 |
+| `SessionMemoryTest#theAdvisorCompactsWhenItsTriggerFires` | ✅ 200 条事件跑一轮后条数下降 |
+| `PersistenceSchemaTest#theLegacySessionIdentityTablesAreGone` | ✅ `information_schema` 里四张表为空，会话 schema 只剩四张 |
+| 跨天仍是同一个 id | ⏳ 没有对象可断言：换段下线之后"跨天换不换"这件事不再存在（`oneConversationKeepsOneSessionIdAcrossDays` 无处可写） |
+
+同一批还改了这些随之下线的断言：`ChatPipelineTest` 的活跃目标注入与 `/goal` 三条、
+`ToolGovernanceTest` 的目标两条与 `InMemoryGoals` 替身、`TurnFlowTest`（只留投递两条，
+额度与清理随目标/清理下线）、`SearchSqlTest` 的指针 schema 用例、`BuildContractTest` 的
+会话 schema 表清单、`ApplicationAssemblyTest` / `ToolProfileMatrixTest` 的工具清单（`get_goal` →
+`recall_session` / `intent`）。
+
+已知缺口照旧：清理判据退回 `expires_at`（框架的 `deleteExpiredSessions` 看创建时间），
+`metadata` 不可更新。
