@@ -24,6 +24,7 @@ ADR-0026 修订里：不再换段、结束与忘记合流、上下文只靠压�
 | --- | --- | --- | --- |
 | 01 | 拆层：会话 id 去掉段、压缩交给 advisor、删容错/清理/目标/预算、迁移 drop 四张表 | — | resolved |
 | 02 | 读侧：`GET /api/sessions`（按人列会话）与 `GET /api/sessions/{id}/messages`（逐轮） | 01 | resolved |
+| 03 | 下线 `/new`：它删的是整条会话行，不是清历史 | 01 | resolved |
 
 ## 明确不做
 

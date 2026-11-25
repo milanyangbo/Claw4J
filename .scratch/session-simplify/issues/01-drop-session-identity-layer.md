@@ -90,7 +90,7 @@ app 14 / 26，配额没抬）。
 | 用例 | 结果 |
 | --- | --- |
 | `SessionMemoryTest#sessionIdCarriesNoSegmentSuffix` | ✅ 键以 `:web:c-1` 结尾，`doesNotContainPattern("-\\d{4}$")` |
-| `SessionMemoryTest#newCommandClearsHistoryAndKeepsTheId` | ✅ `/new` 后 `createdIds()` 仍只有原来那个 id，提示词里没有上一轮 |
+| ~~`SessionMemoryTest#newCommandClearsHistoryAndKeepsTheId`~~ | ⏳ 用例与功能一起删除（票 03）：它守的"清历史但 id 不变"其实没成立——`/new` 删的是整条会话行，这条能力整个不要了 |
 | `SessionMemoryTest#sessionStorageFailureFailsTheTurn` | ✅ `findById` 抛 `DataAccessResourceFailureException` 时整轮抛出，不再降级 |
 | `SessionMemoryTest#theAdvisorCompactsWhenItsTriggerFires` | ✅ 200 条事件跑一轮后条数下降 |
 | `PersistenceSchemaTest#theLegacySessionIdentityTablesAreGone` | ✅ `information_schema` 里四张表为空，会话 schema 只剩四张 |
