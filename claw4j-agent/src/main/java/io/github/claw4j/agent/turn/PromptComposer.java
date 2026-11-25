@@ -3,15 +3,12 @@ package io.github.claw4j.agent.turn;
 import io.github.claw4j.agent.approval.Elevations;
 import io.github.claw4j.agent.advisor.PiiRedactor;
 import io.github.claw4j.agent.audit.AuditEvent;
-import io.github.claw4j.agent.goal.SessionGoal;
 import io.github.claw4j.agent.intent.IntentBlock;
 import io.github.claw4j.agent.intent.IntentMatcher;
 import io.github.claw4j.agent.intent.StandingIntent;
 import io.github.claw4j.agent.intent.StandingIntents;
-import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.progress.ProgressCardCallback;
 import io.github.claw4j.agent.progress.ProgressCards;
-import io.github.claw4j.agent.session.SessionCompactor;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.InboundMessage;
@@ -87,15 +84,6 @@ final class PromptComposer {
         }
     }
 
-    /**
-     * 注入的「活跃目标」那一行最多几个字。
-     *
-     * <p>与 OpenClaw 的 {@code MAX_ACTIVE_GOAL_OBJECTIVE_CHARS} 同值（200，
-     * {@code src/auto-reply/reply/inbound-meta.ts:29}），超出截断并加省略号。它只是一行提醒，
-     * 不是目标全文——要看全文走 {@code /goal} 或 {@code get_goal}。
-     */
-    private static final int GOAL_CHARS = 200;
-
     private final ChatClient chatClient;
 
     /**
@@ -110,17 +98,8 @@ final class PromptComposer {
     /** 当前模型的供应商名，用于"按模型"那一层。降级到备模型时清单不重算，见 ADR 缺口。 */
     private final String providerKey;
 
-    /**
-     * 压缩器。可以为 null：没装配会话存储就没有「历史」这回事，也就没有可压的。这不是配置错误，
-     * 是能力不在场，所以不造一个空实现去假装它存在。
-     */
-    private final SessionCompactor compactor;
-
     /** 这一段会话的提权档（票 06）；没有时为 {@code null}，等同于"这一族命令没开"。 */
     private final Elevations elevations;
-
-    /** 会话目标（ADR-0027）。为 null 表示没开目标存储：每回合少注入那一行。 */
-    private final SessionGoalStore goals;
 
     /**
      * 进度卡（票 01）。为 null 表示没装配会话存储：工具清单原样给。
@@ -157,9 +136,7 @@ final class PromptComposer {
      * @param chatClient 对话客户端，必填
      * @param catalog 工具清单，可以为 null（按"只有全局层"解析）
      * @param providerKey 当前供应商名，可以为 null
-     * @param compactor 压缩器，可以为 null
      * @param elevations 提权状态，可以为 null
-     * @param goals 目标存储，可以为 null
      * @param progressCards 进度卡存储，可以为 null（工具清单原样给）
      * @param intents 意图存储，可以为 null（不做匹配）
      * @param turnTimeout 一轮最多跑多久，可以为 null（取默认值）
@@ -167,15 +144,12 @@ final class PromptComposer {
      * @param agentId 这一轮是哪个 agent 在跑，只用于审计归属；为 null 或空白时落成 unknown
      */
     PromptComposer(ChatClient chatClient, ToolCatalog catalog, String providerKey,
-                   SessionCompactor compactor, Elevations elevations, SessionGoalStore goals,
-                   ProgressCards progressCards, StandingIntents intents,
+                   Elevations elevations, ProgressCards progressCards, StandingIntents intents,
                    Duration turnTimeout, Clock clock, String agentId) {
         this.chatClient = chatClient;
         this.catalog = catalog;
         this.providerKey = providerKey;
-        this.compactor = compactor;
         this.elevations = elevations;
-        this.goals = goals;
         this.progressCards = progressCards;
         this.intents = intents;
         this.turnTimeout = turnTimeout == null
@@ -213,11 +187,8 @@ final class PromptComposer {
         Principal principal = message.principal();
         // 归属键与对话键都由调用方算好再传进来：一轮请求里 run 的 owner、会话 id
         // 都要用，各算一遍的话，口径一改就可能只改到一半，而表现是"会话记得住、run 查不到"。
-        // 压缩必须发生在"这一轮拼提示词"之前：记忆 Advisor 在 before 阶段读事件，
-        // 压完紧接着就被读到。放在 after 里等于压给下一轮用，而下一轮可能已经超了。
-        if (compactor != null) {
-            compactor.compactIfNeeded(sessionId);
-        }
+        // 压缩交给 SessionMemoryAdvisor 的 compactionTrigger（ADR-0026 修订）：它在 after 阶段
+        // 判一次、本轮没请求工具调用才压。这里不再先压一遍——两边都开会一轮压两次。
         // 入站就脱敏（ADR-0011 里真模型测试抓到的那个缺陷）：
         // 会话记忆是在 Advisor 链的 before 阶段最早那一步把用户消息写进库的，
         // 而出站脱敏发生在 after——它改得到模型的回答，改不到已经落库的那条用户消息。
@@ -263,7 +234,7 @@ final class PromptComposer {
             toolContext.put(ContextKeys.CHAT_REF, message.chatId());
         }
         ChatClient.ChatClientRequestSpec request =
-                chatClient.prompt(activeGoalLine(conversationKey) + reminderOf(principal, message, masked)
+                chatClient.prompt(reminderOf(principal, message, masked)
                         + masked).toolContext(toolContext);
         if (catalog != null) {
             // 工具按这一轮的上下文现筛（ADR-0030 裁决二）：按模型 / 按发送者 / 子 Agent 角色那几层
@@ -322,47 +293,4 @@ final class PromptComposer {
                 .build());
     }
 
-    /**
-     * 每回合那一行「活跃目标」（ADR-0027 决定三，照 OpenClaw 的注入形态）。
-     *
-     * <p>只有 {@code active} 才注入（{@code src/auto-reply/reply/inbound-meta.ts:37}）。OpenClaw 的
-     * 原话是「已暂停、已阻塞、预算受限、用量受限和已完成的目标不会被注入，因此操作员的停止操作会
-     * 持续生效，直到目标恢复」。这一条是「叫停能生效」的唯一保证——注入只判有没有行的话，用户按了
-     * 暂停，下一轮模型还在往那个方向推进，而界面上写着「已暂停」。
-     *
-     * <p>四个分句逐句照原文（{@code English: Active goal: <objective> — advance; keep active until
-     * fully achieved; block only after the same blocker on 3 consecutive turns; after update_goal,
-     * provide the requested visible final.}，{@code docs/tools/goal.md:201}）：推进、达成前保持活跃、
-     * 同一个阻塞连续三轮才标 blocked、{@code update_goal} 之后仍要给最终回答。少一句就会长出对应的
-     * 坏行为，尤其最后一句：模型标完 {@code complete} 就收工，用户看到的是一个状态变了、但没有回答
-     * 的一轮。
-     *
-     * <p>折成一行：目标原文可能有七行，而这里要的是一行上下文。折行只影响注入，库里存的仍是原文。
-     *
-     * @param conversationKey 会话节点键
-     * @return 要注入的那一行；没有活跃目标时是空串
-     */
-    private String activeGoalLine(String conversationKey) {
-        if (goals == null || conversationKey == null) {
-            return "";
-        }
-        return goals.of(conversationKey)
-                .filter(SessionGoal::injected)
-                .map(goal -> "活跃目标：" + oneLine(goal.objective(), GOAL_CHARS)
-                        + " — 推进它；没完全达成之前保持活跃；同一个阻塞连续三个轮次都在才标 blocked；"
-                        + "update_goal 之后仍要给出用户要的最终回答。\n")
-                .orElse("");
-    }
-
-    /**
-     * 把多行折成一行再截断，连续空白压成一个空格，首尾不留。
-     *
-     * @param value 原文，可为 null
-     * @param max 字符上限
-     * @return 折好的一行
-     */
-    private static String oneLine(String value, int max) {
-        String flat = value == null ? "" : value.replaceAll("\\s+", " ").strip();
-        return flat.length() <= max ? flat : flat.substring(0, max) + "…";
-    }
 }

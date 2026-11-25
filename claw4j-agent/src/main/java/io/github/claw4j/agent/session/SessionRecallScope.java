@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.session.EventFilter;
 import org.springframework.ai.session.SessionEvent;
 import org.springframework.ai.session.SessionService;
-import org.springframework.dao.DataAccessException;
 
 import java.util.List;
 import java.util.Objects;
@@ -40,8 +39,6 @@ public final class SessionRecallScope {
 
     private final SessionVisibility visibility;
 
-    /** 存储不可用只 WARN 一次：召回是每轮都可能触发的，刷屏会把别的日志挤掉。 */
-    private final AtomicBoolean degraded = new AtomicBoolean();
 
     public SessionRecallScope(SessionService sessions, CrossSessionEvents across,
                               SessionVisibility visibility) {
@@ -120,13 +117,9 @@ public final class SessionRecallScope {
     /**
      * 查一次。
      *
-     * <p>存储不可用时两条路都退化成"没有命中"：{@code self} 那一路由
-     * {@link FaultTolerantSessionService} 兜着，跨会话这一路在这里自己兜。不兜的话，同一个库
-     * 挂掉，配 {@code self} 的部署答"没找到"、配 {@code all} 的部署整轮失败——档位不同不该是
-     * "能不能回答"的差别。
-     *
-     * <p>降级不静默：不 WARN 的话，"库挂了"与"这段历史确实没说过"在日志上完全一样，
-     * 而两者的处置差得很远——一个修库，一个换关键词。
+     * <p>存储不可用时让它抛（2026-11-25，票 01）：不再有降级层把异常翻译成"没有命中"。
+     * 那一层曾经的理由是"档位不同不该是能不能回答的差别"，代价是"库挂了"与"确实没提过"
+     * 在用户眼里完全一样——而两者的处置差得很远。现在记忆与回答同一条链，库挂了就都答不了。
      *
      * @param sessionId 当前这一段；跨会话档不用它，但仍然要传——它是"你在哪个上下文里问的"，
      *                  空的话连该不该查都判断不了
@@ -137,17 +130,7 @@ public final class SessionRecallScope {
         Objects.requireNonNull(sessionId, "sessionId");
         Objects.requireNonNull(filter, "filter");
         if (visibility.crossSession()) {
-            try {
-                return across.find(filter);
-            }
-            catch (DataAccessException storageDown) {
-                if (degraded.compareAndSet(false, true)) {
-                    log.warn("跨会话召回查不了（visibility={}），这一轮按没有命中处理；"
-                                    + "后续同样的失败不再逐条打印：{}",
-                            visibility.key(), storageDown.getMessage());
-                }
-                return List.of();
-            }
+            return across.find(filter);
         }
         return sessions.getEvents(sessionId, filter);
     }

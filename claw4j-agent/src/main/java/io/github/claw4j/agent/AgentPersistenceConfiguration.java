@@ -26,7 +26,6 @@ import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.agent.schedule.ScheduleStore;
 import io.github.claw4j.agent.schedule.ScheduleTools;
-import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.domain.ApproverRoster;
 import io.github.claw4j.domain.port.AgentPort;
 import io.github.claw4j.domain.port.ApprovalCards;
@@ -82,7 +81,7 @@ import java.util.Map;
         matchIfMissing = true)
 @EnableScheduling
 @EnableConfigurationProperties({ApprovalProperties.class,
-        ScheduleProperties.class, AuditProperties.class, SessionResetProperties.class})
+        ScheduleProperties.class, AuditProperties.class})
 public class AgentPersistenceConfiguration {
 
     /**

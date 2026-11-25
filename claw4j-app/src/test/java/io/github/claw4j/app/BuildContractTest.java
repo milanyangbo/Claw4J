@@ -447,9 +447,13 @@ class BuildContractTest {
         // 六份基线，一个 schema 一份：会话（含进度卡与事件条件意图）、知识库、审批/定时/审计/白名单、
         // 入站队列、以及示例插件的业务库（V1 建表 + V2 种子）。改表结构的地方直接改对应的那一份，
         // 不往上叠补丁——补丁串读不出"现在的形状"，而这张表正是为了让人一眼看见它。
+        //
+        // 唯一的例外是 V7（2026-11-25，删会话身份层那四张表）：它是**删**，而 V3 已经在开发库与
+        // 验收库里跑过了——回头改 V3 会让那些库的 Flyway 校验和对不上，连迁移都跑不起来。
+        // 所以这一条留在补丁里，等下一次重建基线时并回 V3。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -466,14 +470,14 @@ class BuildContractTest {
                 .containsExactly("business", "claw4j_channel", "claw4j_rag",
                         "claw4j_run", "claw4j_session");
 
-        // 会话 schema 里是框架的两张加我们的六张。少了哪张说明有人把基线改坏了；多了哪张
-        // （比如一张平铺的 session_entry）说明有人在基线之外又摊了一张表。
+        // 会话 schema 里是框架的两张加我们的两张（ADR-0029 修订：身份层交回框架）。
+        // 少了哪张说明有人把基线改坏了；多了哪张（比如那张平铺的 session_entry）说明有人
+        // 在基线之外又摊了一张表。
         assertThat(jdbc.queryForList(
                 "select table_name from information_schema.tables"
                         + " where table_schema = 'claw4j_session' order by table_name", String.class))
-                .containsExactly("ai_session", "ai_session_event", "conversations",
-                        "session_conversations", "session_nodes", "session_progress_cards",
-                        "session_windows", "standing_intents");
+                .containsExactly("ai_session", "ai_session_event", "session_progress_cards",
+                        "standing_intents");
 
         // V2 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
         assertThat(jdbc.queryForObject("select count(*) from business.sales_order", Integer.class))

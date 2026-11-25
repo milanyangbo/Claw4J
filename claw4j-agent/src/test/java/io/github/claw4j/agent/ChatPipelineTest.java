@@ -14,9 +14,6 @@ import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.model.config.ModelConfiguration;
 import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.agent.channel.DeliveryTarget;
-import io.github.claw4j.agent.goal.GoalStatus;
-import io.github.claw4j.agent.goal.SessionGoal;
-import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -230,37 +227,24 @@ class ChatPipelineTest {
     }
 
     /**
-     * 熔断与额度的分界（ADR-0027 决定五）。
-     *
-     * <p>两件事必须分开：这一轮绕了太多次，是止损，不改任何持久状态；这件事花超了，是额度，
-     * 记在目标上，进 {@code budget_limited}。合成一个数的话，运维看到停了分不清该加预算还是该
-     * 让模型收敛。
-     *
-     * <p>回给用户的那句话也要是自己的：框架把它变成一代回答时用的是英文原话，直接吐给用户
-     * 等于把内部机制漏出去。
+     * 撞上上限时回给用户的那句话必须是我们自己的：框架把它变成一代回答时用的是英文原话，
+     * 直接吐给用户等于把内部机制漏出去。
      */
     @Test
-    @DisplayName("撞上工具调用上限：回我们自己的话，目标状态一点都不动")
-    void theToolCallCapIsACircuitBreakerNotAQuota() {
-        InMemoryGoals goals = new InMemoryGoals();
+    @DisplayName("撞上工具调用上限：回我们自己的话，不外泄框架原文")
+    void theToolCallCapAnswersWithOurOwnWords() {
         RecordingTool tool = new RecordingTool("lookup", "还是不对");
         FixedChatModel model = new FixedChatModel(prompt -> requestTool("lookup", "{}"), List.of());
         ChatClientAgentPort port = ChatClientAgentPort.builder(client(model, List.of(),
                         List.of(tool)))
-                .goals(goals)
                 .build();
 
-        port.reply(message("chat-cap", "/goal 把三张表的口径对齐"));
         String text = port.reply(message("chat-cap", "一直查")).text();
 
         assertThat(tool.calls()).isEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
         assertThat(text)
                 .as("给用户的是「这一步做了太多次」，不是框架的 limit exceeded")
                 .isEqualTo(ChatClientAgentPort.TOOL_CALL_CAPPED);
-        assertThat(goals.of(nodeKey("chat-cap"))
-                .orElseThrow().status())
-                .as("熔断不改目标状态：止损与额度是两件事")
-                .isEqualTo(GoalStatus.ACTIVE);
     }
 
     @Test
@@ -639,129 +623,6 @@ class ChatPipelineTest {
                 .build();
     }
 
-    private static ChatClientAgentPort port(FixedChatModel model, ToolCallAudit audit,
-                                            SessionGoalStore goals) {
-        return ChatClientAgentPort.builder(client(model, List.of(), List.of()))
-                .audit(audit)
-                .goals(goals)
-                .build();
-    }
-
-    @Test
-    @DisplayName("活跃目标每回合进提示词，暂停之后不进；/goal 命令本身不调模型")
-    void onlyAnActiveGoalIsInjectedIntoEveryTurn() {
-        InMemoryGoals goals = new InMemoryGoals();
-        List<String> sent = new ArrayList<>();
-        FixedChatModel model = new FixedChatModel(prompt -> {
-            sent.add(prompt.getInstructions().stream()
-                    .map(each -> each.getText() == null ? "" : each.getText())
-                    .reduce("", String::concat));
-            return answer("好");
-        });
-        ChatClientAgentPort port = port(model, new RecordingAudit().toolCallAudit(), goals);
-
-        port.reply(message("chat-1", "/goal 让 CI 变绿"));
-        assertThat(model.prompts())
-                .as("/goal 是命令：不进模型、不占一次调用（OpenClaw 的纯命令消息绕过队列和模型）")
-                .isEmpty();
-
-        port.reply(message("chat-1", "现在到哪一步了"));
-        assertThat(sent.getLast()).contains("活跃目标：让 CI 变绿");
-
-        port.reply(message("chat-1", "/goal pause"));
-        assertThat(model.prompts()).as("/goal pause 同样不调模型").hasSize(1);
-        port.reply(message("chat-1", "接着说"));
-        assertThat(sent.getLast())
-                .as("暂停之后不再注入。只判\"有没有目标\"的话，用户按了暂停、界面上写着已暂停，"
-                        + "下一轮模型还在往那个方向推进")
-                .doesNotContain("活跃目标：");
-
-        port.reply(message("chat-1", "/goal resume"));
-        port.reply(message("chat-1", "接着说"));
-        assertThat(sent.getLast()).as("恢复之后重新注入").contains("活跃目标：让 CI 变绿");
-    }
-
-    /**
-     * 达成的目标能 resume（ADR-0027 决定三，照 OpenClaw 的命令表）。
-     *
-     * <p>依据：OpenClaw 的 resume 能恢复受限或已完成的目标（{@code docs/tools/goal.md:91}）；
-     * 不能直接 edit、pause、block 是另一句话。
-     *
-     * <p>恢复的是同一个目标：内容、预算、已用 Token 都不动，只有 {@code budget_limited} 才开
-     * 新窗口。当成新建一件的话，再推一次会带着一份空账从头开始，而用户以为额度还在。
-     */
-    @Test
-    @DisplayName("达成的目标能被 /goal resume 拉回来：同一个目标继续推，内容与用量都保留")
-    void aCompletedGoalCanBeResumed() {
-        InMemoryGoals goals = new InMemoryGoals();
-        List<String> sent = new ArrayList<>();
-        FixedChatModel model = new FixedChatModel(prompt -> {
-            sent.add(prompt.getInstructions().stream()
-                    .map(each -> each.getText() == null ? "" : each.getText())
-                    .reduce("", String::concat));
-            return answer("好");
-        });
-        ChatClientAgentPort port = port(model, new RecordingAudit().toolCallAudit(), goals);
-        String key = nodeKey("chat-1");
-
-        port.reply(message("chat-1", "/goal 让 CI 变绿"));
-        goals.account(key, 1200L);
-        port.reply(message("chat-1", "/goal complete 推上去并验证过"));
-
-        assertThat(port.reply(message("chat-1", "/goal resume")).text())
-                .as("完成的也能恢复")
-                .contains("重新开始推进");
-
-        SessionGoal resumed = goals.of(key).orElseThrow();
-        assertThat(resumed.status()).isEqualTo(GoalStatus.ACTIVE);
-        assertThat(resumed.objective()).as("恢复同一个目标，不是新建一件").isEqualTo("让 CI 变绿");
-        assertThat(resumed.tokensUsed())
-                .as("只有 budget_limited 才开新窗口：达成的目标再推一次，额度接着算")
-                .isEqualTo(1200);
-
-        port.reply(message("chat-1", "接着说"));
-        assertThat(sent.getLast())
-                .as("恢复之后重新注入，且四个分句都在——少一句就长出对应的坏行为")
-                .contains("活跃目标：让 CI 变绿")
-                .contains("没完全达成之前保持活跃")
-                .contains("连续三个轮次")
-                .contains("仍要给出用户要的最终回答");
-    }
-
-    /**
-     * 达成之后不能直接改（原文排错表：{@code Goal error: goal is already complete}）。
-     *
-     * <p><b>三个动作都要被挡，并且说清怎么继续</b>：edit、pause、block。
-     * 全回一句"库连不上"的话，用户会对着一个完好的系统反复重试——
-     * 而它其实只需要一句 {@code /goal resume}。
-     */
-    @Test
-    @DisplayName("达成的目标不能直接 edit / pause / block：要先把目标 resume 回来")
-    void aCompletedGoalMustBeResumedBeforeItCanBeChanged() {
-        InMemoryGoals goals = new InMemoryGoals();
-        ChatClientAgentPort port = port(new FixedChatModel("好"), new RecordingAudit().toolCallAudit(), goals);
-        String key = nodeKey("chat-1");
-
-        port.reply(message("chat-1", "/goal 让 CI 变绿"));
-        port.reply(message("chat-1", "/goal complete"));
-
-        for (String command : List.of("/goal edit 换个说法", "/goal pause", "/goal block 卡住了")) {
-            assertThat(port.reply(message("chat-1", command)).text())
-                    .as("达成之后要改它得先 resume：一次误触不该把收了尾的事改回进行中")
-                    .contains("先 /goal resume");
-        }
-        assertThat(goals.of(key).orElseThrow().status()).isEqualTo(GoalStatus.COMPLETE);
-        assertThat(goals.of(key).orElseThrow().objective()).isEqualTo("让 CI 变绿");
-    }
-
-    /**
-     * 消息直接给了整段会话键时，就用它——不换段、不查指针（ADR-0027）。
-     *
-     * <p>审批批准之后走的就是这条：那条请求的 {@code session_key} 写在审批行上，
-     * 批准之后要回到<b>那一段</b>对话开新一轮。按通道重新派生也能算出一个键，
-     * 而它与本段差一个段后缀——上下文与 goal 就都不在这段里了，表现是
-     * "批准之后它像第一次听到这件事"。
-     */
     @Test
     @DisplayName("显式给的整段会话键原样使用：审批续跑要回到它自己那一段")
     void anExplicitSessionKeyIsUsedAsGiven() {
@@ -840,147 +701,6 @@ class ChatPipelineTest {
                 .context(Map.of(ContextKeys.PRINCIPAL, principal))
                 .build();
     }
-
-    /**
-     * 内存版目标存储：这一层只验哪一行进提示词，所以只实现被调到的那几个方法。
-     *
-     * <p>不与 {@code ToolGovernanceTest} 共用：那边要的是另一套语义（改写、用量），两份各自
-     * 很小；共用一个语义更宽的替身，反而容易让一边的断言依赖另一边的实现。
-     */
-    private static final class InMemoryGoals implements SessionGoalStore {
-
-        private static final Instant NOW = Instant.parse("2026-11-06T02:00:00Z");
-
-        /** 一行 = entry 的这一段：目标 + 会话累计用量（account 用它算快照差）。 */
-        private record State(SessionGoal goal, long totalTokens) {
-        }
-
-        private final Map<String, State> rows = new HashMap<>();
-
-        @Override
-        public Optional<SessionGoal> of(String sessionKey) {
-            State state = rows.get(sessionKey);
-            return state == null ? Optional.empty() : Optional.of(state.goal());
-        }
-
-        @Override
-        public Optional<SessionGoal> start(String sessionKey, String objective, Long tokenBudget) {
-            if (rows.containsKey(sessionKey)) {
-                return Optional.empty();
-            }
-            SessionGoal created = new SessionGoal(sessionKey, SessionGoal.SCHEMA_VERSION,
-                    UUID.randomUUID(), objective, GoalStatus.ACTIVE, NOW, NOW,
-                    0, true, 0, tokenBudget, 0, null, null, null, null, null, null);
-            rows.put(sessionKey, new State(created, 0));
-            return Optional.of(created);
-        }
-
-        @Override
-        public Optional<SessionGoal> edit(String sessionKey, UUID goalId, String objective) {
-            State state = rows.get(sessionKey);
-            if (state == null || !state.goal().id().equals(goalId)
-                    || state.goal().status() == GoalStatus.COMPLETE) {
-                return Optional.empty();
-            }
-            SessionGoal old = state.goal();
-            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(), objective,
-                    old.status(), old.createdAt(), NOW, old.tokenStart(), old.tokenStartFresh(),
-                    old.tokensUsed(), old.tokenBudget(), old.continuationTurns(), old.note(),
-                    old.pausedAt(), old.blockedAt(), old.completedAt(), old.usageLimitedAt(),
-                    old.budgetLimitedAt()));
-        }
-
-        @Override
-        public Optional<SessionGoal> setStatus(String sessionKey, UUID goalId, GoalStatus status,
-                                               String note) {
-            State state = rows.get(sessionKey);
-            if (state == null || !state.goal().id().equals(goalId)
-                    || state.goal().status() == GoalStatus.COMPLETE) {
-                return Optional.empty();
-            }
-            SessionGoal old = state.goal();
-            Instant paused = status == GoalStatus.PAUSED ? NOW : old.pausedAt();
-            Instant blocked = status == GoalStatus.BLOCKED ? NOW : old.blockedAt();
-            Instant completed = status == GoalStatus.COMPLETE
-                    ? (old.completedAt() == null ? NOW : old.completedAt()) : old.completedAt();
-            Instant usage = status == GoalStatus.USAGE_LIMITED ? NOW : old.usageLimitedAt();
-            Instant budget = status == GoalStatus.BUDGET_LIMITED ? NOW : old.budgetLimitedAt();
-            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
-                    old.objective(), status, old.createdAt(), NOW, old.tokenStart(),
-                    old.tokenStartFresh(), old.tokensUsed(), old.tokenBudget(),
-                    old.continuationTurns(), note, paused, blocked, completed, usage, budget));
-        }
-
-        @Override
-        public Optional<SessionGoal> resume(String sessionKey, UUID goalId, String note) {
-            State state = rows.get(sessionKey);
-            if (state == null || !state.goal().id().equals(goalId)
-                    || state.goal().status() == GoalStatus.ACTIVE) {
-                return Optional.empty();
-            }
-            SessionGoal old = state.goal();
-            boolean newWindow = old.status() == GoalStatus.BUDGET_LIMITED
-                    || old.status() == GoalStatus.USAGE_LIMITED;
-            long start = newWindow ? state.totalTokens() : old.tokenStart();
-            long used = newWindow ? 0 : old.tokensUsed();
-            Instant completed = old.status() == GoalStatus.COMPLETE ? null : old.completedAt();
-            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
-                    old.objective(), GoalStatus.ACTIVE, old.createdAt(), NOW, start,
-                    newWindow || old.tokenStartFresh(), used, old.tokenBudget(),
-                    old.continuationTurns(), note, old.pausedAt(), old.blockedAt(), completed,
-                    newWindow ? null : old.usageLimitedAt(),
-                    newWindow ? null : old.budgetLimitedAt()));
-        }
-
-        /**
-         * 对账：用量按快照差重算，不是累加——与 JDBC 那条语句一致。
-         * {@code null} 表示这一轮拿不到用量，此时什么都不改。
-         */
-        @Override
-        public Optional<SessionGoal> account(String sessionKey, Long deltaTokens) {
-            State state = rows.get(sessionKey);
-            if (state == null) {
-                return Optional.empty();
-            }
-            if (deltaTokens == null) {
-                return Optional.of(state.goal());
-            }
-            SessionGoal old = state.goal();
-            long total = state.totalTokens() + deltaTokens;
-            long start = old.tokenStartFresh() ? old.tokenStart() : total;
-            long used = old.tokenStartFresh()
-                    ? Math.max(old.tokensUsed(), total - old.tokenStart())
-                    : old.tokensUsed();
-            boolean capped = old.status() != GoalStatus.COMPLETE
-                    && old.status() != GoalStatus.BUDGET_LIMITED
-                    && old.status() != GoalStatus.USAGE_LIMITED
-                    && old.tokenBudget() != null && used >= old.tokenBudget();
-            SessionGoal next = new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
-                    old.objective(), capped ? GoalStatus.BUDGET_LIMITED : old.status(),
-                    old.createdAt(), NOW, start, true, used, old.tokenBudget(),
-                    old.continuationTurns(), old.note(), old.pausedAt(), old.blockedAt(),
-                    old.completedAt(), old.usageLimitedAt(),
-                    capped ? NOW : old.budgetLimitedAt());
-            rows.put(sessionKey, new State(next, total));
-            return Optional.of(next);
-        }
-
-        @Override
-        public boolean clear(String sessionKey, UUID goalId) {
-            State state = rows.get(sessionKey);
-            if (state == null || !state.goal().id().equals(goalId)) {
-                return false;
-            }
-            rows.remove(sessionKey);
-            return true;
-        }
-
-        private Optional<SessionGoal> put(State state, SessionGoal goal) {
-            rows.put(goal.sessionKey(), new State(goal, state.totalTokens()));
-            return Optional.of(goal);
-        }
-    }
-
 
     private static ChatClientAgentPort port(ChatModel model, List<ToolCallback> tools) {
         return new ChatClientAgentPort(client(model, List.of(), tools));

@@ -172,31 +172,12 @@ claw4j:
       dm-scope: main
       # 群聊：per-group（默认）按群隔离；main 把群并进主会话。
       group-scope: per-group
-      # 会话表放哪个 schema。五处都读这一个键（框架那一路、会话指针、会话目标、清理、召回），
-      # 所以改一处就够，但五处会一起变。
+      # 会话表放哪个 schema。框架那一路与召回都读它，改一处就够。
       # schema: claw4j_session
-      # 多久清一次过期会话（后台任务）。
+      # 多久跑一次过期会话清理。只删 expires_at 已过的行，判据是框架的 TTL。
       cleanup-interval: PT1H
       # 主模型的上下文窗口（token）。用到一半就开始压缩。换模型只改这一行。
       context-window: 65536
-      # 旧会话怎么清。
-      maintenance:
-        # enforce 真删；warn 只算不删，把"本来会删多少"打进日志与指标。
-        mode: enforce
-        # 多久没动算陈旧（不是建了多久）。
-        prune-after: 30d
-        # 会话节点数上限。多租户要按"人数 × 通道数"调大，否则到上限被赶走的是最久没动的那个。
-        max-entries: 5000
-      # 换段 = 换对话：记忆、预算、召回都从零开始。
-      reset:
-        # none（默认）不自动结束，靠压缩管长度；daily-and-idle 跨天或空闲；
-        # idle 只看空闲。三档下 /new 都有效。
-        mode: none
-        # 一天从几点算起。4 点的意思是"凌晨三点还在聊的那件事还是昨天那件"。
-        # 时区取上面的 agent.zone。
-        at-hour: 4
-        # 多久没动静算这段结束（分钟）。
-        idle-minutes: 120
 
     # ---- 长期记忆没有默认值：`claw4j.advisor.memory.directory` 配了才打开这一层 ----
     # 给了默认目录就等于默认打开，所以这里不写。本地那几行见 application-local.yml。

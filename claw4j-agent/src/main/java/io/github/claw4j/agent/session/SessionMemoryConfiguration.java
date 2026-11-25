@@ -2,9 +2,6 @@ package io.github.claw4j.agent.session;
 
 import com.zaxxer.hikari.HikariDataSource;
 import io.github.claw4j.agent.advisor.AdvisorOrder;
-import io.github.claw4j.agent.goal.GoalTools;
-import io.github.claw4j.agent.goal.JdbcSessionGoalStore;
-import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.domain.principal.ToolTier;
 import io.github.claw4j.domain.principal.ToolTierRegistry;
@@ -66,8 +63,7 @@ import java.util.Map;
 @ConditionalOnSingleCandidate(DataSource.class)
 @EnableScheduling
 @EnableConfigurationProperties({DataSourceProperties.class, SessionMemoryProperties.class,
-        SessionServiceProperties.class, SessionResetProperties.class,
-        SessionScopeProperties.class, SessionMaintenanceProperties.class,
+        SessionServiceProperties.class, SessionScopeProperties.class,
         SessionVisibilityProperties.class})
 public class SessionMemoryConfiguration implements DisposableBean {
 
@@ -101,13 +97,14 @@ public class SessionMemoryConfiguration implements DisposableBean {
     }
 
     /**
-     * 会话服务。这一份顶掉 starter 自带的那份（同样靠类名排序先注册），换来的唯一区别是包了
-     * 一层 {@link FaultTolerantSessionService}：存储不可用时降级为"这一轮没有记忆"，
-     * 而不是让整条链失败。配置项（{@code spring.ai.session.*}）仍然照 starter 那份读。
+     * 会话服务。这一份顶掉 starter 自带的那份（靠类名排序先注册），只为把 schema 与别名的
+     * 配置接到我们那个池上；行为是 {@link DefaultSessionService} 自己的，不包任何降级
+     * （2026-11-25，票 01）：存储不可用就是这一轮不可用——记忆与回答走同一条链，
+     * 假装"这一轮没有记忆"只会让排障从"库挂了"变成"机器人突然失忆"。
      *
      * @param repository 会话仓储
      * @param properties starter 的会话配置项
-     * @return 包了降级逻辑的会话服务
+     * @return 会话服务
      */
     @Bean
     @ConditionalOnMissingBean(SessionService.class)
@@ -118,7 +115,7 @@ public class SessionMemoryConfiguration implements DisposableBean {
                 .allowSystemMessages(properties.isAllowSystemMessages())
                 .defaultTimeToLive(properties.getTimeToLive())
                 .build();
-        return new FaultTolerantSessionService(delegate);
+        return delegate;
     }
 
     /**
@@ -126,22 +123,55 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * {@code AgentAutoConfiguration#chatClient} 的 {@code defaultAdvisors} 收走，
      * 调用方不需要知道有记忆这回事。
      *
-     * <p>不在这里配 {@code compactionTrigger} / {@code compactionStrategy}：配上去之后
-     * Advisor 会在整轮结束、且这一轮没请求工具调用时再调一次 {@code SessionService.compact}，
-     * 与 {@link SessionCompactor} 在进模型之前的那一次重复。压缩只走一条路。
+     * <p>压缩由它自己做（2026-11-25，票 01）：{@code compactionTrigger} 在整轮结束、且这一轮
+     * 没请求工具调用时判一次。此前是 {@code SessionCompactor} 在进模型之前压，两边都开会一轮
+     * 压两次——现在只留框架这一条。
      *
      * <p>order 见 {@link AdvisorOrder#SESSION_MEMORY}：排在入站拦截之后、其余一切之前，
      * 于是 {@code after} 它最后收尾——写进会话表的才是脱敏之后的文本。
      *
-     * @param sessionService 会话服务，已包降级
+     * @param sessionService 会话服务
+     * @param properties 压缩参数：窗口、阈值比例、保留条数
+     * @param chatModel 生成摘要用的模型
+     * @param catalog 模型目录，可能为 null（这个部署没装配模型层）
      * @return 记忆 Advisor
      */
     @Bean
     @ConditionalOnMissingBean(SessionMemoryAdvisor.class)
-    public SessionMemoryAdvisor sessionMemoryAdvisor(SessionService sessionService) {
+    public SessionMemoryAdvisor sessionMemoryAdvisor(SessionService sessionService,
+                                                     SessionMemoryProperties properties,
+                                                     ChatModel chatModel,
+                                                     ObjectProvider<ModelCatalog> catalog) {
+        ChatClient summaryClient = ChatClient.builder(chatModel).build();
+        int window = contextWindowOf(catalog.getIfAvailable(), properties.contextWindow());
+        log.info("会话压缩已启用：窗口 {} token、到 {} 触发（{}%）、保留最近 {} 条事件",
+                window, properties.compactionThreshold(window),
+                Math.round(properties.triggerRatio() * 100), properties.eventsToKeep());
         return SessionMemoryAdvisor.builder(sessionService)
                 .order(AdvisorOrder.SESSION_MEMORY)
+                .compactionTrigger(TokenCountTrigger.builder()
+                        .threshold(properties.compactionThreshold(window))
+                        .build())
+                .compactionStrategy(RecursiveSummarizationCompactionStrategy.builder(summaryClient)
+                        .maxEventsToKeep(properties.eventsToKeep())
+                        .onSummarizationFailure(request -> log.warn(
+                                "摘要生成失败，会话 {} 这一轮不压：{}",
+                                request.session().id(), request.currentEventCount()))
+                        .build())
                 .build();
+    }
+
+    /**
+     * 过期会话清理的调度入口（票 01）。判据在框架那一侧（{@code expires_at}），
+     * 这里只负责"什么时候跑"——删掉自己那套判据之后，如果连调度也不留，TTL 就只是一列没人读的时间。
+     *
+     * @param sessions 会话服务
+     * @return 清理任务
+     */
+    @Bean
+    @ConditionalOnMissingBean(SessionExpirySweep.class)
+    public SessionExpirySweep sessionExpirySweep(SessionService sessions) {
+        return new SessionExpirySweep(sessions);
     }
 
     /**
@@ -157,99 +187,6 @@ public class SessionMemoryConfiguration implements DisposableBean {
         }
         int window = catalog.primaryRow().getContextWindow();
         return window <= 0 ? fallback : window;
-    }
-
-    /**
-     * 压缩器：进模型之前把历史收拾一遍（M3-02）。
-     *
-     * <p>摘要用一个单独建的 {@code ChatClient}，不挂任何 Advisor：挂上记忆 Advisor 就是
-     * "压缩时写事件 → 再次触发压缩"的环；挂上鉴权则摘要会因为没有 Principal 被拒。
-     *
-     * <p>这个客户端用的是主模型。用便宜那一路要先回答"哪一路算便宜"，那是配置问题，
-     * 记在票里（见 ADR-0006）。
-     *
-     * @param sessionService 会话服务
-     * @param properties     压缩参数：窗口、阈值比例、保留条数
-     * @param chatModel      生成摘要用的模型
-     * @param meterRegistry  可选，装不装 actuator 只影响指标报不报得出去
-     * @return 压缩器
-     */
-    @Bean
-    @ConditionalOnMissingBean(SessionCompactor.class)
-    public SessionCompactor sessionCompactor(SessionService sessionService,
-                                             SessionMemoryProperties properties,
-                                             ChatModel chatModel,
-                                             ObjectProvider<ModelCatalog> catalog,
-                                             ObjectProvider<MeterRegistry> meterRegistry) {
-        ChatClient summaryClient = ChatClient.builder(chatModel).build();
-        // 窗口跟着模型走（ADR-0035）：目录里主模型那一行说了算；目录拿不到时，
-        // claw4j.advisor.session.context-window 才兜底——它现在只是一个"没有目录的部署"的退路。
-        int window = contextWindowOf(catalog.getIfAvailable(), properties.contextWindow());
-        // 三个数是"改了要重启才生效"的，所以放在启动期而不是每轮。
-        log.info("会话压缩已启用：窗口 {} token、到 {} 触发（{}%）、保留最近 {} 条事件",
-                window, properties.compactionThreshold(window),
-                Math.round(properties.triggerRatio() * 100), properties.eventsToKeep());
-        var trigger = TokenCountTrigger.builder()
-                // 按窗口比例算出来的数：换模型只改目录里那一行的 context-window。
-                .threshold(properties.compactionThreshold(window))
-                .build();
-        var strategy = RecursiveSummarizationCompactionStrategy.builder(summaryClient)
-                .maxEventsToKeep(properties.eventsToKeep())
-                .onSummarizationFailure(request -> log.warn(
-                        "摘要生成失败，会话 {} 这一轮不压：{}",
-                        request.session().id(), request.currentEventCount()))
-                .build();
-        MeterRegistry registry = meterRegistry.getIfAvailable();
-        return new SessionCompactor(sessionService, trigger, strategy,
-                registry == null ? Metrics.globalRegistry : registry);
-    }
-
-    /**
-     * 旧会话怎么清（ADR-0026 的收尾，判据照 OpenClaw 的 {@code session.maintenance}）。
-     *
-     * <p>用主连接池：表名写全限定，与会话仓储那一路不同（那边框架生成的 SQL 不带前缀，
-     * 必须另开一个池把 {@code currentSchema} 指过去）。schema 段从
-     * {@link SessionMemoryProperties#schema()} 取，不写字面量：写死的话改配之后框架往新 schema
-     * 写、这里清旧的，日志全绿而一行都没清对。
-     *
-     * <p>把 {@code ScheduleProperties} 依赖进来，是因为 cron 的会话留存
-     * （{@code claw4j.schedule.session-retention}）由清理这一侧读，调度那一侧不读。
-     * 放在 schedule 命名空间是为了与 OpenClaw 的 {@code cron.sessionRetention} 同位置，
-     * 写在这里则是为了"谁读谁写"能一眼看出来。
-     *
-     * @param jdbc JDBC 句柄，走主连接池
-     * @param properties 清理判据与档位
-     * @param schedule 定时运行的会话留存
-     * @param meterRegistry 可选，装不装 actuator 只影响指标报不报得出去
-     * @param session 会话存储配置，取 schema
-     * @return 清理任务
-     */
-    @Bean
-    @ConditionalOnMissingBean(SessionMaintenance.class)
-    public SessionMaintenance sessionMaintenance(JdbcTemplate jdbc,
-                                                 SessionMaintenanceProperties properties,
-                                                 io.github.claw4j.agent.schedule.ScheduleProperties schedule,
-                                                 ObjectProvider<MeterRegistry> meterRegistry,
-                                                 SessionMemoryProperties session) {
-        MeterRegistry registry = meterRegistry.getIfAvailable();
-        return new SessionMaintenance(jdbc, properties, schedule,
-                registry == null ? Metrics.globalRegistry : registry, session.schema());
-    }
-
-    /**
-     * 过期会话清理的调度（M3-04）。
-     *
-     * <p>{@code spring.ai.session.time-to-live} 只是写在会话行上的时间戳，没有任何东西读它，
-     * 而且它写的是"建行 + TTL"，不随活动刷新。判"该不该清"的是 {@link SessionMaintenance}
-     * 里的"多久没动"，这个 bean 只管"什么时候跑"。
-     *
-     * @param maintenance 清理判据
-     * @return 定时清理任务
-     */
-    @Bean
-    @ConditionalOnMissingBean(SessionCleanup.class)
-    public SessionCleanup sessionCleanup(SessionMaintenance maintenance) {
-        return new SessionCleanup(maintenance);
     }
 
     /**
@@ -285,9 +222,8 @@ public class SessionMemoryConfiguration implements DisposableBean {
      * 每次调用都从 {@code ToolContext} 里取当前身份与会话 id（见 {@link RecallSessionTool}）。
      * 把身份或会话绑在 bean 上，等于所有人的上下文里都装着第一个人的历史。
      *
-     * <p>它拿到的是包了降级的 {@link FaultTolerantSessionService}：库挂的时候这里是"没找到"，
-     * 不是整轮失败。跨会话那一档也降级成同样的一句话（见 {@link SessionRecallScope#events}），
-     * 否则同一个库挂掉，配 {@code self} 的部署答"没找到"、配 {@code all} 的部署整轮失败。
+     * <p>库挂的时候这里会抛（2026-11-25，票 01）：不再有一层把它翻译成"没找到"。见
+     * {@link SessionRecallScope#events}。
      *
      * <p>启动日志要说出生效范围：默认 {@code all} 意味着 {@code read-only} 身份可以召回别人的
      * 会话。不写这一行的话，"现在到底是哪一档"只能靠翻 yml，而 yml 里的值可能被环境变量覆盖。
@@ -328,116 +264,6 @@ public class SessionMemoryConfiguration implements DisposableBean {
     @Bean
     public ToolTierRegistry recallSessionTierRegistry() {
         return ToolTierRegistry.allProfilesFor(List.of(RecallSessionTool.TOOL_NAME));
-    }
-
-    /**
-     * 会话状态行（ADR-0026，票 06 起是 {@code session_entry}）。表在会话 schema 里，
-     * 但这个 bean 用的是主连接池。
-     *
-     * <p>与会话仓储那一路不同：框架生成的 SQL 不带前缀，所以那边必须另开一个池把
-     * {@code currentSchema} 指过去；这里的 SQL 全在自己手里、表名写全限定，不靠连接的
-     * {@code search_path}。少一个 {@code DataSource} 的收益是实的——容器里出现两个，
-     * {@code @ConditionalOnSingleCandidate(DataSource.class)} 就不再成立，一整套 JDBC
-     * 自动配置会安静地不装配。
-     *
-     * <p>这一行也是目标的家：目标的 17 个列与段在同一行，换段时它们一起清空。因此目标存储不再
-     * 单独建表，也没有"换段之后旧目标还在"这种中间态。
-     *
-     * <p>schema 段从 {@link SessionMemoryProperties#schema()} 取，与框架那一路同源：写死的话
-     * 改配之后状态行留在旧 schema，换段判定与记忆读的不是同一批表。
-     *
-     * @param jdbc    JDBC 句柄，走主连接池
-     * @param session 会话存储配置，取 schema
-     * @return 状态行存储
-     */
-    @Bean
-    @ConditionalOnMissingBean(SessionEntryStore.class)
-    public SessionEntryStore sessionEntryStore(JdbcTemplate jdbc, SessionMemoryProperties session) {
-        return new JdbcSessionEntryStore(jdbc, session.schema());
-    }
-
-    /**
-     * 段怎么算：跨天或空闲，谁先到算谁。
-     *
-     * <p>时钟显式传 {@code systemUTC}：跨天边界按业务时区算
-     * （{@link SessionResetProperties#dailyResetAt}），而 {@code Instant} 本身没有时区，所以用哪个
-     * {@code Clock} 不影响"边界是几点"——影响它的只有 zone 参数。写死 UTC 是让这一点在代码里
-     * 显式，不靠"反正 systemDefault 也对"。
-     *
-     * <p>{@code MeterRegistry} 走 {@code ObjectProvider}：装不装 actuator 只影响状态行失败的计数
-     * 报不报得出去，不影响该不该换段。
-     *
-     * @param store         状态行存储
-     * @param reset         换段规则
-     * @param scopes        会话键的两个 scope（ADR-0029）
-     * @param agent         智能体配置，取业务时区
-     * @param meterRegistry 可选，用于失败计数
-     * @return 段解析器
-     */
-    @Bean
-    @ConditionalOnMissingBean(SessionEntries.class)
-    public SessionEntries sessionEntries(SessionEntryStore store,
-                                         SessionResetProperties reset,
-                                         SessionScopeProperties scopes,
-                                         AgentProperties agent,
-                                         ObjectProvider<MeterRegistry> meterRegistry) {
-        // 生效值必须进日志，这是 SessionScopeProperties 的注释承诺过的一行（ADR-0032 之前只有承诺）：
-        // dm-scope 的默认值是 main——单用户便利、多人部署串话，而"配了没生效"与"没配"在日志上
-        // 长得一模一样。多用户部署的收口在 claw4j-app 的 SessionBoundaryCheck（直接拒绝启动），
-        // 这里打生效值是为了单用户部署也能看见自己在用哪一档。
-        log.info("会话边界生效值：私聊={}，群聊={}（多用户部署私聊必须是 {}，见 ADR-0029 / 0032）",
-                scopes.dmScope(), scopes.groupScope(), SessionScopeProperties.DM_PER_CHANNEL_PEER);
-        return new SessionEntries(store, reset, scopes, agent.zone(), Clock.systemUTC(),
-                meterRegistry.getIfAvailable());
-    }
-
-    /**
-     * 会话目标（ADR-0027 决定三）。表在会话 schema 里，用的是主连接池。
-     *
-     * <p>与会话状态行同一条理由写全限定表名：不靠连接的 search_path，也就不需要第二个
-     * {@code DataSource}。schema 段同样从 {@link SessionMemoryProperties#schema()} 取。
-     *
-     * @param jdbc          JDBC 句柄，走主连接池
-     * @param meterRegistry 可选，用于读写失败计数
-     * @param session       会话存储配置，取 schema
-     * @return 目标存储
-     */
-    @Bean
-    @ConditionalOnMissingBean(SessionGoalStore.class)
-    public SessionGoalStore sessionGoalStore(JdbcTemplate jdbc,
-                                             ObjectProvider<MeterRegistry> meterRegistry,
-                                             SessionMemoryProperties session) {
-        return new JdbcSessionGoalStore(jdbc, session.schema(), meterRegistry.getIfAvailable());
-    }
-
-    /**
-     * 三个目标工具（{@code get_goal} / {@code create_goal} / {@code update_goal}）。
-     *
-     * <p>不跟着 run 存储进退：目标挂在会话上，run 关掉之后"这一段对话在往哪儿走"照样成立。
-     * 这也是它与原来那个 {@code update_plan} 最实质的区别——后者跟着
-     * {@code claw4j.persistence.enabled} 一起消失。
-     *
-     * @param goals 目标存储
-     * @return 目标工具集
-     */
-    @Bean
-    @ConditionalOnMissingBean(GoalTools.class)
-    public GoalTools goalTools(SessionGoalStore goals) {
-        return new GoalTools(goals);
-    }
-
-    /**
-     * 三个目标工具的画像：全部（{@link ToolTier#all()}）。
-     *
-     * <p>它们不碰业务表、不出网，读写的都是"这一段对话自己的状态"，与召回同一类。任何画像里
-     * 少掉它们都会让长活丢掉目标，而目标恰恰是最需要它的场景（一段要做很多轮的活）。
-     *
-     * @return 把三个目标工具归到全部画像的登记表
-     */
-    @Bean
-    public ToolTierRegistry goalTierRegistry() {
-        return ToolTierRegistry.allProfilesFor(
-                List.of(GoalTools.GET, GoalTools.CREATE, GoalTools.UPDATE));
     }
 
     /**

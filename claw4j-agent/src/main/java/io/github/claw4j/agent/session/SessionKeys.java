@@ -9,21 +9,21 @@ import java.util.HexFormat;
 import java.util.Objects;
 
 /**
- * 会话 id 的拼法。两把键各管一件事。
+ * 会话 id 的拼法。
  *
- * <p>{@link #ownerOf} 是归属键：{@code userId@权限指纹}。run 的 owner、审计、定时任务的归属
- * 都用它，回答"这是谁的东西"。
+ * <p>{@link #ownerOf} 是归属键：现在是裸 {@code userId}（ADR-0030 下线了权限指纹）。run 的 owner、
+ * 审计、定时任务的归属都用它，回答"这是谁的东西"。
  *
- * <p>{@link #sessionIdOf(String, String)} 是对话键：{@code 节点键 + 段}，只用于对话历史
- * （记忆 Advisor 的 sessionId），回答"这是哪一段话"。
+ * <p>{@code sessionIdOf} 是会话键：{@code claw4j:user:<owner>:<peer>}。2026-11-25 起它同时就是
+ * 记忆 Advisor 的 sessionId（ADR-0026 修订）——不再有"段"这层后缀，所以"哪条对话"与"哪一段话"
+ * 是同一个字符串。
  *
- * <p>段是对话键的第三件事（ADR-0026）：前两件回答"谁的""哪条通道的哪个地址"，都不随时间变；
- * 段回答"第几世"，由 {@link SessionEntries} 按跨天 / 空闲轮换。没有段的时候，一段对话没有
- * 结束这个动作，用户也没有"开一段新对话"的手段。判定要读库，所以放在 {@link SessionEntries}。
+ * <p>曾经有过第三个成分"段"（第几世：跨天、空闲、{@code /new} 各换一个）。它解决的问题是
+ * "一段对话怎么结束"；下线之后这件事没有了，代价是用户不再有"开新对话"的手段、上下文只能靠
+ * 压缩控制——记在 ADR-0026 修订与 ADR-0029 修订里。
  *
- * <p>两把键必须分开：同一个人在网页私聊里问到的数字，十分钟后在二十人的项目群里被念一次，
- * 就是一次没人复核的泄露。权限指纹挡不住这一层——它保证"权限一样才共享"，
- * 而这里两个人的权限一样，听众不一样。
+ * <p>归属键与会话键仍然分开：同一个人在网页私聊里问到的数字，十分钟后在二十人的项目群里被念一次，
+ * 就是一次没人复核的泄露。会话键里的 peer 段挡住这一层——它区分"哪个地址"，而 owner 只回答"谁"。
  *
  * <p>节点键的 peer 段由 {@code direct} 与两个 scope 决定（ADR-0029），判定在
  * {@link SessionScopeProperties}：私聊默认落 {@code main}（一个人的所有私聊算同一段），
@@ -32,7 +32,7 @@ import java.util.Objects;
  * 对应它的 {@code session.dmScope: main} / {@code groupScope: per-group}
  * （{@code docs/concepts/session.md:158-166}）。
  *
- * <p>代价要认清：{@code dm-scope: main} 下换通道<b>不再</b>换段——网页里问到的数字，
+ * <p>代价要认清：{@code dm-scope: main} 下一个人的所有私聊共用一个会话——网页里问到的数字，
  * 飞书私聊里的模型也看得见；这在一人一台机器上是便利，多人可及的部署里是串话。
  * 那一档必须显式配成 {@code per-channel-peer}，代价才是"同一个人换个通道要重讲一遍"。
  * 它把跨通道共享做成显式配置 {@code session.identityLinks}
@@ -139,8 +139,8 @@ public final class SessionKeys {
      * 群聊默认按通道 + 群 id。同一个人的私聊与他在群里的发言因此是两个节点——这一条是硬要求，
      * 不区分的话群里的上下文会并进私聊，那是一处静默的越权读。
      *
-     * <p>目标是跨段的一份状态（{@code SessionGoalStore}）与会话状态行（{@code SessionEntryStore}）
-     * 都按它定位：{@code /new} 换的是段，不是节点。
+     * <p>2026-11-25 起它就是会话 id 本身（ADR-0026 修订）：没有段，也没有挂在它上面的目标行。
+     * 进度卡与意图仍按这个键存，所以它必须对同一段对话稳定。
      *
      * @param owner   归属键，来自 {@link #ownerOf}
      * @param direct  是不是私聊，来自 {@code InboundMessage#direct()}
@@ -175,64 +175,6 @@ public final class SessionKeys {
      */
     public static String conversationKeyOf(String owner, String channel, String chatId) {
         return sessionIdOf(owner, channel, chatId);
-    }
-
-    /**
-     * 带段的对话键：{@code claw4j:user:<owner>:<通道>:<chatId>:<段>}（ADR-0026）。
-     *
-     * <p>段是"这段对话的第几世"，由 {@link SessionEntries} 按时间给（跨天或空闲就换一个），
-     * 所以 sessionId 从"一段对话的固定坐标"变成了"某一次的坐标"：换段之后记忆、预算、召回
-     * 全都从零开始，旧段还在库里只读。
-     *
-     * <p>空段是老形状，这一支刻意留着，只给两处用：审批续跑读不到 run 上的 {@code session_id}
-     * 时的回落，以及段上线之前就存在的会话。它们只读不写——新的一轮永远带段，
-     * 不带段的话换段就等于没发生过。
-     *
-     * <p>段拼在最后，不拼在 owner 前面：召回的身份校验是
-     * {@code sessionId.startsWith(PREFIX + owner + ":")}（见 {@link SessionRecallScope#belongsTo}）。
-     * 拼在前面会让一个人的历史对另一个人成立，那是一条静默的越权读。
-     *
-     * @param owner   归属键，来自 {@link #ownerOf}
-     * @param channel 通道，可以为 null
-     * @param chatId  通道里的地址，可以为 null
-     * @param segment 空或 null 表示"不加段"
-     * @return 对话键
-     */
-    public static String sessionIdOf(String owner, String channel, String chatId, String segment) {
-        return sessionIdOf(sessionIdOf(owner, channel, chatId), segment);
-    }
-
-    /**
-     * 从会话节点键派生带段的对话键：{@code <节点键>:<段>}。
-     *
-     * <p>段是"这段对话的第几世"，由 {@link SessionEntries} 给；节点键回答"哪条对话"。
-     * 分开传而不是把两个东西再拼一次，是因为节点键可能来自 scope 规则（{@code main}），
-     * 也可能来自库里已有的一行——两种来源拼出来的形状必须一模一样，才能与
-     * {@code ai_session.id} 对上。
-     *
-     * @param conversationKey 不含段的节点键
-     * @param segment         空或 null 表示"不加段"
-     * @return 对话键，也就是 {@code ai_session.id} 与 {@code session_windows.session_id}
-     */
-    public static String sessionIdOf(String conversationKey, String segment) {
-        Objects.requireNonNull(conversationKey, "conversationKey");
-        return segment == null || segment.isBlank()
-                ? conversationKey
-                : conversationKey + SESSION_SEPARATOR + segment;
-    }
-
-    /**
-     * 便捷入口：同四参版，指纹只算一次。
-     *
-     * @param principal 当前身份
-     * @param channel   通道，可以为 null
-     * @param chatId    通道里的地址，可以为 null
-     * @param segment   空或 null 表示"不加段"
-     * @return 对话键
-     */
-    public static String sessionIdOf(Principal principal, String channel, String chatId,
-                                     String segment) {
-        return sessionIdOf(ownerOf(principal), channel, chatId, segment);
     }
 
     /**
@@ -315,7 +257,7 @@ public final class SessionKeys {
     }
 
     /**
-     * 缺省落占位。给 {@link SessionEntries} 与 {@code ConversationLane} 用：它们要拿同样规整过的
+     * 缺省落占位。给 {@code ConversationLane} 用：它要拿同样规整过的
      * 三样去查指针、拼锁键，两边对 null 与空串的处理必须一致——否则 sessionId 里的 {@code "-"}
      * 与指针行里的 {@code ""} 会是同一条对话的两个身份，而锁键上差一个字符就是两把不同的锁。
      *

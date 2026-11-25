@@ -8,9 +8,7 @@ import io.github.claw4j.rag.config.RagProperties;
 import io.github.claw4j.rag.retrieval.WeightedScoreJoiner;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
-import io.github.claw4j.agent.session.SessionEntryStore;
 import io.github.claw4j.agent.session.CrossSessionEvents;
-import io.github.claw4j.agent.session.JdbcSessionEntryStore;
 import io.github.claw4j.agent.session.JdbcCrossSessionEvents;
 import io.github.claw4j.agent.session.SessionSchema;
 import io.github.claw4j.agent.session.SessionKeys;
@@ -630,78 +628,6 @@ class SearchSqlTest {
                 .as("表名写死成 claw4j_session 的话这里一条都没有，而那个空结果会被降级成「没找到」——"
                         + "配了 claw4j.advisor.session.schema 却不生效，是本仓库最讨厌的那种「配了看起来生效」")
                 .containsExactly("alt-1");
-    }
-
-    /**
-     * 会话指针也读 {@code claw4j.advisor.session.schema}，不是只让召回那一条读。
-     *
-     * <p>防的是修了一半：只改召回而不改指针、目标、清理，比全都写死更难发现，因为它看起来
-     * 已经修过了。
-     *
-     * <p>断言必须看落库位置，不能只看返回值：写死时 {@code segmentOf} 照样返回 {@code seg-1}，
-     * 因为它确实写成功了，只是写进了另一张同名表。所以这里查 {@code claw4j_alt.session_nodes}
-     * 的行数，那一行才证明配了哪个 schema 就写哪个。
-     */
-    @Test
-    @DisplayName("会话指针跟着 claw4j.advisor.session.schema 走：写死的话它悄悄写进另一张表")
-    void conversationPointersHonourTheConfiguredSchema() {
-        jdbc.execute("drop schema if exists claw4j_alt cascade");
-        jdbc.execute("create schema claw4j_alt");
-        jdbc.execute("""
-                create table claw4j_alt.session_nodes (
-                    session_key text not null primary key,
-                    current_session_id text not null,
-                    entry_json jsonb not null,
-                    session_started_at timestamptz,
-                    last_interaction_at timestamptz,
-                    created_at timestamptz,
-                    updated_at timestamptz not null,
-                    entry_valid smallint not null default 0);
-                create table claw4j_alt.session_windows (
-                    session_id text not null primary key,
-                    session_key text not null,
-                    previous_session_id text,
-                    reason text,
-                    session_scope text not null default 'conversation',
-                    created_at timestamptz not null,
-                    updated_at timestamptz not null,
-                    started_at timestamptz,
-                    chat_type text,
-                    channel text,
-                    account_id text,
-                    primary_conversation_id text);
-                create table claw4j_alt.conversations (
-                    conversation_id text not null primary key,
-                    channel text not null,
-                    account_id text not null,
-                    kind text not null,
-                    peer_id text not null,
-                    delivery_target text not null,
-                    created_at timestamptz not null,
-                    updated_at timestamptz not null);
-                create table claw4j_alt.session_conversations (
-                    session_id text not null,
-                    conversation_id text not null,
-                    role text not null default 'primary',
-                    first_seen_at timestamptz not null,
-                    last_seen_at timestamptz not null,
-                    primary key (session_id, conversation_id, role))
-                """);
-
-        Instant now = Instant.parse("2026-11-08T10:00:00Z");
-        Optional<String> segment = new JdbcSessionEntryStore(jdbc, "claw4j_alt")
-                .segmentOf(new SessionEntryStore.Key(
-                                SessionKeys.conversationKeyOf("u-1@fp", "web", "c-1"),
-                                "u-1@fp", "web", "c-1", true),
-                        new SessionEntryStore.Rotation("seg-1", now, now.minusSeconds(7200),
-                                now.minusSeconds(86_400), true, false));
-
-        assertThat(segment).contains("seg-1");
-        assertThat(jdbc.queryForObject(
-                "select count(*) from claw4j_alt.session_nodes", Long.class))
-                .as("写死 claw4j_session 时这一行会落到那张表里：insert 不报错、返回值照常，"
-                        + "只有这里能看出配的 schema 没生效")
-                .isEqualTo(1L);
     }
 
     /** 会话行：事件有外键，不先建会话插不进去。 */

@@ -17,8 +17,7 @@ import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
-import io.github.claw4j.agent.session.SessionCompactor;
-import io.github.claw4j.agent.session.SessionEntries;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
@@ -682,24 +681,22 @@ public class AgentAutoConfiguration {
      * 就能驱动 Agent，不需要知道 ChatClient 的存在。
      *
      * @param chatClient 对话客户端
-     * @param compactor 会话压缩器，可能不存在
+     * @param sessions 会话存储，可能不存在（{@code /new} 清不了历史）
      * @param delivery 结果投递，可能不存在
      * @param tracer 埋点入口，没开观测时用 {@link SpanTracer#NONE}
-     * @param pointers 会话指针，可能不存在
+     * @param scopes 键的分段规则，可能不存在
      * @param audit 审计接缝，可能不存在
-     * @param goals 会话目标存储，可能不存在
      * @param properties agent 配置，取 lane 等待上限
      * @return 实现 {@link AgentPort} 与 {@link TaskLauncher} 的那个门
      */
     @Bean
     @ConditionalOnMissingBean(AgentPort.class)
     public AgentPort agentPort(ChatClient chatClient,
-                               ObjectProvider<SessionCompactor> compactor,
+                               ObjectProvider<org.springframework.ai.session.SessionService> sessions,
                                ObjectProvider<ConversationDelivery> delivery,
                                ObjectProvider<SpanTracer> tracer,
-                               ObjectProvider<SessionEntries> pointers,
+                               ObjectProvider<SessionScopeProperties> scopes,
                                ObjectProvider<ToolCallAudit> audit,
-                               ObjectProvider<io.github.claw4j.agent.goal.SessionGoalStore> goals,
                                ObjectProvider<io.github.claw4j.agent.progress.ProgressCards> progressCards,
                                ObjectProvider<io.github.claw4j.agent.intent.StandingIntents> intents,
                                AgentProperties properties,
@@ -720,13 +717,12 @@ public class AgentAutoConfiguration {
         // lane 不是可选项：它是"一段对话同时只有一轮在跑"那条正确性保证本身。
         // 不装配它，并发两条消息就会各跑各的，而失败长相是"模型偶尔会忘事"。
         return ChatClientAgentPort.builder(chatClient)
-                .compactor(compactor.getIfAvailable())
+                .sessions(sessions.getIfAvailable())
                 .delivery(delivery.getIfAvailable())
                 .tracer(tracer.getIfAvailable(() -> SpanTracer.NONE))
-                .pointers(pointers.getIfAvailable())
+                .scopes(scopes.getIfAvailable())
                 .lane(new ConversationLane(properties.laneWait()))
                 .audit(audit.getIfAvailable())
-                .goals(goals.getIfAvailable())
                 .progressCards(progressCards.getIfAvailable())
                 .intents(intents.getIfAvailable())
                 .catalog(catalog)

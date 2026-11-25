@@ -212,10 +212,12 @@ public class ScheduleScanner {
         // 对话身份：只到任务，不带触发时刻。它要跨触发稳定——目标是跨触发的一份状态，
         // 锁也该是同一把；带上时刻等于每次触发都换一个节点、换一把锁。
         String conversationId = SessionKeys.CRON_PREFIX + task.id();
-        // 会话键：身份 + 本次触发时刻。每次运行天然是一个新段。
+        // 会话键：身份 + 本次触发时刻。每次运行是独立的一条会话，不是同一条的"新段"——
+        // 段那层已经下线（ADR-0026 修订），而 OpenClaw 的隔离 cron 本来也是每次运行铸一个新
+        // sessionId。时刻放进地址段而不是拼在末尾，是为了让 sessionId 的形状仍然只有一种。
+        String runId = conversationId + ":" + now.toEpochMilli();
         String sessionId = SessionKeys.sessionIdOf(
-                SessionKeys.sessionIdOf(SessionKeys.ownerOf(owner), task.channel(), conversationId),
-                Long.toString(now.toEpochMilli()));
+                SessionKeys.ownerOf(owner), task.channel(), runId);
         return new InboundMessage(owner, chatId, task.goal(), now, null, task.channel(),
                 task.notifyPolicy(), conversationId, sessionId,
                 // 定时任务没有"听众"这个概念：它不是群聊，会话键也不按 peer 分段（ADR-0029）。

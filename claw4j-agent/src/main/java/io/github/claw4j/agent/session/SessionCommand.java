@@ -27,7 +27,7 @@ public final class SessionCommand {
      * （{@code docs/concepts/session.md:66-67}），那一轮除了"新的开始了"没有别的信息，
      * 不值一次模型调用。重开条件：有人要求确认语接上一段的结尾。
      */
-    public static final String ACK = "好，这是一段新对话。刚才那些不会再被带进来。";
+    public static final String ACK = "好，这段对话的历史已经清空了，刚才那些不会再被带进来。";
 
     /** 认这两个，大小写不敏感。OpenClaw 两个都认（{@code docs/concepts/session.md:279}）。 */
     private static final Set<String> COMMANDS = Set.of("/new", "/reset");

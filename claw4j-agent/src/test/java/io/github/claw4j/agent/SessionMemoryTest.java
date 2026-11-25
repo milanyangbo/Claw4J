@@ -4,25 +4,14 @@ import io.github.claw4j.agent.toolaccess.ToolsProperties;
 import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import io.github.claw4j.agent.turn.ConversationLane;
 import io.github.claw4j.agent.memory.PrincipalMemoryAdvisor;
-import io.github.claw4j.agent.session.SessionEntryStore;
-import io.github.claw4j.agent.session.SessionEntries;
-import io.github.claw4j.agent.session.FaultTolerantSessionService;
-import io.github.claw4j.agent.session.JdbcSessionEntryStore;
-import io.github.claw4j.agent.session.SessionCompactor;
-import io.github.claw4j.agent.schedule.ScheduleProperties;
 import io.github.claw4j.agent.session.SessionKeys;
-import io.github.claw4j.agent.session.SessionMaintenance;
 import io.github.claw4j.agent.approval.ElevatedCommand;
 import io.github.claw4j.agent.approval.ElevatedProperties;
 import io.github.claw4j.agent.approval.Elevations;
-import io.github.claw4j.agent.goal.GoalCommand;
 import io.github.claw4j.agent.session.SessionCommand;
-import io.github.claw4j.agent.session.SessionMaintenanceProperties;
 import io.github.claw4j.agent.session.SessionMemoryConfiguration;
 import io.github.claw4j.agent.session.SessionMemoryProperties;
-import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.session.SessionSchema;
-import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.session.SessionVisibility;
 import io.github.claw4j.agent.session.SessionVisibilityProperties;
 import io.github.claw4j.domain.ContextKeys;
@@ -116,79 +105,6 @@ import static org.mockito.Mockito.when;
  * 单独钉住；记忆有没有真的进提示词则从 AgentPort 走两轮。
  */
 class SessionMemoryTest {
-
-    @Test
-    @DisplayName("存储连不上时读取返回「没有」，而不是把异常抛给对话链")
-    void readFailureDegradesToNoMemory() {
-        SessionService delegate = mock(SessionService.class);
-        when(delegate.findById("s-1")).thenThrow(new DataAccessResourceFailureException("连不上库"));
-        when(delegate.getEvents("s-1", EventFilter.active())).thenThrow(new DataAccessResourceFailureException("连不上库"));
-        when(delegate.findByUserId("u-1")).thenThrow(new DataAccessResourceFailureException("连不上库"));
-        FaultTolerantSessionService service = new FaultTolerantSessionService(delegate);
-
-        assertThat(service.findById("s-1")).isNull();
-        assertThat(service.getEvents("s-1", EventFilter.active())).isEmpty();
-        assertThat(service.findEventsByUserId("u-1", EventFilter.active())).isEmpty();
-        assertThat(service.findByUserId("u-1")).isEmpty();
-    }
-
-    @Test
-    @DisplayName("事务开不起来也算存储不可用：它不继承 DataAccessException，漏认就整链 500")
-    void transactionFailureIsAlsoDegraded() {
-        SessionService delegate = mock(SessionService.class);
-        when(delegate.getEvents("s-1", EventFilter.active()))
-                .thenThrow(new CannotCreateTransactionException("事务管理器连不上库"));
-        FaultTolerantSessionService service = new FaultTolerantSessionService(delegate);
-
-        assertThat(service.getEvents("s-1", EventFilter.active())).isEmpty();
-    }
-
-    @Test
-    @DisplayName("创建不出会话时返回一个能继续走的空会话，不是 null")
-    void createFailureReturnsUsableSession() {
-        SessionService delegate = mock(SessionService.class);
-        when(delegate.create(org.mockito.ArgumentMatchers.any()))
-                .thenThrow(new DataAccessResourceFailureException("连不上库"));
-        FaultTolerantSessionService service = new FaultTolerantSessionService(delegate);
-
-        Session session = service.create(CreateSessionRequest.builder().id("s-1").userId("u-1").build());
-
-        assertThat(session).isNotNull();
-        assertThat(session.id()).isEqualTo("s-1");
-        assertThat(session.userId()).isEqualTo("u-1");
-    }
-
-    @Test
-    @DisplayName("写不进事件只丢这一轮的记忆，不把已经算出来的回答搞崩")
-    void appendFailureIsSwallowed() {
-        SessionService delegate = mock(SessionService.class);
-        org.mockito.Mockito.doThrow(new DataAccessResourceFailureException("连不上库"))
-                .when(delegate).appendEvent(org.mockito.ArgumentMatchers.any());
-        FaultTolerantSessionService service = new FaultTolerantSessionService(delegate);
-
-        SessionEvent event = SessionEvent.builder()
-                .id("e-1")
-                .sessionId("s-1")
-                .timestamp(Instant.now())
-                .message(new org.springframework.ai.chat.messages.UserMessage("在吗"))
-                .build();
-
-        assertThatCode(() -> service.appendEvent(event)).doesNotThrowAnyException();
-        assertThatCode(() -> service.delete("s-1")).doesNotThrowAnyException();
-        assertThat(service.deleteExpiredSessions(Instant.now())).isZero();
-    }
-
-    @Test
-    @DisplayName("不是存储问题的异常照样抛：别把编程错误伪装成「这一轮没记忆」")
-    void nonStorageFailurePropagates() {
-        SessionService delegate = mock(SessionService.class);
-        when(delegate.findById("s-1")).thenThrow(new IllegalStateException("代码写错了"));
-        FaultTolerantSessionService service = new FaultTolerantSessionService(delegate);
-
-        assertThatThrownBy(() -> service.findById("s-1"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("代码写错了");
-    }
 
     @Test
     @DisplayName("schema 拼进 URL 时按已有查询参数选 ? 还是 &")
@@ -298,13 +214,11 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("会话跟着「这一段对话」走：同一段的两轮共享，换一段就断（ADR-0025）")
+    @DisplayName("会话跟着地址走：同一地址的两轮共享，换个地址就断（ADR-0025）")
     void memoryFollowsTheConversationNotJustThePrincipal() {
         MapSessionService sessions = new MapSessionService();
         FixedChatModel model = new FixedChatModel("记住了");
-        // 时钟钉在同一天：跨天与空闲都不会触发，所以下面每一段的"换没换"只由 /new 决定。
-        ChatClientAgentPort port = port(model, sessions, null, pointersAt(new MemoryPointers(),
-                Instant.parse("2026-11-05T02:00:00Z"), ZoneId.of("Asia/Shanghai")));
+        ChatClientAgentPort port = port(model, sessions);
         Principal principal = new Principal("u-1");
 
         port.reply(new InboundMessage(principal, "web-chat", "我叫 Ethan"));
@@ -318,7 +232,10 @@ class SessionMemoryTest {
                 .hasSize(1);
         assertThat(sameConversation).contains("我叫 Ethan");
 
-        port.reply(new InboundMessage(principal, "feishu-chat", "我叫什么"));
+        // 换的是「群聊」而不是另一个私聊：默认 dm-scope 是 main，同一个人的私聊本来就算同一条会话
+        // （ADR-0029 裁决二），拿它来验"换一段就断"会验到别的东西上去。
+        port.reply(new InboundMessage(principal, "oc_group", "我叫什么", Instant.now(), null,
+                "feishu", NotifyPolicy.DEFAULT, null, null, false));
 
         String otherConversation = model.prompts().getLast().getInstructions().stream()
                 .map(Message::getText)
@@ -329,8 +246,19 @@ class SessionMemoryTest {
         assertThat(otherConversation)
                 .as("两段串了的话，群里就能看见私聊里说过的内容——那是没人复核的泄露")
                 .doesNotContain("我叫 Ethan");
+    }
 
-        // ---- 第三条换段途径：用户自己说"换一段"（ADR-0026）。
+    @Test
+    @DisplayName("/new 清掉历史但 id 不变：侧边栏不会因为「开了新对话」多出一行")
+    void newCommandClearsHistoryAndKeepsTheId() {
+        MapSessionService sessions = new MapSessionService();
+        FixedChatModel model = new FixedChatModel("记住了");
+        ChatClientAgentPort port = port(model, sessions);
+        Principal principal = new Principal("u-1");
+
+        port.reply(new InboundMessage(principal, "web-chat", "我叫 Ethan"));
+        String before = sessions.createdIds().getFirst();
+
         String acknowledged = port.reply(new InboundMessage(principal, "web-chat", "/new")).text();
         port.reply(new InboundMessage(principal, "web-chat", "我叫什么"));
 
@@ -341,10 +269,10 @@ class SessionMemoryTest {
                 .as("单独 /new 回一句确认，而不是把命令本身送进模型")
                 .isEqualTo(SessionCommand.ACK);
         assertThat(sessions.createdIds())
-                .as("换段之后是另一行会话：同上一个 id 的话，新段根本不存在")
-                .hasSize(3);
+                .as("/new 不再换会话：id 与之前同一个，侧边栏不会多一行")
+                .containsOnly(before);
         assertThat(afterCommand)
-                .as("这就是用户按 /new 的理由：上下文污染之后，唯一有效的动作是换一段重说")
+                .as("这就是用户按 /new 的理由：上下文污染之后，唯一有效的动作是清掉重说")
                 .doesNotContain("我叫 Ethan");
     }
 
@@ -384,18 +312,22 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("会话 id 跟着「人 + 这一段对话 + 段」走：前三样稳定，段按时间换")
-    void sessionIdFollowsIdentity() {
+    @DisplayName("会话 id 就是会话键：形状稳定，没有任何段后缀")
+    void sessionIdCarriesNoSegmentSuffix() {
         Principal who = new Principal("u-1");
 
         assertThat(SessionKeys.sessionIdOf(who, "web", "c-1"))
                 .as("每次都不一样的话，这个人永远记不住上一轮，而且没有任何报错")
                 .isEqualTo(SessionKeys.sessionIdOf(new Principal("u-1"), "web", "c-1"))
-                .startsWith(SessionKeys.PREFIX + "u-1:");
+                .startsWith(SessionKeys.PREFIX + "u-1:")
+                .endsWith(":web:c-1");
+
+        assertThat(SessionKeys.sessionIdOf(who, "web", "c-1"))
+                .as("段下线之后末尾不该再挂 <epochMilli>-<四位十六进制>：多一截就是另一个会话")
+                .doesNotContainPattern("-\\d{4}$");
 
         // 权限指纹从键里下线（ADR-0030）：同一个 userId 换配置不换会话。这是明码标价的代价
-        // ——降权之后历史里那些旧数字还在上下文里（ADR 代价第 3 条），这里显式钉住"确实不换"，
-        // 免得以后有人以为它还会换。
+        // ——降权之后历史里那些旧数字还在上下文里（ADR 代价第 3 条），这里显式钉住"确实不换"。
         assertThat(SessionKeys.sessionIdOf(who, "web", "c-1"))
                 .as("换配置不换会话：身份现在只有 userId，没有第二种权限版本")
                 .isEqualTo(SessionKeys.sessionIdOf(new Principal("u-1"), "web", "c-1"));
@@ -408,84 +340,19 @@ class SessionMemoryTest {
         assertThat(SessionKeys.sessionIdOf(who, "web", null))
                 .as("没有 chatId 的消息落在占位段，同通道共享——但不会串到别的通道去")
                 .isNotEqualTo(SessionKeys.sessionIdOf(who, "feishu", null));
+    }
 
-        // ---- 段：形状与回落（ADR-0026）。
-        String segmented = SessionKeys.sessionIdOf(who, "web", "c-1", "1762300000000-abcd");
-        assertThat(segmented)
-                .as("段拼在最后。拼在 owner 前面会让召回的身份校验（startsWith）对别人成立")
-                .startsWith(SessionKeys.PREFIX + "u-1:")
-                .endsWith(":web:c-1:1762300000000-abcd")
-                .isNotEqualTo(SessionKeys.sessionIdOf(who, "web", "c-1"));
-        assertThat(SessionKeys.sessionIdOf(who, "web", "c-1", ""))
-                .as("空段 = 加段之前的形状：审批续跑读不到 run 上的 session_id 时走这条")
-                .isEqualTo(SessionKeys.sessionIdOf(who, "web", "c-1"));
-
-        // ---- 段：什么时候换。判定在内存实现里，与生产 SQL 同语义；
-        // 真正的 SQL 语义（一条语句、每次都刷新 touched_at）由 RunSchemaSqlTest 用真库验。
-        ZoneId zone = ZoneId.of("Asia/Shanghai");
-        MemoryPointers store = new MemoryPointers();
-        Instant first = Instant.parse("2026-11-05T02:00:00Z");   // 东八区 11-05 10:00
-        String today = pointersAt(store, first, zone).segmentOf("u-1@fp", true, "web", "c-1");
-        assertThat(pointersAt(store, first.plusSeconds(3600), zone)
-                .segmentOf("u-1@fp", true, "web", "c-1"))
-                .as("同一天连着说两句就换段，等于每一句都是新对话：记忆与额度都不累积")
-                .isEqualTo(today);
-        assertThat(pointersAt(store, first.plusSeconds(3600 + 121 * 60), zone)
-                .segmentOf("u-1@fp", true, "web", "c-1"))
-                .as("空闲超过阈值必须换：不换的话这一段永远不会结束")
-                .isNotEqualTo(today);
-
-        // 东八区 03:59 与 04:00 只差一分钟，idle 不可能触发，能触发的只有日历。
-        MemoryPointers crossing = new MemoryPointers();
-        String beforeBreak = pointersAt(crossing, Instant.parse("2026-11-05T19:59:00Z"), zone)
-                .segmentOf("u-1@fp", true, "web", "c-1");
-        assertThat(pointersAt(crossing, Instant.parse("2026-11-05T20:00:00Z"), zone)
-                .segmentOf("u-1@fp", true, "web", "c-1"))
-                .as("04:00 是逻辑日的分界点。用 UTC 的日期来判断的话，东八区凌晨 0~8 点全错，"
-                        + "而 CI 跑在 UTC 上是绿的")
-                .isNotEqualTo(beforeBreak);
-
-        // ---- 一次访问先把这一行锁住，再读旧状态。
-        // 合并成一条 select 的话，join 与 select 列表的求值顺序没有保证，会出现"先读到旧值、
-        // 后拿到锁"——那正是并发下同一次轮换被做两遍的窗口。
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        doReturn(List.of()).when(jdbc).queryForList(anyString(), any(Object[].class));
-        doReturn(List.of()).when(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
-        assertThat(new JdbcSessionEntryStore(jdbc, SessionSchema.DEFAULT_SCHEMA).segmentOf(
-                new SessionEntryStore.Key(SessionKeys.conversationKeyOf("u-1@fp", "web", "c-1"),
-                        "u-1@fp", "web", "c-1", true),
-                new SessionEntryStore.Rotation("fresh", first, first.minusSeconds(7200),
-                        first.minusSeconds(86_400), true, false)))
-                .contains("fresh");
-        InOrder locking = inOrder(jdbc);
-        locking.verify(jdbc).queryForList(contains("pg_advisory_xact_lock"), any(Object[].class));
-        locking.verify(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
-
-        // ---- 指针挂了不拦话：退回加段之前的形状，并计数。
-        // 抛出去会把每一句话都打成 500，而根因只是少了一张表——两件事的代价差得太远。
-        SimpleMeterRegistry metrics = new SimpleMeterRegistry();
-        SessionEntries broken = new SessionEntries(
-                (key, rotation) -> {
-                    throw new IllegalStateException("表还没迁");
-                },
-                SessionResetProperties.defaults(), SessionScopeProperties.defaults(), zone,
-                Clock.fixed(first, zone), metrics);
-        assertThat(broken.segmentOf("u-1@fp", true, "web", "c-1"))
-                .as("降级之后所有对话退到同一个永不过期的 id，也就是回到改造之前的行为")
-                .isEmpty();
-        assertThat(metrics.get(SessionEntries.FAILURE_METRIC).counter().count())
-                .as("这个计数不为 0 就说明段当前没生效；少记一笔可以，不让它变成静默")
-                .isEqualTo(1.0);
-
-        // ---- /new（ADR-0026 的第三条换段途径）：整词匹配，剩下的内容才是这一轮要问的话。
+    @Test
+    @DisplayName("/new 的解析：整词匹配，剩下的内容才是清空之后要问的话")
+    void newCommandParsesItsTwoShapes() {
         assertThat(SessionCommand.parse("/new"))
-                .as("单独一个 /new：只换段，回一句确认（不跑模型）")
+                .as("单独一个 /new：只清历史，回一句确认（不跑模型）")
                 .isEqualTo(new SessionCommand.Parsed("", true));
         assertThat(SessionCommand.parse("  /NEW  ").reset())
-                .as("大小写不敏感：用户不该为了换个对话去猜大小写")
+                .as("大小写不敏感：用户不该为了清个上下文去猜大小写")
                 .isTrue();
         assertThat(SessionCommand.parse("/reset 帮我查华南回款"))
-                .as("/reset 是别名，后面那句才是新段的第一句")
+                .as("/reset 是别名，后面那句才是清空之后的第一句")
                 .isEqualTo(new SessionCommand.Parsed("帮我查华南回款", true));
         assertThat(SessionCommand.parse("/newer 怎么说"))
                 .as("前缀匹配会让「问一个新问题」被当成「清空上下文」，而且没有任何报错")
@@ -494,81 +361,11 @@ class SessionMemoryTest {
                 .as("不是命令的斜杠开头一律当普通问题：别的命令不归我们解释")
                 .isEqualTo(new SessionCommand.Parsed("/etc 的权限", false));
         assertThat(SessionCommand.parse("上周成交额").reset()).isFalse();
-
-        // ---- /goal 命令族（ADR-0027）：整词、别名、未知动作词当新目标、多行原文保留。
-        assertThat(GoalCommand.parse("/goal")).contains(new GoalCommand.Show());
-        assertThat(GoalCommand.parse("/goal status")).contains(new GoalCommand.Show());
-        assertThat(GoalCommand.parse("/goal 让 CI 变绿"))
-                .as("/goal 后面任何不是已知动作词的文本都是新目标（OpenClaw 原文）")
-                .contains(new GoalCommand.Start("让 CI 变绿"));
-        assertThat(GoalCommand.parse("/goal create 让 CI 变绿"))
-                .as("create 是 start 的别名，与 /goal start 等价")
-                .contains(new GoalCommand.Start("让 CI 变绿"));
-        assertThat(GoalCommand.parse("/goal done 已推上去"))
-                .as("done 是 complete 的别名")
-                .contains(new GoalCommand.Complete("已推上去"));
-        assertThat(GoalCommand.parse("/goal blocked 等 CI 环境"))
-                .contains(new GoalCommand.Block("等 CI 环境"));
-        assertThat(GoalCommand.parse("/goal edit 让 CI 变绿并更新文档"))
-                .contains(new GoalCommand.Edit("让 CI 变绿并更新文档"));
-        assertThat(GoalCommand.parse("/goal start a\n  b\n    c"))
-                .as("多行目标原样保留：折成空格会让一份清单变成一段读不懂的散文")
-                .contains(new GoalCommand.Start("a\n  b\n    c"));
-        assertThat(GoalCommand.parse("/goals 是什么"))
-                .as("前缀匹配会让一个普通问题被当成命令，而用户看到的是「我的问题它没回答」")
-                .isEmpty();
-        assertThat(GoalCommand.parse("/goal edit"))
-                .as("认出来了但参数不对：说清用法，而不是静默建一个空目标")
-                .hasValueSatisfying(command ->
-                        assertThat(command).isInstanceOf(GoalCommand.Invalid.class));
-        assertThat(SessionCommand.parse("/goal pause").reset())
-                .as("/goal 不是 /new：它不换段")
-                .isFalse();
-    }
-
-    /**
-     * 走 {@code daily-and-idle}：这一组用例守的是"跨天或空闲就换"，而默认值现在是
-     * {@code none}（ADR-0029 与它同默认），所以要显式点名。
-     */
-    private static SessionEntries pointersAt(MemoryPointers store, Instant now, ZoneId zone) {
-        return new SessionEntries(store,
-                new SessionResetProperties(SessionResetProperties.MODE_DAILY_AND_IDLE, null, 0L),
-                SessionScopeProperties.defaults(), zone, Clock.fixed(now, zone), null);
-    }
-
-    /**
-     * 状态行的内存实现：语义与 {@code JdbcSessionEntryStore} 的两条 SQL 对齐——过期就换段、
-     * 没过期就沿用并刷新 {@code lastInteractionAt}；跨天比的是时刻。
-     *
-     * <p>它不替代 SQL 那条用例，只让「时间怎么驱动段」能单独验：那三段的输入是时刻，不是数据库。
-     * 反过来说，<b>它红了不代表生产也红</b>：两边是同一套语义的两个实现，真正的 SQL 仍然由真
-     * Postgres 上的用例验。
-     */
-    private static final class MemoryPointers implements SessionEntryStore {
-
-        private final Map<Key, Row> rows = new LinkedHashMap<>();
-
-        @Override
-        public Optional<String> segmentOf(Key key, Rotation rotation) {
-            Row old = rows.get(key);
-            boolean stale = old == null
-                    || rotation.forced()
-                    || old.lastInteraction().isBefore(rotation.idleBefore())
-                    || (rotation.dailyGate() && old.startedAt().isBefore(rotation.dailyResetAt()));
-            Row next = stale
-                    ? new Row(rotation.freshSegment(), rotation.now(), rotation.now())
-                    : new Row(old.segment(), rotation.now(), old.startedAt());
-            rows.put(key, next);
-            return Optional.of(next.segment());
-        }
-
-        private record Row(String segment, Instant lastInteraction, Instant startedAt) {
-        }
     }
 
     @Test
-    @DisplayName("聊得久了历史被压成摘要：事件不再线性增长，省下的 token 记在指标里")
-    void longConversationGetsCompacted() {
+    @DisplayName("压缩由记忆 Advisor 自己在轮末触发：事件不再线性增长")
+    void theAdvisorCompactsWhenItsTriggerFires() {
         MapSessionService sessions = new MapSessionService();
         String sessionId = SessionKeys.sessionIdOf(new Principal("u-1"), "web", "c-1");
         sessions.create(CreateSessionRequest.builder().id(sessionId).userId("u-1").build());
@@ -577,34 +374,13 @@ class SessionMemoryTest {
         }
         int before = sessions.getEvents(sessionId, EventFilter.active()).size();
 
-        SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        compactor(sessions, registry).compactIfNeeded(sessionId);
+        ChatClientAgentPort port = portWithCompaction(sessions);
+
+        port.reply(message("c-1", "再说一句"));
 
         assertThat(sessions.getEvents(sessionId, EventFilter.active()))
                 .as("压完事件条数必须下降，否则等于什么都没做")
-                .hasSizeLessThan(before);
-        assertThat(registry.get("claw4j.session.compaction.archived").counter().count())
-                .as("压掉几条要能看见")
-                .isGreaterThan(0);
-    }
-
-    @Test
-    @DisplayName("压缩失败的两种口径：没历史不算故障，摘要挂了只留痕、不拖垮这一轮")
-    void compactionFailureAccounting() {
-        SimpleMeterRegistry registry = new SimpleMeterRegistry();
-
-        compactor(new MapSessionService(), registry).compactIfNeeded("http:u-never-asked");
-        assertThat(registry.find("claw4j.session.compaction.failures").counter())
-                .as("把时序问题记成故障，这个数从第一天起就不是 0，从此没人看它")
-                .isNull();
-
-        SessionService broken = mock(SessionService.class);
-        when(broken.compact(anyString(), any(CompactionTrigger.class), any(CompactionStrategy.class)))
-                .thenThrow(new IllegalStateException("摘要模型 503"));
-        assertThatCode(() -> compactor(broken, registry).compactIfNeeded("s-1"))
-                .as("压不成是成本问题，不是可用性问题")
-                .doesNotThrowAnyException();
-        assertThat(registry.get("claw4j.session.compaction.failures").counter().count()).isEqualTo(1);
+                .hasSizeLessThan(before + 1);
     }
 
     @Test
@@ -626,11 +402,10 @@ class SessionMemoryTest {
                 .as("阈值 = 窗口 × 0.5；仍是 32768 说明键绑错了层级，静默走了默认值")
                 .isEqualTo(65536);
 
-        new SessionMemoryConfiguration().sessionCompactor(mock(SessionService.class), properties,
+        new SessionMemoryConfiguration().sessionMemoryAdvisor(mock(SessionService.class), properties,
                 mock(ChatModel.class),
                 new DefaultListableBeanFactory().getBeanProvider(
-                        io.github.claw4j.model.catalog.ModelCatalog.class),
-                new DefaultListableBeanFactory().getBeanProvider(MeterRegistry.class));
+                        io.github.claw4j.model.catalog.ModelCatalog.class));
 
         assertThat(output.toString())
                 .as("这一行是换模型时唯一看得见窗口的地方，三个数都必须是绑上来的值")
@@ -654,10 +429,9 @@ class SessionMemoryTest {
 
         DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
         factory.registerSingleton("modelCatalog", catalog);
-        new SessionMemoryConfiguration().sessionCompactor(mock(SessionService.class), properties,
+        new SessionMemoryConfiguration().sessionMemoryAdvisor(mock(SessionService.class), properties,
                 mock(ChatModel.class),
-                factory.getBeanProvider(io.github.claw4j.model.catalog.ModelCatalog.class),
-                factory.getBeanProvider(MeterRegistry.class));
+                factory.getBeanProvider(io.github.claw4j.model.catalog.ModelCatalog.class));
 
         assertThat(output.toString())
                 .as("窗口是模型的元数据：目录里那行才是准的，配置那个数只在没有目录时兜底")
@@ -671,57 +445,19 @@ class SessionMemoryTest {
     }
 
     @Test
-    @DisplayName("清理撞上连不上的库：返回空账、只 WARN 第一次、每次都计数——不让后台任务变成刷屏的异常")
-    void cleanupSurvivesAnUnavailableDatabase() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
+    @DisplayName("会话存储挂了就是这一轮失败，不降级成「这一轮没有记忆」（ADR-0026 修订）")
+    void sessionStorageFailureFailsTheTurn() {
+        SessionService broken = mock(SessionService.class);
+        when(broken.findById(anyString()))
                 .thenThrow(new DataAccessResourceFailureException("连不上库"));
-        SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        SessionMaintenance maintenance = maintenance(jdbc, registry);
+        when(broken.create(any()))
+                .thenThrow(new DataAccessResourceFailureException("连不上库"));
+        ChatClientAgentPort port = port(new FixedChatModel("好"), broken);
 
-        assertThatCode(() -> maintenance.sweep(Instant.now()))
-                .as("清理是后台任务，抛出去只会让 @Scheduled 每小时刷一次全栈；"
-                        + "而「清理没跑成」与「没有东西可清」在结果上都是 0 行")
-                .doesNotThrowAnyException();
-        assertThat(maintenance.sweep(Instant.now())).isEqualTo(SessionMaintenance.Report.NONE);
-        assertThat(registry.get(SessionMaintenance.FAILURES).counter().count())
-                .as("失败不静默：这个数不为 0 就说明这些天一行都没清")
-                .isEqualTo(2);
-    }
-
-    @Test
-    @DisplayName("清理的每个数越界都直接拒绝启动：0 是「全部过期」，负数是一个热循环在打库")
-    void maintenanceBoundsAreRejected() {
-        assertThatThrownBy(() -> new SessionMemoryProperties(null, 0, 0, 0, 0, Duration.ZERO))
-                .as("fixedDelay=0 是「上一轮结束立刻下一轮」，而这里悄悄改成 1 小时，调度器照样拿到 0")
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("cleanup-interval");
-        assertThatThrownBy(() -> new SessionMemoryProperties(null, 0, 0, 0, 0, Duration.ofMinutes(-5)))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThat(SessionMemoryProperties.defaults().cleanupInterval())
-                .as("键缺失才落默认值——「没配」有合理默认，「写 0」是写错了，两件事不能混")
-                .isEqualTo(SessionMemoryProperties.DEFAULT_CLEANUP_INTERVAL);
-
-        assertThatThrownBy(() -> new SessionMaintenanceProperties(null, Duration.ZERO, null))
-                .as("0 的意思是「所有段都过期」，第一次清理就会把会话表清空，"
-                        + "而它看起来只是「把数调小一点」")
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("prune-after");
-        assertThatThrownBy(() -> new SessionMaintenanceProperties("enforce", null, 0))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("max-entries");
-
-        assertThat(SessionMaintenanceProperties.defaults().mode())
-                .as("默认必须是 enforce：与 OpenClaw 同值，到期就删")
-                .isEqualTo(SessionMaintenanceProperties.MODE_ENFORCE);
-        assertThat(SessionMaintenanceProperties.defaults().maxEntries())
-                .as("默认 5000，与 OpenClaw 的 maxEntries 同值")
-                .isEqualTo(SessionMaintenanceProperties.DEFAULT_MAX_ENTRIES);
-        assertThatThrownBy(() -> new SessionMaintenanceProperties("enfroce", null, null))
-                .as("拼错不能落回任何一档：落回 warn 是一条都不删，落回 enforce 是拼错反而删数据")
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("mode");
-        assertThat(new SessionMaintenanceProperties("ENFORCE", null, null).enforces()).isTrue();
+        assertThatThrownBy(() -> port.reply(message("chat-a", "问一句")))
+                .as("库挂了还照常回答，排障时看到的只是「机器人突然失忆」——"
+                        + "记忆与回答走同一条链，一起失败才找得到根因")
+                .isInstanceOf(DataAccessResourceFailureException.class);
     }
 
     @Test
@@ -777,21 +513,6 @@ class SessionMemoryTest {
     static class VisibilityOnly {
     }
 
-    private static SessionMaintenance maintenance(JdbcTemplate jdbc, MeterRegistry registry) {
-        return new SessionMaintenance(jdbc, SessionMaintenanceProperties.defaults(),
-                ScheduleProperties.defaults(), registry, SessionSchema.DEFAULT_SCHEMA);
-    }
-
-    private static SessionCompactor compactor(SessionService sessions, MeterRegistry registry) {
-        return new SessionCompactor(sessions,
-                TokenCountTrigger.builder().threshold(100).build(),
-                RecursiveSummarizationCompactionStrategy.builder(
-                                ChatClient.builder(new FixedChatModel("摘要：用户连问了多轮成交额")).build())
-                        .maxEventsToKeep(6)
-                        .build(),
-                registry);
-    }
-
     private static SessionEvent event(String sessionId, int index) {
         return SessionEvent.builder()
                 .id("e-" + index)
@@ -807,20 +528,31 @@ class SessionMemoryTest {
 
     private static ChatClientAgentPort port(ChatModel model, SessionService sessions,
                                             ConversationLane lane) {
-        return port(model, sessions, lane, null);
-    }
-
-    private static ChatClientAgentPort port(ChatModel model, SessionService sessions,
-                                            ConversationLane lane, SessionEntries pointers) {
         ChatClient chat = ChatPipelineTest.clientBuilder(model)
                 .defaultAdvisors(SessionMemoryAdvisor.builder(sessions)
                         .order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
                         .build())
                 .build();
         return ChatClientAgentPort.builder(chat)
-                .pointers(pointers)
+                .sessions(sessions)
                 .lane(lane)
                 .build();
+    }
+
+    /** 带压缩的装配：触发阈值调低到 100 token，跑一轮就能看见事件被折成摘要。 */
+    private static ChatClientAgentPort portWithCompaction(SessionService sessions) {
+        ChatClient chat = ChatPipelineTest.clientBuilder(new FixedChatModel("好"))
+                .defaultAdvisors(SessionMemoryAdvisor.builder(sessions)
+                        .order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
+                        .compactionTrigger(TokenCountTrigger.builder().threshold(100).build())
+                        .compactionStrategy(RecursiveSummarizationCompactionStrategy.builder(
+                                        ChatClient.builder(
+                                                new FixedChatModel("摘要：用户连问了多轮成交额")).build())
+                                .maxEventsToKeep(6)
+                                .build())
+                        .build())
+                .build();
+        return ChatClientAgentPort.builder(chat).build();
     }
 
     private static InboundMessage message(String chatId, String text) {

@@ -112,7 +112,7 @@ public final class PrincipalDreamAdvisor implements BaseAdvisor {
             try {
                 // 库的状态文件（.dream-state.json）直接写在这个目录里、不会替我们建目录；
                 // 不建的话第一个用户的第一次收尾就会炸在 after 里，把一轮正常的回答弄挂。
-                // 记忆是附加信息，不是可用性依赖（与 FaultTolerantSessionService 同一个口径）。
+                // 记忆整理是附加信息，不是可用性依赖：目录建不出来就关掉这一项，不拖垮这一轮。
                 Files.createDirectories(directory);
             }
             catch (IOException failure) {

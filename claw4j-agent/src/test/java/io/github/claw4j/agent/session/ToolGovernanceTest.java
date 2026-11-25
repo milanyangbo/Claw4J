@@ -2,11 +2,6 @@ package io.github.claw4j.agent.session;
 
 import io.github.claw4j.agent.audit.DecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
-import io.github.claw4j.agent.goal.GoalCommand;
-import io.github.claw4j.agent.goal.GoalStatus;
-import io.github.claw4j.agent.goal.GoalTools;
-import io.github.claw4j.agent.goal.SessionGoal;
-import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
@@ -281,14 +276,13 @@ class ToolGovernanceTest {
     }
 
     /**
-     * 当前这一段对话。<b>带段</b>（ADR-0026）：召回的身份校验是前缀匹配
-     * （{@code startsWith(PREFIX + owner + ":")}），段拼在最后不能影响它。
+     * 当前这条对话。2026-11-25 起会话 id 就是会话键（ADR-0026 修订），没有段后缀。
      *
-     * <p>故意不给这个常量一个"无段"的形状：如果哪天有人把段拼到 owner 前面，
-     * 下面几条召回用例里"换一个人就看不到"会先红——那正是把越权读变成报错的唯一办法。
+     * <p>召回的身份校验是前缀匹配（{@code startsWith(PREFIX + owner + ":")}），这几条用例
+     * 真正钉的是"换一个人就看不到"——键的形状变了也得照样成立。
      */
     private static final String CURRENT_SESSION = SessionKeys.sessionIdOf(
-            new Principal("u-1"), "web", "chat-a", "1762300000000-abcd");
+            new Principal("u-1"), "web", "chat-a");
 
     /** 同一个人的另外两段对话：网页上的另一个 chat，以及一个项目群。 */
     private static final String PRIVATE_ELSEWHERE = sessionOf("u-1", "web", "chat-b");
@@ -480,22 +474,21 @@ class ToolGovernanceTest {
         assertThat(recalled).contains("已截断");
     }
 
-    // ---------------------------------------------------------------- 会话目标（ADR-0027）
+    // ---------------------------------------------------------------- 手写 schema
 
     /**
-     * 目标挂在会话上、一个会话一个。这两条与上面那一半问的是同一个问题：模型手上能改的东西
-     * 到底有多大。召回那一半是别把别人的话带回来，目标这一半是别悄悄改掉这一段对话的走向。
+     * 手写的入参 Schema 必须能被解析成 Map。
      *
-     * <p>用内存替身而不是真库：这里验的是规则（谁被拒、改完之后哪几格不动），库那一侧
-     * （六态约束、主键唯一）由 {@code RunSchemaSqlTest} 在真 Postgres 上验。
+     * <p>不解析的话症状很难查：模型调用方在发请求之前就要转，坏一个，整轮的工具清单都发不出去，
+     * 而模型那边只会看到「没有工具」。这条盯的就是这种沉默的整轮失效。
      */
     @Test
     @DisplayName("工具的手写入参 Schema 必须是合法 JSON：少转义一个引号，那一轮所有工具都发不出去")
     void handwrittenToolSchemasAreValidJson() {
-        GoalTools tools = new GoalTools(new InMemoryGoals());
+        List<ToolCallback> handwritten = List.of(tool(new FakeSessions()));
         JsonHelper json = new JsonHelper();
 
-        for (ToolCallback callback : tools.getToolCallbacks()) {
+        for (ToolCallback callback : handwritten) {
             assertThatCode(() -> json.fromJsonToMap(callback.getToolDefinition().inputSchema()))
                     .as("%s 的 inputSchema 解析不了。模型调用方在发请求之前就要把它转成 Map："
                             + "坏一个，整轮的工具清单都发不出去，而模型那边只会看到「没有工具」"
@@ -505,224 +498,6 @@ class ToolGovernanceTest {
         }
     }
 
-    @Test
-    @DisplayName("一个会话一个目标：再建一次失败且原文不变；edit 动目标不动状态与用量")
-    void oneGoalPerSessionAndEditKeepsStatusAndUsage() {
-        InMemoryGoals goals = new InMemoryGoals();
-        GoalTools tools = new GoalTools(goals);
-        ToolContext context = sessionOf("c-goal");
-
-        String created = call(tools, GoalTools.CREATE, "{\"objective\":\"让 CI 变绿\"}", context);
-        String again = call(tools, GoalTools.CREATE, "{\"objective\":\"换一个\"}", context);
-
-        assertThat(created).contains("已建目标").contains("让 CI 变绿");
-        assertThat(again)
-                .as("OpenClaw：清除当前目标之前再建会失败，而不是静默覆盖——"
-                        + "覆盖的话用户以为新建了，其实旧那个的状态与用量一起没了")
-                .contains("已经有目标");
-        assertThat(goals.of("c-goal").orElseThrow().objective()).isEqualTo("让 CI 变绿");
-
-        goals.account("c-goal", 1200L);
-        GoalCommand.execute(new GoalCommand.Edit("让 CI 变绿并更新文档"), goals, "c-goal").strip();
-
-        assertThat(goals.of("c-goal").orElseThrow())
-                .satisfies(goal -> {
-                    assertThat(goal.objective()).isEqualTo("让 CI 变绿并更新文档");
-                    assertThat(goal.status()).as("改个措辞不该把状态也改了").isEqualTo(GoalStatus.ACTIVE);
-                    assertThat(goal.tokensUsed())
-                            .as("先 clear 再 start 的写法会让用量归零——一个改措辞的动作把额度还回去了")
-                            .isEqualTo(1200);
-                });
-    }
-
-    @Test
-    @DisplayName("模型只能标 complete / blocked：暂停、恢复、改写、清除都不归它")
-    void theModelCanOnlyMarkCompleteOrBlocked() {
-        InMemoryGoals goals = new InMemoryGoals();
-        GoalTools tools = new GoalTools(goals);
-        ToolContext context = sessionOf("c-goal");
-        call(tools, GoalTools.CREATE, "{\"objective\":\"让 CI 变绿\"}", context);
-
-        String paused = call(tools, GoalTools.UPDATE, "{\"status\":\"paused\"}", context);
-        assertThat(paused)
-                .as("OpenClaw：模型不能在不作说明的情况下暂停目标——那是操作员的按钮")
-                .contains("只能标 complete 或 blocked");
-        assertThat(goals.of("c-goal").orElseThrow().status())
-                .as("被拒之后状态一个字都不该动")
-                .isEqualTo(GoalStatus.ACTIVE);
-
-        String blocked = call(tools, GoalTools.UPDATE,
-                "{\"status\":\"blocked\",\"note\":\"等 CI 环境\"}", context);
-        assertThat(blocked).contains("已阻塞");
-        assertThat(goals.of("c-goal").orElseThrow().note()).isEqualTo("等 CI 环境");
-
-        // ---- 从 blocked 恢复是正常的；再按一次 resume 才是什么都不该发生
-        //（原文的命令表把 resume 的作用对象列成"已暂停、已阻塞、受限或已完成"——
-        // 除了"已经是活跃的"，别的都能恢复）。
-        assertThat(GoalCommand.execute(new GoalCommand.Resume(null), goals, "c-goal"))
-                .contains("目标恢复为活跃");
-        SessionGoal afterResume = goals.of("c-goal").orElseThrow();
-        assertThat(GoalCommand.execute(new GoalCommand.Resume(null), goals, "c-goal"))
-                .as("目标是活跃的再按 resume：说清「本来就是活跃的」，而不是假装改成功了")
-                .contains("本来就是活跃");
-        assertThat(goals.of("c-goal").orElseThrow())
-                .as("没改就别动这一行：空按钮不该在 updatedAt 上留下一道痕迹，"
-                        + "否则那一列会退化成时间戳")
-                .isEqualTo(afterResume);
-    }
-
-    private static ToolContext sessionOf(String sessionKey) {
-        return new ToolContext(Map.of(ContextKeys.CONVERSATION, sessionKey));
-    }
-
-    private static String call(GoalTools tools, String name, String json, ToolContext context) {
-        for (ToolCallback callback : tools.getToolCallbacks()) {
-            if (callback.getToolDefinition().name().equals(name)) {
-                return callback.call(json, context);
-            }
-        }
-        throw new AssertionError("没有这个工具：" + name);
-    }
-
-    /**
-     * 内存版目标存储：这一层验的是规则（谁被拒、改完之后哪几格不动），
-     * 所以它照着 SQL 的语义写——{@code start} 撞已有目标返回空、
-     * {@code edit} 不动状态与用量、{@code setStatus} 撞终态返回空。
-     * 替身比实现宽容的话，用例会绿着而真库那边是坏的（真库那一份在 {@code RunSchemaSqlTest}）。
-     */
-    private static final class InMemoryGoals implements SessionGoalStore {
-
-        private static final Instant NOW = Instant.parse("2026-11-06T02:00:00Z");
-
-        /** 一行 = entry 的这一段：目标 + 会话累计用量（account 用它算快照差）。 */
-        private record State(SessionGoal goal, long totalTokens) {
-        }
-
-        private final Map<String, State> rows = new LinkedHashMap<>();
-
-        @Override
-        public Optional<SessionGoal> of(String sessionKey) {
-            State state = rows.get(sessionKey);
-            return state == null ? Optional.empty() : Optional.of(state.goal());
-        }
-
-        @Override
-        public Optional<SessionGoal> start(String sessionKey, String objective, Long tokenBudget) {
-            if (rows.containsKey(sessionKey)) {
-                return Optional.empty();
-            }
-            SessionGoal created = new SessionGoal(sessionKey, SessionGoal.SCHEMA_VERSION,
-                    UUID.randomUUID(), objective, GoalStatus.ACTIVE, NOW, NOW,
-                    0, true, 0, tokenBudget, 0, null, null, null, null, null, null);
-            rows.put(sessionKey, new State(created, 0));
-            return Optional.of(created);
-        }
-
-        @Override
-        public Optional<SessionGoal> edit(String sessionKey, UUID goalId, String objective) {
-            State state = rows.get(sessionKey);
-            if (state == null || !state.goal().id().equals(goalId)
-                    || state.goal().status() == GoalStatus.COMPLETE) {
-                return Optional.empty();
-            }
-            SessionGoal old = state.goal();
-            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(), objective,
-                    old.status(), old.createdAt(), NOW, old.tokenStart(), old.tokenStartFresh(),
-                    old.tokensUsed(), old.tokenBudget(), old.continuationTurns(), old.note(),
-                    old.pausedAt(), old.blockedAt(), old.completedAt(), old.usageLimitedAt(),
-                    old.budgetLimitedAt()));
-        }
-
-        @Override
-        public Optional<SessionGoal> setStatus(String sessionKey, UUID goalId, GoalStatus status,
-                                               String note) {
-            State state = rows.get(sessionKey);
-            if (state == null || !state.goal().id().equals(goalId)
-                    || state.goal().status() == GoalStatus.COMPLETE) {
-                return Optional.empty();
-            }
-            SessionGoal old = state.goal();
-            Instant paused = status == GoalStatus.PAUSED ? NOW : old.pausedAt();
-            Instant blocked = status == GoalStatus.BLOCKED ? NOW : old.blockedAt();
-            Instant completed = status == GoalStatus.COMPLETE
-                    ? (old.completedAt() == null ? NOW : old.completedAt()) : old.completedAt();
-            Instant usage = status == GoalStatus.USAGE_LIMITED ? NOW : old.usageLimitedAt();
-            Instant budget = status == GoalStatus.BUDGET_LIMITED ? NOW : old.budgetLimitedAt();
-            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
-                    old.objective(), status, old.createdAt(), NOW, old.tokenStart(),
-                    old.tokenStartFresh(), old.tokensUsed(), old.tokenBudget(),
-                    old.continuationTurns(), note, paused, blocked, completed, usage, budget));
-        }
-
-        @Override
-        public Optional<SessionGoal> resume(String sessionKey, UUID goalId, String note) {
-            State state = rows.get(sessionKey);
-            if (state == null || !state.goal().id().equals(goalId)
-                    || state.goal().status() == GoalStatus.ACTIVE) {
-                return Optional.empty();
-            }
-            SessionGoal old = state.goal();
-            boolean newWindow = old.status() == GoalStatus.BUDGET_LIMITED
-                    || old.status() == GoalStatus.USAGE_LIMITED;
-            long start = newWindow ? state.totalTokens() : old.tokenStart();
-            long used = newWindow ? 0 : old.tokensUsed();
-            Instant completed = old.status() == GoalStatus.COMPLETE ? null : old.completedAt();
-            return put(state, new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
-                    old.objective(), GoalStatus.ACTIVE, old.createdAt(), NOW, start,
-                    newWindow || old.tokenStartFresh(), used, old.tokenBudget(),
-                    old.continuationTurns(), note, old.pausedAt(), old.blockedAt(), completed,
-                    newWindow ? null : old.usageLimitedAt(),
-                    newWindow ? null : old.budgetLimitedAt()));
-        }
-
-        @Override
-        public Optional<SessionGoal> account(String sessionKey, Long deltaTokens) {
-            State state = rows.get(sessionKey);
-            if (state == null) {
-                return Optional.empty();
-            }
-            if (deltaTokens == null) {
-                return Optional.of(state.goal());
-            }
-            SessionGoal old = state.goal();
-            long total = state.totalTokens() + deltaTokens;
-            long start = old.tokenStartFresh() ? old.tokenStart() : total;
-            long used = old.tokenStartFresh()
-                    ? Math.max(old.tokensUsed(), total - old.tokenStart())
-                    : old.tokensUsed();
-            boolean capped = old.status() != GoalStatus.COMPLETE
-                    && old.status() != GoalStatus.BUDGET_LIMITED
-                    && old.status() != GoalStatus.USAGE_LIMITED
-                    && old.tokenBudget() != null && used >= old.tokenBudget();
-            SessionGoal next = new SessionGoal(sessionKey, old.schemaVersion(), old.id(),
-                    old.objective(), capped ? GoalStatus.BUDGET_LIMITED : old.status(),
-                    old.createdAt(), NOW, start, true, used, old.tokenBudget(),
-                    old.continuationTurns(), old.note(), old.pausedAt(), old.blockedAt(),
-                    old.completedAt(), old.usageLimitedAt(),
-                    capped ? NOW : old.budgetLimitedAt());
-            rows.put(sessionKey, new State(next, total));
-            return Optional.of(next);
-        }
-
-        @Override
-        public boolean clear(String sessionKey, UUID goalId) {
-            State state = rows.get(sessionKey);
-            if (state == null || !state.goal().id().equals(goalId)) {
-                return false;
-            }
-            rows.remove(sessionKey);
-            return true;
-        }
-
-        private Optional<SessionGoal> put(State state, SessionGoal goal) {
-            rows.put(goal.sessionKey(), new State(goal, state.totalTokens()));
-            return Optional.of(goal);
-        }
-    }
-
-    // ---------------------------------------------------------------- 假存储 / 假会话
-
-    /** 默认档（{@code all}）：绝大多数用例问的是"能查到什么"，不是"哪一档"。 */
     private static RecallSessionTool tool(FakeSessions sessions) {
         return tool(sessions, SessionVisibility.DEFAULT);
     }

@@ -33,7 +33,7 @@ class ToolProfileTest {
     /** 生产上的形状：地基工具全画像、外部工具 coding+messaging、机器类只有 coding。 */
     private static List<ToolTierRegistry> registries() {
         return List.of(
-                ToolTierRegistry.allProfilesFor(Set.of("toolSearchTool", "systemStatus", "get_goal",
+                ToolTierRegistry.allProfilesFor(Set.of("toolSearchTool", "systemStatus", "intent",
                         "recall_session")),
                 ToolTierRegistry.external(Set.of("querySales", "sendMail"),
                         ToolTier.CODING, ToolTier.MESSAGING),
@@ -43,7 +43,7 @@ class ToolProfileTest {
     }
 
     private static final List<String> MANIFEST = List.of(
-            "toolSearchTool", "systemStatus", "get_goal", "recall_session",
+            "toolSearchTool", "systemStatus", "intent", "recall_session",
             "querySales", "sendMail",
             "run_script", "propose_script", "delegate_task", "schedule_task",
             "Bash", "BashOutput", "KillShell",
@@ -75,7 +75,7 @@ class ToolProfileTest {
     void messagingDropsMachineAndAutonomyTools() {
         Set<String> kept = kept(ToolTier.MESSAGING);
 
-        assertEquals(Set.of("toolSearchTool", "systemStatus", "get_goal", "recall_session",
+        assertEquals(Set.of("toolSearchTool", "systemStatus", "intent", "recall_session",
                 "querySales", "sendMail"), kept);
     }
 
@@ -95,7 +95,7 @@ class ToolProfileTest {
     void minimalKeepsOnlyFoundationTools() {
         Set<String> kept = kept(ToolTier.MINIMAL);
 
-        assertEquals(Set.of("toolSearchTool", "systemStatus", "get_goal", "recall_session"), kept);
+        assertEquals(Set.of("toolSearchTool", "systemStatus", "intent", "recall_session"), kept);
         // 外部工具桶不进 minimal——与 OpenClaw "minimal still hides them" 一致。
         assertFalse(kept.contains("querySales"));
     }

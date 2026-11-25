@@ -28,7 +28,7 @@ import java.time.Duration;
  *                      口径与 OpenClaw 不同：它的 {@code keepRecentTokens} 是 20000 个
  *                      {@code token} 的预算（{@code docs/reference/session-management-compaction/compaction.md:116}），
  *                      这里是条数——{@code RecursiveSummarizationCompactionStrategy} 只收条数
- * @param cleanupInterval 过期会话的清理间隔。本类不读它，读它的是 {@link SessionCleanup} 上
+ * @param cleanupInterval 过期会话的清理间隔。本类不读它，读它的是 {@link SessionExpirySweep} 上
  *                      {@code @Scheduled} 的占位符原文；它出现在这里只为了在绑定期把坏值挡下来——
  *                      {@code PT0S} 会让 {@code fixedDelay} 变成 0，清理任务退化成热循环打库。
  *                      同 {@code CacheProperties#cleanupInterval}

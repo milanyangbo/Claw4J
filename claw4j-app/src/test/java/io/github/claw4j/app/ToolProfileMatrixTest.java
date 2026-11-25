@@ -72,7 +72,7 @@ class ToolProfileMatrixTest {
         for (ToolTier profile : ToolTier.values()) {
             assertThat(visibleIn(profile))
                     .as("%s 画像里缺了地基工具", profile)
-                    .contains("systemStatus", "recall_session", "get_goal");
+                    .contains("systemStatus", "recall_session");
         }
     }
 
@@ -112,8 +112,8 @@ class ToolProfileMatrixTest {
         Set<String> minimal = visibleIn(ToolTier.MINIMAL);
 
         assertThat(minimal)
-                .as("地基：读自己状态、回忆本会话、目标——一个都不该少")
-                .contains("systemStatus", "recall_session", "get_goal");
+                .as("地基：读自己状态、回忆本会话——一个都不该少")
+                .contains("systemStatus", "recall_session");
         assertThat(minimal)
                 .as("外部工具（业务模块、MCP）不进 minimal——与它 「minimal still hides them」 一致")
                 .doesNotContain("querySales");

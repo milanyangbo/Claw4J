@@ -7,7 +7,6 @@ import io.github.claw4j.agent.audit.JdbcDecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
 import io.github.claw4j.agent.channel.DeliveryTarget;
-import io.github.claw4j.agent.session.SessionResetProperties;
 import io.github.claw4j.agent.schedule.Schedule;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.agent.schedule.ScheduleAuthorization;

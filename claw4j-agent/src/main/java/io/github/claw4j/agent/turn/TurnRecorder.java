@@ -6,8 +6,6 @@ import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.channel.DeliveryTarget;
-import io.github.claw4j.agent.goal.GoalStatus;
-import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.domain.NotifyPolicy;
 import io.github.claw4j.domain.port.InboundMessage;
@@ -91,21 +89,15 @@ final class TurnRecorder {
      */
     private final ConversationDelivery delivery;
 
-    /** 会话目标（ADR-0027）。为 null 表示没开目标存储。 */
-    private final SessionGoalStore goals;
-
     /**
      * @param tracer 埋点入口，为 null 时用 {@link SpanTracer#NONE}
      * @param audit 审计接缝，可以为 null
      * @param delivery 结果投递，可以为 null
-     * @param goals 目标存储，可以为 null
      */
-    TurnRecorder(SpanTracer tracer, ToolCallAudit audit, ConversationDelivery delivery,
-                 SessionGoalStore goals) {
+    TurnRecorder(SpanTracer tracer, ToolCallAudit audit, ConversationDelivery delivery) {
         this.tracer = tracer == null ? SpanTracer.NONE : tracer;
         this.audit = audit;
         this.delivery = delivery;
-        this.goals = goals;
     }
 
     /** 埋点入口，门面开 span 时用；关着时是空实现而不是 null。 */
@@ -147,48 +139,21 @@ final class TurnRecorder {
      * 审计（P07）。要回答「这一轮调了哪些工具」，读 step 表里的 {@code StepKind#TOOL_CALLS} 行，
      * 不要读这里。
      *
-     * <p>这一轮花掉的 token 记到目标上，不记到会话上（ADR-0027 决定五）：OpenClaw 的额度是 goal 的
-     * 属性（{@code create_goal} 的 {@code token_budget}），用完进 {@code budget_limited}；会话本身
-     * 没有「额度」这回事。记账与判超在同一条 SQL 里（见 {@code JdbcSessionGoalStore#addTokens}）。
-     * 用完额度不是「这一轮失败」，它是这件事停下来了——状态在目标上，不在一轮上。
+     * <p>这一轮花掉的 token 不再记账（2026-11-25，ADR-0025 作废）：额度原本挂在目标上，而目标与
+     * 会话语义层一起下线。现在这一层只负责收尾——脱敏后的回答落日志、按策略投递、写审计终态。
+     * 要恢复用量统计，得在新的一层上重建，不是把 {@code tokens} 参数加回来。
      *
      * @param scope 审计作用域
-     * @param conversationKey 会话节点键，用于记额度
      * @param answer 这一轮的回答全文
      * @param pushTo 要推的地址；null 表示不推
      * @param policy 通知策略
-     * @param tokens 这一轮花掉的 token；拿不到时为 null
      */
-    void closeTurn(AuditEvent.Scope scope, String conversationKey, String answer,
-                   DeliveryTarget pushTo, NotifyPolicy policy, Long tokens) {
-        chargeGoal(conversationKey, tokens);
+    void closeTurn(AuditEvent.Scope scope, String answer,
+                   DeliveryTarget pushTo, NotifyPolicy policy) {
         if (delivery != null && pushTo != null) {
             delivery.announce(pushTo, policy, answer);
         }
         runFinished(scope, AuditStatus.SUCCEEDED, null);
-    }
-
-    /**
-     * 把这一轮花掉的 token 记到这段会话的目标上。
-     *
-     * <p>没有目标就不记：额度是目标的属性，没有目标就没有「这件事的预算」这回事。记到一个不存在的
-     * 东西上，等于把成本口径又挪回会话。
-     *
-     * <p>记不进去不影响回答：目标存储降级（库连不上、迁移没跑过）时 {@code account} 返回空，
-     * 这一轮照常收尾。少记一笔的代价远小于把用户的话打死，那种降级由 {@code claw4j.goal.errors}
-     * 暴露。
-     *
-     * @param conversationKey 会话节点键
-     * @param tokens 这一轮花掉的 token；null 表示没有数，不重算用量
-     */
-    private void chargeGoal(String conversationKey, Long tokens) {
-        if (goals == null || conversationKey == null) {
-            return;
-        }
-        goals.account(conversationKey, tokens)
-                .filter(goal -> goal.status() == GoalStatus.BUDGET_LIMITED)
-                .ifPresent(goal -> log.info("目标撞上 token 预算，进入 budget_limited：session={} used={}/{}",
-                        goal.sessionKey(), goal.tokensUsed(), goal.tokenBudget()));
     }
 
     /**

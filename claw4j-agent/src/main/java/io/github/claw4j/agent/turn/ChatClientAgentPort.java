@@ -8,11 +8,9 @@ import io.github.claw4j.agent.audit.RunOutcome;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.agent.channel.DeliveryTarget;
-import io.github.claw4j.agent.goal.SessionGoalStore;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
-import io.github.claw4j.agent.session.SessionCompactor;
-import io.github.claw4j.agent.session.SessionEntries;
+import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -25,6 +23,7 @@ import io.github.claw4j.domain.untrusted.OutboundText;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.session.SessionService;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.model.tool.ToolCallLimitExceededException;
 
@@ -112,12 +111,12 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     /** 由 builder 装好的门；依赖都已拆到四个协作者里。 */
     private ChatClientAgentPort(Builder builder) {
         ChatClient chatClient = Objects.requireNonNull(builder.chatClient, "chatClient");
-        this.address = new SessionAddress(builder.pointers);
-        this.commands = new SlashCommands(address, builder.goals, builder.elevations);
+        this.address = new SessionAddress(builder.scopes);
+        this.commands = new SlashCommands(builder.sessions, builder.elevations);
         this.composer = new PromptComposer(chatClient, builder.catalog, builder.providerKey,
-                builder.compactor, builder.elevations, builder.goals, builder.progressCards, builder.intents,
+                builder.elevations, builder.progressCards, builder.intents,
                 builder.turnTimeout, builder.clock, builder.agentId);
-        this.recorder = new TurnRecorder(builder.tracer, builder.audit, builder.delivery, builder.goals);
+        this.recorder = new TurnRecorder(builder.tracer, builder.audit, builder.delivery);
         this.lane = builder.lane;
         this.agentId = builder.agentId;
         this.messageAudit = builder.messageAudit == null ? MessageAudit.NONE : builder.messageAudit;
@@ -142,13 +141,12 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     public static final class Builder {
 
         private final ChatClient chatClient;
-        private SessionCompactor compactor;
         private ConversationDelivery delivery;
         private SpanTracer tracer;
-        private SessionEntries pointers;
+        private SessionScopeProperties scopes;
         private ConversationLane lane;
         private ToolCallAudit audit;
-        private SessionGoalStore goals;
+        private SessionService sessions;
         private io.github.claw4j.agent.progress.ProgressCards progressCards;
         private io.github.claw4j.agent.intent.StandingIntents intents;
         private ToolCatalog catalog;
@@ -163,15 +161,6 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
 
         private Builder(ChatClient chatClient) {
             this.chatClient = chatClient;
-        }
-
-        /**
-         * @param value 压缩器，可以为 null（没有会话存储就没有可压的）
-         * @return this
-         */
-        public Builder compactor(SessionCompactor value) {
-            this.compactor = value;
-            return this;
         }
 
         /**
@@ -193,11 +182,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         }
 
         /**
-         * @param value 会话指针，可以为 null（没有"段"这回事）
+         * @param value 键的分段规则（dmScope / groupScope），可以为 null（按默认值）
          * @return this
          */
-        public Builder pointers(SessionEntries value) {
-            this.pointers = value;
+        public Builder scopes(SessionScopeProperties value) {
+            this.scopes = value;
             return this;
         }
 
@@ -220,11 +209,11 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
         }
 
         /**
-         * @param value 目标存储，可以为 null（这个部署没开目标存储）
+         * @param value 会话存储，可以为 null（没装会话层时 {@code /new} 清不了历史）
          * @return this
          */
-        public Builder goals(SessionGoalStore value) {
-            this.goals = value;
+        public Builder sessions(SessionService value) {
+            this.sessions = value;
             return this;
         }
 
@@ -418,31 +407,29 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      */
     private Turn answer(InboundMessage message, DeliveryTarget answeredAt) {
         String owner = SessionKeys.ownerOf(message.principal());
-        // 目标挂在会话节点上（不含段），与含段的 sessionId 不是同一个字符串。
         String conversationKey = address.conversationKeyOf(message, owner);
-        // /new、/goal、/elevated 这一族与"跑一轮"同层：认出来就当场办、回一句话，不进模型也不开 run
-        // （OpenClaw：纯命令消息绕过队列和模型）。先判命令再算 sessionId：/new 的换段副作用就在
-        // 命令那一层发生，两处各算一次会让"换了没有"取决于走了哪条分支。
+        // 会话 id 就是会话键（ADR-0026 修订）：没有段，先算它没有副作用；而 /new 要删的正是这个 id，
+        // 所以命令层需要它先存在。含段时代是反过来的——那时规矩是"先判命令、再算 id"，因为换段
+        // 那个副作用在命令里。
+        String sessionId = address.sessionIdOf(message, owner);
+        // /new、/elevated 这一族与"跑一轮"同层：认出来就当场办、回一句话，不进模型也不开 run
+        // （OpenClaw：纯命令消息绕过队列和模型）。
         long inboundAt = System.nanoTime();
-        SlashCommands.Parsed parsed = commands.parse(message, owner, conversationKey);
+        SlashCommands.Parsed parsed = commands.parse(message, sessionId);
         if (parsed.reply().isPresent()) {
             // 命令也是"处理完了"：它没调模型，但它确实是这条消息的结局。
             auditInbound(message, null, MessageOutcome.COMPLETED, null, inboundAt);
             return new Turn(null, parsed.reply().get());
         }
-        // 对话键与归属键是两把：owner 管"这是谁的东西"，sessionId 管"这是哪一段话"。
-        // 群聊与私聊必须是两段——同一份权限下，听众可以完全不同（ADR-0025）。
-        // 段由指针给（ADR-0026）：跨天、空闲、或者用户发了 /new 就换一个。
-        String sessionId = address.sessionIdOf(message, owner, parsed.reset());
         // 这一轮的编号（ADR-0027）：本地生成，不落任何表。它只在三处用——审计的两条事件、
         // trace 的一段 span、返回给调用方的回执。
         // 名字叫 executionId（ADR-0038）：它上面那层"可能跨轮共享的关联"我们没有，
         // 也没有任何"按 executionId 取回一件事"的接口，因为一轮答完它就作废了。
         String executionId = UUID.randomUUID().toString();
         // 审计的"这一轮开始"。与结束那条成对：只有结束的话，跑了多久、两条并发的先后都只能靠时间戳猜。
-        // 两把会话键都带进审计（ADR-0037 第三批）：session_key 是会话键（不含段），
-        // session_id 是这一段。OpenClaw 两列都在（audit-event-store.ts:97-98），
-        // 只写含段的那一个的话，"同一段对话"与"这一轮"再也分不开。
+        // 两列都带进审计（ADR-0037 第三批）：去掉段之后 session_key 与 session_id 同值，
+        // 仍按两列写——OpenClaw 两列都在（audit-event-store.ts:97-98），而"将来会不会重新分开"
+        // 是下一次改形状时的事，读侧不该因为今天的巧合而少一列。
         AuditEvent.Scope auditScope = AuditEvent.Scope.of(executionId, conversationKey, sessionId, agentId,
                 message.principal(), message.channel());
         recorder.runStarted(auditScope);
@@ -464,9 +451,8 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     // 日志敢打全文，是因为脱敏已经在 Advisor 链上做完；哪天有人在链路之外打日志，
                     // 这里会立刻出现原始值。
                     log.debug("出站回答 chatId={} executionId={} text={}", message.chatId(), executionId, text);
-                    recorder.closeTurn(auditScope, conversationKey, text,
-                            TurnRecorder.pushTargetOf(answeredAt, message), message.notifyPolicy(),
-                            TurnRecorder.tokensOf(response));
+                    recorder.closeTurn(auditScope, text,
+                            TurnRecorder.pushTargetOf(answeredAt, message), message.notifyPolicy());
                     TurnRecorder.stampTurn(turn, response);
                 }
                 auditInbound(message, executionId, MessageOutcome.COMPLETED, null, inboundAt);
@@ -512,8 +498,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     private void streamInLane(InboundMessage message, Consumer<OutboundMessage> onChunk) {
         String owner = SessionKeys.ownerOf(message.principal());
         String conversationKey = address.conversationKeyOf(message, owner);
+        String sessionId = address.sessionIdOf(message, owner);
         long inboundAt = System.nanoTime();
-        SlashCommands.Parsed parsed = commands.parse(message, owner, conversationKey);
+        SlashCommands.Parsed parsed = commands.parse(message, sessionId);
         if (parsed.reply().isPresent()) {
             auditInbound(message, null, MessageOutcome.COMPLETED, null, inboundAt);
             // 与"忙"那条同形：一帧正文 + 一帧空文本，调用方靠后者收尾。
@@ -522,11 +509,10 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
             onChunk.accept(OutboundMessage.of(message.chatId(), "", null));
             return;
         }
-        String sessionId = address.sessionIdOf(message, owner, parsed.reset());
         String executionId = UUID.randomUUID().toString();
-        // 两把会话键都带进审计（ADR-0037 第三批）：session_key 是会话键（不含段），
-        // session_id 是这一段。OpenClaw 两列都在（audit-event-store.ts:97-98），
-        // 只写含段的那一个的话，"同一段对话"与"这一轮"再也分不开。
+        // 两列都带进审计（ADR-0037 第三批）：去掉段之后 session_key 与 session_id 同值，
+        // 仍按两列写——OpenClaw 两列都在（audit-event-store.ts:97-98），而"将来会不会重新分开"
+        // 是下一次改形状时的事，读侧不该因为今天的巧合而少一列。
         AuditEvent.Scope auditScope = AuditEvent.Scope.of(executionId, conversationKey, sessionId, agentId,
                 message.principal(), message.channel());
         recorder.runStarted(auditScope);
@@ -561,9 +547,9 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
                     // 流式这一路手上没有 ChatResponse（汇总 usage 在最后一帧，未必到得了），
                     // 所以 token 传 null 而不是 0：0 会被读成「这一轮没花钱」，
                     // 而这是「没有数」。代价是流式的用量不计入目标预算（见票 04 的「没做」一节）。
-                    recorder.closeTurn(auditScope, conversationKey, answer.toString(),
+                    recorder.closeTurn(auditScope, answer.toString(),
                             TurnRecorder.pushTargetOf(TurnRecorder.addressOf(message), message),
-                            message.notifyPolicy(), null);
+                            message.notifyPolicy());
                     auditInbound(message, executionId, MessageOutcome.COMPLETED, null, inboundAt);
                 } catch (RuntimeException | Error failure) {
                     // 入站这一行只分完成/失败两种：取消与超时的细分在 run 那一行上（RunOutcome）。
