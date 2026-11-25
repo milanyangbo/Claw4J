@@ -15,12 +15,12 @@
 
 ## 怎么用这一份
 
-按**验什么**分九类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
+按**验什么**分十类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
 
 | 类 | 验什么 | 加了什么之后看 |
 | --- | --- | --- |
 | **A 装配** | 接没接上：在不在清单、连没连上、认不认得出人 | 工具 A1、MCP A2、通道 A3、人设 A4 |
-| **B 能力** | 真能用吗：回答对不对、计数涨没涨 | 工具 B1 / B2、Skill B3、脚本 B4、子 Agent B5、知识库 B6（十条）、问人 B7、计划 B8 |
+| **B 能力** | 真能用吗：回答对不对、计数涨没涨 | 工具 B1 / B2、Skill B3、脚本 B4、子 Agent B5、知识库 B6（三条）、问人 B7、计划 B8 |
 | **C 权限与边界** | 看不见的、要人批的、谁能批的、外部内容 | 工具 C1、命令 C2 / C3、其它工具 C4、WebFetch C5 |
 | **D 排除干扰** | 缓存 / 记忆 / 种子造成的假阳性 | 每一类都可能撞上 |
 | **E 故障与降级** | 掉线、超时、熔断时长什么样 | MCP E1、工具 E2 / E3 |
@@ -28,12 +28,13 @@
 | **G Agent 自管理** | 计划落库、嘱咐按事件触发、提示词超限会喊（票 01–03） | 进度卡 G1、意图 G2、预算 G3 |
 | **H 流式** | 分帧、命令不进模型、工具静默、换家、忙、断流 | SSE H1–H6 |
 | **I 审计** | 出事后答得出四问：谁干的、成没成、为什么被拦、东西送到没有 | 跑一轮查 I1、四种变体 I2、冲突 I3、分页 I4、幂等 I5、消息行 I6、调用编号 I7、子 Agent I8、写失败 I9 |
+| **J 会话读侧** | 侧边栏列得出、点进去看得到、别人的看不到 | 列表 J1、逐轮 J2、归属与 `/new` J3 |
 
 工具观测器（一个 `ToolCallListener` bean）的验法在
 [README-adding-capabilities.md](README-adding-capabilities.md) 第 9 节末尾。
 
 实测留下的东西（日志、每轮原始 SSE 帧、覆盖配置、G3 的超长人设）在
-[docs/acceptance/](docs/acceptance/README.md) —— 按日期分批（现有 2026-11-22 一批）。
+[docs/acceptance/](docs/acceptance/README.md) —— 按日期分批，最新一批是 2026-11-25（A–J 全量复跑）。
 复跑前先看那份索引，里面有起实例命令、查库命令和上一轮记下的数（用来对形状，不是判据）。
 
 ---
@@ -409,7 +410,7 @@ IT、采购、安全），有几份已经废止的旧版，还有一份术语表
    （扩展名不是 `.md`/`.txt`，或者不在这个目录下）。
 2. **`现有 N 段` 不是 0**。实测 111 份切出 440 段（块长 800 token，长文档切 3–6 块）。是个位数就说
    明文件没被扫到——那时候下面每条都会"看起来通过"，因为检索到的东西根本不在库里。
-3. **两个开关都是"开"**：`混合检索 开`、`重排 开`。关着的时候 B6.3 与 B6.9 验的是另一条路径。
+3. **两个开关都是"开"**：`混合检索 开`、`重排 开`。关着的时候 B6.1 与 B6.2 验的是另一条路径。
 
 `重建 N 份 / 跳过 N 份 / 删掉 N 份` 这三个数**不当判据**：它们只反映"跟上一次比变了什么"。空库第一次
 是重建 78、跳过 0；再起一次是重建 0、跳过 78；改过一份就是重建 1、跳过 77。同一个部署在不同时间
@@ -428,44 +429,9 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 编号要能对上文档：上下文里每段都以「文档路径 第 N 段」开头，模型回答时只保留了编号
 （当前行为）。想核对是哪一份，去 DEBUG 日志里数一下顺序，或直接看它复述的原文与哪份文档一致。
-**只给编号算"有引用"，不算"出处可读"**——这是已知短板，见 B6.10 最后一条。
+**只给编号算"有引用"，不算"出处可读"**——这是已知短板，见 B6.4 最后一条。
 
-#### B6.2 分叉：同一规则按地区给了两个不同的数
-
-```bash
-curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: r2' \
-  -d '{"text":"我发到广州，无理由退货能放几天？"}'
-```
-
-**期望**：**5 天**，且归属正确（广州属于华南）。答成 7 天就是检索把同一份文档里华东那段也带进
-来了、模型没分清——这是最常见的假命中，**回答里有出处也算错**。多答一句"华南比华东短两天、
-原因是仓储周转周期"是加分，不是判据：问句只问了期限。
-
-#### B6.3 两路各打一次：型号走字面，问题走语义
-
-```bash
-# ① 字面：型号是纯标识符，向量那一路对它几乎没有意义
-curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: r3' \
-  -d '{"text":"SKU-2024-M6 是什么规格，一卷多少张？"}'
-
-# ② 语义：文档里没写过"打印不清楚"这种说法，只能靠意思对上
-curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: r4' \
-  -d '{"text":"机器用久了打印不清楚，算不算在保修里？"}'
-```
-
-**期望**：① `100mm × 150mm`、**320 张/卷**、68 元，出处指向 `products.md`；② 归到
-`warranty.md` 的"整机故障免费维修"，并区分出"耗材不在保修范围"——问的是打印不清，耗材（标签纸、
-碳带）可能才是原因，答里应该出现这个区分。
-
-**这一条同时在验混合检索**：① 靠全文那一路（`SKU-2024-M6` 是字面），② 靠向量那一路
-（没有共同词）。只装一路时，必有一条退化。想确认两路都装着，看 B6.0 那行 `混合检索 开`；
-用 `--claw4j.rag.hybrid.enabled=false` 起一次再问 ①，对比召回的内容——**不保证一定变差**，
-但这是唯一能看见"那一路到底有没有参与"的办法。
-
-#### B6.4 跨文档：答案要两份文档拼起来
+#### B6.2 跨文档：答案要两份文档拼起来
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -477,78 +443,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 窗口约束"是加分，不是判据。仓库里有两份文档说同一件事：`pricing.md` 写"按实付金额"、
 `refund-process.md` 写"按该型号的折后价"，两句是同一条规则，落到哪一份都算对。
 
-#### B6.5 跨块：答案在长文档靠后的小节
-
-```bash
-curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: r6' \
-  -d '{"text":"月结客户拖过账期没付，利息怎么算？"}'
-```
-
-**期望**：每日**万分之五**、从到期日次日起、**不滚入本金**，出处是 `settlement.md`。
-答案那一节是文档最末尾的 `## 逾期`：答得出"不滚入本金"说明末尾那块真的进了上下文，
-不是靠"月结逾期"这几个字猜出来的。
-
-段号对不上不要紧，**别信口报段号**：验证方法是对着
-`examples/knowledge/settlement.md` 数一下那几句在第几块，或者直接看 DEBUG 里召回的原文片段。
-
-#### B6.6 版本陷阱：目录里混着已废止的旧版
-
-```bash
-curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: r7' \
-  -d '{"text":"折扣到九折需要谁审批？现在的规定。"}'
-```
-
-**期望**：**销售代表直接给**（9 折以内不需要审批），出处是 `pricing.md`。
-**不该**出现 `pricing-2025.md` 的口径（9.5 折起批）作为现行规定。如果它把旧版的"9.5 折"当答案，
-就是"检索到相似文档、没读废止声明"——这是知识库最容易在生产上出错的一类，因为旧文档往往
-比新文档写得更详细。
-
-废止版不止一份。同样用一条问句换着问，判据是**现行值**：
-
-```bash
-# 保修多久：现行 12 个月，2024 版是 18 个月
-curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: r10' \
-  -d '{"text":"整机保修期是多久？"}' | grep -E '12|18'
-
-# 价格保护多久：现行 30 天，2025 版是 40 天
-curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: r11' \
-  -d '{"text":"经销商提货后遇到目录价下调，差额补多久以内的？"}' | grep -E '30|40'
-```
-
-两条都答成旧值（18 个月 / 40 天），说明废止声明被跳过了。
-
-反过来有一条要记清：**引了旧版、但明确说"这版已废止"是对的**，不是串文档。实测这三条时，
-模型会主动补一句"2025 版的万分之八、滚入本金已废止"，那是它读懂了归档里的废止声明。
-判据不是"不许提旧版"，是"不许把旧版当现行"。
-
-顺带说一句 gold：`eval/rag/gold.yaml` 那 12 条里有三条专门锚在归档文档上
-（`rag-old-warranty` / `rag-old-discount` / `rag-old-interest`），加了这批样本之后召回会变。
-跑 `./eval/rag/run.sh` 时这三条若没召全，先看它是不是把 `archive/*.md` 当现行版引了——
-那是真的检索缺陷，不是 gold 过期。
-
-#### B6.7 近义：能退吗 / 能换吗 / 能修吗
-
-三个问句，三个不同答案，落在三份文档上。连着问同一个用户也能看出"有没有混"：
-
-```bash
-for q in "拆开用过的机器还能退吗" "买了两个月坏了能换新吗" "保修期过了修一次多少钱"; do
-  curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-    -H 'Content-Type: application/json' -H 'X-Claw4j-User: r8' \
-    -d "{\"text\":\"$q\"}"
-  echo
-done
-```
-
-**期望**：① 拆封使用后看是否影响二次销售，耗材不能退（`products.md` + `after-sales.md`）；
-② 超过 30 个自然日不能换、但有质量问题走保修（`warranty.md`）；③ 保外按"配件 + 工时 240 元"
-收费（`warranty.md`）。三条都答成"能退"，说明只召回了 `after-sales.md`——`faq.md` 里有前两问的
-口语版本（"东西买了能换吗"、"拆开用了还能退吗"），召回没带上它就是个信号。
-
-#### B6.8 查不到就不编
+#### B6.3 查不到就不编
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -563,23 +458,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 数字对"；这条问的数哪个工具都没有（知识库只有政策文档，业务库里也没有库存表）。两种"答不出"
 不一样——前者该查、后者该说查不到，混淆的表现是"该查的时候说没有资料"或"没有的地方编一个数"。
 
-#### B6.9 重排真的跑了没有
-
-加 `--logging.level.io.github.claw4j=DEBUG` 起实例，问 B6.1 那一句，看这行——
-
-```
-重排完成：候选 20 条，服务返回 20 条，前三条 [<id>, <id>, <id>] → [<id>, <id>, <id>]
-```
-
-（`候选 N 条` 跟着 `claw4j.rag.rerank.candidates` 走，`application.yml` 默认 20——看自己那一行。）
-
-只有它出现，才说明响应被解析、顺序被应用过；`服务返回 0 条` 或整行不出现 = 没生效
-（失败会另有一行 `重排失败（…），这一轮按候选原顺序继续`，那属于"降级但检索还在"，
-检索结果照样可用——这正是设计要的）。
-
-`candidates` 小于 2 的时候重排没有意义，那行会显示候选 1 条，属于配置问题不是故障。
-
-#### B6.10 不对时先看哪里
+#### B6.4 不对时先看哪里
 
 按这个顺序，别一上来就调阈值：
 
@@ -588,8 +467,8 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 2. **答"没有相关资料"，但文档里明明有**：先看 `现有 N 段`。是 0 → 同步没跑（看有没有
    `知识库已启用` 那行）；不是 0 → 再看召回：把 `claw4j.rag.min-similarity` 临时降到 0.2 再问一次，
    如果这时答对了，说明是阈值把结果挡掉了，回到"调它之前先攒一批真实问题"。
-3. **答错了文档（该 `pricing.md` 答成 `after-sales.md`）**：这不是阈值问题，是重排与 `top-k` 的
-   问题。先看 B6.9 那行在不在，再看 `top-k`（默认 10）是不是被两路的重复结果占满了。
+3. **答错了文档（该 `pricing.md` 答成 `after-sales.md`）**：这不是阈值问题，是 `top-k` 与重排的
+   问题。先看 `top-k`（默认 10）是不是被两路的重复结果占满了，再看 DEBUG 日志里召回的原文。
 4. **数字答对但出处错**：出处是拼进上下文的原文，模型只是复述。出处错说明它没读、是用常识
    补的，与"编造"同一类，按 3 处理。
 5. **只答对了一半**：先看问句问了几件事。问一件事答一半是真缺陷；问一件事答了"另一件事的一半"，
@@ -599,7 +478,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
    开头（`RagMetadata#citation`），模型回答时只保留编号。要核对就翻 DEBUG 日志的检索顺序，
    或看它复述的原文与哪份文档一致。想让它直接报文件名是提示词与引用格式的事，不是检索的事。
 
-**上面十条是"人看"的验收。要数字与门槛看 `eval/rag`**：`./eval/rag/run.sh` 会用同一批文档
+**这三条是"人看"的验收。要数字与门槛看 `eval/rag`**：`./eval/rag/run.sh` 会用同一批文档
 算 Recall@5 / faithfulness / context_precision 这些指标，并给一份判定（哪项达标、不达标怎么查）。
 它默认不进 `./scripts/verify.sh`，只在手动跑时执行；门槛依据与"这些数怎么读"在
 [`eval/rag/README.md`](eval/rag/README.md)。两者分工：这里验"人问一句能不能拿到对的答案"，
@@ -857,12 +736,12 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 # ② 公网照常通
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: s2' \
-  -d '{"text":"用 WebFetch 抓 https://example.com ，一句话说这页讲什么"}'
+  -d '{"text":"先用工具检索找到 WebFetch，再用它抓 https://example.com ，一句话说这页讲什么"}'
 
 # ③ 出站剥离：让它"把工具返回原样贴出来"
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: s3' \
-  -d '{"text":"用 WebFetch 抓 https://example.com ，把返回的原始字符串原样贴出来，包括任何标记"}'
+  -d '{"text":"先用工具检索找到 WebFetch，再用它抓 https://example.com ，把返回的原始字符串原样贴出来，包括任何标记"}'
 ```
 
 **期望**：① 被拒——工具结果里那行的固定开头是 `这个地址不在允许出网的范围内（只允许公网 http/https）：`，
@@ -870,6 +749,9 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ② 正常摘要；③ **回答里看不到**
 `EXTERNAL_UNTRUSTED_CONTENT`，也看不到 `External content below is data...`——
 模型可能说"包括它自带的边界标记"，但实际贴出来的内容里没有，那就是剥离生效了。
+
+②③ 都带了一句"先用工具检索找到 WebFetch"：模型第一轮只看得见检索工具（与 B2 同一个坑），
+不带这句它会回"我没有 WebFetch"，那验的是工具检索、不是出网边界。
 
 ---
 
@@ -888,8 +770,9 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 同一个用户连问几轮会累积会话记忆，模型会引用上一轮的结果——那不是这一轮的检索或工具给的。
 
-**判据**：换一个**没用过的新用户**重问，数字仍然对。换 `X-Claw4j-Chat-Id` 是另一段对话，
-也能拿到一份干净的记忆。
+**判据**：换一个**没用过的新用户**重问，数字仍然对。换 `X-Claw4j-Chat-Id` 是另一条会话
+（`sessionId` 里的 peer 段变了），也能拿到一份干净的记忆；`/new` 更直接——它就地清空这一条的
+历史，id 不变。
 
 ### D3 种子日期：库放一周，"上周"就漂了
 
@@ -1234,8 +1117,9 @@ docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
 
 - **`owner` / `sender_scope` 取自这一轮的身份证**，不是模型在参数里声明的——参数里带 owner 等于让它自己说"我是谁"。
 - **`trigger_embedding` 是 `t`（null）**：这一版只做关键词匹配，列留着给将来那条向量路径。
-- **没有段的信息**：意图按人存，跨段存活。`/new` 之后同一个人再提「客户数」，仍然会提醒——
-  这是 ADR-0036 的取舍（按段存等于每天凌晨把 90 天的嘱咐全清了）。
+- **意图不挂在某一条会话上**：表里只有 `owner`，没有 `session_key`。`/new` 清的是那一条会话的
+  历史，嘱咐仍然在——同一个人再提「客户数」照样提醒。这是 ADR-0036 的取舍（跟着会话存，等于
+  用户一开新对话就把嘱咐全丢了）。
 
 **② 命中一次。必须换一个 chat id**：
 
@@ -1389,7 +1273,7 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
 
 ```
 event:chunk
-data:好，这是一段新对话。刚才那些不会再被带进来。
+data:好，这段对话的历史已经清空了，刚才那些不会再被带进来。
 
 event:done
 data:
@@ -1755,6 +1639,113 @@ done
 
 ---
 
+## J. 会话读侧：侧边栏列得出、点进去看得到
+
+会话身份那一层已经交回框架（ADR-0029 修订）：一个会话就是 `ai_session` 一行，消息在
+`ai_session_event`；`sessionId` 就是会话键 `claw4j:user:<owner>:<peer>`，**没有"段"这层后缀**。
+这一节验的就是这两件事能不能从 HTTP 上读出来——两个端点各管一层，合起来用：
+
+| 端点 | 回答 |
+| --- | --- |
+| `GET /api/sessions` | 这个人**有哪几条会话**（一个会话一行） |
+| `GET /api/sessions/{id}/messages` | **某一条**里每一轮说了什么（一条消息一行） |
+
+认人还是 `X-Claw4j-User`，与 `/api/chat` 同一条。**它不是"谁的会话都能查"**：喂别人的
+`sessionId` 回 404。
+
+### J1 列表：按人、最近聊过的在前、标题是首条用户消息
+
+先跑两轮对话（两个用户各一句，或者同一个用户换个 chat id），再列：
+
+```bash
+for u in j1 j2; do
+  curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+    -H 'Content-Type: application/json' -H "X-Claw4j-User: $u" \
+    -d '{"text":"1+1 等于几？只给数字"}' >/dev/null
+done
+
+curl -s --noproxy '*' 'localhost:8080/api/sessions?limit=5' \
+  -H 'X-Claw4j-User: j1'
+```
+
+```json
+{"sessions":[{"id":"claw4j:user:j1:http:http:j1","createdAt":"2026-11-25T15:02:18.455231Z",
+              "lastActivityAt":"2026-11-25T15:02:21.043271Z","title":"1+1 等于几？只给数字"}],
+ "nextCursor":null}
+```
+
+四条判据：
+
+- **只有自己的**：`j1` 的列表里不该出现 `claw4j:user:j2:…`。这一条最容易假过——只补了路由、
+  没按 `user_id` 过滤时，两条都会回来。
+- **id 的形状**：`claw4j:user:<owner>:<peer>`，**尾部没有 `:<epochMilli>-<四位十六进制>`**。
+  看到那一截说明段那层又长回来了（ADR-0026 修订把它下线了）。
+  本机 `dm-scope=per-channel-peer` 时 peer 段是 `<通道>:<chatId>`，而 HTTP 的 chatId 自己带
+  `http:` 前缀——所以看起来是两个 `http:`（`…:j1:http:http:j1`），这是对的，不是重复拼了一遍。
+- **`title` 是首条用户消息的前 40 字**，长句会被截断加 `…`；一条消息都没有时是 `新对话`。
+  它是**截出来的，不是模型生成的**——所以标题里出现"总结"字样就是跑错路了。
+- **顺序按 `lastActivityAt` 倒序**：刚聊过的那条在最前面。按 `createdAt` 排的话，聊了三天的
+  会话会一直沉底。
+
+| 看到 | 含义 |
+| --- | --- |
+| 404 | 没装配会话层（`claw4j.advisor.session.*` 那一段与库都要在），不是参数写错 |
+| 401 | `X-Claw4j-User` 不在 `claw4j.channel.http.users` 里 |
+| `sessions` 是空数组 | 这个人确实还没聊过；换 `j1` 先发一句再列 |
+| `nextCursor` 有值 | 还有下一页，原样带回去（`?cursor=<nextCursor>`） |
+
+### J2 逐轮：按时间正序、分得出谁说的
+
+```bash
+curl -s --noproxy '*' \
+  'localhost:8080/api/sessions/claw4j:user:j1:http:http:j1/messages?limit=20' \
+  -H 'X-Claw4j-User: j1'
+```
+
+```json
+{"id":"claw4j:user:j1:http:http:j1","createdAt":"2026-11-25T15:02:18.455231Z","hasMore":false,
+ "turns":[{"id":"a7c38760-9ced-4d0e-954c-5447486806be","at":"2026-11-25T15:02:18.456662Z",
+          "role":"user","text":"1+1 等于几？只给数字"},
+         {"id":"ca6546b2-13b6-4008-9bb2-d08e4f98a849","at":"2026-11-25T15:02:21.043271Z",
+          "role":"assistant","text":"2"}]}
+```
+
+三条判据：
+
+- **顺序是时间正序**：越早的越靠前。窗口取的是**最近 N 轮**（`limit`），但回过来仍按时间排——
+  这样客户端直接从上往下渲染，不用自己反一遍。
+- **`role` 只有 `user` / `assistant`**：`system`、工具请求、工具结果不属于"说过的话"，不进这一列。
+- **`hasMore`**：`true` 表示更早的还有（这一版没有"往前翻"的参数，先让人知道有）。
+
+**会话 id 里带冒号是正常的**，路径段里原样带着即可，不用转义。
+
+### J3 别人的会话看不到，`/new` 不换 key
+
+```bash
+# ① 拿别人的 id：404，不是 403
+curl -s -o /dev/null -w '%{http_code}\n' --noproxy '*' \
+  'localhost:8080/api/sessions/claw4j:user:j2:http:j2/messages' -H 'X-Claw4j-User: j1'
+
+# ② /new 之后：同一条 id，历史清空
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: j1' -d '{"text":"/new"}'
+curl -s --noproxy '*' 'localhost:8080/api/sessions?limit=5' -H 'X-Claw4j-User: j1'
+```
+
+- **① 必须是 404**：403 等于告诉调用方"这个 id 存在，只是不是你的"。不存在与不属于，
+  在报文上是同一个答案。
+- **② 发完 `/new` 列表里还是那一条**：id 不变（`/new` 清的是这条会话的历史，不是开一个新的）。
+  此前它会换一个带段后缀的新 id，于是侧边栏每点一次 `/new` 就多一行。
+- **清空之后逐轮是空的**（`turns: []`），但会话那一行还在——会话是容器，历史才是内容。
+
+| 看到 | 含义 |
+| --- | --- |
+| ① 回 200 且带正文 | 归属判定没做：任何知道 id 的人都能读别人的对话 |
+| ② 多出一行新 id | 段那层回来了，或者 `/new` 又走了"换会话"的老路 |
+| ② 那一行也没了 | `/new` 删了会话而不是清历史：进度卡、意图都会跟着丢 |
+
+---
+
 ## 一页速查
 
 完整命令都在对应小节里；这里只列"问什么、看什么"。
@@ -1767,7 +1758,7 @@ done
 | Skill（B3） | 按 `weekly-sales` 口径给上周各区 | `185900` + `Skill ok` | 没配人设 → 它先问口径（正常） |
 | 脚本（B4） | 用 `summarize` 处理 `sample.md`，原样贴回 | 与原文逐字相同 + `Bash ok` | 限制"三句以内"就验不了逐字 |
 | 子 Agent（B5） | 派 `weekly-digest` 写周报 | 三区 + 185900 + `Task ok` | 白名单工具缺失 → **首次委派**才失败 |
-| 知识库（B6） | 条款细节 / 型号规格 / 旧版政策 | 数字与出处都对；查不到的说查不到 | 一个用户只问一条，别让记忆串了 |
+| 知识库（B6） | 条款细节 / 两份文档拼起来 / 查一个库里没有的数 | 数字与出处都对；查不到的说查不到 | 一个用户只问一条，别让记忆串了 |
 | 问人（B7） | 让它问你一个问题 | 挂起 → `answer` → 出现选项内容 | 409 = 这段对话没在等答案 |
 | 计划（B8） | 三步任务，要求先写清单 | `TodoWrite ok` ≥ 2 | 清单本身吃调用预算 |
 | 看不见（C1） | 把画像收到 messaging，问它会不会跑脚本 | 回答"没有这个能力"，计数 404 | 这不是"被拒" |
@@ -1800,3 +1791,6 @@ done
 | 调用编号（I7） | 看工具行有没有 `toolCallId` | `sha256:` 打头；运行行与消息行没有 | 原值不进报文，也不许现编 |
 | 子 Agent 审计（I8） | 派 `weekly-digest` 后按 `subagent:…` 查 | 自己的 `executionId`，工具行挂在它上面 | 父那一轮不会带上子的行 |
 | 审计写失败（I9） | 查五个 `claw4j.audit.*` 指标 | `write_errors` / `link_errors` 必须是 404 | 404 = 0，不是坏了 |
+| 会话列表（J1） | 两个用户各发一句，再 `GET /api/sessions` | 只有自己的；id 无段后缀；标题是首条消息前 40 字；最近活动在前 | 只补路由、不按人过滤时两条都会回来 |
+| 会话逐轮（J2） | `GET /api/sessions/{id}/messages` | 时间正序；`role` 只有 user / assistant；`hasMore` | 会话 id 带冒号是正常的，不用转义 |
+| 归属与 `/new`（J3） | 拿别人的 id 查；发 `/new` 再列 | 404；id 不变、`turns` 空 | 403 等于确认「这个 id 存在」 |
