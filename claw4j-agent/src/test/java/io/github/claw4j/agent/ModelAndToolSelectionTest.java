@@ -2,6 +2,7 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.observability.MeteredToolIndex;
+import io.github.claw4j.agent.toolaccess.HybridToolIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
@@ -303,6 +304,24 @@ class ModelAndToolSelectionTest {
                 .withPropertyValues("claw4j.advisor.tool-search.max-results=3")
                 .run(context -> assertThat(context.getBean(ToolSearchProperties.class).maxResults())
                         .isEqualTo(3));
+
+        assertThat(ToolSearchProperties.defaults().hybrid().keywordWeight())
+                .as("hybrid 的关键字权重没配时是 0.5，不是 0——0 是「纯向量」，那是另一个配置")
+                .isEqualTo(ToolSearchProperties.Hybrid.DEFAULT_KEYWORD_WEIGHT);
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues("claw4j.advisor.tool-search.hybrid.keyword-weight=2")
+                .run(context -> assertThat(context.getBean(ToolSearchProperties.class)
+                        .hybrid().keywordWeight())
+                        .as("越界夹到 1，而不是让一个 2 参与分母")
+                        .isEqualTo(1.0));
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues("claw4j.advisor.tool-search.hybrid.keyword-weight=-1")
+                .run(context -> assertThat(context.getBean(ToolSearchProperties.class)
+                        .hybrid().keywordWeight())
+                        .isEqualTo(0.0));
     }
 
     /**
@@ -311,27 +330,39 @@ class ModelAndToolSelectionTest {
      * <p>验的是"选谁"，不是"搜得准不准"——后者要真语料，属于评测。
      */
     @Test
-    @DisplayName("index 三档各建各的索引；vector 缺 VectorStore 时启动就失败，不回落")
+    @DisplayName("index 四档各建各的索引；hybrid 的两翼各自带分组；vector 缺向量库时启动就失败，不回落")
     void indexChoiceIsHonoured() {
-        assertThat(ToolSearch.index(ToolSearchProperties.defaults(), null))
+        ToolCategories categories = ToolCategories.of(Map.of());
+        assertThat(inner(ToolSearch.index(ToolSearchProperties.defaults(), null, categories)))
                 .as("不写 index 时是中文那一版")
                 .isInstanceOf(ChineseToolIndex.class);
 
         ToolSearchProperties lucene = new ToolSearchProperties(
                 ToolSearchProperties.Index.LUCENE, 5, new ToolSearchProperties.Lucene(0.6f));
-        assertThat(ToolSearch.index(lucene, null))
+        assertThat(inner(ToolSearch.index(lucene, null, categories)))
                 .as("lucene 那一档不再需要容器里有什么")
                 .isInstanceOf(LuceneToolIndex.class);
 
         ToolSearchProperties vector = new ToolSearchProperties(
                 ToolSearchProperties.Index.VECTOR, 5, null);
-        assertThatThrownBy(() -> ToolSearch.index(vector, null))
+        assertThatThrownBy(() -> ToolSearch.index(vector, null, categories))
                 .isInstanceOf(IllegalStateException.class)
                 .as("回落成 regex 会让\"我明明配了向量\"变成一个查不出来的谎")
                 .hasMessageContaining("VectorStore")
                 .hasMessageContaining("index 改回 regex");
-        assertThat(ToolSearch.index(vector, new FakeVectorStore()))
+        assertThat(inner(ToolSearch.index(vector, new FakeVectorStore(), categories)))
                 .isInstanceOf(VectorToolIndex.class);
+
+        ToolIndex fused = ToolSearch.index(new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, 5, null),
+                new FakeVectorStore(), categories);
+        assertThat(fused)
+                .as("hybrid 不在外面再包一层分组：两翼各自被包，融合在最外面")
+                .isInstanceOf(HybridToolIndex.class);
+        assertThat(((HybridToolIndex) fused).keywordWing())
+                .as("分组必须贴在里面：包在融合外面会让某一组先被别组顶掉名额")
+                .isInstanceOf(NamespacedToolIndex.class);
+        assertThat(((HybridToolIndex) fused).vectorWing())
+                .isInstanceOf(NamespacedToolIndex.class);
 
         new ApplicationContextRunner()
                 .withUserConfiguration(BindingOnly.class)
@@ -345,8 +376,25 @@ class ModelAndToolSelectionTest {
 
         new ApplicationContextRunner()
                 .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues("claw4j.advisor.tool-search.index=hybrid",
+                        "claw4j.advisor.tool-search.hybrid.keyword-weight=0.3")
+                .run(context -> {
+                    ToolSearchProperties bound = context.getBean(ToolSearchProperties.class);
+                    assertThat(bound.index()).isEqualTo(ToolSearchProperties.Index.HYBRID);
+                    assertThat(bound.hybrid().keywordWeight())
+                            .as("权重是数字，配了就得按配的来")
+                            .isEqualTo(0.3);
+                });
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
                 .withPropertyValues("claw4j.advisor.tool-search.index=bogus")
                 .run(context -> assertThat(context).as("非法取值不让它悄悄落回默认").hasFailed());
+    }
+
+    /** 分组那层统一在最里面，验"选哪一档"时要先剥掉它。 */
+    private static ToolIndex inner(ToolIndex index) {
+        return index instanceof NamespacedToolIndex namespaced ? namespaced.delegate() : index;
     }
 
     /**
@@ -466,13 +514,13 @@ class ModelAndToolSelectionTest {
                 .contains("文件路径");
 
         // 七、默认 bean 真的换掉了。只改测试构造等于测的还是旧实现。
-        //     "容器里没有 VectorStore" 用空工厂的 provider 表示：默认那一档不读它。
-        var noVectorStore = new DefaultListableBeanFactory()
-                .getBeanProvider(org.springframework.ai.vectorstore.VectorStore.class);
-        var noRegistry = new DefaultListableBeanFactory()
-                .getBeanProvider(io.micrometer.core.instrument.MeterRegistry.class);
-        ToolIndex assembled = new AgentAutoConfiguration()
-                .toolIndex(ToolSearchProperties.defaults(), noVectorStore, noRegistry);
+        //     "没有向量库、没有 embedding、没有库" 用空工厂的 provider 表示：默认那一档一个都不读。
+        DefaultListableBeanFactory empty = new DefaultListableBeanFactory();
+        ToolIndex assembled = new AgentAutoConfiguration().toolIndex(ToolSearchProperties.defaults(),
+                empty.getBeanProvider(org.springframework.jdbc.core.JdbcTemplate.class),
+                empty.getBeanProvider(org.springframework.ai.embedding.EmbeddingModel.class),
+                1024,
+                empty.getBeanProvider(io.micrometer.core.instrument.MeterRegistry.class));
         assertThat(assembled)
                 .as("最外层是计量：包在里层记到的是收窄之前那一批，答不了「模型看到几个」")
                 .isInstanceOf(MeteredToolIndex.class);
@@ -799,6 +847,103 @@ class ModelAndToolSelectionTest {
         assertThat(summary.totalAmount()).as("1 + 0").isEqualTo(1.0);
     }
 
+    // ------------------------------------------------------------ 检索的 hybrid（票 07）
+
+    /**
+     * 关键字与向量两路都空手，才是真的找不到。
+     *
+     * <p>这里钉的是本票要救的那类失败：中文问法、英文描述，字面一个字都不重合。关键字那一路
+     * （{@link ChineseToolIndex}）在这种问法上返回空，这不是"描述写得不好"，是词面匹配的上限。
+     * 向量那一路按语义带回来，融合之后模型才看得见它。
+     */
+    @Test
+    @DisplayName("零字面重叠：中文问法 + 英文描述，关键字空手、向量带回来")
+    void hybridFindsToolWithNoLiteralOverlap() {
+        String summary = "Fetches content from a specified URL using HTTP GET and returns markdown";
+        // 问法是「这个地址」而不是「这个网页」：后者已经被票 04 的同义词表桥接（页 → fetch,url），
+        // 那座桥上过得去，就不是本票要救的那类空手。
+        String query = "这个地址写了什么";
+        ToolIndex keywordOnly = new ChineseToolIndex();
+        keywordOnly.indexTools("h-1", List.of(ToolReference.builder().toolName("WebFetch")
+                .summary(summary).build()));
+
+        assertThat(names(keywordOnly, "h-1", query, null))
+                .as("中文二元组撞不上英文描述，这是票 04 靠同义词表一座桥一座桥补的那个洞")
+                .isEmpty();
+
+        HybridToolIndex hybrid = HybridToolIndex.of(ToolCategories.of(Map.of()), keywordOnly,
+                new StubToolIndex(List.of(reference("WebFetch", summary, 0.42))), 0.5);
+        assertThat(names(hybrid, "h-1", query, null))
+                .as("一路空手不该把另一路的结果也吞掉")
+                .containsExactly("WebFetch");
+    }
+
+    /**
+     * 权重两端各归一端，这是"换索引能对照"的前提。
+     *
+     * <p>1 必须与改之前逐字一致（纯关键字），0 必须是纯向量。若写成"两路都查、按权重加权"，
+     * 权重 1 时向量那一路的候选仍会以 0 分进列表——看起来权重生效了，结果里却混着只由向量带回来的
+     * 工具，对照就不成立。
+     */
+    @Test
+    @DisplayName("keyword-weight 两端各归一端：1 只看关键字，0 只看向量")
+    void keywordWeightDecidesWhoWins() {
+        ToolCategories categories = ToolCategories.of(Map.of());
+        StubToolIndex keywordWing = new StubToolIndex(List.of(
+                reference("file_read", "读取文件内容", 0.9),
+                reference("lookup", "查询销售成交额", 0.5)));
+        StubToolIndex vectorWing = new StubToolIndex(List.of(reference("WebFetch", "抓网页", 0.8)));
+
+        assertThat(names(HybridToolIndex.of(categories, keywordWing, vectorWing, 1.0), "h-2", "随便问", null))
+                .as("权重 1 = 改之前的现状，用来做对照")
+                .containsExactly("file_read", "lookup");
+        assertThat(names(HybridToolIndex.of(categories, keywordWing, vectorWing, 0.0), "h-2", "随便问", null))
+                .as("权重 0 = 纯向量：关键字那一路整个不参与，不是「参与但得 0 分」")
+                .containsExactly("WebFetch");
+    }
+
+    /**
+     * 融合按名次，不按原始分；分组在两翼之内、融合之前。
+     *
+     * <p>两段同一个入口（{@code search}）、同一种断言（回来的顺序与名单），与
+     * {@code chineseQueryNeedsNoSpaces} 拿一张表跑多行是同一个写法。
+     *
+     * <p>第一段：关键字那一路的分数（命中次数）与向量那一路的分数（余弦）量纲不同，直接加权求和
+     * 要让量纲大的一路占满——上面那组数按求和排是 {@code [X, Y, Z]}，按名次是 {@code [Y, X, Z]}。
+     * 第二段：分组若包在融合外面，排在前面的那一组会先把名额占满，收窄之后反而"更少了"。
+     */
+    @Test
+    @DisplayName("融合按名次不按原始分；分组在两翼之内、融合之前")
+    void fusionUsesRanksAndGroupsBeforeFusion() {
+        ToolCategories categories = ToolCategories.of(Map.of());
+
+        StubToolIndex keywordWing = new StubToolIndex(List.of(
+                reference("X", "关键字那路的第一名，分很高", 1.0),
+                reference("Y", "两路都在，名次靠前", 0.001)));
+        StubToolIndex vectorWing = new StubToolIndex(List.of(
+                reference("Y", "两路都在，名次靠前", 0.9),
+                reference("Z", "只在向量那路", 0.8)));
+        assertThat(names(HybridToolIndex.of(categories, keywordWing, vectorWing, 0.5), "h-3", "随便问", null))
+                .as("按名次：Y 两路都靠前所以第一；按求和：X 的 1.0 会压住一切")
+                .containsExactly("Y", "X", "Z");
+
+        // 第二段：两路索引的是同一批工具（现实就是如此），file_* 二十个排在前面，web_* 两个垫底。
+        List<ToolReference> catalogue = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            catalogue.add(reference("file_op" + i, "文件操作第 " + i + " 个", 0.9 - i * 0.01));
+        }
+        catalogue.add(reference("web_fetch", "抓取网页", 0.2));
+        catalogue.add(reference("web_post", "提交表单", 0.1));
+        HybridToolIndex grouped = HybridToolIndex.of(categories,
+                new StubToolIndex(catalogue), new StubToolIndex(catalogue), 0.5);
+        // 分组表是"索引时记住的"，不是"检索时猜的"：不调这一次，两翼都收窄不了。
+        grouped.indexTools("h-4", catalogue);
+
+        assertThat(names(grouped, "h-4", "随便问", "web"))
+                .as("分组包在融合外面时，融合后的前排（外层要的 3×5 条）全是 file_*，收窄完一条不剩")
+                .containsExactlyInAnyOrder("web_fetch", "web_post");
+    }
+
     private static double count(SimpleMeterRegistry registry, String result, boolean narrowed) {
         Counter counter = registry.find(MeteredToolIndex.SEARCH_CALLS)
                 .tag("result", result)
@@ -828,7 +973,7 @@ class ModelAndToolSelectionTest {
         }
     }
 
-    private static List<String> names(NamespacedToolIndex index, String sessionId, String query, String category) {
+    private static List<String> names(ToolIndex index, String sessionId, String query, String category) {
         return index.search(new ToolSearchRequest(sessionId, query, 5, category))
                 .toolReferences()
                 .stream()
@@ -836,9 +981,49 @@ class ModelAndToolSelectionTest {
                 .toList();
     }
 
+    /** 固定返回一批候选的索引：本票验的是融合的算术，不是检索准不准。 */
+    private static ToolReference reference(String toolName, String summary, double score) {
+        return ToolReference.builder().toolName(toolName).summary(summary)
+                .relevanceScore(score).build();
+    }
+
+    /**
+     * 只按顺序交回固定候选的索引。
+     *
+     * <p>照 {@code maxResults} 截断，与真索引一致：替身不该比真实实现更宽松，否则"窗口里够不够"
+     * 这类断言会在替身上成立、在真库上不成立。
+     */
+    private static final class StubToolIndex implements ToolIndex {
+
+        private final List<ToolReference> hits;
+
+        StubToolIndex(List<ToolReference> hits) {
+            this.hits = List.copyOf(hits);
+        }
+
+        @Override
+        public void indexTool(String sessionId, ToolReference toolReference) {
+        }
+
+        @Override
+        public void indexTools(String sessionId, List<ToolReference> toolReferences) {
+        }
+
+        @Override
+        public ToolSearchResponse search(ToolSearchRequest toolSearchRequest) {
+            int max = toolSearchRequest.maxResults() == null ? 5 : toolSearchRequest.maxResults();
+            List<ToolReference> slice = this.hits.stream().limit(max).toList();
+            return ToolSearchResponse.builder().toolReferences(slice).totalMatches(slice.size()).build();
+        }
+
+        @Override
+        public void clearIndex(String sessionId) {
+        }
+    }
+
     private static ToolSearchProperties properties(ToolSearchProperties.Mode mode, int revealBelow,
                                                    List<String> pinned, Map<String, List<String>> categories) {
-        return new ToolSearchProperties(null, 5, null, mode, revealBelow, pinned, categories);
+        return new ToolSearchProperties(null, 5, null, mode, revealBelow, pinned, categories, null);
     }
 
     // ------------------------------------------------------------ 本模块的两条架构闸

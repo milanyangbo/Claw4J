@@ -21,10 +21,10 @@ import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
-import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
+import io.github.claw4j.agent.toolaccess.ToolVectorStore;
 import io.github.claw4j.agent.toolaccess.ToolsProperties;
 import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import io.github.claw4j.agent.turn.ConversationLane;
@@ -49,21 +49,25 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springaicommunity.agent.tools.ToolCallListener;
 import org.springaicommunity.agent.tools.ToolCallListeners;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -295,37 +299,79 @@ public class AgentAutoConfiguration {
     }
 
     /**
-     * 工具检索用的索引：按 {@code claw4j.advisor.tool-search.index} 三选一。
+     * 工具检索用的索引：按 {@code claw4j.advisor.tool-search.index} 四选一。
      *
      * <p>默认那一档是中文版而不是框架的 {@code RegexToolIndex}：后者只按空白与标点切词，中文整句进去
      * 是一个 token，当子串匹配等于什么都不匹配。代价不止命中率——用它就得反过来要求模型自己用
      * 空格分词，等于把实现的缺陷教给模型。{@link ChineseToolIndex} 让那段提示词没有必要存在
      * （见 {@link ToolSearch#SYSTEM_SUFFIX}）。
      *
-     * <p>{@code lucene} 与 {@code vector} 是另外两条路：前者靠词频打分，后者靠语义相似度。三条路
-     * 的取舍写在 {@link ToolSearchProperties.Index} 上；这里只做选择，不替使用者猜。
+     * <p>{@code lucene} / {@code vector} / {@code hybrid} 是另外三条路：第二个靠词频打分，后两个靠
+     * 语义相似度，{@code hybrid} 是两路按名次融合。四条的取舍写在
+     * {@link ToolSearchProperties.Index} 上；这里只做选择，不替使用者猜。
      *
-     * <p>外面再包一层 {@link NamespacedToolIndex}：分组与选哪档索引无关，是横切的一层。
+     * <p>分组与计量都在工厂里包好（{@link ToolSearch#index} 返回的已经是带分组的形状）：
+     * 分组必须贴在每个检索实现上、在融合之前，包在外面会让某一组先被别组顶掉名额。
      *
-     * <p>容器里已有 {@code ToolIndex} 时整个让位：自定义实现比这三个开关更具体，
+     * <p><b>工具向量库不注册成 bean</b>：{@code RagAutoConfiguration} 的
+     * {@code @ConditionalOnMissingBean(VectorStore.class)} 会因为多一个同类型 bean 静默退让，
+     * 表现是知识库突然全空、日志里一句都没有。所以它在这里现场构造，只交给索引。
+     *
+     * <p>容器里已有 {@code ToolIndex} 时整个让位：自定义实现比这四个开关更具体，
      * 硬塞一个只会让两边的清单各说各话。
      *
-     * @param toolSearch 检索配置
-     * @param vectorStore 向量库，只在 {@code index=vector} 时用到
+     * @param toolSearch   检索配置
+     * @param jdbc         JDBC 句柄，只有 vector / hybrid 用得到
+     * @param embeddings   向量模型，只有 vector / hybrid 用得到
+     * @param dimensions   向量维度，必须与工具向量表一致
      * @param meterRegistry 指标注册表，可能不存在（没装 actuator）；那时照常检索、只是不记
      * @return 索引
      */
     @Bean
     @ConditionalOnMissingBean(ToolIndex.class)
-    public ToolIndex toolIndex(ToolSearchProperties toolSearch, ObjectProvider<VectorStore> vectorStore,
+    public ToolIndex toolIndex(ToolSearchProperties toolSearch, ObjectProvider<JdbcTemplate> jdbc,
+                               ObjectProvider<EmbeddingModel> embeddings,
+                               @Value("${claw4j.model.embedding.dimensions:1024}") int dimensions,
                                ObjectProvider<MeterRegistry> meterRegistry) {
-        ToolIndex chosen = ToolSearch.index(toolSearch, vectorStore.getIfAvailable());
-        // 分组是横切的一层：框架的 categoryFilter 已经交给模型了，但三个现成索引都不读它，
-        // 所以包一层才有"收窄"这件事。换索引档时这层不用重写。
-        ToolIndex grouped = new NamespacedToolIndex(chosen, ToolCategories.of(toolSearch.categories()));
+        VectorStore toolVectorStore = toolVectorStore(toolSearch, jdbc, embeddings, dimensions);
         // 计量包在**最外层**：包在里层记到的是收窄之前那一批（宽搜 15 条、过滤后 0 条，
         // 里层看到的是 15），那就答不了"模型到底看到几个"。
-        return new MeteredToolIndex(grouped, meterRegistry.getIfAvailable());
+        return new MeteredToolIndex(
+                ToolSearch.index(toolSearch, toolVectorStore, ToolCategories.of(toolSearch.categories())),
+                meterRegistry.getIfAvailable());
+    }
+
+    /**
+     * 工具专用的向量库：{@code index} 要向量时才建，建不出来就启动失败。
+     *
+     * <p>不在默认档（regex）就返回 {@code null} 是关键：建它就要连库、就要 {@code create table}、
+     * 就要一次 embedding 调用。不配向量检索的部署不该为此付任何代价——包括启动时多一张空表。
+     *
+     * <p>缺 embedding 时不降级（与 {@code claw4j.rag.enabled} 同一口径）：降级成"每次都搜不到"的
+     * 空库，症状与"工具描述确实不匹配"分不开。
+     *
+     * @param toolSearch 检索配置
+     * @param jdbc       JDBC 句柄
+     * @param embeddings 向量模型
+     * @param dimensions 向量维度
+     * @return 工具向量库；这一档不用向量时为 {@code null}
+     * @throws IllegalStateException 这一档要向量但缺依赖
+     */
+    private static VectorStore toolVectorStore(ToolSearchProperties toolSearch, ObjectProvider<JdbcTemplate> jdbc,
+                                               ObjectProvider<EmbeddingModel> embeddings, int dimensions) {
+        if (!toolSearch.index().needsVectorStore()) {
+            return null;
+        }
+        JdbcTemplate template = jdbc.getIfAvailable();
+        EmbeddingModel model = embeddings.getIfAvailable();
+        if (template == null || model == null) {
+            throw new IllegalStateException("claw4j.advisor.tool-search.index=" + toolSearch.index().name()
+                    .toLowerCase(Locale.ROOT) + "，但缺 "
+                    + (model == null ? "EmbeddingModel（配 claw4j.model.embedding）" : "JdbcTemplate（配数据源）")
+                    + "：工具向量表 " + ToolVectorStore.qualifiedTable() + " 建不出来，检索会永远空手。"
+                    + "补上依赖，或者把 index 改回 regex。");
+        }
+        return ToolVectorStore.create(template, model, dimensions);
     }
 
     /**

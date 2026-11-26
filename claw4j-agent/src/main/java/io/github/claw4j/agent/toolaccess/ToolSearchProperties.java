@@ -25,10 +25,11 @@ import java.util.Map;
  * @param revealBelow {@code mode=auto} 的阈值：工具数不超过它就不检索；0 或负数取 10
  * @param pinned      常驻工具名：每轮都在清单里，不经过检索；写错的名字忽略并告警
  * @param categories  类别（namespace）→ 工具名；不配则按名字前缀推导，见 {@link ToolCategories}
+ * @param hybrid      {@code index=hybrid} 那一档的参数
  */
 @ConfigurationProperties("claw4j.advisor.tool-search")
 public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, Mode mode, int revealBelow,
-                                   List<String> pinned, Map<String, List<String>> categories) {
+                                   List<String> pinned, Map<String, List<String>> categories, Hybrid hybrid) {
 
     /**
      * 工具面怎么露给模型。
@@ -69,10 +70,62 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
         LUCENE,
 
         /**
-         * 向量召回：按语义找工具，不要求字面重合。需要容器里有一个 {@code VectorStore}
-         * （pgvector 的自动配置能提供，但它还要 {@code EmbeddingModel} 与一张向量表）。
+         * 向量召回：按语义找工具，不要求字面重合。
+         *
+         * <p>用的是<b>工具专用</b>的向量库（{@link ToolVectorStore}），不是容器里知识库那一个：
+         * 共用一张表会让工具描述跟着 BM25 与向量两路被召回进业务问答。缺 {@code EmbeddingModel}
+         * 或数据库时启动失败，不回落成"每次都搜不到"的空库。
          */
-        VECTOR
+        VECTOR,
+
+        /**
+         * 关键字 ∪ 向量，按名次融合（{@link HybridToolIndex}）：两路各自召回，RRF 只吃名次。
+         *
+         * <p>为什么不是加权求和：两路的分值量纲不同（正则是命中次数，向量是余弦），求和要先归一化，
+         * 而归一化系数只能靠调；名次不用调，也不需要两路可比。
+         *
+         * <p>它要的东西比 {@link #VECTOR} 只多一样——关键字那一路是纯本地计算，不花钱。
+         */
+        HYBRID;
+
+        /**
+         * 这一档要不要一个向量库。
+         *
+         * <p>问在这里而不是让装配去 {@code switch}：加档时改一处，漏改的地方会编译不过
+         * （{@code switch} 表达式没有 default，少一个分支就是语法错误）。
+         *
+         * @return 要时为真
+         */
+        public boolean needsVectorStore() {
+            return this == VECTOR || this == HYBRID;
+        }
+    }
+
+    /**
+     * {@code index=hybrid} 那一档的参数。其余三档读不到它。
+     *
+     * @param keywordWeight 关键字那一路占多少，见 {@link #DEFAULT_KEYWORD_WEIGHT}
+     */
+    public record Hybrid(Double keywordWeight) {
+
+        /**
+         * 缺省的权重：两路各一半。
+         *
+         * <p>不调成偏关键字（比如 0.7）：偏它的唯一理由是"关键字那一路更准"，而票 05 的证据是
+         * 反过来——词面匹配在中文问法上大量空手。要偏等评测集建起来再说，那时这是第一个该调的旋钮。
+         */
+        public static final double DEFAULT_KEYWORD_WEIGHT = 0.5;
+
+        /**
+         * 越界夹到 {@code [0, 1]}，缺省取 {@value #DEFAULT_KEYWORD_WEIGHT}。
+         *
+         * <p>用包装类型而不是 {@code double}：0 是一个有意义的取值（纯向量），不能与"没配"共用
+         * 同一个数——那正是 {@link Lucene#minScore} 用 {@code Float} 的同一条理由。
+         */
+        public Hybrid {
+            keywordWeight = keywordWeight == null || keywordWeight.isNaN()
+                    ? DEFAULT_KEYWORD_WEIGHT : Math.clamp(keywordWeight, 0.0, 1.0);
+        }
     }
 
     /**
@@ -126,6 +179,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
         revealBelow = revealBelow <= 0 ? DEFAULT_REVEAL_BELOW : revealBelow;
         pinned = pinned == null ? List.of() : List.copyOf(pinned);
         categories = categories == null ? Map.of() : Map.copyOf(categories);
+        hybrid = hybrid == null ? new Hybrid(null) : hybrid;
     }
 
     /**
@@ -134,7 +188,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * @param maxResults 一次返回几个候选；0 或负数取默认
      */
     public ToolSearchProperties(int maxResults) {
-        this(null, maxResults, null, null, 0, null, null);
+        this(null, maxResults, null, null, 0, null, null, null);
     }
 
     /**
@@ -147,7 +201,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * @param lucene     lucene 那档的参数
      */
     public ToolSearchProperties(Index index, int maxResults, Lucene lucene) {
-        this(index, maxResults, lucene, null, 0, null, null);
+        this(index, maxResults, lucene, null, 0, null, null, null);
     }
 
     /**

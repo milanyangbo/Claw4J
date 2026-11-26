@@ -4,6 +4,9 @@ import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.observability.MeteredToolIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
+import io.github.claw4j.agent.toolaccess.ToolVectorStore;
+import io.github.claw4j.rag.store.VectorStoreNames;
+import org.springframework.ai.vectorstore.VectorStore;
 import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.guard.SensitiveWords;
 import io.github.claw4j.model.routing.ModelFallbackExhaustedException;
@@ -492,6 +495,32 @@ class ApplicationAssemblyTest {
         assertThat(((MeteredToolIndex) index).delegate())
                 .as("第二层是分组：框架的 categoryFilter 只有这一层读")
                 .isInstanceOf(NamespacedToolIndex.class);
+    }
+
+    /**
+     * 工具向量（票 07）：不注册成 bean，也不落在知识库那套表上。
+     *
+     * <p>两件都必须钉住，因为坏掉之后的症状都是"别处突然不对"，而不是这里报错：
+     * <ul>
+     *   <li>多一个 {@code VectorStore} bean，知识库那一个的 {@code @ConditionalOnMissingBean}
+     *       会静默退让，表现是知识库突然全空，日志里没有一行提到向量；</li>
+     *   <li>共用 {@code claw4j_rag.vector_store}，工具描述会跟着 BM25 与向量那两路被召回进
+     *       业务问答——"Glob 是文件匹配工具"会出现在查退货政策的答案里。</li>
+     * </ul>
+     *
+     * <p>断在名字与容器上、不连库：默认 {@code index=regex} 时这张表根本不该被建出来，
+     * 而"建没建"由工具向量库是否被构造决定，这里问的就是那个决定。
+     */
+    @Test
+    @DisplayName("工具向量不进容器也不进知识库那张表（票 07）")
+    void toolVectorsStayOutOfTheKnowledgeTable() {
+        assertThat(context.getBeansOfType(VectorStore.class))
+                .as("工具向量库在工厂里现场构造：进容器就会顶掉知识库那一个")
+                .isEmpty();
+        assertThat(ToolVectorStore.SCHEMA)
+                .as("换 schema 而不是加一列：知识库的 BM25 与向量两路都按表扫，共用一张表就会串味")
+                .isNotEqualTo(VectorStoreNames.SCHEMA);
+        assertThat(ToolVectorStore.qualifiedTable()).isEqualTo("claw4j_tool.tool_index");
     }
 
     @Test

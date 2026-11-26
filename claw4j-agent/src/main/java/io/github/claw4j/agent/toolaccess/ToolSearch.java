@@ -76,37 +76,55 @@ public final class ToolSearch {
             + "不用自己拆关键词——中文和英文它都认。\n";
 
     /**
-     * 按配置建索引。三种实现的差别只在"怎么把 query 变成候选"，见 {@link ToolSearchProperties.Index}。
+     * 按配置建索引。四档的差别只在"怎么把 query 变成候选"，见 {@link ToolSearchProperties.Index}。
      *
-     * <p>选 {@code vector} 而容器里没有 {@code VectorStore} 时<b>在这里就失败</b>，不悄悄回落到正则：
-     * 回落之后日志上一切正常，而"我明明配了向量检索"这个判断会一直错下去，错到有人拿它做线上决定。
+     * <p>分组这一层在<b>里面</b>，四档都一样：{@code categoryFilter} 只有 {@link NamespacedToolIndex}
+     * 读，而 hybrid 的两个检索实现各自要被收窄、融合之后才轮到截断。包在外面的话，排在前面的那一组
+     * 会先把名额占满，收窄之后反而更少——这是本类唯一一处"顺序决定对错"的地方。
      *
-     * @param properties 检索配置，必填
-     * @param vectorStore 容器里的向量库，可能为 {@code null}
-     * @return 索引
-     * @throws IllegalStateException {@code index=vector} 但没有 {@code VectorStore}
+     * <p>选 {@code vector} / {@code hybrid} 而没有工具向量库时<b>在这里就失败</b>，不悄悄回落到
+     * 正则：回落之后日志上一切正常，而"我明明配了向量检索"这个判断会一直错下去，错到有人拿它做
+     * 线上决定。
+     *
+     * @param properties  检索配置，必填
+     * @param vectorStore 工具专用的向量库（{@link ToolVectorStore}），只有 vector / hybrid 用得到，
+     *                    其余两档传 {@code null}
+     * @param categories  分组规则，必填
+     * @return 索引，四档都已经是"带分组"的形状
+     * @throws IllegalStateException {@code index=vector|hybrid} 但没有工具向量库
      */
-    public static ToolIndex index(ToolSearchProperties properties, VectorStore vectorStore) {
+    public static ToolIndex index(ToolSearchProperties properties, VectorStore vectorStore,
+                                  ToolCategories categories) {
         Objects.requireNonNull(properties, "properties");
+        Objects.requireNonNull(categories, "categories");
         return switch (properties.index()) {
-            case REGEX -> new ChineseToolIndex();
-            case LUCENE -> new LuceneToolIndex(properties.lucene().minScore());
-            case VECTOR -> new VectorToolIndex(requireVectorStore(vectorStore));
+            case REGEX -> new NamespacedToolIndex(new ChineseToolIndex(), categories);
+            case LUCENE -> new NamespacedToolIndex(
+                    new LuceneToolIndex(properties.lucene().minScore()), categories);
+            case VECTOR -> new NamespacedToolIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
+                    categories);
+            case HYBRID -> HybridToolIndex.of(categories, new ChineseToolIndex(),
+                    new VectorToolIndex(requireVectorStore(vectorStore)), properties.hybrid().keywordWeight());
         };
     }
 
     /**
      * 向量索引要的那份依赖。缺它时把"缺什么、怎么补"写进异常：这句话是排查的唯一线索。
      *
-     * @param vectorStore 容器里的向量库，可能为 {@code null}
+     * <p>缺的不是"容器里那个 VectorStore"——知识库那一份不能拿来用（工具描述会挤进业务问答的召回）。
+     * 缺的是工具专用的那一份，它由 {@link ToolVectorStore} 用 {@code EmbeddingModel} 现场建；
+     * 建不出来通常就是没配向量模型。
+     *
+     * @param vectorStore 工具向量库，可能为 {@code null}
      * @return 同一个向量库
      * @throws IllegalStateException 为 {@code null}
      */
     private static VectorStore requireVectorStore(VectorStore vectorStore) {
         if (vectorStore == null) {
-            throw new IllegalStateException("claw4j.advisor.tool-search.index=vector，但容器里没有"
-                    + " VectorStore。要么配 spring.ai.vectorstore.pgvector（还需要 EmbeddingModel 与向量表），"
-                    + "要么自己提供一个 VectorStore bean，要么把 index 改回 regex。");
+            throw new IllegalStateException("claw4j.advisor.tool-search.index 要向量，但工具用的 "
+                    + "VectorStore 建不出来。它由 EmbeddingModel 现场构造（表在 " + ToolVectorStore.qualifiedTable()
+                    + "），所以要配 claw4j.model.embedding（模型名、key、dimensions）；"
+                    + "不想配就把 index 改回 regex。");
         }
         return vectorStore;
     }

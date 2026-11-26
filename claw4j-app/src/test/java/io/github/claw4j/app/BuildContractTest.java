@@ -436,7 +436,7 @@ class BuildContractTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("pgvector/pgvector:pg16");
 
     @Test
-    @DisplayName("跨 jar 的迁移按版本号合并：六份基线全跑到，五个 schema 都在")
+    @DisplayName("跨 jar 的迁移按版本号合并：七份基线全跑到，六个 schema 都在")
     void migrationsFromEveryModuleLandInOneHistory() {
         var flyway = flyway();
         flyway.migrate();
@@ -444,31 +444,32 @@ class BuildContractTest {
         // 断言跑完之后历史里有什么，而不是这一次执行了几条：同一份容器被两条用例共用，
         // 谁先跑都会把迁移做完。
         //
-        // 六份基线，一个 schema 一份：会话（含进度卡与事件条件意图）、知识库、审批/定时/审计/白名单、
-        // 入站队列、以及示例插件的业务库（V1 建表 + V2 种子）。改表结构的地方直接改对应的那一份，
-        // 不往上叠补丁——补丁串读不出"现在的形状"，而这张表正是为了让人一眼看见它。
+        // 七份基线，一个 schema 一份：会话（含进度卡与事件条件意图）、知识库、审批/定时/审计/白名单、
+        // 入站队列、工具检索的向量（票 07）、以及示例插件的业务库（V1 建表 + V2 种子）。改表结构的地方
+        // 直接改对应的那一份，不往上叠补丁——补丁串读不出"现在的形状"，而这张表正是为了让人一眼看见它。
         //
         // 唯一的例外是 V7（2026-11-25，删会话身份层那四张表）：它是**删**，而 V3 已经在开发库与
         // 验收库里跑过了——回头改 V3 会让那些库的 Flyway 校验和对不上，连迁移都跑不起来。
         // 所以这一条留在补丁里，等下一次重建基线时并回 V3。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
 
         var jdbc = new JdbcTemplate(dataSource());
 
-        // 五个 schema 各自的归属：business 是示例插件的，其余是 agent 的（会话 claw4j_session、
-        // 调度/审批/审计在 claw4j_run、知识库在 claw4j_rag、入站队列在 claw4j_channel）。
-        // 缓存不在其中：它一旦重新出现在这里，就是有人又把缓存往库里写了。
+        // 六个 schema 各自的归属：business 是示例插件的，其余是 agent 的（会话 claw4j_session、
+        // 调度/审批/审计在 claw4j_run、知识库在 claw4j_rag、入站队列在 claw4j_channel、
+        // 工具检索的向量在 claw4j_tool）。缓存不在其中：它一旦重新出现在这里，就是有人又把缓存往库里写了。
         // 入站队列单独一个是因为它跟着通道走：它是平台把消息交给宿主这件事的账，
-        // 与一次 agent 运行没有父子关系。
+        // 与一次 agent 运行没有父子关系。claw4j_tool 与 claw4j_rag 必须是两个：共用一张表，
+        // 工具描述会跟着知识库的两路召回进业务问答。
         assertThat(jdbc.queryForList(
                 "select schema_name from information_schema.schemata"
                         + " where schema_name in ('business', 'claw4j_session', 'claw4j_cache',"
-                        + " 'claw4j_run', 'claw4j_rag', 'claw4j_channel')"
+                        + " 'claw4j_run', 'claw4j_rag', 'claw4j_channel', 'claw4j_tool')"
                         + " order by schema_name", String.class))
                 .containsExactly("business", "claw4j_channel", "claw4j_rag",
-                        "claw4j_run", "claw4j_session");
+                        "claw4j_run", "claw4j_session", "claw4j_tool");
 
         // 会话 schema 里是框架的两张加我们的两张（ADR-0029 修订：身份层交回框架）。
         // 少了哪张说明有人把基线改坏了；多了哪张（比如那张平铺的 session_entry）说明有人
@@ -490,7 +491,7 @@ class BuildContractTest {
         var flyway = flyway();
         flyway.migrate();
 
-        // 7 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
+        // 8 个文件分布在不同 jar 里，重复扫描最容易出现的是"某个 jar 里的又被当成新的"。
         assertThat(flyway.migrate().migrationsExecuted)
                 .as("第二次调用不该再执行任何迁移")
                 .isZero();
