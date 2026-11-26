@@ -1,0 +1,123 @@
+# 工具检索的 gold：用户怎么问 → 应当翻到哪个工具。
+#
+# 与 eval/rag/gold.yaml 分工不同：那边判"答案的出处有没有被召回"（绑句子、要处理跨块），
+# 这边判"工具名在不在前 k"。工具名是稳定标识符，不需要锚点，也不存在跨块——所以不并成一份。
+#
+# 题面照 tool-retrieval-benchmark（ACL 2025）的形状：用户真的会这么说，**不点工具名**，
+# 干扰项是同域相近的那些（同分类里的其他工具）。
+#
+# gold_tools 允许为空 = "不该有候选"。空不是"没写"，是一个有意义的取值（检索器给出任何候选都算噪声）。
+#
+# 覆盖（每一类对应一种真实的检索失效，不按数量堆）：
+#   base      基座工具：现在常驻，检索掉分不影响线上，但它是"索引能不能工作"的底线
+#   business  中文问中文描述：掉分说明索引本身坏了，是最不该掉的一档
+#   zh-en     中文问英文描述：票 04 的同义词桥与票 07 的向量各自值多少分，看这一档
+#   no-search 闲聊：给了候选就是噪声
+
+# ---------------------------------------------------------------- base
+
+- id: tools-glob-md
+  question: examples 目录下有哪些 .md 文件？
+  category: base
+  gold_tools: [Glob]
+
+- id: tools-grep-refund
+  question: 哪些文件里提到了 refund？
+  category: base
+  gold_tools: [Grep]
+
+- id: tools-read-head
+  question: examples/README.md 的前 20 行是什么？
+  category: base
+  gold_tools: [Read]
+
+- id: tools-bash-test
+  question: 在仓库里跑一遍单元测试
+  category: base
+  gold_tools: [Bash]
+
+# ---------------------------------------------------------------- business
+
+- id: tools-sales-last-week
+  question: 上周华东区的成交额是多少？
+  category: business
+  gold_tools: [querySales]
+
+- id: tools-sales-region-rank
+  question: 这个月各区的销售额排一下名
+  category: business
+  gold_tools: [querySales]
+
+- id: tools-mail-unread
+  question: 我还有哪些没读的邮件？
+  category: business
+  gold_tools: [mail_list_unread]
+
+- id: tools-mail-send
+  question: 给张三发个邮件，说交付延期两天
+  category: business
+  gold_tools: [mail_send]
+
+- id: tools-github-issues
+  question: 仓库里还有哪些没关的 issue？
+  category: business
+  gold_tools: [github_issue_list]
+
+- id: tools-github-pr-ci
+  question: 这个 PR 的流水线过了没有？
+  category: business
+  gold_tools: [github_pr_checks]
+
+- id: tools-schedule-daily
+  question: 每天早上九点提醒我看销售日报
+  category: business
+  gold_tools: [schedule_task]
+
+- id: tools-schedule-list
+  question: 我定了哪些定时任务？
+  category: business
+  gold_tools: [list_schedules]
+
+- id: tools-schedule-cancel
+  question: 把刚才那个提醒取消掉
+  category: business
+  gold_tools: [cancel_schedule]
+
+# ---------------------------------------------------------------- zh-en（中文问、描述是英文）
+
+- id: tools-webfetch-address
+  question: 这个地址写了什么？https://example.com
+  category: zh-en
+  gold_tools: [WebFetch]
+
+- id: tools-system-status
+  question: 你现在用的什么模型、跑在哪个版本？
+  category: zh-en
+  gold_tools: [systemStatus]
+
+- id: tools-recall-previous
+  question: 上次咱们说的那个口径是什么来着？
+  category: zh-en
+  gold_tools: [recall_session]
+
+- id: tools-memory-preference
+  question: 你记得我偏好什么吗？
+  category: zh-en
+  gold_tools: [MemoryView]
+
+- id: tools-intent-remind
+  question: 客户数超过一万的时候提醒我
+  category: zh-en
+  gold_tools: [intent]
+
+# ---------------------------------------------------------------- no-search（不该给候选）
+
+- id: tools-chitchat-hello
+  question: 你好
+  category: no-search
+  gold_tools: []
+
+- id: tools-chitchat-thanks
+  question: 谢谢，明白了
+  category: no-search
+  gold_tools: []
