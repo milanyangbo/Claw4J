@@ -65,6 +65,58 @@ No new test cases to generate`，77.08% 只是旧结果重算。要真跑得把�
 
 判定：`irrelevance` 76.25% < 90%，仍不达标；`simple_python` 95.25% ≥ 95%，达标。退出码 1。
 
+## 第 1 批之二：换调用形态（2026-11-26 已跑，L1 的另一半）
+
+`bfcl-eval` 里 DeepSeek 其实注册了三条，都是 `deepseek-chat` / `deepseek-reasoner` 这同一批 API 模型，
+差别只在**怎么调**：
+
+| 注册名 | API 模型 | 形态 | `irrelevance` |
+| --- | --- | --- | --- |
+| `DeepSeek-V3.2-Exp-FC` | `deepseek-chat` | 原生 function calling | **76.25%**（183/240） |
+| `DeepSeek-V3.2-Exp` | `deepseek-chat` | prompt（BFCL 的系统提示 + 文本解析） | **88.75% / 89.17%**（213 / 214） |
+| `DeepSeek-V3.2-Exp-thinking` | `deepseek-reasoner` | prompt + 推理 | **87.50%**（210/240） |
+
+跑法（`report.py` 本来就吃 `--model`，`run.sh` 写死 FC，实验期直接调 `boot.py`）：
+
+```
+set -a; . ./.env; set +a
+eval/tools/bfcl/.venv/bin/python eval/tools/bfcl/boot.py generate \
+  --model DeepSeek-V3.2-Exp --test-category irrelevance --num-threads 8
+eval/tools/bfcl/.venv/bin/python eval/tools/bfcl/boot.py evaluate \
+  --model DeepSeek-V3.2-Exp --test-category irrelevance --partial-eval
+```
+
+**同一个 API 模型，只是换了调用形态，差 12.5 个点。**这比 FC 的噪声（2 题 = 0.8pt）大一个量级，
+不是抖动。
+
+为什么 prompt 形态更好——**能找到一句话，但不能把 12.5 全记在它头上**：
+
+BFCL prompt 形态的系统提示（`bfcl_eval/constants/default_prompts.py` 的 `classic` 档）里有一句
+
+> If none of the functions can be used, point it out. If the given question lacks the parameters
+> required by the function, also point it out.
+
+这是**明确许可"这次不调"**，而原生 FC 模式没有对应的话。但两组之间的差别**同时**含两个变量
+（调用形态本身 + 这段系统提示），本批没拆开——要拆得再加一组"FC + 只补这一句"，而那正好是
+L2 能做的事（见下）。
+
+**这条不通向"生产换成 prompt 形态"**：Spring AI 走原生 tool calling，生产就是 FC。
+所以上表里 88.75% 是"模型能力上限"的诊断数，**不是生产口径的数**；生产口径仍以 FC 的 76.25% 为准。
+
+判定：90% 这条线，三条注册项都够不着（最高 89.17%，差 2 题）。**要过 90，只有换模型或改线**，
+我们自己的代码动不了这个数。
+
+## 下一步：三条路，互不替代
+
+| 路 | 做什么 | 成本 | 能让 BFCL irrelevance ≥90 吗 |
+| --- | --- | --- | --- |
+| A 换模型 | BFCL 已注册 `gpt-5.2-2025-12-11-FC`、`claude-sonnet-4-5`、`gemini-3-pro`；要对应 key，240 题几分钟 | 一个新 key | **能**，这是唯一不动评测条件的路 |
+| B 改线 | 90% 是我们的发明；240 题里 2 题 = 0.83pt，而 FC 同配置两跑就差 2 题——**门限分辨率细于噪声** | 不用钱，要裁决 | 不能，它是承认够不着 |
+| C 生产侧补一句 | 把那句"没有合适的工具就直接说明"写进 `SYSTEM_SUFFIX`（一行，行业形状，见票 24） | 8 分钟 L2 | 不能，但这是唯一同时改善线上的改动 |
+
+C 的判据：L2 A 组乱调率（现 10.0%，其中 4 条 `recall_session`）。它同时是"12.5pt 里有多少来自那句话"
+的拆变量实验——所以 C 不只是产品改动，它也是本票缺的那一组对照。
+
 ## 三层，必须分开
 
 | 层 | 问的是 | 怎么量 | 现在有没有数 |
