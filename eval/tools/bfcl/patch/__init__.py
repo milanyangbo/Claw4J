@@ -49,6 +49,56 @@ def apply() -> bool:
     if _PATCHED:
         return True
 
+    ok = _patch_client_kwargs()
+    _patch_system_prompt()
+    _PATCHED = True
+    return ok
+
+
+def _patch_system_prompt() -> None:
+    """把我们的系统提示注入 FC 请求（`CLAW4J_BFCL_SYSTEM_PROMPT_FILE` 指向一个文件时生效）。
+
+    ## 为什么这不是"改评测条件"
+
+    BFCL 的 FC 形态**不传任何 system message**（`add_first_turn_message_FC` 只是 `extend`），
+    所以裸跑出来的是"模型在零指令下会不会乱调"。而任何真实部署都有系统提示——我们的
+    `ToolSearch.SYSTEM_SUFFIX` 就是。要量"我们的配置下 irrelevance 是多少"，只能把它挂上去。
+
+    代价要说明白：**这个数不是榜单口径**，不能跟 `76.25%` 混作一谈，也不能跟别人比。
+    所以这里会打印一行横幅，产物另放一个模型名下（见 `run.sh` 的 `BFCL_MODEL`）。
+
+    ## 只跑一次
+
+    反复改提示词去刷这 240 题，等于拿评测集当训练集。这个开关是给"一次对照实验"用的，
+    不是常开的。
+    """
+
+    path = os.getenv("CLAW4J_BFCL_SYSTEM_PROMPT_FILE")
+    if not path:
+        return
+    try:
+        with open(path, encoding="utf-8") as handle:
+            prompt = handle.read()
+    except OSError as exc:
+        print(f"[patch] 读不到系统提示 {path}：{exc}（这一次按裸模型跑）", file=sys.stderr)
+        return
+
+    from bfcl_eval.model_handler.api_inference.openai_completion import (
+        OpenAICompletionsHandler,
+    )
+
+    original = OpenAICompletionsHandler.add_first_turn_message_FC
+
+    def add_first_turn_message_FC(self, inference_data, first_turn_message):  # noqa: ANN001
+        return original(self, inference_data,
+                        [{"role": "system", "content": prompt}] + list(first_turn_message))
+
+    OpenAICompletionsHandler.add_first_turn_message_FC = add_first_turn_message_FC
+    print(f"[patch] 已注入系统提示（{path}，{len(prompt)} 字）：**非榜单口径**", file=sys.stderr)
+
+
+def _patch_client_kwargs() -> bool:
+    """父类构造时缺 api_key 的那个洞（见模块文档）。"""
     try:
         from bfcl_eval.model_handler.api_inference.openai_completion import (
             OpenAICompletionsHandler,
@@ -77,5 +127,4 @@ def apply() -> bool:
         return kwargs
 
     OpenAICompletionsHandler._build_client_kwargs = _build_client_kwargs
-    _PATCHED = True
     return True

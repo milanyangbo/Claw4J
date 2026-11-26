@@ -159,3 +159,33 @@ Tool Search Tool 是 hosted tool，自带描述；官方给的适用判断是**�
 
 **未做的**：没有量。改完只跑了 `ModelAndToolSelectionTest`（绿）。要看效果必须有一组端到端数据，
 而 `eval/tools/selection` 已删；BFCL 又是裸模型口径、读不到我们的提示词。
+
+## 第一次量（2026-11-26 23:07）：63.33%，但这个数不能用——混淆被证实
+
+做法：`patch/__init__.py` 加了 `CLAW4J_BFCL_SYSTEM_PROMPT_FILE`，在 FC 形态的
+`add_first_turn_message_FC` 里把整段 `SYSTEM_SUFFIX` 作为 system message 注入（BFCL 的 FC 形态本来
+不传任何 system message），240 题跑一遍。**非榜单口径**，产物在 `stale-20261126/non_live/*-fc-oursuffix.json`。
+
+| | 裸跑 | 注入我们的整段 suffix |
+| --- | --- | --- |
+| `irrelevance` | 76.25%（183/240） | **63.33%**（152/240） |
+| `simple_python` | 95.25% | 94.00% |
+
+**拆开后原因一目了然**（按调用目标分）：
+
+| | 调了给定函数 | 调 `toolSearchTool`（BFCL 里不存在） |
+| --- | --- | --- |
+| 裸跑 | 78 次 / 57 题错 | **0 次** |
+| 注入 | 73 次 / 88 题错 | **34 次** |
+
+我们的提示词第一句是"你一开始只看得见 toolSearchTool 一个工具"——这在我们的运行时是真的，
+在 BFCL 是假的（那儿只有一个具体函数，没有检索工具）。模型照做，去调了 `toolSearchTool`
+（`irrelevance_10` 的原样输出：`{"toolSearchTool": {"query": "compute derivative…"}}`）。
+
+所以 63.33% 量的是"指令和场景冲突"，不是"提示词有害"。
+
+**唯一有用的信号**：对**给定函数**的误调从 78 次降到 73 次。方向与"许可句"预期一致，
+但幅度在噪声边缘（5 次调用 ≈ 2 个题），不能当结论。
+
+要干净地量那句许可，只能只注入第三句（"检索之后仍然没有能用的工具，就直接说明情况，
+不要拿相近的工具硬做"），把与工具面绑定的两句去掉。**那是第二次跑，需要用户点头。**
