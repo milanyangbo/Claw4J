@@ -31,11 +31,17 @@ public record ToolGold(String id, String question, String category, List<String>
     /**
      * 认得的分类。写错分类不会报错但会让那一档悄悄少一条题，所以在这里收口。
      *
-     * <p>{@code life} 是票 26 新增的一档：工具目录里出现了天气、菜谱、艺术品、汇率这些
-     * 与代码无关的能力之后，"检索是按场景找还是按技术词碰"才问得出来。放在 {@code business}
-     * 里会让这个问题重新变得看不见——那一档的分数会被两批性质不同的题混在一起算。
+     * <p>{@code weather} 起的八档是票 26/27 拆出来的：工具目录里出现了天气、菜谱、
+     * 艺术品、汇率、书、时差这些与代码无关的能力之后，"检索是按场景找还是按技术词碰"
+     * 才问得出来。票 27 又把票 26 那一档 `life`（28 题混着六件事）按 server 拆成六档——
+     * **合分只能回答"生活域整体没漏"，回答不了"哪一类在漏"**。
+     *
+     * <p>一档只有 3–4 道题时，一格题就是 0.25–0.33，比回归门的容差还粗；这几档只用于
+     * 判"整类有没有掉光"，不用于判单题波动（{@code run_ir.py} 的档位说明里写着同一条）。
      */
-    public static final Set<String> CATEGORIES = Set.of("base", "business", "zh-en", "life");
+    public static final Set<String> CATEGORIES = Set.of(
+            "base", "business", "zh-en",
+            "weather", "media", "food", "culture", "money", "health", "books", "travel");
 
     public ToolGold {
         id = requireText(id, "gold.id");

@@ -332,166 +332,231 @@
   category: business
   gold_tools: [github_api]
 
-- id: life-music-running
-  question: 推荐点适合跑步听的歌
-  category: life
-  gold_tools: [music_search]
-
-# ---------------------------------------------------------------- life
+# ---------------------------------------------------------------- weather / media / food
+# ---------------------------------------------------------------- culture / money / health
 #
-# 2026-11-27（票 26）：工具目录从 24 个扩到 50 个，新增的全是**跟代码无关**的能力域：
-# 天气、剧集、音乐、播客、有声书、菜谱、食品营养、艺术品、笑话、英文词义、汇率、配色、身体。
+# 2026-11-27（票 27）：票 26 把这一片放进同一个 `life` 档，28 道题混着六件事。
+# 合分只能回答"生活域整体没漏"，回答不了"哪一类在漏"——六个测量点平均成一个，
+# 精度换成了好看的数字。所以按 server 拆成六档，**题目一字未改，只改 category**。
 #
-# 这一档存在的意义不是"再多一类题"，而是回答一个此前问不出来的问题：
+# 这一片存在的意义不是"再多几类题"，而是回答一个此前问不出来的问题：
 # 当目录里同时有 querySales 和 weather_now，检索是**按场景**找，还是**按技术词**碰？
-# 旧 24 个工具里一半以上共享"代码/文件/终端"这套词汇，那种目录下，字面匹配也能拿高分。
+# 旧 24 个工具里一半以上共享"代码/文件/终端"这套词汇，那种目录下字面匹配也能拿高分。
 #
 # 题面照旧不点工具名、不写 API 名。同域里容易混的（tv_show_search / tv_show_detail）
 # 各给一道，因为"要不要先拿编号"正是检索该学会的判断。
+#
+# **小档的读数下限**：一档 3–4 道题时，一题就是 0.25–0.33，比回归门的容差还粗。
+# 这几档只用来判"整类有没有掉光"，不判单题的波动。
 
 # -- 天气：现在 / 未来 / 空气
 
-- id: life-weather-now
+- id: weather-now
   question: 今天北京冷不冷，要不要穿外套
-  category: life
+  category: weather
   gold_tools: [weather_now]
 
-- id: life-weather-forecast-week
+- id: weather-forecast-week
   question: 这几天东京的天气怎么样
-  category: life
+  category: weather
   gold_tools: [weather_forecast]
 
-- id: life-weather-forecast-rain
+- id: weather-forecast-rain
   question: 明天上海会下雨吗
-  category: life
+  category: weather
   gold_tools: [weather_forecast]
 
-- id: life-air-quality
+- id: weather-air-quality
   question: 北京现在的空气能出去跑步吗
-  category: life
+  category: weather
   gold_tools: [air_quality]
 
 # -- 影音：剧集 / 音乐 / 歌手 / 播客 / 有声书
 
-- id: life-tv-search
+- id: media-tv-search
   question: 绝命毒师评分高吗，讲的是什么事
-  category: life
+  category: media
   gold_tools: [tv_show_search]
 
-- id: life-tv-detail
+- id: media-tv-detail
   question: 这部剧一共几季，在哪个台播的
-  category: life
+  category: media
   gold_tools: [tv_show_detail]
 
-- id: life-music-search
+- id: media-music-search
   question: 有首歌我一直想不起来名字，副歌是啦啦啦
-  category: life
+  category: media
   gold_tools: [music_search]
 
-- id: life-music-artist
+- id: media-music-running
+  question: 推荐点适合跑步听的歌
+  category: media
+  gold_tools: [music_search]
+
+- id: media-music-artist
   question: 周杰伦出过哪些专辑
-  category: life
+  category: media
   gold_tools: [artist_lookup]
 
-- id: life-podcast
+- id: media-podcast
   question: 推荐几个讲历史的播客
-  category: life
+  category: media
   gold_tools: [podcast_search]
 
-- id: life-audiobook
+- id: media-audiobook
   question: 沙丘有没有有声书
-  category: life
+  category: media
   gold_tools: [audiobook_search]
 
 # -- 吃喝：菜谱 / 食材 / 营养
 
-- id: life-recipe-search
+- id: food-recipe-search
   question: 意大利面怎么做
-  category: life
+  category: food
   gold_tools: [recipe_search]
 
-- id: life-recipe-detail
+- id: food-recipe-detail
   question: 这道菜要放多少克面粉，步骤是什么
-  category: life
+  category: food
   gold_tools: [recipe_detail]
 
-- id: life-recipe-ingredient
+- id: food-recipe-ingredient
   question: 冰箱里只有鸡胸肉和西兰花，能做什么
-  category: life
+  category: food
   gold_tools: [recipe_by_ingredient]
 
-- id: life-food-barcode
+- id: food-barcode
   question: 扫一下这包零食的条码，看看热量多少
-  category: life
+  category: food
   gold_tools: [food_barcode]
 
-- id: life-food-search
+- id: food-search
   question: 希腊酸奶的糖含量高不高
-  category: life
+  category: food
   gold_tools: [food_search]
 
 # -- 文化：艺术 / 笑话 / 词义
 
-- id: life-art-search
+- id: culture-art-search
   question: 莫奈都画过哪些画
-  category: life
+  category: culture
   gold_tools: [art_search]
 
-- id: life-art-detail
+- id: culture-art-detail
   question: 这幅画是什么年代的，用什么画的
-  category: life
+  category: culture
   gold_tools: [art_detail]
 
-- id: life-joke-random
+- id: culture-joke-random
   question: 讲个笑话吧
-  category: life
+  category: culture
   gold_tools: [joke_random]
 
-- id: life-joke-search
+- id: culture-joke-search
   question: 有没有拿猫开玩笑的段子
-  category: life
+  category: culture
   gold_tools: [joke_search]
 
-- id: life-word-define
+- id: culture-word-define
   question: serendipity 这个词是什么意思
-  category: life
+  category: culture
   gold_tools: [word_define]
 
-# -- 钱与颜色
+# -- 钱与颜色：两种"顺手算一下"
 
-- id: life-fx-convert
+- id: money-fx-convert
   question: 一百美元能换多少人民币
-  category: life
+  category: money
   gold_tools: [fx_convert]
 
-- id: life-fx-rates
+- id: money-fx-rates
   question: 现在日元对主要货币是什么行情
-  category: life
+  category: money
   gold_tools: [fx_rates]
 
-- id: life-color-info
+- id: money-color-info
   question: FF5733 是什么颜色
-  category: life
+  category: money
   gold_tools: [color_info]
 
-- id: life-color-scheme
+- id: money-color-scheme
   question: 以深蓝为主色配一套方案
-  category: life
+  category: money
   gold_tools: [color_scheme]
 
 # -- 身体：三个纯算术（不联网，但同样是"用户会问、模型容易算错"的一类）
 
-- id: life-bmi
+- id: health-bmi
   question: 我一米七五，八十公斤，算胖吗
-  category: life
+  category: health
   gold_tools: [bmi_calc]
 
-- id: life-calories
+- id: health-calories
   question: 我一天大概需要多少卡路里
-  category: life
+  category: health
   gold_tools: [calorie_needs]
 
-- id: life-water
+- id: health-water
   question: 每天应该喝多少水
-  category: life
+  category: health
   gold_tools: [water_intake]
+
+# ---------------------------------------------------------------- books
+#
+# 2026-11-27（票 27）：把"书"补上。三个公开书源实测都不稳（Open Library 时通时不通、
+# Google Books 502、Gutendex 超时），所以这一档配的是**本地 24 本的书架**——规模写在
+# 工具描述里，不假装是全网检索。对检索来说它考的是另一件事：**"书"这套词与"技术词"
+# 完全不搭**，能不能翻到它，看的是索引有没有在按场景理解。
+#
+# `book_search` 与 `book_by_author` 故意各给一道：前者是"我要找一本什么样的书"，
+# 后者是"这个人还写过什么"。两者都可能被同一句话触到，正是检索该分辨的。
+
+- id: books-search-theme
+  question: 有什么讲明朝的书
+  category: books
+  gold_tools: [book_search]
+
+- id: books-detail
+  question: 三体这本书讲的是什么
+  category: books
+  gold_tools: [book_detail]
+
+- id: books-by-author
+  question: 余华还写过哪些书
+  category: books
+  gold_tools: [book_by_author]
+
+- id: books-pick-sleep
+  question: 最近总是睡不着，推荐本书看看
+  category: books
+  gold_tools: [reading_pick]
+
+# ---------------------------------------------------------------- travel
+#
+# 2026-11-27（票 27）：出行这一档全部在本地算（标准库 zoneinfo + 日出方程），
+# 一次网络都不发。原因写在 travel_mcp_server 的模块注释里：Nominatim 与 OSRM 实测不通，
+# 而时区与日出日落本来就有闭式解，不该押在第三方服务还活着。
+#
+# 与 weather 最容易混的是 `travel-sunrise-sunset`（"明天上海几点天黑"）与
+# `weather-forecast-rain`（"明天上海会下雨吗"）。同一座城市、同一天、都跟天气有关，
+# 但一个要时刻、一个要预报——这一对是这一档最有信息量的两道题。
+
+- id: travel-timezone
+  question: 北京下午三点，纽约是几点
+  category: travel
+  gold_tools: [timezone_convert]
+
+- id: travel-world-clock
+  question: 现在伦敦和东京各是几点
+  category: travel
+  gold_tools: [world_clock]
+
+- id: travel-sunrise-sunset
+  question: 明天上海几点天黑
+  category: travel
+  gold_tools: [sun_times]
+
+- id: travel-city-distance
+  question: 北京到上海有多远
+  category: travel
+  gold_tools: [city_distance]

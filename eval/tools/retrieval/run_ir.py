@@ -44,15 +44,30 @@ DEFAULT_REPORT = REPORTS / "report.md"
 MEASURES = ["R@1", "R@3", "R@5", "RR", "nDCG@10"]
 
 # 分类的固定顺序与释义（票 15）。顺序写死是为了两次跑出来的报告能逐行 diff。
-CATEGORY_ORDER = ["base", "business", "zh-en", "life"]
+#
+# 2026-11-27（票 27）：票 26 的 `life` 一档拆成六档，再加 books / travel 两个新域。
+# 拆的理由不是"分类好看"，是**合分会把六个测量点平均成一个**：28 道题混着天气、影音、
+# 吃喝、艺术、汇率、身体，分数再高也只能说"生活域整体没漏"，说不出哪一类在漏。
+CATEGORY_ORDER = [
+    "base", "business", "zh-en",
+    "weather", "media", "food", "culture", "money", "health", "books", "travel",
+]
 CATEGORY_MEANING = {
     "base": "基座工具（Read/Grep/Glob/Bash/WebFetch/TodoWrite）。它们现在常驻（票 10），"
             "检索掉分不影响线上，但它是「索引还能不能工作」的底线",
     "business": "中文问法 × 中文描述。掉分说明索引本身坏了，是最不该掉的一档",
     "zh-en": "中文问法 × 英文描述。关键字那一路几乎全空，只有向量那一路能看",
-    "life": "生活域（票 26）：天气、影音、吃喝、艺术、汇率、配色、身体。这一档回答的不是"
-            "「索引坏没坏」，而是「检索在按场景找，还是按技术词碰」——旧目录里一半工具共享"
-            "代码/文件/终端这套词汇，那种目录下字面匹配也能拿高分",
+    "weather": "天气三问：现在、未来、空气。这一档考的是「冷不冷」和「能不能跑步」"
+               "能不能落到不同的工具上",
+    "media": "剧集、音乐、歌手、播客、有声书。五种媒体对象、五套词，最容易互相顶掉",
+    "food": "菜谱三条路径（菜名 / 单菜 / 按食材）与食品营养两条",
+    "culture": "艺术品、笑话、英文词义。三条互不相干的线索放在一档，看会不会串",
+    "money": "汇率与配色：两种「顺手算一下」。与 health 的区别是它要出网取数",
+    "health": "纯算术：BMI、每日热量、饮水。不联网，所以这一档的分数与网络无关",
+    "books": "本地 24 本书架（票 27）。公开书源都不稳，所以不押注外部 API；"
+             "这一档考的是「书」这套词与「技术词」完全不搭时还能不能翻到",
+    "travel": "时区、日出日落、城市距离，全部本地算（票 27）。与 weather 最像："
+              "同一座城市同一天，「几点天黑」与「下不下雨」要落到不同工具",
 }
 
 # 每档配置是怎么算的。键同时支持 hybrid-<权重> 的通配（见 describe_config）。
@@ -172,6 +187,12 @@ def load_categories() -> dict[str, str]:
             continue
         qid, category = line.split("\t")
         mapping[qid] = category
+    unknown = sorted(set(mapping.values()) - set(CATEGORY_ORDER))
+    if unknown:
+        # 不报错的话这些题只进总分、不进分档表——整档消失而且没人发现（票 27 拆档时踩过）。
+        print(f"{path} 里有分类没写进 CATEGORY_ORDER：{unknown}。"
+              f"补进 CATEGORY_ORDER（{CATEGORY_ORDER}）再跑。")
+        sys.exit(2)
     return mapping
 
 
