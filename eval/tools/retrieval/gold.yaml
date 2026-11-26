@@ -318,3 +318,180 @@
   question: 跑太久了，不用等了，结束它
   category: zh-en
   gold_tools: [KillShell]
+
+
+# 2026-11-27：这两个工具此前一直没题——catalogue 有、题库没有，等于检索对不对没人看。
+# 「每个工具至少一道题」那条断言写出来就是为了堵这个口子。
+- id: business-task-fanout
+  question: 把这几份日志分给几个子任务并行分析
+  category: business
+  gold_tools: [Task]
+
+- id: business-github-api
+  question: 直接调一下 GitHub 的那个接口看看返回什么
+  category: business
+  gold_tools: [github_api]
+
+- id: life-music-running
+  question: 推荐点适合跑步听的歌
+  category: life
+  gold_tools: [music_search]
+
+# ---------------------------------------------------------------- life
+#
+# 2026-11-27（票 26）：工具目录从 24 个扩到 50 个，新增的全是**跟代码无关**的能力域：
+# 天气、剧集、音乐、播客、有声书、菜谱、食品营养、艺术品、笑话、英文词义、汇率、配色、身体。
+#
+# 这一档存在的意义不是"再多一类题"，而是回答一个此前问不出来的问题：
+# 当目录里同时有 querySales 和 weather_now，检索是**按场景**找，还是**按技术词**碰？
+# 旧 24 个工具里一半以上共享"代码/文件/终端"这套词汇，那种目录下，字面匹配也能拿高分。
+#
+# 题面照旧不点工具名、不写 API 名。同域里容易混的（tv_show_search / tv_show_detail）
+# 各给一道，因为"要不要先拿编号"正是检索该学会的判断。
+
+# -- 天气：现在 / 未来 / 空气
+
+- id: life-weather-now
+  question: 今天北京冷不冷，要不要穿外套
+  category: life
+  gold_tools: [weather_now]
+
+- id: life-weather-forecast-week
+  question: 这几天东京的天气怎么样
+  category: life
+  gold_tools: [weather_forecast]
+
+- id: life-weather-forecast-rain
+  question: 明天上海会下雨吗
+  category: life
+  gold_tools: [weather_forecast]
+
+- id: life-air-quality
+  question: 北京现在的空气能出去跑步吗
+  category: life
+  gold_tools: [air_quality]
+
+# -- 影音：剧集 / 音乐 / 歌手 / 播客 / 有声书
+
+- id: life-tv-search
+  question: 绝命毒师评分高吗，讲的是什么事
+  category: life
+  gold_tools: [tv_show_search]
+
+- id: life-tv-detail
+  question: 这部剧一共几季，在哪个台播的
+  category: life
+  gold_tools: [tv_show_detail]
+
+- id: life-music-search
+  question: 有首歌我一直想不起来名字，副歌是啦啦啦
+  category: life
+  gold_tools: [music_search]
+
+- id: life-music-artist
+  question: 周杰伦出过哪些专辑
+  category: life
+  gold_tools: [artist_lookup]
+
+- id: life-podcast
+  question: 推荐几个讲历史的播客
+  category: life
+  gold_tools: [podcast_search]
+
+- id: life-audiobook
+  question: 沙丘有没有有声书
+  category: life
+  gold_tools: [audiobook_search]
+
+# -- 吃喝：菜谱 / 食材 / 营养
+
+- id: life-recipe-search
+  question: 意大利面怎么做
+  category: life
+  gold_tools: [recipe_search]
+
+- id: life-recipe-detail
+  question: 这道菜要放多少克面粉，步骤是什么
+  category: life
+  gold_tools: [recipe_detail]
+
+- id: life-recipe-ingredient
+  question: 冰箱里只有鸡胸肉和西兰花，能做什么
+  category: life
+  gold_tools: [recipe_by_ingredient]
+
+- id: life-food-barcode
+  question: 扫一下这包零食的条码，看看热量多少
+  category: life
+  gold_tools: [food_barcode]
+
+- id: life-food-search
+  question: 希腊酸奶的糖含量高不高
+  category: life
+  gold_tools: [food_search]
+
+# -- 文化：艺术 / 笑话 / 词义
+
+- id: life-art-search
+  question: 莫奈都画过哪些画
+  category: life
+  gold_tools: [art_search]
+
+- id: life-art-detail
+  question: 这幅画是什么年代的，用什么画的
+  category: life
+  gold_tools: [art_detail]
+
+- id: life-joke-random
+  question: 讲个笑话吧
+  category: life
+  gold_tools: [joke_random]
+
+- id: life-joke-search
+  question: 有没有拿猫开玩笑的段子
+  category: life
+  gold_tools: [joke_search]
+
+- id: life-word-define
+  question: serendipity 这个词是什么意思
+  category: life
+  gold_tools: [word_define]
+
+# -- 钱与颜色
+
+- id: life-fx-convert
+  question: 一百美元能换多少人民币
+  category: life
+  gold_tools: [fx_convert]
+
+- id: life-fx-rates
+  question: 现在日元对主要货币是什么行情
+  category: life
+  gold_tools: [fx_rates]
+
+- id: life-color-info
+  question: FF5733 是什么颜色
+  category: life
+  gold_tools: [color_info]
+
+- id: life-color-scheme
+  question: 以深蓝为主色配一套方案
+  category: life
+  gold_tools: [color_scheme]
+
+# -- 身体：三个纯算术（不联网，但同样是"用户会问、模型容易算错"的一类）
+
+- id: life-bmi
+  question: 我一米七五，八十公斤，算胖吗
+  category: life
+  gold_tools: [bmi_calc]
+
+- id: life-calories
+  question: 我一天大概需要多少卡路里
+  category: life
+  gold_tools: [calorie_needs]
+
+- id: life-water
+  question: 每天应该喝多少水
+  category: life
+  gold_tools: [water_intake]

@@ -96,8 +96,8 @@ qid 用 `gold.yaml` 的 `id`（`tools-glob-md` 这种），docno 用工具名。
 | 判什么行为 | 用例 | 先红的样子 |
 | --- | --- | --- |
 | run 的 rank 就是检索返回的顺序 | ✅ `ToolRetrievalExportTest#runKeepsSearchOrder` | 把导出改成按名字排序 → 期望 `[Read…]`、实际 `[Bash, Glob, Grep, Read, TodoWrite]`，实测红 |
-| qrels 只含有 gold 的题，`no-search` 不进 | ✅ `ToolRetrievalExportTest#qrelsSkipsZeroCandidateQuestions` | 把 20 题全写进 qrels 时，行数对不上（应为 18 题 × 各 gold 数），断言红 |
-| 零候选题单独落一份，带实际候选数 | ✅ `ToolRetrievalExportTest#zeroCandidateQuestionsGoToTheirOwnFile` | 只写 qrels 不写这份时，`no-search` 那两题在 Python 侧无据可判，断言红 |
+| qrels 只含有 gold 的题，`no-search` 不进 | ⏳ 已失去对象（2026-11-27 复核）：`no-search` 档随票 22 删掉，`ToolGold` 现在不允许空 `goldTools`，这道题不可能再出现。守它的用例 `qrelsSkipsZeroCandidateQuestions` 一并删除 | — |
+| 零候选题单独落一份，带实际候选数 | ⏳ 同上：`no-search.jsonl` 与 `zeroCandidateQuestionsGoToTheirOwnFile` 都在票 22 删除。该项能力改由 BFCL `irrelevance` 判（票 23） | — |
 | 缺 `baseline.json` 时退出 2，不是 0 | ⏳ 手动验过（移走 `baseline.json` → 退出码 2），**未脚本化** | 把缺失当"无基线、全过"时退出 0 |
 
 第四条没做成脚本：要自动化它得再引一个 shell 测试入口，而这条判据一年也不会改一次。

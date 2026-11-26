@@ -44,12 +44,15 @@ DEFAULT_REPORT = REPORTS / "report.md"
 MEASURES = ["R@1", "R@3", "R@5", "RR", "nDCG@10"]
 
 # 分类的固定顺序与释义（票 15）。顺序写死是为了两次跑出来的报告能逐行 diff。
-CATEGORY_ORDER = ["base", "business", "zh-en"]
+CATEGORY_ORDER = ["base", "business", "zh-en", "life"]
 CATEGORY_MEANING = {
     "base": "基座工具（Read/Grep/Glob/Bash/WebFetch/TodoWrite）。它们现在常驻（票 10），"
             "检索掉分不影响线上，但它是「索引还能不能工作」的底线",
     "business": "中文问法 × 中文描述。掉分说明索引本身坏了，是最不该掉的一档",
     "zh-en": "中文问法 × 英文描述。关键字那一路几乎全空，只有向量那一路能看",
+    "life": "生活域（票 26）：天气、影音、吃喝、艺术、汇率、配色、身体。这一档回答的不是"
+            "「索引坏没坏」，而是「检索在按场景找，还是按技术词碰」——旧目录里一半工具共享"
+            "代码/文件/终端这套词汇，那种目录下字面匹配也能拿高分",
 }
 
 # 每档配置是怎么算的。键同时支持 hybrid-<权重> 的通配（见 describe_config）。
@@ -260,13 +263,24 @@ def quality_rows(scores: dict[str, dict[str, float]], baseline: dict | None) -> 
     if GATE_PRIMARY in scores:
         current = scores[GATE_PRIMARY]["R@5"]
         accepted = metrics.get(GATE_PRIMARY, {}).get("R@5")
+        state = _state(current, GATE_R5, accepted)
+        # 文案要跟着 state 走。原来这里写死"< 合格线 0.80"，于是 2026-11-27 那次
+        # R@5 = 0.825（过了 0.80、只是比基线低）被打印成"低于合格线"——
+        # 一句话就把"回归"和"不达标"混成了同一件事，而这两件事该改的地方完全不同。
+        if state == "不达标":
+            problem = f"{GATE_PRIMARY} 的 R@5 = {current:.3f} < 合格线 {GATE_R5:.2f}"
+        elif state == "回归":
+            problem = (f"{GATE_PRIMARY} 的 R@5 = {current:.3f}，比基线 {accepted:.3f} "
+                       f"低 {accepted - current:.3f}（容差 {TOLERANCE}）")
+        else:
+            problem = ""
         rows.append({
             "name": f"R@5（{GATE_PRIMARY}，生产默认）",
             "current": f"{current:.3f}",
             "gate": f"≥{GATE_R5:.2f}",
             "basis": "绝对门",
-            "state": _state(current, GATE_R5, accepted),
-            "problem": f"{GATE_PRIMARY} 的 R@5 = {current:.3f} < 合格线 {GATE_R5:.2f}",
+            "state": state,
+            "problem": problem,
         })
 
     for name in ("R@1", "RR", "nDCG@10"):

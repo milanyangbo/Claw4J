@@ -18,6 +18,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -114,7 +115,7 @@ class ToolGoldTest {
     }
 
     @Test
-    @DisplayName("真题库能加载：20 条以上、三类齐全、id 不重复")
+    @DisplayName("真题库能加载：20 条以上、四类齐全、id 不重复")
     void goldFileLoads() throws IOException {
         List<ToolGold> golds = loadGold();
         assertThat(golds).as("第一版按 20 条起，够看出差别、又不至于写一天").hasSizeGreaterThanOrEqualTo(20);
@@ -126,8 +127,44 @@ class ToolGoldTest {
             assertThat(ids.add(gold.id())).as("id 重复会让报告里两条题混成一条：" + gold.id()).isTrue();
         }
         assertThat(categories)
-                .as("三类缺一类，就等于那个失效模式没人看：基座 / 业务 / 中文问英文")
+                .as("四类缺一类，就等于那个失效模式没人看：基座 / 业务 / 中文问英文 / 生活域")
                 .containsExactlyInAnyOrderElementsOf(ToolGold.CATEGORIES);
+    }
+
+    /**
+     * 目录里每个工具都要有题。
+     *
+     * <p>2026-11-27 写这条时当场就红了：`Task` 与 `github_api` 一直在 catalogue 里、一道题都没有。
+     * 那种"工具在、题不在"的状态不会报错——它只是让那两个工具的检索质量**从来没人看过**，
+     * 而报告上的 `R@5` 依然好看（分母里没有它们）。
+     *
+     * <p>加了工具却忘了出题，是这类评测最常见的一种腐烂：catalogue 越来越长，题量不动，
+     * 分数不变，于是"我们覆盖了 50 个工具"这句话慢慢变成假的。
+     */
+    @Test
+    @DisplayName("目录里每个工具都至少有一道题：工具在、题不在 = 它的检索质量没人看")
+    void everyCataloguedToolHasAQuestion() throws IOException {
+        Set<String> covered = loadGold().stream()
+                .flatMap(gold -> gold.goldTools().stream())
+                .collect(Collectors.toSet());
+
+        assertThat(covered)
+                .as("这些工具在目录里，但没有任何题指向它——检索把它们排到第几都没人知道")
+                .containsAll(cataloguedTools());
+    }
+
+    /**
+     * 期望的工具目录。入库的清单而不是活的目录：这个类是纯单元测试，不起容器、不连 MCP。
+     *
+     * <p>与 `reports/catalogue.txt`（导出产物）的差值是下一次排查的入口——两者不一致时，
+     * 要么是加完工具没更新这份，要么是某个 MCP server 没起来。
+     */
+    private static Set<String> cataloguedTools() throws IOException {
+        Path file = TestPaths.repositoryRoot().resolve("eval/tools/retrieval/catalogue.txt");
+        return Files.readAllLines(file, StandardCharsets.UTF_8).stream()
+                .map(String::trim)
+                .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+                .collect(Collectors.toSet());
     }
 
     /**

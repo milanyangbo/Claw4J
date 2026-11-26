@@ -1,140 +1,153 @@
-# 票 26：把工具目录从 24 个扩到 51 个——先有足够多的工具，评测才有意义
+# 票 26：把工具目录从 24 个扩到 49 个——扩的不是"程序周边"，是生活、娱乐、艺术、消费
 
 **Status:** open（待批）
-**裁决来源：** 用户 2026-11-26「我觉得目前 tool 和 mcp 还是有点少，可以多增加一些吧，至少增加一倍多」
-「然后在此基础上做评测吧」。
-**no ADR needed**（沿用 ADR-0003 的能力三层：能包成 MCP 的走 MCP，需要只读约束与 SQL 守卫的留在 Java 侧）。
+**裁决来源：** 用户 2026-11-26「tool 和 mcp 还是有点少，可以多增加一些吧，至少增加一倍多」
+「github / mail / git / sales 新增同质化有点严重」「可以找一些其他方向的」
+「这些也有点同质化，都是跟程序有关的，有不同场景的吗？比如娱乐啊，艺术等等」。
+**no ADR needed**（沿用 ADR-0003 的能力三层；新工具都走已有的 MCP stdio 骨架）。
 
-## 为什么现在这 24 个不够
+## 被否掉的两版，以及原因
 
-`eval/tools/retrieval/reports/catalogue.txt` 里是 24 个：
-
-| 来源 | 个数 | 工具 |
+| 版本 | 内容 | 为什么不行 |
 | --- | --- | --- |
-| 内建（Spring AI community + 自研） | 15 | Read / Grep / Glob / TodoWrite / WebFetch / Bash / BashOutput / KillShell / Task / TaskOutput / Skill / AskUserQuestionTool / recall_session / intent / systemStatus |
-| 调度 | 3 | schedule_task / list_schedules / cancel_schedule |
-| MCP `github` | 3 | github_issue_list / github_pr_checks / github_api |
-| MCP `mail` | 2 | mail_list_unread / mail_send |
-| example-sales（Java） | 1 | querySales |
+| v1 | github 3→11、mail 2→8、新 git 8、sales 1→6 | 同族工具描述只差几个词。而 24 个工具的向量分本来就挤在 0.29–0.83、相关与不相关完全重叠（票 25 的 `scores.jsonl`）。再塞近义词，分数会掉，但掉的原因是"我故意出了近义题" |
+| v2 | 时间 / 网络 / 压缩 / 表格 / 文本 / 主机 | 六个域全是**程序员工具箱**。工具全都是 `date`、`dig`、`unzip`、`sqlite3`、`sha256sum` 的包装，检索只要有"技术词汇"就够，考不到"用户到底想干什么" |
 
-三个具体问题：
+## 这一版的取舍：全部是程序之外的生活域
 
-1. **随机取 5 个的命中率是 5/24 ≈ 0.21**，绝对门 0.80 是它的近 4 倍——门槛看着高，其实一半靠运气。
-2. **同族里只有一个工具**：github 三个、mail 两个，而且没有一组"必须区分"的近义工具。检索层最难的
-   那种判断（`github_pr_checks` vs `github_pr_view`）现在根本没被考过。
-3. **业务侧只有一把锤子**：`querySales` 收一条 SQL。模型得先知道表结构才能写对 SQL，而"表结构"
-   这件事没有任何工具能回答。
+一个判据：**如果一个工具可以用 `Bash` 一行命令替代，它价值就低**。上一版 26 个里 20 个都能
+（`dig` / `unzip` / `sqlite3` / `sha256sum` / `date`）。这一版全部是**外部数据源**，`Bash` 替不了
+（要拼 API、解析 JSON、处理鉴权），必须有一个专门的工具。
 
-## 目标：24 → 51（+27）
+## 选谁：先实测，再决定
 
-新增的四组，每一组都**真能干活**，不写占位工具。占位工具会让评测变成"测名字起得好不好猜"，
-不是测检索。
+拿 18 个公开 API 逐个探过（`urllib`，8–25 秒超时，串行 + 间隔），**只有 10 个在这台机器上真能通**：
 
-### 1. MCP `github`：3 → 11（+8）
+| 通 | 延迟 | 不通 | 症状 |
+| --- | --- | --- | --- |
+| open-meteo（天气 + 地理编码 + 空气质量） | 1.1s | Wikipedia REST | 超时 |
+| TVmaze（剧集） | 0.9s | Nominatim（地点） | 超时 |
+| iTunes Search（音乐 / 专辑 / 歌手 / 播客 / 有声书 / 电子书） | 0.4s | Met Museum | **410 Gone**（接口已下线） |
+| TheMealDB（菜谱） | 1.4s | Art Institute of Chicago | 403（带 `AIC-User-Agent` 仍 403） |
+| Open Food Facts（营养） | 1.8s | jokeapi v2 / zenquotes / quotable | SSL 断连 |
+| open.er-api.com（汇率） | 2.5s | coingecko / OSRM / openalex | SSL 断连 |
+| TheColorAPI（配色） | 3.1s | **iTunes 电影 / 剧集** | 0 条（`entity=movie`/`tvShow` 已下架，带 `country=US` 也是 0） |
+| Cleveland Museum of Art | 1.7s | **Google Books** | 502 |
+| icanhazdadjoke（笑话） | 0.8s | **Gutendex** | 超时 |
+| dictionaryapi.dev（词典） | 2.3s | **Open Library** | 不稳定（一次 10.5s 通，一次 502） |
 
-`examples/mcp/gh_mcp_server.py`，全走 `gh` 只读子命令（本机已装 gh 2.100.0 并认证）：
+全部免费、无需 key。**没通的一律不做**——写一个调不通的工具，等于往目录里塞一个假能力。
 
-| 工具 | 一句话 |
-| --- | --- |
-| `github_pr_list` | 列一个仓库的 PR（按状态/时间） |
-| `github_pr_view` | 看某个 PR 的标题、正文、评审状态 |
-| `github_pr_diff` | 看某个 PR 的代码改动 |
-| `github_issue_view` | 看某个 issue 的正文与评论 |
-| `github_repo_view` | 看仓库概况（语言、star、默认分支） |
-| `github_run_list` | 列 Actions 最近几次运行 |
-| `github_run_view` | 看某次运行失败的 job 与日志尾巴 |
-| `github_release_list` | 列最近的 release |
+两条改道是实测逼出来的：
 
-新增与现有 3 个的区分点：`issue_list` 是列表 / `issue_view` 是单条；`pr_checks` 是 CI 状态 /
-`pr_view` 是内容 / `pr_diff` 是改动。
+- **影视改用 TVmaze**。iTunes 的 `entity=movie` 与 `entity=tvShow` 都返回 0 条，Apple 已经不提供影视搜索了。
+  TVmaze 免费、无 key、能搜剧集与详情，但**只有剧集，没有电影**——所以这一版没有"电影"工具。
+- **不做书**。Open Library 时通时不通（同一台机器 10 分钟内测到 10.5s 成功与 502 各一次），
+  Google Books 502、Gutendex 超时。书是"想加但通不了"，不是"没想到"。
 
-### 2. MCP `mail`：2 → 8（+6）
+## 目标：24 → 50（+26），六个 server
 
-`examples/mcp/himalaya_mcp_server.py`，走 `himalaya`。**本机没装 himalaya**（`which himalaya` 为空），
-所以这 6 个在跑通前只到"返回一句怎么装"。但 mail 现有那 2 个也是这样——工具存在、能被检索到、
-调用时如实说缺依赖，这与现状一致，不新增不确定性。
+只有标准库（本机 `pypdf` / `PIL` / `openpyxl` 都没装），走现有 `mcp_stdio.Tool` 骨架。
+
+### `weather_mcp_server.py`（3）— 天气
 
 | 工具 | 一句话 |
 | --- | --- |
-| `mail_search` | 按主题/发件人/正文关键词搜邮件 |
-| `mail_read` | 读某一封邮件的全文 |
-| `mail_reply` | 回复某一封（有副作用） |
-| `mail_move` | 把邮件移到别的文件夹（有副作用） |
-| `mail_list_folders` | 列账户下的文件夹 |
-| `mail_download_attachment` | 把某封邮件的附件存到本地 |
+| `weather_now` | 某个城市现在的天气（温度、体感、湿度、风） |
+| `weather_forecast` | 未来 7 天的天气与温度区间 |
+| `air_quality` | 某地的空气质量（PM2.5 / PM10 / AQI） |
 
-### 3. 新 MCP `git`：8（+8）
-
-新建 `examples/mcp/git_mcp_server.py`，与 gh / himalaya 同一形态（`mcp_stdio.Tool` + `run_cli`），
-包本机 `git`。选它而不是接 `server-git` 那个 npx 官方实现，理由有两条：**启动 0.2 秒 vs 36 秒**
-（`application-local.yml` 里已经为 npx 的超时写过注释），以及**描述可以写成中文**——评测里
-"中文问句 × 英文描述"那一档（zh-en）需要英文描述做对照，两个都在才有得比。
+### `media_mcp_server.py`（6）— 剧集、音乐、播客、有声书
 
 | 工具 | 一句话 |
 | --- | --- |
-| `git_status` | 工作区有哪些改动、哪些已暂存 |
-| `git_log` | 最近若干次提交（作者、时间、摘要） |
-| `git_diff` | 某个范围的代码改动（工作区 / 两次提交之间） |
-| `git_show` | 看某次提交改了哪些文件 |
-| `git_blame` | 某一行/某个文件每行的最后一次改动 |
-| `git_branch_list` | 本地与远端分支 |
-| `git_stash_list` | 暂存栈里有几条 |
-| `git_conflict_list` | 当前冲突的文件 |
+| `tv_show_search` | 按剧名搜剧集（首播年份、类型、评分） |
+| `tv_show_detail` | 某部剧的详情（播出平台、集数、简介） |
+| `music_search` | 搜歌曲（歌手、专辑、时长） |
+| `artist_lookup` | 按歌手名看他/她的专辑 |
+| `podcast_search` | 按关键词搜播客节目 |
+| `audiobook_search` | 按书名或作者搜有声书 |
 
-### 4. Java `sales` 增补：1 → 6（+5）
-
-`claw4j-example-sales` 里加一组 schema 探查工具，**复用现有 `ReadOnlySqlExecutor` + `SalesSqlGuard`**，
-不新开执行路径。都是 `SELECT`，能过现有守卫（`information_schema` / `pg_catalog` 查询首关键字是
-`select`）；`EXPLAIN` 过不了守卫，所以不做——不为一个新工具去放宽只读校验。
+### `food_mcp_server.py`（5）— 做饭、营养
 
 | 工具 | 一句话 |
 | --- | --- |
-| `listTables` | 这个库有哪些表、各属于哪个 schema |
-| `describeTable` | 某张表有哪些字段、类型、是否可空 |
-| `sampleRows` | 某张表的前若干行（看数据长什么样） |
-| `columnDistribution` | 某一列有哪些取值、各出现多少次 |
-| `tableRowCount` | 各表大约多少行（判断该不该扫它） |
+| `recipe_search` | 按菜名搜菜谱 |
+| `recipe_detail` | 某个菜谱的配料表与步骤 |
+| `recipe_by_ingredient` | 冰箱里有什么，能做什么菜 |
+| `food_barcode` | 按条形码查食品的营养成分 |
+| `food_search` | 按名字搜食品的热量、糖、脂肪 |
 
-这条线补的是真实工作流：**先看有哪些表 → 再看字段 → 再写 SQL**。现在模型只能直接猜表名。
+### `culture_mcp_server.py`（5）— 艺术、娱乐、语言
 
-## 必须同步做的一件事：题库 50 → 80
+| 工具 | 一句话 |
+| --- | --- |
+| `art_search` | 按关键词搜艺术品（Cleveland 艺术馆） |
+| `art_detail` | 作品详情：作者、年代、材质、图片 |
+| `joke_random` | 来一个随机英文冷笑话 |
+| `joke_search` | 按关键词找相关的冷笑话 |
+| `word_define` | 英文单词的释义、词性、音标 |
 
-`gold.yaml` 现在 50 题只覆盖 22 个工具（`Task` 与 `github_api` 都没题）。新增 27 个工具后，
-如果不扩题，新工具在评测里**等于不存在**——catalogue 变长了，`R@5` 的分母没变，分数还会因为
-候选变多而虚降。
+### `life_mcp_server.py`（4）— 钱与颜色
 
-做法：每个新工具至少 1 题，高频的（`github_pr_*`、`describeTable`）2 题，中文问法、不点工具名。
-`ToolGoldTest` 里加一条硬断言：**catalogue 里每个工具都至少有一道题**——不写这条，下次加工具
-还会忘。
+| 工具 | 一句话 |
+| --- | --- |
+| `fx_convert` | 两种货币之间换算（按最新汇率） |
+| `fx_rates` | 某货币对一篮子主要货币的汇率 |
+| `color_info` | 某个颜色的名称、RGB、HSL |
+| `color_scheme` | 给一个主色，生成一套配色方案 |
 
-## 先说清楚会变差的地方
+### `health_mcp_server.py`（3）— 身体（纯计算，不联网）
 
-**`R@5` 会掉，我不知道会掉多少。** 候选池从 24 涨到 51，五选一的难度上升；同族工具又互相像
-（`github_pr_view` / `github_pr_diff` / `github_pr_checks` 三个描述只差几个词）。现有绝对门
-`R@5 ≥ 0.80` 有可能跌破，跌了就如实报红，不改门。
+| 工具 | 一句话 |
+| --- | --- |
+| `bmi_calc` | 算 BMI 并给出体型分类 |
+| `calorie_needs` | 算基础代谢与每日热量需求（按活动量） |
+| `water_intake` | 算每日建议饮水量 |
 
-这不是坏事——它正好把"同族区分"这个真难点第一次摆到台面上。但结论要提前说死：**这一票不承诺
-分数变好，只承诺工具变真**。
+合计 3+6+5+5+4+3 = **26**，24 + 26 = **50**（2.08 倍）。
+
+## 这一版对检索的意义
+
+24 个旧工具里，一半以上共享"代码/文件/终端"这套词汇。新增的 26 个与它们**没有任何共同的能力词**：
+"票房"、"配料"、"汇率"、"配色"、"卡路里"、"馆藏"。所以：
+
+- 检索要判的不再是"哪个技术词撞上了"，而是"这句话属于哪个场景"。
+- `R@5` 掉了，说明我们的检索是字面匹配；没掉，说明它真的在按语义找。**这比分数本身更有信息量。**
+
+## 必须同步做：题库 50 → 80
+
+现在 50 题只覆盖 22 个工具（`Task`、`github_api` 一道题都没有）。新增 26 个却不扩题，
+它们在评测里等于不存在——catalogue 变长、`R@5` 分母不变，分数还会因为候选变多而虚降。
+
+做法：每个新域 4–5 题，覆盖该域每个工具，中文问法、**不点工具名、不写 API 名**。
+`ToolGoldTest` 加一条硬断言：catalogue 里每个工具都至少有一道题——写完这条现在就会红。
+
+## 先说清楚风险
+
+- **依赖外部 API**：限流、下线（Met Museum 就是 410 走的）、变慢（Open Library 10.5s）。
+  这些工具**不影响检索分数**——检索只读 catalogue 的名字与描述，不发起调用；但"它真能干活"
+  这件事依赖对方还在。
+- **`R@5` 会掉，掉多少不知道**。候选池 24 → 50。跌破 0.80 就如实报红，不改门。
+- **不做**：百科（Wikipedia 不通）、地点与路线（Nominatim 超时、OSRM 断连）、加密行情
+  （coingecko 断连）。这些是"想加但通不了"，不是"没想到"。
 
 ## TDD 用例清单
 
 | 判什么行为 | 用例 | 先红的样子 |
 | --- | --- | --- |
-| 三个 MCP server 的工具名唯一、描述非空、required 都在 properties 里 | 新建 `examples/mcp/test_servers.py`（`unittest`，零第三方依赖） | 现在没有这个文件；加完工具后名字打错（如 `mail_readd`）没有任何东西会红 |
-| 新 server 能被 MCP 协议列出 | 同上，跑 `tools/list` 的 JSON-RPC 帧 | 没这个 server |
-| schema 探查工具在真库上返回表/字段 | `claw4j-example-sales` 新增 `SchemaToolsTest`（Testcontainers） | 类不存在 |
-| 探查工具不绕过只读守卫 | 同上：给一条 `drop table` 走 `describeTable` 之外的入口 | 新入口若自己拼 SQL，守卫就绕过去了 |
-| 每个工具都有题 | `ToolGoldTest#everyCataloguedToolHasAQuestion`（新增） | 现在 `Task`、`github_api` 无题，这条一写就红 |
-| 目录里认得的工具与新增一致 | `ToolRetrievalExportTest` 的 required 集合（338 行） | 现在只钉了 4 个名字 |
+| 六个 server 的工具名唯一、描述非空、required 都在 properties 里、`tools/list` 能列出 | 新建 `examples/mcp/test_servers.py`（`unittest`，零依赖，起子进程走 JSON-RPC） | 没有这个文件；名字打错（`recipe_detial`）没有任何东西会红 |
+| 纯计算那三个真算得对（不依赖网络） | 同上：`bmi_calc(175, 80)` 必须是 26.1，`water_intake(70)` 必须在合理区间 | 没有用例 |
+| 需要出网的工具在断网时返回原因而不是抛栈 | 同上：把 base URL 指向一个不存在的域名 | 没处理就是 `URLError` 冒到 MCP 层 |
+| 目录里每个工具都有题 | `ToolGoldTest#everyCataloguedToolHasAQuestion`（新增） | `Task`、`github_api` 无题，一写就红 |
+| 新工具真的进了 catalogue | `ToolRetrievalExportTest` 的 required 集合（338 行） | 现在只钉了 4 个名字 |
 
-复核：`./scripts/verify.sh` 全绿；`./eval/tools/retrieval/run.sh` 出新的 catalogue 与 `R@5`。
+复核：`./scripts/verify.sh` 全绿；`./eval/tools/retrieval/run.sh` 出新 catalogue 与 `R@5`。
 
 ## 缺口
 
-- **mail 那 6 个在本机跑不通**（没装 himalaya）。它们能进目录、能被检索，但调用只返回"怎么装"。
-  与现有 2 个同状态，不算新增风险；但如果哪天要量"工具真的能干活"，mail 这一族得先装 himalaya。
-- **不做 `EXPLAIN`**：守卫不允许，且放宽守卫的代价大于多一个工具。
-- **不接 npx 官方 server**：启动 36 秒会让 `run.sh` 的初始化超时，且描述是英文的、与现有中文工具体系
-  不成套。要用的话是另一张票（连同超时与 `inherit-env` 一起改）。
-- **不加 `Write` / `Edit`**：它们在 `pinned` 之外、默认档不开。开它们改的是能力面（能改文件），
-  与"把目录变长"不是一件事。
+- **`Open Library` 要 10.5 秒**。`book_search` 会明显慢于别的工具；如果 MCP 的
+  `request-timeout`（默认 30s）被它拖爆，就把超时收到 8 秒并如实返回"对方太慢"。
+- **`health` 三个是纯计算**，与外部数据无关。它们存在的意义是把"生活域"补完整，
+  不是为了凑数——BMI / 热量 / 饮水是真实助理会被问到的三类问题。
+- **不加 `Write` / `Edit`**：它们在 `pinned` 之外、默认档不开。开它们改的是能力面。

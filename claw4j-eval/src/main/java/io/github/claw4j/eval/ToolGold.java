@@ -28,8 +28,14 @@ public record ToolGold(String id, String question, String category, List<String>
     /** yaml 里认得的顶层键。多一个就是写错了（宁可当场报错，也别让打错的键被静默忽略）。 */
     private static final Set<String> KEYS = Set.of("id", "question", "category", "gold_tools");
 
-    /** 认得的分类。写错分类不会报错但会让那一档悄悄少一条题，所以在这里收口。 */
-    public static final Set<String> CATEGORIES = Set.of("base", "business", "zh-en");
+    /**
+     * 认得的分类。写错分类不会报错但会让那一档悄悄少一条题，所以在这里收口。
+     *
+     * <p>{@code life} 是票 26 新增的一档：工具目录里出现了天气、菜谱、艺术品、汇率这些
+     * 与代码无关的能力之后，"检索是按场景找还是按技术词碰"才问得出来。放在 {@code business}
+     * 里会让这个问题重新变得看不见——那一档的分数会被两批性质不同的题混在一起算。
+     */
+    public static final Set<String> CATEGORIES = Set.of("base", "business", "zh-en", "life");
 
     public ToolGold {
         id = requireText(id, "gold.id");
