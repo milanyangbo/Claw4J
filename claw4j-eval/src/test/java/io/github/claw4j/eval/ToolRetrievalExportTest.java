@@ -2,6 +2,7 @@ package io.github.claw4j.eval;
 
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
+import io.github.claw4j.agent.toolaccess.TranslatedVectorIndex;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.toolaccess.ToolVectorStore;
@@ -14,6 +15,8 @@ import org.junit.jupiter.api.TestInstance;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.tool.toolsearch.index.lucene.LuceneToolIndex;
+import org.springframework.ai.tool.toolsearch.index.vectorstore.VectorToolIndex;
 import org.springframework.ai.tool.toolsearch.ToolReference;
 import org.springframework.ai.tool.toolsearch.ToolSearchRequest;
 import org.springframework.ai.tool.toolsearch.ToolSearchResponse;
@@ -176,6 +179,54 @@ class ToolRetrievalExportTest {
             this.rankings.put(config, byQid);
             writeRun(config, byQid);
         }
+        dumpWingScores(tools);
+    }
+
+    /**
+     * 两翼的原始分数，逐题落一份（票 25 的第一步：定相关性下限要先看分布）。
+     *
+     * <p>为什么要它：融合是 RRF，出来只有名次没有分数，所以"这批候选够不够格"在融合之后无处判断。
+     * 定阈值需要两个分布——该命中的工具拿多少分、同一个 query 下别的工具拿多少分。后者就是
+     * "不相关时的分数"，不用另造负样本，同一批题里取非 gold 的那几个即可。
+     *
+     * <p>两翼的门槛都调到 0：这里要的是分布本身，不是"过了 0.25 之后还剩谁"。
+     * 向量翼那条 0.2 是框架的 {@code private static final}，调不动——所以**低于 0.2 的分数看不到**，
+     * 这一条要写进结论，不能当成"没有低分"。
+     */
+    private void dumpWingScores(List<ToolReference> tools) throws IOException {
+        ToolIndex luceneWing = new TranslatedVectorIndex(new LuceneToolIndex(0f), this.translator);
+        VectorStore store = ToolVectorStore.create(this.jdbc, this.embeddings, 1024);
+        ToolIndex vectorWing = new TranslatedVectorIndex(new VectorToolIndex(store), this.translator);
+        luceneWing.indexTools("scores", tools);
+        vectorWing.indexTools("scores", tools);
+
+        StringBuilder text = new StringBuilder();
+        for (ToolGold gold : this.golds) {
+            for (Map.Entry<String, ToolIndex> wing : Map.of("lucene", luceneWing, "vector", vectorWing)
+                    .entrySet()) {
+                ToolSearchResponse response = wing.getValue().search(
+                        new ToolSearchRequest("scores", gold.question(), 50, null));
+                List<String> hits = new ArrayList<>();
+                for (ToolReference reference : response.toolReferences()) {
+                    hits.add("{\"tool\":" + quote(reference.toolName())
+                            + ",\"score\":" + reference.relevanceScore() + "}");
+                }
+                text.append("{\"qid\":").append(quote(gold.id()))
+                        .append(",\"category\":").append(quote(gold.category()))
+                        .append(",\"gold\":").append(array(gold.goldTools()))
+                        .append(",\"wing\":").append(quote(wing.getKey()))
+                        .append(",\"hits\":[").append(String.join(",", hits)).append("]}\n");
+            }
+        }
+        Files.writeString(this.reports.resolve("scores.jsonl"), text.toString(), StandardCharsets.UTF_8);
+    }
+
+    private static String array(List<String> values) {
+        return "[" + String.join(",", values.stream().map(ToolRetrievalExportTest::quote).toList()) + "]";
+    }
+
+    private static String quote(String value) {
+        return "\"" + value.replace("\"", "\\\"") + "\"";
     }
 
     @Test
