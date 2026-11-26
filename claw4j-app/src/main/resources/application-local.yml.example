@@ -132,7 +132,7 @@ claw4j:
           args:
             - examples/mcp/himalaya_mcp_server.py
 
-        # ---- 六个生活域：都不需要 key，但**要出网** ----
+        # ---- 六个生活域：都不需要 key，但**要出网**（票 26） ----
         # 存在的理由不是"工具数量"，是让工具目录里有跟代码无关的能力：天气、剧集、菜谱、
         # 艺术品、汇率、颜色、身体健康。少了这一层，检索评测考的就只是"技术词撞没撞上"。
         #
@@ -168,6 +168,19 @@ claw4j:
           command: python3
           args:
             - examples/mcp/health_mcp_server.py
+        # ---- 2026-11-27（票 27）再加两个域。都不押注外部 API ----
+        # 书：带一份 24 本的本地书架。公开书源实测都不稳（Open Library 时通时不通、
+        # Google Books 502、Gutendex 超时），所以宁可规模小也要**每一本都查得到**。
+        books:
+          command: python3
+          args:
+            - examples/mcp/books_mcp_server.py
+        # 出行：时区、日出日落、城市距离，全在本地算（zoneinfo + 日出方程）。
+        # Nominatim 与 OSRM 实测不通，而这三件事本来就有闭式解。
+        travel:
+          command: python3
+          args:
+            - examples/mcp/travel_mcp_server.py
 
         # ---- 别人写的两个：默认关着，因为要 Node 与出网 ----
         # 打开：去掉下面几行行首的 "# "，并把上面两行超时也解注释。

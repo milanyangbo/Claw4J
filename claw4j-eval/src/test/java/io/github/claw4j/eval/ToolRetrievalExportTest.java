@@ -118,6 +118,10 @@ class ToolRetrievalExportTest {
         mcpServer(registry, "culture", "examples/mcp/culture_mcp_server.py");
         mcpServer(registry, "life", "examples/mcp/life_mcp_server.py");
         mcpServer(registry, "health", "examples/mcp/health_mcp_server.py");
+        // 票 27 的两个域：书（本地 24 本书架）与出行（时区 / 日出 / 距离，本地算）。
+        // 同样两处都要加——这是上面那条注释说的结构问题，还没解。
+        mcpServer(registry, "books", "examples/mcp/books_mcp_server.py");
+        mcpServer(registry, "travel", "examples/mcp/travel_mcp_server.py");
     }
 
     private static void mcpServer(DynamicPropertyRegistry registry, String name, String script) {
@@ -350,7 +354,8 @@ class ToolRetrievalExportTest {
         Set<String> required = Set.of("github_issue_list", "github_pr_checks",
                 "mail_list_unread", "mail_send",
                 "weather_now", "tv_show_search", "recipe_search",
-                "art_search", "fx_convert", "bmi_calc");
+                "art_search", "fx_convert", "bmi_calc",
+                "book_search", "sun_times");
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
         while (true) {
             List<ToolCallback> tools = this.catalogue.tools();

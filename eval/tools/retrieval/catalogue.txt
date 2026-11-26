@@ -7,6 +7,7 @@
 # 这个是**期望**。两者不一致时，先看是谁变了——加完工具没更新这里，或者 MCP server 没起来。
 #
 # 2026-11-27：24 → 50，新增的全是生活域（天气 / 影音 / 吃喝 / 文化 / 钱与颜色 / 身体）。
+# 同日晚些时候（票 27）：50 → 58，再加"书"（本地书架）与"出行"（时区 / 日出 / 距离）。
 
 # ---- 内建 ----
 AskUserQuestionTool
@@ -77,3 +78,15 @@ color_scheme
 bmi_calc
 calorie_needs
 water_intake
+
+# ---- MCP：书（本地 24 本书架，票 27）----
+book_search
+book_detail
+book_by_author
+reading_pick
+
+# ---- MCP：出行（本地计算，票 27）----
+timezone_convert
+world_clock
+sun_times
+city_distance

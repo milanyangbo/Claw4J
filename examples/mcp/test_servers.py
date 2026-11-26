@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-六个生活域 server 的契约测试。零第三方依赖，`python3 -m unittest` 直接跑。
+八个生活域 server 的契约测试。零第三方依赖，`python3 -m unittest` 直接跑。
 
 判的只有两类事：
 
@@ -24,11 +24,12 @@ sys.path.insert(0, HERE)
 
 import http_json  # noqa: E402
 
-SERVERS = ["weather", "media", "food", "culture", "life", "health"]
+SERVERS = ["weather", "media", "food", "culture", "life", "health", "books", "travel"]
 
 # 各 server 应有的工具数。写死是有意的：加工具时这条会提醒你回来改，
 # 而不是让"26 个工具"变成一个没人核过的说法。
-EXPECTED = {"weather": 3, "media": 6, "food": 5, "culture": 5, "life": 4, "health": 3}
+EXPECTED = {"weather": 3, "media": 6, "food": 5, "culture": 5, "life": 4, "health": 3,
+            "books": 4, "travel": 4}
 
 
 def rpc(server, method, params=None, timeout=60):
@@ -133,6 +134,61 @@ class HealthCalculationTest(unittest.TestCase):
         text, _ = call("health", "calorie_needs",
                        {"height_cm": 175, "weight_kg": 70, "age": 30, "activity": "napping"})
         self.assertIn("activity", text)
+
+
+class BookShelfTest(unittest.TestCase):
+    """书架不联网，所以答案可以钉死。钉的是"它真的查得到"，不是"它查得全"。"""
+
+    def test_known_title_has_its_author_and_year(self):
+        text, failed = call("books", "book_detail", {"title": "三体"})
+        self.assertFalse(failed, text)
+        self.assertIn("刘慈欣", text)
+        self.assertIn("2008", text)
+
+    def test_search_hits_by_theme_not_just_title(self):
+        """用户问「讲明朝的书」——书名里没有"明朝"，只有简介里有。这一条挡的是"只匹配书名"。"""
+        text, failed = call("books", "book_search", {"query": "明朝"})
+        self.assertFalse(failed, text)
+        self.assertIn("万历十五年", text)
+
+    def test_empty_shelf_says_so_instead_of_inventing(self):
+        text, failed = call("books", "book_search", {"query": "不存在的书名xyz"})
+        self.assertFalse(failed, text)
+        self.assertIn("只有 24 本", text, "24 是本地的规模，不能假装是全网检索")
+
+    def test_reading_pick_gives_a_concrete_title(self):
+        text, failed = call("books", "reading_pick", {"mood": "最近总是睡不着", "count": 3})
+        self.assertFalse(failed, text)
+        self.assertIn("《", text)
+
+
+class TravelCalculationTest(unittest.TestCase):
+    """时区、日出、距离都在本地算。数值可以钉，因为公式与城市坐标都在仓库里。"""
+
+    def test_daylight_is_longer_at_summer_solstice(self):
+        summer, _ = call("travel", "sun_times", {"city": "北京", "date": "2026-06-21"})
+        winter, _ = call("travel", "sun_times", {"city": "北京", "date": "2026-12-21"})
+        self.assertRegex(summer, r"昼长：1[45] 小时", summer)
+        self.assertRegex(winter, r"昼长：9 小时", winter)
+
+    def test_distance_between_beijing_and_shanghai(self):
+        text, failed = call("travel", "city_distance", {"from_city": "北京", "to_city": "上海"})
+        self.assertFalse(failed, text)
+        self.assertRegex(text, r"约 10[5-9]\d 公里", "实测 1067 公里，容差一个数量级内的手滑")
+
+    def test_timezone_conversion_crosses_the_date_line(self):
+        """北京 09:00 是纽约前一天的 20:00（冬令时 UTC-5）。差 13 小时，日期要跟着退一天。"""
+        text, failed = call("travel", "timezone_convert",
+                            {"when": "2026-11-27 09:00", "from_city": "北京", "to_city": "纽约"})
+        self.assertFalse(failed, text)
+        self.assertIn("2026-11-26 20:00", text)
+        self.assertIn("13.0 小时", text)
+
+    def test_unknown_city_returns_reason(self):
+        """查不到时区就明说不在表里。按经纬度猜时区是另一种猜法，猜错了比查不到更糟。"""
+        text, failed = call("travel", "city_distance", {"from_city": "火星", "to_city": "上海"})
+        self.assertFalse(failed, text)
+        self.assertIn("不在城市表里", text)
 
 
 class HttpFailureTest(unittest.TestCase):
