@@ -1,0 +1,79 @@
+# 期望的工具目录（票 26）。一行一个工具名，`#` 开头是注释。
+#
+# 它存在的理由：`ToolGoldTest#everyCataloguedToolHasAQuestion` 要判"目录里每个工具都有题"，
+# 而题库是纯单元测试（不起容器、不连 MCP），拿不到活的目录。所以把期望清单放在这里入库。
+#
+# 与 `reports/catalogue.txt` 的区别：那个是**导出产物**（跑一次才知道实际有哪些），
+# 这个是**期望**。两者不一致时，先看是谁变了——加完工具没更新这里，或者 MCP server 没起来。
+#
+# 2026-11-27：24 → 50，新增的全是生活域（天气 / 影音 / 吃喝 / 文化 / 钱与颜色 / 身体）。
+
+# ---- 内建 ----
+AskUserQuestionTool
+recall_session
+Task
+TaskOutput
+Skill
+intent
+systemStatus
+Read
+Grep
+Glob
+TodoWrite
+WebFetch
+Bash
+BashOutput
+KillShell
+
+# ---- 调度 ----
+schedule_task
+list_schedules
+cancel_schedule
+
+# ---- MCP：代码与邮件（已有）----
+github_issue_list
+github_pr_checks
+github_api
+mail_list_unread
+mail_send
+
+# ---- Java：业务库 ----
+querySales
+
+# ---- MCP：天气 ----
+weather_now
+weather_forecast
+air_quality
+
+# ---- MCP：影音 ----
+tv_show_search
+tv_show_detail
+music_search
+artist_lookup
+podcast_search
+audiobook_search
+
+# ---- MCP：吃喝 ----
+recipe_search
+recipe_detail
+recipe_by_ingredient
+food_barcode
+food_search
+
+# ---- MCP：文化 ----
+art_search
+art_detail
+joke_random
+joke_search
+word_define
+
+# ---- MCP：钱与颜色 ----
+fx_convert
+fx_rates
+color_info
+color_scheme
+
+# ---- MCP：身体 ----
+bmi_calc
+calorie_needs
+water_intake

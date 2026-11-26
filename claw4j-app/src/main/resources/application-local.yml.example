@@ -132,6 +132,43 @@ claw4j:
           args:
             - examples/mcp/himalaya_mcp_server.py
 
+        # ---- 六个生活域：都不需要 key，但**要出网** ----
+        # 存在的理由不是"工具数量"，是让工具目录里有跟代码无关的能力：天气、剧集、菜谱、
+        # 艺术品、汇率、颜色、身体健康。少了这一层，检索评测考的就只是"技术词撞没撞上"。
+        #
+        # 每个工具的真实可用性都实测过（2026-11-27）：下面这些公开接口在本机通，
+        # 而 Wikipedia（超时）、Nominatim（超时）、Met Museum（410 已下线）、
+        # Art Institute（403）、Google Books（502）、iTunes 的 movie/tvShow（返回 0 条）都不通，
+        # 所以没有"百科""地点路线""电影""书"这几类。要加，先确认对方还活着。
+        #
+        # 评测上下文（ToolRetrievalExportTest）里另有一份同样的声明——它只加载自动配置、
+        # 不读这份 yml。加 server 要两处都加，漏一处评测会报"60 秒内 MCP 工具没到位"。
+        weather:
+          command: python3
+          args:
+            - examples/mcp/weather_mcp_server.py
+        media:
+          command: python3
+          args:
+            - examples/mcp/media_mcp_server.py
+        food:
+          command: python3
+          args:
+            - examples/mcp/food_mcp_server.py
+        culture:
+          command: python3
+          args:
+            - examples/mcp/culture_mcp_server.py
+        life:
+          command: python3
+          args:
+            - examples/mcp/life_mcp_server.py
+        # 这一条不联网，纯算术：BMI、每日热量、饮水量。
+        health:
+          command: python3
+          args:
+            - examples/mcp/health_mcp_server.py
+
         # ---- 别人写的两个：默认关着，因为要 Node 与出网 ----
         # 打开：去掉下面几行行首的 "# "，并把上面两行超时也解注释。
         # everything 是官方参考实现（零参数、零凭据）；deepwiki 是公开的 HTTP 端点（不起进程）。

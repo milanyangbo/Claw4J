@@ -108,6 +108,16 @@ class ToolRetrievalExportTest {
         // 本机不需要装 gh / himalaya —— 那两个 CLI 只在**调用**时才检查。
         mcpServer(registry, "github", "examples/mcp/gh_mcp_server.py");
         mcpServer(registry, "mail", "examples/mcp/himalaya_mcp_server.py");
+        // 票 26 的六个生活域。**这里必须与 application-local.yml 的 servers 段一致**：
+        // 本类的上下文只加载自动配置、不读那份 yml（见上面 zh-description 那条注释），
+        // 所以加一个 server 是两处都要加。漏了这一处，评测会报"60 秒内 MCP 工具没到位"，
+        // 而线上已经接上了——2026-11-27 第一次跑就是这么红的。
+        mcpServer(registry, "weather", "examples/mcp/weather_mcp_server.py");
+        mcpServer(registry, "media", "examples/mcp/media_mcp_server.py");
+        mcpServer(registry, "food", "examples/mcp/food_mcp_server.py");
+        mcpServer(registry, "culture", "examples/mcp/culture_mcp_server.py");
+        mcpServer(registry, "life", "examples/mcp/life_mcp_server.py");
+        mcpServer(registry, "health", "examples/mcp/health_mcp_server.py");
     }
 
     private static void mcpServer(DynamicPropertyRegistry registry, String name, String script) {
@@ -335,8 +345,12 @@ class ToolRetrievalExportTest {
      * <p>等不到就**失败**，不跳过：跳过等于把本票要验的东西静默取消。
      */
     private List<ToolCallback> mcpBackedCatalogue() {
+        // 每个 MCP server 抽一个代表：只要有一个没起来，说明那条 stdio 连接是 DOWN，
+        // 那个 server 的整组工具都不会在目录里（不是少一个，是少一组）。
         Set<String> required = Set.of("github_issue_list", "github_pr_checks",
-                "mail_list_unread", "mail_send");
+                "mail_list_unread", "mail_send",
+                "weather_now", "tv_show_search", "recipe_search",
+                "art_search", "fx_convert", "bmi_calc");
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
         while (true) {
             List<ToolCallback> tools = this.catalogue.tools();
@@ -372,7 +386,7 @@ class ToolRetrievalExportTest {
      * 只有这条能分开它们。
      */
     @Test
-    @DisplayName("两个示例 MCP server 的工具进了目录：github_* 与 mail_* 各两个")
+    @DisplayName("示例 MCP server 的工具进了目录：代码/邮件两个 + 生活域六个")
     void mcpToolsReachTheCatalogue() {
         Set<String> names = mcpBackedCatalogue().stream()
                 .map(callback -> callback.getToolDefinition().name())
@@ -380,7 +394,10 @@ class ToolRetrievalExportTest {
 
         assertThat(names)
                 .as("这四个是票 13 里那四道死题的 gold；它们不在，那四道题就永远 miss")
-                .contains("github_issue_list", "github_pr_checks", "mail_list_unread", "mail_send");
+                .contains("github_issue_list", "github_pr_checks", "mail_list_unread", "mail_send")
+                .as("票 26 加的六个生活域 server，每个抽一个代表：少一个就是那个 server 没起来")
+                .contains("weather_now", "tv_show_search", "recipe_search",
+                        "art_search", "fx_convert", "bmi_calc");
     }
 
     /**
