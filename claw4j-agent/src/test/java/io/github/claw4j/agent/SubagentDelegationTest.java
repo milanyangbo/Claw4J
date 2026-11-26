@@ -6,6 +6,7 @@ import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.toolaccess.ToolsProperties;
@@ -348,11 +349,11 @@ class SubagentDelegationTest {
         List<ToolCallback> once = AgentAutoConfiguration.collectToolCallbacks(
                 providerOf(List.of(new RecordingTool("lookup", "1"))), providerOf(List.of()),
                 null, audit, SpanTracer.NONE, ObservationRegistry.NOOP, profile,
-                tiers, ToolPolicyPipeline.none(), selection -> { });
+                tiers, ToolPolicyPipeline.none(), selection -> { }, ToolDescriptionTranslator.NONE);
         List<ToolCallback> twice = AgentAutoConfiguration.collectToolCallbacks(
                 providerOf(once), providerOf(List.of()),
                 null, audit, SpanTracer.NONE, ObservationRegistry.NOOP, profile,
-                tiers, ToolPolicyPipeline.none(), selection -> { });
+                tiers, ToolPolicyPipeline.none(), selection -> { }, ToolDescriptionTranslator.NONE);
 
         assertThat(twice).hasSize(1);
         assertThat(twice.getFirst())
@@ -366,7 +367,7 @@ class SubagentDelegationTest {
         List<ToolCallback> again = AgentAutoConfiguration.collectToolCallbacks(
                 providerOf(sanitized), providerOf(List.of()),
                 null, audit, SpanTracer.NONE, ObservationRegistry.NOOP, profile,
-                tiers, ToolPolicyPipeline.none(), selection -> { });
+                tiers, ToolPolicyPipeline.none(), selection -> { }, ToolDescriptionTranslator.NONE);
         assertThat(again.getFirst())
                 .as("净化器里面已经有计量：再包一层就是两遍审计")
                 .isSameAs(sanitized.getFirst());
@@ -645,7 +646,7 @@ class SubagentDelegationTest {
                 // 显式 always：这几条要验的是子链的委派与审计，脚本写的就是「检索 → 调用 → 结论」
                 // 三步。默认 auto 在工具只有一两个时会全塞，那三步就少一步，脚本对不上——而
                 // "子链按默认配置怎么滑档"不是这里的题目（那条在 ModelAndToolSelectionTest）。
-                new ToolSearchProperties(null, 5, null, ToolSearchProperties.Mode.ALWAYS, 0, null, null, null),
+                new ToolSearchProperties(null, 5, null, ToolSearchProperties.Mode.ALWAYS, 0, null, null, null, null),
                 ToolCallBudget.MAX_TOTAL_CALLS);
     }
 

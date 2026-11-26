@@ -1,6 +1,6 @@
 # 票 11：工具描述本地化——运行时自动译成中文，开关可配
 
-**Status:** open
+**Status:** resolved
 
 > 依赖票 09：改完之后"好了多少"只有那张对照表能回答。09 没落地时本票只能判"通了"。
 
@@ -84,30 +84,58 @@ tools = withTranslatedDescriptions(tools, translator);   // 策略筛完之后�
 
 ## TDD 用例清单
 
-`claw4j-agent` 已到顶（14 文件；`ModelAndToolSelectionTest` 与 `ObservabilityTest` 各 26 条），
-所以本票**第 0 步是合并**，把 26 降下来再放新用例：
+`claw4j-agent` 已到顶（14 文件；`ModelAndToolSelectionTest` 26 条），所以本票**第 0 步是合并**，
+而且票据原来的算术是错的（26 − 2 + 3 = 27）：实际做法是**合两对、加两条**，最后仍是 26。
 
-- `ModelAndToolSelectionTest#maxResultsIsClamped` + `#indexChoiceIsHonoured` → 合成一条"配置边界"
-  （同一入口：`ToolSearchProperties` 的构造与绑定；同一种断言：越界/缺省落到哪）→ **−1**
-- `ObservabilityTest#searchCounterSeparatesHitFromMiss` + `#narrowedMissIsTagged`
-  → 合成一条"三个数各记什么"（同一入口：`MeteredToolIndex#search`；同一形状：读某个标签的计数）→ **−1**
-
-腾出 2 个位置，放 3 条（第 3 条并进第 2 条）：
+- `maxResultsIsClamped` + `indexChoiceIsHonoured` → 合成 `configBoundariesAreHonoured`
+  （同一入口：`ToolSearchProperties` 的构造与绑定；同一种断言：越界/缺省/选谁落到哪）→ −1
+- `searchCounterSeparatesHitFromMiss` + `narrowedMissIsTagged` → 合成
+  `searchMetricsSeparateTheThreeOutcomes`（同一入口：`MeteredToolIndex#search`；同一形状：按标签读计数）→ −1
 
 | 判什么行为 | 用例 | 先红的样子 |
 | --- | --- | --- |
-| 关着时一个调用都不发生、描述逐字不变 | `ModelAndToolSelectionTest#zhDescriptionOffChangesNothing` | 开关没接上（永远翻）时，假模型的调用计数 > 0，断言红 |
-| 英文描述被换成"中文 + 原文"，且索引里也是这一份 | `ModelAndToolSelectionTest#zhDescriptionRewritesBothModelAndIndex` | 只包了模型那一路时，`ToolIndex` 里那条 summary 还是英文，断言红 |
-| 译失败退原文、只告警一次、不抛 | 并入上一条（第二段） | 抛出去时整轮请求失败；每轮重复告警时日志被刷满 |
-| 已有中文的描述不翻 | 并入第一条（第二段：给一条中文描述，断言调用计数不变） | 无条件翻时它会被"中文 + 原文"污染，答案变长 |
+| 关着 / 名单外时描述逐字不变、零调用 | ✅ `ModelAndToolSelectionTest#zhDescriptionOffLeavesDescriptionsAlone` | 开关没接上（永远翻）时模型调用计数 > 0，断言红 |
+| 开着时中文在前原文在后，且索引里也是这一份 | ✅ `ModelAndToolSelectionTest#zhDescriptionRewritesForModelAndIndex`（第一段 + 中文问法能命中） | 只包了模型那一路时，从定义建出来的 `ToolReference` 还是英文、中文问法搜不到，断言红 |
+| 已有中文的不翻、译失败退原文 | ✅ 并入上一条（第二、三段） | 无条件翻时中文描述被污染；抛出去时整轮请求挂掉 |
+| 名单非空时只翻名单里的 | ✅ 并入第一条（第二段） | 名单没生效时名单外也被翻，调用计数 > 0 |
 
-验收在票 09 那张表上：同一份题、同一索引，`zh-description` 前后各跑一次，比 Recall@k 与 MRR。
+`config-regroup/issues/01` 里两条 ✅ 引用跟着改名（那道闸会红，改的是名字不是删行）。
+
+## 实跑：同一份题、开与关各一遍（2026-11-26，19 工具 / 20 题）
+
+```
+配置         分类       R@1 关 → 开      R@5 关 → 开      MRR 关 → 开
+regex        全部      0.150 → 0.100    0.500 → 0.600    0.289 → 0.255
+hybrid-0.5   全部      0.200 → 0.200    0.550 → 0.650    0.350 → 0.389
+hybrid-0.0   全部      0.350 → 0.450    0.600 → 0.600    0.427 → 0.504
+
+hybrid-0.0   zh-en     0.600 → 0.800    0.800 → 0.800    0.640 → 0.800
+hybrid-0.5   zh-en     0.200 → 0.400    0.600 → 0.800    0.290 → 0.600
+```
+
+**向量那一路明显受益**（`zh-en` 档 R@1 0.60 → 0.80、MRR 0.64 → 0.80）：中文描述与中文问法在
+同一个语义空间里，这正是中文化想买的东西。
+
+**关键字那一路反而略降**（regex 全部 R@1 0.15 → 0.10，business 檔 R@1 0.11 → 0.00）：描述变长了，
+二元组可碰撞的字也变多，"提到某个词的无关工具"更容易挤进前排。这一条与直觉相反，得记下来——
+**中文化的收益要配向量那一路，配纯关键字是负的**。
+
+样本只有 20 条、19 个工具，方向可信、数值不可引；重跑命令在 `eval/tools/README.md`。
+
+## 落地时与票面不同的两处（据实改）
+
+1. **配置是嵌套的两项**，不是平铺的三个：`zh-description.enabled` + `zh-description.tools`。
+   `ToolSearchProperties` 已经 8 个分量，再平铺两条就是 10 个。
+2. **`zh-description-tools` 的语义是"允许翻的范围"**：非空时只在这个范围里挑"描述没中文"的那些；
+   已有中文的一律不动（名单里有它也不翻——把中文再译一遍只会更长）。
 
 ## 缺口（本票不做）
 
+- **子链不翻**：`SubagentAutoConfiguration` 收集工具时传的是 `NONE`。它拿到的是父清单里那批业务
+  工具（描述本来就是中文），先不付这份钱。真出现"子 Agent 找不到工具"再开。
 - **落表缓存**（V9）：重启重译。等工具上百个、或 utility 调用成为可感成本时再开。
 - **批量翻译**：一次请求译多个工具能降调用次数，但要处理模型输出格式的失败路径。先一次一个，
   简单、可测、失败隔离。
-- **译得准不准**：一次样本看不出来。票 09 的对照表只回答"命中率变没变"，回答不了"意思对不对"——
-  后者要么人工抽检，要么等 `tool-retrieval-benchmark` 那类题面里带参数约束的题。
+- **译得准不准**：一次样本看不出来。上面那张表只回答"命中率变没变"，回答不了"意思对不对"——
+  后者要么人工抽检，要么等题面里带参数约束的题。
 - **反向**（中文描述译成英文）：同样的机制，等真有中文描述的工具再说，现在没有。

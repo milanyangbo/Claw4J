@@ -3,6 +3,7 @@ package io.github.claw4j.agent;
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.observability.MeteredToolIndex;
 import io.github.claw4j.agent.toolaccess.HybridToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
@@ -283,8 +284,8 @@ class ModelAndToolSelectionTest {
      * 大于 10 则被框架自己截断，两种都不该让调用方以为配置生效了。
      */
     @Test
-    @DisplayName("max-results 越界夹到 1–10，键缺失落回 5")
-    void maxResultsIsClamped() {
+    @DisplayName("配置边界：max-results 夹到 1–10、权重夹到 0–1、四档索引各建各的")
+    void configBoundariesAreHonoured() {
         assertThat(ToolSearchProperties.defaults().maxResults())
                 .as("没配时是 5")
                 .isEqualTo(ToolSearchProperties.DEFAULT_MAX_RESULTS);
@@ -322,16 +323,9 @@ class ModelAndToolSelectionTest {
                 .run(context -> assertThat(context.getBean(ToolSearchProperties.class)
                         .hybrid().keywordWeight())
                         .isEqualTo(0.0));
-    }
 
-    /**
-     * 索引三档：配了哪个就真的用哪个。
-     *
-     * <p>验的是"选谁"，不是"搜得准不准"——后者要真语料，属于评测。
-     */
-    @Test
-    @DisplayName("index 四档各建各的索引；hybrid 的两翼各自带分组；vector 缺向量库时启动就失败，不回落")
-    void indexChoiceIsHonoured() {
+        // ---- 同一个入口的另一半：index 四档选谁、分组贴在哪一层
+
         ToolCategories categories = ToolCategories.of(Map.of());
         assertThat(inner(ToolSearch.index(ToolSearchProperties.defaults(), null, categories)))
                 .as("不写 index 时是中文那一版")
@@ -391,6 +385,7 @@ class ModelAndToolSelectionTest {
                 .withPropertyValues("claw4j.advisor.tool-search.index=bogus")
                 .run(context -> assertThat(context).as("非法取值不让它悄悄落回默认").hasFailed());
     }
+
 
     /** 分组那层统一在最里面，验"选哪一档"时要先剥掉它。 */
     private static ToolIndex inner(ToolIndex index) {
@@ -786,43 +781,40 @@ class ModelAndToolSelectionTest {
 
     // ------------------------------------------------------------ 检索的可观测性（票 08）
 
+    /**
+     * 三个数各记什么：搜到、空手、收窄之后空手。
+     *
+     * <p>一段三段不是"一条测三件事"：同一个入口（{@code MeteredToolIndex#search}）、同一种断言
+     * （按标签读计数），差的只是这一次检索的结果与有没有收窄——与「一张表跑多行」同一个写法。
+     *
+     * <p>为什么非要分开：{@code miss} 与 {@code narrowed=true 的 miss} 修法不同。前者是索引与描述
+     * 的问题（去改描述、换索引），后者是分组配错了、或者模型在乱填 {@code categoryFilter}。
+     * 混在一个数里时，前者的修法会被套到后者的症状上。
+     */
     @Test
-    @DisplayName("搜到与空手分开计：result=hit / miss 各一条")
-    void searchCounterSeparatesHitFromMiss() {
+    @DisplayName("三个数分开记：hit / miss / 收窄之后的 miss")
+    void searchMetricsSeparateTheThreeOutcomes() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        MeteredToolIndex index = new MeteredToolIndex(new ChineseToolIndex(), registry);
-        index.indexTools("m-1", List.of(
+        MeteredToolIndex plain = new MeteredToolIndex(new ChineseToolIndex(), registry);
+        plain.indexTools("m-1", List.of(
                 ToolReference.builder().toolName("lookup").summary("查询销售成交额").build()));
-
-        index.search(new ToolSearchRequest("m-1", "成交额", 5, null));
-        index.search(new ToolSearchRequest("m-1", "帮我订一张去上海的机票", 5, null));
+        plain.search(new ToolSearchRequest("m-1", "成交额", 5, null));
+        plain.search(new ToolSearchRequest("m-1", "帮我订一张去上海的机票", 5, null));
 
         assertThat(count(registry, MeteredToolIndex.HIT, false)).isEqualTo(1);
         assertThat(count(registry, MeteredToolIndex.MISS, false)).isEqualTo(1);
-    }
 
-    /**
-     * 收窄之后空手要能单独认出来。
-     *
-     * <p>它和"索引里根本没有这个工具"是两个问题：前者是分组配错了、或者模型在乱填
-     * {@code categoryFilter}，后者该去改描述或换索引。混在一个数里就分不出该动哪边。
-     */
-    @Test
-    @DisplayName("收窄导致的空手：narrowed=true 且 result=miss")
-    void narrowedMissIsTagged() {
-        SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        MeteredToolIndex index = new MeteredToolIndex(
+        MeteredToolIndex grouped = new MeteredToolIndex(
                 new NamespacedToolIndex(new ChineseToolIndex(), ToolCategories.of(Map.of())), registry);
-        index.indexTools("m-2", List.of(
+        grouped.indexTools("m-2", List.of(
                 ToolReference.builder().toolName("file_read").summary("读取文件内容").build(),
                 ToolReference.builder().toolName("web_fetch").summary("抓取网页内容").build()));
-
-        index.search(new ToolSearchRequest("m-2", "读取文件", 5, "web"));
+        grouped.search(new ToolSearchRequest("m-2", "读取文件", 5, "web"));
 
         assertThat(count(registry, MeteredToolIndex.MISS, true)).isEqualTo(1);
         assertThat(count(registry, MeteredToolIndex.MISS, false))
-                .as("不分开的话这一条会被记成「索引不好使」，而实际是收窄收没了")
-                .isZero();
+                .as("不分开的话这一条会被记成「索引不好使」，而实际是收窄收没了；上面那条不受影响")
+                .isEqualTo(1);
     }
 
     @Test
@@ -1034,7 +1026,85 @@ class ModelAndToolSelectionTest {
 
     private static ToolSearchProperties properties(ToolSearchProperties.Mode mode, int revealBelow,
                                                    List<String> pinned, Map<String, List<String>> categories) {
-        return new ToolSearchProperties(null, 5, null, mode, revealBelow, pinned, categories, null);
+        return new ToolSearchProperties(null, 5, null, mode, revealBelow, pinned, categories, null, null);
+    }
+
+    // ------------------------------------------------------------ 描述本地化（票 11）
+
+    /**
+     * 不翻的两种情况：开关关着、名字不在名单里。
+     *
+     * <p>两种都要断言"一次模型调用都没发生"：关着还在调，等于为一个不生效的开关付钱；
+     * 名单外还在调，等于名单没生效而报告上看不出来。
+     */
+    @Test
+    @DisplayName("开关关着、或名字不在名单里：描述逐字不变，一次模型调用都不发生")
+    void zhDescriptionOffLeavesDescriptionsAlone() {
+        RecordingTool read = new RecordingTool("Read", "内容", "Reads a file from the local filesystem");
+        FixedChatModel model = new FixedChatModel("读取本地文件");
+        ToolDescriptionTranslator off = new ToolDescriptionTranslator(model,
+                new ToolSearchProperties.ZhDescription(false, List.of()));
+
+        assertThat(off.translate(List.of(read)))
+                .as("关着时连包装都不造：返回的是同一个对象")
+                .containsExactly(read);
+        assertThat(model.prompts()).isEmpty();
+
+        ToolDescriptionTranslator scoped = new ToolDescriptionTranslator(model,
+                new ToolSearchProperties.ZhDescription(true, List.of("WebFetch")));
+        assertThat(scoped.translate(List.of(read))).containsExactly(read);
+        assertThat(model.prompts()).as("名单非空时，名单外的工具不该花一次调用").isEmpty();
+    }
+
+    /**
+     * 开着时：模型与索引拿到同一份中文描述。
+     *
+     * <p>断言"索引里也换了"是这条的重点——包在回调上而不是索引上的理由就在这里：索引从回调的
+     * {@link ToolDefinition} 建，所以只要包在收集出口，两边自动同源。包在索引层的话，全塞模式
+     * （工具少、索引根本不建）下模型看到的还是英文。
+     *
+     * <p>后两段是"不翻"与"翻失败"，同一个入口、同一种断言形状，所以并在这里。
+     */
+    @Test
+    @DisplayName("开着：中文在前原文在后，索引里也是这一份；已有中文的不翻；译失败退原文")
+    void zhDescriptionRewritesForModelAndIndex() {
+        RecordingTool read = new RecordingTool("Read", "内容", "Reads a file from the local filesystem");
+        FixedChatModel model = new FixedChatModel("读取本地文件的内容并返回");
+        ToolDescriptionTranslator translator = new ToolDescriptionTranslator(model,
+                new ToolSearchProperties.ZhDescription(true, List.of()));
+
+        ToolCallback translated = translator.translate(List.of(read)).getFirst();
+        assertThat(translated.getToolDefinition().description())
+                .as("中文一句在前、原文在后：参数名与边界条件留在原文里")
+                .startsWith("读取本地文件的内容并返回")
+                .contains("Reads a file from the local filesystem");
+
+        ToolReference reference = ToolReference.builder()
+                .toolName(translated.getToolDefinition().name())
+                .summary(translated.getToolDefinition().description())
+                .build();
+        ChineseToolIndex index = new ChineseToolIndex();
+        index.indexTools("zh", List.of(reference));
+        assertThat(index.search(new ToolSearchRequest("zh", "读取文件", 5, null)).toolReferences())
+                .as("译之前这句中文问法在英文描述上一个字都撞不上（票 09 的 zh-en 档量过）")
+                .isNotEmpty();
+
+        RecordingTool chinese = new RecordingTool("querySales", "128400", "查询销售成交额与订单明细");
+        int before = model.prompts().size();
+        assertThat(translator.translate(List.of(chinese)).getFirst())
+                .as("本来就是中文，原样返回")
+                .isSameAs(chinese);
+        assertThat(model.prompts()).as("已有中文还去翻，是白花钱").hasSize(before);
+
+        RecordingTool broken = new RecordingTool("Broken", "x", "Does something");
+        ToolDescriptionTranslator failing = new ToolDescriptionTranslator(
+                new FixedChatModel(prompt -> {
+                    throw new IllegalStateException("模型挂了");
+                }),
+                new ToolSearchProperties.ZhDescription(true, List.of()));
+        assertThat(failing.translate(List.of(broken)).getFirst())
+                .as("译不出来就用原文：中文化是增强，不该让整轮请求挂掉")
+                .isSameAs(broken);
     }
 
     // ------------------------------------------------------------ 本模块的两条架构闸

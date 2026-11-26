@@ -26,10 +26,12 @@ import java.util.Map;
  * @param pinned      常驻工具名：每轮都在清单里，不经过检索；写错的名字忽略并告警
  * @param categories  类别（namespace）→ 工具名；不配则按名字前缀推导，见 {@link ToolCategories}
  * @param hybrid      {@code index=hybrid} 那一档的参数
+ * @param zhDescription 工具描述要不要在运行时译成中文，见 {@link ZhDescription}
  */
 @ConfigurationProperties("claw4j.advisor.tool-search")
 public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, Mode mode, int revealBelow,
-                                   List<String> pinned, Map<String, List<String>> categories, Hybrid hybrid) {
+                                   List<String> pinned, Map<String, List<String>> categories, Hybrid hybrid,
+                                   ZhDescription zhDescription) {
 
     /**
      * 工具面怎么露给模型。
@@ -147,6 +149,27 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
     }
 
     /**
+     * 工具描述本地化的开关（票 11）。
+     *
+     * <p>为什么需要它：框架自带的工具描述大多是英文，而用户说的是中文。常驻（{@link #pinned}）解决了
+     * 基座那几个"根本找不到"，但长尾（MCP、技能、子 Agent、业务工具）还在检索里，词面撞不上就是撞不上。
+     *
+     * <p>为什么是运行时翻而不是人写映射表：{@code eval/tools/gold.yaml} 里那一档「中文问英文描述」
+     * 的分数（票 09 基线：regex R@1 0.20、纯向量 0.60）说明了差多少；而人写的表跟着工具描述漂，
+     * 漂了还看不出来。
+     *
+     * @param enabled 要不要翻。默认关：它要在第一次拿到这份清单时花掉若干次 utility 调用
+     * @param tools   只翻这些工具（名字来自 {@code @Tool(name=…)}）。空 = 自动判定：描述里汉字少于
+     *                {@value ToolDescriptionTranslator#MIN_CJK_CHARS} 个才翻。名字写错不报错也不翻
+     */
+    public record ZhDescription(boolean enabled, List<String> tools) {
+
+        public ZhDescription {
+            tools = tools == null ? List.of() : List.copyOf(tools);
+        }
+    }
+
+    /**
      * 一次检索返回几个候选。
      *
      * <p>取 5：模型一次只挑一两个来调，返回十个等于把省下来的 token 又还回去一部分。
@@ -180,6 +203,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
         pinned = pinned == null ? List.of() : List.copyOf(pinned);
         categories = categories == null ? Map.of() : Map.copyOf(categories);
         hybrid = hybrid == null ? new Hybrid(null) : hybrid;
+        zhDescription = zhDescription == null ? new ZhDescription(false, List.of()) : zhDescription;
     }
 
     /**
@@ -188,7 +212,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * @param maxResults 一次返回几个候选；0 或负数取默认
      */
     public ToolSearchProperties(int maxResults) {
-        this(null, maxResults, null, null, 0, null, null, null);
+        this(null, maxResults, null, null, 0, null, null, null, null);
     }
 
     /**
@@ -201,7 +225,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * @param lucene     lucene 那档的参数
      */
     public ToolSearchProperties(Index index, int maxResults, Lucene lucene) {
-        this(index, maxResults, lucene, null, 0, null, null, null);
+        this(index, maxResults, lucene, null, 0, null, null, null, null);
     }
 
     /**

@@ -319,7 +319,10 @@ public class SubagentAutoConfiguration {
                 observations == null ? ObservationRegistry.NOOP : observations,
                 effective, tierRegistries,
                 new ToolPolicyPipeline(decision.layers()),
-                selection -> { });
+                selection -> { },
+                // 子链暂时不译描述：它拿到的是父清单里的一批业务工具，而这一层最要紧的是
+                // "能不能用"不是"怎么找到"（检索已在父那一轮发生过）。见票 11 的缺口。
+                io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator.NONE);
         // 审批闸也接同一个审计：被拒的子调用同样是"发生过的调用"，与父链一个口径。
         return AgentAutoConfiguration.withApprovalGate(collected, approvals, required, audit)
                 .stream()

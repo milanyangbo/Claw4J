@@ -24,7 +24,10 @@ import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
+import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
 import io.github.claw4j.agent.toolaccess.ToolVectorStore;
+import io.github.claw4j.model.catalog.ModelRole;
+import io.github.claw4j.model.routing.ModelRoles;
 import io.github.claw4j.agent.toolaccess.ToolsProperties;
 import io.github.claw4j.agent.turn.ChatClientAgentPort;
 import io.github.claw4j.agent.turn.ConversationLane;
@@ -168,7 +171,8 @@ public class AgentAutoConfiguration {
                                    ObjectProvider<Approvals> approvals,
                                    ObjectProvider<ApprovalRequiredTools> required,
                                    ObjectProvider<SandboxProperties> sandboxProperties,
-                                   ObjectProvider<ToolCallListener> listeners) {
+                                   ObjectProvider<ToolCallListener> listeners,
+                                   ObjectProvider<ToolDescriptionTranslator> translator) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
         List<ToolTierRegistry> registries = tierRegistries.orderedStream().toList();
         // 沙箱是部署级的（mode=non-main 配了启动失败），所以这一轮的 sandboxed 就是它。
@@ -208,7 +212,8 @@ public class AgentAutoConfiguration {
                         if (!signature.equals(reported.getAndSet(signature))) {
                             report(effective, selection);
                         }
-                    });
+                    },
+                    translator.getIfAvailable(() -> ToolDescriptionTranslator.NONE));
             return withApprovalGate(withListener(tools, listeners.getIfAvailable()),
                     approvals.getIfAvailable(), required.getIfAvailable(ApprovalRequiredTools::none),
                     audit.getIfAvailable());
@@ -375,6 +380,33 @@ public class AgentAutoConfiguration {
     }
 
     /**
+     * 工具描述的翻译器（票 11）：开关关着就返回那个什么都不做的。
+     *
+     * <p>为什么开中文化却没有 utility 链时**启动失败**而不是静默退回原文：那与
+     * {@code claw4j.rag.enabled} 同一条口径——"我明明配了"不该变成一个查不出来的谎。
+     * 反过来，翻译**调用失败**只退原文（运行期的事，不拦启动）。
+     *
+     * @param roles      按角色取模型的入口
+     * @param properties 检索配置，读 {@code zh-description}
+     * @return 翻译器
+     * @throws IllegalStateException 开了中文化但 utility 角色被关掉
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ToolDescriptionTranslator toolDescriptionTranslator(ModelRoles roles, ToolSearchProperties properties) {
+        ToolSearchProperties.ZhDescription zh = properties.zhDescription();
+        if (!zh.enabled()) {
+            return ToolDescriptionTranslator.NONE;
+        }
+        if (!roles.enabled(ModelRole.utility)) {
+            throw new IllegalStateException("claw4j.advisor.tool-search.zh-description.enabled=true，"
+                    + "但 utility 角色被关掉了（claw4j.model.roles.utility 配了空串）：没有链可以翻译。"
+                    + "要么把 utility 打开，要么把中文化关掉。");
+        }
+        return new ToolDescriptionTranslator(roles.forRole(ModelRole.utility), zh);
+    }
+
+    /**
      * 检索工具的画像：全部（{@link ToolTier#all()}）。
      *
      * <p>它必须在每个画像里都出现：清单里其余工具都要检索才看得见，把检索工具自己挡掉之后，模型
@@ -459,7 +491,8 @@ public class AgentAutoConfiguration {
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries) {
         return collectToolCallbacks(callbacks, providers, registry, audit, tracer, observations, profile,
-                tierRegistries, ToolPolicyPipeline.none(), selection -> report(profile, selection));
+                tierRegistries, ToolPolicyPipeline.none(), selection -> report(profile, selection),
+                ToolDescriptionTranslator.NONE);
     }
     /**
      * 同上，但把「这次筛完的结论」交给调用方处置。
@@ -490,7 +523,7 @@ public class AgentAutoConfiguration {
                                                           List<ToolTierRegistry> tierRegistries,
                                                           Consumer<ToolProfile.Selection> onSelection) {
         return collectToolCallbacks(callbacks, providers, registry, audit, tracer, observations, profile,
-                tierRegistries, ToolPolicyPipeline.none(), onSelection);
+                tierRegistries, ToolPolicyPipeline.none(), onSelection, ToolDescriptionTranslator.NONE);
     }
 
     /**
@@ -521,7 +554,8 @@ public class AgentAutoConfiguration {
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries,
                                                           ToolPolicyPipeline pipeline,
-                                                          Consumer<ToolProfile.Selection> onSelection) {
+                                                          Consumer<ToolProfile.Selection> onSelection,
+                                                          ToolDescriptionTranslator translator) {
         List<ToolCallback> collected = new ArrayList<>();
         callbacks.orderedStream().forEach(collected::add);
         // provider 的 getToolCallbacks() 每次调用都重新问一次来源：MCP 那一层是活视图，
@@ -550,7 +584,7 @@ public class AgentAutoConfiguration {
         // 已经包过的原样返回（票 19）：子链走的也是这条收集路径，而它拿到的 provider 交出来的
         // 工具**本身已经带一层包装**。再包一次会让同一次调用写两遍审计——第二遍被唯一键挡住，
         // 于是不报错、只是 duplicates 涨，而"每条子链调用都涨 2"从外面看像重放。
-        return collected.stream()
+        List<ToolCallback> metered = collected.stream()
                 .filter(callback -> kept.contains(callback.getToolDefinition().name()))
                 // 显式转型，否则 stream 的元素类型被推断成 MeteredToolCallback，
                 // 与返回类型 List<ToolCallback> 对不上（它不是泛型类，推断不出父类型）。
@@ -559,6 +593,9 @@ public class AgentAutoConfiguration {
                         : (ToolCallback) new MeteredToolCallback(callback, registry, audit, tracer,
                                 observations))
                 .toList();
+        // 最后一层：换描述（票 11）。放在计量外面、审批闸里面——审批闸按名字判，与描述无关；
+        // 而计量记的是"调了哪个工具"，也不该被描述影响。
+        return translator.translate(metered);
     }
 
     /**

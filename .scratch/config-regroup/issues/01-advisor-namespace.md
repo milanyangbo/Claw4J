@@ -56,10 +56,10 @@ claw4j:
 | `session` 那四个键写在 yml 里（文本层） | `BuildContractTest#applicationYmlDeclaresTheContextWindow`、`BuildContractTest#applicationYmlDeclaresTheSessionScopes` | 把 yml 里 `advisor.session` 改回 `session`，两条都红 |
 | 那四个键**真能绑上**（不是只有文本对） | `BuildContractTest#theSessionScopesBindToThePropertiesClass` | 键前缀写成 `claw4j.advisor.sessions`（多个 s）→ 红 |
 | 表名只写在一处，改 schema 时五处一起变 | `BuildContractTest#sessionSchemaLiteralLivesInOnePlace` | 在任何一处手写 `claw4j_session.ai_session` → 红 |
-| `index` 三档各建各的索引 | `ModelAndToolSelectionTest#indexChoiceIsHonoured` | 把 `case LUCENE ->` 改成 `REGEX` → 红 ✅ |
+| `index` 四档各建各的索引 | `ModelAndToolSelectionTest#configBoundariesAreHonoured`（2026-11-26 与 max-results 那条合并，票 11 腾方法数） | 把 `case LUCENE ->` 改成 `REGEX` → 红 ✅ |
 | `vector` 缺 `VectorStore` 启动即失败，不回落 | 同上 | 注释掉 `requireVectorStore` 那一行 → 红 ✅ |
 | 非法 `index` 不让它悄悄落回默认 | 同上 | 把枚举换成 `String` 再 try/catch → 红 ✅ |
-| `max-results` 越界夹到 1–10，缺省 5 | `ModelAndToolSelectionTest#maxResultsIsClamped` | 去掉 `Math.min(...)` → 夹上界那条红 ✅ |
+| `max-results` 越界夹到 1–10，缺省 5 | `ModelAndToolSelectionTest#configBoundariesAreHonoured`（同上，合并） | 去掉 `Math.min(...)` → 夹上界那条红 ✅ |
 | `advisor.memory.directory` 配了才装长期记忆那一层 | ⏳ `MemoryProperties` 的目录绑定 | 见「缺口」第 1 条 |
 
 **缺口**
@@ -77,7 +77,7 @@ claw4j:
 `ToolSearchProperties` 加 `index` 与 `lucene.min-score`，`ToolSearch.index(...)` 按配置建索引，
 `claw4j-agent` 加 lucene-core / lucene-analysis-common 9.12.3（根 pom 管版本），
 `vector` 缺 `VectorStore` 时启动即失败并说明缺什么。用例并进
-`ModelAndToolSelectionTest#indexChoiceIsHonoured`（没有单开测试文件：本模块有 14 个的上限）。
+`ModelAndToolSelectionTest#configBoundariesAreHonoured`（没有单开测试文件：本模块有 14 个的上限）。
 `./scripts/verify.sh` 全绿（0 失败 / 0 错误 / 0 跳过，9 模块，覆盖率 65.7%–93.8%）。
 
 **复核时改回来的一处（2026-11-20）**：归并这批键时把 `SessionCompactor` / `SessionMaintenance` /
