@@ -1,6 +1,7 @@
 # 票 24：`SYSTEM_SUFFIX` 对齐行业形状——分两刀，先删动作例子
 
-**Status:** open
+**Status:** parked（2026-11-26 22:4x 起挂起。两条理由：① 用户把重心指回 irrelevance 达标，本票改的是措辞形状、
+不影响那个数；② 它第一刀的唯一证据来自已删除的 `eval/tools/selection`，做完也验证不了）
 **裁决来源：** 用户 2026-11-26「ToolSearch.SYSTEM_SUFFIX，可以参考行业内，是怎么写的」。
 **no ADR needed**（不引入新概念、不改"该不该检索"的归属，只换措辞）。
 **上游：** 票 23 第 2 批（L2 四组）已量出 A 组比 B 组多的 4 条全是 `recall_session`，起因指向本票第一刀要删的那个"例如"。
