@@ -41,6 +41,8 @@ docs/acceptance/**/*.log
 # 两层各自的目录见 eval/tools/README.md。
 eval/tools/retrieval/reports/*
 !eval/tools/retrieval/reports/.gitkeep
+# L2 选择层评测：题库与 README 入库，跑出来的逐题结果不入库。
+eval/tools/selection/reports/*
 eval/tools/retrieval/.venv/
 eval/tools/retrieval/__pycache__/
 
