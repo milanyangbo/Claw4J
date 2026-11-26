@@ -100,11 +100,11 @@ case HYBRID -> HybridToolIndex.of(categories, new ChineseToolIndex(),
 
 | 判什么行为 | 用例 | 先红的样子 |
 | --- | --- | --- |
-| 关着 / 名单外时描述逐字不变、零调用 | ✅ `ModelAndToolSelectionTest#zhDescriptionOffLeavesDescriptionsAlone` | 开关没接上（永远翻）时模型调用计数 > 0，断言红 |
-| 开着时**只有向量翼**入库中文+原文，关键字翼仍是原文 | ✅ `ModelAndToolSelectionTest#zhDescriptionFeedsVectorWingOnly`（第一段） | 把翻译包在两翼外层时，关键字翼也变成中文，断言红（临时去掉 `TranslatedVectorIndex` 的翻译验过，单条用例当场红） |
+| 关着 / 名单外时描述逐字不变、零调用 | ✅ `ModelAndToolSelectionTest#zhDescriptionScopeAndFallback`（2026-11-26 票 16 合并后的名字） | 开关没接上（永远翻）时模型调用计数 > 0，断言红 |
+| 开着时**只有向量翼**入库中文+原文，关键字翼仍是原文 | ✅ `ModelAndToolSelectionTest#zhDescriptionScopeAndFallback`（同上）（第一段） | 把翻译包在两翼外层时，关键字翼也变成中文，断言红（临时去掉 `TranslatedVectorIndex` 的翻译验过，单条用例当场红） |
 | 装配边界：regex/lucene 不包翻译层，vector/hybrid 的向量翼包 | ✅ 并入 `ModelAndToolSelectionTest#configBoundariesAreHonoured` | 翻译器被塞进关键字档时，`inner(...)` 不再是 `ChineseToolIndex`，断言红 |
-| 已有中文的不翻、译失败退原文 | ✅ 并入 `zhDescriptionFeedsVectorWingOnly`（第二、三段） | 无条件翻时中文描述被污染；抛出去时整轮请求挂掉 |
-| 名单非空时只翻名单里的 | ✅ 并入 `zhDescriptionOffLeavesDescriptionsAlone`（第二段） | 名单没生效时名单外也被翻，调用计数 > 0 |
+| 已有中文的不翻、译失败退原文 | ✅ 并入 `ModelAndToolSelectionTest#zhDescriptionScopeAndFallback`（第四、五段） | 无条件翻时中文描述被污染；抛出去时整轮请求挂掉 |
+| 名单非空时只翻名单里的 | ✅ 并入 `ModelAndToolSelectionTest#zhDescriptionScopeAndFallback`（第二段） | 名单没生效时名单外也被翻，调用计数 > 0 |
 
 `config-regroup/issues/01` 里两条 ✅ 引用跟着改名（那道闸会红，改的是名字不是删行）。
 
@@ -164,6 +164,7 @@ hybrid-0.0  zh-en     R@1              R@5              RR
 - `business`（中文描述）、`regex` / `lucene`（读原文）一格没动——与"只喂向量"的设计一致。
   `base`（描述全英文）`R@1` 0.000 → 0.250，也在受益的那一侧。
 - **不可复现的是"开"那一侧**：翻译不落表，每个进程重译，措辞不同 → embedding 不同 → 名次跟着变。
+  （**2026-11-26 票 16 已修**：译文落表，同一份库重启不再重译；只剩"评测每次新容器"这一处未收。）
   关的那一侧逐位可复现。
 
 所以第二版"没有收益"的结论只对 20 题那版成立：那 5 道 `zh-en` 里有 3 道 gold 的描述是中文，
@@ -181,7 +182,7 @@ hybrid-0.0  zh-en     R@1              R@5              RR
 
 - **子链不翻**：`SubagentAutoConfiguration` 收集工具时传的是 `NONE`。它拿到的是父清单里那批业务
   工具（描述本来就是中文），先不付这份钱。真出现"子 Agent 找不到工具"再开。
-- **落表缓存**（V9）：重启重译。**现在有了更硬的理由**：不落表就不只是"多花几次调用"，
+- ~~**落表缓存**（V9）：重启重译。~~ **已完成**：票 16（V9 + `claw4j_tool.tool_description`）。**现在有了更硬的理由**：不落表就不只是"多花几次调用"，
   而是"每次跑评测结论都不一样"——第三版里开的那一侧三次跑出三个 `R@1`。要做回归门先得钉住它。
 - **批量翻译**：一次请求译多个工具能降调用次数，但要处理模型输出格式的失败路径。先一次一个，
   简单、可测、失败隔离。
