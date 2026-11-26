@@ -37,9 +37,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -95,6 +97,17 @@ class ToolRetrievalExportTest {
                 () -> TestPaths.repositoryRoot().resolve("examples/agents").toString());
         registry.add("claw4j.agent.default", () -> "ops");
         registry.add("claw4j.advisor.cache.enabled", () -> "false");
+        // 两个示例 MCP server（票 14）：github_* 与 mail_* 只有在接上它们时才会进目录，
+        // 而那正是 business 这一档里"外部系统工具"那一类。工具清单在 serve(...) 里静态声明，
+        // 本机不需要装 gh / himalaya —— 那两个 CLI 只在**调用**时才检查。
+        mcpServer(registry, "github", "examples/mcp/gh_mcp_server.py");
+        mcpServer(registry, "mail", "examples/mcp/himalaya_mcp_server.py");
+    }
+
+    private static void mcpServer(DynamicPropertyRegistry registry, String name, String script) {
+        registry.add("claw4j.capability.mcp.servers." + name + ".command", () -> "python3");
+        registry.add("claw4j.capability.mcp.servers." + name + ".args[0]",
+                () -> TestPaths.repositoryRoot().resolve(script).toString());
     }
 
     /** 与 {@code ToolRetrievalSnapshotTest} 同一个顺序：两档关键字、三档 hybrid。 */
@@ -133,7 +146,7 @@ class ToolRetrievalExportTest {
         Files.createDirectories(this.reports);
         this.golds = golds();
 
-        List<ToolReference> tools = this.catalogue.tools().stream()
+        List<ToolReference> tools = mcpBackedCatalogue().stream()
                 .map(ToolRetrievalExportTest::reference)
                 .toList();
 
@@ -261,6 +274,65 @@ class ToolRetrievalExportTest {
         assertThat(byQid.values())
                 .as("分类打错一个字，那一档就静默消失")
                 .allSatisfy(category -> assertThat(ToolGold.CATEGORIES).contains(category));
+    }
+
+    /**
+     * 目录，且确认 MCP 那几个工具已经到位。
+     *
+     * <p>为什么要等：{@code McpToolProvider} 首次接触是同步的，但**连不上时只记 DOWN 再排一次
+     * 退避重试**（票 02 / 07 的设计）。所以上下文起来了不等于工具到位——脚本慢一点、python3
+     * 冷启动一下，目录里就可能还没有 `mail_*`。不等的话，这一轮会"少五个工具、悄悄算完"，
+     * 而报告上只是数字低一点。
+     *
+     * <p>等不到就**失败**，不跳过：跳过等于把本票要验的东西静默取消。
+     */
+    private List<ToolCallback> mcpBackedCatalogue() {
+        Set<String> required = Set.of("github_issue_list", "github_pr_checks",
+                "mail_list_unread", "mail_send");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        while (true) {
+            List<ToolCallback> tools = this.catalogue.tools();
+            Set<String> names = tools.stream()
+                    .map(callback -> callback.getToolDefinition().name())
+                    .collect(Collectors.toSet());
+            if (names.containsAll(required)) {
+                return tools;
+            }
+            if (System.nanoTime() > deadline) {
+                Set<String> missing = new LinkedHashSet<>(required);
+                missing.removeAll(names);
+                throw new IllegalStateException("60 秒内 MCP 工具没到位：" + missing
+                        + "。检查 claw4j.capability.mcp.servers 里两个 server 能否起来"
+                        + "（python3 在 PATH 里吗、examples/mcp/*.py 还在吗）。现有 "
+                        + names.size() + " 个工具。");
+            }
+            try {
+                Thread.sleep(500);
+            }
+            catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("等 MCP 工具时被打断", interrupted);
+            }
+        }
+    }
+
+    /**
+     * 两个示例 MCP server 的工具真的进了目录。
+     *
+     * <p>票 13 的目录断言抓出过四道死题（gold 指向 `mail_*` / `github_*`，而评测上下文没接 MCP），
+     * 当时是换成别的题绕开的。这条反过来钉住"接上了没有"：绕开与接上，报告上都只是数字，
+     * 只有这条能分开它们。
+     */
+    @Test
+    @DisplayName("两个示例 MCP server 的工具进了目录：github_* 与 mail_* 各两个")
+    void mcpToolsReachTheCatalogue() {
+        Set<String> names = mcpBackedCatalogue().stream()
+                .map(callback -> callback.getToolDefinition().name())
+                .collect(Collectors.toSet());
+
+        assertThat(names)
+                .as("这四个是票 13 里那四道死题的 gold；它们不在，那四道题就永远 miss")
+                .contains("github_issue_list", "github_pr_checks", "mail_list_unread", "mail_send");
     }
 
     @Test

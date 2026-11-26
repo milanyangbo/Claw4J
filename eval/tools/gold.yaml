@@ -58,30 +58,29 @@
   category: business
   gold_tools: [list_schedules]
 
-# 下面四道原来指向 mail_* / github_*，2026-11-26 的目录断言发现它们**不在当轮目录里**
-# （那些工具随 MCP 装配，评测上下文没接 MCP），所以这四题永远 miss，把 business 这一档
-# 白扣 4/12。换成指向现有业务工具、但换一种问法：这一档要测的是"中文问中文描述找不找得到"，
-# 不是"某个部署有没有装 MCP"。等评测上下文接了 MCP，这四道原题可以按缺口补回来。
+# 下面四道指向外部系统（github_* / mail_*）。票 13 时它们曾被换成别的问法，因为评测上下文
+# 没接 MCP、这些工具不在目录里（永远 miss）。票 14 让评测上下文接上 examples/mcp 里那两个
+# 示例 server，于是原题回来了——这一档少了"外部系统工具"这一类，就等于没测最容易检索不到的那类。
 
-- id: tools-sales-detail
-  question: 查一下这个月华东的订单明细
+- id: tools-mail-unread
+  question: 我还有哪些没读的邮件？
   category: business
-  gold_tools: [querySales]
+  gold_tools: [mail_list_unread]
 
-- id: tools-schedule-daily-only
-  question: 我设的定时任务里，哪几个是每天跑的？
+- id: tools-mail-send
+  question: 给张三发个邮件，说交付延期两天
   category: business
-  gold_tools: [list_schedules]
+  gold_tools: [mail_send]
 
-- id: tools-schedule-stop-one
-  question: 不用每天早上提醒了，撤掉它
+- id: tools-github-issues
+  question: 仓库里还有哪些没关的 issue？
   category: business
-  gold_tools: [cancel_schedule]
+  gold_tools: [github_issue_list]
 
-- id: tools-recall-decision
-  question: 我们上次定的方案最后选了哪个？
+- id: tools-github-pr-ci
+  question: 这个 PR 的流水线过了没有？
   category: business
-  gold_tools: [recall_session]
+  gold_tools: [github_pr_checks]
 
 - id: tools-schedule-cancel
   question: 把刚才那个提醒取消掉

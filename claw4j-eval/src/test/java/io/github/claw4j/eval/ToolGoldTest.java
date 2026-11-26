@@ -196,6 +196,28 @@ class ToolGoldTest {
                 .isZero();
     }
 
+    /**
+     * `business` 这一档必须含"外部系统工具"那四道。
+     *
+     * <p>票 13 时它们被换成别的问法（评测上下文没接 MCP，指向 `mail_*` / `github_*` 的题永远
+     * miss）。票 14 接上了示例 server，原题回来——这一档若只剩"平台自带工具"，就等于没测
+     * 最容易检索不到的那一类：名字长、描述带英文、同域干扰多。
+     */
+    @Test
+    @DisplayName("business 覆盖外部系统：mail_* 与 github_* 各两道")
+    void businessCoversExternalSystems() throws IOException {
+        Set<String> businessTools = new java.util.HashSet<>();
+        for (ToolGold gold : loadGold()) {
+            if (gold.category().equals("business")) {
+                businessTools.addAll(gold.goldTools());
+            }
+        }
+
+        assertThat(businessTools)
+                .as("这四道题是「外部系统工具找不找得到」的唯一证据；换成别的问法后，这一类就没人测了")
+                .contains("mail_list_unread", "mail_send", "github_issue_list", "github_pr_checks");
+    }
+
     private static ToolRetrievalEval.Score byCategory(List<ToolRetrievalEval.Score> scores, String category) {
         return scores.stream().filter(score -> score.category().equals(category)).findFirst()
                 .orElseThrow(() -> new AssertionError("报告里没有这一档：" + category));
