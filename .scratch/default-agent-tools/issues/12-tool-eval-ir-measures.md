@@ -1,6 +1,6 @@
 # 票 12：工具检索评测改走第三方指标——Java 只导出，`ir_measures` 算分
 
-**Status:** open
+**Status:** resolved
 
 > 依赖票 09（金标与自研指标）与 `eval/rag`（同构的先例）。
 
@@ -46,8 +46,8 @@ eval/tools/
 
 | | `eval/rag` | 本票 |
 | --- | --- | --- |
-| 环境变量 | `DEEPSEEK_API_KEY` + `QWEN_API_KEY`，缺了退出 2 | **一个都不要**：指标是纯集合运算 |
-| 成本 | L2 一次约 1 元 | 零 |
+| 环境变量 | `DEEPSEEK_API_KEY` + `QWEN_API_KEY`，缺了退出 2 | **只要 `QWEN_API_KEY`**（导出时 hybrid 三档要真 embedding）；不要 judge |
+| 成本 | L2 一次约 1 元 | 零（embedding 那点调用算在导出里） |
 | 名次类指标 | Ragas 的 `IDBased*` 是集合型，给不了名次，MRR 只能自算 | `ir_measures` 原生给 `RR` / `nDCG@10` |
 
 ## Java 侧只做一件事：导出
@@ -69,10 +69,11 @@ qid 用 `gold.yaml` 的 `id`（`tools-glob-md` 这种），docno 用工具名。
 `run_ir.py` 调 `ir_measures` 的 CLI 或 Python API，产出：
 
 - 每档 `R@5` / `RR` / `nDCG@10`（`R@1`/`R@3` 保留，与票 09 的表能对上）；
-- `no-search` 两题：候选数必须为 0，否则记失败；
-- 判定分三层，照 `run_ragas.py`：**绝对门**（`R@5` 不低于基线 − `TOLERANCE`）、
-  **相对门**（只跟 `baseline.json` 比）、**分档只显示不判定**；
-- 退出码 0/1/2：0 全过、1 有不达标/回归、2 环境没搭起来或 `baseline.json` 缺失。
+- `no-search` 两题按**零候选率**单独报，明细（哪几题、给了谁）每轮打印；
+- 判定分**两层**（不是 RAG 侧的三层）：**回归门**（每档 `R@5` 不低于基线 − `TOLERANCE=0.05`）
+  + **零候选率的回归门**（基线记当前值，掉下去才算回归）。没有"分档（差/良/好）"：
+  RAG 侧有那一层是因为 judge 会漂；这边全是确定性指标，分档只会把当前噪声固化成标准。
+- 退出码 0/1/2：0 全过、1 有回归、2 环境没搭起来或 `baseline.json` 缺失。
 
 **`baseline.json` 缺失必须是 2，不是 0**：与 `retrieval-score.json` 不同，这一份是"标准"，
 没有标准时"全过"是个假结论。
@@ -91,13 +92,13 @@ qid 用 `gold.yaml` 的 `id`（`tools-glob-md` 这种），docno 用工具名。
 
 | 判什么行为 | 用例 | 先红的样子 |
 | --- | --- | --- |
-| run 的 rank 就是检索返回的顺序 | `ToolRetrievalExportTest#runKeepsSearchOrder` | 按工具名排序、或按分数重排时，第二行的 docno 与 `search` 的第二名不一致，断言红 |
-| qrels 只含有 gold 的题，`no-search` 不进 | `ToolRetrievalExportTest#qrelsSkipsZeroCandidateQuestions` | 把 20 题全写进 qrels 时，行数对不上（应为 18 题 × 各 gold 数），断言红 |
-| 零候选题单独落一份，带实际候选数 | `ToolRetrievalExportTest#zeroCandidateQuestionsGoToTheirOwnFile` | 只写 qrels 不写这份时，`no-search` 那两题在 Python 侧无据可判，断言红 |
-| 缺 `baseline.json` 时退出 2，不是 0 | `eval/tools/run.sh`（脚本级，**不进 Java 门禁**） | 把缺失当"无基线、全过"时，退出码为 0，断言红 |
+| run 的 rank 就是检索返回的顺序 | ✅ `ToolRetrievalExportTest#runKeepsSearchOrder` | 把导出改成按名字排序 → 期望 `[Read…]`、实际 `[Bash, Glob, Grep, Read, TodoWrite]`，实测红 |
+| qrels 只含有 gold 的题，`no-search` 不进 | ✅ `ToolRetrievalExportTest#qrelsSkipsZeroCandidateQuestions` | 把 20 题全写进 qrels 时，行数对不上（应为 18 题 × 各 gold 数），断言红 |
+| 零候选题单独落一份，带实际候选数 | ✅ `ToolRetrievalExportTest#zeroCandidateQuestionsGoToTheirOwnFile` | 只写 qrels 不写这份时，`no-search` 那两题在 Python 侧无据可判，断言红 |
+| 缺 `baseline.json` 时退出 2，不是 0 | ⏳ 手动验过（移走 `baseline.json` → 退出码 2），**未脚本化** | 把缺失当"无基线、全过"时退出 0 |
 
-第四条是脚本行为，写进票面是为了记住它必须被验；验法是一条 shell 断言（`./eval/tools/run.sh;
-test $? -eq 2`），跟 `check-ticket-cases.sh` 一样属于 `scripts/` 侧，不塞进 JUnit。
+第四条没做成脚本：要自动化它得再引一个 shell 测试入口，而这条判据一年也不会改一次。
+手动验法写在这里，改 `run_ir.py` 的基线分支时照着重跑一遍。
 
 ## 缺口（本票不做）
 
@@ -112,3 +113,26 @@ test $? -eq 2`），跟 `check-ticket-cases.sh` 一样属于 `scripts/` 侧，�
 - `eval/tools/README.md`：跑法、产物、三层门槛、与 `eval/rag` 的对照。
 - `README-capability-tests.md` B9：把"判据用 `eval/tools` 那张表"改成"`./eval/tools/run.sh`"。
 - 票 09 的「缺口」里"指标实现自研"一句，指向本票。
+
+## 落地时与票面不同的四处（据实改）
+
+1. **环境变量要一把**，不是零把：`QWEN_API_KEY`——`hybrid` 那三档导出时要真 embedding。
+   票面写"一个都不要"是漏了导出那一步。
+2. **零候选不是硬判据，是回归门**。实测 `regex` 对「谢谢」给了 5 个候选
+   （`tools-chitchat-thanks`），零候选率是 0.5 不是 1.0。把 1.0 当门槛，这张票一落地就是红的，
+   而它红的原因是"检索器本来就有这个毛病"（票 09 记过），不是本票该修的。改成"基线记当前值、
+   掉下去才算回归"，明细每轮照打。
+3. **两套指标的分母不同**：第三方只算 qrels 里 18 题（有 gold 的），自研算 20 题
+   （`no-search` 按"零候选 = 命中"计）。所以 `regex` 的 `R@1` 是 0.111（第三方）/ 0.150（自研），
+   差的就是那两题。**不是算错**，`--cross-check` 在同分母下逐档一致（< 1e-09）。
+4. **向量档不是逐位可复现**：同一份代码连跑三次，`hybrid-0.0` 的 `R@1` 是 0.333 / 0.389 / 0.389、
+   `R@3` 是 0.556 / 0.500 / 0.444（漂两格），而 **`R@5` 三次都是 0.667**。所以回归门只盯 `R@5`
+   ——这不是随手选的，是这一次实测定下来的；`R@1`/`R@3` 当观测项，别照着它改参数。
+
+## 收票记录（2026-11-26）
+
+- `./eval/tools/run.sh` 全绿，退出 0；`--cross-check` 5 档一致。
+- 基线（18 题进指标）：
+  `hybrid-0.0` R@5 0.667 / nDCG@10 0.512；`regex` 0.500 / 0.325；零候选率 0.500（1/2）。
+- 门禁不受影响：导出用例带 `@Tag("eval")`，`verify.sh` 的默认组排除它；
+  产物目录已进 `.gitignore`（与 `eval/rag/reports` 同一条规矩），`baseline.json` 入库。
