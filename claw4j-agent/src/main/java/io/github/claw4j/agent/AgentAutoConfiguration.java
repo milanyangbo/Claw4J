@@ -19,7 +19,6 @@ import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
 import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.session.SessionScopeProperties;
-import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
@@ -302,16 +301,12 @@ public class AgentAutoConfiguration {
     }
 
     /**
-     * 工具检索用的索引：按 {@code claw4j.advisor.tool-search.index} 四选一。
+     * 工具检索用的索引：按 {@code claw4j.advisor.tool-search.index} 二选一。
      *
-     * <p>默认那一档是中文版而不是框架的 {@code RegexToolIndex}：后者只按空白与标点切词，中文整句进去
-     * 是一个 token，当子串匹配等于什么都不匹配。代价不止命中率——用它就得反过来要求模型自己用
-     * 空格分词，等于把实现的缺陷教给模型。{@link ChineseToolIndex} 让那段提示词没有必要存在
-     * （见 {@link ToolSearch#SYSTEM_SUFFIX}）。
-     *
-     * <p>{@code lucene} / {@code vector} / {@code hybrid} 是另外三条路：第二个靠词频打分，后两个靠
-     * 语义相似度，{@code hybrid} 是两路按名次融合。四条的取舍写在
-     * {@link ToolSearchProperties.Index} 上；这里只做选择，不替使用者猜。
+     * <p>两档都吃中文译文，所以"中文整句撞不上英文描述"这件事不再靠自研分词去补：
+     * {@code lucene} 是纯本地的词频打分（库的默认），{@code hybrid} 再叠一路向量语义召回、
+     * 按名次融合（应用的默认）。取舍写在 {@link ToolSearchProperties.Index} 上；
+     * 这里只做选择，不替使用者猜。
      *
      * <p>分组与计量都在工厂里包好（{@link ToolSearch#index} 返回的已经是带分组的形状）：
      * 分组必须贴在每个检索实现上、在融合之前，包在外面会让某一组先被别组顶掉名额。

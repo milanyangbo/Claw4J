@@ -203,8 +203,8 @@ public final class RuleToolIndex implements ToolIndex {
     /**
      * 编译期就把正则编好。
      *
-     * <p>放到检索时再编的写法，坏处与 {@link ChineseToolIndex} 那条一样：{@code PatternSyntaxException}
-     * 会被内层的 catch 变成一次空结果，与"这个词确实没有对应工具"分不开。这里直接抛，
+     * <p>放到检索时再编，{@code PatternSyntaxException} 会被框架 {@code RegexToolIndex#doSearch}
+     * 的 catch 变成一次空结果，与"这个词确实没有对应工具"分不开。这里直接抛，
      * 坏掉的是启动，一眼能看见。
      *
      * @param rules 配置里的规则表

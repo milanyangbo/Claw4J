@@ -57,7 +57,7 @@ public final class ToolSearch {
      * 问完就把"没有工具"一起说了，所以还要说明确认口径与先检索不冲突。同理要说清"先检索、再调用"：
      * 只藏工具不解释，模型会拿一个不合适的工具硬凑，或者直接说做不到。
      *
-     * <p>索引用 {@link ChineseToolIndex}（相邻两字一组），整句本来就能命中，所以这里让模型用一句
+     * <p>索引读的是中文译文（{@code zh-description}），整句本来就能命中，所以这里让模型用一句
      * 自然语言说清要什么能力，不要求它自己拆关键词。提示词与索引必须一起改：只改索引不改提示词，
      * 等于留一段教模型绕开不存在的限制的话。
      *
@@ -76,45 +76,41 @@ public final class ToolSearch {
             + "不用自己拆关键词——中文和英文它都认。\n";
 
     /**
-     * 按配置建索引。四档的差别只在"怎么把 query 变成候选"，见 {@link ToolSearchProperties.Index}。
+     * 按配置建索引。两档的差别只在"怎么把 query 变成候选"，见 {@link ToolSearchProperties.Index}。
      *
-     * <p>分组这一层在<b>里面</b>，四档都一样：{@code categoryFilter} 只有 {@link NamespacedToolIndex}
+     * <p>分组这一层在<b>里面</b>，两档都一样：{@code categoryFilter} 只有 {@link NamespacedToolIndex}
      * 读，而 hybrid 的两个检索实现各自要被收窄、融合之后才轮到截断。包在外面的话，排在前面的那一组
      * 会先把名额占满，收窄之后反而更少——这是本类唯一一处"顺序决定对错"的地方。
      *
-     * <p>选 {@code vector} / {@code hybrid} 而没有工具向量库时<b>在这里就失败</b>，不悄悄回落到
-     * 正则：回落之后日志上一切正常，而"我明明配了向量检索"这个判断会一直错下去，错到有人拿它做
-     * 线上决定。
+     * <p>选 {@code hybrid} 而没有工具向量库时<b>在这里就失败</b>，不悄悄回落到 Lucene：回落之后
+     * 日志上一切正常，而"我明明配了向量检索"这个判断会一直错下去，错到有人拿它做线上决定。
      *
- * <p>中文化（{@code zh-description}）**四档都包在外面**：2026-11-26 换翼之后两翼读的是同一份
- * 中文译文（票 21 的对照里，lucene 吃译文让 base 档从 0.000 到 0.900）。唯一不包的是 {@code regex}
- * 那一档——它按二元组做 OR 匹配，描述变长碰撞就变多，实测掉分。
- *
- * @param properties  检索配置，必填
- * @param vectorStore 工具专用的向量库（{@link ToolVectorStore}），只有 vector / hybrid 用得到，
- *                    其余两档传 {@code null}
- * @param categories  分组规则，必填
- * @param translator  描述翻译器，喂给 lucene / vector / hybrid 三档；不译时传
- *                    {@link ToolDescriptionTranslator#NONE}
- * @return 索引，四档都已经是"带分组"的形状；配了 {@code rules} 时最外层再包一层规则
- * @throws IllegalStateException {@code index=vector|hybrid} 但没有工具向量库
- */
+     * <p>中文化（{@code zh-description}）**两档都包在外面**：2026-11-26 换翼之后两翼读的是同一份
+     * 中文译文（票 21 的对照里，lucene 吃译文让 base 档从 0.000 到 0.900）。自研的二元组那一档随
+     * {@code index=regex} 一起退役了——它恰恰是"描述变长就掉分"的那一个（0.15 → 0.10）。
+     *
+     * @param properties  检索配置，必填
+     * @param vectorStore 工具专用的向量库（{@link ToolVectorStore}），只有 hybrid 用得到，
+     *                    {@code lucene} 传 {@code null}
+     * @param categories  分组规则，必填
+     * @param translator  描述翻译器，两档都喂；不译时传 {@link ToolDescriptionTranslator#NONE}
+     * @return 索引，最外层是寒暄拦截（{@link ChitchatToolIndex}），里面依次是规则（配了才有）、
+     *         分组与那一档的检索实现
+     * @throws IllegalStateException {@code index=hybrid} 但没有工具向量库
+     */
     public static ToolIndex index(ToolSearchProperties properties, VectorStore vectorStore,
                                   ToolCategories categories, ToolDescriptionTranslator translator) {
         Objects.requireNonNull(properties, "properties");
         Objects.requireNonNull(categories, "categories");
         Objects.requireNonNull(translator, "translator");
         ToolIndex base = switch (properties.index()) {
-            case REGEX -> new NamespacedToolIndex(new ChineseToolIndex(), categories);
+            // 两档都吃译文（票 21）：Lucene 按字切中文 query，撞上英文描述一个词都不重合，
+            // 只能捞到中文描述的那几个干扰项——那一版它在 base 档是 0.000，接上译文后 0.900。
             case LUCENE -> new NamespacedToolIndex(
                     new TranslatedVectorIndex(new LuceneToolIndex(properties.lucene().minScore()),
                             translator), categories);
-            case VECTOR -> new NamespacedToolIndex(
-                    new TranslatedVectorIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
-                            translator), categories);
-            // 关键字翼是 Lucene，不是 self-written 的 ChineseToolIndex（票 21）：
-            // TF-IDF 排序比"二元组命中次数累加"靠谱，而且描述一变长，它的 IDF 会把常见字压下去，
-            // 不像二元组那样越加越容易碰撞。两翼都吃译文——否则中文问法只能撞上中文描述的工具。
+            // 关键字翼是 Lucene，不是自研的二元组（票 21）：TF-IDF 排序比"命中次数累加"靠谱，
+            // 而且描述一变长，它的 IDF 会把常见字压下去，不像二元组那样越加越容易碰撞。
             case HYBRID -> HybridToolIndex.of(categories,
                     new TranslatedVectorIndex(new LuceneToolIndex(properties.lucene().minScore()),
                             translator),
@@ -124,7 +120,12 @@ public final class ToolSearch {
         // 规则层包在**最外面**：它要看到已经融合、已经收窄、已经截断的那一版，命中就把工具提到最前。
         // 包在里面的话，融合会按 RRF 重新排序，"规则置顶"当场失效——而结果看起来只是"规则不太灵"。
         // 没配规则时原样返回 base：空转一层会让所有既有装配断言多包一层壳，收益是零。
-        return properties.rules().isEmpty() ? base : new RuleToolIndex(base, properties.rules(), categories);
+        ToolIndex ranked = properties.rules().isEmpty()
+                ? base : new RuleToolIndex(base, properties.rules(), categories);
+        // 寒暄与空 query 挡在最外面：那是"该不该检索"，不是"怎么检索"。放在里面（任何一档索引里）
+        // 都会让另一档漏掉——2026-11-26 之前它就只对 `index=regex` 生效，而生产早就是 hybrid，
+        // 于是"谢谢"照样拿到五个候选，评测里那一列却一直显示 1.000。
+        return new ChitchatToolIndex(ranked);
     }
 
     /**
@@ -143,7 +144,7 @@ public final class ToolSearch {
             throw new IllegalStateException("claw4j.advisor.tool-search.index 要向量，但工具用的 "
                     + "VectorStore 建不出来。它由 EmbeddingModel 现场构造（表在 " + ToolVectorStore.qualifiedTable()
                     + "），所以要配 claw4j.model.embedding（模型名、key、dimensions）；"
-                    + "不想配就把 index 改回 regex。");
+                    + "不想配就把 index 改成 lucene（纯本地，不用向量库）。");
         }
         return vectorStore;
     }

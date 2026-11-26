@@ -110,12 +110,12 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 模型手上默认是两类：六个**常驻基座**（`Read` / `Grep` / `Glob` / `Bash` / `WebFetch` / `TodoWrite`，
 `claw4j.advisor.tool-search.pinned`）加一个 `toolSearchTool`；其余工具要搜一次才拿得到。搜得准不准由
 `claw4j.advisor.tool-search.index` 决定：`hybrid`（默认，关键字 ∪ 向量按名次融合）、`lucene`（全文打分，
-中文按字切）、`vector`（语义召回）、`regex`（中文二元组 + 同义词表，只认字面）。`vector` 与 `hybrid` 要一份
-**工具专用**的向量库（`claw4j_tool.tool_index`，由 `EmbeddingModel` 建）：它不注册成 bean，
-也不与知识库共用表——共用会让工具描述跟着知识库的召回进业务问答。四档只影响
+中文按字切）。两档都读中文译文；`hybrid` 要一份**工具专用**的向量库（`claw4j_tool.tool_index`，
+由 `EmbeddingModel` 建）——它不注册成 bean，也不与知识库共用表，共用会让工具描述跟着知识库的召回
+进业务问答。纯向量不再是单独一档：`hybrid` + `keyword-weight: 0` 就是它。档位只影响
 "搜到什么"，**不放宽任何一层可见性**——索引里只有本来就在清单里的工具。
 相似度管不了的那类确定性别交给它猜：`claw4j.advisor.tool-search.rules` 可以写
-「命中这句正则就把这几个工具置顶」，默认空。
+「命中这句正则就把这几个工具置顶」，默认空。寒暄与空查询一律不给候选，这一层在所有索引外面。
 
 **③ 哪些要人批。** 两类，互相独立：
 

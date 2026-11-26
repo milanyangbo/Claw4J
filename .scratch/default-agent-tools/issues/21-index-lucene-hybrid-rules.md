@@ -1,6 +1,6 @@
 # 票 21：index 收成 lucene/hybrid，hybrid 换 lucene 翼，regex 退成规则层
 
-**Status:** partially done（2026-11-26：第 1 批换翼 + 规则层已落地；删 `REGEX`/`VECTOR` 档未做）
+**Status:** resolved（2026-11-26：换翼、规则层、删档位三批都已落地）
 **来源：** 用户 2026-11-26 的架构判断——「hybrid 是向量加 lucene，而不是 regex，当然 regex 退成规则层，
 这个 regex 也要用框架本身的能力，只是看看能不能支持传自定义的正则表达式」。
 
@@ -131,9 +131,43 @@ claw4j:
 合并成 `moduleDependenciesPointOneWay`（三条同形规则，守的都是"模块只许单向依赖"），
 并在 Javadoc 里保留三条规则各自的 ADR 与症状。没有新增测试文件——那会直接顶破 14 这个数。
 
-**第 2 批之二（未做）**：删 `REGEX` / `VECTOR` 枚举，`VECTOR` 的功能由 `HYBRID` + `keyword-weight: 0`
-承接（2026-11-26 实测两者同为 0.820）；`ChineseToolIndex` 退役或只保留同义词表作为规则层的默认值。
-要改所有 `switch`、配置绑定与四处测试断言，单独一步做。
+## 第 2 批之二：删档位（2026-11-26 落地）
+
+| 决定 | 为什么 |
+| --- | --- |
+| `Index` 只剩 `LUCENE` / `HYBRID` | `REGEX` 的位置由规则层承接；`VECTOR` 与 `hybrid` + `keyword-weight: 0` 等价 |
+| **库的默认从 `REGEX` 改成 `LUCENE`** | 库不替调用方决定依赖向量库：`lucene` 纯本地、0.780–0.820，`hybrid` 缺 vector store 会启动失败 |
+| 删 `ChineseToolIndex`（318 行） | 它只被 `REGEX` 用；二元组与同义词表在换 Lucene 翼之后已无增量 |
+| 闲聊拦截独立成 `ChitchatToolIndex` | 见下面"这一批暴露的真问题"——它原来只对 `REGEX` 生效 |
+| 评测从 5 档收到 4 档 | `regex` 那一列随档位一起删；`hybrid-1.0` 现在与 `lucene` 逐格相同 |
+
+### 这一批暴露的真问题：零候选率量错了对象
+
+`no-search.jsonl` 原来固定取 `regex` 那一档的结果（当初它是默认档，闲聊拦截又长在
+`ChineseToolIndex` 里）。默认换成 `hybrid` 之后，这一列**从来没描述过生产**。
+
+删掉 `regex` 时才露出来：改成按生产档 `hybrid-0.5` 量，第一版结果是 **0.000**——十道寒暄题
+每题拿到 5 个候选（向量那一路对任何输入都按相似度交回前 k 个）。这不是"检索不准"，是
+"压根不该检索"。
+
+修法：把词表从被删的 `ChineseToolIndex` 移到 `ChitchatToolIndex`，包在**所有索引外面**
+（`MeteredToolIndex` 之内），与档位无关；空 query 一并挡掉（框架正则档返 `.*`、向量档返前 k 个，
+两种都是"空查询把渐进式披露静默关掉"）。修后回到 1.000，`R@5` 不动（闲聊题不进 qrels）。
+
+顺带纠一个**我自己的错**：删 `ChineseToolIndex` 之前我"量"了各档在闲聊题上的候选数，结论是
+"各档都零候选"——那是错的，`.run` 里本来就不含闲聊题，我量的是空集。真数据在第二节那个
+0.000 里。**判据必须在会包含该题的产物上量。**
+
+### 门禁与数字
+
+- `./scripts/verify.sh` 全绿（失败 / 错误 / 跳过 0），`claw4j-agent` 14 文件 26 方法。
+- 检索层：`hybrid-0.5` R@5 **0.880**、零候选率 **1.000**、退出码 `0`；`lucene` / `hybrid-0.0`
+  同一天两次导出在 0.780–0.800 之间摆（37/50 题并列抖动 + 每轮重译），已写进 README。
+- 测试改写：`chineseQueryNeedsNoSpaces` 改用默认档（`lucene`）+ 增加"整句寒暄不给候选"；
+  `inner()` 从"剥一层分组"改成循环剥（寒暄 / 规则 / 分组三层）；
+  `ApplicationAssemblyTest` 的分层断言加了一层（计量 → 寒暄 → 融合/分组）。
+
+复核：2026-11-26 `./mvnw -o -Peval -pl claw4j-eval -am test -Dtest=ToolRetrievalExportTest && ./eval/tools/retrieval/run.sh --from-report`
 
 ## 缺口
 

@@ -5,7 +5,7 @@ import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.ToolCallAudit;
-import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
+import org.springframework.ai.tool.toolsearch.index.lucene.LuceneToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.toolaccess.ToolsProperties;
@@ -547,7 +547,7 @@ class SubagentDelegationTest {
                 beans.getBeanProvider(MeterRegistry.class),
                 beans.getBeanProvider(ToolTierRegistry.class),
                 ToolsProperties.defaults(),
-                new ChineseToolIndex(),
+                new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE),
                 ToolSearchProperties.defaults(),
                 AgentProperties.defaults(),
                 beans.getBeanProvider(Approvals.class),
@@ -641,7 +641,7 @@ class SubagentDelegationTest {
      */
     private SubagentRunner runner(ChatModel model, List<ToolCallback> tools, ToolCallAudit audit) {
         return new SubagentRunner(model, ObservationRegistry.NOOP, audit, () -> tools,
-                new ChineseToolIndex(),
+                new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE),
                 // 显式 always：这几条要验的是子链的委派与审计，脚本写的就是「检索 → 调用 → 结论」
                 // 三步。默认 auto 在工具只有一两个时会全塞，那三步就少一步，脚本对不上——而
                 // "子链按默认配置怎么滑档"不是这里的题目（那条在 ModelAndToolSelectionTest）。

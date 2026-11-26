@@ -114,12 +114,12 @@ class ToolRetrievalSnapshotTest {
         List<ToolGold> golds = golds();
         System.out.println("工具目录 " + tools.size() + " 个，题 " + golds.size() + " 条");
         System.out.println("常驻（pinned）：" + context.getBean(ToolSearchProperties.class).pinned());
-        System.out.println("中文化（只喂向量）：" + context.getBean(ToolSearchProperties.class).zhDescription());
+        System.out.println("中文化（两翼都吃）：" + context.getBean(ToolSearchProperties.class).zhDescription());
 
 
         List<ToolRetrievalEval.Score> scores = new ArrayList<>();
-        for (String config : List.of("regex", "lucene")) {
-            scores.addAll(ToolRetrievalEval.evaluate(config, index(context.getBean(ToolSearchProperties.class), config),
+        for (String config : List.of("lucene")) {
+            scores.addAll(ToolRetrievalEval.evaluate(config, index(config),
                     tools, golds));
         }
         for (double weight : List.of(1.0, 0.5, 0.0)) {
@@ -133,19 +133,18 @@ class ToolRetrievalSnapshotTest {
         // 不断言分数高低（那是要观察的东西，不是要钉的东西），只断言"每档都真的跑了"：
         // 五行全同分就是"配置没接上"，与"三种索引一样好"分不开。
         assertThat(scores).extracting(ToolRetrievalEval.Score::config)
-                .contains("regex", "lucene", "hybrid-1.0", "hybrid-0.5", "hybrid-0.0");
+                .contains("lucene", "hybrid-1.0", "hybrid-0.5", "hybrid-0.0");
         assertThat(scores).allSatisfy(score ->
                 assertThat(score.total()).as("这一档一条题都没跑").isPositive());
     }
 
-    /** 前三档不需要向量库，传 {@code null}；分组留空，与线上默认一致。 */
-    private ToolIndex index(ToolSearchProperties defaults, String config) {
+    /** 只有 lucene 走这条（不要向量库）：分组留空，与线上默认一致。 */
+    private ToolIndex index(String config) {
         // 每档显式写出自己的 Index，不吃 defaults 里那个：2026-11-26 起应用默认是 hybrid，
-        // 拿它当 regex 用会去找向量库（这里只传 null），报的是一句和本意无关的装配错误。
+        // 拿它当 lucene 用会去找向量库（这里只传 null），报的是一句和本意无关的装配错误。
         ToolSearchProperties properties = switch (config) {
             case "lucene" -> new ToolSearchProperties(ToolSearchProperties.Index.LUCENE, 5, null);
-            case "regex" -> new ToolSearchProperties(ToolSearchProperties.Index.REGEX, 5, null);
-            default -> defaults;
+            default -> throw new IllegalArgumentException("这一档不需要向量库：" + config);
         };
         return ToolSearch.index(properties, null, ToolCategories.of(Map.of()), this.translator);
     }

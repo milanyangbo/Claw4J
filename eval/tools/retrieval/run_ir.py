@@ -64,9 +64,12 @@ CATEGORY_MEANING = {
 
 # 每档配置是怎么算的。键同时支持 hybrid-<权重> 的通配（见 describe_config）。
 CONFIG_MEANING = {
-    "regex": "中文二元组 + 同义词表，纯关键字。默认那一档",
-    "lucene": "全文检索打分（中文按字切），靠词频，不看语义",
+    "lucene": "全文检索打分（中文按字切），靠词频，不看语义。不用向量库，是库的默认那一档",
 }
+
+# 已经删掉的档位（票 21）：导出端不再产出它们，但 reports/ 里可能还留着上一轮的 .run。
+# 直接读会生成一列"看起来还在跑"的旧数，比不显示更坏——所以跳过，并说明跳过了几个。
+STALE_CONFIGS = {"regex", "vector"}
 
 # 回归容差：确定性指标本来可以不设，留 0.05 是为了"一格题"不反复告警。
 TOLERANCE = 0.05
@@ -110,7 +113,7 @@ def parse_args() -> argparse.Namespace:
 
 def config_order(name: str) -> tuple:
     """报告里的列序：关键字在前、纯向量在后，未知档排最后（按字典序）。"""
-    known = ["regex", "lucene", "hybrid-1.0", "hybrid-0.5", "hybrid-0.0"]
+    known = ["lucene", "hybrid-1.0", "hybrid-0.5", "hybrid-0.0"]
     if name in known:
         return (0, known.index(name), name)
     return (1, 0, name)
@@ -127,7 +130,7 @@ def describe_config(name: str) -> str:
         except ValueError:
             return "关键字与向量的融合（权重没解析出来）"
         if value >= 1.0:
-            return "关键字 100% + 向量 0%：与 regex 逐格相同，用来证明「对照」是真对照"
+            return "关键字 100% + 向量 0%：与 lucene 逐格相同，用来证明「对照」是真对照"
         if value <= 0.0:
             return "纯向量：完全按语义相似度找，不要求字面重合"
         return f"关键字 {value:g} + 向量 {1 - value:g}（线上默认权重）"
@@ -137,6 +140,10 @@ def describe_config(name: str) -> str:
 def run_files(only: str) -> list[Path]:
     wanted = [name.strip() for name in only.split(",") if name.strip()]
     files = sorted(REPORTS.glob("*.run"), key=lambda path: config_order(path.stem))
+    stale = [path for path in files if path.stem in STALE_CONFIGS]
+    if stale:
+        print("跳过已退役档位的旧 .run：" + ", ".join(path.stem for path in stale))
+    files = [path for path in files if path.stem not in STALE_CONFIGS]
     if wanted:
         files = [path for path in files if path.stem in wanted]
     if not files:
@@ -455,7 +462,7 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
 
     lines += [
         "",
-        "所以 `hybrid-1.0` 与 `regex` 应当逐格相同——如果不同，说明融合那层写错了。"
+        "所以 `hybrid-1.0` 与 `lucene` 应当逐格相同——如果不同，说明融合那层写错了。"
         "`hybrid-0.0` 是纯向量，`hybrid-0.5` 是各一半。",
         "",
         "## 总表",

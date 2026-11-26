@@ -114,9 +114,22 @@ class ToolRetrievalExportTest {
                 () -> TestPaths.repositoryRoot().resolve(script).toString());
     }
 
-    /** 与 {@code ToolRetrievalSnapshotTest} 同一个顺序：两档关键字、三档 hybrid。 */
+    /**
+     * 与 {@code ToolRetrievalSnapshotTest} 同一个顺序：一档 lucene、三档 hybrid。
+     *
+     * <p>票 21 把 {@code regex}（自研中文二元组）与 {@code vector} 两档删了：前者的位置由规则层承接，
+     * 后者与 {@code hybrid-0.0} 等价（实测同为 0.820）。所以这张表从五行降到四行。
+     */
     private static final List<String> CONFIGS =
-            List.of("regex", "lucene", "hybrid-1.0", "hybrid-0.5", "hybrid-0.0");
+            List.of("lucene", "hybrid-1.0", "hybrid-0.5", "hybrid-0.0");
+
+    /**
+     * 零候选题按哪一档量。
+     *
+     * <p>用生产在用的那一档，不用最好看的那一档：这一列问的是"用户说「谢谢」时会不会收到候选"，
+     * 答案必须来自用户实际拿到的那条路。名字与 {@code run_ir.py} 的 {@code GATE_PRIMARY} 一致。
+     */
+    private static final String NO_SEARCH_CONFIG = "hybrid-0.5";
 
     @Autowired
     private ToolCatalog catalogue;
@@ -158,7 +171,7 @@ class ToolRetrievalExportTest {
         writeCategories();
         writeCatalogue(tools);
         for (String config : CONFIGS) {
-            // hybrid 的三档要现场建向量库；前三档传 null。分派写在这里而不是 index() 里，
+            // hybrid 的三档要现场建向量库；lucene 传 null。分派写在这里而不是 index() 里，
             // 是因为 hybrid 需要 jdbc 与 embedding，那是这个类的状态，不是那个纯函数的事。
             ToolIndex index = config.startsWith("hybrid-")
                     ? hybrid(Double.parseDouble(config.substring("hybrid-".length())))
@@ -358,7 +371,7 @@ class ToolRetrievalExportTest {
                 .containsExactlyInAnyOrderElementsOf(zeroCandidate);
         assertThat(rows).allSatisfy(row -> assertThat(row.get("returned"))
                 .as("actual 候选数必须写上：判据是「必须为 0」，写死 0 就永远通过")
-                .isEqualTo(this.rankings.get("regex").get((String) row.get("qid")).size()));
+                .isEqualTo(this.rankings.get(NO_SEARCH_CONFIG).get((String) row.get("qid")).size()));
     }
 
     /**
@@ -437,7 +450,7 @@ class ToolRetrievalExportTest {
             if (!gold.goldTools().isEmpty()) {
                 continue;
             }
-            List<String> got = this.rankings.get("regex").get(gold.id());
+            List<String> got = this.rankings.get(NO_SEARCH_CONFIG).get(gold.id());
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("qid", gold.id());
             row.put("returned", got.size());
@@ -447,11 +460,12 @@ class ToolRetrievalExportTest {
         Files.writeString(this.reports.resolve("no-search.jsonl"), text.toString(), StandardCharsets.UTF_8);
     }
 
-    /** 前三档不需要向量库，传 {@code null}；与快照那份同一套构造。 */
+    /** 只有 lucene 走这条（不要向量库）；与快照那份同一套构造。 */
     private ToolIndex index(String config) {
         ToolSearchProperties properties = switch (config) {
             case "lucene" -> new ToolSearchProperties(ToolSearchProperties.Index.LUCENE, 5, null);
-            default -> ToolSearchProperties.defaults();
+            // 不再回落成 defaults：defaults 现在是 lucene，回落会让"写错档名"变成"悄悄跑了 lucene"。
+            default -> throw new IllegalArgumentException("这一档不需要向量库：" + config);
         };
         return ToolSearch.index(properties, null, ToolCategories.of(Map.of()), this.translator);
     }

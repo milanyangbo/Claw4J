@@ -34,7 +34,7 @@ public final class ToolRetrievalEval {
     /**
      * 一档配置 × 一个分类的分数。
      *
-     * @param config   配置名（{@code regex} / {@code hybrid-0.5} …）
+     * @param config   配置名（{@code lucene} / {@code hybrid-0.5} …）
      * @param category 分类；{@link #ALL} 表示全部
      * @param total    这一档有几条题
      * @param recall1  前 1 名命中的比例

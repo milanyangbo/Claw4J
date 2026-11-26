@@ -1,8 +1,8 @@
 package io.github.claw4j.agent;
 
-import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.observability.MeteredToolIndex;
 import io.github.claw4j.agent.toolaccess.HybridToolIndex;
+import io.github.claw4j.agent.toolaccess.ChitchatToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
 import io.github.claw4j.agent.toolaccess.TranslatedVectorIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
@@ -270,7 +270,7 @@ class ModelAndToolSelectionTest {
     void missingSessionIdFailsLoudly() {
         ChatClient client = ChatClient.builder(new FixedChatModel("好的"),
                         ObservationRegistry.NOOP, null, null,
-                        ToolSearch.toolLoop(ToolSearchProperties.defaults(), new ChineseToolIndex(),
+                        ToolSearch.toolLoop(ToolSearchProperties.defaults(), new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE),
                                 ObservationRegistry.NOOP, ToolCallBudget.MAX_TOTAL_CALLS))
                 .defaultToolCallbacks(new RecordingTool("lookup", "128400", "查询销售成交额"))
                 .build();
@@ -352,15 +352,19 @@ class ModelAndToolSelectionTest {
                         .as("只写 pattern 不写 tools 是配置错误：命中之后不知道给哪个工具")
                         .hasRootCauseInstanceOf(IllegalArgumentException.class));
 
-        // ---- 同一个入口的另一半：index 四档选谁、分组贴在哪一层
+        // ---- 同一个入口的另一半：index 两档选谁、分组贴在哪一层
 
         ToolCategories categories = ToolCategories.of(Map.of());
-        // 开着中文化的翻译器：它只该出现在向量那一路外面，关键字档必须不包（票 11 修正）。
+        // 开着中文化的翻译器：两档都该包着它（票 21 之后），否则中文问法只能撞上中文描述的工具。
         ToolDescriptionTranslator zh = new ToolDescriptionTranslator(new FixedChatModel("查文件"),
                 new ToolSearchProperties.ZhDescription(true, List.of()));
-        assertThat(inner(ToolSearch.index(ToolSearchProperties.defaults(), null, categories, zh)))
-                .as("不写 index 时是中文那一版；而且不包翻译层——关键字读原文")
-                .isInstanceOf(ChineseToolIndex.class);
+        ToolIndex byDefault = inner(ToolSearch.index(ToolSearchProperties.defaults(), null, categories, zh));
+        assertThat(byDefault)
+                .as("不写 index 时是 lucene，而且包着翻译层——它按字切中文 query，读英文原文就撞不上")
+                .isInstanceOf(TranslatedVectorIndex.class);
+        assertThat(untranslated(byDefault))
+                .as("库的默认档不要向量库：不配任何东西也要起得来")
+                .isInstanceOf(LuceneToolIndex.class);
 
         ToolSearchProperties lucene = new ToolSearchProperties(
                 ToolSearchProperties.Index.LUCENE, 5, new ToolSearchProperties.Lucene(0.6f));
@@ -372,22 +376,16 @@ class ModelAndToolSelectionTest {
                 .as("lucene 那一档不再需要容器里有什么")
                 .isInstanceOf(LuceneToolIndex.class);
 
-        ToolSearchProperties vector = new ToolSearchProperties(
-                ToolSearchProperties.Index.VECTOR, 5, null);
-        assertThatThrownBy(() -> ToolSearch.index(vector, null, categories, zh))
+        assertThatThrownBy(() -> ToolSearch.index(
+                new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, 5, null), null, categories, zh))
                 .isInstanceOf(IllegalStateException.class)
-                .as("回落成 regex 会让\"我明明配了向量\"变成一个查不出来的谎")
+                .as("回落成 lucene 会让\"我明明配了向量\"变成一个查不出来的谎")
                 .hasMessageContaining("VectorStore")
-                .hasMessageContaining("index 改回 regex");
-        assertThat(inner(ToolSearch.index(vector, new FakeVectorStore(), categories, zh)))
-                .as("向量档外面包着翻译层：改的是入库文本，不是检索逻辑")
-                .isInstanceOf(TranslatedVectorIndex.class);
-        assertThat(((TranslatedVectorIndex) inner(ToolSearch.index(vector, new FakeVectorStore(), categories, zh)))
-                .delegate())
-                .isInstanceOf(VectorToolIndex.class);
+                .hasMessageContaining("index 改成 lucene");
 
-        ToolIndex fused = ToolSearch.index(new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, 5, null),
-                new FakeVectorStore(), categories, zh);
+        ToolIndex fused = inner(ToolSearch.index(
+                new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, 5, null),
+                new FakeVectorStore(), categories, zh));
         assertThat(fused)
                 .as("hybrid 不在外面再包一层分组：两翼各自被包，融合在最外面")
                 .isInstanceOf(HybridToolIndex.class);
@@ -396,14 +394,14 @@ class ModelAndToolSelectionTest {
                 .isInstanceOf(NamespacedToolIndex.class);
         assertThat(((HybridToolIndex) fused).vectorWing())
                 .isInstanceOf(NamespacedToolIndex.class);
-        assertThat(inner(((HybridToolIndex) fused).vectorWing()))
-                .as("向量翼里包着翻译层")
-                .isInstanceOf(TranslatedVectorIndex.class);
+        assertThat(untranslated(inner(((HybridToolIndex) fused).vectorWing())))
+                .as("向量翼里包着翻译层，翻译层后面是向量索引")
+                .isInstanceOf(VectorToolIndex.class);
         assertThat(inner(((HybridToolIndex) fused).keywordWing()))
                 .as("关键字翼也包着翻译层（票 21）：两翼读同一份中文描述，只是检索方式不同")
                 .isInstanceOf(TranslatedVectorIndex.class);
         assertThat(untranslated(inner(((HybridToolIndex) fused).keywordWing())))
-                .as("关键字翼是 Lucene，不是自研的 ChineseToolIndex")
+                .as("关键字翼是 Lucene，不是已退役的自研二元组")
                 .isInstanceOf(LuceneToolIndex.class);
 
         new ApplicationContextRunner()
@@ -436,8 +434,25 @@ class ModelAndToolSelectionTest {
 
 
     /** 分组那层统一在最里面，验"选哪一档"时要先剥掉它。 */
+    /**
+     * 剥掉"包在检索外面的那几层"，剩下真正干活的索引。
+     *
+     * <p>循环而不是写死一层：寒暄拦截、规则、分组是三个独立决定，配不配都可能少一层。
+     * 断"里面是谁"的用例只关心最里那层，逐层写死会让每个新包装都改一次这些断言。
+     */
     private static ToolIndex inner(ToolIndex index) {
-        return index instanceof NamespacedToolIndex namespaced ? namespaced.delegate() : index;
+        ToolIndex current = index;
+        while (true) {
+            if (current instanceof ChitchatToolIndex chitchat) {
+                current = chitchat.delegate();
+            } else if (current instanceof RuleToolIndex rule) {
+                current = rule.delegate();
+            } else if (current instanceof NamespacedToolIndex namespaced) {
+                current = namespaced.delegate();
+            } else {
+                return current;
+            }
+        }
     }
 
     /** 再往里剥一层翻译包装：断言"真正干活的索引是哪个"时要穿过它。 */
@@ -473,19 +488,23 @@ class ModelAndToolSelectionTest {
     }
 
     /**
-     * 中文检索原本要求模型自己用空格分词；现在整句直接能命中。
+     * 中文整句不用空格也能命中——但这不再是自研分词的功劳，而是默认那一档（Lucene + 译文）的事。
      *
      * <p>一条方法里放多段不是「一条测多件事」：它们同一个入口（{@code ToolIndex#search}）、
-     * 同一种断言形状（结果里有没有那个工具），差的只是输入，与
-     * {@code retryableClassificationTable} 拿一张表跑多行是同一个写法。
+     * 同一种断言形状（结果里有没有那个工具），差的只是输入。
      *
-     * <p>为什么断言「在前 5 里」而不是「第一个就是它」：二元组的假阳性是真实的，排序能压住
+     * <p>为什么断言「在前 5 里」而不是「第一个就是它」：中文按字切片的假阳性是真实的，排序能压住
      * 大部分但不是全部；断言「不许出现别的」会给自己埋假红。
+     *
+     * <p>min-score 传 0 是刻意的：这条验的是<b>排序</b>，"多少分以下不要"是另一件事
+     * （评测里量的是 0.25）。混在一条断言里，失败时说不清是"找不到"还是"被筛掉了"。
      */
     @Test
     @DisplayName("中文检索：整句能命中，关键词不变差，工具从 20 加到 100 也不变差")
     void chineseQueryNeedsNoSpaces() {
-        ChineseToolIndex index = new ChineseToolIndex();
+        ToolIndex index = ToolSearch.index(new ToolSearchProperties(
+                        ToolSearchProperties.Index.LUCENE, 5, new ToolSearchProperties.Lucene(0.0f)),
+                null, ToolCategories.of(Map.of()), ToolDescriptionTranslator.NONE);
         List<ToolReference> tools = List.of(
                 ToolReference.builder().toolName("recall_session")
                         .summary("按关键词检索历史对话：回忆、之前说过什么、以前的结论").build(),
@@ -502,14 +521,10 @@ class ModelAndToolSelectionTest {
                 ToolReference.builder().toolName("scheduleMeeting")
                         .summary("预约会议室，安排日程与参会人").build(),
                 ToolReference.builder().toolName("runScript")
-                        .summary("在沙箱里执行脚本，用于批量处理数据").build(),
-                // 描述照抄框架那一份：全英文。这正是网页这一族要跨语言搭桥的原因。
-                ToolReference.builder().toolName("WebFetch")
-                        .summary("Fetches content from a specified URL and processes it using an AI "
-                                + "model. Takes a URL and a prompt, fetches the URL content using "
-                                + "HTTP GET method, converts HTML to markdown.").build());
+                        .summary("在沙箱里执行脚本，用于批量处理数据").build());
 
-        // 一、整句命中。不切词的话整句是一个 token，当子串去描述里找什么都找不到。
+        // 一、整句命中。框架的 StandardAnalyzer 不认中文词边界，但按字切也能靠字面重合排上来；
+        //     生产上真正的跨语言那一半由译文负责（见 configBoundariesAreHonoured 的翻译层断言）。
         index.indexTools("chat-1", tools);
         assertThat(foundTools(index, "chat-1", "回忆以前说过的话"))
                 .as("中文整句不该空手而归")
@@ -520,67 +535,31 @@ class ModelAndToolSelectionTest {
                 .as("空格分隔的关键词仍然命中同一个工具")
                 .contains("recall_session");
 
-        // 三、英文 query 逐字不变：没有中文就走父类，正则形状与父类一致。
-        //     反例是把 ASCII 段也打散成 re|ca|ll —— 那样英文检索全线掉。
-        assertThat(index.convertQueryToRegexPattern("sales revenue last week"))
-                .as("没有中文时原样交回父类，一个 token 都不该被拆开")
-                .isEqualTo("(?i)(sales|revenue|last|week)");
-
-        // 四、切分本身可断言，不是黑盒：光看"搜出来的是不是它"说不清变的是切分还是排序。
-        //     七个二元组之后是同义词表追加的两个词（整句里出现了"回忆"）。
-        assertThat(index.tokens("回忆以前说过的话"))
-                .as("相邻两字一组；单字不单独成词，含停用字的“过的”照样保留")
-                .containsExactlyInAnyOrder(
-                        "回忆", "忆以", "以前", "前说", "说过", "过的", "的话", "历史", "会话");
-
-        // 四之二、网页那一族（票 04）：用户说"打开这个网页""这个链接讲什么"，而 WebFetch 的描述
-        //     只有英文（框架自带）。不给 fetch/url 这座桥，中文二元组一个都匹配不上——
-        //     实测四问四否，模型每次都答"我没有能抓网页的工具"。
-        assertThat(foundTools(index, "chat-1", "打开这个网页看看 https://example.com"))
-                .as("中文问网页要能落到 WebFetch 上，不能靠 query 里那个 URL 碰巧命中")
-                .contains("WebFetch");
-        assertThat(foundTools(index, "chat-1", "这个链接讲了什么"))
-                .as("只有中文、连 URL 都没有的时候才最能说明问题")
-                .contains("WebFetch");
-
-        // 五、空 query 不能返回全部。父类返回 .* 会把五个工具一起交出去，
-        //     模型随便发个空查询就把渐进式披露静默关掉了，而日志上一切正常。
+        // 三、空 query 与整句寒暄都不给候选。前者若落了 .* 或向量的"永远给前 k 个"兜底，
+        //     模型随便发个空查询就把渐进式披露静默关掉；后者是用户"说谢谢"却看到五个工具。
+        //     两条都不是"检索不准"，是"压根不该检索"。
         assertThat(foundTools(index, "chat-1", ""))
                 .as("空查询一个工具都不给").isEmpty();
         assertThat(foundTools(index, "chat-1", "   "))
                 .as("全是空白的查询同样一个都不给").isEmpty();
+        assertThat(foundTools(index, "chat-1", "谢谢，明白了"))
+                .as("整句只是道谢时不给候选：给了模型就会去查点东西")
+                .isEmpty();
+        assertThat(foundTools(index, "chat-1", "那就这样吧，回头聊"))
+                .as("换一批寒暄词同样不给：判定按词表逐段删空，不按固定短语")
+                .isEmpty();
 
-        // 六、提示词与索引必须一起改：只改索引，等于留着一段教模型绕一个已不存在的限制。
+        // 四、提示词不能还教模型绕一个已不存在的限制。
         assertThat(ToolSearch.SYSTEM_SUFFIX)
                 .as("索引能认整句之后，提示词里不该还要求模型自己分词")
                 .doesNotContain("空格")
                 .as("但“看不到工具不代表没有这个能力”必须留着——不写它模型会直接答“我没有工具”")
                 .contains("不代表没有这个能力")
-                .as("检索的触发条件不能只挂在“业务问题”上：看网页、读文件同样是动手做事，"
-                        + "限定成业务问题会让它直接答“我没有这个工具”（票 04 实测四问四否）")
+                .as("检索的触发条件不能只挂在“业务问题”上：看网页、读文件同样是动手做事")
                 .contains("网址")
                 .contains("文件路径");
 
-        // 七、默认 bean 真的换掉了。只改测试构造等于测的还是旧实现。
-        //     "没有向量库、没有 embedding、没有库" 用空工厂的 provider 表示：默认那一档一个都不读。
-        DefaultListableBeanFactory empty = new DefaultListableBeanFactory();
-        ToolIndex assembled = new AgentAutoConfiguration().toolIndex(ToolSearchProperties.defaults(),
-                empty.getBeanProvider(org.springframework.jdbc.core.JdbcTemplate.class),
-                empty.getBeanProvider(org.springframework.ai.embedding.EmbeddingModel.class),
-                1024,
-                empty.getBeanProvider(io.micrometer.core.instrument.MeterRegistry.class),
-                empty.getBeanProvider(ToolDescriptionTranslator.class));
-        assertThat(assembled)
-                .as("最外层是计量：包在里层记到的是收窄之前那一批，答不了「模型看到几个」")
-                .isInstanceOf(MeteredToolIndex.class);
-        assertThat(((MeteredToolIndex) assembled).delegate())
-                .as("第二层是分组：框架的 categoryFilter 只有它能读")
-                .isInstanceOf(NamespacedToolIndex.class);
-        assertThat(((NamespacedToolIndex) ((MeteredToolIndex) assembled).delegate()).delegate())
-                .as("里层仍是中文那档——默认值没跟着分组一起变")
-                .isInstanceOf(ChineseToolIndex.class);
-
-        // 八、20 → 100：同一组 query，工具变多之后答案不变差。
+        // 五、20 → 100：同一组 query，工具变多之后答案不变差。
         //     真实清单加起来不到 20 个（注解式 3 个 + 手工构造的若干 + MCP），
         //     100 个只能用跟业务无关的假工具造——这正是 ADR-0021「行为不随工具数量变化」要的动作。
         List<ToolReference> fillers = new ArrayList<>();
@@ -610,17 +589,10 @@ class ModelAndToolSelectionTest {
         List<ToolReference> hundred = new ArrayList<>(tools);
         hundred.addAll(fillers);
         assertGrowsWithoutLoss(index, "grow-100", hundred, queries, expected);
-
-        // 九、拼坏正则的表现是"0 个结果"，不是报错——框架把 PatternSyntaxException 吞成了空响应，
-        //     与"这个词真的没有对应工具"分不开。这条把那条路堵死：正则元字符混在中文里，
-        //     产出的必须仍然是合法正则（拼坏了 convertQueryToRegexPattern 会自己抛）。
-        assertThatCode(() -> index.convertQueryToRegexPattern("回忆 (a|b) [x]* $ ^ \\ 中的 * 号"))
-                .as("中文里混进正则元字符不能把模式拼坏")
-                .doesNotThrowAnyException();
     }
 
     /** 把一批工具索引进一个新会话，逐条 query 断言目标还留在前 5 里。 */
-    private static void assertGrowsWithoutLoss(ChineseToolIndex index, String sessionId,
+    private static void assertGrowsWithoutLoss(ToolIndex index, String sessionId,
                                                List<ToolReference> tools,
                                                List<String> queries, List<String> expected) {
         index.indexTools(sessionId, tools);
@@ -631,7 +603,7 @@ class ModelAndToolSelectionTest {
         }
     }
 
-    private static List<String> foundTools(ChineseToolIndex index, String sessionId, String query) {
+    private static List<String> foundTools(ToolIndex index, String sessionId, String query) {
         return index.search(new ToolSearchRequest(sessionId, query, 5, null))
                 .toolReferences()
                 .stream()
@@ -651,7 +623,7 @@ class ModelAndToolSelectionTest {
 
     private static ChatClient client(FixedChatModel model, List<ToolCallback> tools,
                                      ToolSearchProperties properties) {
-        ToolIndex index = new ChineseToolIndex();
+        ToolIndex index = new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE);
         return ChatClient.builder(model, ObservationRegistry.NOOP, null, null,
                         ToolSearch.toolLoop(properties, index, ObservationRegistry.NOOP,
                                 ToolCallBudget.MAX_TOTAL_CALLS))
@@ -818,7 +790,7 @@ class ModelAndToolSelectionTest {
     @Test
     @DisplayName("categoryFilter 真的能收窄，而不是传了等于没传")
     void categoryFilterNarrowsTheSearch() {
-        NamespacedToolIndex index = new NamespacedToolIndex(new ChineseToolIndex(), ToolCategories.of(Map.of()));
+        NamespacedToolIndex index = new NamespacedToolIndex(new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE), ToolCategories.of(Map.of()));
         index.indexTools("c-1", List.of(
                 ToolReference.builder().toolName("file_read").summary("读取文件内容").build(),
                 ToolReference.builder().toolName("web_fetch").summary("抓取网页内容").build()));
@@ -849,7 +821,7 @@ class ModelAndToolSelectionTest {
     @DisplayName("三个数分开记：hit / miss / 收窄之后的 miss")
     void searchMetricsSeparateTheThreeOutcomes() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        MeteredToolIndex plain = new MeteredToolIndex(new ChineseToolIndex(), registry);
+        MeteredToolIndex plain = new MeteredToolIndex(new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE), registry);
         plain.indexTools("m-1", List.of(
                 ToolReference.builder().toolName("lookup").summary("查询销售成交额").build()));
         plain.search(new ToolSearchRequest("m-1", "成交额", 5, null));
@@ -859,7 +831,7 @@ class ModelAndToolSelectionTest {
         assertThat(count(registry, MeteredToolIndex.MISS, false)).isEqualTo(1);
 
         MeteredToolIndex grouped = new MeteredToolIndex(
-                new NamespacedToolIndex(new ChineseToolIndex(), ToolCategories.of(Map.of())), registry);
+                new NamespacedToolIndex(new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE), ToolCategories.of(Map.of())), registry);
         grouped.indexTools("m-2", List.of(
                 ToolReference.builder().toolName("file_read").summary("读取文件内容").build(),
                 ToolReference.builder().toolName("web_fetch").summary("抓取网页内容").build()));
@@ -891,7 +863,7 @@ class ModelAndToolSelectionTest {
     @DisplayName("返回条数进分布：一次 1 个、一次 0 个")
     void resultCountRecordsHowManyCameBack() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        MeteredToolIndex index = new MeteredToolIndex(new ChineseToolIndex(), registry);
+        MeteredToolIndex index = new MeteredToolIndex(new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE), registry);
         index.indexTools("m-4", List.of(
                 ToolReference.builder().toolName("lookup").summary("查询销售成交额").build()));
 
@@ -910,7 +882,7 @@ class ModelAndToolSelectionTest {
      * 关键字与向量两路都空手，才是真的找不到。
      *
      * <p>这里钉的是本票要救的那类失败：中文问法、英文描述，字面一个字都不重合。关键字那一路
-     * （{@link ChineseToolIndex}）在这种问法上返回空，这不是"描述写得不好"，是词面匹配的上限。
+     * （{@link LuceneToolIndex}）在这种问法上返回空，这不是"描述写得不好"，是词面匹配的上限。
      * 向量那一路按语义带回来，融合之后模型才看得见它。
      */
     @Test
@@ -920,7 +892,7 @@ class ModelAndToolSelectionTest {
         // 问法是「这个地址」而不是「这个网页」：后者已经被票 04 的同义词表桥接（页 → fetch,url），
         // 那座桥上过得去，就不是本票要救的那类空手。
         String query = "这个地址写了什么";
-        ToolIndex keywordOnly = new ChineseToolIndex();
+        ToolIndex keywordOnly = new LuceneToolIndex(ToolSearchProperties.Lucene.DEFAULT_MIN_SCORE);
         keywordOnly.indexTools("h-1", List.of(ToolReference.builder().toolName("WebFetch")
                 .summary(summary).build()));
 
@@ -1024,7 +996,10 @@ class ModelAndToolSelectionTest {
 
         ToolIndex index = ToolSearch.index(properties, null, categories, ToolDescriptionTranslator.NONE);
         assertThat(index)
-                .as("配了规则就要包这一层，而且要包在最外面")
+                .as("最外层是寒暄拦截：该不该检索先于怎么检索")
+                .isInstanceOf(ChitchatToolIndex.class);
+        assertThat(((ChitchatToolIndex) index).delegate())
+                .as("规则层紧贴在里面；它在检索外面，命中才不会被融合重排")
                 .isInstanceOf(RuleToolIndex.class);
 
         index.indexTools("chat-1", List.of(

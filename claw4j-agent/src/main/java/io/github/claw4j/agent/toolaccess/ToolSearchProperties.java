@@ -18,8 +18,8 @@ import java.util.Map;
  * 边缘场景，而是花在最常见的一类问法上——{@code examples 目录下有哪些 md} 这种话，模型 5/5
  * 都不去检索，直接答"我没有能列目录的工具"。所以改成按规模滑档，见 {@link Mode#AUTO}。
  *
- * @param index       看不见的那部分用哪种索引找回来，见 {@link Index}；不写取 {@link Index#REGEX}<br>
- *                    <b>库的默认与应用的不同</b>：库不替调用方决定依赖向量库，所以留 REGEX；
+ * @param index       看不见的那部分用哪种索引找回来，见 {@link Index}；不写取 {@link Index#LUCENE}<br>
+ *                    <b>库的默认与应用的不同</b>：库不替调用方决定依赖向量库，所以留 {@code lucene}；
  *                    {@code claw4j-app} 的 {@code application.yml} 配的是 {@code hybrid} +
  *                    {@code keyword-weight: 0.5}（2026-11-26 实测 R@5 0.880，唯一过线的一档）。
  * @param maxResults  一次检索最多返回几个候选工具（框架约定 1–10，默认 5）
@@ -60,40 +60,39 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
         AUTO
     }
 
-    /** {@code index=vector} 之外那三档见 {@link Index}。 */
+    /**
+     * 看不见的那部分用哪种索引找回来，两档。
+     *
+     * <p>2026-11-26 收成两档（票 21）：{@code regex}（自研中文二元组）与 {@code vector}（纯向量）
+     * 都删了。前者在实测里是最低的 0.360，而它的独特价值——"人写正则指定工具"——已经由
+     * {@link #rules()} 承接（规则是断言，比"扩词再排序"更直接）；后者与
+     * {@code hybrid} + {@code keyword-weight: 0} 功能等价（实测同为 0.820），
+     * 留两档入口让"纯向量"这件事少一个开关，也就少一处配置错误。
+     */
     public enum Index {
 
         /**
-         * 正则分词：{@link ChineseToolIndex} 在框架的 {@code RegexToolIndex} 上加了中文二元组
-         * 与同义词表，整句不用空格也能命中。
+         * Lucene 全文检索：TF-IDF 打分，中文按字切分。
          *
-         * <p>只认字面，所以中文问法撞英文描述时上限就摆在那里（2026-11-26 实测 R@5 0.360）。
-         * 它不再是默认档——默认是 {@link #HYBRID}。
-         */
-        REGEX,
-
-        /**
-         * Lucene 全文检索：打分与排序比正则正规，但框架把分析器写死成 {@code StandardAnalyzer}，
-         * 中文按字切分——召回不一定比默认那档好。它不进提示词，只影响"搜到什么"。
+         * <p>纯本地计算、不要向量库，是<b>库的默认档</b>：它让"不配任何东西"也有 0.820 的 R@5
+         * （2026-11-26，60 题）。它读的是译文（{@link ToolSearch#index} 里包了翻译层），
+         * 否则中文问法只能撞上中文描述的那几个干扰项——那一版 base 档是 0.000。
+         *
+         * <p>它不进提示词，只影响"搜到什么"。
          */
         LUCENE,
 
         /**
-         * 向量召回：按语义找工具，不要求字面重合。
-         *
-         * <p>用的是<b>工具专用</b>的向量库（{@link ToolVectorStore}），不是容器里知识库那一个：
-         * 共用一张表会让工具描述跟着 BM25 与向量两路被召回进业务问答。缺 {@code EmbeddingModel}
-         * 或数据库时启动失败，不回落成"每次都搜不到"的空库。
-         */
-        VECTOR,
-
-        /**
          * 关键字 ∪ 向量，按名次融合（{@link HybridToolIndex}）：两路各自召回，RRF 只吃名次。
          *
-         * <p>为什么不是加权求和：两路的分值量纲不同（正则是命中次数，向量是余弦），求和要先归一化，
+         * <p>为什么不是加权求和：两路的分值量纲不同（TF-IDF 是文档分，向量是余弦），求和要先归一化，
          * 而归一化系数只能靠调；名次不用调，也不需要两路可比。
          *
-         * <p>它要的东西比 {@link #VECTOR} 只多一样——关键字那一路是纯本地计算，不花钱。
+         * <p>实测 0.880（{@code keyword-weight: 0.5}），是唯一过质量线的那一档，所以
+         * {@code claw4j-app} 用它当默认。它要第二份依赖：<b>工具专用</b>的向量库
+         * （{@link ToolVectorStore}），缺 {@code EmbeddingModel} 或数据库时启动失败。
+         *
+         * <p>纯向量就是它 + {@code keyword-weight: 0}（权重为 0 的那一路整个不查）。
          */
         HYBRID;
 
@@ -106,12 +105,12 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
          * @return 要时为真
          */
         public boolean needsVectorStore() {
-            return this == VECTOR || this == HYBRID;
+            return this == HYBRID;
         }
     }
 
     /**
-     * {@code index=hybrid} 那一档的参数。其余三档读不到它。
+     * {@code index=hybrid} 那一档的参数。{@code lucene} 读不到它。
      *
      * @param keywordWeight 关键字那一路占多少，见 {@link #DEFAULT_KEYWORD_WEIGHT}
      */
@@ -165,9 +164,9 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * 的分数（票 09 基线：regex R@1 0.20、纯向量 0.60）说明了差多少；而人写的表跟着工具描述漂，
      * 漂了还看不出来。
      *
-     * <p><b>只喂向量那一路</b>（{@code index=vector|hybrid}），关键字那一路读原文：2026-11-26 的
-     * 开/关对照里，它让向量档的 zh-en 从 0.60 涨到 0.80，却让 regex 从 0.15 掉到 0.10——
-     * 描述变长、中文二元组碰撞变多。所以默认 {@code regex} 下打开这个开关没有收益、只有调用成本。
+     * <p><b>两档都喂译文</b>（票 21 起）：向量那一路靠它跨语言，Lucene 那一路靠它把中文 query 从
+     * "一个词都不重合"救回来（base 档 0.000 → 0.900）。2026-11-26 之前在自研二元组那一档上是反的
+     * ——描述变长、二元组碰撞变多，喂译文从 0.15 掉到 0.10；那一档已随 {@code index=regex} 退役。
      *
      * @param enabled 要不要翻。默认关：它要在第一次拿到这份清单时花掉若干次 utility 调用
      * @param tools   只翻这些工具（名字来自 {@code @Tool(name=…)}）。空 = 自动判定：描述里汉字少于
@@ -240,7 +239,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      */
     @ConstructorBinding
     public ToolSearchProperties {
-        index = index == null ? Index.REGEX : index;
+        index = index == null ? Index.LUCENE : index;
         maxResults = maxResults <= 0
                 ? DEFAULT_MAX_RESULTS : Math.min(maxResults, FRAMEWORK_MAX_RESULTS_CAP);
         lucene = lucene == null ? new Lucene(null) : lucene;
