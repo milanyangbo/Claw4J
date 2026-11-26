@@ -1,32 +1,23 @@
-#!/usr/bin/env python3
 """工具检索评测（票 12 / 票 15）：Java 只导出，指标交给 ir_measures，报告负责讲明白。
 
 链路与 ``eval/rag`` 同构：``run.sh`` → Java ``ToolRetrievalExportTest`` 导出
-``reports/qrels.txt`` / ``reports/<config>.run`` / ``reports/categories.txt`` /
-``reports/no-search.jsonl`` → 本脚本算分。
+``reports/qrels.txt`` / ``reports/<config>.run`` / ``reports/categories.txt`` → 本脚本算分。
 
-三件与 RAG 侧不同的事，都是"更简单"：
+两件与 RAG 侧不同的事，都是"更简单"：
 
 - **不要 judge、不要 embedding**：指标是纯集合运算，零成本、同输入同输出。
 - **名次类指标是原生的**：``RR`` / ``nDCG@10`` 直接由 ir_measures 给。Ragas 的
   ``IDBased*`` 是集合型，那一侧的名次只能自算。
-- **零候选题单独判**：TREC 表达不了"期望零候选"，那两题不进 qrels，读
-  ``no-search.jsonl``，判据是 ``returned == 0``。
 
-门槛分两层，管两件不同的事（票 19 起）：
+门槛分层，管两件不同的事（票 19 起）：
 
-- **绝对门**：与基线无关的合格水位。``R@5 ≥ 0.80``、零候选率 ``≥ 0.90``。两个数都是从
-  "用户可感知的错误频率"推的（见 ``GATE_R5`` / ``GATE_NO_SEARCH`` 的注释），**不是行业
-  公开数字**——工具检索没有公认榜单，这一点与 BFCL 不同。
+- **绝对门**：与基线无关的合格水位，``R@5 ≥ 0.80``。这个数从"用户可感知的错误频率"推的
+  （见 ``GATE_R5`` 的注释），**不是行业公开数字**——工具检索没有公认榜单，这一点与 BFCL 不同。
 - **回归门**：不低于 ``baseline.json`` 减 ``TOLERANCE``，回答"有没有变差"。
 
-2026-11-26 之前这里只有回归门，且特意写明"零候选率不是绝对门"，理由是"把 1.0 当门槛
-等于假装它已经修好，一落地就是红的"。票 19 的判断是：**一落地就是红的恰恰是对的**——
-烂分数不该靠"跟上次一样烂"拿到通过。所以改成 0.90 并如实判不达标。
-
-``--cross-check`` 用票 09 的自研公式重算一遍 ``R@5`` / ``RR``，与 ir_measures 逐档比。
-两份实现之间差 > 1e-9 就当场退出 1：两套指标各说一套时，第一个问题是"信谁"，
-这条自检把那个问题变成一条报错。
+2026-11-26（票 22）删掉了 ``no-search`` 档与它的"零候选率 ≥ 0.90"。那条判据量的是
+"这一轮该不该检索"——意图判定，不是检索；检索层对任何 query 都该给候选。这项能力归 BFCL
+的 ``irrelevance`` 档（240 题，判模型该不该调）。留在这里会变成一条永远 0.000 的假门。
 """
 
 from __future__ import annotations
@@ -53,13 +44,12 @@ DEFAULT_REPORT = REPORTS / "report.md"
 MEASURES = ["R@1", "R@3", "R@5", "RR", "nDCG@10"]
 
 # 分类的固定顺序与释义（票 15）。顺序写死是为了两次跑出来的报告能逐行 diff。
-CATEGORY_ORDER = ["base", "business", "zh-en", "no-search"]
+CATEGORY_ORDER = ["base", "business", "zh-en"]
 CATEGORY_MEANING = {
     "base": "基座工具（Read/Grep/Glob/Bash/WebFetch/TodoWrite）。它们现在常驻（票 10），"
             "检索掉分不影响线上，但它是「索引还能不能工作」的底线",
     "business": "中文问法 × 中文描述。掉分说明索引本身坏了，是最不该掉的一档",
     "zh-en": "中文问法 × 英文描述。关键字那一路几乎全空，只有向量那一路能看",
-    "no-search": "闲聊（「你好」「谢谢」）。期望一个候选都不给，给了就是噪声；不进 qrels，单独判",
 }
 
 # 每档配置是怎么算的。键同时支持 hybrid-<权重> 的通配（见 describe_config）。
@@ -90,9 +80,6 @@ GATE_PRIMARY = "hybrid-0.5"
 # 且等于"5 题漏 1 题"。为什么不照抄 rag 的 0.90：RAG 漏一段信息就真没了，
 # 工具检索漏一个只是退化（基座工具常驻、模型还能在目录里挑），两者失败代价不同。
 GATE_R5 = 0.80
-
-# 闲聊误触发：用户直接的观感错误（说「谢谢」却去查天气）。0.90 = 十次允许一次。
-GATE_NO_SEARCH = 0.90
 
 # 交叉校验的容忍：两套实现算同一批整数除法，浮点差只该在末位。
 CROSS_CHECK_EPS = 1e-9
@@ -200,32 +187,12 @@ def score_categories(qrels: list, run_path: Path, categories: dict[str, str]) ->
         part_qrels = [row for row in qrels if row.query_id in qids]
         part_run = [row for row in run if row.query_id in qids]
         if not part_qrels:
-            # no-search 不进 qrels：它的判据是"零候选率"，不是 recall。
+            # 某一类在 qrels 里一条都没有（题库改到一半时会这样）：留空表，别当 0 分算。
             result[category] = {}
             continue
         measured = ir_measures.calc_aggregate(measures, part_qrels, part_run)
         result[category] = {str(measure): float(measured[measure]) for measure in measures}
     return result
-
-
-def zero_candidate() -> dict[str, object]:
-    """
-    零候选题的判定。
-
-    ``returned`` 是 Java 侧记的实际候选数，不是写死的 0——写死它，这条判据就永远通过。
-    """
-    path = REPORTS / "no-search.jsonl"
-    if not path.exists():
-        print(f"缺 {path}：没有它就判不了「不该给候选」的那两题")
-        sys.exit(2)
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    failed = [row["qid"] for row in rows if row.get("returned") != 0]
-    return {
-        "total": len(rows),
-        "passed": len(rows) - len(failed),
-        "rate": (len(rows) - len(failed)) / len(rows) if rows else 1.0,
-        "failed": failed,
-    }
 
 
 def self_metrics(run_path: Path) -> dict[str, float]:
@@ -285,11 +252,9 @@ def _state(current: float, gate: float, accepted: float | None) -> str:
     return "达标"
 
 
-def quality_rows(scores: dict[str, dict[str, float]], zero: dict[str, object],
-                 baseline: dict | None) -> list[dict]:
+def quality_rows(scores: dict[str, dict[str, float]], baseline: dict | None) -> list[dict]:
     """判定表的行：指标 / 当前 / 合格线 / 口径 / 结论。报告与退出码都从这里出来。"""
     metrics = (baseline or {}).get("metrics", {})
-    accepted_rate = (baseline or {}).get("no_search_rate")
     rows = []
 
     if GATE_PRIMARY in scores:
@@ -303,17 +268,6 @@ def quality_rows(scores: dict[str, dict[str, float]], zero: dict[str, object],
             "state": _state(current, GATE_R5, accepted),
             "problem": f"{GATE_PRIMARY} 的 R@5 = {current:.3f} < 合格线 {GATE_R5:.2f}",
         })
-
-    current = zero["rate"]
-    rows.append({
-        "name": "no-search 零候选率",
-        "current": f"{current:.3f}",
-        "gate": f"≥{GATE_NO_SEARCH:.2f}",
-        "basis": "绝对门",
-        "state": _state(current, GATE_NO_SEARCH, accepted_rate),
-        "problem": f"零候选率 {current:.3f} < 合格线 {GATE_NO_SEARCH:.2f}；给了候选的题："
-                   + (", ".join(zero["failed"]) or "无"),
-    })
 
     for name in ("R@1", "RR", "nDCG@10"):
         if GATE_PRIMARY in scores:
@@ -355,7 +309,7 @@ def table(scores: dict[str, dict[str, float]]) -> str:
 
 def category_table(by_category: dict[str, dict[str, dict[str, float]]], configs: list[str],
                    measure: str) -> str:
-    """行=分类、列=各档的某一指标。no-search 没有 recall，写 n/a。"""
+    """行=分类、列=各档的某一指标。某一类在某档缺数时写 n/a，不写 0。"""
     header = f"{'分类':<12}" + "".join(f"{config:>12}" for config in configs)
     lines = [header]
     for category in CATEGORY_ORDER:
@@ -393,11 +347,10 @@ def verdict_text(rows: list[dict]) -> str:
 
 
 def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict[str, dict[str, float]]],
-                zero: dict[str, object], failures: list[str], baseline: dict | None,
+                failures: list[str], baseline: dict | None,
                 question_count: int, tool_count: int | None, configs: list[str],
                 rows: list[dict]) -> str:
     """整份报告。读者定成"第一次看这份东西的人"，所以每一节都要能独立读懂。"""
-    scored_questions = question_count - int(zero["total"])
     lines = [
         "# 工具检索评测报告",
         "",
@@ -418,8 +371,8 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
         "",
         "## 这次测的是什么",
         "",
-        f"- 题库 {question_count} 条：{scored_questions} 条给了\"期望的工具\"，"
-        f"{zero['total']} 条期望\"一个候选都不给\"（闲聊）。",
+        f"- 题库 {question_count} 条，每条都写明了\"期望的工具\"（不再有\"期望零候选\"那类题，"
+        "见文末「这一档为什么没了」）。",
         f"- 工具目录 {tool_count if tool_count is not None else '?'} 个——是**当轮装配出来的**那份，"
         "不是代码里写死的名单。",
         "- 每条题检索一次、取前 5 个候选，看期望的那个工具在不在里面。",
@@ -448,7 +401,7 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
         "读的时候注意两件事：",
         "",
         "1. **题少的时候一格很贵**："
-        f"{scored_questions} 题的 1 格 ≈ {1 / scored_questions:.3f}，所以 0.01 的差别不是信号。",
+        f"{question_count} 题的 1 格 ≈ {1 / question_count:.3f}，所以 0.01 的差别不是信号。",
         "2. **`R@1`/`R@3` 在向量档会抖**（近分并列，PostgreSQL 取 top-k 没有 tie-breaker），"
         "`R@5` 稳定。别照着 `R@1` 的最后一位改参数。",
         "",
@@ -470,9 +423,6 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
         "```",
         table(scores),
         "```",
-        "",
-        f"no-search 零候选率 {zero['rate']:.3f}（{zero['passed']}/{zero['total']}）"
-        + (f"；给了候选：{', '.join(zero['failed'])}" if zero["failed"] else ""),
         "",
         "## 按分类（`R@5`：前五里有对的）",
         "",
@@ -496,12 +446,11 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
         "",
         "## 怎么算达标",
         "",
-        f"1. **绝对门（回答「够不够好」）**：生产默认档与可用最优档的 `R@5` 都要 `≥{GATE_R5:.2f}`，"
-        f"零候选率 `≥{GATE_NO_SEARCH:.2f}`。这两个数从「用户可感知的错误频率」推来"
-        "（`R@5` 0.80 = 五题漏一题；零候选率 0.90 = 十次闲聊允许一次误触发），"
-        "**不是行业公开数字**——工具检索没有公认榜单。要改它们，改的是 `GATE_R5` / "
-        "`GATE_NO_SEARCH`，并且在这里写明新依据。",
-        f"2. **回归门（回答「有没有变差」）**：`R@5` 与零候选率都不低于 `baseline.json` 里记的值"
+        f"1. **绝对门（回答「够不够好」）**：生产默认档的 `R@5` 要 `≥{GATE_R5:.2f}`。"
+        "这个数从「用户可感知的错误频率」推来（0.80 = 五题漏一题），"
+        "**不是行业公开数字**——工具检索没有公认榜单。要改它，改的是 `GATE_R5`，"
+        "并且在这里写明新依据。",
+        f"2. **回归门（回答「有没有变差」）**：`R@5` 不低于 `baseline.json` 里记的值"
         f"减 {TOLERANCE}（≈ 两道半题的量级）。",
         "3. **两者独立**：过了绝对门但比基线跌超容差 → 回归；本来就低于合格线 → 不达标。"
         "「上次也这样」不能换来达标。",
@@ -520,6 +469,22 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
         "要拿它当门，先得把译文钉住。",
         "- **样本小**：题量决定分辨率。现在的结论是\"方向可信、数值不可引\"。",
         "",
+        "## 这一档为什么没了（`no-search`）",
+        "",
+        "2026-11-26（票 22）之前这里有 10 道寒暄题，判据是\"一个候选都不给\"，闸在检索层：",
+        "一个中文词表删空即返回零候选。撤掉它有三条理由，都能指到事实：",
+        "",
+        "1. **词表与题库互为因果**：那 10 道题就是照着词表写的（「你好」「谢谢，明白了」「哈哈」"
+        "「知道了」），1.000 这个数只证明词表覆盖了自己那份题，不证明通用性。",
+        "2. **它认的是\"整句寒暄\"，不是\"没有意义的对话\"**：判据是删空才命中，所以真正的废话"
+        "（含糊、试探、情绪、跑题）判不中，而它本来要解决的是那一类。",
+        "3. **意图判定不是检索**：检索层对任何 query 都该给候选；\"这一轮该不该调工具\"是模型的"
+        "决策。这项能力现在由 BFCL 的 `irrelevance` 档判（240 题、判模型该不该调），"
+        "不在这里重复一个更弱的版本。",
+        "",
+        "所以本报告**不再有\"零候选率\"这一列**。它当初是一条绝对门（≥0.90），撤掉不是降低标准——",
+        "是把判据挪到了会真正产生该行为的那一层。",
+        "",
     ]
     if baseline is not None:
         lines += ["## 基线（上次被接受的）", "", "```", table(baseline.get("metrics", {})), "```", ""]
@@ -537,7 +502,6 @@ def main() -> int:
     scores = {config: score_one(qrels, REPORTS / f"{config}.run") for config in configs}
     by_category = {config: score_categories(qrels, REPORTS / f"{config}.run", categories)
                    for config in configs}
-    zero = zero_candidate()
 
     if args.cross_check:
         problems = cross_check(scores)
@@ -557,19 +521,16 @@ def main() -> int:
         return 2
 
     # 更新基线时只跳过回归那一半：绝对门照判（见 judge 的说明）。
-    rows = quality_rows(scores, zero, baseline)
+    rows = quality_rows(scores, baseline)
     failures = judge(rows, skip_regression=args.update_baseline)
 
     text = table(scores)
     print(text)
-    print(f"no-search 零候选率 {zero['rate']:.3f}（{zero['passed']}/{zero['total']}）"
-          + (f"；给了候选：{', '.join(zero['failed'])}" if zero["failed"] else ""))
 
     if args.update_baseline:
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "metrics": scores,
-            "no_search_rate": zero["rate"],
         }
         args.baseline.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                                  encoding="utf-8")
@@ -578,12 +539,12 @@ def main() -> int:
     catalogue = REPORTS / "catalogue.txt"
     tool_count = len([line for line in catalogue.read_text(encoding="utf-8").splitlines() if line.strip()]) \
         if catalogue.exists() else None
-    report = report_text(scores, by_category, zero, failures, baseline,
+    report = report_text(scores, by_category, failures, baseline,
                          question_count=len(categories), tool_count=tool_count, configs=configs,
                          rows=rows)
 
     DEFAULT_SCORE.write_text(json.dumps(
-        {"metrics": scores, "by_category": by_category, "no_search": zero},
+        {"metrics": scores, "by_category": by_category},
         ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     DEFAULT_REPORT.write_text(report + "\n", encoding="utf-8")
 

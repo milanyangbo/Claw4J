@@ -6,13 +6,14 @@
 # 题面照 tool-retrieval-benchmark（ACL 2025）的形状：用户真的会这么说，**不点工具名**，
 # 干扰项是同域相近的那些（同分类里的其他工具）。
 #
-# gold_tools 允许为空 = "不该有候选"。空不是"没写"，是一个有意义的取值（检索器给出任何候选都算噪声）。
-#
 # 覆盖（每一类对应一种真实的检索失效，不按数量堆）：
 #   base      基座工具：现在常驻，检索掉分不影响线上，但它是"索引能不能工作"的底线
 #   business  中文问中文描述：掉分说明索引本身坏了，是最不该掉的一档
 #   zh-en     中文问英文描述：票 04 的同义词桥与票 07 的向量各自值多少分，看这一档
-#   no-search 闲聊：给了候选就是噪声
+#
+# 没有 no-search 档（票 22）：原来有 10 道寒暄题，判据是"一个候选都不给"。那条判据量的是
+# "这一轮该不该检索"，属于意图判定，不是检索——检索层对任何 query 都该给候选。能力归
+# BFCL 的 irrelevance 档（240 题，判模型该不该调），不在这里重复一遍、更弱的一遍。
 
 # ---------------------------------------------------------------- base
 
@@ -317,61 +318,3 @@
   question: 跑太久了，不用等了，结束它
   category: zh-en
   gold_tools: [KillShell]
-
-# ---------------------------------------------------------------- no-search（不该给候选）
-
-- id: tools-chitchat-hello
-  question: 你好
-  category: no-search
-  gold_tools: []
-
-- id: tools-chitchat-thanks
-  question: 谢谢，明白了
-  category: no-search
-  gold_tools: []
-
-# 2026-11-26（票 18）：原来只有 2 道，零候选率 0.500 就是**一题**说了算，没有统计意义。
-# 补到 10 道，一格 0.10，与回归门的容差同量级。
-#
-# 出题约束比别的档更严：必须**彻底没有工具语义**。凡是含"查/找/方案/选择/取消/算了"这类词的都不要——
-# 那种题本身有歧义（"算了"确实像取消，"你觉得哪个方案好"确实像要问用户），判"给了候选就是错"不公平。
-
-- id: tools-chitchat-ack
-  question: 好的，收到
-  category: no-search
-  gold_tools: []
-
-- id: tools-chitchat-ok-then
-  question: 嗯，那就这样吧
-  category: no-search
-  gold_tools: []
-
-- id: tools-chitchat-effort
-  question: 辛苦了
-  category: no-search
-  gold_tools: []
-
-- id: tools-chitchat-weather
-  question: 今天天气不错
-  category: no-search
-  gold_tools: []
-
-- id: tools-chitchat-laugh
-  question: 哈哈
-  category: no-search
-  gold_tools: []
-
-- id: tools-chitchat-are-you-there
-  question: 你在吗
-  category: no-search
-  gold_tools: []
-
-- id: tools-chitchat-bye
-  question: 先这样，回头聊
-  category: no-search
-  gold_tools: []
-
-- id: tools-chitchat-got-it
-  question: 知道了
-  category: no-search
-  gold_tools: []
