@@ -2,7 +2,6 @@ package io.github.claw4j.agent.toolaccess;
 
 import io.github.claw4j.agent.turn.ToolCallBudget;
 import io.micrometer.observation.ObservationRegistry;
-import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.ai.tool.toolsearch.index.lucene.LuceneToolIndex;
 import org.springframework.ai.tool.toolsearch.index.vectorstore.VectorToolIndex;
@@ -18,10 +17,12 @@ import java.util.Objects;
  * 模型的工具清单从全部换成「检索工具 + 已查到的」。所以这里不产出两个 builder：两个循环装在一起
  * 时模型只看得见其中一个，另一个的预算与鉴权落点都是摆设。
  *
- * <p>没有「工具少就全塞」的分支。留它的代价不是多几行代码，而是模型看到的行为随工具数量改变：
- * 同一句问话，在工具从 20 个涨到 21 个的那个版本里就换了一套规则。代价写在明处——工具集很小时
- * 也要先检索一次，多一轮往返；换来的是「模型永远看得见找工具这个动作」这一条恒定行为，
- * 以及只有一套要验的东西。
+ * <p><b>2026-11-26 起有「工具少就全塞」这一支</b>（ADR-0021「领先 2」修订，票 06）：原来写的是
+ * "行为不随工具数量变化"，代价估的是"工具少也得多花一轮检索"。实测（票 05）这一轮不是花在边缘
+ * 场景，而是花在最常见的一类问法上——{@code examples 目录下有哪些 md} 这种话模型不去检索，
+ * 直接答"我没有能列目录的工具"。现在按 {@link ToolSearchProperties.Mode} 三档：默认 {@code auto}
+ * 在工具数不超过 {@code reveal-below} 时全塞，超过才检索。代价换成"两种模式两条路"，
+ * 用同一个 Advisor 内部分支消化（{@link DisclosureToolCallingAdvisor}），不另外开一条链。
  *
  * <p>用替换而不是多挂一个 Advisor：{@code DefaultChatClient} 在链上出现第二个自称工具循环的
  * Advisor 时直接抛 {@code IllegalStateException}，所以也没有走 starter
@@ -59,6 +60,9 @@ public final class ToolSearch {
      * <p>索引用 {@link ChineseToolIndex}（相邻两字一组），整句本来就能命中，所以这里让模型用一句
      * 自然语言说清要什么能力，不要求它自己拆关键词。提示词与索引必须一起改：只改索引不改提示词，
      * 等于留一段教模型绕开不存在的限制的话。
+     *
+     * <p><b>只在"藏起来"的那几轮拼它</b>（{@link ToolSearchProperties.Mode}）：全塞时这句话是假的，
+     * 而模型会照它去做——先去检索一遍本来就在眼前的东西。
      */
     public static final String SYSTEM_SUFFIX = "\n\n"
             + "**你现在只看得见一个叫 toolSearchTool 的「找工具」工具，其余能力全在它后面。**\n"
@@ -122,13 +126,13 @@ public final class ToolSearch {
      * @param toolCallLimit 整轮工具调用上限，见 {@link ToolCallBudget#toolCallingManager}
      * @return 配好索引、候选数、提示词与熔断的 builder
      */
-    public static ToolSearchToolCallingAdvisor.Builder<?> toolLoop(ToolSearchProperties properties,
-                                                                   ToolIndex toolIndex,
-                                                                   ObservationRegistry observations,
-                                                                   int toolCallLimit) {
-        return ToolSearchToolCallingAdvisor.builder()
+    public static DisclosureToolCallingAdvisor.Builder toolLoop(ToolSearchProperties properties,
+                                                                    ToolIndex toolIndex,
+                                                                    ObservationRegistry observations,
+                                                                    int toolCallLimit) {
+        return DisclosureToolCallingAdvisor.builder()
                 .toolIndex(Objects.requireNonNull(toolIndex, "toolIndex"))
-                .maxResults(properties.maxResults())
+                .properties(Objects.requireNonNull(properties, "properties"))
                 .systemMessageSuffix(SYSTEM_SUFFIX)
                 .toolCallingManager(ToolCallBudget.toolCallingManager(observations, toolCallLimit));
     }

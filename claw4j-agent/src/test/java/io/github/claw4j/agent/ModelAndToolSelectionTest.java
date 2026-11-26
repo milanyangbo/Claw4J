@@ -1,6 +1,8 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
+import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.turn.ChatClientAgentPort;
@@ -196,8 +198,8 @@ class ModelAndToolSelectionTest {
 
 
     @Test
-    @DisplayName("只有一个工具也要先检索：模型看见的清单不随工具数量改变")
-    void singleToolIsStillSearchedFirst() {
+    @DisplayName("mode=always 时只有一个工具也要先检索：这一档不随工具数量改变")
+    void singleToolIsSearchedFirstWhenModeSaysAlways() {
         RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
         AtomicInteger turn = new AtomicInteger();
         FixedChatModel model = new FixedChatModel(prompt -> switch (turn.getAndIncrement()) {
@@ -206,11 +208,12 @@ class ModelAndToolSelectionTest {
             default -> ChatPipelineTest.answer("查到了 128400");
         });
 
-        String text = port(model, List.of(lookup), ToolSearchProperties.defaults())
+        String text = port(model, List.of(lookup), properties(ToolSearchProperties.Mode.ALWAYS, 0,
+                List.of(), null))
                 .reply(message("上周华东成交额")).text();
 
         assertThat(toolNames(model.prompts().getFirst()))
-                .as("第一轮只该看见检索工具：这就是渐进式披露，与工具总数无关")
+                .as("这一档永远是「先检索」：工具只有 1 个也一样")
                 .containsExactly(ToolSearch.TOOL_NAME);
         assertThat(toolNames(model.prompts().get(1)))
                 .as("检索回来的工具要进清单，检索工具自己也要留着（还可能要继续找）")
@@ -355,7 +358,7 @@ class ModelAndToolSelectionTest {
                 prompt -> ChatPipelineTest.answer("同步路径不该被走到"),
                 prompt -> Flux.just(ChatPipelineTest.answer("查到了 128400")));
 
-        port(model, List.of(lookup), ToolSearchProperties.defaults())
+        port(model, List.of(lookup), properties(ToolSearchProperties.Mode.ALWAYS, 0, List.of(), null))
                 .stream(message("上周华东成交额"), chunk -> {
                 });
 
@@ -461,8 +464,13 @@ class ModelAndToolSelectionTest {
         //     "容器里没有 VectorStore" 用空工厂的 provider 表示：默认那一档不读它。
         var noVectorStore = new DefaultListableBeanFactory()
                 .getBeanProvider(org.springframework.ai.vectorstore.VectorStore.class);
-        assertThat(new AgentAutoConfiguration().toolIndex(ToolSearchProperties.defaults(), noVectorStore))
-                .as("装配出来的索引必须是新实现")
+        ToolIndex assembled = new AgentAutoConfiguration()
+                .toolIndex(ToolSearchProperties.defaults(), noVectorStore);
+        assertThat(assembled)
+                .as("装配出来的索引外面一定有分组这一层：框架的 categoryFilter 只有它能读")
+                .isInstanceOf(NamespacedToolIndex.class);
+        assertThat(((NamespacedToolIndex) assembled).delegate())
+                .as("里层仍是中文那档——默认值没跟着分组一起变")
                 .isInstanceOf(ChineseToolIndex.class);
 
         // 八、20 → 100：同一组 query，工具变多之后答案不变差。
@@ -577,6 +585,147 @@ class ModelAndToolSelectionTest {
         List<ToolCallback> tools = new ArrayList<>(List.of(real));
         tools.addAll(noisyTools(noise));
         return List.copyOf(tools);
+    }
+
+    // ------------------------------------------------------------ 工具面（票 06）
+
+    /**
+     * 常驻：配置里写了的工具，每轮都在清单里，不用先检索。
+     *
+     * <p>它解决的是"检索这一下能不能想到"：用户问"读一下那个文件"时，模型得先想到"我可能需要一个
+     * 读文件的工具"。常驻把这一步省掉——工具就在眼前。
+     */
+    @Test
+    @DisplayName("pinned 的工具每轮都在清单里，不必先检索")
+    void pinnedToolsAreAlwaysVisible() {
+        RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
+        FixedChatModel model = new FixedChatModel("好");
+
+        port(model, withNoise(lookup, 20), properties(ToolSearchProperties.Mode.ALWAYS, 0,
+                List.of("lookup"), null))
+                .reply(message("上周华东成交额"));
+
+        assertThat(toolNames(model.prompts().get(0)))
+                .as("检索工具 + 常驻，第一轮就该是这样")
+                .containsExactlyInAnyOrder(ToolSearch.TOOL_NAME, "lookup");
+    }
+
+    /**
+     * 工具少时全塞：这时多花一轮检索是纯开销，而且模型会因为"清单里只有一个找工具的工具"
+     * 直接回答"我没有能列目录的工具"（票 05 的五次实测）。
+     */
+    @Test
+    @DisplayName("工具数不超过阈值时全塞，也不拼“只看得见检索工具”那段提示")
+    void revealsEverythingBelowTheThreshold() {
+        RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
+        FixedChatModel model = new FixedChatModel("好");
+
+        port(model, withNoise(lookup, 2), properties(ToolSearchProperties.Mode.AUTO, 10, List.of(), null))
+                .reply(message("上周华东成交额"));
+
+        assertThat(toolNames(model.prompts().get(0)))
+                .as("三个工具全在，且没有检索工具")
+                .hasSize(3)
+                .doesNotContain(ToolSearch.TOOL_NAME);
+        assertThat(textsOf(model.prompts().get(0)))
+                .as("全塞时那句“你只看得见 finder”是假的，模型会照它先去检索一遍眼前的东西")
+                .doesNotContain("只看得见");
+    }
+
+    /** 超过阈值才检索：这是大部署的那一档，也是改动之前的唯一行为。 */
+    @Test
+    @DisplayName("工具数超过阈值时只看得见检索工具")
+    void hidesLongTailAboveTheThreshold() {
+        RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
+        FixedChatModel model = new FixedChatModel("好");
+
+        port(model, withNoise(lookup, 20), properties(ToolSearchProperties.Mode.AUTO, 10, List.of(), null))
+                .reply(message("上周华东成交额"));
+
+        assertThat(toolNames(model.prompts().get(0)))
+                .as("21 个工具 > 10，回到检索那一档")
+                .containsExactly(ToolSearch.TOOL_NAME);
+    }
+
+    /** off：全塞，连索引都不建。工具只有几个的部署用这一档。 */
+    @Test
+    @DisplayName("mode=off 永不检索，全部工具都在清单里")
+    void offModeNeverHidesTools() {
+        RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
+        FixedChatModel model = new FixedChatModel("好");
+
+        port(model, withNoise(lookup, 20), properties(ToolSearchProperties.Mode.OFF, 0, List.of(), null))
+                .reply(message("上周华东成交额"));
+
+        assertThat(toolNames(model.prompts().get(0)))
+                .as("21 个全在")
+                .hasSize(21)
+                .doesNotContain(ToolSearch.TOOL_NAME);
+    }
+
+    /** 名字里带了不存在的 pinned：告警并跳过，不能让整个部署起不来。 */
+    @Test
+    @DisplayName("pinned 写了不存在的名字只忽略，不影响这一轮")
+    void unknownPinnedNameIsIgnored() {
+        RecordingTool lookup = new RecordingTool("lookup", "128400", "查询销售成交额");
+        FixedChatModel model = new FixedChatModel("好");
+
+        port(model, withNoise(lookup, 20), properties(ToolSearchProperties.Mode.ALWAYS, 0,
+                List.of("no_such_tool"), null))
+                .reply(message("上周华东成交额"));
+
+        assertThat(toolNames(model.prompts().get(0)))
+                .as("写错的名字被跳过，清单里不会多出一个空位")
+                .containsExactly(ToolSearch.TOOL_NAME);
+    }
+
+    /** 分组：配置优先，没配按名字前缀。这是"通用"的那一半——代码里不认任何具体工具名。 */
+    @Test
+    @DisplayName("类别：配置优先，否则取名字第一个下划线之前的部分")
+    void categoryDefaultsToNamePrefix() {
+        ToolCategories derived = ToolCategories.of(Map.of());
+        assertThat(derived.categoryOf("github_issue_list")).isEqualTo("github");
+        assertThat(derived.categoryOf("Read"))
+                .as("没有下划线时它自己就是一组——这是部署该配 categories 的信号")
+                .isEqualTo("Read");
+
+        ToolCategories configured = ToolCategories.of(Map.of("file", List.of("Read", "Glob")));
+        assertThat(configured.categoryOf("Read")).isEqualTo("file");
+        assertThat(configured.categoryOf("web_fetch"))
+                .as("配置里没有的仍然按前缀推导，不是「配了就全得配」")
+                .isEqualTo("web");
+    }
+
+    /** 检索时按组收窄：框架把这个参数交给模型了，但现成索引都不读它。 */
+    @Test
+    @DisplayName("categoryFilter 真的能收窄，而不是传了等于没传")
+    void categoryFilterNarrowsTheSearch() {
+        NamespacedToolIndex index = new NamespacedToolIndex(new ChineseToolIndex(), ToolCategories.of(Map.of()));
+        index.indexTools("c-1", List.of(
+                ToolReference.builder().toolName("file_read").summary("读取文件内容").build(),
+                ToolReference.builder().toolName("web_fetch").summary("抓取网页内容").build()));
+
+        assertThat(names(index, "c-1", "内容", null))
+                .as("不收窄时两个都该在候选里")
+                .containsExactlyInAnyOrder("file_read", "web_fetch");
+        assertThat(names(index, "c-1", "内容", "file"))
+                .as("收窄到 file 组，只剩 file_read")
+                .containsExactly("file_read");
+        assertThat(names(index, "c-1", "内容", "web"))
+                .containsExactly("web_fetch");
+    }
+
+    private static List<String> names(NamespacedToolIndex index, String sessionId, String query, String category) {
+        return index.search(new ToolSearchRequest(sessionId, query, 5, category))
+                .toolReferences()
+                .stream()
+                .map(ToolReference::toolName)
+                .toList();
+    }
+
+    private static ToolSearchProperties properties(ToolSearchProperties.Mode mode, int revealBelow,
+                                                   List<String> pinned, Map<String, List<String>> categories) {
+        return new ToolSearchProperties(null, 5, null, mode, revealBelow, pinned, categories);
     }
 
     // ------------------------------------------------------------ 本模块的两条架构闸

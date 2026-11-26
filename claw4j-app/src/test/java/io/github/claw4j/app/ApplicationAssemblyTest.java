@@ -1,6 +1,8 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
+import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.guard.GuardProperties;
 import io.github.claw4j.agent.guard.SensitiveWords;
 import io.github.claw4j.model.routing.ModelFallbackExhaustedException;
@@ -31,6 +33,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.advisor.toolsearch.ToolSearchToolCallingAdvisor;
+import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -457,6 +461,32 @@ class ApplicationAssemblyTest {
         assertThat(observationRegistry.isNoop())
                 .as("noop 时工具回调读不到 tool_call_id，静默退化成\"没有这个能力\"")
                 .isFalse();
+    }
+
+    /**
+     * 工具面（票 06）：默认按规模滑档，而且索引外面确实包了分组那一层。
+     *
+     * <p>断在 bean 上而不是断在提示词上：这一段要回答的是"配置真的进到装配里了吗"，
+     * 而"模型这一轮看见几个工具"由 {@code ModelAndToolSelectionTest} 那几条按模式钉住。
+     */
+    @Test
+    @DisplayName("工具面默认 auto 并按 10 滑档；索引外面有分组这一层（票 06）")
+    void toolSurfaceDefaultsToAutoAndWrapsGrouping() {
+        ToolSearchProperties properties = context.getBean(ToolSearchProperties.class);
+
+        assertThat(properties.mode())
+                .as("默认 auto：工具 20–30 个时判下来仍是检索，与改动之前一致")
+                .isEqualTo(ToolSearchProperties.Mode.AUTO);
+        assertThat(properties.revealBelow()).isEqualTo(10);
+        assertThat(properties.pinned())
+                .as("不预置任何工具名——常驻哪些是部署的事，代码里写死就等于换批工具就失效")
+                .isEmpty();
+        assertThat(properties.categories())
+                .as("同理，分组也不预置：不配就按名字前缀推导")
+                .isEmpty();
+        assertThat(context.getBean(ToolIndex.class))
+                .as("框架的 categoryFilter 只有这一层读，包没包上决定收窄有没有用")
+                .isInstanceOf(NamespacedToolIndex.class);
     }
 
     @Test

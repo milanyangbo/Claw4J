@@ -20,6 +20,8 @@ import io.github.claw4j.agent.persona.BuiltinPersona;
 import io.github.claw4j.agent.session.SessionScopeProperties;
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolPolicyAssembler;
+import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.toolaccess.ToolsProperties;
@@ -302,6 +304,8 @@ public class AgentAutoConfiguration {
      * <p>{@code lucene} 与 {@code vector} 是另外两条路：前者靠词频打分，后者靠语义相似度。三条路
      * 的取舍写在 {@link ToolSearchProperties.Index} 上；这里只做选择，不替使用者猜。
      *
+     * <p>外面再包一层 {@link NamespacedToolIndex}：分组与选哪档索引无关，是横切的一层。
+     *
      * <p>容器里已有 {@code ToolIndex} 时整个让位：自定义实现比这三个开关更具体，
      * 硬塞一个只会让两边的清单各说各话。
      *
@@ -312,7 +316,10 @@ public class AgentAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(ToolIndex.class)
     public ToolIndex toolIndex(ToolSearchProperties toolSearch, ObjectProvider<VectorStore> vectorStore) {
-        return ToolSearch.index(toolSearch, vectorStore.getIfAvailable());
+        ToolIndex chosen = ToolSearch.index(toolSearch, vectorStore.getIfAvailable());
+        // 分组是横切的一层：框架的 categoryFilter 已经交给模型了，但三个现成索引都不读它，
+        // 所以包一层才有"收窄"这件事。换索引档时这层不用重写。
+        return new NamespacedToolIndex(chosen, ToolCategories.of(toolSearch.categories()));
     }
 
     /**

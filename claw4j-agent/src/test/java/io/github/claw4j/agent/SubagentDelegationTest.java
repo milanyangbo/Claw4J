@@ -642,7 +642,10 @@ class SubagentDelegationTest {
     private SubagentRunner runner(ChatModel model, List<ToolCallback> tools, ToolCallAudit audit) {
         return new SubagentRunner(model, ObservationRegistry.NOOP, audit, () -> tools,
                 new ChineseToolIndex(),
-                ToolSearchProperties.defaults(),
+                // 显式 always：这几条要验的是子链的委派与审计，脚本写的就是「检索 → 调用 → 结论」
+                // 三步。默认 auto 在工具只有一两个时会全塞，那三步就少一步，脚本对不上——而
+                // "子链按默认配置怎么滑档"不是这里的题目（那条在 ModelAndToolSelectionTest）。
+                new ToolSearchProperties(null, 5, null, ToolSearchProperties.Mode.ALWAYS, 0, null, null),
                 ToolCallBudget.MAX_TOTAL_CALLS);
     }
 

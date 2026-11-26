@@ -3,23 +3,57 @@ package io.github.claw4j.agent.toolaccess;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
+import java.util.List;
+import java.util.Map;
+
 /**
- * 工具检索：用哪种索引、一次给几个候选。
+ * 工具面：露多少给模型（{@link Mode}），以及看不见的那部分怎么找回来（{@link Index}）。
  *
- * <p>没有「要不要开检索」的开关，也没有「工具少于几个就全塞」的阈值：前者会让检索在某个环境里
- * 被悄悄关掉，后者会让同一句问话在工具数量跨过阈值时换一套规则，而这两件事都没有地方能看出来。
- * 循环只有一种，见 {@link ToolSearch#toolLoop}。
+ * <p>这两件事必须分开配，因为它们是两个维度：露出决定"模型知不知道有这类能力"，索引决定
+ * "知道有、但找不到"时能不能救回来。合成一个开关的写法，最后总是靠"给某类工具写特例"来补，
+ * 而那正是本配置要消掉的东西——这里没有任何具体工具名。
  *
- * @param index      用哪种索引，见 {@link Index}；不写取 {@link Index#REGEX}
- * @param maxResults 一次检索最多返回几个候选工具（框架约定 1–10，默认 5）
- * @param lucene     {@code index=lucene} 那一档的参数
+ * <p><b>2026-11-26 起与 ADR-0021 原条目相反</b>：原条目写"行为不随工具数量变化"，理由是
+ * "不想让部署规模决定语义"，代价估的是"工具少也得多花一轮检索"。实测（票 05）这一轮不是花在
+ * 边缘场景，而是花在最常见的一类问法上——{@code examples 目录下有哪些 md} 这种话，模型 5/5
+ * 都不去检索，直接答"我没有能列目录的工具"。所以改成按规模滑档，见 {@link Mode#AUTO}。
+ *
+ * @param index       看不见的那部分用哪种索引找回来，见 {@link Index}；不写取 {@link Index#REGEX}
+ * @param maxResults  一次检索最多返回几个候选工具（框架约定 1–10，默认 5）
+ * @param lucene      {@code index=lucene} 那一档的参数
+ * @param mode        工具面怎么露，见 {@link Mode}；不写取 {@link Mode#AUTO}
+ * @param revealBelow {@code mode=auto} 的阈值：工具数不超过它就不检索；0 或负数取 10
+ * @param pinned      常驻工具名：每轮都在清单里，不经过检索；写错的名字忽略并告警
+ * @param categories  类别（namespace）→ 工具名；不配则按名字前缀推导，见 {@link ToolCategories}
  */
 @ConfigurationProperties("claw4j.advisor.tool-search")
-public record ToolSearchProperties(Index index, int maxResults, Lucene lucene) {
+public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, Mode mode, int revealBelow,
+                                   List<String> pinned, Map<String, List<String>> categories) {
 
     /**
-     * 索引的三种实现。库里有三个，我们按需接：选哪一个决定"检索靠字面还是靠语义"。
+     * 工具面怎么露给模型。
+     *
+     * <p>三档而不是一个布尔开关：检索这一层不是"开或关"，而是"什么时候值得为省 token 付一轮往返"。
+     * 工具很少时那一轮纯属浪费，工具很多时不检索就超上下文——同一个部署在这两档之间会移动。
      */
+    public enum Mode {
+
+        /** 永不检索：全部工具每轮都在清单里，也不建索引。工具只有几个时这样最省。 */
+        OFF,
+
+        /** 一直检索：模型每轮只看得见检索工具 + 常驻 + 已检索到的。工具很多的部署用这一档。 */
+        ALWAYS,
+
+        /**
+         * 按数量滑档（默认）：工具数（不含检索工具自己）不超过 {@code reveal-below} 就全塞，超过才检索。
+         *
+         * <p>为什么默认它：本仓当前 20–30 个工具，判下来仍是检索，行为与改动之前完全一致；
+         * 而只挂三五个业务工具的部署自动变成全塞，不用改配置。
+         */
+        AUTO
+    }
+
+    /** {@code index=vector} 之外那三档见 {@link Index}。 */
     public enum Index {
 
         /**
@@ -66,17 +100,21 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene) {
      */
     public static final int DEFAULT_MAX_RESULTS = 5;
 
+    /** {@code mode=auto} 的缺省阈值：Anthropic 的口径是少于约 10 个工具时全量比检索更快。 */
+    public static final int DEFAULT_REVEAL_BELOW = 10;
+
     /** 框架在工具描述里写的是 1–10（Spring AI {@code ToolSearchTool}:50），这里提前夹住。 */
     private static final int FRAMEWORK_MAX_RESULTS_CAP = 10;
 
     /**
-     * 三个缺省都在这里收口：配置绑定与"手工构造"两条路落到同一处。
+     * 缺省都在这里收口：配置绑定与"手工构造"两条路落到同一处。
      *
-     * <p>用原始类型而不是包装类型管 {@code maxResults}：0 与「没配」本来就是同一件事。
-     * {@code index} 与 {@code lucene} 用引用类型，因为"没配"要能区分出来。
+     * <p>用原始类型而不是包装类型管 {@code maxResults} 与 {@code revealBelow}：0 与"没配"本来就是
+     * 同一件事。{@code index} / {@code lucene} / {@code mode} / 两个集合用引用类型，因为"没配"要能
+     * 区分出来。
      *
-     * <p>标 {@link ConstructorBinding} 是因为这一个 record 有两个构造器：不标的话绑定层
-     * 不知道走哪个，会退化到"找无参构造"，报 {@code No default constructor found}。
+     * <p>标 {@link ConstructorBinding} 是因为这一个 record 有多个构造器：不标的话绑定层不知道走哪个，
+     * 会退化到"找无参构造"，报 {@code No default constructor found}。
      */
     @ConstructorBinding
     public ToolSearchProperties {
@@ -84,15 +122,32 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene) {
         maxResults = maxResults <= 0
                 ? DEFAULT_MAX_RESULTS : Math.min(maxResults, FRAMEWORK_MAX_RESULTS_CAP);
         lucene = lucene == null ? new Lucene(null) : lucene;
+        mode = mode == null ? Mode.AUTO : mode;
+        revealBelow = revealBelow <= 0 ? DEFAULT_REVEAL_BELOW : revealBelow;
+        pinned = pinned == null ? List.of() : List.copyOf(pinned);
+        categories = categories == null ? Map.of() : Map.copyOf(categories);
     }
 
     /**
-     * 只要一个候选数的那一版：索引取默认、lucene 那档也用默认。
+     * 只要一个候选数的那一版：其余全取默认。
      *
      * @param maxResults 一次返回几个候选；0 或负数取默认
      */
     public ToolSearchProperties(int maxResults) {
-        this(null, maxResults, null);
+        this(null, maxResults, null, null, 0, null, null);
+    }
+
+    /**
+     * 指定索引与候选数的那一版：露出策略取默认。
+     *
+     * <p>留着是因为"换索引"与"露出多少"是两件事，改一件不该逼调用方填另一件的四个参数。
+     *
+     * @param index      索引
+     * @param maxResults 一次返回几个候选
+     * @param lucene     lucene 那档的参数
+     */
+    public ToolSearchProperties(Index index, int maxResults, Lucene lucene) {
+        this(index, maxResults, lucene, null, 0, null, null);
     }
 
     /**
@@ -102,5 +157,19 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene) {
      */
     public static ToolSearchProperties defaults() {
         return new ToolSearchProperties(0);
+    }
+
+    /**
+     * 这一轮的形状：全塞还是检索。
+     *
+     * @param toolCount 这一轮请求里的工具数（不含检索工具自己）
+     * @return 是不是全塞
+     */
+    public boolean revealsAll(int toolCount) {
+        return switch (mode) {
+            case OFF -> true;
+            case ALWAYS -> false;
+            case AUTO -> toolCount <= revealBelow;
+        };
     }
 }
