@@ -13,6 +13,7 @@ import io.github.claw4j.agent.channel.ConversationDelivery;
 import io.github.claw4j.model.config.ModelConfiguration;
 import io.github.claw4j.model.config.ModelProperties;
 import io.github.claw4j.agent.observability.MeteredToolCallback;
+import io.github.claw4j.agent.observability.MeteredToolIndex;
 import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.agent.observability.SpanTracer;
 import io.github.claw4j.agent.persona.AgentProperties;
@@ -311,15 +312,20 @@ public class AgentAutoConfiguration {
      *
      * @param toolSearch 检索配置
      * @param vectorStore 向量库，只在 {@code index=vector} 时用到
+     * @param meterRegistry 指标注册表，可能不存在（没装 actuator）；那时照常检索、只是不记
      * @return 索引
      */
     @Bean
     @ConditionalOnMissingBean(ToolIndex.class)
-    public ToolIndex toolIndex(ToolSearchProperties toolSearch, ObjectProvider<VectorStore> vectorStore) {
+    public ToolIndex toolIndex(ToolSearchProperties toolSearch, ObjectProvider<VectorStore> vectorStore,
+                               ObjectProvider<MeterRegistry> meterRegistry) {
         ToolIndex chosen = ToolSearch.index(toolSearch, vectorStore.getIfAvailable());
         // 分组是横切的一层：框架的 categoryFilter 已经交给模型了，但三个现成索引都不读它，
         // 所以包一层才有"收窄"这件事。换索引档时这层不用重写。
-        return new NamespacedToolIndex(chosen, ToolCategories.of(toolSearch.categories()));
+        ToolIndex grouped = new NamespacedToolIndex(chosen, ToolCategories.of(toolSearch.categories()));
+        // 计量包在**最外层**：包在里层记到的是收窄之前那一批（宽搜 15 条、过滤后 0 条，
+        // 里层看到的是 15），那就答不了"模型到底看到几个"。
+        return new MeteredToolIndex(grouped, meterRegistry.getIfAvailable());
     }
 
     /**

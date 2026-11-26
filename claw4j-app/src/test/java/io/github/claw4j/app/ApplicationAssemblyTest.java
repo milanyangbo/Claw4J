@@ -1,6 +1,7 @@
 package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
+import io.github.claw4j.agent.observability.MeteredToolIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.guard.GuardProperties;
@@ -484,8 +485,12 @@ class ApplicationAssemblyTest {
         assertThat(properties.categories())
                 .as("同理，分组也不预置：不配就按名字前缀推导")
                 .isEmpty();
-        assertThat(context.getBean(ToolIndex.class))
-                .as("框架的 categoryFilter 只有这一层读，包没包上决定收窄有没有用")
+        ToolIndex index = context.getBean(ToolIndex.class);
+        assertThat(index)
+                .as("最外层是计量：包在里层记到的是收窄之前那一批，答不了「模型看到几个」")
+                .isInstanceOf(MeteredToolIndex.class);
+        assertThat(((MeteredToolIndex) index).delegate())
+                .as("第二层是分组：框架的 categoryFilter 只有这一层读")
                 .isInstanceOf(NamespacedToolIndex.class);
     }
 

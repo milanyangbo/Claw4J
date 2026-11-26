@@ -1,6 +1,7 @@
 package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
+import io.github.claw4j.agent.observability.MeteredToolIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
@@ -45,6 +46,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import io.github.claw4j.domain.port.InboundMessage;
 import io.github.claw4j.domain.principal.Principal;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
@@ -57,6 +61,7 @@ import org.springframework.ai.tool.toolsearch.index.vectorstore.VectorToolIndex;
 import org.springframework.ai.tool.toolsearch.index.lucene.LuceneToolIndex;
 import org.springframework.ai.tool.toolsearch.ToolReference;
 import org.springframework.ai.tool.toolsearch.ToolSearchRequest;
+import org.springframework.ai.tool.toolsearch.ToolSearchResponse;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
@@ -464,12 +469,17 @@ class ModelAndToolSelectionTest {
         //     "容器里没有 VectorStore" 用空工厂的 provider 表示：默认那一档不读它。
         var noVectorStore = new DefaultListableBeanFactory()
                 .getBeanProvider(org.springframework.ai.vectorstore.VectorStore.class);
+        var noRegistry = new DefaultListableBeanFactory()
+                .getBeanProvider(io.micrometer.core.instrument.MeterRegistry.class);
         ToolIndex assembled = new AgentAutoConfiguration()
-                .toolIndex(ToolSearchProperties.defaults(), noVectorStore);
+                .toolIndex(ToolSearchProperties.defaults(), noVectorStore, noRegistry);
         assertThat(assembled)
-                .as("装配出来的索引外面一定有分组这一层：框架的 categoryFilter 只有它能读")
+                .as("最外层是计量：包在里层记到的是收窄之前那一批，答不了「模型看到几个」")
+                .isInstanceOf(MeteredToolIndex.class);
+        assertThat(((MeteredToolIndex) assembled).delegate())
+                .as("第二层是分组：框架的 categoryFilter 只有它能读")
                 .isInstanceOf(NamespacedToolIndex.class);
-        assertThat(((NamespacedToolIndex) assembled).delegate())
+        assertThat(((NamespacedToolIndex) ((MeteredToolIndex) assembled).delegate()).delegate())
                 .as("里层仍是中文那档——默认值没跟着分组一起变")
                 .isInstanceOf(ChineseToolIndex.class);
 
@@ -713,6 +723,109 @@ class ModelAndToolSelectionTest {
                 .containsExactly("file_read");
         assertThat(names(index, "c-1", "内容", "web"))
                 .containsExactly("web_fetch");
+    }
+
+    // ------------------------------------------------------------ 检索的可观测性（票 08）
+
+    @Test
+    @DisplayName("搜到与空手分开计：result=hit / miss 各一条")
+    void searchCounterSeparatesHitFromMiss() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        MeteredToolIndex index = new MeteredToolIndex(new ChineseToolIndex(), registry);
+        index.indexTools("m-1", List.of(
+                ToolReference.builder().toolName("lookup").summary("查询销售成交额").build()));
+
+        index.search(new ToolSearchRequest("m-1", "成交额", 5, null));
+        index.search(new ToolSearchRequest("m-1", "帮我订一张去上海的机票", 5, null));
+
+        assertThat(count(registry, MeteredToolIndex.HIT, false)).isEqualTo(1);
+        assertThat(count(registry, MeteredToolIndex.MISS, false)).isEqualTo(1);
+    }
+
+    /**
+     * 收窄之后空手要能单独认出来。
+     *
+     * <p>它和"索引里根本没有这个工具"是两个问题：前者是分组配错了、或者模型在乱填
+     * {@code categoryFilter}，后者该去改描述或换索引。混在一个数里就分不出该动哪边。
+     */
+    @Test
+    @DisplayName("收窄导致的空手：narrowed=true 且 result=miss")
+    void narrowedMissIsTagged() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        MeteredToolIndex index = new MeteredToolIndex(
+                new NamespacedToolIndex(new ChineseToolIndex(), ToolCategories.of(Map.of())), registry);
+        index.indexTools("m-2", List.of(
+                ToolReference.builder().toolName("file_read").summary("读取文件内容").build(),
+                ToolReference.builder().toolName("web_fetch").summary("抓取网页内容").build()));
+
+        index.search(new ToolSearchRequest("m-2", "读取文件", 5, "web"));
+
+        assertThat(count(registry, MeteredToolIndex.MISS, true)).isEqualTo(1);
+        assertThat(count(registry, MeteredToolIndex.MISS, false))
+                .as("不分开的话这一条会被记成「索引不好使」，而实际是收窄收没了")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("索引抛异常记 error 并往上抛：不让模型以为「没搜到」")
+    void searchFailureCountsAsErrorAndPropagates() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        MeteredToolIndex index = new MeteredToolIndex(new FailingToolIndex(), registry);
+
+        assertThatThrownBy(() -> index.search(new ToolSearchRequest("m-3", "成交额", 5, null)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("索引挂了");
+
+        assertThat(count(registry, MeteredToolIndex.ERROR, false)).isEqualTo(1);
+        assertThat(count(registry, MeteredToolIndex.MISS, false))
+                .as("吞成 miss 的话，「检索坏了」会表现成「这个库没有那个工具」")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("返回条数进分布：一次 1 个、一次 0 个")
+    void resultCountRecordsHowManyCameBack() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        MeteredToolIndex index = new MeteredToolIndex(new ChineseToolIndex(), registry);
+        index.indexTools("m-4", List.of(
+                ToolReference.builder().toolName("lookup").summary("查询销售成交额").build()));
+
+        index.search(new ToolSearchRequest("m-4", "成交额", 5, null));
+        index.search(new ToolSearchRequest("m-4", "订机票", 5, null));
+
+        DistributionSummary summary = registry.find(MeteredToolIndex.SEARCH_RESULTS).summary();
+        assertThat(summary).as("没有 registry 时这里会是 null，说明装配漏了").isNotNull();
+        assertThat(summary.count()).isEqualTo(2);
+        assertThat(summary.totalAmount()).as("1 + 0").isEqualTo(1.0);
+    }
+
+    private static double count(SimpleMeterRegistry registry, String result, boolean narrowed) {
+        Counter counter = registry.find(MeteredToolIndex.SEARCH_CALLS)
+                .tag("result", result)
+                .tag("narrowed", Boolean.toString(narrowed))
+                .counter();
+        return counter == null ? 0 : counter.count();
+    }
+
+    /** 只会炸的索引：验「检索失败」与「没搜到」在指标上不是一件事。 */
+    private static final class FailingToolIndex implements ToolIndex {
+
+        @Override
+        public void indexTool(String sessionId, ToolReference toolReference) {
+        }
+
+        @Override
+        public void indexTools(String sessionId, List<ToolReference> toolReferences) {
+        }
+
+        @Override
+        public ToolSearchResponse search(ToolSearchRequest toolSearchRequest) {
+            throw new IllegalStateException("索引挂了");
+        }
+
+        @Override
+        public void clearIndex(String sessionId) {
+        }
     }
 
     private static List<String> names(NamespacedToolIndex index, String sessionId, String query, String category) {
