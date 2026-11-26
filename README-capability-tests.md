@@ -20,7 +20,7 @@
 | 类 | 验什么 | 加了什么之后看 |
 | --- | --- | --- |
 | **A 装配** | 接没接上：在不在清单、连没连上、认不认得出人 | 工具 A1、MCP A2、通道 A3、人设 A4 |
-| **B 能力** | 真能用吗：回答对不对、计数涨没涨 | 工具 B1 / B2、Skill B3、脚本 B4、子 Agent B5、知识库 B6（三条）、问人 B7、计划 B8 |
+| **B 能力** | 真能用吗：回答对不对、计数涨没涨 | 工具 B1 / B2、Skill B3、脚本 B4、子 Agent B5、知识库 B6（三条）、问人 B7、计划 B8、检索 B9 |
 | **C 权限与边界** | 看不见的、要人批的、谁能批的、外部内容 | 工具 C1、命令 C2 / C3、其它工具 C4、WebFetch C5 |
 | **D 排除干扰** | 缓存 / 记忆 / 种子造成的假阳性 | 每一类都可能撞上 |
 | **E 故障与降级** | 掉线、超时、熔断时长什么样 | MCP E1、工具 E2 / E3 |
@@ -271,6 +271,11 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 判据还是看结果：能说出页面上那句话（`This domain is for use in documentation examples…`）
 就是通了。回"我没有这个工具"、或者凭常识编页面内容，都按**没过**记。两条补救都不许用
 （替它写检索步骤、自己替它抓一遍）——前者改题目，后者没验到模型。
+
+**前三条题目里点名"用 Glob / 用 Read / 用 Grep"是暂时的**：不点名时这几句现在还过不了
+（2026-11-26 实测「examples 目录下有哪些 .md 文件」，`regex` 与 `hybrid` 都拿不到 `Glob`）。点名验的是
+"工具本身能不能用"，不点名验的是"模型找不找得到"——两件事分开记，别混成一个"通过"。等工具描述
+中文化与评测集落地之后再把题目改成自然问法，那时候红的会是后者，而它必须能红。
 
 - **写文件默认是关的**：不开时问「用 Write 写一个文件」，模型应该说没有这个工具；
   要开就 `CLAW4J_FILES_WRITE_ENABLED=true` 重启，启动日志会写「Write / Edit 已开」。
@@ -537,6 +542,43 @@ Todos have been modified successfully. Ensure that you continue to use the todo 
 
 **它花调用预算**：默认一轮 6 次，"三步活 + 每步回写清单"正好用完。撞上时回答里出现
 `Total tool call limit (6) exceeded`，见 E3。
+
+### B9 工具检索：翻到了没有、翻回来的是哪几个
+
+模型手上只有 `toolSearchTool` 的时候，"它没做"常常不是不会，是**没翻到**。这一节不问业务，只看检索本身。
+
+```bash
+for m in claw4j.tool.search.calls claw4j.tool.search.results; do
+  curl -s --noproxy '*' "localhost:9090/actuator/metrics/$m"; echo
+done
+```
+
+| 指标 | 怎么读 |
+| --- | --- |
+| `claw4j.tool.search.calls{result}` | `hit` = 有候选；`miss` = 索引返回了空；`error` = 索引自己抛了 |
+| `…{narrowed}` | `true` 的 `miss` 是**收窄之后**空手：分组配错了，或者模型在乱填 `categoryFilter` |
+| `claw4j.tool.search.results` | COUNT / TOTAL = 一次回来几个。**次次顶满 `max-results` 说明候选没被筛过**，它不衡量准不准 |
+
+**判据**：问一句确定该有工具的话，`calls` 多 1 且 `result=hit`。出现 `miss` 而回答里说"我没有这个工具"，
+问题在提示词或索引，不在工具本身。`error` 千万别当成 `miss`——那是"搜崩了"，修法完全不同。
+
+**要看名字得开 DEBUG**（只有 `index=hybrid` 打这一行）：
+
+```
+--logging.level.io.github.claw4j=DEBUG
+工具检索 hybrid：query=列出目录下的文件 关键字=[…] 向量=[…] 融合后=[…]
+```
+
+一行三份名单：两翼各翻了什么、融合后给了模型什么。**少了哪个工具在这行里一眼看见**，指标上看不出来。
+
+换索引：`--claw4j.advisor.tool-search.index=regex|lucene|vector|hybrid`（默认 `regex`）。后两档要一份
+**工具专用**的向量库（`claw4j_tool.tool_index`，由 `EmbeddingModel` 建）：建不出来就启动失败，不回落。
+它不能是知识库那张表——`claw4j_rag.vector_store` 里 `metadata->>'toolName'` 必须一条都没有，
+共用就会让工具描述跟着知识库的召回进业务问答。
+
+**这一节现在判不了"翻得准不准"**。2026-11-26 记下的一条：`index=hybrid` 下问「examples 目录下有哪些
+`.md` 文件」，融合后前五里没有 `Glob`（它排在向量那一路第 7），模型仍然答"没有列目录的工具"。
+准确率要等工具评测集，别拿一次问答当结论。
 
 ---
 
@@ -1761,6 +1803,7 @@ curl -s --noproxy '*' 'localhost:8080/api/sessions?limit=5' -H 'X-Claw4j-User: j
 | 知识库（B6） | 条款细节 / 两份文档拼起来 / 查一个库里没有的数 | 数字与出处都对；查不到的说查不到 | 一个用户只问一条，别让记忆串了 |
 | 问人（B7） | 让它问你一个问题 | 挂起 → `answer` → 出现选项内容 | 409 = 这段对话没在等答案 |
 | 计划（B8） | 三步任务，要求先写清单 | `TodoWrite ok` ≥ 2 | 清单本身吃调用预算 |
+| 检索（B9） | 问一句该有工具的话，再查 `claw4j.tool.search.*` | `result=hit` 多 1，没有 `miss`/`error` | 顶满 `max-results` ≠ 翻得准；`error` 不是 `miss` |
 | 看不见（C1） | 把画像收到 messaging，问它会不会跑脚本 | 回答"没有这个能力"，计数 404 | 这不是"被拒" |
 | 命令审批（C2） | 跑一条白名单外的命令，再批 | `granted` + 计数涨 + 审计带编号 | 编号**以库里为准** |
 | 资格（C3） | 自己批自己 / 名单外 / 过期后点 | 403 / 403 / 409 | 名单先判，自批后判 |

@@ -109,7 +109,9 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 
 模型默认只看得见 `toolSearchTool` 一个工具，先搜一次才拿得到具体工具。搜得准不准由
 `claw4j.advisor.tool-search.index` 决定：`regex`（默认，中文整句能命中）、`lucene`（全文打分，
-中文按字切）、`vector`（语义召回，要求容器里有 `VectorStore`，没有就启动失败）。三档只影响
+中文按字切）、`vector`（语义召回）、`hybrid`（关键字 ∪ 向量，按名次融合）。后两档要一份
+**工具专用**的向量库（`claw4j_tool.tool_index`，由 `EmbeddingModel` 建）：它不注册成 bean，
+也不与知识库共用表——共用会让工具描述跟着知识库的召回进业务问答。四档只影响
 "搜到什么"，**不放宽任何一层可见性**——索引里只有本来就在清单里的工具。
 
 **③ 哪些要人批。** 两类，互相独立：
