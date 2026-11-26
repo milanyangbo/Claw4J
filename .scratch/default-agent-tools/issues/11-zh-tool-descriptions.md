@@ -3,6 +3,9 @@
 **Status:** resolved
 
 > 依赖票 09：改完之后"好了多少"只有那张对照表能回答。09 没落地时本票只能判"通了"。
+>
+> **2026-11-26 修正**：作用域从"模型 + 索引"收窄到"只喂向量索引"（关键字那一路被它拖低）。
+> 收窄后复测，向量侧没有可测变化，**默认关、机制保留**。见文末第二版实跑。
 
 ## 由来
 
@@ -16,8 +19,8 @@
 ## 裁决
 
 `docs/adr/0021-explicitly-not-doing.md`（「**领先 2**：工具可见性」）再修订一条：
-**给模型看的工具描述可运行时本地化**，开关与作用范围可配；本地化只改描述文本，不改工具名、
-不改权限、不改计量口径。
+**喂给向量索引的工具描述可运行时本地化**，开关与作用范围可配；本地化只改入库文本，
+不改工具名、不改权限、不改计量口径、**不改模型看到的清单**（2026-11-26 收窄，见文末修正）。
 
 ## 配置
 
@@ -25,11 +28,13 @@
 claw4j:
   advisor:
     tool-search:
-      # 要不要把英文的工具描述译成中文。默认关：它每次部署会花掉若干次 utility 调用。
-      zh-description: false
-      # 只译这些工具（名字来自 @Tool(name=…)）。空 = 自动判定：描述里没有汉字的才译。
-      # 名字写错不报错也不翻——与 pinned 不同，它没有"必须有"的语义。
-      zh-description-tools: []
+      zh-description:
+        # 要不要把英文的工具描述译成中文喂给向量索引。默认关：每次部署会花掉若干次 utility 调用，
+        # 而默认 index=regex 根本用不上它。
+        enabled: false
+        # 只译这些工具（名字来自 @Tool(name=…)）。空 = 自动判定：描述里汉字少于 6 个才译。
+        # 名字写错不报错也不翻——与 pinned 不同，它没有"必须有"的语义。
+        tools: []
 ```
 
 **为什么要自动判定**：绝大多数工具的描述是英文，逐个人工登记就是又一张会漂的映射表。判据简单到
@@ -46,27 +51,28 @@ claw4j:
 <原文>
 ```
 
-保留原文：工具描述里常有参数名、路径语义、边界条件，译丢一句就是模型误用一个工具。代价是每轮
-描述 token 约 1.6 倍——**只对真译了的工具付这份钱**，且这笔钱是固定值，不随对话轮数增长。
+保留原文：向量检索要的是语义，但描述里有参数名、路径语义这类译不准的东西，删掉原文等于把
+不确定性交给一次模型调用。
+
+**没有 token 代价**（修正后）：这一份只进向量库，不进模型的清单，所以不占每轮上下文。
+代价变成 `indexTools` 时的那几次 utility 调用（只在工具集变化时发生）。
 
 翻的规矩写死在提示词里（不开放配置）：一句简体中文、保留工具名/参数名/代码标识符原样、
 不加解释、不换行、只输出译文。
 
 ## 落在哪
 
-`AgentAutoConfiguration#collectToolCallbacks` 的**出口**，与 `MeteredToolCallback` 同一位置：
+`ToolSearch#index` 建索引时，**只包在向量那一路外面**（`TranslatedVectorIndex`）：
 
 ```java
-tools = withTranslatedDescriptions(tools, translator);   // 策略筛完之后再包
+case HYBRID -> HybridToolIndex.of(categories, new ChineseToolIndex(),
+        new TranslatedVectorIndex(new VectorToolIndex(store), translator), weight);
 ```
 
-三条理由：
-
-1. **索引与模型必须看到同一份**。索引是从 `ToolCallback` 的 `ToolDefinition` 建的
-   （`DisclosureToolCallingAdvisor` 的 `indexTools` 就吃这个），包在回调上，两边自动同源；
-   包在索引层的话，"全塞模式"下模型看到的还是英文，而那正是 `mode=auto` 在工具少的部署上的常态。
-2. **筛完再翻**。被档位/`deny` 挡掉的工具不该花这次调用。
-3. 与计量同一个装饰器位置，没有第二处需要记得同步。
+为什么不是包在 `collectToolCallbacks` 出口（最初的设计）：那样模型与索引拿同一份中文，2026-11-26
+的对照里关键字那一路从 0.15 掉到 0.10——描述变长、中文二元组碰撞变多。既然收益与代价分在两条路上，
+就让两条路读不同的文本。位置选在向量索引外面一层：`index=vector` 与 `hybrid` 两档自动都覆盖，
+`HybridToolIndex` 不用知道这件事。
 
 翻译器本身：`ToolDescriptionTranslator`，拿 `ChatModel`（`roles.utility`，票 F7 那条链）与一个
 进程内缓存 `ConcurrentHashMap<toolName, Entry(sha256(原文), 中文)>`——原文变了就重译。
@@ -95,13 +101,19 @@ tools = withTranslatedDescriptions(tools, translator);   // 策略筛完之后�
 | 判什么行为 | 用例 | 先红的样子 |
 | --- | --- | --- |
 | 关着 / 名单外时描述逐字不变、零调用 | ✅ `ModelAndToolSelectionTest#zhDescriptionOffLeavesDescriptionsAlone` | 开关没接上（永远翻）时模型调用计数 > 0，断言红 |
-| 开着时中文在前原文在后，且索引里也是这一份 | ✅ `ModelAndToolSelectionTest#zhDescriptionRewritesForModelAndIndex`（第一段 + 中文问法能命中） | 只包了模型那一路时，从定义建出来的 `ToolReference` 还是英文、中文问法搜不到，断言红 |
-| 已有中文的不翻、译失败退原文 | ✅ 并入上一条（第二、三段） | 无条件翻时中文描述被污染；抛出去时整轮请求挂掉 |
-| 名单非空时只翻名单里的 | ✅ 并入第一条（第二段） | 名单没生效时名单外也被翻，调用计数 > 0 |
+| 开着时**只有向量翼**入库中文+原文，关键字翼仍是原文 | ✅ `ModelAndToolSelectionTest#zhDescriptionFeedsVectorWingOnly`（第一段） | 把翻译包在两翼外层时，关键字翼也变成中文，断言红（临时去掉 `TranslatedVectorIndex` 的翻译验过，单条用例当场红） |
+| 装配边界：regex/lucene 不包翻译层，vector/hybrid 的向量翼包 | ✅ 并入 `ModelAndToolSelectionTest#configBoundariesAreHonoured` | 翻译器被塞进关键字档时，`inner(...)` 不再是 `ChineseToolIndex`，断言红 |
+| 已有中文的不翻、译失败退原文 | ✅ 并入 `zhDescriptionFeedsVectorWingOnly`（第二、三段） | 无条件翻时中文描述被污染；抛出去时整轮请求挂掉 |
+| 名单非空时只翻名单里的 | ✅ 并入 `zhDescriptionOffLeavesDescriptionsAlone`（第二段） | 名单没生效时名单外也被翻，调用计数 > 0 |
 
 `config-regroup/issues/01` 里两条 ✅ 引用跟着改名（那道闸会红，改的是名字不是删行）。
 
 ## 实跑：同一份题、开与关各一遍（2026-11-26，19 工具 / 20 题）
+
+### 第一版（两翼都读中文）——已作废
+
+下面的数字是"模型与索引都看中文"那一版。**"向量受益"这一条没有复现**，留在票面是为了说明
+为什么改设计，不要引用。
 
 ```
 配置         分类       R@1 关 → 开      R@5 关 → 开      MRR 关 → 开
@@ -121,6 +133,21 @@ hybrid-0.5   zh-en     0.200 → 0.400    0.600 → 0.800    0.290 → 0.600
 **中文化的收益要配向量那一路，配纯关键字是负的**。
 
 样本只有 20 条、19 个工具，方向可信、数值不可引；重跑命令在 `eval/tools/README.md`。
+
+### 第二版（只喂向量）——现状
+
+```
+配置         全部 R@1 关 → 开    全部 MRR 关 → 开    zh-en R@1 关 → 开
+regex        0.150 → 0.150      0.289 → 0.289      0.200 → 0.200
+hybrid-0.5   0.200 → 0.200      0.350 → 0.342      0.200 → 0.200
+hybrid-0.0   0.350 → 0.350      0.433 → 0.431      0.600 → 0.600
+```
+
+**关键字那一路不再降**（0.15 保住）——收窄的目的达到。但**向量那一路也没有变化**：
+五道 `zh-en` 题逐格相同。向量模型本身跨语言，中文 query 对英文描述早就能命中，中文化在
+这一档上的边际收益是零。第一版那两个数从哪来，这次复现不出来，**不编原因**。
+
+结论：机制保留、默认关。它现在既没有收益也没有害处；要判值不值，先把 `zh-en` 那一档加厚。
 
 ## 落地时与票面不同的两处（据实改）
 
