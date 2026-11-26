@@ -13,7 +13,10 @@
 #   ./eval/tools/bfcl/run.sh --from-score        # 不调模型，只按当前门槛重算分与报告
 #   ./eval/tools/bfcl/run.sh --update-baseline   # 确认改好了，把分数钉成新基线
 #
-# 退出码：0 全过；1 有回归；2 环境没搭起来（缺 key / 缺依赖 / 缺基线）。
+# 退出码：0 达标（绝对门与回归门都过）；1 有不达标或回归项（看报告「判定」表的结论列）；
+#         2 环境没搭起来（缺 key / 缺依赖）。
+# 绝对门（票 19）：simple_python ≥95%、irrelevance ≥90%。它与基线无关，--update-baseline
+# 只跳过回归那一半，不会豁免它——所以更新完基线仍可能退出 1，那是质量没达标，不是写失败。
 
 set -uo pipefail
 

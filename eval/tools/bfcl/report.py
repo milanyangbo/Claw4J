@@ -11,11 +11,12 @@
 
 1. **两路互校**：逐条明细数出来的对错，必须等于汇总行给的数。不等就退出 1。
    与检索层 `--cross-check` 同一条规矩：两套数各说一套时，第一个问题是「信谁」。
-2. **判回归**：与 `baseline.json` 比，掉超过 `TOLERANCE` 就是回归。
+2. **判达标与回归**：两条独立的线——绝对门（与基线无关的合格水位）与回归门（跟上次比掉没掉）。
 3. **写一份人能读懂的报告**：指标是什么意思、错了的那些长什么样、怎么算达标。
 
-门槛只有一层（回归门），因为这里的指标也是确定性的——同样的题、同样的判据，
-模型输出变了分数才会变。真正的不确定性来自「模型偶尔不一样」，用容差吸收。
+门槛分两层（票 19 起）。2026-11-26 之前这里只有回归门，等于拿「上次自己的分数」当合格线——
+上一次那版从没被判过合格，那是自证清白。指标本身是确定性的（同样的题、同样的判据，
+模型输出变了分数才会变），所以不确定性仍用容差吸收，但**合格与否不再由基线决定**。
 """
 
 from __future__ import annotations
@@ -72,6 +73,22 @@ ERROR_TYPE_MEANING = {
 # 回归容差：一格题在 400 条里是 0.25%，在 240 条里是 0.42%，所以 0.02 已经很紧；
 # 留 0.03 是为了「模型这一次多错了几条」不反复告警，同时真坏了必然报得出来。
 TOLERANCE = 0.03
+
+
+# ---------------------------------------------------------------------------
+# 绝对门（票 19）：与基线无关的合格水位。依据都在下面，改数要连依据一起改。
+#
+# `simple_python` 95%：工具选错或参数填错是硬错，用户拿到的是错结果。95% = 20 次错 1 次。
+# `irrelevance` 90%：该闭嘴时调了工具，用户直接看得见（「我就说了声谢谢，它去查天气」）。
+#   90% = 十次闲聊允许一次乱调。注意这一档同时受模型自身能力制约——模型侧就是不稳，
+#   索引侧更严才有意义。
+#
+# 两个数都是**产品线**，不是行业公开数字：BFCL 官方榜给分数与排名，不给及格线
+# （`bfcl_eval` 全包无此概念，核实过）。要改，改这里并在报告「怎么算达标」里写明新依据。
+GATES = {
+    "simple_python": 0.95,
+    "irrelevance": 0.90,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -195,32 +212,92 @@ def read_leaderboard_csv(score_dir: Path = SCORE_DIR) -> dict[str, str]:
     return {}
 
 
-def judge(results: list[dict], baseline: dict | None) -> tuple[bool, list[str]]:
-    """回归门：每一档单独判，不做平均。
+def _state(current: float, gate: float, accepted: float | None) -> str:
+    """先问「够不够好」，再问「有没有变差」。
+
+    顺序反过来，一个「本来就烂、这次烂得一样」的分数会被判成「稳定」——那正是票 19 要修的病。
+    """
+    if current < gate:
+        return "不达标"
+    if accepted is not None and current < accepted - TOLERANCE:
+        return "回归"
+    if accepted is None:
+        return "基准"  # 过了门，但还没有基线可比，说"达标"会过头
+    return "达标"
+
+
+def quality_rows(results: list[dict], baseline: dict | None) -> list[dict]:
+    """判定表的行。报告与退出码都从这里出来，不各写一套。"""
+    rows = []
+    for item in results:
+        category = item["category"]
+        gate = GATES[category]
+        current = item["accuracy"]
+        accepted = (baseline or {}).get(category)
+        state = _state(current, gate, accepted)
+        if state == "不达标":
+            problem = f"{category} 不达标：{current:.2%} < 合格线 {gate:.0%}"
+        elif state == "回归":
+            problem = (f"{category} 回归：{current:.4f} < 基线 {accepted:.4f}"
+                       f" - 容差 {TOLERANCE}")
+        else:
+            problem = ""
+        rows.append({
+            "category": category,
+            "current": current,
+            "gate": gate,
+            "state": state,
+            "problem": problem,
+        })
+    return rows
+
+
+def judge(rows: list[dict], baseline: dict | None,
+          skip_regression: bool = False) -> tuple[bool, list[str]]:
+    """两根门一起判，每一档单独判、不做平均。
 
     `irrelevance` 与 `simple_python` 平均会让「老实拒调」被「工具选对率」盖住——
     这正是票 17 明确要避免的事。
-    """
-    if baseline is None:
-        return False, ["缺基线：先跑一次 --update-baseline，把它钉成起点"]
 
+    `skip_regression` 只在 --update-baseline 时置真：那一刻的语义是「接受当前值」，
+    拿旧基线挡自己会自相矛盾。但**绝对门照判**——钉了基线不等于质量达标。
+    """
     problems = []
-    for item in results:
-        category = item["category"]
-        previous = baseline.get(category)
-        if previous is None:
-            problems.append(f"{category} 在基线里没有记录（新增了一档？）")
-            continue
-        floor = previous - TOLERANCE
-        if item["accuracy"] < floor:
-            problems.append(
-                f"{category} 回归：{item['accuracy']:.4f} < 基线 {previous:.4f} - 容差 {TOLERANCE}"
-            )
+    if baseline is None:
+        problems.append("缺基线：先跑一次 --update-baseline，把它钉成起点")
+    for row in rows:
+        if row["state"] == "不达标" or (row["state"] == "回归" and not skip_regression):
+            problems.append(row["problem"])
     return not problems, problems
 
 
 def _pct(value: float) -> str:
     return f"{value * 100:.2f}%"
+
+
+def gate_table(rows: list[dict]) -> str:
+    """判定表。与检索层同一形态，读的人从一层换到另一层时不用重新学。"""
+    lines = ["| 指标 | 当前 | 合格线 | 判定口径 | 结论 |",
+             "| --- | --- | --- | --- | --- |"]
+    for row in rows:
+        lines.append(f"| `{row['category']}` | {_pct(row['current'])} | ≥{row['gate']:.0%} "
+                     f"| 绝对门 | {row['state']} |")
+    return "\n".join(lines)
+
+
+def verdict_text(rows: list[dict]) -> str:
+    """「不达标」和「回归」是两件事，混成「不通过」就读不出来了。"""
+    short = [row for row in rows if row["state"] == "不达标"]
+    regressed = [row for row in rows if row["state"] == "回归"]
+    parts = []
+    if short:
+        parts.append(f"{len(short)} 项低于合格线")
+    if regressed:
+        parts.append(f"{len(regressed)} 项比基线差超过 {TOLERANCE}")
+    if not parts:
+        return "**达标**（绝对门与回归门都过）"
+    head = "**不达标**" if short else "**回归**"
+    return head + "：" + "；".join(parts)
 
 
 def _width(text: str) -> int:
@@ -241,19 +318,33 @@ def build_report(
     problems: list[str],
     baseline: dict | None,
     score_dir: Path = SCORE_DIR,
+    rows: list[dict] | None = None,
 ) -> str:
     now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    rows = rows or []
     lines = [
         "# 工具选择评测报告（BFCL）",
         "",
         f"- 时间：{now}",
         f"- 模型：`{model}`（DeepSeek 的 `deepseek-chat`，通过 BFCL 的 FC 通道调用）",
-        f"- 判定：**{'通过' if passed else '不通过'}**",
+        f"- 判定：{verdict_text(rows)}",
     ]
     for problem in problems:
         lines.append(f"  - {problem}")
 
     lines += [
+        "",
+        "## 判定",
+        "",
+        gate_table(rows),
+        "",
+        "**两根门管两件事，不能混着看。**「绝对门」与基线无关，回答**够不够好**；"
+        f"「回归门」只跟上次被接受的那份比（`baseline.json`，容差 {TOLERANCE}），"
+        "回答**有没有变差**。拿基线当合格线等于自证清白——上一次那版从没被判过合格。",
+        "",
+        "两个合格线的出处：`simple_python` 95% = 20 次错 1 次；`irrelevance` 90% = "
+        "十次闲聊允许一次乱调。都是从**用户可感知的错误频率**推的，**不是 BFCL 官方标准**"
+        "——官方榜给分数与排名，不给及格线（`bfcl_eval` 全包没有这个概念，核实过）。",
         "",
         "## 这次测的是什么",
         "",
@@ -268,7 +359,8 @@ def build_report(
         "",
         "## 一分钟读法",
         "",
-        "1. 先看上面那行「判定」。不通过时会点名哪一档掉了、掉到多少。",
+        "1. 先看上面那张「判定」表：**结论列**写达标／不达标／回归。不达标是「低于合格线」，"
+        "回归是「比上次差」——两件事，别混着看。",
         f"2. `simple_python` 的准确率是**主判据**：{len(CATEGORIES)} 档里它最能反映「工具名与描述写得好不好」。",
         "3. `irrelevance` **单列，不与上面平均**。它测的是模型的自我克制，掉下去是另一类事故。",
         "",
@@ -361,13 +453,20 @@ def build_report(
     lines += [
         "## 怎么算达标",
         "",
-        f"只有一条**回归门**：每档准确率不低于基线减 `{TOLERANCE}`。",
+        "两根门，互相独立：",
         "",
-        "- 基线是「上次被接受的那次」，存在 `eval/tools/bfcl/baseline.json`（入库）。",
-        "- 没有基线时退出 2，不是「0 分通过」——没有基线的评测只是打印。",
-        "- 掉超过容差退出 1，并点名是哪一档。",
+        "1. **绝对门（回答「够不够好」）**："
+        + "、".join(f"`{name}` ≥{gate:.0%}" for name, gate in GATES.items())
+        + "。依据见报告开头那张表下面那段——是产品线，不是官方标准。",
+        f"2. **回归门（回答「有没有变差」）**：每档准确率不低于基线减 `{TOLERANCE}`。"
+        "基线是「上次被接受的那次」，存在 `eval/tools/bfcl/baseline.json`（入库）。",
+        "3. **两者独立**：过了绝对门但比基线跌超容差 → 回归；本来就低于合格线 → 不达标。"
+        "「上次也这样」不能换来达标；`--update-baseline` 也不行（它只跳过回归那一半）。",
         "",
-        "退出码：`0` 通过；`1` 有回归或两路数不一致；`2` 环境没搭起来（缺 key / 缺依赖 / 缺基线）。",
+        "- 没有基线时退出 1 并点名——没有基线的评测只是打印。",
+        "",
+        "退出码：`0` 达标（绝对门与回归门都过）；`1` 有不达标／回归项，或两路数不一致；"
+        "`2` 环境没搭起来（缺 key / 缺依赖）。",
         "",
         "## 已知噪声（读数字前先知道这些）",
         "",
@@ -417,10 +516,14 @@ def main() -> int:
         print(f"基线已更新：{args.baseline}")
         baseline = payload["categories"]
 
+    rows = quality_rows(results, baseline)
     if args.no_baseline:
         passed, problems = True, []
+    elif args.update_baseline:
+        # 钉基线 ≠ 质量达标：只跳过回归那一半，绝对门照判。
+        passed, problems = judge(rows, baseline, skip_regression=True)
     else:
-        passed, problems = judge(results, baseline)
+        passed, problems = judge(rows, baseline)
 
     payload = {
         "model": args.model,
@@ -437,33 +540,33 @@ def main() -> int:
         },
         "baseline": baseline,
         "tolerance": TOLERANCE,
+        "gates": GATES,
+        "states": {row["category"]: row["state"] for row in rows},
         "problems": problems,
     }
     (reports_dir / "bfcl.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
 
-    report = build_report(args.model, results, passed, problems, baseline, args.score_dir)
+    report = build_report(args.model, results, passed, problems, baseline, args.score_dir, rows)
     (reports_dir / "report.md").write_text(report, encoding="utf-8")
 
-    for item in results:
-        print(
-            f"{_pad(item['category'], 18)}{_pad(_pct(item['accuracy']), 8, 'right')}  "
-            f"({item['correct']}/{item['total']})  错因 {len(item['error_types'])} 类"
-        )
+    for row in rows:
+        gate = f"≥{row['gate']:.0%}"
+        print(f"{_pad(row['category'], 18)}{_pad(_pct(row['current']), 8, 'right')}"
+              f"{_pad(gate, 8, 'right')}  {row['state']}")
     print(f"报告：{reports_dir / 'report.md'}")
 
-    if args.update_baseline:
-        print("已把本次分数钉成基线。")
-        return 0
     if args.no_baseline:
-        print("（--no-baseline：本次只出报告，不做回归判定——冒烟 6 条没法跟全量基线比）")
+        print("（--no-baseline：本次只出报告，不做判定——冒烟 6 条没法跟全量基线比）")
         return 0
+    if args.update_baseline:
+        print("已把本次分数钉成基线（回归比较的起点，**不代表质量达标**）。")
     if not passed:
         for problem in problems:
             print(f"✗ {problem}", file=sys.stderr)
         return 1
-    print("✓ 两档都不低于基线")
+    print("✓ 达标（绝对门与回归门都过）")
     return 0
 
 

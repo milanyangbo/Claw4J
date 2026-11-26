@@ -13,14 +13,16 @@
 - **零候选题单独判**：TREC 表达不了"期望零候选"，那两题不进 qrels，读
   ``no-search.jsonl``，判据是 ``returned == 0``。
 
-门槛只有两层，不是 RAG 侧的三层：工具侧的指标全是确定性的，**没有 judge 噪声**，所以
-不需要"相对门 + 容差"去吸收抖动。留下的两层是：
+门槛分两层，管两件不同的事（票 19 起）：
 
-- **回归门**：每档 ``R@5`` 不低于 ``baseline.json`` 减 ``TOLERANCE``。基线是"上次被接受的
-  版本"，没有它就不是评测，只是打印。
-- **零候选率也是回归门，不是绝对门**：当前 ``regex`` 对「谢谢」就会给候选（票 09 记录过），
-  把 1.0 当门槛等于假装它已经修好，一落地就是红的。基线记当前值，掉下去才算回归。
-  明细（哪几题给了候选）每轮都打印——它是观测项，不该被一个数字盖住。
+- **绝对门**：与基线无关的合格水位。``R@5 ≥ 0.80``、零候选率 ``≥ 0.90``。两个数都是从
+  "用户可感知的错误频率"推的（见 ``GATE_R5`` / ``GATE_NO_SEARCH`` 的注释），**不是行业
+  公开数字**——工具检索没有公认榜单，这一点与 BFCL 不同。
+- **回归门**：不低于 ``baseline.json`` 减 ``TOLERANCE``，回答"有没有变差"。
+
+2026-11-26 之前这里只有回归门，且特意写明"零候选率不是绝对门"，理由是"把 1.0 当门槛
+等于假装它已经修好，一落地就是红的"。票 19 的判断是：**一落地就是红的恰恰是对的**——
+烂分数不该靠"跟上次一样烂"拿到通过。所以改成 0.90 并如实判不达标。
 
 ``--cross-check`` 用票 09 的自研公式重算一遍 ``R@5`` / ``RR``，与 ir_measures 逐档比。
 两份实现之间差 > 1e-9 就当场退出 1：两套指标各说一套时，第一个问题是"信谁"，
@@ -68,6 +70,30 @@ CONFIG_MEANING = {
 
 # 回归容差：确定性指标本来可以不设，留 0.05 是为了"一格题"不反复告警。
 TOLERANCE = 0.05
+
+
+# ---------------------------------------------------------------------------
+# 绝对门（票 19）：与基线无关的合格水位。基线只回答"有没有变差"，回答不了"够不够好"。
+#
+# 只给**有用户可感知后果**的指标设门，其余标 — 作诊断项（与 eval/rag 把「召回完整性」
+# 标 — 是同一条理由：均值会抹平长尾，拿它当门只会常红）。
+#
+# 判两档，因为它们是两个不同的问题：
+#   GATE_PRIMARY —— 生产默认档（application.yml 的 index: regex）。用户此刻拿到的就是它。
+#   GATE_BEST    —— 改配置后能达到的水平。换默认值是要单独量的事（见 application.yml 注释），
+#                   但在那之前也该知道"能到多少"。
+# ---------------------------------------------------------------------------
+
+# R@5 的合格线。依据：24 个工具里随机取 5 个的命中率是 5/24 ≈ 0.208；0.80 是它的近 4 倍，
+# 且等于"5 题漏 1 题"。为什么不照抄 rag 的 0.90：RAG 漏一段信息就真没了，
+# 工具检索漏一个只是退化（基座工具常驻、模型还能在目录里挑），两者失败代价不同。
+GATE_R5 = 0.80
+
+# 闲聊误触发：用户直接的观感错误（说「谢谢」却去查天气）。0.90 = 十次允许一次。
+GATE_NO_SEARCH = 0.90
+
+GATE_PRIMARY = "regex"
+GATE_BEST = "hybrid-0.0"
 
 # 交叉校验的容忍：两套实现算同一批整数除法，浮点差只该在末位。
 CROSS_CHECK_EPS = 1e-9
@@ -242,25 +268,77 @@ def cross_check(scores: dict[str, dict[str, float]]) -> list[str]:
     return problems
 
 
-def judge(scores: dict[str, dict[str, float]], zero: dict[str, object],
-          baseline: dict | None) -> list[str]:
-    """回归门。返回失败项；空 = 全过。"""
-    if baseline is None:
-        return []
+def _state(current: float, gate: float, accepted: float | None) -> str:
+    """一行指标怎么结案。顺序有讲究：先问「够不够好」，再问「有没有变差」。
+
+    反过来写的话，一个「本来就烂、这次烂得一样」的分数会被判成「稳定」——那正是票 19 要修的病。
+    """
+    if current < gate:
+        return "不达标"
+    if accepted is not None and current < accepted - TOLERANCE:
+        return "回归"
+    if accepted is None:
+        return "基准"  # 过了门，但还没有基线可比，说"达标"会过头
+    return "达标"
+
+
+def quality_rows(scores: dict[str, dict[str, float]], zero: dict[str, object],
+                 baseline: dict | None) -> list[dict]:
+    """判定表的行：指标 / 当前 / 合格线 / 口径 / 结论。报告与退出码都从这里出来。"""
+    metrics = (baseline or {}).get("metrics", {})
+    accepted_rate = (baseline or {}).get("no_search_rate")
+    rows = []
+
+    for config, label in ((GATE_PRIMARY, "生产默认"), (GATE_BEST, "可用最优")):
+        if config not in scores:
+            continue
+        current = scores[config]["R@5"]
+        accepted = metrics.get(config, {}).get("R@5")
+        rows.append({
+            "name": f"R@5（{config}，{label}）",
+            "current": f"{current:.3f}",
+            "gate": f"≥{GATE_R5:.2f}",
+            "basis": "绝对门",
+            "state": _state(current, GATE_R5, accepted),
+            "problem": f"{config} 的 R@5 = {current:.3f} < 合格线 {GATE_R5:.2f}",
+        })
+
+    current = zero["rate"]
+    rows.append({
+        "name": "no-search 零候选率",
+        "current": f"{current:.3f}",
+        "gate": f"≥{GATE_NO_SEARCH:.2f}",
+        "basis": "绝对门",
+        "state": _state(current, GATE_NO_SEARCH, accepted_rate),
+        "problem": f"零候选率 {current:.3f} < 合格线 {GATE_NO_SEARCH:.2f}；给了候选的题："
+                   + (", ".join(zero["failed"]) or "无"),
+    })
+
+    for name in ("R@1", "RR", "nDCG@10"):
+        if GATE_BEST in scores:
+            rows.append({
+                "name": f"{name}（{GATE_BEST}）",
+                "current": f"{scores[GATE_BEST][name]:.3f}",
+                "gate": "—",
+                "basis": "诊断项，不作门",
+                "state": "—",
+                "problem": "",
+            })
+    return rows
+
+
+def judge(rows: list[dict], skip_regression: bool = False) -> list[str]:
+    """把判定表压成失败项，空 = 全过。
+
+    `skip_regression` 只在 --update-baseline 时置真：那一刻的语义是「接受当前值」，
+    拿旧基线挡自己会自相矛盾。但**绝对门照判**——"钉了基线"不等于"质量达标"，
+    否则又回到票 19 要修的那个病。
+    """
     failures = []
-    accepted_rate = baseline.get("no_search_rate")
-    if accepted_rate is not None and zero["rate"] < accepted_rate - TOLERANCE:
-        failures.append(f"零候选率从 {accepted_rate:.3f} 掉到 {zero['rate']:.3f}"
-                        f"（下限 {accepted_rate - TOLERANCE:.3f}）；给了候选的题："
-                        + (", ".join(zero["failed"]) or "无"))
-    for config, measured in scores.items():
-        accepted = baseline.get("metrics", {}).get(config)
-        if accepted is None:
-            continue  # 新加的档没有基线：不算回归，打印时标出来
-        floor = accepted.get("R@5", 0.0) - TOLERANCE
-        if measured["R@5"] < floor:
-            failures.append(f"{config} 的 R@5 从 {accepted['R@5']:.3f} 掉到 {measured['R@5']:.3f}"
-                            f"（下限 {floor:.3f}）")
+    for row in rows:
+        state = row["state"]
+        if state == "不达标" or (state == "回归" and not skip_regression):
+            failures.append(row["problem"] or f"{row['name']}：{state}")
     return failures
 
 
@@ -288,17 +366,54 @@ def category_table(by_category: dict[str, dict[str, dict[str, float]]], configs:
     return "\n".join(lines)
 
 
+def gate_table(rows: list[dict]) -> str:
+    """判定表。markdown 表格由渲染器对齐，不手算宽度。"""
+    lines = ["| 指标 | 当前 | 合格线 | 判定口径 | 结论 |",
+             "| --- | --- | --- | --- | --- |"]
+    for row in rows:
+        lines.append(f"| {row['name']} | {row['current']} | {row['gate']} "
+                     f"| {row['basis']} | {row['state']} |")
+    return "\n".join(lines)
+
+
+def verdict_text(rows: list[dict]) -> str:
+    """一句话结论。分三种，因为「不达标」和「回归」是两件事，混成「不通过」就读不出来了。"""
+    short = [row for row in rows if row["state"] == "不达标"]
+    regressed = [row for row in rows if row["state"] == "回归"]
+    parts = []
+    if short:
+        parts.append(f"{len(short)} 项低于合格线")
+    if regressed:
+        parts.append(f"{len(regressed)} 项比基线差超过 {TOLERANCE}")
+    if not parts:
+        return "**达标**（绝对门与回归门都过）"
+    head = "**不达标**" if short else "**回归**"
+    return head + "：" + "；".join(parts)
+
+
 def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict[str, dict[str, float]]],
                 zero: dict[str, object], failures: list[str], baseline: dict | None,
-                question_count: int, tool_count: int | None, configs: list[str]) -> str:
+                question_count: int, tool_count: int | None, configs: list[str],
+                rows: list[dict]) -> str:
     """整份报告。读者定成"第一次看这份东西的人"，所以每一节都要能独立读懂。"""
-    verdict = "通过" if not failures else "不通过"
     scored_questions = question_count - int(zero["total"])
     lines = [
         "# 工具检索评测报告",
         "",
         f"- 时间：{datetime.now(timezone.utc).isoformat(timespec='seconds')}",
-        f"- 判定：**{verdict}**",
+        f"- 判定：{verdict_text(rows)}",
+        "",
+        "## 判定",
+        "",
+        gate_table(rows),
+        "",
+        "**两根门管两件事，不能混着看。**「绝对门」与基线无关，回答**够不够好**；"
+        "「回归门」只跟上次被接受的那份比（`baseline.json`，容差 "
+        f"{TOLERANCE}），回答**有没有变差**。只有绝对门的数字才算质量结论——"
+        "拿基线当合格线等于自证清白：上一次那版从没被判过合格。",
+        "",
+        "标 `—` 的是诊断项，不作门。`R@1`／`RR`／`nDCG@10` 都属于「捞到了但排得靠后」，"
+        "前五里有对的工具，模型还能自己挑，不构成功能缺失。",
         "",
         "## 这次测的是什么",
         "",
@@ -311,7 +426,8 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
         "",
         "## 一分钟读法",
         "",
-        "1. 先看上面那行「判定」。不通过时会列出哪一档掉了、掉到多少。",
+        "1. 先看上面那张「判定」表：**结论列**写达标／不达标／回归。不达标是「低于合格线」，"
+        "回归是「比上次差」——两件事，别混着看。",
         "2. 看「总表」的 `R@5` 列：**前 5 个候选里有对的那个工具的比例**，这是主判据。",
         "3. 数字不对时看「按分类」：哪一档掉，决定该改描述还是换索引。",
         "   `business` 掉 = 索引坏了；`zh-en` 掉 = 跨语言这条路不行（换向量、或中文化）。",
@@ -379,14 +495,21 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
         "",
         "## 怎么算达标",
         "",
-        f"1. **回归门**：每一档的 `R@5` 不低于 `baseline.json` 里记的值减 {TOLERANCE}"
-        f"（= 一格题的量级）。基线是\"上次被接受的版本\"，没有它就不是评测，只是打印。",
-        "2. **零候选率也是回归门**：基线记当前值，掉下去才失败。它不是"
-        "\"必须 1.0\"——`regex` 现在对「谢谢」就会给候选，把 1.0 当门槛等于假装它已经修好。",
-        "3. **基线里没有的档不算回归**：新加的档只打印，第一次跑完用 `--update-baseline` 接受它。",
+        f"1. **绝对门（回答「够不够好」）**：生产默认档与可用最优档的 `R@5` 都要 `≥{GATE_R5:.2f}`，"
+        f"零候选率 `≥{GATE_NO_SEARCH:.2f}`。这两个数从「用户可感知的错误频率」推来"
+        "（`R@5` 0.80 = 五题漏一题；零候选率 0.90 = 十次闲聊允许一次误触发），"
+        "**不是行业公开数字**——工具检索没有公认榜单。要改它们，改的是 `GATE_R5` / "
+        "`GATE_NO_SEARCH`，并且在这里写明新依据。",
+        f"2. **回归门（回答「有没有变差」）**：`R@5` 与零候选率都不低于 `baseline.json` 里记的值"
+        f"减 {TOLERANCE}（≈ 两道半题的量级）。",
+        "3. **两者独立**：过了绝对门但比基线跌超容差 → 回归；本来就低于合格线 → 不达标。"
+        "「上次也这样」不能换来达标。",
+        "4. **基线里没有的档不算回归**：新加的档只打印，第一次跑完用 `--update-baseline` 接受它。",
         "",
-        "退出码：`0` 全过；`1` 有回归（看下面的「不通过的原因」）；`2` 环境没搭起来"
-        "（缺 key / 缺依赖 / **缺基线**）。",
+        "退出码：`0` 达标（绝对门与回归门都过）；`1` 有不达标或回归项（见下面的「判定」表"
+        "与「未过项」）；`2` 环境没搭起来（缺 key / 缺依赖 / **缺基线**）。",
+        "",
+        "退出码 `1` 在题集重排后是**预期**的：门槛没跟着降，分数本来就该红。",
         "",
         "## 已知噪声",
         "",
@@ -400,7 +523,7 @@ def report_text(scores: dict[str, dict[str, float]], by_category: dict[str, dict
     if baseline is not None:
         lines += ["## 基线（上次被接受的）", "", "```", table(baseline.get("metrics", {})), "```", ""]
     if failures:
-        lines += ["## 不通过的原因", ""] + [f"- {item}" for item in failures] + [""]
+        lines += ["## 未过项", ""] + [f"- {item}" for item in failures] + [""]
     return "\n".join(lines)
 
 
@@ -432,8 +555,9 @@ def main() -> int:
               f"确认这一版可以接受之后用 --update-baseline 建一份。")
         return 2
 
-    # 更新基线时不判回归：这一轮的语义是"接受当前值"，拿旧基线挡自己会自相矛盾。
-    failures = [] if args.update_baseline else judge(scores, zero, baseline)
+    # 更新基线时只跳过回归那一半：绝对门照判（见 judge 的说明）。
+    rows = quality_rows(scores, zero, baseline)
+    failures = judge(rows, skip_regression=args.update_baseline)
 
     text = table(scores)
     print(text)
@@ -454,19 +578,23 @@ def main() -> int:
     tool_count = len([line for line in catalogue.read_text(encoding="utf-8").splitlines() if line.strip()]) \
         if catalogue.exists() else None
     report = report_text(scores, by_category, zero, failures, baseline,
-                         question_count=len(categories), tool_count=tool_count, configs=configs)
+                         question_count=len(categories), tool_count=tool_count, configs=configs,
+                         rows=rows)
 
     DEFAULT_SCORE.write_text(json.dumps(
         {"metrics": scores, "by_category": by_category, "no_search": zero},
         ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     DEFAULT_REPORT.write_text(report + "\n", encoding="utf-8")
 
+    for row in rows:
+        print(f"  {row['name']:<28}{row['current']:>8}{row['gate']:>9}  {row['state']}")
+
     if failures:
-        print("不通过：")
+        print(f"未过 {len(failures)} 项（退出 1）：")
         for item in failures:
             print("  " + item)
         return 1
-    print(f"全部通过（层数 {len(scores)}）。报告：{DEFAULT_REPORT.relative_to(ROOT)}")
+    print(f"达标（{len(scores)} 档，绝对门与回归门都过）。报告：{DEFAULT_REPORT.relative_to(ROOT)}")
     return 0
 
 
