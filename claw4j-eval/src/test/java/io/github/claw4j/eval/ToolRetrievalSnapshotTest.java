@@ -153,7 +153,7 @@ class ToolRetrievalSnapshotTest {
     /** hybrid 的三档权重：向量库现场建（与线上同一条路，不注册成 bean）。 */
     private ToolIndex hybrid(double weight) {
         ToolSearchProperties properties = new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, 5, null,
-                null, 0, null, Map.of(), new ToolSearchProperties.Hybrid(weight), null);
+                null, 0, null, Map.of(), new ToolSearchProperties.Hybrid(weight), null, null);
         VectorStore vectorStore = ToolVectorStore.create(this.jdbc, this.embeddings, 1024);
         return ToolSearch.index(properties, vectorStore, ToolCategories.of(Map.of()), this.translator);
     }

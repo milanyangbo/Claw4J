@@ -255,7 +255,14 @@ hybrid-0.0  zh-en       R@1              R@5              RR
 - 所以"上一次说没收益"的结论**只对 20 题那版题库成立**：那 5 道 `zh-en` 里有 3 道在测中文问中文，
   中文化对它们本来就不可能有效果。
 
-**判定**：`index=vector|hybrid` 时建议打开；默认仍关，因为默认 `index=regex`，而它在那条路上
-一次都不生效（关键字翼读原文，模型看到的清单也是原文）。要让它可复现，得把译文落表（票 11 的
-V9 缺口）——现在每跑一次评测就重新译一遍，这也是 `R@1` 观测不稳的来源。
+**判定**：`index=lucene|vector|hybrid` 时都该打开（票 21 起 `application.yml` 默认 `enabled: true`）；
+`index=regex` 那一档不包译文，开着只是白花翻译调用。要让它逐位可复现，得把译文落表——票 16 已落表，
+但本评测每次起新容器（Testcontainers），跨 run 仍会重译，这也是 `R@1` 观测不稳的来源。
+
+## 不在本评测里的东西
+
+- **规则层**（`claw4j.advisor.tool-search.rules`，票 21）：它是人写的"这句正则 → 这几个工具"断言，
+  评测集里没有对应 gold，量不出分。它的判据是行为用例
+  （`ModelAndToolSelectionTest#rulePutsItsToolFirst` / `#rulesStayOutOfTheWay`），不是这里的指标。
+  默认空，所以开着也不会污染本页的基线。
 

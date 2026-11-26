@@ -6,6 +6,7 @@ import io.github.claw4j.agent.toolaccess.HybridToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
 import io.github.claw4j.agent.toolaccess.TranslatedVectorIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
+import io.github.claw4j.agent.toolaccess.RuleToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
@@ -325,6 +326,31 @@ class ModelAndToolSelectionTest {
                 .run(context -> assertThat(context.getBean(ToolSearchProperties.class)
                         .hybrid().keywordWeight())
                         .isEqualTo(0.0));
+
+        assertThat(ToolSearchProperties.defaults().rules())
+                .as("规则默认空：它跟着业务走，不该由库替调用方写一条")
+                .isEmpty();
+
+        // 规则是嵌套记录，绑的是 rules[0].pattern 与 rules[0].tools[i] 两级下标。
+        // 断在绑定上而不是断在"能 new 出来"：配置键写错时不会报错，只会静默变成空表。
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues("claw4j.advisor.tool-search.rules[0].pattern=报销|发票",
+                        "claw4j.advisor.tool-search.rules[0].tools[0]=finance_export",
+                        "claw4j.advisor.tool-search.rules[0].tools[1]=querySales")
+                .run(context -> {
+                    List<ToolSearchProperties.Rule> rules = context.getBean(ToolSearchProperties.class).rules();
+                    assertThat(rules).hasSize(1);
+                    assertThat(rules.getFirst().pattern()).isEqualTo("报销|发票");
+                    assertThat(rules.getFirst().tools()).containsExactly("finance_export", "querySales");
+                });
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(BindingOnly.class)
+                .withPropertyValues("claw4j.advisor.tool-search.rules[0].pattern=报销")
+                .run(context -> assertThat(context.getStartupFailure())
+                        .as("只写 pattern 不写 tools 是配置错误：命中之后不知道给哪个工具")
+                        .hasRootCauseInstanceOf(IllegalArgumentException.class));
 
         // ---- 同一个入口的另一半：index 四档选谁、分组贴在哪一层
 
@@ -975,6 +1001,94 @@ class ModelAndToolSelectionTest {
                 .containsExactlyInAnyOrder("web_fetch", "web_post");
     }
 
+    // ------------------------------------------------------------ 规则层（票 21 第 2 批）
+
+    /**
+     * 规则命中就把点名的工具提到最前，内层自己的命中跟在后面。
+     *
+     * <p>为什么这条不能靠"看分数有没有变高"：规则是断言，不是相关性。它要回答的只有一句——
+     * 用户说"报销"时，那个导出工具在不在第一位。所以断言的是顺序，不是分数。
+     *
+     * <p>同时守装配：规则层必须包在最外层。包在融合里面的话，RRF 会按名次重排，置顶当场失效，
+     * 而现象只是"规则好像不太灵"，与"规则没生效"分不开。
+     *
+     * <p>查询里刻意让"报销"不出现在任何一个工具描述里：规则要是没生效，结果就是零候选。
+     */
+    @Test
+    @DisplayName("规则命中把工具提到最前，内层命中跟在后面")
+    void rulePutsItsToolFirst() {
+        ToolCategories categories = ToolCategories.of(Map.of());
+        ToolSearchProperties properties = new ToolSearchProperties(null, 5, null,
+                ToolSearchProperties.Mode.ALWAYS, 0, null, null, null, null,
+                List.of(new ToolSearchProperties.Rule("报销|发票|开票", List.of("financeExport"))));
+
+        ToolIndex index = ToolSearch.index(properties, null, categories, ToolDescriptionTranslator.NONE);
+        assertThat(index)
+                .as("配了规则就要包这一层，而且要包在最外面")
+                .isInstanceOf(RuleToolIndex.class);
+
+        index.indexTools("chat-1", List.of(
+                ToolReference.builder().toolName("financeExport").summary("把财务报表整理成 Excel 文件").build(),
+                ToolReference.builder().toolName("querySales").summary("查询销售成交额与订单明细").build()));
+
+        assertThat(names(index, "chat-1", "这个月的报销单子和销售成交额一起看看", null))
+                .as("规则点名的排第一，内层靠字面命中的 querySales 留在后面")
+                .containsExactly("financeExport", "querySales");
+
+        assertThat(names(index, "chat-1", "销售成交额是多少", null))
+                .as("不命中规则时一个字都不该被改动")
+                .containsExactly("querySales");
+    }
+
+    /**
+     * 规则的边界：不命中就透传，点名的工具不存在就跳过，正则写错就起不来。
+     *
+     * <p>三件事同一个命题——"规则只能加强，不能破坏原有检索"。前两件如果做错，症状是某个工具
+     * 悄悄消失；第三件如果做错，症状是上线后那条规则永远不生效、日志里一句没有。
+     */
+    @Test
+    @DisplayName("规则不命中就透传、点名不存在的工具就跳过、正则写错就启动失败")
+    void rulesStayOutOfTheWay() {
+        ToolCategories categories = ToolCategories.of(Map.of());
+        List<ToolReference> catalogue = List.of(
+                ToolReference.builder().toolName("querySales").summary("查询销售成交额与订单明细").build(),
+                ToolReference.builder().toolName("searchDocs").summary("在知识库里检索文档").build());
+
+        ToolIndex plain = ToolSearch.index(noRules(), null, categories, ToolDescriptionTranslator.NONE);
+        plain.indexTools("chat-1", catalogue);
+
+        ToolIndex offTopic = ruleIndex(List.of(
+                new ToolSearchProperties.Rule("报销|发票", List.of("querySales"))));
+        offTopic.indexTools("chat-1", catalogue);
+        assertThat(names(offTopic, "chat-1", "上个月的销售成交额", null))
+                .as("query 里没有规则那两个字，结果必须与不带规则的那一版逐条相同")
+                .containsExactlyElementsOf(names(plain, "chat-1", "上个月的销售成交额", null));
+
+        ToolIndex ghost = ruleIndex(List.of(
+                new ToolSearchProperties.Rule("报销", List.of("financeExport"))));
+        ghost.indexTools("chat-1", catalogue);
+        assertThat(names(ghost, "chat-1", "这个月报销多少", null))
+                .as("规则指着当前会话里没有的工具时，等于这条规则没命中——而不是把候选清空")
+                .containsExactlyElementsOf(names(plain, "chat-1", "这个月报销多少", null));
+
+        assertThatThrownBy(() -> ruleIndex(List.of(
+                new ToolSearchProperties.Rule("报销(", List.of("querySales")))))
+                .as("正则编译不过要在装配时就抛：留到检索时会被内层 catch 成一次空结果")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("报销(");
+    }
+
+    private static ToolSearchProperties noRules() {
+        return new ToolSearchProperties(null, 5, null, ToolSearchProperties.Mode.ALWAYS, 0,
+                null, null, null, null, null);
+    }
+
+    private static ToolIndex ruleIndex(List<ToolSearchProperties.Rule> rules) {
+        ToolSearchProperties properties = new ToolSearchProperties(null, 5, null,
+                ToolSearchProperties.Mode.ALWAYS, 0, null, null, null, null, rules);
+        return ToolSearch.index(properties, null, ToolCategories.of(Map.of()), ToolDescriptionTranslator.NONE);
+    }
+
     private static double count(SimpleMeterRegistry registry, String result, boolean narrowed) {
         Counter counter = registry.find(MeteredToolIndex.SEARCH_CALLS)
                 .tag("result", result)
@@ -1129,7 +1243,7 @@ class ModelAndToolSelectionTest {
 
     private static ToolSearchProperties properties(ToolSearchProperties.Mode mode, int revealBelow,
                                                    List<String> pinned, Map<String, List<String>> categories) {
-        return new ToolSearchProperties(null, 5, null, mode, revealBelow, pinned, categories, null, null);
+        return new ToolSearchProperties(null, 5, null, mode, revealBelow, pinned, categories, null, null, null);
     }
 
     // ------------------------------------------------------------ 描述本地化（票 11）
@@ -1273,15 +1387,36 @@ class ModelAndToolSelectionTest {
     // ------------------------------------------------------------ 本模块的两条架构闸
 
     /**
-     * 反向依赖不会编译失败，也不会当场报错：agent 一旦认识 channel，
-     * 换一个入口就要改 Agent，单元测试也得先起一个通道。ADR-0010 的边界在这里落成机器校验。
+     * 模块边界只朝一个方向：反向依赖既不会编译失败，也不会当场报错，所以只能靠机器校验。
+     *
+     * <p>三条规则合并成一条（单文件已到 26 个方法的上限，见 {@code docs/agents/testing.md}）：
+     * 它们守的是同一件事——谁允许认识谁。破了之后的症状也一样：编译过、容器起得来、日志干净，
+     * 只是换一个入口或换一个模型就要连带改三个模块。
+     *
+     * <ul>
+     *   <li>agent 不认识 channel（ADR-0010）：否则换入口就要改 Agent，单测还得先起一个通道。
+     *   <li>agent 里没有模型实现（ADR-0035）：否则"换模型"与"改 Agent"是同一次改动。
+     *   <li>模型层只依赖 core（ADR-0035）：否则 agent 依赖 model、model 又反过来问 agent 要会话，
+     *       形成一个谁也不能单独替换的环。
+     * </ul>
      */
     @Test
-    @DisplayName("agent 不认识 channel（架构闸）")
-    void agentKnowsNoChannel() {
+    @DisplayName("模块依赖单向：agent 不认识 channel、不放模型实现，模型层只依赖 core（架构闸）")
+    void moduleDependenciesPointOneWay() {
         noClasses().that().resideInAPackage("io.github.claw4j.agent..")
                 .should().dependOnClassesThat()
                 .resideInAPackage("io.github.claw4j.channel..")
+                .check(agentClasses());
+
+        noClasses().that().resideInAPackage("io.github.claw4j.agent..")
+                .should().implement(ChatModel.class)
+                .check(agentClasses());
+
+        noClasses().that().resideInAPackage("io.github.claw4j.model..")
+                .should().dependOnClassesThat()
+                .resideInAnyPackage("io.github.claw4j.agent..", "io.github.claw4j.capability..",
+                        "io.github.claw4j.rag..", "io.github.claw4j.channel..",
+                        "io.github.claw4j.app..")
                 .check(agentClasses());
     }
 
@@ -1306,38 +1441,6 @@ class ModelAndToolSelectionTest {
                 .and().implement(Advisor.class)
                 .should().implement(CallAdvisor.class)
                 .andShould().implement(StreamAdvisor.class)
-                .check(agentClasses());
-    }
-
-    /**
-     * 模型实现类不在 agent 里（ADR-0035）：agent 只拿一个 {@code ChatModel} 去组 ChatClient。
-     *
-     * <p>搬走之前，路由、供应商装配、embedding 与指标都寄生在 agent 里，"换模型"和"改 Agent"
-     * 是同一次改动。规则一旦破，症状不是报错：新加的模型功能会重新长回 agent，
-     * 而模型层那张表又少一行。
-     */
-    @Test
-    @DisplayName("模型实现类不在 agent 里（架构闸）")
-    void agentHasNoModelImplementation() {
-        noClasses().that().resideInAPackage("io.github.claw4j.agent..")
-                .should().implement(ChatModel.class)
-                .check(agentClasses());
-    }
-
-    /**
-     * 模型层只依赖 core（ADR-0035）：不认识 agent / capability / rag / channel。
-     *
-     * <p>反过来依赖会编译通过（那些模块在同一个 reactor 里），代价是一个环：
-     * agent 依赖 model，model 又去问 agent 要会话或工具，谁也不能单独替换。
-     */
-    @Test
-    @DisplayName("模型层只依赖 core：不认识 agent / capability / rag / channel（架构闸）")
-    void modelDependsOnCoreOnly() {
-        noClasses().that().resideInAPackage("io.github.claw4j.model..")
-                .should().dependOnClassesThat()
-                .resideInAnyPackage("io.github.claw4j.agent..", "io.github.claw4j.capability..",
-                        "io.github.claw4j.rag..", "io.github.claw4j.channel..",
-                        "io.github.claw4j.app..")
                 .check(agentClasses());
     }
 

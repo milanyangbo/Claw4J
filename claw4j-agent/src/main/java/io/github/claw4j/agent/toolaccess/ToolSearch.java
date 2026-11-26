@@ -86,24 +86,25 @@ public final class ToolSearch {
      * 正则：回落之后日志上一切正常，而"我明明配了向量检索"这个判断会一直错下去，错到有人拿它做
      * 线上决定。
      *
-     * <p>中文化（{@code zh-description}）**只包在向量那一路外面**：同一份题量出来，它让向量受益、
-     * 让关键字那一路下降（描述变长、二元组碰撞变多），所以不能两条路共用一份文本。
-     * 关键字档（{@code regex} / {@code lucene}）拿到 {@code translator} 也用不上——它们读原文。
-     *
-     * @param properties  检索配置，必填
-     * @param vectorStore 工具专用的向量库（{@link ToolVectorStore}），只有 vector / hybrid 用得到，
-     *                    其余两档传 {@code null}
-     * @param categories  分组规则，必填
-     * @param translator  描述翻译器，只喂向量那一路；不译时传 {@link ToolDescriptionTranslator#NONE}
-     * @return 索引，四档都已经是"带分组"的形状
-     * @throws IllegalStateException {@code index=vector|hybrid} 但没有工具向量库
-     */
+ * <p>中文化（{@code zh-description}）**四档都包在外面**：2026-11-26 换翼之后两翼读的是同一份
+ * 中文译文（票 21 的对照里，lucene 吃译文让 base 档从 0.000 到 0.900）。唯一不包的是 {@code regex}
+ * 那一档——它按二元组做 OR 匹配，描述变长碰撞就变多，实测掉分。
+ *
+ * @param properties  检索配置，必填
+ * @param vectorStore 工具专用的向量库（{@link ToolVectorStore}），只有 vector / hybrid 用得到，
+ *                    其余两档传 {@code null}
+ * @param categories  分组规则，必填
+ * @param translator  描述翻译器，喂给 lucene / vector / hybrid 三档；不译时传
+ *                    {@link ToolDescriptionTranslator#NONE}
+ * @return 索引，四档都已经是"带分组"的形状；配了 {@code rules} 时最外层再包一层规则
+ * @throws IllegalStateException {@code index=vector|hybrid} 但没有工具向量库
+ */
     public static ToolIndex index(ToolSearchProperties properties, VectorStore vectorStore,
                                   ToolCategories categories, ToolDescriptionTranslator translator) {
         Objects.requireNonNull(properties, "properties");
         Objects.requireNonNull(categories, "categories");
         Objects.requireNonNull(translator, "translator");
-        return switch (properties.index()) {
+        ToolIndex base = switch (properties.index()) {
             case REGEX -> new NamespacedToolIndex(new ChineseToolIndex(), categories);
             case LUCENE -> new NamespacedToolIndex(
                     new TranslatedVectorIndex(new LuceneToolIndex(properties.lucene().minScore()),
@@ -120,6 +121,10 @@ public final class ToolSearch {
                     new TranslatedVectorIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
                             translator), properties.hybrid().keywordWeight());
         };
+        // 规则层包在**最外面**：它要看到已经融合、已经收窄、已经截断的那一版，命中就把工具提到最前。
+        // 包在里面的话，融合会按 RRF 重新排序，"规则置顶"当场失效——而结果看起来只是"规则不太灵"。
+        // 没配规则时原样返回 base：空转一层会让所有既有装配断言多包一层壳，收益是零。
+        return properties.rules().isEmpty() ? base : new RuleToolIndex(base, properties.rules(), categories);
     }
 
     /**

@@ -21,7 +21,7 @@ import java.util.Map;
  * @param index       看不见的那部分用哪种索引找回来，见 {@link Index}；不写取 {@link Index#REGEX}<br>
  *                    <b>库的默认与应用的不同</b>：库不替调用方决定依赖向量库，所以留 REGEX；
  *                    {@code claw4j-app} 的 {@code application.yml} 配的是 {@code hybrid} +
- *                    {@code keyword-weight: 0}（2026-11-26 实测那是唯一能过 R@5 0.80 的档）。
+ *                    {@code keyword-weight: 0.5}（2026-11-26 实测 R@5 0.880，唯一过线的一档）。
  * @param maxResults  一次检索最多返回几个候选工具（框架约定 1–10，默认 5）
  * @param lucene      {@code index=lucene} 那一档的参数
  * @param mode        工具面怎么露，见 {@link Mode}；不写取 {@link Mode#AUTO}
@@ -30,11 +30,12 @@ import java.util.Map;
  * @param categories  类别（namespace）→ 工具名；不配则按名字前缀推导，见 {@link ToolCategories}
  * @param hybrid      {@code index=hybrid} 那一档的参数
  * @param zhDescription 工具描述要不要在运行时译成中文，见 {@link ZhDescription}
+ * @param rules       人写的正则规则，命中就把点名的工具置顶，见 {@link Rule}；默认空
  */
 @ConfigurationProperties("claw4j.advisor.tool-search")
 public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, Mode mode, int revealBelow,
                                    List<String> pinned, Map<String, List<String>> categories, Hybrid hybrid,
-                                   ZhDescription zhDescription) {
+                                   ZhDescription zhDescription, List<Rule> rules) {
 
     /**
      * 工具面怎么露给模型。
@@ -180,6 +181,41 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
     }
 
     /**
+     * 一条"这句话就该用这个工具"的断言（票 21 第 2 批）。
+     *
+     * <p>为什么要有它：相似度解决不了确定性。{@code 这个月报销多少} 与"导出财务报表"任何一档都算不出
+     * 高分，但业务上答案就是那一个工具；这类对应关系由人写下来比让模型猜可靠，出问题时也能指到一行配置。
+     *
+     * <p>为什么用正则而不是同义词表：同义词表只能"扩词"，扩出来的词还要再参与相似度排序，命中与否
+     * 取决于别的候选；规则是"点名"——命中即置顶，与其余候选无关。正则引擎与框架
+     * {@code RegexToolIndex} 是同一个（{@link java.util.regex.Pattern}），不用另学一套语法。
+     *
+     * <p>代价要认：规则不会自己跟着工具描述漂。工具改名、下线，规则就静默不命中，所以写错的工具名
+     * 会打一行 WARN，规则本身也要有对应的用例兜着。
+     *
+     * @param pattern 匹配整句 query 的正则（{@code find}，不是整句相等），如 {@code 报销|发票|开票}
+     * @param tools   命中后要置顶的工具名（{@code @Tool(name=…)} 的值），按此顺序排在最前
+     */
+    public record Rule(String pattern, List<String> tools) {
+
+        /**
+         * 缺一个就抛：一条没有 pattern 或没有 tools 的规则是配置错误，静默忽略会让"我明明配了"查不出来。
+         *
+         * <p>抛在这里而不是等第一次检索：配置错要在启动时红，而不是在上线后表现为"这条规则好像没生效"。
+         */
+        public Rule {
+            if (pattern == null || pattern.isBlank()) {
+                throw new IllegalArgumentException("claw4j.advisor.tool-search.rules 有一条没写 pattern");
+            }
+            if (tools == null || tools.isEmpty()) {
+                throw new IllegalArgumentException("claw4j.advisor.tool-search.rules 的 " + pattern
+                        + " 没写 tools：规则命中后不知道要给哪个工具");
+            }
+            tools = List.copyOf(tools);
+        }
+    }
+
+    /**
      * 一次检索返回几个候选。
      *
      * <p>取 5：模型一次只挑一两个来调，返回十个等于把省下来的 token 又还回去一部分。
@@ -214,6 +250,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
         categories = categories == null ? Map.of() : Map.copyOf(categories);
         hybrid = hybrid == null ? new Hybrid(null) : hybrid;
         zhDescription = zhDescription == null ? new ZhDescription(false, List.of()) : zhDescription;
+        rules = rules == null ? List.of() : List.copyOf(rules);
     }
 
     /**
@@ -222,7 +259,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * @param maxResults 一次返回几个候选；0 或负数取默认
      */
     public ToolSearchProperties(int maxResults) {
-        this(null, maxResults, null, null, 0, null, null, null, null);
+        this(null, maxResults, null, null, 0, null, null, null, null, null);
     }
 
     /**
@@ -235,7 +272,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * @param lucene     lucene 那档的参数
      */
     public ToolSearchProperties(Index index, int maxResults, Lucene lucene) {
-        this(index, maxResults, lucene, null, 0, null, null, null, null);
+        this(index, maxResults, lucene, null, 0, null, null, null, null, null);
     }
 
     /**
