@@ -101,6 +101,10 @@ class ToolRetrievalSnapshotTest {
     @Autowired
     private org.springframework.context.ApplicationContext context;
 
+    /** 容器里那个：开关由 {@code zh-description.enabled} 决定，关着时是 NONE。 */
+    @Autowired
+    private io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator translator;
+
     @Test
     @DisplayName("五种配置跑同一份题：出对照表，不设阈值")
     void printsBaselineTable() throws IOException {
@@ -110,6 +114,8 @@ class ToolRetrievalSnapshotTest {
         List<ToolGold> golds = golds();
         System.out.println("工具目录 " + tools.size() + " 个，题 " + golds.size() + " 条");
         System.out.println("常驻（pinned）：" + context.getBean(ToolSearchProperties.class).pinned());
+        System.out.println("中文化（只喂向量）：" + context.getBean(ToolSearchProperties.class).zhDescription());
+
 
         List<ToolRetrievalEval.Score> scores = new ArrayList<>();
         for (String config : List.of("regex", "lucene")) {
@@ -138,7 +144,7 @@ class ToolRetrievalSnapshotTest {
             case "lucene" -> new ToolSearchProperties(ToolSearchProperties.Index.LUCENE, 5, null);
             default -> defaults;
         };
-        return ToolSearch.index(properties, null, ToolCategories.of(Map.of()));
+        return ToolSearch.index(properties, null, ToolCategories.of(Map.of()), this.translator);
     }
 
     /** hybrid 的三档权重：向量库现场建（与线上同一条路，不注册成 bean）。 */
@@ -146,7 +152,7 @@ class ToolRetrievalSnapshotTest {
         ToolSearchProperties properties = new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, 5, null,
                 null, 0, null, Map.of(), new ToolSearchProperties.Hybrid(weight), null);
         VectorStore vectorStore = ToolVectorStore.create(this.jdbc, this.embeddings, 1024);
-        return ToolSearch.index(properties, vectorStore, ToolCategories.of(Map.of()));
+        return ToolSearch.index(properties, vectorStore, ToolCategories.of(Map.of()), this.translator);
     }
 
     private static ToolReference reference(ToolCallback callback) {

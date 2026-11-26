@@ -2,8 +2,7 @@ package io.github.claw4j.agent.toolaccess;
 
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.toolsearch.ToolReference;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -14,18 +13,18 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 把英文的工具描述译成中文，一起交给模型与索引（票 11）。
+ * 把英文的工具描述译成中文，只喂给向量索引（票 11，2026-11-26 按实测收窄范围）。
  *
- * <p>为什么要有它：检索是词面匹配，而框架自带的描述只有英文。票 04 给网页那一族手写了几组同义说法
- * 搭桥，桥是逐个搭的、描述一改就静默失效。票 09 的基线量出这一档有多差：中文问英文描述，
- * 关键字那一路 R@1 0.20，纯向量 0.60。
+ * <p>为什么要有它：框架自带的工具描述只有英文，而用户问的是中文。票 09 的基线量出这一档有多差：
+ * 中文问英文描述，关键字那一路 R@1 0.20，纯向量 0.60。
  *
- * <p><b>译成「中文 + 原文」而不是只留中文</b>：描述里常有参数名、路径语义、边界条件，译丢一句就是
- * 模型误用一个工具。代价是每轮描述 token 约 1.6 倍，只对真译了的工具付。
+ * <p><b>为什么只给向量那一路</b>：同一份题、开着与关着各跑一遍，向量那一路受益
+ * （hybrid-0.0 的 zh-en 档 0.60 → 0.80），关键字那一路反而降（regex 0.15 → 0.10）——
+ * 描述变长，中文二元组可碰撞的字变多，无关工具更容易挤进前排。收益与代价分在两条路上，
+ * 就不该让两条路读同一份文本（见 {@link TranslatedVectorIndex}）。
  *
- * <p><b>包在回调上，不包在索引上</b>：索引是从回调的 {@link ToolDefinition} 建的，包在回调上
- * 两边自动同源；包在索引层的话，{@code mode=auto} 且工具少的部署是全塞（索引根本不建），
- * 模型看到的还是英文。
+ * <p><b>译成「中文 + 原文」而不是只留中文</b>：向量要的是语义，原文留着不碍事；而描述里常有
+ * 参数名、路径语义这类译不准的东西，删掉原文等于把不确定性交给一次模型调用。
  *
  * <p><b>失败退原文，不抛</b>：中文化是增强，缺了只是命中率低一点；而启动失败会把整个服务挡在门外
  * （与 {@code claw4j.rag.enabled} 那条相反，理由不同：那边检索是功能本体）。
@@ -47,6 +46,9 @@ public final class ToolDescriptionTranslator {
     public static final ToolDescriptionTranslator NONE =
             new ToolDescriptionTranslator(null, new ToolSearchProperties.ZhDescription(false, List.of()));
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(ToolDescriptionTranslator.class);
+
     private final ChatModel model;
 
     private final ToolSearchProperties.ZhDescription config;
@@ -67,70 +69,74 @@ public final class ToolDescriptionTranslator {
     }
 
     /**
-     * 给一份清单里的工具换描述。
+     * 给一批工具引用换 summary，只用在向量索引的入库口。
      *
      * <p>并发译：一个工具一次调用、互不依赖，串行的话三十个工具就是几十秒的首轮。
      * 失败各自退原文，一个工具译不出来不影响其它。
      *
-     * @param callbacks 这一轮筛完的工具
-     * @return 换过描述的清单；与输入等长、同序
+     * @param references 这一轮的工具
+     * @return 换过 summary 的清单；与输入等长、同序。不需要译时**返回原列表**，不做无谓复制。
      */
-    public List<ToolCallback> translate(List<ToolCallback> callbacks) {
-        if (!this.config.enabled() || this.model == null) {
-            return callbacks;
+    public List<ToolReference> translateReferences(List<ToolReference> references) {
+        if (!this.config.enabled() || this.model == null || references.isEmpty()) {
+            return references;
         }
-        return callbacks.parallelStream().map(this::translated).toList();
+        return references.parallelStream().map(this::translated).toList();
     }
 
     /**
      * 一个工具：能译就换，不能译就原样。
      *
-     * <p>四种"不译"：开关关着（上面已挡）、已经译过（子链拿到的清单里可能已经有）、
-     * 描述里本来就有中文、名字不在 {@code zh-description-tools} 名单里（名单空 = 不限制）。
+     * <p>三种"不译"：开关关着（上面已挡）、描述里本来就有中文、名字不在
+     * {@code zh-description-tools} 名单里（名单空 = 不限制）。
      */
-    private ToolCallback translated(ToolCallback callback) {
-        if (callback instanceof TranslatedToolCallback) {
-            return callback;
-        }
-        ToolDefinition definition = callback.getToolDefinition();
-        String name = definition.name();
-        String description = definition.description() == null ? "" : definition.description();
+    private ToolReference translated(ToolReference reference) {
+        String name = reference.toolName();
+        String description = reference.summary() == null ? "" : reference.summary();
         if (cjkCount(description) >= MIN_CJK_CHARS) {
-            return callback;
+            return reference;
         }
         if (!this.config.tools().isEmpty() && !this.config.tools().contains(name)) {
-            return callback;
+            return reference;
         }
 
         String hash = hash(description);
         Entry cached = this.cache.get(name);
         if (cached != null && cached.hash().equals(hash)) {
-            return new TranslatedToolCallback(callback, cached.chinese());
+            return withChinese(reference, cached.chinese());
         }
         try {
-            String chinese = ask(definition, description);
+            String chinese = ask(name, description);
             this.cache.put(name, new Entry(hash, chinese));
-            return new TranslatedToolCallback(callback, chinese);
+            return withChinese(reference, chinese);
         } catch (RuntimeException failure) {
             if (this.warned.putIfAbsent(name, Boolean.TRUE) == null) {
                 // 只告警一次：这是外部依赖的问题（没 key、限流、超时），每轮刷一遍没有新信息。
-                org.slf4j.LoggerFactory.getLogger(ToolDescriptionTranslator.class)
-                        .warn("工具 {} 的描述没译成中文，这一轮仍用原文：{}", name, failure.toString());
+                LOG.warn("工具 {} 的描述没译成中文，向量索引这一轮仍用原文：{}", name, failure.toString());
             }
-            return callback;
+            return reference;
         }
+    }
+
+    /** 中文在前、原文在后：只改 summary，名字与相似度原样带走。 */
+    private static ToolReference withChinese(ToolReference reference, String chinese) {
+        return ToolReference.builder()
+                .toolName(reference.toolName())
+                .relevanceScore(reference.relevanceScore())
+                .summary(chinese + "\n" + reference.summary())
+                .build();
     }
 
     /**
      * 问一次模型。译文里一个汉字都没有时按失败处理——那说明它把原文抄回来了，留着反而让描述更长。
      */
-    private String ask(ToolDefinition definition, String description) {
+    private String ask(String name, String description) {
         String answer = this.model.call(new Prompt("""
                 把下面这句工具描述翻成一句简体中文。要求：保留工具名、参数名、代码标识符原样；
                 不加解释；不换行；只输出译文。
 
                 工具名：%s
-                描述：%s""".formatted(definition.name(), description)))
+                描述：%s""".formatted(name, description)))
                 .getResult().getOutput().getText();
         String chinese = answer == null ? "" : answer.strip();
         if (cjkCount(chinese) < MIN_CJK_CHARS) {

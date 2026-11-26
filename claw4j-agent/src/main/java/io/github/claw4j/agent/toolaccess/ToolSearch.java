@@ -86,25 +86,33 @@ public final class ToolSearch {
      * 正则：回落之后日志上一切正常，而"我明明配了向量检索"这个判断会一直错下去，错到有人拿它做
      * 线上决定。
      *
+     * <p>中文化（{@code zh-description}）**只包在向量那一路外面**：同一份题量出来，它让向量受益、
+     * 让关键字那一路下降（描述变长、二元组碰撞变多），所以不能两条路共用一份文本。
+     * 关键字档（{@code regex} / {@code lucene}）拿到 {@code translator} 也用不上——它们读原文。
+     *
      * @param properties  检索配置，必填
      * @param vectorStore 工具专用的向量库（{@link ToolVectorStore}），只有 vector / hybrid 用得到，
      *                    其余两档传 {@code null}
      * @param categories  分组规则，必填
+     * @param translator  描述翻译器，只喂向量那一路；不译时传 {@link ToolDescriptionTranslator#NONE}
      * @return 索引，四档都已经是"带分组"的形状
      * @throws IllegalStateException {@code index=vector|hybrid} 但没有工具向量库
      */
     public static ToolIndex index(ToolSearchProperties properties, VectorStore vectorStore,
-                                  ToolCategories categories) {
+                                  ToolCategories categories, ToolDescriptionTranslator translator) {
         Objects.requireNonNull(properties, "properties");
         Objects.requireNonNull(categories, "categories");
+        Objects.requireNonNull(translator, "translator");
         return switch (properties.index()) {
             case REGEX -> new NamespacedToolIndex(new ChineseToolIndex(), categories);
             case LUCENE -> new NamespacedToolIndex(
                     new LuceneToolIndex(properties.lucene().minScore()), categories);
-            case VECTOR -> new NamespacedToolIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
-                    categories);
+            case VECTOR -> new NamespacedToolIndex(
+                    new TranslatedVectorIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
+                            translator), categories);
             case HYBRID -> HybridToolIndex.of(categories, new ChineseToolIndex(),
-                    new VectorToolIndex(requireVectorStore(vectorStore)), properties.hybrid().keywordWeight());
+                    new TranslatedVectorIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
+                            translator), properties.hybrid().keywordWeight());
         };
     }
 

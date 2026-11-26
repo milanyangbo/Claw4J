@@ -4,6 +4,7 @@ import io.github.claw4j.agent.toolaccess.ChineseToolIndex;
 import io.github.claw4j.agent.observability.MeteredToolIndex;
 import io.github.claw4j.agent.toolaccess.HybridToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
+import io.github.claw4j.agent.toolaccess.TranslatedVectorIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
@@ -327,28 +328,35 @@ class ModelAndToolSelectionTest {
         // ---- 同一个入口的另一半：index 四档选谁、分组贴在哪一层
 
         ToolCategories categories = ToolCategories.of(Map.of());
-        assertThat(inner(ToolSearch.index(ToolSearchProperties.defaults(), null, categories)))
-                .as("不写 index 时是中文那一版")
+        // 开着中文化的翻译器：它只该出现在向量那一路外面，关键字档必须不包（票 11 修正）。
+        ToolDescriptionTranslator zh = new ToolDescriptionTranslator(new FixedChatModel("查文件"),
+                new ToolSearchProperties.ZhDescription(true, List.of()));
+        assertThat(inner(ToolSearch.index(ToolSearchProperties.defaults(), null, categories, zh)))
+                .as("不写 index 时是中文那一版；而且不包翻译层——关键字读原文")
                 .isInstanceOf(ChineseToolIndex.class);
 
         ToolSearchProperties lucene = new ToolSearchProperties(
                 ToolSearchProperties.Index.LUCENE, 5, new ToolSearchProperties.Lucene(0.6f));
-        assertThat(inner(ToolSearch.index(lucene, null, categories)))
+        assertThat(inner(ToolSearch.index(lucene, null, categories, zh)))
                 .as("lucene 那一档不再需要容器里有什么")
                 .isInstanceOf(LuceneToolIndex.class);
 
         ToolSearchProperties vector = new ToolSearchProperties(
                 ToolSearchProperties.Index.VECTOR, 5, null);
-        assertThatThrownBy(() -> ToolSearch.index(vector, null, categories))
+        assertThatThrownBy(() -> ToolSearch.index(vector, null, categories, zh))
                 .isInstanceOf(IllegalStateException.class)
                 .as("回落成 regex 会让\"我明明配了向量\"变成一个查不出来的谎")
                 .hasMessageContaining("VectorStore")
                 .hasMessageContaining("index 改回 regex");
-        assertThat(inner(ToolSearch.index(vector, new FakeVectorStore(), categories)))
+        assertThat(inner(ToolSearch.index(vector, new FakeVectorStore(), categories, zh)))
+                .as("向量档外面包着翻译层：改的是入库文本，不是检索逻辑")
+                .isInstanceOf(TranslatedVectorIndex.class);
+        assertThat(((TranslatedVectorIndex) inner(ToolSearch.index(vector, new FakeVectorStore(), categories, zh)))
+                .delegate())
                 .isInstanceOf(VectorToolIndex.class);
 
         ToolIndex fused = ToolSearch.index(new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, 5, null),
-                new FakeVectorStore(), categories);
+                new FakeVectorStore(), categories, zh);
         assertThat(fused)
                 .as("hybrid 不在外面再包一层分组：两翼各自被包，融合在最外面")
                 .isInstanceOf(HybridToolIndex.class);
@@ -357,6 +365,11 @@ class ModelAndToolSelectionTest {
                 .isInstanceOf(NamespacedToolIndex.class);
         assertThat(((HybridToolIndex) fused).vectorWing())
                 .isInstanceOf(NamespacedToolIndex.class);
+        assertThat(inner(((HybridToolIndex) fused).vectorWing()))
+                .as("向量翼里包着翻译层；关键字翼没有——两路读不同的文本")
+                .isInstanceOf(TranslatedVectorIndex.class);
+        assertThat(inner(((HybridToolIndex) fused).keywordWing()))
+                .isInstanceOf(ChineseToolIndex.class);
 
         new ApplicationContextRunner()
                 .withUserConfiguration(BindingOnly.class)
@@ -515,7 +528,8 @@ class ModelAndToolSelectionTest {
                 empty.getBeanProvider(org.springframework.jdbc.core.JdbcTemplate.class),
                 empty.getBeanProvider(org.springframework.ai.embedding.EmbeddingModel.class),
                 1024,
-                empty.getBeanProvider(io.micrometer.core.instrument.MeterRegistry.class));
+                empty.getBeanProvider(io.micrometer.core.instrument.MeterRegistry.class),
+                empty.getBeanProvider(ToolDescriptionTranslator.class));
         assertThat(assembled)
                 .as("最外层是计量：包在里层记到的是收窄之前那一批，答不了「模型看到几个」")
                 .isInstanceOf(MeteredToolIndex.class);
@@ -1024,6 +1038,35 @@ class ModelAndToolSelectionTest {
         }
     }
 
+    /** 只记"入库时收到了什么"的索引：两翼的文本差别是票 11 修正的核心，得看得见。 */
+    private static final class RecordingIndex implements ToolIndex {
+
+        private final List<ToolReference> indexed = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        @Override
+        public void indexTool(String sessionId, ToolReference toolReference) {
+            this.indexed.add(toolReference);
+        }
+
+        @Override
+        public void indexTools(String sessionId, List<ToolReference> toolReferences) {
+            this.indexed.addAll(toolReferences);
+        }
+
+        @Override
+        public ToolSearchResponse search(ToolSearchRequest toolSearchRequest) {
+            return ToolSearchResponse.builder().toolReferences(List.of()).totalMatches(0).build();
+        }
+
+        @Override
+        public void clearIndex(String sessionId) {
+        }
+
+        List<ToolReference> indexed() {
+            return List.copyOf(this.indexed);
+        }
+    }
+
     private static ToolSearchProperties properties(ToolSearchProperties.Mode mode, int revealBelow,
                                                    List<String> pinned, Map<String, List<String>> categories) {
         return new ToolSearchProperties(null, 5, null, mode, revealBelow, pinned, categories, null, null);
@@ -1038,73 +1081,74 @@ class ModelAndToolSelectionTest {
      * 名单外还在调，等于名单没生效而报告上看不出来。
      */
     @Test
-    @DisplayName("开关关着、或名字不在名单里：描述逐字不变，一次模型调用都不发生")
+    @DisplayName("开关关着、或名字不在名单里：引用逐字不变，一次模型调用都不发生")
     void zhDescriptionOffLeavesDescriptionsAlone() {
-        RecordingTool read = new RecordingTool("Read", "内容", "Reads a file from the local filesystem");
+        ToolReference read = reference("Read", "Reads a file from the local filesystem", 0.0);
         FixedChatModel model = new FixedChatModel("读取本地文件");
         ToolDescriptionTranslator off = new ToolDescriptionTranslator(model,
                 new ToolSearchProperties.ZhDescription(false, List.of()));
 
-        assertThat(off.translate(List.of(read)))
-                .as("关着时连包装都不造：返回的是同一个对象")
+        assertThat(off.translateReferences(List.of(read)))
+                .as("关着时连新对象都不造：返回的是同一个")
                 .containsExactly(read);
         assertThat(model.prompts()).isEmpty();
 
         ToolDescriptionTranslator scoped = new ToolDescriptionTranslator(model,
                 new ToolSearchProperties.ZhDescription(true, List.of("WebFetch")));
-        assertThat(scoped.translate(List.of(read))).containsExactly(read);
+        assertThat(scoped.translateReferences(List.of(read))).containsExactly(read);
         assertThat(model.prompts()).as("名单非空时，名单外的工具不该花一次调用").isEmpty();
     }
 
     /**
-     * 开着时：模型与索引拿到同一份中文描述。
+     * 开着时只有向量那一路读中文：关键字翼与模型都是原文。
      *
-     * <p>断言"索引里也换了"是这条的重点——包在回调上而不是索引上的理由就在这里：索引从回调的
-     * {@link ToolDefinition} 建，所以只要包在收集出口，两边自动同源。包在索引层的话，全塞模式
-     * （工具少、索引根本不建）下模型看到的还是英文。
+     * <p>这条是 2026-11-26 那次对照的落点——中文化让向量受益、让纯关键字下降（描述变长，
+     * 二元组碰撞变多）。所以断言的不是"译了"，而是"**只译给该译的那一路**"：两翼各记一份
+     * 入库文本，关键字那份必须逐字等于原文。
      *
      * <p>后两段是"不翻"与"翻失败"，同一个入口、同一种断言形状，所以并在这里。
      */
     @Test
-    @DisplayName("开着：中文在前原文在后，索引里也是这一份；已有中文的不翻；译失败退原文")
-    void zhDescriptionRewritesForModelAndIndex() {
-        RecordingTool read = new RecordingTool("Read", "内容", "Reads a file from the local filesystem");
+    @DisplayName("开着：只有向量翼入库中文+原文，关键字翼与模型仍是原文；已有中文不翻；译失败退原文")
+    void zhDescriptionFeedsVectorWingOnly() {
+        ToolReference read = reference("Read", "Reads a file from the local filesystem", 0.0);
         FixedChatModel model = new FixedChatModel("读取本地文件的内容并返回");
         ToolDescriptionTranslator translator = new ToolDescriptionTranslator(model,
                 new ToolSearchProperties.ZhDescription(true, List.of()));
 
-        ToolCallback translated = translator.translate(List.of(read)).getFirst();
-        assertThat(translated.getToolDefinition().description())
-                .as("中文一句在前、原文在后：参数名与边界条件留在原文里")
+        RecordingIndex keywordWing = new RecordingIndex();
+        RecordingIndex vectorWing = new RecordingIndex();
+        HybridToolIndex hybrid = HybridToolIndex.of(ToolCategories.of(Map.of()), keywordWing,
+                new TranslatedVectorIndex(vectorWing, translator), 0.5);
+        hybrid.indexTools("zh", List.of(read));
+
+        assertThat(keywordWing.indexed())
+                .as("关键字那一路读原文：描述一变长，中文二元组就会撞出更多噪声")
+                .extracting(ToolReference::summary)
+                .containsExactly("Reads a file from the local filesystem");
+        assertThat(vectorWing.indexed())
+                .as("向量那一路要的是语义，中文一句在前、原文在后")
+                .extracting(ToolReference::summary)
+                .singleElement()
+                .asString()
                 .startsWith("读取本地文件的内容并返回")
                 .contains("Reads a file from the local filesystem");
 
-        ToolReference reference = ToolReference.builder()
-                .toolName(translated.getToolDefinition().name())
-                .summary(translated.getToolDefinition().description())
-                .build();
-        ChineseToolIndex index = new ChineseToolIndex();
-        index.indexTools("zh", List.of(reference));
-        assertThat(index.search(new ToolSearchRequest("zh", "读取文件", 5, null)).toolReferences())
-                .as("译之前这句中文问法在英文描述上一个字都撞不上（票 09 的 zh-en 档量过）")
-                .isNotEmpty();
-
-        RecordingTool chinese = new RecordingTool("querySales", "128400", "查询销售成交额与订单明细");
+        ToolReference chinese = reference("querySales", "查询销售成交额与订单明细", 0.0);
         int before = model.prompts().size();
-        assertThat(translator.translate(List.of(chinese)).getFirst())
+        assertThat(translator.translateReferences(List.of(chinese)))
                 .as("本来就是中文，原样返回")
-                .isSameAs(chinese);
+                .containsExactly(chinese);
         assertThat(model.prompts()).as("已有中文还去翻，是白花钱").hasSize(before);
 
-        RecordingTool broken = new RecordingTool("Broken", "x", "Does something");
         ToolDescriptionTranslator failing = new ToolDescriptionTranslator(
                 new FixedChatModel(prompt -> {
                     throw new IllegalStateException("模型挂了");
                 }),
                 new ToolSearchProperties.ZhDescription(true, List.of()));
-        assertThat(failing.translate(List.of(broken)).getFirst())
+        assertThat(failing.translateReferences(List.of(read)))
                 .as("译不出来就用原文：中文化是增强，不该让整轮请求挂掉")
-                .isSameAs(broken);
+                .containsExactly(read);
     }
 
     // ------------------------------------------------------------ 本模块的两条架构闸

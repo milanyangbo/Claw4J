@@ -158,6 +158,10 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * 的分数（票 09 基线：regex R@1 0.20、纯向量 0.60）说明了差多少；而人写的表跟着工具描述漂，
      * 漂了还看不出来。
      *
+     * <p><b>只喂向量那一路</b>（{@code index=vector|hybrid}），关键字那一路读原文：2026-11-26 的
+     * 开/关对照里，它让向量档的 zh-en 从 0.60 涨到 0.80，却让 regex 从 0.15 掉到 0.10——
+     * 描述变长、中文二元组碰撞变多。所以默认 {@code regex} 下打开这个开关没有收益、只有调用成本。
+     *
      * @param enabled 要不要翻。默认关：它要在第一次拿到这份清单时花掉若干次 utility 调用
      * @param tools   只翻这些工具（名字来自 {@code @Tool(name=…)}）。空 = 自动判定：描述里汉字少于
      *                {@value ToolDescriptionTranslator#MIN_CJK_CHARS} 个才翻。名字写错不报错也不翻

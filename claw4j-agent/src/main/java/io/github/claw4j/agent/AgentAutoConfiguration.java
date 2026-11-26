@@ -171,8 +171,7 @@ public class AgentAutoConfiguration {
                                    ObjectProvider<Approvals> approvals,
                                    ObjectProvider<ApprovalRequiredTools> required,
                                    ObjectProvider<SandboxProperties> sandboxProperties,
-                                   ObjectProvider<ToolCallListener> listeners,
-                                   ObjectProvider<ToolDescriptionTranslator> translator) {
+                                   ObjectProvider<ToolCallListener> listeners) {
         ToolProfile profile = profileOf(personas.selected(), toolPolicy);
         List<ToolTierRegistry> registries = tierRegistries.orderedStream().toList();
         // 沙箱是部署级的（mode=non-main 配了启动失败），所以这一轮的 sandboxed 就是它。
@@ -212,8 +211,7 @@ public class AgentAutoConfiguration {
                         if (!signature.equals(reported.getAndSet(signature))) {
                             report(effective, selection);
                         }
-                    },
-                    translator.getIfAvailable(() -> ToolDescriptionTranslator.NONE));
+                    });
             return withApprovalGate(withListener(tools, listeners.getIfAvailable()),
                     approvals.getIfAvailable(), required.getIfAvailable(ApprovalRequiredTools::none),
                     audit.getIfAvailable());
@@ -322,6 +320,9 @@ public class AgentAutoConfiguration {
      * {@code @ConditionalOnMissingBean(VectorStore.class)} 会因为多一个同类型 bean 静默退让，
      * 表现是知识库突然全空、日志里一句都没有。所以它在这里现场构造，只交给索引。
      *
+     * <p>中文化（{@code zh-description}）只交给向量那一路：{@code regex} / {@code lucene} 读原文，
+     * 因为实测描述变长会让中文二元组碰撞变多、纯关键字那一档反而下降（票 11 的对照表）。
+     *
      * <p>容器里已有 {@code ToolIndex} 时整个让位：自定义实现比这四个开关更具体，
      * 硬塞一个只会让两边的清单各说各话。
      *
@@ -330,6 +331,7 @@ public class AgentAutoConfiguration {
      * @param embeddings   向量模型，只有 vector / hybrid 用得到
      * @param dimensions   向量维度，必须与工具向量表一致
      * @param meterRegistry 指标注册表，可能不存在（没装 actuator）；那时照常检索、只是不记
+     * @param translator    描述翻译器，只喂向量那一路；关着时是 {@code NONE}
      * @return 索引
      */
     @Bean
@@ -337,12 +339,14 @@ public class AgentAutoConfiguration {
     public ToolIndex toolIndex(ToolSearchProperties toolSearch, ObjectProvider<JdbcTemplate> jdbc,
                                ObjectProvider<EmbeddingModel> embeddings,
                                @Value("${claw4j.model.embedding.dimensions:1024}") int dimensions,
-                               ObjectProvider<MeterRegistry> meterRegistry) {
+                               ObjectProvider<MeterRegistry> meterRegistry,
+                               ObjectProvider<ToolDescriptionTranslator> translator) {
         VectorStore toolVectorStore = toolVectorStore(toolSearch, jdbc, embeddings, dimensions);
         // 计量包在**最外层**：包在里层记到的是收窄之前那一批（宽搜 15 条、过滤后 0 条，
         // 里层看到的是 15），那就答不了"模型到底看到几个"。
         return new MeteredToolIndex(
-                ToolSearch.index(toolSearch, toolVectorStore, ToolCategories.of(toolSearch.categories())),
+                ToolSearch.index(toolSearch, toolVectorStore, ToolCategories.of(toolSearch.categories()),
+                        translator.getIfAvailable(() -> ToolDescriptionTranslator.NONE)),
                 meterRegistry.getIfAvailable());
     }
 
@@ -491,8 +495,7 @@ public class AgentAutoConfiguration {
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries) {
         return collectToolCallbacks(callbacks, providers, registry, audit, tracer, observations, profile,
-                tierRegistries, ToolPolicyPipeline.none(), selection -> report(profile, selection),
-                ToolDescriptionTranslator.NONE);
+                tierRegistries, ToolPolicyPipeline.none(), selection -> report(profile, selection));
     }
     /**
      * 同上，但把「这次筛完的结论」交给调用方处置。
@@ -523,7 +526,7 @@ public class AgentAutoConfiguration {
                                                           List<ToolTierRegistry> tierRegistries,
                                                           Consumer<ToolProfile.Selection> onSelection) {
         return collectToolCallbacks(callbacks, providers, registry, audit, tracer, observations, profile,
-                tierRegistries, ToolPolicyPipeline.none(), onSelection, ToolDescriptionTranslator.NONE);
+                tierRegistries, ToolPolicyPipeline.none(), onSelection);
     }
 
     /**
@@ -554,8 +557,7 @@ public class AgentAutoConfiguration {
                                                           ToolProfile profile,
                                                           List<ToolTierRegistry> tierRegistries,
                                                           ToolPolicyPipeline pipeline,
-                                                          Consumer<ToolProfile.Selection> onSelection,
-                                                          ToolDescriptionTranslator translator) {
+                                                          Consumer<ToolProfile.Selection> onSelection) {
         List<ToolCallback> collected = new ArrayList<>();
         callbacks.orderedStream().forEach(collected::add);
         // provider 的 getToolCallbacks() 每次调用都重新问一次来源：MCP 那一层是活视图，
@@ -584,7 +586,7 @@ public class AgentAutoConfiguration {
         // 已经包过的原样返回（票 19）：子链走的也是这条收集路径，而它拿到的 provider 交出来的
         // 工具**本身已经带一层包装**。再包一次会让同一次调用写两遍审计——第二遍被唯一键挡住，
         // 于是不报错、只是 duplicates 涨，而"每条子链调用都涨 2"从外面看像重放。
-        List<ToolCallback> metered = collected.stream()
+        return collected.stream()
                 .filter(callback -> kept.contains(callback.getToolDefinition().name()))
                 // 显式转型，否则 stream 的元素类型被推断成 MeteredToolCallback，
                 // 与返回类型 List<ToolCallback> 对不上（它不是泛型类，推断不出父类型）。
@@ -593,9 +595,6 @@ public class AgentAutoConfiguration {
                         : (ToolCallback) new MeteredToolCallback(callback, registry, audit, tracer,
                                 observations))
                 .toList();
-        // 最后一层：换描述（票 11）。放在计量外面、审批闸里面——审批闸按名字判，与描述无关；
-        // 而计量记的是"调了哪个工具"，也不该被描述影响。
-        return translator.translate(metered);
     }
 
     /**
