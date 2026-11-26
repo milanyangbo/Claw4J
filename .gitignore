@@ -37,8 +37,22 @@ __pycache__/
 # （同目录的 README、SSE 帧、覆盖配置、超长人设都入库，是可以对着看的证据）
 docs/acceptance/**/*.log
 
-# 工具检索评测（票 12）：与 eval/rag 同一条规矩——基线入库，产物不入库。
-eval/tools/reports/*
-!eval/tools/reports/.gitkeep
-eval/tools/.venv/
-eval/tools/__pycache__/
+# 工具评测（票 12 检索层 / 票 17 选择层）：与 eval/rag 同一条规矩——基线入库，产物不入库。
+# 两层各自的目录见 eval/tools/README.md。
+eval/tools/retrieval/reports/*
+!eval/tools/retrieval/reports/.gitkeep
+eval/tools/retrieval/.venv/
+eval/tools/retrieval/__pycache__/
+
+# 选择层评测（票 17）：BFCL 自己的 venv / 临时目录 / 原始结果 / 排行榜 csv。
+# 入库的只有 run.sh、boot.py、patch/、baseline.json——产物与标准分开。
+eval/tools/bfcl/.venv/
+eval/tools/bfcl/tmpdir/
+eval/tools/bfcl/result/
+eval/tools/bfcl/score/
+eval/tools/bfcl/smoke/
+eval/tools/bfcl/.file_locks/
+eval/tools/bfcl/reports/*
+!eval/tools/bfcl/reports/.gitkeep
+eval/tools/bfcl/__pycache__/
+eval/tools/bfcl/patch/__pycache__/

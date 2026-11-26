@@ -1,0 +1,8 @@
+{
+  "model": "DeepSeek-V3.2-Exp-FC",
+  "updated_at": "2026-11-26T09:01:51+00:00",
+  "categories": {
+    "simple_python": 0.955,
+    "irrelevance": 0.770833
+  }
+}

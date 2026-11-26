@@ -1,0 +1,15 @@
+# 选择层评测的 Python 依赖（票 17）。
+#
+# 只有两个：BFCL 本体，和它漏声明的一个传递依赖。
+#
+# 版本锁死的理由与 ragas==0.4.4 一样：分数变了要能归因到被测代码，不是归因到评测器升级。
+# BFCL 的判据（AST 比对）与题库都在包里，换版本等于换一把尺子。
+
+# 2026.3.23。要求 Python ≥3.10，但它把 numpy 锁在 1.26.4，而 numpy 1.26 没有 3.13 的
+# wheel —— 所以 venv 必须用 3.10–3.12 建（run.sh 会自动找）。用 3.13 会现场编译 C 代码然后失败。
+bfcl-eval==2026.3.23
+
+# 上游漏了这条依赖：qwen-agent 在 import 时 `import soundfile`，但 bfcl-eval 的
+# install_requires 里没有它。缺了会在 "from bfcl_eval.__main__ import cli" 就炸，
+# 报的是 ModuleNotFoundError: No module named 'soundfile'，看着像装错了包，其实是它的锅。
+soundfile>=0.12
