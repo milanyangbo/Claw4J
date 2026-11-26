@@ -147,6 +147,46 @@ class ToolGoldTest {
     }
 
     /**
+     * 票 18 之前这一档只有 4 题：一格 0.25，比 `TOLERANCE`（0.05）还粗四倍。
+     *
+     * <p>症状是"R@5 从 0.25 到 0.75 只差两道题"——读那个数的人和看噪声没有区别。
+     * 而且它两种配置下有三道直接 miss，"索引还能不能工作"这条底线其实说不清。
+     *
+     * <p>为什么下限是 10 而不是 20：这一档的工具池只有 Read/Grep/Glob/Bash 四个，
+     * 再往上凑就是同一件事换说法，边际信息量为零。10 题把一格压到 0.10，
+     * 与回归门同一个量级，够了。
+     */
+    @Test
+    @DisplayName("base 至少 10 题：4 题时一格 0.25，读那个数跟看噪声没区别")
+    void baseHasEnoughQuestions() throws IOException {
+        long count = loadGold().stream()
+                .filter(gold -> gold.category().equals("base"))
+                .count();
+
+        assertThat(count)
+                .as("基座工具常驻、掉分不影响线上，但它是「索引还能不能工作」的底线，4 题撑不起这个判断")
+                .isGreaterThanOrEqualTo(10);
+    }
+
+    /**
+     * 票 18 之前这一档只有 2 题：零候选率 0.500 就是**一题**说了算。
+     *
+     * <p>它的判据是"给了候选就算错"，所以题少的时候最坏：单题翻转直接让这个数从 0.5 跳到 1.0，
+     * 而读报告的人只会看到"零候选率掉了 50%"。10 题把一格压到 0.10。
+     */
+    @Test
+    @DisplayName("no-search 至少 10 题：2 题时零候选率就是一题说了算")
+    void noSearchHasEnoughQuestions() throws IOException {
+        long count = loadGold().stream()
+                .filter(gold -> gold.category().equals("no-search"))
+                .count();
+
+        assertThat(count)
+                .as("这一档判「不该给候选」，题少的时候单题翻转就会让占比跳一半")
+                .isGreaterThanOrEqualTo(10);
+    }
+
+    /**
      * 这一档的定义是**中文问法 × 英文描述**，gold 必须落在英文描述那一组里。
      *
      * <p>2026-11-26 发现的问题：原来 5 道里有 3 道的 gold（`systemStatus` / `recall_session` /

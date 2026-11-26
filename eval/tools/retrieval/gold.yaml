@@ -36,6 +36,40 @@
   category: base
   gold_tools: [Bash]
 
+# 2026-11-26（票 18）：原来这一档只有 4 道，一格题 0.25——比回归门的容差还粗，判不了退步。
+# 补到 10 道，并且**刻意混两种难度**：一半带中文字面词（现在能命中），一半纯语义（现在命中不了）。
+# 全是难的那种，这一档永远是 0，同样看不出退步；全都能命中，又变成business 那样饱和。
+
+- id: tools-read-pom
+  question: 把 pom.xml 打开我看看
+  category: base
+  gold_tools: [Read]
+
+- id: tools-read-line
+  question: config 那个文件第 30 行写了啥
+  category: base
+  gold_tools: [Read]
+
+- id: tools-grep-todo
+  question: 代码里哪些地方还留着 TODO
+  category: base
+  gold_tools: [Grep]
+
+- id: tools-grep-call-site
+  question: 哪里调了 mcpServer 这个方法
+  category: base
+  gold_tools: [Grep]
+
+- id: tools-glob-java
+  question: src 下面所有 Java 文件列一下
+  category: base
+  gold_tools: [Glob]
+
+- id: tools-bash-build
+  question: 把项目编译一下
+  category: base
+  gold_tools: [Bash]
+
 # ---------------------------------------------------------------- business
 
 - id: tools-sales-last-week
@@ -105,6 +139,53 @@
   question: 客户数超过一万的时候提醒我
   category: business
   gold_tools: [intent]
+
+# 2026-11-26（票 18）：上面那 12 道在 `R@5` 上五档全 1.000——不是题送分，是这批工具的同域干扰项
+# 就那么几个，关键字那一路最差也翻到第 5（`github-pr-ci`、`recall-previous`），刚好卡在边界内。
+#
+# 下面 8 道是**去字面化**的：不点工具名，也不用工具描述里的词（销售/邮件/issue/PR/定时/提醒）。
+# 出题是否到位有一条硬判据：这 8 道在 `regex` 下应当排到第 6 名以外；排得进去，说明字面还漏了。
+# 它们要回答的问题：当问法里没有工具描述的词时，纯向量那一路能不能救回来。
+
+- id: tools-sales-quarter
+  question: 华东区这个季度走得怎么样
+  category: business
+  gold_tools: [querySales]
+
+- id: tools-sales-by-region-plain
+  question: 把上个月的数按区域拆开看看
+  category: business
+  gold_tools: [querySales]
+
+- id: tools-schedule-alarm
+  question: 一到早上九点就叫我一声
+  category: business
+  gold_tools: [schedule_task]
+
+- id: tools-schedule-where
+  question: 我之前让它定期干的事都在哪儿
+  category: business
+  gold_tools: [list_schedules]
+
+- id: tools-mail-tell
+  question: 跟老王说一声周五的会挪到下周一
+  category: business
+  gold_tools: [mail_send]
+
+- id: tools-mail-any-message
+  question: 有没有人给我留了话
+  category: business
+  gold_tools: [mail_list_unread]
+
+- id: tools-github-pr-broke
+  question: 那次改动有没有挂
+  category: business
+  gold_tools: [github_pr_checks]
+
+- id: tools-github-backlog
+  question: 还有什么事挂着没人管
+  category: business
+  gold_tools: [github_issue_list]
 
 # ---------------------------------------------------------------- zh-en（中文问、描述是英文）
 #
@@ -246,5 +327,51 @@
 
 - id: tools-chitchat-thanks
   question: 谢谢，明白了
+  category: no-search
+  gold_tools: []
+
+# 2026-11-26（票 18）：原来只有 2 道，零候选率 0.500 就是**一题**说了算，没有统计意义。
+# 补到 10 道，一格 0.10，与回归门的容差同量级。
+#
+# 出题约束比别的档更严：必须**彻底没有工具语义**。凡是含"查/找/方案/选择/取消/算了"这类词的都不要——
+# 那种题本身有歧义（"算了"确实像取消，"你觉得哪个方案好"确实像要问用户），判"给了候选就是错"不公平。
+
+- id: tools-chitchat-ack
+  question: 好的，收到
+  category: no-search
+  gold_tools: []
+
+- id: tools-chitchat-ok-then
+  question: 嗯，那就这样吧
+  category: no-search
+  gold_tools: []
+
+- id: tools-chitchat-effort
+  question: 辛苦了
+  category: no-search
+  gold_tools: []
+
+- id: tools-chitchat-weather
+  question: 今天天气不错
+  category: no-search
+  gold_tools: []
+
+- id: tools-chitchat-laugh
+  question: 哈哈
+  category: no-search
+  gold_tools: []
+
+- id: tools-chitchat-are-you-there
+  question: 你在吗
+  category: no-search
+  gold_tools: []
+
+- id: tools-chitchat-bye
+  question: 先这样，回头聊
+  category: no-search
+  gold_tools: []
+
+- id: tools-chitchat-got-it
+  question: 知道了
   category: no-search
   gold_tools: []
