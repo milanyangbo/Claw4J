@@ -719,6 +719,17 @@ class ModelAndToolSelectionTest {
                 .as("21 个全在")
                 .hasSize(21)
                 .doesNotContain(ToolSearch.TOOL_NAME);
+
+        // 票 10 之后默认配置里 pinned 是六个名字：off 档的语义是"全塞"，不是"只留常驻那几个"。
+        // 这两件事混了的话，off 会变成一个隐藏的白名单，而它名字里的 off 是"关掉检索"。
+        FixedChatModel pinnedModel = new FixedChatModel("好");
+        port(pinnedModel, withNoise(lookup, 20), properties(ToolSearchProperties.Mode.OFF, 0,
+                List.of("lookup"), null))
+                .reply(message("上周华东成交额"));
+        assertThat(toolNames(pinnedModel.prompts().get(0)))
+                .as("pinned 不影响全塞：该在的 21 个一个不少")
+                .hasSize(21)
+                .doesNotContain(ToolSearch.TOOL_NAME);
     }
 
     /** 名字里带了不存在的 pinned：告警并跳过，不能让整个部署起不来。 */

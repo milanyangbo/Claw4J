@@ -18,6 +18,8 @@ import io.github.claw4j.agent.schedule.ScheduleScanner;
 import io.github.claw4j.rag.retrieval.HybridDocumentRetriever;
 import io.github.claw4j.agent.session.SessionKeys;
 import io.github.claw4j.agent.session.SessionScopeProperties;
+import io.github.claw4j.capability.builtin.agenttools.AgentToolsAutoConfiguration;
+import io.github.claw4j.capability.exec.ExecAutoConfiguration;
 import io.github.claw4j.capability.mcp.McpServerProperties;
 import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.channel.http.HttpChatController;
@@ -468,13 +470,17 @@ class ApplicationAssemblyTest {
     }
 
     /**
-     * 工具面（票 06）：默认按规模滑档，而且索引外面确实包了分组那一层。
+     * 工具面（票 06 / 票 10）：默认按规模滑档、基座工具常驻，索引外面确实包了分组那一层。
      *
      * <p>断在 bean 上而不是断在提示词上：这一段要回答的是"配置真的进到装配里了吗"，
      * 而"模型这一轮看见几个工具"由 {@code ModelAndToolSelectionTest} 那几条按模式钉住。
+     *
+     * <p>{@code pinned} 从"空"改成了明确的六个（票 10）：原来那条断言守的是"别把某次调试的名单
+     * 写死在**代码**里"，现在名单在 yml 里、部署一行就能改，守的东西没变；而默认部署要能干活
+     * 这件事，只有把名字写下来才成立。
      */
     @Test
-    @DisplayName("工具面默认 auto 并按 10 滑档；索引外面有分组这一层（票 06）")
+    @DisplayName("工具面默认 auto 并按 10 滑档；基座六个常驻；索引外面有分组这一层（票 06 / 10）")
     void toolSurfaceDefaultsToAutoAndWrapsGrouping() {
         ToolSearchProperties properties = context.getBean(ToolSearchProperties.class);
 
@@ -483,10 +489,18 @@ class ApplicationAssemblyTest {
                 .isEqualTo(ToolSearchProperties.Mode.AUTO);
         assertThat(properties.revealBelow()).isEqualTo(10);
         assertThat(properties.pinned())
-                .as("不预置任何工具名——常驻哪些是部署的事，代码里写死就等于换批工具就失效")
-                .isEmpty();
+                .as("基座六个常驻：读、找、搜、跑、看网页、记计划")
+                .containsExactly("Read", "Grep", "Glob", "Bash", "WebFetch", "TodoWrite");
+        assertThat(properties.pinned())
+                .as("名单必须覆盖只读三件套与 shell 主入口——名字来自库，与那两个常量同源，"
+                        + "不是另抄一份字面量；抄错了这里先红")
+                .containsAll(AgentToolsAutoConfiguration.READ_ONLY_TOOL_NAMES)
+                .contains(ExecAutoConfiguration.TOOL_NAMES.getFirst());
+        assertThat(context.getBean(ToolCatalog.class).names())
+                .as("写进 pinned 的名字都得真的在清单里：拼错一个字母只会告警一次，没人会注意到")
+                .containsAll(properties.pinned());
         assertThat(properties.categories())
-                .as("同理，分组也不预置：不配就按名字前缀推导")
+                .as("分组仍然不预置：不配就按名字前缀推导——常驻与分组是两件事")
                 .isEmpty();
         ToolIndex index = context.getBean(ToolIndex.class);
         assertThat(index)

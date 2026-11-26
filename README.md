@@ -107,7 +107,8 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 还可以按模型（`byProvider`）与发送者（`toolsBySender`）继续往下减。
 **看不见的工具不在清单里**，模型不会"先计划再撞墙"，也不会出现"我没有权限"这种话术。
 
-模型默认只看得见 `toolSearchTool` 一个工具，先搜一次才拿得到具体工具。搜得准不准由
+模型手上默认是两类：六个**常驻基座**（`Read` / `Grep` / `Glob` / `Bash` / `WebFetch` / `TodoWrite`，
+`claw4j.advisor.tool-search.pinned`）加一个 `toolSearchTool`；其余工具要搜一次才拿得到。搜得准不准由
 `claw4j.advisor.tool-search.index` 决定：`regex`（默认，中文整句能命中）、`lucene`（全文打分，
 中文按字切）、`vector`（语义召回）、`hybrid`（关键字 ∪ 向量，按名次融合）。后两档要一份
 **工具专用**的向量库（`claw4j_tool.tool_index`，由 `EmbeddingModel` 建）：它不注册成 bean，

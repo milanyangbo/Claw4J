@@ -1,6 +1,6 @@
 # 票 10：基座工具进默认 pinned——不再等模型猜中词
 
-**Status:** open
+**Status:** resolved
 
 ## 由来
 
@@ -66,9 +66,25 @@ claw4j:
 
 | 判什么行为 | 用例 | 先红的样子 |
 | --- | --- | --- |
-| 默认名单就是那 6 个 | `ApplicationAssemblyTest#toolSurfaceDefaultsToAutoAndWrapsGrouping` | 名单改了而断言没改时红；名单与 `READ_ONLY_TOOL_NAMES` 漂开时也红 |
-| 名单里的名字都真的存在 | 同一方法内加一句：每个名字都能在 `ToolCatalog` 里找到 | 拼错一个字母（`Glob` 写成 `GlobTool`）时红——它只会告警一次，不红就没人发现 |
-| `mode=off` 时 pinned 不影响全塞 | 并入 `ModelAndToolSelectionTest#offModeNeverHidesTools` | pinned 被当成"只留这些"时红 |
+| 默认名单就是那 6 个 | ✅ `ApplicationAssemblyTest#toolSurfaceDefaultsToAutoAndWrapsGrouping` | 名单改了而断言没改时红；名单与 `READ_ONLY_TOOL_NAMES` 漂开时也红 |
+| 名单里的名字都真的存在 | ✅ 同一方法内加一句：每个名字都能在 `ToolCatalog` 里找到 | 拼错一个字母（`Glob` 写成 `GlobTool`）时红——它只会告警一次，不红就没人发现 |
+| `mode=off` 时 pinned 不影响全塞 | ✅ 并入 `ModelAndToolSelectionTest#offModeNeverHidesTools` | pinned 被当成"只留这些"时红 |
+
+## 真机验证（2026-11-26，默认配置，没有任何 `tool-search` 覆盖）
+
+同一句「examples 目录下有哪些 .md 文件？」——票 05 里 0/5 的那一句：
+
+| 看什么 | 值 | 说明 |
+| --- | --- | --- |
+| `claw4j.tool.search.calls` | **404** | 一次检索都没发生：`Glob` 在清单里，不用找 |
+| `claw4j.model.calls` | 2 | 第一轮 + 拿到工具结果后回答一轮 |
+| `claw4j.tool.calls?tool=Glob` | 1 | 就它干的；`Read` / `Grep` / `Bash` 都是 0 |
+| 回答 | 128 个 md，按目录分组 | 与磁盘一致 |
+
+启动日志里没有「pinned 里的 X 不在一轮清单里」的告警，六个名字全部落在清单里。
+
+**这是本票要的那条证据**：0/5 → 1/1，而且通的方式是"不检索、直接调常驻工具"，不是"检索这次猜中了"。
+票 05 结论第 1 条（触发靠信号）在这条路径上不再起作用。
 
 ## 缺口（本票不做）
 

@@ -191,9 +191,18 @@ claw4j:
       mode: auto
       # mode=auto 的阈值（不含检索工具自己）。10 这个数来自"少于约十个工具时全量更快"。
       reveal-below: 10
-      # 常驻工具名：写在这里的每轮都在清单里，不经过检索。写错名字会告警并忽略。
-      # 代码里不写死任何一个——常驻哪些是部署的事。
-      pinned: []
+      # 常驻工具名：写在这里的每轮都在清单里，不经过检索。写错名字会告警一次并忽略。
+      #
+      # 这六个是基座：读文件、找文件、搜内容、跑命令、看网页、记计划——"说人话就该直接用"的动作。
+      # 默认给它们，是因为实测（票 05）：不常驻时模型不去检索，直接答"我没有列目录的工具"，
+      # 0/5；常驻之后同一句就通。代价是每轮多六段描述（约 1–2k token），固定值、不随工具集增长。
+      #
+      # **不带条件装配的名字**：Write / Edit（默认关）、WebSearch（要 key）、Task / TaskOutput、
+      # AskUserQuestionTool、Skill、Memory*、BashOutput / KillShell——写进来只会在没装它的部署上
+      # 每次启动留一条"不在这一轮清单里"的告警，而它们都不是每轮都可能用。
+      # 名字来自库的 @Tool(name=…)，与 AgentToolsAutoConfiguration.READ_ONLY_TOOL_NAMES、
+      # ExecAutoConfiguration.TOOL_NAMES 是同一批；改名单要连着那两处一起看（那条断言会红）。
+      pinned: [Read, Grep, Glob, Bash, WebFetch, TodoWrite]
       # 类别（namespace）→ 工具名。不配就按名字前缀推导（github_issue_list -> github）。
       # 模型可以通过检索工具的 categoryFilter 收窄到一组；成形（>=2 个工具）的组会写进提示词。
       categories: {}
