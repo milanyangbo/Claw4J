@@ -1,6 +1,6 @@
 # 票 22：撤掉检索层的寒暄拦截，no-search 归到模型侧 irrelevance
 
-**Status:** open（代码已落地；装配那条用例缺 `DEEPSEEK_API_KEY` 未现场复核，见「复核」）
+**Status:** resolved（2026-11-26：类已删、装配用例在有 key 的环境下补跑通过）
 **来源：** 用户 2026-11-26 的三条质疑 + 一句裁决。质疑：「不具备通用性」「很长一句话里面包含了
 CHITCHAT 这些关键字，那算不算寒暄」「每次过来都要跑一遍正则，真实场景会有性能损耗」「主要感觉
 `ChitchatToolIndex` 就是为了跑评测专门增加的」。裁决：「去除 ChitchatToolIndex 吧，感觉真正要提高的
@@ -65,7 +65,7 @@ CHITCHAT 这些关键字，那算不算寒暄」「每次过来都要跑一遍�
 | --- | --- | --- | --- |
 | 配了规则时，最外层是规则层（原来断言的是寒暄层） | `ModelAndToolSelectionTest#rulePutsItsToolFirst`（991 行） | 现有断言 `isInstanceOf(ChitchatToolIndex.class)`，类删掉后编译不过 | ✅ |
 | 中文整句照样命中，去掉寒暄断言后这条不被顺手弄坏 | `ModelAndToolSelectionTest#chineseQueryNeedsNoSpaces`（504 行） | 删第三段时把前两段一起删掉，就没人守"中文整句不空手" | ✅ |
-| 删除后装配链是 计量 → 融合/分组（原来是 计量 → 寒暄 → 融合/分组） | `ApplicationAssemblyTest#toolSurfaceDefaultsToAutoAndWrapsGrouping`（486 行，516–518 是那三行） | 还 import 不到已删的类；剥壳写死两层，改后必须指向 `HybridToolIndex` 或 `NamespacedToolIndex` | ❌ 未跑：本机 `.env` 的 `DEEPSEEK_API_KEY` 为空，ADR-0011 没有 mock 兜底，上下文起不来 |
+| 删除后装配链是 计量 → 融合/分组（原来是 计量 → 寒暄 → 融合/分组） | `ApplicationAssemblyTest#toolSurfaceDefaultsToAutoAndWrapsGrouping`（486 行，516–518 是那三行） | 还 import 不到已删的类；剥壳写死两层，改后必须指向 `HybridToolIndex` 或 `NamespacedToolIndex` | ✅ 补跑通过 |
 | 题库不再有 `no-search`，空 gold 会被拒 | `ToolGoldTest`（9 条，含改写后的"空 gold 抛异常"） | 空 gold 若被静默接受，分母就少一道该扣分的题 | ✅ |
 | 检索层评测不再有 `no-search` 一档 | `./eval/tools/retrieval/run.sh --from-report` | `run_ir.py` 仍去找 `no-search.jsonl`，缺文件时报错或静默跳过 | ✅ 退出码 0 |
 
@@ -74,9 +74,14 @@ CHITCHAT 这些关键字，那算不算寒暄」「每次过来都要跑一遍�
 
 复核：`2026-11-26` — `ModelAndToolSelectionTest` 26/26 绿；`ToolGoldTest` 9/9 绿；
 `-pl claw4j-agent,claw4j-eval -am test` 231 条里 230 绿，唯一红的是
-`ChatPipelineTest#realModelTurnsNaturalLanguageIntoTheRightToolCall`（缺 `DEEPSEEK_API_KEY`，
-与本案无关）；`run.sh --from-report` 退出码 0、`R@5` 0.880 达标。
-**`ApplicationAssemblyTest` 那一条没跑**——同样是真模型上下文，同一个原因，留待有 key 时复核。
+`ChatPipelineTest#realModelTurnsNaturalLanguageIntoTheRightToolCall`；`run.sh --from-report`
+退出码 0、`R@5` 0.880 达标；`ApplicationAssemblyTest#toolSurfaceDefaultsToAutoAndWrapsGrouping`
+补跑通过（BUILD SUCCESS）。
+
+**跑这些用例之前必须 `set -a; . ./.env; set +a`**：测试类上的
+`spring.config.import=optional:file:./.env` 只把 `.env` 当 properties 读，而 `SecretResolver`
+取的是 `System.getenv`，两条路不通。我第一次没 source 就跑了，把"没加载"误判成"`.env` 里没有
+key"，还把错误结论写进了票 23——已改。
 
 ## 落地记录
 

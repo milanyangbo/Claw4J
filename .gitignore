@@ -50,6 +50,8 @@ eval/tools/bfcl/.venv/
 eval/tools/bfcl/tmpdir/
 eval/tools/bfcl/result/
 eval/tools/bfcl/score/
+# 跑数留痕：旧逐题结果挪到这里才不会被 BFCL 的缓存跳过，判据与数字不入库。
+eval/tools/bfcl/stale-*/
 eval/tools/bfcl/smoke/
 eval/tools/bfcl/.file_locks/
 eval/tools/bfcl/reports/*
