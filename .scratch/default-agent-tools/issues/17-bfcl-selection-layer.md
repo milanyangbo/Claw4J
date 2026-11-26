@@ -23,16 +23,29 @@
 Berkeley Function Calling Leaderboard（`bfcl-eval`，Python）是目前唯一把"选对/参数对/不该调"
 三件事都定义清楚的公开评测器：AST 比对参数、`irrelevance` 类别专门测"该不该调用"。
 
-**第 0 步（动代码之前必须做完）**：核实三件事并写进票面。
+**第 0 步（2026-11-26 已做，结论在下面）**
 
-1. 包名与入口：`pip install bfcl-eval` 之后是不是 `bfcl evaluate --model <handler> --test-category <cat>`；
-2. **自定义模型怎么注册**：我们的模型是 OpenAI 兼容端点（`roles.utility` 那条链），BFCL 允许
-   `--register-handler` 或 `local_inference` 那类扩展点吗？不允许就只能走
-   "先按它的格式导出请求、我们自己发、再把响应喂回去"这条更笨但更可控的路；
-3. 跑一次**最小子集**的真实成本：几个类别、多少次请求、多少钱。写成一行，超过阈值就缩。
+核实结果，逐条对上面三个问题：
 
-第 0 步的结论如果是"只能改它的源码"，那本票就退化成"照它的数据结构自己写 30 行"，
-**那也要在票面写清为什么退**，不能默默换成自研再叫它 BFCL。
+1. **包名对得上**：PyPI 上是 `bfcl-eval`（2026.3.23，要求 Python ≥3.10），仓库在
+   `ShishirPatil/gorilla/berkeley-function-call-leaderboard`。子命令是 `bfcl generate` 与
+   `bfcl evaluate`，类别要写 `simple_python`（V4 把 `simple` 改名了）、`irrelevance`；
+   只跑子集时评估要加 `--partial-eval`。
+2. **没有 `--register-handler`**。CLI 只认已经注册的模型名；加新模型是**改它的源码**：
+   `bfcl_eval/constants/model_config.py` 里加一条 `ModelConfig`、`supported_models.py` 里加进
+   支持列表，handler 若能复用 `OpenAICompletionsHandler` 就不用自己写类。
+   另一条路是 `.env` 里的 `REMOTE_OPENAI_BASE_URL` + `REMOTE_OPENAI_API_KEY`（给"已经在跑的
+   OpenAI 兼容端点"用的）——**这正是我们的情况**，但它仍然要求模型名先注册，所以还是得打那两个补丁。
+3. **成本没量**：得先装起来、注册、跑一次 `--run-ids` 的十几条才知道。**没量就不写数**。
+
+**因此本票的形态要改**（据实）：不是"装个 CLI 就接上"，而是
+**「装 + 给它的 model_config 打一个本地补丁 + 用 `--run-ids` 跑十几条」**。
+补丁要单独放（`eval/tools/bfcl/patch/`），不 fork 整个仓库、不改我们的构建——
+理由与 `eval/rag` 引 Ragas 一致：第三方是评测工具，不是我们的依赖。
+
+**这个形态要不要走，先问人**：打补丁意味着"别人升级一次，补丁要跟着改"。若不想背这个，
+退路是"照它的结果格式自己发请求（约 30 行），只借用它的题库与判据"——但那样就不能再叫
+"用 BFCL 评的"，票面与报告里都得写清"借用它的题与判据，跑的是我们自己的壳"。
 
 ## 评什么（第一版只做两档）
 
