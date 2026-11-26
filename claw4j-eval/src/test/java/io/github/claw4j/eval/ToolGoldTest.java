@@ -63,11 +63,11 @@ class ToolGoldTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("category");
 
-        ToolGold ok = ToolGold.from(Map.of(
-                "id", "ok", "question", "你好", "category", "no-search", "gold_tools", List.of()));
-        assertThat(ok.goldTools())
-                .as("空 gold 是合法的：它的意思是「不该有候选」，不是「没写」")
-                .isEmpty();
+        assertThatThrownBy(() -> ToolGold.from(Map.of(
+                "id", "x", "question", "你好", "category", "base", "gold_tools", List.of())))
+                .as("空 gold 只剩一个含义：漏写。它会让人以为题目正常、实际分母里少了一道该扣分的题")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("gold_tools");
     }
 
     @Test
@@ -94,25 +94,27 @@ class ToolGoldTest {
     void metricsMoveWithTheIndex() {
         List<ToolGold> golds = List.of(
                 new ToolGold("a", "上周成交额", "business", List.of("querySales")),
-                new ToolGold("b", "你好", "no-search", List.of()));
+                new ToolGold("b", "代码里哪些地方还留着 TODO", "base", List.of("Grep")));
 
         List<ToolRetrievalEval.Score> perfect = ToolRetrievalEval.evaluate("perfect",
                 new StubToolIndex(List.of("querySales")), List.of(), golds);
         assertThat(byCategory(perfect, "business").recall1()).isEqualTo(1.0);
 
-        // 一个"永远返回全部工具"的索引：业务那档照样命中，但闲聊那档收到候选 = 噪声，必须判没中。
+        // 一个"永远返回全部工具"的索引：business 那档照样命中，base 那档也一样——
+        // 两档要各自看得见，别把一档的结果算到另一档头上。
         List<ToolRetrievalEval.Score> noisy = ToolRetrievalEval.evaluate("noisy",
                 new StubToolIndex(List.of("querySales", "Read", "Grep", "Glob", "Bash")), List.of(), golds);
-        assertThat(byCategory(noisy, "no-search").recall5())
-                .as("闲聊收到候选就是噪声；判成命中的话，越乱给分越高")
-                .isZero();
         assertThat(byCategory(noisy, "business").recall1())
                 .as("同一份题、不同索引，两档的差别要各自看得见")
                 .isEqualTo(1.0);
+        assertThat(byCategory(noisy, "base").recall5())
+                .as("Grep 排在第 3 位：@5 命中、@1 不中——两档分开报要能体现出这个差别")
+                .isEqualTo(1.0);
+        assertThat(byCategory(noisy, "base").recall1()).isZero();
     }
 
     @Test
-    @DisplayName("真题库能加载：20 条以上、四类齐全、id 不重复")
+    @DisplayName("真题库能加载：20 条以上、三类齐全、id 不重复")
     void goldFileLoads() throws IOException {
         List<ToolGold> golds = loadGold();
         assertThat(golds).as("第一版按 20 条起，够看出差别、又不至于写一天").hasSizeGreaterThanOrEqualTo(20);
@@ -124,7 +126,7 @@ class ToolGoldTest {
             assertThat(ids.add(gold.id())).as("id 重复会让报告里两条题混成一条：" + gold.id()).isTrue();
         }
         assertThat(categories)
-                .as("四类缺一类，就等于那个失效模式没人看：基座 / 业务 / 中文问英文 / 不该检索")
+                .as("三类缺一类，就等于那个失效模式没人看：基座 / 业务 / 中文问英文")
                 .containsExactlyInAnyOrderElementsOf(ToolGold.CATEGORIES);
     }
 
@@ -165,24 +167,6 @@ class ToolGoldTest {
 
         assertThat(count)
                 .as("基座工具常驻、掉分不影响线上，但它是「索引还能不能工作」的底线，4 题撑不起这个判断")
-                .isGreaterThanOrEqualTo(10);
-    }
-
-    /**
-     * 票 18 之前这一档只有 2 题：零候选率 0.500 就是**一题**说了算。
-     *
-     * <p>它的判据是"给了候选就算错"，所以题少的时候最坏：单题翻转直接让这个数从 0.5 跳到 1.0，
-     * 而读报告的人只会看到"零候选率掉了 50%"。10 题把一格压到 0.10。
-     */
-    @Test
-    @DisplayName("no-search 至少 10 题：2 题时零候选率就是一题说了算")
-    void noSearchHasEnoughQuestions() throws IOException {
-        long count = loadGold().stream()
-                .filter(gold -> gold.category().equals("no-search"))
-                .count();
-
-        assertThat(count)
-                .as("这一档判「不该给候选」，题少的时候单题翻转就会让占比跳一半")
                 .isGreaterThanOrEqualTo(10);
     }
 

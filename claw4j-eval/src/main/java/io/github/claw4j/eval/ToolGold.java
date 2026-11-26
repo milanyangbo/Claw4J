@@ -12,14 +12,16 @@ import java.util.Set;
  * 要处理跨块），这边判"工具名在不在前 k"——工具名是稳定的标识符，不需要锚点，也不存在跨块。
  * 合成一份会得到一个既绑句子又绑名字的记录，两种判据都不是它。
  *
- * <p><b>{@code goldTools} 允许为空</b>：那是"不该检索"的题（"你好""谢谢"）。空不是"没写"，
- * 是一个有意义的取值——索引给出任何候选都算噪声。为了不把这两件事混起来，空列表按"期望零候选"
- * 统计，进单独那一类，不进 recall 的平均。
+ * <p><b>{@code goldTools} 不能为空</b>：每条题都必须指明期望翻到哪个（哪几个）工具。
+ * 2026-11-26（票 22）之前空列表表示"不该检索"（"你好""谢谢"），那一档随
+ * {@code ChitchatToolIndex} 一起撤了：判"这一轮该不该调工具"是模型的决策，归 BFCL 的
+ * {@code irrelevance} 档。所以空列表现在只剩一个含义——这条题漏写了 gold，它会让分数虚高，
+ * 当场拒掉。
  *
  * @param id         kebab-case，报告与报错靠它定位
  * @param question   问给检索器的那句话（用户真的会这么说，不点工具名）
- * @param category   分类，用来分开报分：base / business / zh-en / no-search
- * @param goldTools  期望翻到的工具名；空表示"不该有候选"
+ * @param category   分类，用来分开报分：base / business / zh-en
+ * @param goldTools  期望翻到的工具名，至少一个
  */
 public record ToolGold(String id, String question, String category, List<String> goldTools) {
 
@@ -27,7 +29,7 @@ public record ToolGold(String id, String question, String category, List<String>
     private static final Set<String> KEYS = Set.of("id", "question", "category", "gold_tools");
 
     /** 认得的分类。写错分类不会报错但会让那一档悄悄少一条题，所以在这里收口。 */
-    public static final Set<String> CATEGORIES = Set.of("base", "business", "zh-en", "no-search");
+    public static final Set<String> CATEGORIES = Set.of("base", "business", "zh-en");
 
     public ToolGold {
         id = requireText(id, "gold.id");
@@ -38,6 +40,10 @@ public record ToolGold(String id, String question, String category, List<String>
                     + "，只认 " + CATEGORIES + "：分类写错会让那一档悄悄少一条题");
         }
         goldTools = goldTools == null ? List.of() : List.copyOf(goldTools);
+        if (goldTools.isEmpty()) {
+            throw new IllegalArgumentException("gold " + id + " 没写 gold_tools：每条题都必须指明"
+                    + "期望翻到的工具（「不该检索」那类题已随票 22 撤掉，不在这份题库里）");
+        }
     }
 
     /**

@@ -94,8 +94,7 @@ public final class ToolSearch {
      *                    {@code lucene} 传 {@code null}
      * @param categories  分组规则，必填
      * @param translator  描述翻译器，两档都喂；不译时传 {@link ToolDescriptionTranslator#NONE}
-     * @return 索引，最外层是寒暄拦截（{@link ChitchatToolIndex}），里面依次是规则（配了才有）、
-     *         分组与那一档的检索实现
+     * @return 索引，最外层是规则（配了才有），里面依次是分组与那一档的检索实现
      * @throws IllegalStateException {@code index=hybrid} 但没有工具向量库
      */
     public static ToolIndex index(ToolSearchProperties properties, VectorStore vectorStore,
@@ -122,10 +121,16 @@ public final class ToolSearch {
         // 没配规则时原样返回 base：空转一层会让所有既有装配断言多包一层壳，收益是零。
         ToolIndex ranked = properties.rules().isEmpty()
                 ? base : new RuleToolIndex(base, properties.rules(), categories);
-        // 寒暄与空 query 挡在最外面：那是"该不该检索"，不是"怎么检索"。放在里面（任何一档索引里）
-        // 都会让另一档漏掉——2026-11-26 之前它就只对 `index=regex` 生效，而生产早就是 hybrid，
-        // 于是"谢谢"照样拿到五个候选，评测里那一列却一直显示 1.000。
-        return new ChitchatToolIndex(ranked);
+        // 这里只回答"怎么把 query 变成候选"，不回答"这一轮该不该检索"（票 22）。
+        // 2026-11-26 之前最外层还包着一个 ChitchatToolIndex：中文寒暄词表，删空即返回零候选。
+        // 撤掉它的三条理由，都是事实：
+        //   ① 词表与评测题互为因果——那十道 no-search 题就是照着词表写的，1.000 不证明通用性；
+        //   ② 它只认"整句由寒暄词拼成"，真正的"没有意义的对话"（含糊、试探、情绪、跑题）判不中；
+        //   ③ 意图判定不是检索。业界两条路都不放在这一层：语义路由（Semantic Router 式，
+        //      示例话语 embedding + 阈值判 off-topic）或交给模型（BFCL 的 irrelevance 档量的就是
+        //      模型该不该调）。我们选后者：检索层无条件给候选，克制的责任在模型。
+        // 空 query 也不再挡：它和寒暄是同一类判断，留一条口子就等于留下"检索层判意图"的先例。
+        return ranked;
     }
 
     /**

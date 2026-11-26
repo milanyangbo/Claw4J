@@ -1,6 +1,5 @@
 package io.github.claw4j.eval;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
@@ -47,15 +46,15 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 把检索结果导出成第三方的指标输入（票 12）：TREC qrels / run，加一份"零候选"清单。
+ * 把检索结果导出成第三方的指标输入（票 12）：TREC qrels / run，加一份分类清单。
  *
  * <p>为什么导出而不是在 Java 里算：这个仓库的既有方针是"Java 只导出、Python 侧用第三方算指标"
  * （见 {@code eval/rag/run_ragas.py} 与 Ragas）。票 09 的自研指标留着跑快速反馈，但**对外口径**
  * 交给 {@code ir_measures}——它给的是 TREC 标准的 Recall / RR / nDCG，换个人也能复算。
  *
- * <p>为什么 {@code no-search} 那两题不写进 qrels：TREC 表达不了"期望零候选"。qrels 里没有相关
- * 文档的 qid 会被跳过或记 0，而这两题的判据是"给了候选才算错"。它们单独落一份 jsonl，由
- * {@code run_ir.py} 判。
+ * <p>2026-11-26（票 22）不再导出 {@code no-search.jsonl}：那 10 道"期望零候选"的题随
+ * {@code ChitchatToolIndex} 一起撤了，判据归 BFCL 的 {@code irrelevance} 档。
+ * 检索层对任何 query 都给候选，qrels 里每条题都有自己的 gold。
  *
  * <p>手动跑：{@code ./mvnw -o -Peval -pl claw4j-eval -am test -Dtest=ToolRetrievalExportTest}。
  * 产物在 {@code eval/tools/retrieval/reports/}，不入库。
@@ -123,14 +122,6 @@ class ToolRetrievalExportTest {
     private static final List<String> CONFIGS =
             List.of("lucene", "hybrid-1.0", "hybrid-0.5", "hybrid-0.0");
 
-    /**
-     * 零候选题按哪一档量。
-     *
-     * <p>用生产在用的那一档，不用最好看的那一档：这一列问的是"用户说「谢谢」时会不会收到候选"，
-     * 答案必须来自用户实际拿到的那条路。名字与 {@code run_ir.py} 的 {@code GATE_PRIMARY} 一致。
-     */
-    private static final String NO_SEARCH_CONFIG = "hybrid-0.5";
-
     @Autowired
     private ToolCatalog catalogue;
 
@@ -152,10 +143,10 @@ class ToolRetrievalExportTest {
     private List<ToolGold> golds;
 
     /**
-     * 跑一次，写三份文件。
+     * 跑一次，把 qrels / 分类清单 / 目录 / 每档一份 run 写到 reports/。
      *
-     * <p>检索只跑一遍、三个用例共用：一档一次真 embedding，重复跑三次只会让评测从"慢"变成"很慢"，
-     * 而三个用例判的是同一批产物的不同侧面。
+     * <p>检索只跑一遍、几个用例共用：一档一次真 embedding，重复跑三次只会让评测从"慢"变成"很慢"，
+     * 而几个用例判的是同一批产物的不同侧面。
      */
     @BeforeAll
     void export() throws IOException {
@@ -185,7 +176,6 @@ class ToolRetrievalExportTest {
             this.rankings.put(config, byQid);
             writeRun(config, byQid);
         }
-        writeNoCandidate();
     }
 
     @Test
@@ -214,24 +204,15 @@ class ToolRetrievalExportTest {
     }
 
     @Test
-    @DisplayName("qrels 只写有 gold 的题；no-search 那两题不进")
-    void qrelsSkipsZeroCandidateQuestions() throws IOException {
+    @DisplayName("qrels 一条题一行，覆盖题库全部题")
+    void qrelsCoversEveryQuestion() throws IOException {
         List<String> lines = Files.readAllLines(this.reports.resolve("qrels.txt"), StandardCharsets.UTF_8);
 
-        Set<String> withGold = this.golds.stream()
-                .filter(gold -> !gold.goldTools().isEmpty())
-                .map(ToolGold::id)
-                .collect(Collectors.toSet());
-        Set<String> zeroCandidate = this.golds.stream()
-                .filter(gold -> gold.goldTools().isEmpty())
-                .map(ToolGold::id)
-                .collect(Collectors.toSet());
-
-        assertThat(lines).hasSize(withGold.size());
+        Set<String> ids = this.golds.stream().map(ToolGold::id).collect(Collectors.toSet());
+        assertThat(lines).hasSize(ids.size());
         assertThat(lines).extracting(line -> line.split(" ")[0])
-                .as("qrels 里出现零候选题时，第三方会把它们按「没检索到」算，分母就不对了")
-                .doesNotContainAnyElementsOf(zeroCandidate)
-                .containsExactlyInAnyOrderElementsOf(withGold);
+                .as("漏一条 = 分母少一题，分数会悄悄变好看")
+                .containsExactlyInAnyOrderElementsOf(ids);
     }
 
     /**
@@ -267,14 +248,13 @@ class ToolRetrievalExportTest {
     }
 
     /**
-     * 分类清单：题库里每一条都要有，且只许出现题库认的那四个值。
+     * 分类清单：题库里每一条都要有，且只许出现题库认的那几个值。
      *
-     * <p>它是给报告用的：`run_ir.py` 靠它把 qrels/run 切成四份，分别算分。所以它必须覆盖
-     * **全部**题——包括 `no-search` 那两条（它们不在 qrels 里，但报告要报它们的零候选率）。
-     * 漏一条的后果不是报错，是那一档在报告里静默消失，而人看着少了一行的表格不会发现。
+     * <p>它是给报告用的：`run_ir.py` 靠它把 qrels/run 切成一类一份，分别算分。所以它必须覆盖
+     * **全部**题。漏一条的后果不是报错，是那一档在报告里静默消失，而人看着少了一行的表格不会发现。
      */
     @Test
-    @DisplayName("分类清单覆盖题库每一条，且只出现题库认的四个值")
+    @DisplayName("分类清单覆盖题库每一条，且只出现题库认的类别")
     void categoriesCoverEveryQuestion() throws IOException {
         List<String> lines = Files.readAllLines(this.reports.resolve("categories.txt"),
                 StandardCharsets.UTF_8);
@@ -286,7 +266,7 @@ class ToolRetrievalExportTest {
         }
 
         assertThat(byQid.keySet())
-                .as("漏一条 = 报告里少一行，而人不会发现（no-search 那两条最容易漏，它们不在 qrels 里）")
+                .as("漏一条 = 报告里少一行，而人不会发现")
                 .containsExactlyInAnyOrderElementsOf(this.golds.stream().map(ToolGold::id).toList());
         assertThat(byQid.values())
                 .as("分类打错一个字，那一档就静默消失")
@@ -352,28 +332,6 @@ class ToolRetrievalExportTest {
                 .contains("github_issue_list", "github_pr_checks", "mail_list_unread", "mail_send");
     }
 
-    @Test
-    @DisplayName("零候选题单独落一份，带实际候选数")
-    void zeroCandidateQuestionsGoToTheirOwnFile() throws IOException {
-        List<String> lines = Files.readAllLines(this.reports.resolve("no-search.jsonl"),
-                StandardCharsets.UTF_8);
-        List<Map<String, Object>> rows = new ArrayList<>();
-        ObjectMapper mapper = new ObjectMapper();
-        for (String line : lines) {
-            rows.add(mapper.readValue(line, Map.class));
-        }
-
-        Set<String> zeroCandidate = this.golds.stream()
-                .filter(gold -> gold.goldTools().isEmpty())
-                .map(ToolGold::id)
-                .collect(Collectors.toSet());
-        assertThat(rows).extracting(row -> row.get("qid"))
-                .containsExactlyInAnyOrderElementsOf(zeroCandidate);
-        assertThat(rows).allSatisfy(row -> assertThat(row.get("returned"))
-                .as("actual 候选数必须写上：判据是「必须为 0」，写死 0 就永远通过")
-                .isEqualTo(this.rankings.get(NO_SEARCH_CONFIG).get((String) row.get("qid")).size()));
-    }
-
     /**
      * qrels：一条题一行，相关性固定 1。
      *
@@ -436,28 +394,6 @@ class ToolRetrievalExportTest {
             text.append(tool.toolName()).append('\n');
         }
         Files.writeString(this.reports.resolve("catalogue.txt"), text.toString(), StandardCharsets.UTF_8);
-    }
-
-    /**
-     * 零候选题：qid + 实际给了几个候选 + 给了哪几个。
-     *
-     * <p>带工具名是因为排障要看"谁挤进来的"，而指标只记个数。
-     */
-    private void writeNoCandidate() throws IOException {
-        ObjectMapper mapper = new ObjectMapper();
-        StringBuilder text = new StringBuilder();
-        for (ToolGold gold : this.golds) {
-            if (!gold.goldTools().isEmpty()) {
-                continue;
-            }
-            List<String> got = this.rankings.get(NO_SEARCH_CONFIG).get(gold.id());
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("qid", gold.id());
-            row.put("returned", got.size());
-            row.put("tools", got);
-            text.append(mapper.writeValueAsString(row)).append('\n');
-        }
-        Files.writeString(this.reports.resolve("no-search.jsonl"), text.toString(), StandardCharsets.UTF_8);
     }
 
     /** 只有 lucene 走这条（不要向量库）；与快照那份同一套构造。 */

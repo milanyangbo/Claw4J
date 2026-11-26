@@ -2,7 +2,6 @@ package io.github.claw4j.agent;
 
 import io.github.claw4j.agent.observability.MeteredToolIndex;
 import io.github.claw4j.agent.toolaccess.HybridToolIndex;
-import io.github.claw4j.agent.toolaccess.ChitchatToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
 import io.github.claw4j.agent.toolaccess.TranslatedVectorIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
@@ -433,19 +432,16 @@ class ModelAndToolSelectionTest {
     }
 
 
-    /** 分组那层统一在最里面，验"选哪一档"时要先剥掉它。 */
     /**
      * 剥掉"包在检索外面的那几层"，剩下真正干活的索引。
      *
-     * <p>循环而不是写死一层：寒暄拦截、规则、分组是三个独立决定，配不配都可能少一层。
+     * <p>循环而不是写死一层：规则与分组是两个独立决定，配不配都可能少一层。
      * 断"里面是谁"的用例只关心最里那层，逐层写死会让每个新包装都改一次这些断言。
      */
     private static ToolIndex inner(ToolIndex index) {
         ToolIndex current = index;
         while (true) {
-            if (current instanceof ChitchatToolIndex chitchat) {
-                current = chitchat.delegate();
-            } else if (current instanceof RuleToolIndex rule) {
+            if (current instanceof RuleToolIndex rule) {
                 current = rule.delegate();
             } else if (current instanceof NamespacedToolIndex namespaced) {
                 current = namespaced.delegate();
@@ -535,19 +531,11 @@ class ModelAndToolSelectionTest {
                 .as("空格分隔的关键词仍然命中同一个工具")
                 .contains("recall_session");
 
-        // 三、空 query 与整句寒暄都不给候选。前者若落了 .* 或向量的"永远给前 k 个"兜底，
-        //     模型随便发个空查询就把渐进式披露静默关掉；后者是用户"说谢谢"却看到五个工具。
-        //     两条都不是"检索不准"，是"压根不该检索"。
-        assertThat(foundTools(index, "chat-1", ""))
-                .as("空查询一个工具都不给").isEmpty();
-        assertThat(foundTools(index, "chat-1", "   "))
-                .as("全是空白的查询同样一个都不给").isEmpty();
-        assertThat(foundTools(index, "chat-1", "谢谢，明白了"))
-                .as("整句只是道谢时不给候选：给了模型就会去查点东西")
-                .isEmpty();
-        assertThat(foundTools(index, "chat-1", "那就这样吧，回头聊"))
-                .as("换一批寒暄词同样不给：判定按词表逐段删空，不按固定短语")
-                .isEmpty();
+        // 三、检索层不再判"这一轮该不该检索"（票 22）。寒暄、空 query 都照常走这一档，
+        //     原来那四条"一个候选都不给"的断言随 ChitchatToolIndex 一起删了：那是意图判定，
+        //     不是检索；克制的责任在模型（BFCL irrelevance 那 240 题量的就是它）。
+        //     刻意不在这里补一条"提示词不许提寒暄"的断言——反过来的措辞（"闲聊不必检索"）
+        //     正是交给模型那条路要写的话，挡它等于挡正确改动。
 
         // 四、提示词不能还教模型绕一个已不存在的限制。
         assertThat(ToolSearch.SYSTEM_SUFFIX)
@@ -996,10 +984,7 @@ class ModelAndToolSelectionTest {
 
         ToolIndex index = ToolSearch.index(properties, null, categories, ToolDescriptionTranslator.NONE);
         assertThat(index)
-                .as("最外层是寒暄拦截：该不该检索先于怎么检索")
-                .isInstanceOf(ChitchatToolIndex.class);
-        assertThat(((ChitchatToolIndex) index).delegate())
-                .as("规则层紧贴在里面；它在检索外面，命中才不会被融合重排")
+                .as("配了规则时最外层就是规则层：它在检索外面，命中才不会被融合重排")
                 .isInstanceOf(RuleToolIndex.class);
 
         index.indexTools("chat-1", List.of(
