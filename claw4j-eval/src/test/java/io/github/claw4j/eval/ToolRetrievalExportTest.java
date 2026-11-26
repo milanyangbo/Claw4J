@@ -138,6 +138,8 @@ class ToolRetrievalExportTest {
                 .toList();
 
         writeQrels();
+        writeCategories();
+        writeCatalogue(tools);
         for (String config : CONFIGS) {
             // hybrid 的三档要现场建向量库；前三档传 null。分派写在这里而不是 index() 里，
             // 是因为 hybrid 需要 jdbc 与 embedding，那是这个类的状态，不是那个纯函数的事。
@@ -234,6 +236,33 @@ class ToolRetrievalExportTest {
                 .isEmpty();
     }
 
+    /**
+     * 分类清单：题库里每一条都要有，且只许出现题库认的那四个值。
+     *
+     * <p>它是给报告用的：`run_ir.py` 靠它把 qrels/run 切成四份，分别算分。所以它必须覆盖
+     * **全部**题——包括 `no-search` 那两条（它们不在 qrels 里，但报告要报它们的零候选率）。
+     * 漏一条的后果不是报错，是那一档在报告里静默消失，而人看着少了一行的表格不会发现。
+     */
+    @Test
+    @DisplayName("分类清单覆盖题库每一条，且只出现题库认的四个值")
+    void categoriesCoverEveryQuestion() throws IOException {
+        List<String> lines = Files.readAllLines(this.reports.resolve("categories.txt"),
+                StandardCharsets.UTF_8);
+        Map<String, String> byQid = new LinkedHashMap<>();
+        for (String line : lines) {
+            String[] parts = line.split("\t");
+            assertThat(parts).as("一行必须是 qid<TAB>category：" + line).hasSize(2);
+            byQid.put(parts[0], parts[1]);
+        }
+
+        assertThat(byQid.keySet())
+                .as("漏一条 = 报告里少一行，而人不会发现（no-search 那两条最容易漏，它们不在 qrels 里）")
+                .containsExactlyInAnyOrderElementsOf(this.golds.stream().map(ToolGold::id).toList());
+        assertThat(byQid.values())
+                .as("分类打错一个字，那一档就静默消失")
+                .allSatisfy(category -> assertThat(ToolGold.CATEGORIES).contains(category));
+    }
+
     @Test
     @DisplayName("零候选题单独落一份，带实际候选数")
     void zeroCandidateQuestionsGoToTheirOwnFile() throws IOException {
@@ -288,6 +317,36 @@ class ToolRetrievalExportTest {
             }
         }
         Files.writeString(this.reports.resolve(config + ".run"), text.toString(), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 分类清单：{@code qid<TAB>category}，题库里每一条都要有。
+     *
+     * <p>为什么由 Java 写而不是让 Python 去读 {@code gold.yaml}：分类只有一份真相，它在这边
+     * （{@link ToolGold#CATEGORIES}）。让 Python 也解析一遍，等于给它一份会漂的副本，而"两边
+     * 分类不一致"这种错在报告上表现为"某一档数字不对"，最难查。代价是多一个文件、多一个依赖
+     * 也没有——{@code pyyaml} 不用装了。
+     */
+    private void writeCategories() throws IOException {
+        StringBuilder text = new StringBuilder();
+        for (ToolGold gold : this.golds) {
+            text.append(gold.id()).append('\t').append(gold.category()).append('\n');
+        }
+        Files.writeString(this.reports.resolve("categories.txt"), text.toString(), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 目录清单：一行一个工具名，就是这一轮索引里那些。
+     *
+     * <p>报告里那句"工具目录 N 个"要有个出处；顺带排障时能一眼看出"某个工具到底装没装上"
+     * （票 13 的两批死题就是这类问题的产物）。
+     */
+    private void writeCatalogue(List<ToolReference> tools) throws IOException {
+        StringBuilder text = new StringBuilder();
+        for (ToolReference tool : tools) {
+            text.append(tool.toolName()).append('\n');
+        }
+        Files.writeString(this.reports.resolve("catalogue.txt"), text.toString(), StandardCharsets.UTF_8);
     }
 
     /**

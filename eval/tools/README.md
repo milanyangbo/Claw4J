@@ -38,12 +38,20 @@
 | `reports/qrels.txt` | Java `ToolRetrievalExportTest` | `<qid> 0 <tool> 1`，36 行（每题一个 gold） |
 | `reports/<config>.run` | 同上 | TREC run：`qid Q0 docno rank score runid`，rank 就是检索给的顺序 |
 | `reports/no-search.jsonl` | 同上 | `{"qid":…, "returned":n, "tools":[…]}`，两行 |
+| `reports/categories.txt` | 同上 | `qid<TAB>category`，38 行——报告「按分类」那一节的唯一数据源 |
+| `reports/catalogue.txt` | 同上 | 一行一个工具名，就是这一轮索引里那些（19 行）；排障时看"某个工具装上了没" |
 | `reports/score.json` | `run_ir.py` | 机器读的分数 |
-| `reports/report.md` | `run_ir.py` | 人读的报告 + 判定 |
+| `reports/report.md` | `run_ir.py` | 人读的报告：测了什么 / 指标怎么读 / 每档配置是什么 / 按分类 / 怎么算达标 / 已知噪声 |
 | `baseline.json` | `run_ir.py --update-baseline` | 上次被接受的版本 |
 
 **`no-search` 为什么不进 qrels**：TREC 表达不了"期望零候选"。qrels 里没有相关文档的 qid 会被
 跳过或记 0，而这两题的判据是"给了候选才算错"。所以它们单独一份、单独判。
+
+## 报告怎么读
+
+`reports/report.md` 是给人看的，自带四节：**测了什么**、**五个指标各是什么意思**（含算例）、
+**每档配置是什么**（`hybrid-0.5` 的 0.5 是关键字那一路的权重）、**怎么算达标**（门槛与退出码）。
+下面这张表是同一件事的压缩版，报告里那份才是完整的。
 
 ## 列
 
@@ -106,8 +114,9 @@ regex            0.000      0.100     0.033          0.750
 0.600。旧题库里这一档是 0.60 对 0.20，看着"差三倍"；换成 20 道真正的"中文问英文描述"之后是
 **0.60 对 0.10**，差别比旧数字大得多——因为旧的那 5 道里有 3 道在测中文问中文。
 
-分档表的算法：按 `gold.yaml` 的分类把 qrels 与 run 各切一份，再喂 `ir_measures.calc_aggregate`
-（`run_ir.py` 只出总表，分档是手算的，命令见票 13 的收票记录）。
+分档表现在由 `run_ir.py` 自己出（票 15）：分类来自 `reports/categories.txt`（Java 导出），
+按分类把 qrels 与 run 各切一份再喂 `ir_measures.calc_aggregate`——仍然只有 `ir_measures` 一家
+在算分，切片只决定"哪些题进这一档"。
 
 **向量档的 `R@1` / `R@3` 会漂，`R@5` 不会**：同一份代码连跑三次，`hybrid-0.0` 的 `R@1` 是
 0.333 / 0.389 / 0.389、`R@3` 是 0.556 / 0.500 / 0.444，而 **`R@5` 三次都是 0.667**（那还是旧题库）。
