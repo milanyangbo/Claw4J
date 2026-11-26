@@ -35,6 +35,19 @@ import static org.assertj.core.api.Assertions.offset;
  */
 class ToolGoldTest {
 
+    /**
+     * 描述是英文的工具（2026-11-26 逐个打印核实）。
+     *
+     * <p>{@code Task} 名字像英文，描述其实是中文（"把一个需要好几步的任务交给专职 Subagent…"），
+     * 所以它不在名单里；反过来 {@code BashOutput} / {@code KillShell} 名字带大写，描述也是英文。
+     *
+     * <p>这份名单与 {@code ToolCatalog} 会漂：工具换了描述、或新加了工具，这里要跟着改——这正是
+     * 一条数据用例的定位，它挡的是"分类放错"，不是"工具变了"。
+     */
+    private static final Set<String> ENGLISH_DESCRIPTION_TOOLS = Set.of(
+            "AskUserQuestionTool", "TaskOutput", "Skill", "TodoWrite", "BashOutput", "KillShell",
+            "WebFetch", "Read", "Grep", "Glob", "Bash");
+
     @Test
     @DisplayName("题面严格校验：不认识的键、不认识的分类、空问题都当场报")
     void rejectsBadEntries() {
@@ -113,6 +126,74 @@ class ToolGoldTest {
         assertThat(categories)
                 .as("四类缺一类，就等于那个失效模式没人看：基座 / 业务 / 中文问英文 / 不该检索")
                 .containsExactlyInAnyOrderElementsOf(ToolGold.CATEGORIES);
+    }
+
+    /**
+     * 这一档要够厚：一格题的分值就是 1/题数，稀了之后任何真实收益都淹没在量化误差里。
+     *
+     * <p>5 题时一格 0.20，而票 12 的 `TOLERANCE` 是 0.05——判据本身比噪声还粗，那一档的分数
+     * 怎么读都是错的。20 题把它压到 0.05，与回归门同一个量级。
+     */
+    @Test
+    @DisplayName("zh-en 至少 20 题：5 题时一格就是 0.20，比回归门的容差还粗")
+    void zhEnHasEnoughQuestions() throws IOException {
+        long count = loadGold().stream()
+                .filter(gold -> gold.category().equals("zh-en"))
+                .count();
+
+        assertThat(count)
+                .as("zh-en 是唯一能判「中文化值不值」的一档，它的题量决定了那个判断的分辨率")
+                .isGreaterThanOrEqualTo(20);
+    }
+
+    /**
+     * 这一档的定义是**中文问法 × 英文描述**，gold 必须落在英文描述那一组里。
+     *
+     * <p>2026-11-26 发现的问题：原来 5 道里有 3 道的 gold（`systemStatus` / `recall_session` /
+     * `intent`）描述本来就是中文，测的是"中文问中文"——一件更容易的事。那 0.60 的 R@1 之所以
+     * 不难看，一部分原因就在这里，而不是检索好。
+     *
+     * <p>名单是常量而不是从工具目录现算：从目录算的话，把描述全中文化之后这条永远通过，
+     * 而"这一档还测不测得到跨语言"这件事就没人回答了。工具描述真改了要人来改这份名单。
+     */
+    @Test
+    @DisplayName("zh-en 只能指向英文描述的工具：gold 落在中文那组时，这一档测的是更容易的事")
+    void zhEnOnlyTargetsEnglishDescriptions() throws IOException {
+        for (ToolGold gold : loadGold()) {
+            if (!gold.category().equals("zh-en")) {
+                continue;
+            }
+            assertThat(gold.goldTools())
+                    .as("这一档的 gold 必须是描述为英文的工具（中文描述的那几个归 business）：" + gold.id())
+                    .isNotEmpty()
+                    .allSatisfy(tool -> assertThat(ENGLISH_DESCRIPTION_TOOLS)
+                            .as("「%s」的描述是中文，放 zh-en 档会让这一档的分数虚高", tool)
+                            .contains(tool));
+        }
+    }
+
+    /**
+     * 空手不是命中：有 gold 的题检索返回空，必须记 0 分。
+     *
+     * <p>2026-11-26 发现的原实现：`noCandidate`（一个候选都没给）被当成了"命中"，不区分这题
+     * **该不该有候选**。于是最坏的失效——索引一个字都没返回——拿了满分：`regex` 下 20 道
+     * `zh-en` 里有 3 道返回空，就被记成 R@1 = 0.150，而第三方口径（TREC）同一批是 0.000。
+     *
+     * <p>这个方向的错特别坏：它奖励"查不到任何东西"，并且只在坏的时候生效——好配置上看不出来。
+     */
+    @Test
+    @DisplayName("空手不算命中：有 gold 的题返回空，R@1/R@5/MRR 全是 0")
+    void emptyResultIsNotAHit() {
+        List<ToolGold> golds = List.of(new ToolGold("t-1", "这个网址写了什么", "zh-en", List.of("WebFetch")));
+
+        ToolRetrievalEval.Score blind = ToolRetrievalEval.evaluate("blind",
+                new StubToolIndex(List.of()), List.of(), golds).getFirst();
+
+        assertThat(blind.recall1()).isZero();
+        assertThat(blind.recall5()).isZero();
+        assertThat(blind.mrr())
+                .as("零候选只对「不该给候选」的题算命中；有 gold 的题返回空是最坏的失效")
+                .isZero();
     }
 
     private static ToolRetrievalEval.Score byCategory(List<ToolRetrievalEval.Score> scores, String category) {

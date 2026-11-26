@@ -111,38 +111,47 @@ public final class ToolRetrievalEval {
     /**
      * 一条题的命中情况。
      *
-     * @param rank       第一个 gold 工具的名次；0 表示前 5 里没有
-     * @param noCandidate 是否一个候选都没给（给空的 gold 用）
+     * @param rank      第一个 gold 工具的名次；0 表示前 5 里没有
+     * @param goldEmpty 这题是否"不该有候选"（题库里 {@code gold_tools: []}）
+     * @param noCandidate 这一次检索是否一个候选都没给
      */
-    private record Hits(int rank, boolean noCandidate) {
+    private record Hits(int rank, boolean goldEmpty, boolean noCandidate) {
 
         static Hits of(ToolGold gold, List<String> got) {
+            boolean empty = got.isEmpty();
             if (gold.goldTools().isEmpty()) {
                 // 空的 gold = 不该有候选。有候选就是噪声，名次记 0，与"没翻到"同一个结果。
-                return new Hits(0, got.isEmpty());
+                return new Hits(0, true, empty);
             }
             for (int i = 0; i < got.size(); i++) {
                 if (gold.goldTools().contains(got.get(i))) {
-                    return new Hits(i + 1, got.isEmpty());
+                    return new Hits(i + 1, false, empty);
                 }
             }
-            return new Hits(0, got.isEmpty());
+            return new Hits(0, false, empty);
         }
 
         boolean within(int k) {
             return this.rank > 0 && this.rank <= k;
         }
 
-        /** 零候选的题按"命中"记：它的判据就是别给候选；给了候选则怎么都算没中。 */
+        /**
+         * 命中与否。
+         *
+         * <p>「零候选」只在**这题本来就不该有候选**时才算命中。原来的实现是
+         * {@code noCandidate || within(k)}——不看 {@code goldEmpty}，于是"索引一个字都没返回"
+         * 这个最坏的失效拿了满分，而且只在坏的时候生效（好配置上看不出来）。2026-11-26 发现：
+         * `regex` 下 20 道 `zh-en` 里有 3 道返回空，自研记成 R@1 0.150，第三方口径是 0.000。
+         */
         boolean matched(int k) {
-            return this.noCandidate || within(k);
+            return this.goldEmpty ? this.noCandidate : within(k);
         }
 
         double reciprocalRank() {
             if (this.rank > 0) {
                 return 1.0 / this.rank;
             }
-            return this.noCandidate ? 1.0 : 0.0;
+            return this.goldEmpty && this.noCandidate ? 1.0 : 0.0;
         }
     }
 

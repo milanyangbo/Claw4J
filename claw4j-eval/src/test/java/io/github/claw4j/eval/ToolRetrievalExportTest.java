@@ -202,6 +202,38 @@ class ToolRetrievalExportTest {
                 .containsExactlyInAnyOrderElementsOf(withGold);
     }
 
+    /**
+     * qrels 里出现的每个工具名，都必须在当轮的工具目录里。
+     *
+     * <p>抓的是"题写错工具名"：原来 `tools-memory-preference` 的 gold 是 `MemoryView`，而目录里没有
+     * 这个工具——那题**永远 miss**，`zh-en` 的 R@1 白扣一格，而报告上看着像"检索不好"。
+     * `ToolGoldTest` 只校验格式，抓不到这类错：`MemoryView` 是个完全合法的工具名形状。
+     *
+     * <p>为什么放在这条 `@Tag("eval")` 的手跑通道里：只有这一条能同时看到真题库与真目录
+     * （目录是条件装配与画像过滤之后的结果，不是代码里写死的那份名单）。
+     */
+    @Test
+    @DisplayName("qrels 里的工具名都在当轮目录里：写错名字的题永远 miss，报告上却像检索不好")
+    void everyGoldToolExistsInCatalogue() {
+        Set<String> available = this.catalogue.tools().stream()
+                .map(callback -> callback.getToolDefinition().name())
+                .collect(Collectors.toSet());
+
+        Map<String, List<String>> unknown = new LinkedHashMap<>();
+        for (ToolGold gold : this.golds) {
+            List<String> missing = gold.goldTools().stream()
+                    .filter(tool -> !available.contains(tool))
+                    .toList();
+            if (!missing.isEmpty()) {
+                unknown.put(gold.id(), missing);
+            }
+        }
+
+        assertThat(unknown)
+                .as("这些题的 gold 不在当轮目录里（现有 %d 个工具），它们永远 miss", available.size())
+                .isEmpty();
+    }
+
     @Test
     @DisplayName("零候选题单独落一份，带实际候选数")
     void zeroCandidateQuestionsGoToTheirOwnFile() throws IOException {

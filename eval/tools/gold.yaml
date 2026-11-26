@@ -48,26 +48,6 @@
   category: business
   gold_tools: [querySales]
 
-- id: tools-mail-unread
-  question: 我还有哪些没读的邮件？
-  category: business
-  gold_tools: [mail_list_unread]
-
-- id: tools-mail-send
-  question: 给张三发个邮件，说交付延期两天
-  category: business
-  gold_tools: [mail_send]
-
-- id: tools-github-issues
-  question: 仓库里还有哪些没关的 issue？
-  category: business
-  gold_tools: [github_issue_list]
-
-- id: tools-github-pr-ci
-  question: 这个 PR 的流水线过了没有？
-  category: business
-  gold_tools: [github_pr_checks]
-
 - id: tools-schedule-daily
   question: 每天早上九点提醒我看销售日报
   category: business
@@ -78,37 +58,185 @@
   category: business
   gold_tools: [list_schedules]
 
+# 下面四道原来指向 mail_* / github_*，2026-11-26 的目录断言发现它们**不在当轮目录里**
+# （那些工具随 MCP 装配，评测上下文没接 MCP），所以这四题永远 miss，把 business 这一档
+# 白扣 4/12。换成指向现有业务工具、但换一种问法：这一档要测的是"中文问中文描述找不找得到"，
+# 不是"某个部署有没有装 MCP"。等评测上下文接了 MCP，这四道原题可以按缺口补回来。
+
+- id: tools-sales-detail
+  question: 查一下这个月华东的订单明细
+  category: business
+  gold_tools: [querySales]
+
+- id: tools-schedule-daily-only
+  question: 我设的定时任务里，哪几个是每天跑的？
+  category: business
+  gold_tools: [list_schedules]
+
+- id: tools-schedule-stop-one
+  question: 不用每天早上提醒了，撤掉它
+  category: business
+  gold_tools: [cancel_schedule]
+
+- id: tools-recall-decision
+  question: 我们上次定的方案最后选了哪个？
+  category: business
+  gold_tools: [recall_session]
+
 - id: tools-schedule-cancel
   question: 把刚才那个提醒取消掉
   category: business
   gold_tools: [cancel_schedule]
 
+# 下面三道原来挂在 zh-en，2026-11-26 逐个打印描述后发现它们的工具描述本来就是中文
+# （systemStatus / recall_session / intent 都是平台自研的），测的是"中文问中文"——
+# 一件更容易的事。放在 zh-en 会让那一档的分数虚高，所以归 business。
+
+- id: tools-system-status
+  question: 你现在用的什么模型、跑在哪个版本？
+  category: business
+  gold_tools: [systemStatus]
+
+- id: tools-recall-previous
+  question: 上次咱们说的那个口径是什么来着？
+  category: business
+  gold_tools: [recall_session]
+
+- id: tools-intent-remind
+  question: 客户数超过一万的时候提醒我
+  category: business
+  gold_tools: [intent]
+
 # ---------------------------------------------------------------- zh-en（中文问、描述是英文）
+#
+# 出题三条硬规矩（2026-11-26，票 13）：
+#
+#   1. 不点工具名、也不出现工具名里的英文词——否则关键字那一路白送分，测的就不是跨语言。
+#   2. 干扰项必须同域：问"读文件"要与 Grep/Glob 争，问"后台命令"要与 Bash/BashOutput/KillShell 争；
+#      拿 querySales 当干扰项的题测不出任何东西。
+#   3. 每题一个 gold。多 gold 会让 ir_measures 的 R@k 变成"覆盖比例"，与自研的"命中任一"
+#      分道扬镳——要统一口径是另一件事。
+#
+# 能出这一档的工具，由**描述语言**决定（见 ToolGoldTest#ENGLISH_DESCRIPTION_TOOLS）：
+#   AskUserQuestionTool TaskOutput Skill TodoWrite BashOutput KillShell WebFetch
+#   Read Grep Glob Bash
+# 中文描述的那批（recall_session Task intent schedule_* systemStatus querySales）出不了；
+# Task 名字像英文，描述其实是中文。
+#
+# base 档已经覆盖 Glob/Grep/Read/Bash，所以这里集中在长尾六个（各三种问法）+ 一道 WebFetch 变体。
+# 三种问法是刻意的：同一件事换三种说法，能看出"检索靠不靠某一个词"，而单题只能给 0/1。
 
 - id: tools-webfetch-address
   question: 这个地址写了什么？https://example.com
   category: zh-en
   gold_tools: [WebFetch]
 
-- id: tools-system-status
-  question: 你现在用的什么模型、跑在哪个版本？
+- id: tools-webfetch-body
+  question: 帮我把这个网址的正文抓下来 https://example.com
   category: zh-en
-  gold_tools: [systemStatus]
+  gold_tools: [WebFetch]
 
-- id: tools-recall-previous
-  question: 上次咱们说的那个口径是什么来着？
-  category: zh-en
-  gold_tools: [recall_session]
+# -- 让人先问清楚，别自己猜（AskUserQuestionTool）
 
-- id: tools-memory-preference
-  question: 你记得我偏好什么吗？
+- id: tools-ask-style
+  question: 动手之前先问清楚我要哪种风格
   category: zh-en
-  gold_tools: [MemoryView]
+  gold_tools: [AskUserQuestionTool]
 
-- id: tools-intent-remind
-  question: 客户数超过一万的时候提醒我
+- id: tools-ask-choose
+  question: 这几个方案我拿不定主意，让我自己挑一个
   category: zh-en
-  gold_tools: [intent]
+  gold_tools: [AskUserQuestionTool]
+
+- id: tools-ask-no-guess
+  question: 不确定的事先问我，别自己猜
+  category: zh-en
+  gold_tools: [AskUserQuestionTool]
+
+# -- 派出去那件事的回音（TaskOutput；与 Task 同域干扰）
+
+- id: tools-task-output-ready
+  question: 刚才派出去那件事有结果了吗
+  category: zh-en
+  gold_tools: [TaskOutput]
+
+- id: tools-task-output-progress
+  question: 那个子任务现在跑到哪一步了
+  category: zh-en
+  gold_tools: [TaskOutput]
+
+- id: tools-task-output-give-me
+  question: 把刚才那件事的返回给我看看
+  category: zh-en
+  gold_tools: [TaskOutput]
+
+# -- 现成的做法直接调（Skill）
+
+- id: tools-skill-convert
+  question: 有现成的技能就直接用，把这份 PDF 转成文字
+  category: zh-en
+  gold_tools: [Skill]
+
+- id: tools-skill-follow-steps
+  question: 按技能说明把这件事走一遍
+  category: zh-en
+  gold_tools: [Skill]
+
+- id: tools-skill-exists
+  question: 这活儿应该有专门的做法，照着执行
+  category: zh-en
+  gold_tools: [Skill]
+
+# -- 记成清单、做完划掉（TodoWrite）
+
+- id: tools-todo-checklist
+  question: 把这几步记成清单，做完一项划掉一项
+  category: zh-en
+  gold_tools: [TodoWrite]
+
+- id: tools-todo-mark-done
+  question: 列个待办，做完的打上已完成
+  category: zh-en
+  gold_tools: [TodoWrite]
+
+- id: tools-todo-three-steps
+  question: 分三步做，先记下来免得漏
+  category: zh-en
+  gold_tools: [TodoWrite]
+
+# -- 挂后台那条命令的回显（BashOutput；与 Bash / KillShell 同域干扰）
+
+- id: tools-bash-output-where
+  question: 刚才挂后台那条命令打到哪了
+  category: zh-en
+  gold_tools: [BashOutput]
+
+- id: tools-bash-output-printed
+  question: 那个进程打印了什么
+  category: zh-en
+  gold_tools: [BashOutput]
+
+- id: tools-bash-output-partial
+  question: 没跑完的那条命令有回显吗
+  category: zh-en
+  gold_tools: [BashOutput]
+
+# -- 掐掉停不下来的那个（KillShell）
+
+- id: tools-kill-stop
+  question: 把那个停不下来的命令掐掉
+  category: zh-en
+  gold_tools: [KillShell]
+
+- id: tools-kill-terminate
+  question: 终止挂在后台的那个进程
+  category: zh-en
+  gold_tools: [KillShell]
+
+- id: tools-kill-no-wait
+  question: 跑太久了，不用等了，结束它
+  category: zh-en
+  gold_tools: [KillShell]
 
 # ---------------------------------------------------------------- no-search（不该给候选）
 
