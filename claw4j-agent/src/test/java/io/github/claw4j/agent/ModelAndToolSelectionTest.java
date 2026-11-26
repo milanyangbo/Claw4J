@@ -59,6 +59,7 @@ import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.tool.toolsearch.index.vectorstore.VectorToolIndex;
 import org.springframework.ai.tool.toolsearch.index.lucene.LuceneToolIndex;
@@ -1038,6 +1039,52 @@ class ModelAndToolSelectionTest {
         }
     }
 
+    /**
+     * 只记读写、不连库的 JdbcTemplate。
+     *
+     * <p>落表这件事要在单测里可验，而为一个"几十行 SQL"的行为拉一个 Postgres 不值得
+     * （容器起一次 20 秒，还要维护一份与迁移脚本同步的表结构）。这里只关心
+     * "存了什么、读到没有、失败时退到哪"，SQL 本身由真机与迁移脚本保证。
+     */
+    private static final class FakeDescriptionTable extends JdbcTemplate {
+
+        private volatile boolean broken;
+
+        // 键是工具名，值里带 hash：这样才与 SQL 的 primary key (tool_name) 一致。
+        // 按 "名字|hash" 记会假装 on conflict 不存在，于是"改了描述"那条断言看起来通过了、
+        // 实际上表里越攒越多。
+        private final Map<String, String[]> byName = new java.util.concurrent.ConcurrentHashMap<>();
+
+        @Override
+        public <T> List<T> queryForList(String sql, Class<T> elementType, Object... args) {
+            if (this.broken) {
+                throw new org.springframework.dao.DataAccessResourceFailureException("表没了");
+            }
+            String[] row = this.byName.get((String) args[0]);
+            if (row == null || !row[0].equals(args[1])) {
+                return List.of();
+            }
+            return List.of(elementType.cast(row[1]));
+        }
+
+        @Override
+        public int update(String sql, Object... args) {
+            if (this.broken) {
+                throw new org.springframework.dao.DataAccessResourceFailureException("表没了");
+            }
+            this.byName.put((String) args[0], new String[] {(String) args[1], (String) args[3]});
+            return 1;
+        }
+
+        void breakIt() {
+            this.broken = true;
+        }
+
+        int rows() {
+            return this.byName.size();
+        }
+    }
+
     /** 只记"入库时收到了什么"的索引：两翼的文本差别是票 11 修正的核心，得看得见。 */
     private static final class RecordingIndex implements ToolIndex {
 
@@ -1075,47 +1122,35 @@ class ModelAndToolSelectionTest {
     // ------------------------------------------------------------ 描述本地化（票 11）
 
     /**
-     * 不翻的两种情况：开关关着、名字不在名单里。
+     * 中文化的作用域与退化：开关、名单、两翼文本、已有中文、译失败。
      *
-     * <p>两种都要断言"一次模型调用都没发生"：关着还在调，等于为一个不生效的开关付钱；
-     * 名单外还在调，等于名单没生效而报告上看不出来。
+     * <p>五段合成一条不是"一条测五件事"：同一个入口（`translateReferences`）、同一种断言
+     * （模型被调用了几次 / 入库文本是哪一份）。分开写只会让五段共享的夹具抄五遍。
+     *
+     * <p>作用域那两段（只喂向量翼、关键字翼读原文）是 2026-11-26 那次对照的落点：中文化让
+     * 向量受益、让纯关键字下降（描述变长、二元组碰撞变多）。所以断言的不是"译了"，而是
+     * "**只译给该译的那一路**"。
      */
     @Test
-    @DisplayName("开关关着、或名字不在名单里：引用逐字不变，一次模型调用都不发生")
-    void zhDescriptionOffLeavesDescriptionsAlone() {
+    @DisplayName("开着：只有向量翼入库中文+原文，关键字翼与模型仍是原文；关着/名单外不翻；已有中文不翻；译失败退原文")
+    void zhDescriptionScopeAndFallback() {
         ToolReference read = reference("Read", "Reads a file from the local filesystem", 0.0);
-        FixedChatModel model = new FixedChatModel("读取本地文件");
+        FixedChatModel model = new FixedChatModel("读取本地文件的内容并返回");
+
         ToolDescriptionTranslator off = new ToolDescriptionTranslator(model,
                 new ToolSearchProperties.ZhDescription(false, List.of()));
-
         assertThat(off.translateReferences(List.of(read)))
                 .as("关着时连新对象都不造：返回的是同一个")
                 .containsExactly(read);
-        assertThat(model.prompts()).isEmpty();
-
         ToolDescriptionTranslator scoped = new ToolDescriptionTranslator(model,
                 new ToolSearchProperties.ZhDescription(true, List.of("WebFetch")));
         assertThat(scoped.translateReferences(List.of(read))).containsExactly(read);
-        assertThat(model.prompts()).as("名单非空时，名单外的工具不该花一次调用").isEmpty();
-    }
+        assertThat(model.prompts())
+                .as("关着还在调，等于为一个不生效的开关付钱；名单外还在调，等于名单没生效")
+                .isEmpty();
 
-    /**
-     * 开着时只有向量那一路读中文：关键字翼与模型都是原文。
-     *
-     * <p>这条是 2026-11-26 那次对照的落点——中文化让向量受益、让纯关键字下降（描述变长，
-     * 二元组碰撞变多）。所以断言的不是"译了"，而是"**只译给该译的那一路**"：两翼各记一份
-     * 入库文本，关键字那份必须逐字等于原文。
-     *
-     * <p>后两段是"不翻"与"翻失败"，同一个入口、同一种断言形状，所以并在这里。
-     */
-    @Test
-    @DisplayName("开着：只有向量翼入库中文+原文，关键字翼与模型仍是原文；已有中文不翻；译失败退原文")
-    void zhDescriptionFeedsVectorWingOnly() {
-        ToolReference read = reference("Read", "Reads a file from the local filesystem", 0.0);
-        FixedChatModel model = new FixedChatModel("读取本地文件的内容并返回");
         ToolDescriptionTranslator translator = new ToolDescriptionTranslator(model,
                 new ToolSearchProperties.ZhDescription(true, List.of()));
-
         RecordingIndex keywordWing = new RecordingIndex();
         RecordingIndex vectorWing = new RecordingIndex();
         HybridToolIndex hybrid = HybridToolIndex.of(ToolCategories.of(Map.of()), keywordWing,
@@ -1149,6 +1184,77 @@ class ModelAndToolSelectionTest {
         assertThat(failing.translateReferences(List.of(read)))
                 .as("译不出来就用原文：中文化是增强，不该让整轮请求挂掉")
                 .containsExactly(read);
+    }
+
+    /**
+     * 译文落表（票 16）：一次译完存起来，下一个进程直接读。
+     *
+     * <p>为什么非要有这条：票 13 的第三版量出中文化有收益，但**开的那一侧三次跑出三个 R@1**
+     * ——译文只在进程内缓存，每跑一次评测就重译一遍，措辞不同 embedding 就不同。一个自己会抖的
+     * 指标不能当回归门。
+     *
+     * <p>五段：首次译写表、新实例读表不再调模型、原文变了重译、译失败不写表、表坏了退内存缓存。
+     * 同一个入口、同一种断言（模型调用次数 / 表里几行），所以并成一条。
+     */
+    @Test
+    @DisplayName("译文落表：跨实例复用、原文变了重译、译失败不写表、表坏了退内存缓存")
+    void zhDescriptionStoresOnceAndReuses() {
+        FakeDescriptionTable table = new FakeDescriptionTable();
+        FixedChatModel model = new FixedChatModel("读取本地文件的内容并返回");
+        ToolSearchProperties.ZhDescription on = new ToolSearchProperties.ZhDescription(true, List.of());
+        ToolReference read = reference("Read", "Reads a file from the local filesystem", 0.0);
+
+        ToolDescriptionTranslator first = new ToolDescriptionTranslator(model, on, table);
+        assertThat(first.translateReferences(List.of(read)).getFirst().summary())
+                .startsWith("读取本地文件的内容并返回");
+        assertThat(model.prompts()).as("第一次要真译一次").hasSize(1);
+        assertThat(table.rows()).as("译完就存：不然下个进程还得再译").isEqualTo(1);
+
+        ToolDescriptionTranslator second = new ToolDescriptionTranslator(model, on, table);
+        assertThat(second.translateReferences(List.of(read)).getFirst().summary())
+                .as("新实例读表，译文与上次那一份逐字相同——这就是「可复现」的来源")
+                .startsWith("读取本地文件的内容并返回");
+        assertThat(model.prompts()).as("跨实例不该再调模型").hasSize(1);
+
+        ToolReference changed = reference("Read", "Reads a file and returns its content", 0.0);
+        assertThat(second.translateReferences(List.of(changed)).getFirst().summary())
+                .as("原文变了必须重译：按工具名命中的话，改了描述还在用旧译文")
+                .contains("Reads a file and returns its content");
+        assertThat(model.prompts()).hasSize(2);
+        assertThat(table.rows()).as("同名工具覆盖那一行，不是越攒越多").isEqualTo(1);
+
+        FakeDescriptionTable untouched = new FakeDescriptionTable();
+        ToolDescriptionTranslator failing = new ToolDescriptionTranslator(
+                new FixedChatModel(prompt -> {
+                    throw new IllegalStateException("模型挂了");
+                }), on, untouched);
+        assertThat(failing.translateReferences(List.of(read)).getFirst())
+                .as("译失败退原文")
+                .isSameAs(read);
+        assertThat(untouched.rows())
+                .as("译失败不写表：把原文当译文存进去，以后永远不会再译，表面上看是缓存命中")
+                .isZero();
+
+        FakeDescriptionTable noisy = new FakeDescriptionTable();
+        ToolDescriptionTranslator echoing = new ToolDescriptionTranslator(
+                new FixedChatModel("工具名：Read\n描述：读取本地文件并返回它的内容"),
+                on, noisy);
+        assertThat(echoing.translateReferences(List.of(read)).getFirst().summary())
+                .as("模型把提示词那两行抄回来时，入库的必须是「描述：」之后那一句"
+                        + "——以前只活在进程里看不出来，落表之后它会长期待在索引里")
+                .startsWith("读取本地文件并返回它的内容")
+                .doesNotContain("工具名");
+
+        FakeDescriptionTable broken = new FakeDescriptionTable();
+        broken.breakIt();
+        ToolDescriptionTranslator degraded = new ToolDescriptionTranslator(model, on, broken);
+        assertThat(degraded.translateReferences(List.of(read)).getFirst().summary())
+                .as("表读不出来就用进程内缓存：中文化是增强，缺了只是命中率低一点")
+                .startsWith("读取本地文件的内容并返回");
+        degraded.translateReferences(List.of(read));
+        assertThat(model.prompts())
+                .as("表坏了也不该每个工具都重试一次读：只告警一次、然后走内存")
+                .hasSize(3);
     }
 
     // ------------------------------------------------------------ 本模块的两条架构闸

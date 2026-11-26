@@ -392,12 +392,14 @@ public class AgentAutoConfiguration {
      *
      * @param roles      按角色取模型的入口
      * @param properties 检索配置，读 {@code zh-description}
+     * @param jdbc       译文表（V9）；没有就只缓存在进程内
      * @return 翻译器
      * @throws IllegalStateException 开了中文化但 utility 角色被关掉
      */
     @Bean
     @ConditionalOnMissingBean
-    public ToolDescriptionTranslator toolDescriptionTranslator(ModelRoles roles, ToolSearchProperties properties) {
+    public ToolDescriptionTranslator toolDescriptionTranslator(ModelRoles roles, ToolSearchProperties properties,
+                                                               ObjectProvider<JdbcTemplate> jdbc) {
         ToolSearchProperties.ZhDescription zh = properties.zhDescription();
         if (!zh.enabled()) {
             return ToolDescriptionTranslator.NONE;
@@ -407,7 +409,7 @@ public class AgentAutoConfiguration {
                     + "但 utility 角色被关掉了（claw4j.model.roles.utility 配了空串）：没有链可以翻译。"
                     + "要么把 utility 打开，要么把中文化关掉。");
         }
-        return new ToolDescriptionTranslator(roles.forRole(ModelRole.utility), zh);
+        return new ToolDescriptionTranslator(roles.forRole(ModelRole.utility), zh, jdbc.getIfAvailable());
     }
 
     /**

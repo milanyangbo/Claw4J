@@ -453,7 +453,7 @@ class BuildContractTest {
         // 所以这一条留在补丁里，等下一次重建基线时并回 V3。
         assertThat(flyway.info().applied())
                 .extracting(info -> info.getVersion().getVersion())
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9");
 
         var jdbc = new JdbcTemplate(dataSource());
 
@@ -479,6 +479,14 @@ class BuildContractTest {
                         + " where table_schema = 'claw4j_session' order by table_name", String.class))
                 .containsExactly("ai_session", "ai_session_event", "session_progress_cards",
                         "standing_intents");
+
+        // V9 的工具描述译文表：它必须存在，否则翻译每轮重译、评测分数跟着抖（票 16）。
+        // 只断表在，不断列——列由迁移脚本定义，改列是那次改动自己的事。
+        assertThat(jdbc.queryForList(
+                "select table_name from information_schema.tables"
+                        + " where table_schema = 'claw4j_tool' order by table_name", String.class))
+                .as("译文表不在 = 中文化退化成每次重译，于是「开了之后分数涨了多少」永远答不准")
+                .contains("tool_description");
 
         // V2 的种子真的落了（示例插件那份 DDL 也在同一批迁移里执行，不是被跳过）。
         assertThat(jdbc.queryForObject("select count(*) from business.sales_order", Integer.class))
