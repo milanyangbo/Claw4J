@@ -1,6 +1,6 @@
 # 票 08：检索的可观测性——搜到没有、空在哪一步
 
-**Status:** open
+**Status:** resolved
 
 ## 由来
 
@@ -77,7 +77,24 @@ mode=off 且全塞       → 索引根本不建，指标恒为 0（正确：一�
 
 - **adoption（检索回来的工具到底有没有被调用）**：要按会话记住上一轮检索集合，再在后续轮次里比对
   实际工具响应名。语义也纠缠（返回 5 个用了 1 个算不算成功），容易做成一个说不清的数。
-  等有真实数据、能定义清楚再开票。
+  等有真实数据、能定义清楚再开票。**真机之后这条的优先级上升了**，见下节。
+
+## 真机验证（2026-11-26，本地实例，默认配置：`mode=auto` / `reveal-below=10` / `max-results=5` / `categories` 空）
+
+- 三次请求，检索共发生 2 次（判据：`claw4j.model.calls` 每轮增量 —— +1 是"没检索直接答"，+2 是检索一次）。
+- 2 次都是 `result=hit`、`narrowed=false`；`claw4j.tool.search.results` COUNT=4 / TOTAL=18 / MAX=5
+  （COUNT 4 是含票 06 期间那两次），即**平均 4.5、次次封顶**。
+- **miss 没构造出来**："查明天北京天气"与"用 docker 重启 nginx"这两句模型压根没触发检索（它自认没有那类能力，
+  直接答"做不了"）；"同步到飞书多维表格"触发了检索，但二元组照样命中 5 条（`querySales` 之类），
+  于是记成 hit。
+- 由此得到一条比"指标能报"更重要的判断：**正则索引下 miss 几乎不是可观测的失效模式**。二元组只要有一个
+  碰上任一工具描述就算命中，返回几近恒等于 `max-results`。真正的失效是"hit 了但不是对的那几个"——
+  这个数本票答不了（要 adoption），也是票 07 上向量/混合的动机。
+- `narrowed=true` 在默认配置下出不来：`categories: {}` 时没有分组可收窄，模型不会填 `categoryFilter`。
+  该分支由单测 `narrowedMissIsTagged` 覆盖。
+- 附带确认：`claw4j.tool.search.results` 的 `MAX` 隔两分钟会显示 0，这是 Micrometer `TimeWindowMax`
+  的滑窗衰减（默认 2 分钟过期），不是记错；要看 max 就在检索之后立刻读。
+
 - **query 原文**：不进标签（高基数）。要查就 `logging.level.io.github.claw4j.agent.toolaccess=DEBUG`。
 - **延迟**：等票 07。
 - **验收文档**：`README-capability-tests.md` 的 I9（五个 `claw4j.audit.*` 计数）旁边可以加这两条，
