@@ -596,8 +596,8 @@ done
 **这一节现在判不了"翻得准不准"**。2026-11-26 记下的一条：`index=hybrid` 下问「examples 目录下有哪些
 `.md` 文件」，融合后前五里没有 `Glob`（它排在向量那一路第 7）。这一句现在**不靠检索**了
 （`Glob` 常驻，见 B2），但那条记录仍然有效——它是"检索质量本身"的证据，说明融合的排序会把对的工具
-挤到前五之外。准确率看 `./eval/tools/run.sh` 那张表（TREC 口径，由 `ir_measures` 算，
-基线在 `eval/tools/baseline.json`），别拿一次问答当结论。
+挤到前五之外。准确率看 `./eval/tools/retrieval/run.sh` 那张表（TREC 口径，由 `ir_measures` 算，
+基线在 `eval/tools/retrieval/baseline.json`），别拿一次问答当结论。
 
 ---
 

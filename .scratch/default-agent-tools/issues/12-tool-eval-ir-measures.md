@@ -24,6 +24,9 @@ Recall@k 就够"。那条说法的前提（"RAG 侧也没引第三方"）是错�
 
 ## 形态：照 `eval/rag` 抄
 
+> 下面这棵树是建票时的样子。2026-11-26 起整棵挪到 `eval/tools/retrieval/`，
+> 与票 17 的 `eval/tools/bfcl/` 平级；文件名没变。
+
 ```
 eval/tools/
   run.sh                  # 唯一入口：Java 导出 → venv → 算分 → 报告
@@ -37,9 +40,9 @@ eval/tools/
 命令：
 
 ```bash
-./eval/tools/run.sh                      # 全部配置，出对照表
-./eval/tools/run.sh --configs hybrid-0.0 # 只跑一档
-./eval/tools/run.sh --from-report        # 不重跑导出，只按当前门槛重算
+./eval/tools/retrieval/run.sh                      # 全部配置，出对照表
+./eval/tools/retrieval/run.sh --configs hybrid-0.0 # 只跑一档
+./eval/tools/retrieval/run.sh --from-report        # 不重跑导出，只按当前门槛重算
 ```
 
 与 RAG 侧的三处不同，都是"更简单"：
@@ -114,8 +117,8 @@ qid 用 `gold.yaml` 的 `id`（`tools-glob-md` 这种），docno 用工具名。
 
 ## 收票时要改的文档
 
-- `eval/tools/README.md`：跑法、产物、三层门槛、与 `eval/rag` 的对照。
-- `README-capability-tests.md` B9：把"判据用 `eval/tools` 那张表"改成"`./eval/tools/run.sh`"。
+- `eval/tools/retrieval/README.md`：跑法、产物、三层门槛、与 `eval/rag` 的对照。
+- `README-capability-tests.md` B9：把"判据用 `eval/tools/retrieval` 那张表"改成"`./eval/tools/retrieval/run.sh`"。
 - 票 09 的「缺口」里"指标实现自研"一句，指向本票。
 
 ## 落地时与票面不同的四处（据实改）
@@ -135,7 +138,7 @@ qid 用 `gold.yaml` 的 `id`（`tools-glob-md` 这种），docno 用工具名。
 
 ## 收票记录（2026-11-26）
 
-- `./eval/tools/run.sh` 全绿，退出 0；`--cross-check` 5 档一致。
+- `./eval/tools/retrieval/run.sh` 全绿，退出 0；`--cross-check` 5 档一致。
 - 基线（18 题进指标）：
   `hybrid-0.0` R@5 0.667 / nDCG@10 0.512；`regex` 0.500 / 0.325；零候选率 0.500（1/2）。
 - 门禁不受影响：导出用例带 `@Tag("eval")`，`verify.sh` 的默认组排除它；

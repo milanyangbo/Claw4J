@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code run_ir.py} 判。
  *
  * <p>手动跑：{@code ./mvnw -o -Peval -pl claw4j-eval -am test -Dtest=ToolRetrievalExportTest}。
- * 产物在 {@code eval/tools/reports/}，不入库。
+ * 产物在 {@code eval/tools/retrieval/reports/}，不入库。
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @SpringBootTest(classes = ToolRetrievalExportTest.ExportApplication.class,
@@ -142,7 +142,7 @@ class ToolRetrievalExportTest {
      */
     @BeforeAll
     void export() throws IOException {
-        this.reports = TestPaths.repositoryRoot().resolve("eval/tools/reports");
+        this.reports = TestPaths.repositoryRoot().resolve("eval/tools/retrieval/reports");
         Files.createDirectories(this.reports);
         this.golds = golds();
 
@@ -475,7 +475,7 @@ class ToolRetrievalExportTest {
 
     @SuppressWarnings("unchecked")
     private static List<ToolGold> golds() throws IOException {
-        Path file = TestPaths.repositoryRoot().resolve("eval/tools/gold.yaml");
+        Path file = TestPaths.repositoryRoot().resolve("eval/tools/retrieval/gold.yaml");
         try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             List<Map<String, Object>> rows = new Yaml().load(reader);
             List<ToolGold> golds = new ArrayList<>(rows.size());

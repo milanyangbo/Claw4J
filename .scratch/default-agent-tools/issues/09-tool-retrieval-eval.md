@@ -39,7 +39,7 @@
 
 ## 金标
 
-`eval/tools/gold.yaml`（与 `eval/rag/gold.yaml` 挨着），形状照 `RetrievalGold` 那套（严格键校验：
+`eval/tools/retrieval/gold.yaml`（与 `eval/rag/gold.yaml` 挨着），形状照 `RetrievalGold` 那套（严格键校验：
 认不得的键当场报错，不让打错一个字母变成"这条题没生效"）：
 
 ```yaml
@@ -86,7 +86,7 @@
 
 ## 落地时与票面不同的三处（据实改）
 
-1. **金标放在 `eval/tools/gold.yaml`**，不在 `claw4j-eval/src/test/resources/`——与
+1. **金标放在 `eval/tools/retrieval/gold.yaml`**，不在 `claw4j-eval/src/test/resources/`——与
    `eval/rag/gold.yaml` 同一层，两份题库挨着，不用记两个地方。
 2. **打分器 `ToolRetrievalEval` 在测试侧**（`src/test/java`），不在 main。`claw4j-eval` 的 main
    一直只有纯 JDK 的 `RetrievalGold`，而打分器要用 Spring AI 的 `ToolIndex`；为了它给 main 拉一条
@@ -99,7 +99,7 @@
 > 于是"返回空"的题全被记成命中。真实值只会更低，旧题库我没重跑，**不编具体数**。
 > 新题库上实测的偏差是：`zh-en` 自研 0.150 / 第三方 0.000（票 13 记录）。
 > bug 在票 13 修掉，用例 `ToolGoldTest#emptyResultIsNotAHit`。这张表已随题库换版整体作废，
-> 现行基线看 `eval/tools/baseline.json`。
+> 现行基线看 `eval/tools/retrieval/baseline.json`。
 
 ## 基线（2026-11-26，19 个工具 / 20 条题，`-Peval` 手跑）
 

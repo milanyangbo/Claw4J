@@ -84,7 +84,7 @@ embedding 走云端推理还是本地推理，跟"帮同事收一份投标材料
 
 同一次修订把**索引实现**也参数化：`regex` / `lucene` / `vector` / `hybrid`。`hybrid` = 关键字 ∪ 向量
 按 RRF 融合、权重可配；工具向量落**独立表**，不复用知识库那张（`VectorToolIndex` 只按 `sessionId`
-过滤，共用会把工具描述召回进业务问答）。重开条件：`eval/tools` 量出 `auto` 在 20–30 个工具时反而
+过滤，共用会把工具描述召回进业务问答）。重开条件：`eval/tools/retrieval` 量出 `auto` 在 20–30 个工具时反而
 更慢（多花的 token 不值），或 `hybrid` 的召回增益抵不上 embedding 的成本，就退回 `always` /
 纯关键字。
 

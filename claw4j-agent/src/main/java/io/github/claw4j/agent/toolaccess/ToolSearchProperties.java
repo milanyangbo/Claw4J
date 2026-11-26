@@ -154,7 +154,7 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      * <p>为什么需要它：框架自带的工具描述大多是英文，而用户说的是中文。常驻（{@link #pinned}）解决了
      * 基座那几个"根本找不到"，但长尾（MCP、技能、子 Agent、业务工具）还在检索里，词面撞不上就是撞不上。
      *
-     * <p>为什么是运行时翻而不是人写映射表：{@code eval/tools/gold.yaml} 里那一档「中文问英文描述」
+     * <p>为什么是运行时翻而不是人写映射表：{@code eval/tools/retrieval/gold.yaml} 里那一档「中文问英文描述」
      * 的分数（票 09 基线：regex R@1 0.20、纯向量 0.60）说明了差多少；而人写的表跟着工具描述漂，
      * 漂了还看不出来。
      *

@@ -95,7 +95,7 @@ base 档已覆盖 `Glob`/`Grep`/`Read`/`Bash`/`WebFetch`，所以 zh-en 的 19 �
 前两条是纯数据用例，进常规门禁；第三条要工具目录，带 `@Tag("eval")`，手动跑。
 
 复核：2026-11-26 `./mvnw -o -pl claw4j-eval -am test -Dtest=ToolGoldTest`（7 条全绿）+
-`./eval/tools/run.sh`（导出 4 条全绿，退出 0，`--cross-check` 5 档一致）。
+`./eval/tools/retrieval/run.sh`（导出 4 条全绿，退出 0，`--cross-check` 5 档一致）。
 
 ## 落地记录（2026-11-26）
 
@@ -167,8 +167,8 @@ embedding 跟着不同。所以票 11 那句"没有可测收益"是对 20 题那
 题库从 20 条变 **38** 条（base 4 / business 12 / zh-en 20 / no-search 2），
 **所有分数与 `baseline.json` 全部作废**。收票时：
 
-1. `./eval/tools/run.sh --update-baseline` 重钉；
-2. `eval/tools/README.md` 的基线表整段替换，旧数字标"旧题库（20 条），已作废"；
+1. `./eval/tools/retrieval/run.sh --update-baseline` 重钉；
+2. `eval/tools/retrieval/README.md` 的基线表整段替换，旧数字标"旧题库（20 条），已作废"；
 3. 票 11 的「第二版实跑」也基于旧题库，加一行指向本票——**不要拿新旧题库的分数直接比**。
 
 ## 缺口（本票不做）

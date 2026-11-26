@@ -6,17 +6,18 @@
 # 唯一要的环境变量是 embedding（Java 导出要建向量库、真算向量）。
 #
 # 用法：
-#   ./eval/tools/run.sh                          # 全部配置
-#   ./eval/tools/run.sh --configs hybrid-0.0     # 只跑一档
-#   ./eval/tools/run.sh --from-report            # 不重跑导出，只按当前门槛重算
-#   ./eval/tools/run.sh --cross-check            # 加做两套指标的一致性校验
-#   ./eval/tools/run.sh --update-baseline        # 确认改好了，把分数钉成新基线
+#   ./eval/tools/retrieval/run.sh                          # 全部配置
+#   ./eval/tools/retrieval/run.sh --configs hybrid-0.0     # 只跑一档
+#   ./eval/tools/retrieval/run.sh --from-report            # 不重跑导出，只按当前门槛重算
+#   ./eval/tools/retrieval/run.sh --cross-check            # 加做两套指标的一致性校验
+#   ./eval/tools/retrieval/run.sh --update-baseline        # 确认改好了，把分数钉成新基线
 #
 # 退出码：0 全过；1 有回归或零候选题失败；2 环境没搭起来（缺 key / 缺依赖 / 缺基线）。
 
 set -uo pipefail
 
-cd "$(dirname "$0")/../.." || exit 1
+# 脚本在 eval/tools/retrieval/ 下，仓库根往上三级。
+cd "$(dirname "$0")/../../.." || exit 1
 
 if [ -f .env ]; then
     set -a
@@ -50,19 +51,32 @@ else
     echo "== 工具检索 1/2：跳过导出（--from-report 只重算分数与判定）=="
 fi
 
-venv="eval/tools/.venv"
+venv="eval/tools/retrieval/.venv"
 if [ ! -x "$venv/bin/python" ]; then
     echo "== 工具检索：建 venv（首次）=="
     python3 -m venv "$venv" || exit 2
 fi
-# 每次对齐一次依赖：requirements 加了包时 venv 不会自己装，
-# 症状是跑到一半报 "No module named ir_measures"。
-"$venv/bin/pip" install -q --disable-pip-version-check -r eval/tools/requirements.txt || exit 2
+# 依赖只在缺的时候装。
+#
+# 两处与"直接跑 pip"不同，都是踩出来的：
+#   - 用 `python -m pip` 而不是 `bin/pip`：venv 目录被搬过之后，`bin/pip` 的 shebang
+#     还指着旧路径，直接跑会说找不到解释器。走 `-m` 就与 shebang 无关。
+#   - 判据是"能不能 import"而不是 pip 的退出码：这台机器上 pip 清理临时目录会被拦，
+#     它带着一堆 WARNING 以非 0 退出，但包其实装好了。
+if ! "$venv/bin/python" -c "import ir_measures" >/dev/null 2>&1; then
+    echo "== 工具检索：装依赖（缺 ir_measures）=="
+    "$venv/bin/python" -m pip install -q --disable-pip-version-check \
+        -r eval/tools/retrieval/requirements.txt || exit 2
+    "$venv/bin/python" -c "import ir_measures" >/dev/null 2>&1 || {
+        echo "ir_measures 还是 import 不了：venv 坏了，删掉 $venv 重跑本脚本。"
+        exit 2
+    }
+fi
 
 echo "== 工具检索 2/2：算分（ir_measures，零成本）=="
 # 空数组在 bash 3.2（macOS 自带）配 set -u 会报 unbound，所以分两支写。
 if [ ${#passthrough[@]} -gt 0 ]; then
-    "$venv/bin/python" eval/tools/run_ir.py "${passthrough[@]}"
+    "$venv/bin/python" eval/tools/retrieval/run_ir.py "${passthrough[@]}"
 else
-    "$venv/bin/python" eval/tools/run_ir.py
+    "$venv/bin/python" eval/tools/retrieval/run_ir.py
 fi

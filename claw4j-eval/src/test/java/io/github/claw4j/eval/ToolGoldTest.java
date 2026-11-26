@@ -225,7 +225,7 @@ class ToolGoldTest {
 
     @SuppressWarnings("unchecked")
     private static List<ToolGold> loadGold() throws IOException {
-        Path file = TestPaths.repositoryRoot().resolve("eval/tools/gold.yaml");
+        Path file = TestPaths.repositoryRoot().resolve("eval/tools/retrieval/gold.yaml");
         try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             List<Map<String, Object>> rows = new Yaml().load(reader);
             List<ToolGold> golds = new ArrayList<>(rows.size());

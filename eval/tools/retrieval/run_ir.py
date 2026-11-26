@@ -38,12 +38,12 @@ from pathlib import Path
 try:
     import ir_measures
 except ImportError:  # pragma: no cover - 环境没搭起来时走这里
-    print("缺 ir_measures：先跑 ./eval/tools/run.sh（它会建 venv 并装 requirements.txt）")
+    print("缺 ir_measures：先跑 ./eval/tools/retrieval/run.sh（它会建 venv 并装 requirements.txt）")
     sys.exit(2)
 
-ROOT = Path(__file__).resolve().parents[2]
-REPORTS = ROOT / "eval/tools/reports"
-DEFAULT_BASELINE = ROOT / "eval/tools/baseline.json"
+ROOT = Path(__file__).resolve().parents[3]
+REPORTS = ROOT / "eval/tools/retrieval/reports"
+DEFAULT_BASELINE = ROOT / "eval/tools/retrieval/baseline.json"
 DEFAULT_SCORE = REPORTS / "score.json"
 DEFAULT_REPORT = REPORTS / "report.md"
 
@@ -118,7 +118,7 @@ def run_files(only: str) -> list[Path]:
     if wanted:
         files = [path for path in files if path.stem in wanted]
     if not files:
-        print(f"{REPORTS} 下没有 .run：先跑 Java 导出（./eval/tools/run.sh）")
+        print(f"{REPORTS} 下没有 .run：先跑 Java 导出（./eval/tools/retrieval/run.sh）")
         sys.exit(2)
     return files
 
@@ -145,7 +145,7 @@ def load_categories() -> dict[str, str]:
     """
     path = REPORTS / "categories.txt"
     if not path.exists():
-        print(f"缺 {path}：没有它就算不了「按分类」。重跑导出（./eval/tools/run.sh）")
+        print(f"缺 {path}：没有它就算不了「按分类」。重跑导出（./eval/tools/retrieval/run.sh）")
         sys.exit(2)
     mapping = {}
     for line in path.read_text(encoding="utf-8").splitlines():

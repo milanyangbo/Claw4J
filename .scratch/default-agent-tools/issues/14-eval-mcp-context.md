@@ -59,8 +59,8 @@
 | 等不到就说清哪个 server 没连上 | ✅ 上面那条用例背后的 `mcpBackedCatalogue()` 超时分支（60 秒后抛，消息里点出缺哪几个工具名） | 静默跳过时绿——所以撤掉等待后这条会红 |
 | `business` 那一档恢复成 12 道、且含 4 道外部系统题 | ✅ `ToolGoldTest#businessCoversExternalSystems` | 替代题还在时红 |
 
-复核：2026-11-26 `./eval/tools/run.sh`（导出 6 条全绿，退出 0）；
-`./eval/tools/run.sh --from-report --update-baseline` 重钉基线。
+复核：2026-11-26 `./eval/tools/retrieval/run.sh`（导出 6 条全绿，退出 0）；
+`./eval/tools/retrieval/run.sh --from-report --update-baseline` 重钉基线。
 
 ## 落地记录
 

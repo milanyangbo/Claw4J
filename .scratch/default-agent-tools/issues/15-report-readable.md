@@ -51,15 +51,15 @@ hybrid-0.0（后面的 0.0 什么意思），怎么样算达标等等"**。
 | --- | --- | --- |
 | categories 覆盖题库每一条 | ✅ `ToolRetrievalExportTest#categoriesCoverEveryQuestion` | 只写有 gold 的题时，`no-search` 那两条缺失，断言红 |
 | 分类只允许题库里的四个 | ✅ 同上（值域断言） | 打错一个字（`zh_en`）时红，否则那一档在报告里静默消失 |
-| 报告里有每档配置的说明与判定规则 | ⏳ `./eval/tools/run.sh --from-report` 后 `grep -c 'hybrid-0.5' reports/report.md` ≥ 2、`grep -c '^## 怎么算达标'` = 1（脚本级，不进 Java 门禁） | 只改表不改说明时，`hybrid-0.5` 的 0.5 又变成没人解释的数 |
+| 报告里有每档配置的说明与判定规则 | ⏳ `./eval/tools/retrieval/run.sh --from-report` 后 `grep -c 'hybrid-0.5' reports/report.md` ≥ 2、`grep -c '^## 怎么算达标'` = 1（脚本级，不进 Java 门禁） | 只改表不改说明时，`hybrid-0.5` 的 0.5 又变成没人解释的数 |
 | 报告里有按分类的两张表 | ⏳ 同上，`grep -c '^## 按分类'` = 2（R@5 与 R@1） | 生成器只吐总表时红 |
 
 后两条是脚本行为，验法是 shell 断言；写进票面是为了记住它们必须被验，与票 12 的第四条同一种处理。
 **没做成自动脚本**：要自动化得再引一个 shell 测试入口，而这两条改一次就不用再动（与票 12 的
 第四条同一个理由）。手验命令就是上面那两条 `grep`。
 
-复核：2026-11-26 `./eval/tools/run.sh`（导出 5 条全绿，退出 0）+
-`./eval/tools/run.sh --from-report`（退出 0），`report.md` 含四节 + 两张分档表。
+复核：2026-11-26 `./eval/tools/retrieval/run.sh`（导出 5 条全绿，退出 0）+
+`./eval/tools/retrieval/run.sh --from-report`（退出 0），`report.md` 含四节 + 两张分档表。
 
 ## 落地时与票面不同的两处（据实改）
 
