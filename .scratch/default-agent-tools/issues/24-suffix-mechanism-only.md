@@ -248,3 +248,40 @@ system message 上，之后每轮都带着它）。所以那句话不是"措辞�
 - 两条都不做的话，这条门永远在红绿之间跳，红灯不指向任何一个可修的缺陷。
 
 **不建议**：继续改提示词去争那 1 题。那是拿 240 题当训练集，一旦这么干，这个数以后就不能再用来判断任何事。
+
+## 用户指出的问题：剩下 25 条里有一半是标注错了，不是模型乱调
+
+用户问：「大约一半的『乱调』，其实那个工具真能做。是不是 gold.yaml 写得有问题？」
+
+**归属先纠正**：这 240 题不是我们的 `gold.yaml`（那是检索层 50 题），是 BFCL 官方数据
+`bfcl_eval/data/BFCL_v4_irrelevance.json`。但判断本身成立。
+
+最硬的一条，`irrelevance_228` 的原始 JSON：
+
+- 问题：`What is the current time in Sydney, Australia?`
+- 唯一工具：`get_local_time`，描述 `Retrieve the local time for a specific city.`
+- 必填参数：`location` —— `The city to get the local time for.`
+- 模型调用：`{"location": "Sydney, Australia", "format": "12"}`
+
+**这是标准答案。** 它被判错，只能是标注的问题：BFCL 这一档的判据是"不需要工具"，
+而这里工具不止能用，参数还对口。
+
+逐条读那 25 条（不是抽样，是全读）：
+
+| 类别 | 条数 | 例子 |
+| --- | --- | --- |
+| 工具描述直接覆盖问题（模型是对的） | **13** | `calculate_heat` 算 Q=mcΔT；`get_nba_player_stats` 含 championships；`restaurant_finder` 找披萨；`get_champion(event, year)` |
+| 相邻能力（能凑，但确实勉强） | 10 | `calculate_distance` 答"开车要多久"；`get_local_time` 答"时区" |
+| 工具明显不对（模型错了） | 2 | `identify_species` 答基因序列；`get_date` 答两地距离 |
+
+13/25 = **52%**，与用户的判断一致。
+
+**这改变了结论**：这条尺子同时在量两件事——模型的克制，和标注的质量。想从 89.58 再往上，
+只能教模型"工具真能做也别调"，那是反生产的（生产上我们恰恰要它调）。
+
+所以 v2（"工具用来取你拿不到的信息，自己知道的不查"）**停了**：它对这 13 条没有作用
+（那些题要的正是模型拿不到的信息），只会压 `simple_python`。该实验在 17 分钟后被中止，
+产物已丢弃，`result/` 恢复为裸跑那两份。
+
+**待定**：irrelevance 的判据要不要改成"人工复核后的口径"，还是在 README 里把标注噪声写清、
+把门按噪声余量定。两条都要用户裁决，不擅自改评测数据。
