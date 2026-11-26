@@ -1,0 +1,323 @@
+package io.github.claw4j.eval;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.claw4j.agent.toolaccess.ToolCategories;
+import io.github.claw4j.agent.toolaccess.ToolDescriptionTranslator;
+import io.github.claw4j.agent.toolaccess.ToolSearch;
+import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
+import io.github.claw4j.agent.toolaccess.ToolVectorStore;
+import io.github.claw4j.capability.tool.ToolCatalog;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.tool.toolsearch.ToolReference;
+import org.springframework.ai.tool.toolsearch.ToolSearchRequest;
+import org.springframework.ai.tool.toolsearch.ToolSearchResponse;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
+import org.yaml.snakeyaml.Yaml;
+
+import java.io.IOException;
+import java.io.Reader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * 把检索结果导出成第三方的指标输入（票 12）：TREC qrels / run，加一份"零候选"清单。
+ *
+ * <p>为什么导出而不是在 Java 里算：这个仓库的既有方针是"Java 只导出、Python 侧用第三方算指标"
+ * （见 {@code eval/rag/run_ragas.py} 与 Ragas）。票 09 的自研指标留着跑快速反馈，但**对外口径**
+ * 交给 {@code ir_measures}——它给的是 TREC 标准的 Recall / RR / nDCG，换个人也能复算。
+ *
+ * <p>为什么 {@code no-search} 那两题不写进 qrels：TREC 表达不了"期望零候选"。qrels 里没有相关
+ * 文档的 qid 会被跳过或记 0，而这两题的判据是"给了候选才算错"。它们单独落一份 jsonl，由
+ * {@code run_ir.py} 判。
+ *
+ * <p>手动跑：{@code ./mvnw -o -Peval -pl claw4j-eval -am test -Dtest=ToolRetrievalExportTest}。
+ * 产物在 {@code eval/tools/reports/}，不入库。
+ */
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@SpringBootTest(classes = ToolRetrievalExportTest.ExportApplication.class,
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "spring.config.import=optional:file:./.env[.properties],"
+                + "optional:file:../.env[.properties]")
+@Tag("eval")
+class ToolRetrievalExportTest {
+
+    /** 与 {@code ToolRetrievalSnapshotTest} 同一套：只声明配置类 + 打开自动配置。 */
+    @SpringBootConfiguration
+    @EnableAutoConfiguration
+    static class ExportApplication {
+    }
+
+    private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(
+            DockerImageName.parse("pgvector/pgvector:pg16").asCompatibleSubstituteFor("postgres"));
+
+    static {
+        POSTGRES.start();
+    }
+
+    @DynamicPropertySource
+    static void properties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("spring.flyway.enabled", () -> "true");
+        registry.add("claw4j.guard.sensitive-words-file",
+                () -> TestPaths.repositoryRoot().resolve("examples/guard/sensitive-words.txt").toString());
+        registry.add("claw4j.skills.directory",
+                () -> TestPaths.repositoryRoot().resolve("examples/skills").toString());
+        registry.add("claw4j.subagents.directory",
+                () -> TestPaths.repositoryRoot().resolve("examples/subagents").toString());
+        registry.add("claw4j.agent.directory",
+                () -> TestPaths.repositoryRoot().resolve("examples/agents").toString());
+        registry.add("claw4j.agent.default", () -> "ops");
+        registry.add("claw4j.advisor.cache.enabled", () -> "false");
+    }
+
+    /** 与 {@code ToolRetrievalSnapshotTest} 同一个顺序：两档关键字、三档 hybrid。 */
+    private static final List<String> CONFIGS =
+            List.of("regex", "lucene", "hybrid-1.0", "hybrid-0.5", "hybrid-0.0");
+
+    @Autowired
+    private ToolCatalog catalogue;
+
+    @Autowired
+    private EmbeddingModel embeddings;
+
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    @Autowired
+    private ToolDescriptionTranslator translator;
+
+    /** 产物目录。 */
+    private Path reports;
+
+    /** 这一轮实际问出来的顺序：config → qid → 工具名（按检索给的顺序）。 */
+    private final Map<String, Map<String, List<String>>> rankings = new LinkedHashMap<>();
+
+    private List<ToolGold> golds;
+
+    /**
+     * 跑一次，写三份文件。
+     *
+     * <p>检索只跑一遍、三个用例共用：一档一次真 embedding，重复跑三次只会让评测从"慢"变成"很慢"，
+     * 而三个用例判的是同一批产物的不同侧面。
+     */
+    @BeforeAll
+    void export() throws IOException {
+        this.reports = TestPaths.repositoryRoot().resolve("eval/tools/reports");
+        Files.createDirectories(this.reports);
+        this.golds = golds();
+
+        List<ToolReference> tools = this.catalogue.tools().stream()
+                .map(ToolRetrievalExportTest::reference)
+                .toList();
+
+        writeQrels();
+        for (String config : CONFIGS) {
+            // hybrid 的三档要现场建向量库；前三档传 null。分派写在这里而不是 index() 里，
+            // 是因为 hybrid 需要 jdbc 与 embedding，那是这个类的状态，不是那个纯函数的事。
+            ToolIndex index = config.startsWith("hybrid-")
+                    ? hybrid(Double.parseDouble(config.substring("hybrid-".length())))
+                    : index(config);
+            index.indexTools(config, tools);
+            Map<String, List<String>> byQid = new LinkedHashMap<>();
+            for (ToolGold gold : this.golds) {
+                byQid.put(gold.id(), names(index.search(
+                        new ToolSearchRequest(config, gold.question(), 5, null))));
+            }
+            this.rankings.put(config, byQid);
+            writeRun(config, byQid);
+        }
+        writeNoCandidate();
+    }
+
+    @Test
+    @DisplayName("run 的 rank 就是检索返回的顺序，不是按名字排的")
+    void runKeepsSearchOrder() throws IOException {
+        List<String> lines = Files.readAllLines(this.reports.resolve("hybrid-0.0.run"), StandardCharsets.UTF_8);
+        assertThat(lines).as("一档一题都没导出").isNotEmpty();
+
+        // 取第一题：同一 qid 的连续几行，rank 必须是 1、2、3……，docno 必须与内存里的顺序逐位相同。
+        String qid = lines.getFirst().split(" ")[0];
+        List<String> expected = this.rankings.get("hybrid-0.0").get(qid);
+        assertThat(expected).as("这一题一个候选都没给，后面的顺序断言就没有意义").isNotEmpty();
+        List<String> runPart = lines.stream()
+                .filter(line -> line.startsWith(qid + " "))
+                .map(line -> line.split(" ")[2])
+                .toList();
+        assertThat(runPart)
+                .as("按名字或按分数重排时，第二行就不再是检索的第二名")
+                .startsWith(expected.toArray(String[]::new));
+        assertThat(lines.stream().filter(line -> line.startsWith(qid + " "))
+                .map(line -> Integer.parseInt(line.split(" ")[3]))
+                .toList())
+                .as("rank 从 1 起、连续、行数等于候选数")
+                .containsExactlyElementsOf(java.util.stream.IntStream.rangeClosed(1, runPart.size())
+                        .boxed().toList());
+    }
+
+    @Test
+    @DisplayName("qrels 只写有 gold 的题；no-search 那两题不进")
+    void qrelsSkipsZeroCandidateQuestions() throws IOException {
+        List<String> lines = Files.readAllLines(this.reports.resolve("qrels.txt"), StandardCharsets.UTF_8);
+
+        Set<String> withGold = this.golds.stream()
+                .filter(gold -> !gold.goldTools().isEmpty())
+                .map(ToolGold::id)
+                .collect(Collectors.toSet());
+        Set<String> zeroCandidate = this.golds.stream()
+                .filter(gold -> gold.goldTools().isEmpty())
+                .map(ToolGold::id)
+                .collect(Collectors.toSet());
+
+        assertThat(lines).hasSize(withGold.size());
+        assertThat(lines).extracting(line -> line.split(" ")[0])
+                .as("qrels 里出现零候选题时，第三方会把它们按「没检索到」算，分母就不对了")
+                .doesNotContainAnyElementsOf(zeroCandidate)
+                .containsExactlyInAnyOrderElementsOf(withGold);
+    }
+
+    @Test
+    @DisplayName("零候选题单独落一份，带实际候选数")
+    void zeroCandidateQuestionsGoToTheirOwnFile() throws IOException {
+        List<String> lines = Files.readAllLines(this.reports.resolve("no-search.jsonl"),
+                StandardCharsets.UTF_8);
+        List<Map<String, Object>> rows = new ArrayList<>();
+        ObjectMapper mapper = new ObjectMapper();
+        for (String line : lines) {
+            rows.add(mapper.readValue(line, Map.class));
+        }
+
+        Set<String> zeroCandidate = this.golds.stream()
+                .filter(gold -> gold.goldTools().isEmpty())
+                .map(ToolGold::id)
+                .collect(Collectors.toSet());
+        assertThat(rows).extracting(row -> row.get("qid"))
+                .containsExactlyInAnyOrderElementsOf(zeroCandidate);
+        assertThat(rows).allSatisfy(row -> assertThat(row.get("returned"))
+                .as("actual 候选数必须写上：判据是「必须为 0」，写死 0 就永远通过")
+                .isEqualTo(this.rankings.get("regex").get((String) row.get("qid")).size()));
+    }
+
+    /**
+     * qrels：一条题一行，相关性固定 1。
+     *
+     * <p>每题只标一个 gold，所以第三方算出来的 Recall@k 与自研的"命中任一"是同一个数。
+     * 以后加多 gold 的题，两者会分道扬镳（前者是覆盖比例）——到那时这条注释要跟着改。
+     */
+    private void writeQrels() throws IOException {
+        StringBuilder text = new StringBuilder();
+        for (ToolGold gold : this.golds) {
+            for (String tool : gold.goldTools()) {
+                text.append(gold.id()).append(" 0 ").append(tool).append(" 1\n");
+            }
+        }
+        Files.writeString(this.reports.resolve("qrels.txt"), text.toString(), StandardCharsets.UTF_8);
+    }
+
+    /** TREC run：{@code qid Q0 docno rank score runid}。score 用 {@code 1/rank}，保证严格递减。 */
+    private void writeRun(String config, Map<String, List<String>> byQid) throws IOException {
+        StringBuilder text = new StringBuilder();
+        for (ToolGold gold : this.golds) {
+            if (gold.goldTools().isEmpty()) {
+                continue;
+            }
+            List<String> got = byQid.get(gold.id());
+            for (int i = 0; i < got.size(); i++) {
+                text.append(gold.id()).append(" Q0 ").append(got.get(i)).append(' ')
+                        .append(i + 1).append(' ')
+                        .append(String.format(java.util.Locale.ROOT, "%.6f", 1.0 / (i + 1)))
+                        .append(' ').append(config).append('\n');
+            }
+        }
+        Files.writeString(this.reports.resolve(config + ".run"), text.toString(), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 零候选题：qid + 实际给了几个候选 + 给了哪几个。
+     *
+     * <p>带工具名是因为排障要看"谁挤进来的"，而指标只记个数。
+     */
+    private void writeNoCandidate() throws IOException {
+        ObjectMapper mapper = new ObjectMapper();
+        StringBuilder text = new StringBuilder();
+        for (ToolGold gold : this.golds) {
+            if (!gold.goldTools().isEmpty()) {
+                continue;
+            }
+            List<String> got = this.rankings.get("regex").get(gold.id());
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("qid", gold.id());
+            row.put("returned", got.size());
+            row.put("tools", got);
+            text.append(mapper.writeValueAsString(row)).append('\n');
+        }
+        Files.writeString(this.reports.resolve("no-search.jsonl"), text.toString(), StandardCharsets.UTF_8);
+    }
+
+    /** 前三档不需要向量库，传 {@code null}；与快照那份同一套构造。 */
+    private ToolIndex index(String config) {
+        ToolSearchProperties properties = switch (config) {
+            case "lucene" -> new ToolSearchProperties(ToolSearchProperties.Index.LUCENE, 5, null);
+            default -> ToolSearchProperties.defaults();
+        };
+        return ToolSearch.index(properties, null, ToolCategories.of(Map.of()), this.translator);
+    }
+
+    private ToolIndex hybrid(double weight) {
+        ToolSearchProperties properties = new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, 5, null,
+                null, 0, null, Map.of(), new ToolSearchProperties.Hybrid(weight), null);
+        VectorStore vectorStore = ToolVectorStore.create(this.jdbc, this.embeddings, 1024);
+        return ToolSearch.index(properties, vectorStore, ToolCategories.of(Map.of()), this.translator);
+    }
+
+    private static List<String> names(ToolSearchResponse response) {
+        if (response == null || response.toolReferences() == null) {
+            return List.of();
+        }
+        return response.toolReferences().stream().map(ToolReference::toolName).toList();
+    }
+
+    private static ToolReference reference(ToolCallback callback) {
+        return ToolReference.builder()
+                .toolName(callback.getToolDefinition().name())
+                .summary(callback.getToolDefinition().description())
+                .build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<ToolGold> golds() throws IOException {
+        Path file = TestPaths.repositoryRoot().resolve("eval/tools/gold.yaml");
+        try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            List<Map<String, Object>> rows = new Yaml().load(reader);
+            List<ToolGold> golds = new ArrayList<>(rows.size());
+            rows.forEach(row -> golds.add(ToolGold.from(row)));
+            return golds;
+        }
+    }
+}

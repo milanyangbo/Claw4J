@@ -36,3 +36,9 @@ __pycache__/
 # 验收现场留下的原始日志：本地证据，几百 KB 的 DEBUG，不入库
 # （同目录的 README、SSE 帧、覆盖配置、超长人设都入库，是可以对着看的证据）
 docs/acceptance/**/*.log
+
+# 工具检索评测（票 12）：与 eval/rag 同一条规矩——基线入库，产物不入库。
+eval/tools/reports/*
+!eval/tools/reports/.gitkeep
+eval/tools/.venv/
+eval/tools/__pycache__/
