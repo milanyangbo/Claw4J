@@ -480,7 +480,7 @@ class ModelAndToolSelectionTest {
                 .containsExactly(ToolSearch.TOOL_NAME);
         assertThat(textsOf(first))
                 .as("检索提示词也要追加到流式的系统消息上，否则模型会说「我没有工具」")
-                .contains("不代表没有这个能力");
+                .contains("工具不止眼前这些");
     }
 
     /**
@@ -544,11 +544,15 @@ class ModelAndToolSelectionTest {
         assertThat(ToolSearch.SYSTEM_SUFFIX)
                 .as("索引能认整句之后，提示词里不该还要求模型自己分词")
                 .doesNotContain("空格")
-                .as("但“看不到工具不代表没有这个能力”必须留着——不写它模型会直接答“我没有工具”")
-                .contains("不代表没有这个能力")
+                .as("“还有工具没加载”这层意思必须留着——不写它模型会直接答“我没有工具”")
+                .contains("工具不止眼前这些")
                 .as("必须明确许可“这次不用工具”：这是 BFCL prompt 形态里那句 If none of the functions "
                         + "can be used, point it out 的等价物，也是乱调的唯一出口")
                 .contains("不要拿相近的工具硬做")
+                .as("不许再断言“你现在只看得见检索工具”：这句话只在检索之前成立，"
+                        + "而系统消息会跟着工具循环进到后面每一轮，那时它是假的"
+                        + "（BFCL 上实测：模型照它去调了一个不存在的 toolSearchTool，34 次）")
+                .doesNotContain("只看得见")
                 .as("不许再写义务句：它把“该不该检索”变成命令，而判断该由模型做")
                 .doesNotContain("第一步就是调")
                 .as("不许再举具体动作当例子：它教的是“遇到含糊的话就去查历史”，不是“怎么描述能力”")
