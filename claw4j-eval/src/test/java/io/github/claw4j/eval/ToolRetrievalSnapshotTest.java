@@ -140,8 +140,11 @@ class ToolRetrievalSnapshotTest {
 
     /** 前三档不需要向量库，传 {@code null}；分组留空，与线上默认一致。 */
     private ToolIndex index(ToolSearchProperties defaults, String config) {
+        // 每档显式写出自己的 Index，不吃 defaults 里那个：2026-11-26 起应用默认是 hybrid，
+        // 拿它当 regex 用会去找向量库（这里只传 null），报的是一句和本意无关的装配错误。
         ToolSearchProperties properties = switch (config) {
             case "lucene" -> new ToolSearchProperties(ToolSearchProperties.Index.LUCENE, 5, null);
+            case "regex" -> new ToolSearchProperties(ToolSearchProperties.Index.REGEX, 5, null);
             default -> defaults;
         };
         return ToolSearch.index(properties, null, ToolCategories.of(Map.of()), this.translator);

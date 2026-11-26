@@ -78,11 +78,10 @@ TOLERANCE = 0.05
 # 只给**有用户可感知后果**的指标设门，其余标 — 作诊断项（与 eval/rag 把「召回完整性」
 # 标 — 是同一条理由：均值会抹平长尾，拿它当门只会常红）。
 #
-# 判两档，因为它们是两个不同的问题：
-#   GATE_PRIMARY —— 生产默认档（application.yml 的 index: regex）。用户此刻拿到的就是它。
-#   GATE_BEST    —— 改配置后能达到的水平。换默认值是要单独量的事（见 application.yml 注释），
-#                   但在那之前也该知道"能到多少"。
-# ---------------------------------------------------------------------------
+# 质量线判生产实际在用的那一档——`application.yml` 的 `index` 是什么，这里就是什么。
+# 2026-11-26 起默认是 hybrid-0.0（实测 0.800；regex 只有 0.360，词面匹配撞英文描述的上限）。
+# 判一个有用户在用的档才有意义：给没人用的对照档设门，红了也不会有人去修。
+GATE_PRIMARY = "hybrid-0.0"
 
 # R@5 的合格线。依据：24 个工具里随机取 5 个的命中率是 5/24 ≈ 0.208；0.80 是它的近 4 倍，
 # 且等于"5 题漏 1 题"。为什么不照抄 rag 的 0.90：RAG 漏一段信息就真没了，
@@ -91,9 +90,6 @@ GATE_R5 = 0.80
 
 # 闲聊误触发：用户直接的观感错误（说「谢谢」却去查天气）。0.90 = 十次允许一次。
 GATE_NO_SEARCH = 0.90
-
-GATE_PRIMARY = "regex"
-GATE_BEST = "hybrid-0.0"
 
 # 交叉校验的容忍：两套实现算同一批整数除法，浮点差只该在末位。
 CROSS_CHECK_EPS = 1e-9
@@ -289,18 +285,16 @@ def quality_rows(scores: dict[str, dict[str, float]], zero: dict[str, object],
     accepted_rate = (baseline or {}).get("no_search_rate")
     rows = []
 
-    for config, label in ((GATE_PRIMARY, "生产默认"), (GATE_BEST, "可用最优")):
-        if config not in scores:
-            continue
-        current = scores[config]["R@5"]
-        accepted = metrics.get(config, {}).get("R@5")
+    if GATE_PRIMARY in scores:
+        current = scores[GATE_PRIMARY]["R@5"]
+        accepted = metrics.get(GATE_PRIMARY, {}).get("R@5")
         rows.append({
-            "name": f"R@5（{config}，{label}）",
+            "name": f"R@5（{GATE_PRIMARY}，生产默认）",
             "current": f"{current:.3f}",
             "gate": f"≥{GATE_R5:.2f}",
             "basis": "绝对门",
             "state": _state(current, GATE_R5, accepted),
-            "problem": f"{config} 的 R@5 = {current:.3f} < 合格线 {GATE_R5:.2f}",
+            "problem": f"{GATE_PRIMARY} 的 R@5 = {current:.3f} < 合格线 {GATE_R5:.2f}",
         })
 
     current = zero["rate"]
@@ -315,10 +309,10 @@ def quality_rows(scores: dict[str, dict[str, float]], zero: dict[str, object],
     })
 
     for name in ("R@1", "RR", "nDCG@10"):
-        if GATE_BEST in scores:
+        if GATE_PRIMARY in scores:
             rows.append({
-                "name": f"{name}（{GATE_BEST}）",
-                "current": f"{scores[GATE_BEST][name]:.3f}",
+                "name": f"{name}（{GATE_PRIMARY}）",
+                "current": f"{scores[GATE_PRIMARY][name]:.3f}",
                 "gate": "—",
                 "basis": "诊断项，不作门",
                 "state": "—",

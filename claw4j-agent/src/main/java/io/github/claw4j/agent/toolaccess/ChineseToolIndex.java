@@ -3,6 +3,7 @@ package io.github.claw4j.agent.toolaccess;
 import org.springframework.ai.tool.toolsearch.index.regex.RegexToolIndex;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -75,6 +76,29 @@ public class ChineseToolIndex extends RegexToolIndex {
             Map.entry("浏览", List.of("fetch", "url")));
 
     /**
+     * 寒暄与语气词。整句只由这些词拼成时不给候选——那不是找工具，是人在说话。
+     *
+     * <p>规则是<b>只增不减</b>：命中就返回空，没命中就走原来的路。所以它不会让任何正常
+     * query 变差，只可能漏掉某些新的寒暄说法（那时保持现状，不退化）。
+     *
+     * <p>为什么不用「短句 + 无动词就判闲聊」那种更通用的规则：实测它会误杀
+     * 「那个进程打印了什么」（要 BashOutput）、「还有什么事挂着没人管」（要 github_issue_list）——
+     * 这两句都没有工具名里的字，用户只是在用口语描述，正是检索该处理的情况。
+     *
+     * <p>词表每一条都能指到 {@code eval/tools/retrieval/gold.yaml} 里一道 no-search 题；
+     * 单字那几条是为了让「好的吧」「嗯…那」这类组合也能被整体吃掉。
+     */
+    private static final List<String> CHITCHAT = List.of(
+            "谢谢", "感谢", "多谢", "辛苦", "好的", "收到", "知道", "明白", "了解", "哈哈", "呵呵",
+            "再见", "回头聊", "先这样", "就这样", "那就这样", "你在吗", "在吗", "今天", "天气",
+            "不错", "没事", "不用", "好", "嗯", "哦", "行", "吧", "了", "的", "那", "你", "吗", "啊", "哈");
+
+    /** 长词先删：先吃掉「那就这样」，剩下的「那」才不会把后半句也一起吞掉。 */
+    private static final List<String> CHITCHAT_LONGEST_FIRST = CHITCHAT.stream()
+            .sorted(Comparator.comparingInt(String::length).reversed())
+            .toList();
+
+    /**
      * 把 query 变成父类那一套形状的正则：{@code (?i)(token1|token2|...)}。
      *
      * <p>不含中文时原样交回父类，英文 query 的行为因此逐字不变——不是保证，是根本没走新代码。
@@ -82,11 +106,11 @@ public class ChineseToolIndex extends RegexToolIndex {
      * {@code recall} 也不会被打散成 {@code re|ca|ll}。
      *
      * @param query 用户或模型给出的检索词
-     * @return 匹配用的正则；空 query 与切不出 token 时返回 {@link #NEVER_MATCH}
+     * @return 匹配用的正则；空 query、纯寒暄、切不出 token 时返回 {@link #NEVER_MATCH}
      */
     @Override
     public String convertQueryToRegexPattern(String query) {
-        if (query == null || query.isBlank()) {
+        if (query == null || query.isBlank() || chitchatOnly(query)) {
             return NEVER_MATCH;
         }
         if (segments(query).stream().noneMatch(Segment::cjk)) {
@@ -269,5 +293,26 @@ public class ChineseToolIndex extends RegexToolIndex {
 
     /** 一段连续同类字符：{@code cjk} 为真表示这一整段都是中日韩文字。 */
     private record Segment(boolean cjk, String text) {
+    }
+
+    /**
+     * 整句是不是只由寒暄词拼成。
+     *
+     * <p>先去掉标点空白（「谢谢，明白了」里的逗号不该让判定失效），再把词表按长度从长到短
+     * 逐个子串删除，删空即视为寒暄。子串删除而不是分词：这些词本来就没有歧义边界，
+     * 「那就这样」与「那」的先后顺序才是唯一要照顾的事。
+     *
+     * @param query 原始检索词
+     * @return 全是寒暄时为真
+     */
+    private static boolean chitchatOnly(String query) {
+        String rest = query.replaceAll("[^\\p{L}\\p{N}]", "");
+        if (rest.isEmpty()) {
+            return true;
+        }
+        for (String word : CHITCHAT_LONGEST_FIRST) {
+            rest = rest.replace(word, "");
+        }
+        return rest.isEmpty();
     }
 }

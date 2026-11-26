@@ -64,10 +64,10 @@ public final class IntentTools implements ToolCallbackProvider {
      * @return 给模型看的结果
      */
     @Tool(name = NAME, description = """
-            留下一条"以后遇到某种说法就提醒我"的记忆（不是定时任务）。
-            适合「以后有人问客户数，先确认是签约数还是活跃数」这类要求；
-            要「每天九点提醒我」请用 schedule_task。
-            触发词命中后会在那一轮回复里出现一小段提醒，最多提醒几次、多久冷却、何时过期都可配。
+            记住一条"以后出现某种说法时替我提一句"的规则，按触发词命中，不是按时间。
+            适合「以后有人问客户数，先确认是签约数还是活跃数」这类要求。
+            按时间、按日程的定时任务不归这里，用 schedule_task。
+            触发词命中后会在那一轮回复里出现一小段话，最多几次、多久冷却、何时过期都可配。
             """)
     public String intent(
             @ToolParam(description = "动作：create 新建、list 列出自己的、cancel 取消") String action,

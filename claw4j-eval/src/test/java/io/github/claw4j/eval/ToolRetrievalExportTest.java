@@ -97,6 +97,10 @@ class ToolRetrievalExportTest {
                 () -> TestPaths.repositoryRoot().resolve("examples/agents").toString());
         registry.add("claw4j.agent.default", () -> "ops");
         registry.add("claw4j.advisor.cache.enabled", () -> "false");
+        // 中文化只喂向量那一路（票 11 的架构决定）。应用默认已经是 true（票 20），
+        // 这里仍显式写一遍：本类的上下文只加载自动配置、不读 application.yml，
+        // 不写就会拿到组件默认的 false，量出来的分数与线上不是一回事。
+        registry.add("claw4j.advisor.tool-search.zh-description.enabled", () -> "true");
         // 两个示例 MCP server（票 14）：github_* 与 mail_* 只有在接上它们时才会进目录，
         // 而那正是 business 这一档里"外部系统工具"那一类。工具清单在 serve(...) 里静态声明，
         // 本机不需要装 gh / himalaya —— 那两个 CLI 只在**调用**时才检查。

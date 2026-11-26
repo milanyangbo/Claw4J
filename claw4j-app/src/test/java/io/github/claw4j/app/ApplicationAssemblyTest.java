@@ -2,6 +2,7 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.observability.MeteredToolIndex;
+import io.github.claw4j.agent.toolaccess.HybridToolIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.toolaccess.ToolVectorStore;
@@ -506,9 +507,22 @@ class ApplicationAssemblyTest {
         assertThat(index)
                 .as("最外层是计量：包在里层记到的是收窄之前那一批，答不了「模型看到几个」")
                 .isInstanceOf(MeteredToolIndex.class);
-        assertThat(((MeteredToolIndex) index).delegate())
-                .as("第二层是分组：框架的 categoryFilter 只有这一层读")
-                .isInstanceOf(NamespacedToolIndex.class);
+        // 分组必须贴在"真正去检索"的那一层上：框架的 categoryFilter 只有 NamespacedToolIndex 读。
+        // 默认档是 hybrid（2026-11-26 起），它自己不是分组层，分组在两翼各贴一层——
+        // 贴在它外面就会让收窄发生在融合之后，前一组先把名额占满，"收窄"反而更少。
+        ToolIndex second = ((MeteredToolIndex) index).delegate();
+        if (second instanceof HybridToolIndex hybrid) {
+            assertThat(hybrid.keywordWing())
+                    .as("关键字那一翼没有分组，收窄在融合这一层就失效了")
+                    .isInstanceOf(NamespacedToolIndex.class);
+            assertThat(hybrid.vectorWing())
+                    .as("向量那一翼没有分组，同上")
+                    .isInstanceOf(NamespacedToolIndex.class);
+        } else {
+            assertThat(second)
+                    .as("第二层是分组：框架的 categoryFilter 只有这一层读")
+                    .isInstanceOf(NamespacedToolIndex.class);
+        }
     }
 
     /**

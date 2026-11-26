@@ -18,7 +18,10 @@ import java.util.Map;
  * 边缘场景，而是花在最常见的一类问法上——{@code examples 目录下有哪些 md} 这种话，模型 5/5
  * 都不去检索，直接答"我没有能列目录的工具"。所以改成按规模滑档，见 {@link Mode#AUTO}。
  *
- * @param index       看不见的那部分用哪种索引找回来，见 {@link Index}；不写取 {@link Index#REGEX}
+ * @param index       看不见的那部分用哪种索引找回来，见 {@link Index}；不写取 {@link Index#REGEX}<br>
+ *                    <b>库的默认与应用的不同</b>：库不替调用方决定依赖向量库，所以留 REGEX；
+ *                    {@code claw4j-app} 的 {@code application.yml} 配的是 {@code hybrid} +
+ *                    {@code keyword-weight: 0}（2026-11-26 实测那是唯一能过 R@5 0.80 的档）。
  * @param maxResults  一次检索最多返回几个候选工具（框架约定 1–10，默认 5）
  * @param lucene      {@code index=lucene} 那一档的参数
  * @param mode        工具面怎么露，见 {@link Mode}；不写取 {@link Mode#AUTO}
@@ -60,8 +63,11 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
     public enum Index {
 
         /**
-         * 正则分词（默认）：{@link ChineseToolIndex} 在框架的 {@code RegexToolIndex} 上加了中文二元组
+         * 正则分词：{@link ChineseToolIndex} 在框架的 {@code RegexToolIndex} 上加了中文二元组
          * 与同义词表，整句不用空格也能命中。
+         *
+         * <p>只认字面，所以中文问法撞英文描述时上限就摆在那里（2026-11-26 实测 R@5 0.360）。
+         * 它不再是默认档——默认是 {@link #HYBRID}。
          */
         REGEX,
 

@@ -52,6 +52,15 @@ public final class ToolDescriptionTranslator {
      */
     static final int MIN_CJK_CHARS = 6;
 
+    /**
+     * 提示词版本，进 hash。
+     *
+     * <p>译文表按 {@code (tool_name, source_hash)} 判新鲜。只对描述取 hash 的话，改了提示词
+     * 仍会读到旧译文——评测每次都是新库所以看不出来，生产里是"改了没生效"，最坏的那种失败。
+     * <b>改 {@link #ask} 的提示词就要把它 +1。</b>
+     */
+    private static final String PROMPT_VERSION = "v2";
+
     /** 什么都不做的那个：没有配置、或开关关着时用它，调用方不必到处判空。 */
     public static final ToolDescriptionTranslator NONE =
             new ToolDescriptionTranslator(null, new ToolSearchProperties.ZhDescription(false, List.of()));
@@ -218,8 +227,10 @@ public final class ToolDescriptionTranslator {
      */
     private String ask(String name, String description) {
         String answer = this.model.call(new Prompt("""
-                把下面这句工具描述翻成一句简体中文。要求：保留工具名、参数名、代码标识符原样；
-                不加解释；不换行；只输出译文。
+                把下面这句工具描述翻成一句简体中文，然后在同一行用“；用户常说：”接上 5–8 个
+                中文口语说法（用户想用这个工具时可能怎么讲，包括委婉、不点名、只描述处境的讲法，
+                不要解释、不要重复原句）。
+                要求：保留工具名、参数名、代码标识符原样；不加解释；不换行；只输出这一行。
 
                 工具名：%s
                 描述：%s""".formatted(name, description)))
@@ -278,7 +289,8 @@ public final class ToolDescriptionTranslator {
     private static String hash(String text) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(text.getBytes(StandardCharsets.UTF_8)));
+            return HexFormat.of().formatHex(digest.digest((PROMPT_VERSION + "\n" + text)
+                    .getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("JDK 没有 SHA-256", impossible);
         }
