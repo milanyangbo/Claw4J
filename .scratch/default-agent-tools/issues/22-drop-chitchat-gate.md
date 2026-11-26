@@ -1,6 +1,6 @@
 # 票 22：撤掉检索层的寒暄拦截，no-search 归到模型侧 irrelevance
 
-**Status:** open
+**Status:** open（代码已落地；装配那条用例缺 `DEEPSEEK_API_KEY` 未现场复核，见「复核」）
 **来源：** 用户 2026-11-26 的三条质疑 + 一句裁决。质疑：「不具备通用性」「很长一句话里面包含了
 CHITCHAT 这些关键字，那算不算寒暄」「每次过来都要跑一遍正则，真实场景会有性能损耗」「主要感觉
 `ChitchatToolIndex` 就是为了跑评测专门增加的」。裁决：「去除 ChitchatToolIndex 吧，感觉真正要提高的
@@ -61,18 +61,35 @@ CHITCHAT 这些关键字，那算不算寒暄」「每次过来都要跑一遍�
 
 ## TDD 用例清单
 
-| 判什么行为 | 用例 | 先红的样子 |
-| --- | --- | --- |
-| 不配规则时，最外层就是融合/分组，没有第四条包装 | `ModelAndToolSelectionTest#indexLayersAreInOrder`（现有分层断言改写） | 断言里还要求 `ChitchatToolIndex`；类删掉后编译不过 |
-| 配了规则时，最外层是规则层 | `ModelAndToolSelectionTest#rulePutsItsToolFirst` | 现有断言写成"最外层是寒暄层"，改后必须指 `RuleToolIndex` |
-| 中文整句照样命中，去掉寒暄断言后这条不被顺手弄坏 | `ModelAndToolSelectionTest#chineseQueryNeedsNoSpaces` | 删断言时把前两段一起删掉，就没人守"中文整句不空手" |
-| 删类之后装配仍起得来，分层断言与新链路一致 | `ApplicationAssemblyTest` | 还 import 不到已删的类 |
-| 检索层评测不再有 `no-search` 一档 | `./eval/tools/retrieval/run.sh` | `run_ir.py` 仍去找 `no-search.jsonl`，缺文件时报错或静默跳过 |
+| 判什么行为 | 用例 | 先红的样子 | 结果 |
+| --- | --- | --- | --- |
+| 配了规则时，最外层是规则层（原来断言的是寒暄层） | `ModelAndToolSelectionTest#rulePutsItsToolFirst`（991 行） | 现有断言 `isInstanceOf(ChitchatToolIndex.class)`，类删掉后编译不过 | ✅ |
+| 中文整句照样命中，去掉寒暄断言后这条不被顺手弄坏 | `ModelAndToolSelectionTest#chineseQueryNeedsNoSpaces`（504 行） | 删第三段时把前两段一起删掉，就没人守"中文整句不空手" | ✅ |
+| 删除后装配链是 计量 → 融合/分组（原来是 计量 → 寒暄 → 融合/分组） | `ApplicationAssemblyTest#toolSurfaceDefaultsToAutoAndWrapsGrouping`（486 行，516–518 是那三行） | 还 import 不到已删的类；剥壳写死两层，改后必须指向 `HybridToolIndex` 或 `NamespacedToolIndex` | ❌ 未跑：本机 `.env` 的 `DEEPSEEK_API_KEY` 为空，ADR-0011 没有 mock 兜底，上下文起不来 |
+| 题库不再有 `no-search`，空 gold 会被拒 | `ToolGoldTest`（9 条，含改写后的"空 gold 抛异常"） | 空 gold 若被静默接受，分母就少一道该扣分的题 | ✅ |
+| 检索层评测不再有 `no-search` 一档 | `./eval/tools/retrieval/run.sh --from-report` | `run_ir.py` 仍去找 `no-search.jsonl`，缺文件时报错或静默跳过 | ✅ 退出码 0 |
 
 ⏳ **「寒暄不给候选」这条行为本身**：本票不再由任何用例守——它不再是系统的约束，改由 BFCL
 `irrelevance` 量。见缺口。
 
-复核：待落地后补 `./scripts/verify.sh` 与 `./eval/tools/retrieval/run.sh --from-report` 的结果。
+复核：`2026-11-26` — `ModelAndToolSelectionTest` 26/26 绿；`ToolGoldTest` 9/9 绿；
+`-pl claw4j-agent,claw4j-eval -am test` 231 条里 230 绿，唯一红的是
+`ChatPipelineTest#realModelTurnsNaturalLanguageIntoTheRightToolCall`（缺 `DEEPSEEK_API_KEY`，
+与本案无关）；`run.sh --from-report` 退出码 0、`R@5` 0.880 达标。
+**`ApplicationAssemblyTest` 那一条没跑**——同样是真模型上下文，同一个原因，留待有 key 时复核。
+
+## 落地记录
+
+| 改了什么 | 说明 |
+| --- | --- |
+| 删 `ChitchatToolIndex.java` | 121 行，含 35 词词表与"删空才算寒暄"的判据 |
+| `ToolSearch.index()` 直接返回规则层或索引本身 | 注释里留了撤掉的三条理由，防止以后有人照"性能"再把它加回来 |
+| `ToolGold.goldTools` 改为**不可为空** | 空的唯一含义原本是"不该有候选"，这个语义已不存在；现在空 = 漏写 gold，构造时抛异常 |
+| 评测产物同步 | `gold.yaml` 删 10 题（60→50）、`categories.txt` 删 10 行、`no-search.jsonl` 删除、`baseline.json` 去掉 `no_search_rate`、报告重生成 |
+
+评测没有重新导出、只跑 `--from-report`，依据是：**被删的那一层对剩下 50 题原样透传**——它只在
+"整句由寒暄词拼成"时返回零候选，而题库里已经没有这类题。所以那 50 题的 `.run` 与重新导出等价。
+（有 `QWEN_API_KEY` 的环境再跑一次完整导出也行，预期逐格相同。）
 
 ## 缺口
 
