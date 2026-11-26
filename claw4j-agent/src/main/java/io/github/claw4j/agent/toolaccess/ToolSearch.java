@@ -106,11 +106,17 @@ public final class ToolSearch {
         return switch (properties.index()) {
             case REGEX -> new NamespacedToolIndex(new ChineseToolIndex(), categories);
             case LUCENE -> new NamespacedToolIndex(
-                    new LuceneToolIndex(properties.lucene().minScore()), categories);
+                    new TranslatedVectorIndex(new LuceneToolIndex(properties.lucene().minScore()),
+                            translator), categories);
             case VECTOR -> new NamespacedToolIndex(
                     new TranslatedVectorIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
                             translator), categories);
-            case HYBRID -> HybridToolIndex.of(categories, new ChineseToolIndex(),
+            // 关键字翼是 Lucene，不是 self-written 的 ChineseToolIndex（票 21）：
+            // TF-IDF 排序比"二元组命中次数累加"靠谱，而且描述一变长，它的 IDF 会把常见字压下去，
+            // 不像二元组那样越加越容易碰撞。两翼都吃译文——否则中文问法只能撞上中文描述的工具。
+            case HYBRID -> HybridToolIndex.of(categories,
+                    new TranslatedVectorIndex(new LuceneToolIndex(properties.lucene().minScore()),
+                            translator),
                     new TranslatedVectorIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
                             translator), properties.hybrid().keywordWeight());
         };

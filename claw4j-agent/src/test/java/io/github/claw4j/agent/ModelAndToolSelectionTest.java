@@ -338,7 +338,11 @@ class ModelAndToolSelectionTest {
 
         ToolSearchProperties lucene = new ToolSearchProperties(
                 ToolSearchProperties.Index.LUCENE, 5, new ToolSearchProperties.Lucene(0.6f));
-        assertThat(inner(ToolSearch.index(lucene, null, categories, zh)))
+        ToolIndex luceneIndex = inner(ToolSearch.index(lucene, null, categories, zh));
+        assertThat(luceneIndex)
+                .as("lucene 那一档外面包着翻译层（票 21）：它按字切中文 query，不换中文描述就撞不上英文原文")
+                .isInstanceOf(TranslatedVectorIndex.class);
+        assertThat(untranslated(luceneIndex))
                 .as("lucene 那一档不再需要容器里有什么")
                 .isInstanceOf(LuceneToolIndex.class);
 
@@ -367,10 +371,14 @@ class ModelAndToolSelectionTest {
         assertThat(((HybridToolIndex) fused).vectorWing())
                 .isInstanceOf(NamespacedToolIndex.class);
         assertThat(inner(((HybridToolIndex) fused).vectorWing()))
-                .as("向量翼里包着翻译层；关键字翼没有——两路读不同的文本")
+                .as("向量翼里包着翻译层")
                 .isInstanceOf(TranslatedVectorIndex.class);
         assertThat(inner(((HybridToolIndex) fused).keywordWing()))
-                .isInstanceOf(ChineseToolIndex.class);
+                .as("关键字翼也包着翻译层（票 21）：两翼读同一份中文描述，只是检索方式不同")
+                .isInstanceOf(TranslatedVectorIndex.class);
+        assertThat(untranslated(inner(((HybridToolIndex) fused).keywordWing())))
+                .as("关键字翼是 Lucene，不是自研的 ChineseToolIndex")
+                .isInstanceOf(LuceneToolIndex.class);
 
         new ApplicationContextRunner()
                 .withUserConfiguration(BindingOnly.class)
@@ -404,6 +412,11 @@ class ModelAndToolSelectionTest {
     /** 分组那层统一在最里面，验"选哪一档"时要先剥掉它。 */
     private static ToolIndex inner(ToolIndex index) {
         return index instanceof NamespacedToolIndex namespaced ? namespaced.delegate() : index;
+    }
+
+    /** 再往里剥一层翻译包装：断言"真正干活的索引是哪个"时要穿过它。 */
+    private static ToolIndex untranslated(ToolIndex index) {
+        return index instanceof TranslatedVectorIndex translated ? translated.delegate() : index;
     }
 
     /**
