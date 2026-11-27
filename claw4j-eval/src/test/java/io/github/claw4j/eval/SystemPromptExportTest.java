@@ -33,9 +33,9 @@ class SystemPromptExportTest {
     private static final String TARGET = "eval/tools/bfcl/system-prompt.txt";
 
     @Test
-    @DisplayName("把 SYSTEM_SUFFIX 原样导出，并读回来逐字比对（票 30）")
+    @DisplayName("把 SYSTEM_SUFFIX 原样导出，并读回来逐字比对（票 30 / 31）")
     void exportsTheSuffixVerbatim() throws IOException {
-        String suffix = ToolSearch.SYSTEM_SUFFIX;
+        String suffix = suffix();
 
         assertThat(suffix)
                 .as("空提示词挂上去等于裸跑，两次结果一样却会得出「提示词没用」的结论")
@@ -53,5 +53,26 @@ class SystemPromptExportTest {
                 .isGreaterThan(50L);
 
         System.out.printf("已导出 %s（%d 字符，%d 字节）%n", out, suffix.length(), Files.size(out));
+    }
+
+    /**
+     * 用反射读，不直接写 {@code ToolSearch.SYSTEM_SUFFIX}。
+     *
+     * <p>它不是修辞上的洁癖：{@code public static final String} 由字面量拼成，是**编译期常量**，
+     * javac 会把值**内联**进每一个引用点。于是改了 {@code ToolSearch} 之后，只要这个测试类
+     * 自己没被重编（增量编译只看源码有没有变，看不到"依赖的常量变了"），跑出来导出的仍是
+     * 上一版文案——而测试会绿、文件会写、`--with-prompt` 会照常跑，量的却是已经不存在的提示词。
+     *
+     * <p>2026-11-27（票 31）踩过一次：改了四句文案，导出的还是旧的三句，287 字节一个不差。
+     * 反射取值在运行时解析，绕开内联，才叫"读真值"。
+     */
+    private static String suffix() {
+        try {
+            return (String) ToolSearch.class.getField("SYSTEM_SUFFIX").get(null);
+        }
+        catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException(
+                    "读不到 ToolSearch.SYSTEM_SUFFIX：字段被改名或降级成非 public，导出就没有对象了", failure);
+        }
     }
 }

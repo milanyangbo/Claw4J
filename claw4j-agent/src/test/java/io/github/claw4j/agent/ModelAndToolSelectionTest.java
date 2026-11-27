@@ -537,22 +537,32 @@ class ModelAndToolSelectionTest {
         //     刻意不在这里补一条"提示词不许提寒暄"的断言——反过来的措辞（"闲聊不必检索"）
         //     正是交给模型那条路要写的话，挡它等于挡正确改动。
 
-        // 四、提示词只讲机制与许可（票 24），不讲义务、不举动作例子、不列例外清单。
-        //     行业四份文本（Claude Code 的运行时注入、OpenAI 的 tool_search 描述、Spring AI 的
-        //     ToolSearchTool 描述、BFCL prompt 形态的系统提示）都是 1–4 句陈述句，没有一份在劝
-        //     "要多用工具"。这里把三条反面锚点钉住，防止哪天又往回写。
+        // 四、提示词只讲"用不用工具"，不讲"怎么把工具取回来"（票 24 起，票 31 定稿）。
+        //     行业四份文本（Anthropic 的工具写作指南、OpenClaw 的 ## Tooling / ## Execution Bias、
+        //     MCP 的 annotations、BFCL 的 prompt 形态）都是 1–4 句陈述句，没有一份在劝"多用工具"，
+        //     也没有一份让模型"再去取一次"——取用是工具自身 description 的职责。
         assertThat(ToolSearch.SYSTEM_SUFFIX)
                 .as("索引能认整句之后，提示词里不该还要求模型自己分词")
                 .doesNotContain("空格")
-                .as("“还有工具没加载”这层意思必须留着——不写它模型会直接答“我没有工具”")
+                .as("“还有工具没加载”这层事实必须留着——不写它模型会直接答“我没有工具”")
                 .contains("工具不止眼前这些")
                 .as("必须明确许可“这次不用工具”：这是 BFCL prompt 形态里那句 If none of the functions "
                         + "can be used, point it out 的等价物，也是乱调的唯一出口")
                 .contains("不要拿相近的工具硬做")
+                .as("参数不许编：编出来的参数比不调用更难发现")
+                .contains("问用户")
                 .as("不许再断言“你现在只看得见检索工具”：这句话只在检索之前成立，"
                         + "而系统消息会跟着工具循环进到后面每一轮，那时它是假的"
                         + "（BFCL 上实测：模型照它去调了一个不存在的 toolSearchTool，34 次）")
                 .doesNotContain("只看得见")
+                .as("票 31：不许再出现检索通道的名字。suffix 在工具取回来之后还一直带着，"
+                        + "再点名就是让人再去取一遍——换了 channel 名也一样不行")
+                .doesNotContain("toolSearchTool")
+                .doesNotContain("检索")
+                .doesNotContain("取出来")
+                .as("不许出现时序词：suffix 每轮都在，'接下来''之后'在后几轮自相矛盾")
+                .doesNotContain("接下来")
+                .doesNotContain("之后")
                 .as("不许再写义务句：它把“该不该检索”变成命令，而判断该由模型做")
                 .doesNotContain("第一步就是调")
                 .as("不许再举具体动作当例子：它教的是“遇到含糊的话就去查历史”，不是“怎么描述能力”")
