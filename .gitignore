@@ -33,9 +33,8 @@ eval/rag/__pycache__/
 __pycache__/
 *.pyc
 
-# 验收现场留下的原始日志：本地证据，几百 KB 的 DEBUG，不入库
-# （同目录的 README、SSE 帧、覆盖配置、超长人设都入库，是可以对着看的证据）
-docs/acceptance/**/*.log
+# 验收留痕整目录不入库：日志、样张、逐条记录都是跑完就该丢的东西，只留在本机。
+docs/acceptance/
 
 # 工具评测（票 12 检索层 / 票 17 选择层）：与 eval/rag 同一条规矩——基线入库，产物不入库。
 # 两层各自的目录见 eval/tools/README.md。
