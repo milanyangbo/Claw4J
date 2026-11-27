@@ -2,17 +2,22 @@ package io.github.claw4j.agent.session;
 
 import io.github.claw4j.agent.audit.DecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.agent.toolaccess.GatedToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditErrorCode;
 import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
-import io.github.claw4j.agent.audit.ToolCallAudit;
 import io.github.claw4j.agent.approval.ApprovalRequiredToolCallback;
 import io.github.claw4j.agent.approval.ApprovalRequiredTools;
 import io.github.claw4j.domain.ApprovalChoice;
 import io.github.claw4j.domain.ApprovalVerdict;
 import io.github.claw4j.domain.port.Approvals;
 import org.springframework.ai.tool.definition.DefaultToolDefinition;
+import org.springframework.ai.tool.toolsearch.ToolIndex;
+import org.springframework.ai.tool.toolsearch.ToolReference;
+import org.springframework.ai.tool.toolsearch.ToolSearchRequest;
+import org.springframework.ai.tool.toolsearch.ToolSearchResponse;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.NotifyPolicy;
@@ -829,6 +834,105 @@ class ToolGovernanceTest {
         private int calls() {
             return calls;
         }
+    }
+
+    // ---------------------------------------------------------------- 准入闸那一半（票 29 / ADR-0039）
+
+    /**
+     * 通用工具的准入闸：问句没点名，它就不该出现在候选里。
+     *
+     * <p>这一半和上面审批那一半问的是同一个问题的两端：审批管"调了之后要不要放行"，闸管
+     * "该不该出现在眼前"。票 28 量出来 240 条里误调 56 条，26 条集中在四个"对什么都能凑合"的
+     * 工具上——它们在候选里，模型就会顺手用一下，而审批拦不住这种"看着像在干活"的调用。
+     *
+     * <p>闸只负责**删**，不负责**排**：置顶是 {@code RuleToolIndex} 的活。两条各管一半，
+     * 用同一张配置表，所以断言要分开看——混在一起测，"删错了"与"没排对"分不出来。
+     */
+    @Test
+    @DisplayName("通用工具没被点名就不进候选；没标 gate 的规则一条都不删（票 29）")
+    void gateTakesGenericToolOutUnlessTheQuestionNamesIt() {
+        ToolSearchProperties.Rule bash = new ToolSearchProperties.Rule("跑|编译|测试", List.of("Bash"), true);
+        ToolSearchProperties.Rule finance = new ToolSearchProperties.Rule("报销", List.of("finance_export"), false);
+        ToolIndex index = GatedToolIndex.of(
+                new FixedIndex(List.of("Bash", "weather_now", "book_search", "sun_times", "finance_export")),
+                List.of(bash, finance));
+
+        assertThat(names(index.search(request("讲个笑话"))))
+                .as("问句里没有「跑/编译/测试」：Bash 不该出现——它在候选里，模型就会拿它算个数")
+                .doesNotContain("Bash")
+                .contains("weather_now", "book_search");
+        assertThat(names(index.search(request("在仓库里跑一遍单元测试"))))
+                .as("点名了就得给：这是「该调没调」那一侧的错，比误调更难被发现")
+                .contains("Bash");
+        assertThat(names(index.search(request("这个月报销多少"))))
+                .as("没标 gate 的规则不进闸：finance_export 不会因为句子里没有触发词就消失——"
+                        + "既有那条「报销」配置的行为一行没变")
+                .contains("finance_export");
+    }
+
+    /**
+     * 兜底：过滤之后不足三个候选就按原名次补回来（门槛写在 `GatedToolIndex.MIN_CANDIDATES`）。
+     *
+     * <p>补回来看起来是"放水"，但空候选更糟：模型没得调时会自己编一个答案，或者干脆说
+     * "我没有这个能力"，两种都看不出是检索出了问题（票 28 那条空候选就是这么暴露的）。
+     */
+    @Test
+    @DisplayName("闸后不足三个候选就按原名次补回来；没配 gate 时不多包一层（票 29）")
+    void gateBackfillsSoTheModelAlwaysHasSomethingToChoose() {
+        ToolIndex three = GatedToolIndex.of(
+                new FixedIndex(List.of("Bash", "WebFetch", "book_search")),
+                List.of(new ToolSearchProperties.Rule("跑|编译|测试", List.of("Bash"), true),
+                        new ToolSearchProperties.Rule("网址|http", List.of("WebFetch"), true)));
+
+        List<String> after = names(three.search(request("讲个笑话")));
+        assertThat(after)
+                .as("两个被闸管着的都命不中，只剩 book_search 一个——补回到三个，且留下那个排在前面")
+                .hasSize(3)
+                .startsWith("book_search");
+
+        ToolSearchProperties.Rule finance = new ToolSearchProperties.Rule("报销", List.of("finance_export"), false);
+        assertThat(GatedToolIndex.of(three, List.of(finance)))
+                .as("一条 gate 规则都没有时原样返回：空转一层只会让装配断言多包一层壳")
+                .isSameAs(three);
+    }
+
+    /** 假索引：固定返回几个名字，名次就是列表顺序。这一层要验的是"删/不删"，不是"像不像"。 */
+    private static final class FixedIndex implements ToolIndex {
+
+        private final List<String> toolNames;
+
+        private FixedIndex(List<String> toolNames) {
+            this.toolNames = toolNames;
+        }
+
+        @Override
+        public ToolSearchResponse search(ToolSearchRequest toolSearchRequest) {
+            List<ToolReference> references = toolNames.stream()
+                    .map(name -> new ToolReference(name, 1.0, name + " 的说明"))
+                    .toList();
+            return ToolSearchResponse.builder()
+                    .toolReferences(references)
+                    .totalMatches(references.size())
+                    .build();
+        }
+
+        @Override
+        public void indexTool(String sessionId, ToolReference toolReference) {
+            // 固定索引：这一层不测"怎么进的索引"。
+        }
+
+        @Override
+        public void clearIndex(String sessionId) {
+            // 同上。
+        }
+    }
+
+    private static ToolSearchRequest request(String query) {
+        return new ToolSearchRequest(SESSION, query, 5, null);
+    }
+
+    private static List<String> names(ToolSearchResponse response) {
+        return response.toolReferences().stream().map(ToolReference::toolName).toList();
     }
 
     /** 假审批门：记下被问了什么，按 {@code granted} 决定兑现与否。 */

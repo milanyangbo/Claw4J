@@ -994,7 +994,7 @@ class ModelAndToolSelectionTest {
         ToolCategories categories = ToolCategories.of(Map.of());
         ToolSearchProperties properties = new ToolSearchProperties(null, 5, null,
                 ToolSearchProperties.Mode.ALWAYS, 0, null, null, null, null,
-                List.of(new ToolSearchProperties.Rule("报销|发票|开票", List.of("financeExport"))));
+                List.of(new ToolSearchProperties.Rule("报销|发票|开票", List.of("financeExport"), false)));
 
         ToolIndex index = ToolSearch.index(properties, null, categories, ToolDescriptionTranslator.NONE);
         assertThat(index)
@@ -1032,21 +1032,21 @@ class ModelAndToolSelectionTest {
         plain.indexTools("chat-1", catalogue);
 
         ToolIndex offTopic = ruleIndex(List.of(
-                new ToolSearchProperties.Rule("报销|发票", List.of("querySales"))));
+                new ToolSearchProperties.Rule("报销|发票", List.of("querySales"), false)));
         offTopic.indexTools("chat-1", catalogue);
         assertThat(names(offTopic, "chat-1", "上个月的销售成交额", null))
                 .as("query 里没有规则那两个字，结果必须与不带规则的那一版逐条相同")
                 .containsExactlyElementsOf(names(plain, "chat-1", "上个月的销售成交额", null));
 
         ToolIndex ghost = ruleIndex(List.of(
-                new ToolSearchProperties.Rule("报销", List.of("financeExport"))));
+                new ToolSearchProperties.Rule("报销", List.of("financeExport"), false)));
         ghost.indexTools("chat-1", catalogue);
         assertThat(names(ghost, "chat-1", "这个月报销多少", null))
                 .as("规则指着当前会话里没有的工具时，等于这条规则没命中——而不是把候选清空")
                 .containsExactlyElementsOf(names(plain, "chat-1", "这个月报销多少", null));
 
         assertThatThrownBy(() -> ruleIndex(List.of(
-                new ToolSearchProperties.Rule("报销(", List.of("querySales")))))
+                new ToolSearchProperties.Rule("报销(", List.of("querySales"), false))))
                 .as("正则编译不过要在装配时就抛：留到检索时会被内层 catch 成一次空结果")
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("报销(");

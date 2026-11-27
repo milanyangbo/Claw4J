@@ -2,8 +2,10 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.observability.MeteredToolIndex;
+import io.github.claw4j.agent.toolaccess.GatedToolIndex;
 import io.github.claw4j.agent.toolaccess.HybridToolIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
+import io.github.claw4j.agent.toolaccess.RuleToolIndex;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.toolaccess.ToolVectorStore;
 import io.github.claw4j.rag.store.VectorStoreNames;
@@ -95,6 +97,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -471,7 +474,7 @@ class ApplicationAssemblyTest {
     }
 
     /**
-     * 工具面（票 06 / 票 10）：默认按规模滑档、基座工具常驻，索引外面确实包了分组那一层。
+     * 工具面（票 06 / 10 / 29）：默认按规模滑档、只读三件套常驻，索引外面确实包了分组那一层。
      *
      * <p>断在 bean 上而不是断在提示词上：这一段要回答的是"配置真的进到装配里了吗"，
      * 而"模型这一轮看见几个工具"由 {@code ModelAndToolSelectionTest} 那几条按模式钉住。
@@ -479,9 +482,13 @@ class ApplicationAssemblyTest {
      * <p>{@code pinned} 从"空"改成了明确的六个（票 10）：原来那条断言守的是"别把某次调试的名单
      * 写死在**代码**里"，现在名单在 yml 里、部署一行就能改，守的东西没变；而默认部署要能干活
      * 这件事，只有把名字写下来才成立。
+     *
+     * <p>票 29 又把它从六个改回三个（ADR-0039）。这一改动最怕的不是"常驻少了"，而是
+     * **能力被悄悄拿走**——所以下面多断一条：凡是从 {@code pinned} 移出的工具，{@code rules}
+     * 里必须有人接着。没有这条，把名字从 yml 里删掉就等于删掉能力，而且不报错。
      */
     @Test
-    @DisplayName("工具面默认 auto 并按 10 滑档；基座六个常驻；索引外面有分组这一层（票 06 / 10）")
+    @DisplayName("工具面默认 auto 并按 10 滑档；只读三件套常驻，移出的三个由 rules 接住（票 06 / 10 / 29）")
     void toolSurfaceDefaultsToAutoAndWrapsGrouping() {
         ToolSearchProperties properties = context.getBean(ToolSearchProperties.class);
 
@@ -490,13 +497,27 @@ class ApplicationAssemblyTest {
                 .isEqualTo(ToolSearchProperties.Mode.AUTO);
         assertThat(properties.revealBelow()).isEqualTo(10);
         assertThat(properties.pinned())
-                .as("基座六个常驻：读、找、搜、跑、看网页、记计划")
-                .containsExactly("Read", "Grep", "Glob", "Bash", "WebFetch", "TodoWrite");
+                .as("只读三件套常驻：读、找、搜。它们没有「凑合」的余地——找不到就是找不到")
+                .containsExactly("Read", "Grep", "Glob");
         assertThat(properties.pinned())
-                .as("名单必须覆盖只读三件套与 shell 主入口——名字来自库，与那两个常量同源，"
-                        + "不是另抄一份字面量；抄错了这里先红")
-                .containsAll(AgentToolsAutoConfiguration.READ_ONLY_TOOL_NAMES)
-                .contains(ExecAutoConfiguration.TOOL_NAMES.getFirst());
+                .as("名单必须覆盖库里的只读三件套——名字来自库，与那个常量同源，不是另抄一份字面量")
+                .containsAll(AgentToolsAutoConfiguration.READ_ONLY_TOOL_NAMES);
+
+        String execTool = ExecAutoConfiguration.TOOL_NAMES.getFirst();
+        assertThat(properties.pinned())
+                .as("跑命令、看网页、记计划不再是基座（票 29）：它们对任何话题都能凑合，"
+                        + "常驻就等于默认把「顺手用一下」摆到眼前")
+                .doesNotContain(execTool, "WebFetch", "TodoWrite");
+
+        Set<String> ruled = properties.rules().stream()
+                .flatMap(rule -> rule.tools().stream())
+                .collect(Collectors.toSet());
+        assertThat(ruled)
+                .as("从常驻移出的三个，rules 里必须点名——否则就是悄悄拿走能力，还查不出来")
+                .contains(execTool, "WebFetch", "TodoWrite");
+        assertThat(ruled)
+                .as("rules 点名的工具都得真的在清单里：写错名字只打一行 WARN，评测里表现为「这条规则好像没生效」")
+                .isSubsetOf(context.getBean(ToolCatalog.class).names());
         assertThat(context.getBean(ToolCatalog.class).names())
                 .as("写进 pinned 的名字都得真的在清单里：拼错一个字母只会告警一次，没人会注意到")
                 .containsAll(properties.pinned());
@@ -507,10 +528,34 @@ class ApplicationAssemblyTest {
         assertThat(index)
                 .as("最外层是计量：包在里层记到的是收窄之前那一批，答不了「模型看到几个」")
                 .isInstanceOf(MeteredToolIndex.class);
+        ToolIndex second = ((MeteredToolIndex) index).delegate();
+        // 票 29 的两层，顺序不能换：**闸在规则层外，规则层在融合外**。
+        // 闸要在最外，才能看到最终顺序、判「过滤完还剩几个、要不要兜底」；规则要在融合外，
+        // 否则融合会按 RRF 重排，"规则置顶"当场失效。先剥闸，再剥规则。
+        if (second instanceof GatedToolIndex gated) {
+            assertThat(properties.rules())
+                    .as("有闸层就得真配了 gate 规则：空白层只会让装配断言多包一层壳")
+                    .anyMatch(ToolSearchProperties.Rule::gate);
+            second = gated.delegate();
+        }
+        else {
+            assertThat(properties.rules())
+                    .as("配了 gate 规则却没包上闸层，等于闸被静默忽略——评测里表现为「怎么一点都没变」")
+                    .noneMatch(ToolSearchProperties.Rule::gate);
+        }
+        if (second instanceof RuleToolIndex rule) {
+            assertThat(properties.rules())
+                    .as("有规则层就得真配了规则：空白层只会让既有装配断言多包一层壳，收益是零")
+                    .isNotEmpty();
+            second = rule.delegate();
+        } else {
+            assertThat(properties.rules())
+                    .as("配了规则却没包上规则层，等于规则被静默忽略——评测里表现为「怎么一点变化都没有」")
+                    .isEmpty();
+        }
         // 分组必须贴在"真正去检索"的那一层上：框架的 categoryFilter 只有 NamespacedToolIndex 读。
         // 默认档是 hybrid（2026-11-26 起），它自己不是分组层，分组在两翼各贴一层——
         // 贴在它外面就会让收窄发生在融合之后，前一组先把名额占满，"收窄"反而更少。
-        ToolIndex second = ((MeteredToolIndex) index).delegate();
         if (second instanceof HybridToolIndex hybrid) {
             assertThat(hybrid.keywordWing())
                     .as("关键字那一翼没有分组，收窄在融合这一层就失效了")

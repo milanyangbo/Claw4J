@@ -194,13 +194,20 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      *
      * @param pattern 匹配整句 query 的正则（{@code find}，不是整句相等），如 {@code 报销|发票|开票}
      * @param tools   命中后要置顶的工具名（{@code @Tool(name=…)} 的值），按此顺序排在最前
+     * @param gate    {@code true} 时这条规则反过来用：没命中就把 {@code tools} <b>从候选里拿掉</b>
+     *                （{@link GatedToolIndex}）。默认 {@code false}，只置顶不删——原有配置一行不用改
      */
-    public record Rule(String pattern, List<String> tools) {
+    public record Rule(String pattern, List<String> tools, boolean gate) {
 
         /**
          * 缺一个就抛：一条没有 pattern 或没有 tools 的规则是配置错误，静默忽略会让"我明明配了"查不出来。
          *
          * <p>抛在这里而不是等第一次检索：配置错要在启动时红，而不是在上线后表现为"这条规则好像没生效"。
+         *
+         * <p><b>不要给它加一个两参的兼容构造器</b>：Spring Boot 绑 record 时只认唯一的那个构造器，
+         * 多一个就绑不上，报的还是"这些配置项没有绑定"（{@code UnboundConfigurationPropertiesException}），
+         * 指向 {@code rules[0].gate} 而不是构造器——2026-11-27 加 {@code gate} 时就踩过这一次。
+         * 不写 {@code gate} 的 YAML 会取 primitive 的默认值 {@code false}，本来就不需要兼容构造器。
          */
         public Rule {
             if (pattern == null || pattern.isBlank()) {

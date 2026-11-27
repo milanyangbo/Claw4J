@@ -110,21 +110,30 @@ public final class ToolSearch {
                     new TranslatedVectorIndex(new VectorToolIndex(requireVectorStore(vectorStore)),
                             translator), properties.hybrid().keywordWeight());
         };
-        // 规则层包在**最外面**：它要看到已经融合、已经收窄、已经截断的那一版，命中就把工具提到最前。
+        // 规则层包在最外面：它要看到已经融合、已经收窄、已经截断的那一版，命中就把工具提到最前。
         // 包在里面的话，融合会按 RRF 重新排序，"规则置顶"当场失效——而结果看起来只是"规则不太灵"。
         // 没配规则时原样返回 base：空转一层会让所有既有装配断言多包一层壳，收益是零。
         ToolIndex ranked = properties.rules().isEmpty()
                 ? base : new RuleToolIndex(base, properties.rules(), categories);
-        // 这里只回答"怎么把 query 变成候选"，不回答"这一轮该不该检索"（票 22）。
-        // 2026-11-26 之前最外层还包着一个 ChitchatToolIndex：中文寒暄词表，删空即返回零候选。
-        // 撤掉它的三条理由，都是事实：
+        // 准入闸在规则层**外面**（票 29 / ADR-0039）：同一张规则表，两个方向——规则把命中的工具提前，
+        // 闸把没命中的通用工具拿掉。闸必须在最外，否则"规则刚把它置顶、截断又把它挤掉"这类结果它看不见；
+        // 它也要看到最终顺序，才能判断"过滤完还剩几个、要不要兜底补位"。
+        // 没配 gate 规则时原样返回 gated==ranked，不多包一层。
+        ToolIndex gated = GatedToolIndex.of(ranked, properties.rules());
+
+        // 这一层只回答"怎么把 query 变成候选"，不回答"这一轮该不该检索"（票 22）。
+        // 撤掉 ChitchatToolIndex 的三条理由，都是事实：
         //   ① 词表与评测题互为因果——那十道 no-search 题就是照着词表写的，1.000 不证明通用性；
         //   ② 它只认"整句由寒暄词拼成"，真正的"没有意义的对话"（含糊、试探、情绪、跑题）判不中；
         //   ③ 意图判定不是检索。业界两条路都不放在这一层：语义路由（Semantic Router 式，
         //      示例话语 embedding + 阈值判 off-topic）或交给模型（BFCL 的 irrelevance 档量的就是
         //      模型该不该调）。我们选后者：检索层无条件给候选，克制的责任在模型。
         // 空 query 也不再挡：它和寒暄是同一类判断，留一条口子就等于留下"检索层判意图"的先例。
-        return ranked;
+        //
+        // 票 29 的准入闸要跟上面那条③分清楚，否则会被当成"又把意图判断塞回检索层"：
+        // 它不判"这句是不是在闲聊"，只判"这句里有没有'跑/编译/网址'这些**能逐条对数**的词"。
+        // 触发词是配置，判错了改配置；而寒暄词表当年判的是"整句有没有意义"，没有可改的对象。
+        return gated;
     }
 
     /**
