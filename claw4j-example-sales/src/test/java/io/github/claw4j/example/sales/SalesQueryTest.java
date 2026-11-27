@@ -53,15 +53,16 @@ class SalesQueryTest {
     }
 
     @Test
-    @DisplayName("上周华东成交额一次查全：128400 从种子落到工具返回值")
-    void weeklyEastRevenueComesFromTheSeed() {
+    @DisplayName("固定区间华东成交额一次查全：128400 从种子落到工具返回值")
+    void eastRevenueForFixedRangeComesFromTheSeed() {
+        // 种子的日期已经钉死（V10__pin_seed_dates.sql），所以这里也用绝对日期：写「上周」的话，过一周就查不到数了。
         String answer = tools.querySales("""
                 select sum(oi.amount) as revenue
                 from business.sales_order o
                 join business.order_item oi on oi.order_id = o.id
                 where o.region_code = 'east' and o.status <> 'CANCELLED'
-                  and o.order_date >= date_trunc('week', current_date) - interval '7 days'
-                  and o.order_date < date_trunc('week', current_date)
+                  and o.order_date >= date '2026-11-16'
+                  and o.order_date <= date '2026-11-22'
                 """);
 
         assertThat(answer).contains("revenue").contains("128400");
@@ -162,8 +163,8 @@ class SalesQueryTest {
                 from business.sales_order o
                 join business.order_item oi on oi.order_id = o.id
                 where o.region_code = 'east' and o.status <> 'CANCELLED'
-                  and o.order_date >= date_trunc('week', current_date) - interval '7 days'
-                  and o.order_date < date_trunc('week', current_date) -- 只看华东
+                  and o.order_date >= date '2026-11-16'
+                  and o.order_date <= date '2026-11-22' -- 只看华东
                 """);
 
         assertThat(answer).doesNotContain("执行失败").contains("128400");

@@ -57,7 +57,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 ```
 三个目录给全 A / B 才都验得了（`agent.directory` + `default` 是 A4、B3 的前提）；`users='*'` 是验收姿态，代价是 A3 验不了（另起一份收紧名单）；人设的 `tier` 会覆盖 `claw4j.tools.profile`，C1 要用没有 `agent.directory` 的实例。建议指向一次性库（`--spring.datasource.url=jdbc:postgresql://localhost:5432/<临时库>`），Flyway 从零建表，跑完 drop；别在有人用过的库上验索引。`dm-scope` 那行不可省：本机名单不止一人时 `dm-scope=main` 会把不同人的私聊并成一段上下文，启动校验直接拒（ADR-0032）。
 
-**A1 / B1 要业务数字，得用 `sales` 人设**：例子里 `default=ops` 是运维助手（进程状态、定时任务、审批），问销售成交额它会**正当拒绝**——回答是「当前环境里没有能查业务库的工具」，计数 404。那不是工具没接上，是人设不干这个（票 34 实测：同一句换成 `--claw4j.agent.default=sales` 就回 128,400.00、`querySales` +1）。验 A1 / B1 时把这一项换掉，A4 那几条再换回来。
+**A1 / B1 要业务数字，得用 `sales` 人设**：例子里 `default=ops` 是运维助手（进程状态、定时任务、审批），问销售成交额它会**正当拒绝**——回答是「当前环境里没有能查业务库的工具」，计数 404。那不是工具没接上，是人设不干这个（票 34 实测：同一句换成 `--claw4j.agent.default=sales` 就回数字，`querySales` +1）。验 A1 / B1 时把这一项换掉，A4 那几条再换回来。
 
 **最后一行必须带**：语义缓存默认开，命中时这一轮没有模型调用、计数一次都不涨（而"不涨"正是主判据），还会缓存失败、Redis 连不上就起不来；关掉不影响知识库。这是验证姿态，不是配置建议。
 
@@ -166,16 +166,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ### B1 业务工具（以自带的 `querySales` 为例）
 
-验什么：问**库里那几行订单的日期**，不问"上周/本周"。种子的日期是灌库那一刻按本同一定下来的，问相对时间，过一周必漂（D3 写过这件事）；问绝对日期，库不动数字就不动，漂了也是"查不到"而不是悄悄换成另一个窗口的数。
-
-先把库里的日期读出来，填进问句（**别抄文档里的 11-16**，库重灌过就换了）：
-
-```bash
-docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
-  "select order_no, order_date, region_code, status from business.sales_order order by order_date;"
-```
-
-再问两次（下面这几个日期是 2026-11-27 那个库的输出，换成上一条 SQL 查到的）：
+验什么：问**固定日期区间**，不问"上周/本周"。种子日期由 `V10__pin_seed_dates.sql` 钉死成 2026-11-02 ~ 2026-11-23，跟今天是哪天、库是哪天建的一点关系都没有，重灌也不变。（迁移号是全局的，V1–V9 已被别的模块占掉，所以是 V10。）代价写在 D3：数据固定在 11 月，所以"上周/本周"这类相对问法今天已经查不到数——那是数据的事，不是工具坏了。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -187,8 +178,8 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"2026-11-19 华东区的成交额是多少"}'
 ```
 
-- **判据**：区间那问 → 华东 **128400**（换区域同理：华北 31500、华南 26000）；单日 11-19 → **74400**；每次 `querySales` 的 `ok` 多 1。
-- **坑**：区间那问若把 `CANCELLED` 那单算进去是 **178400**（差 50000，一眼看得出来），数字对了才算排除写对。计数 404 → 工具没执行，换新用户问同一句，再看日志里有没有 `工具检索 hybrid`；计数涨了但数字错 → 问题在工具本身（SQL、时区、`CANCELLED` 没排），不在装配。**"上周/本周"这类相对问法仍可以问**，但判据不能写死数字（期望值随当天日期走），要问就现算——所以别把它放进判据。库超过一周按 D3 重灌，重灌后这两问的日期与数字一起换。
+- **判据**：区间那问 → 华东 **128400**（换区域同理：华北 31500、华南 26000）；单日 11-19 → **74400**；每次 `querySales` 的 `ok` 多 1。跑之前想确认库是哪一版种子：`select min(order_date), max(order_date) from business.sales_order` 应是 `2026-11-02` / `2026-11-23`。
+- **坑**：区间那问若把 `CANCELLED` 那单算进去是 **178400**（差 50000，一眼看得出来），数字对了才算排除写对。计数 404 → 工具没执行，换新用户问同一句，再看日志里有没有 `工具检索 hybrid`；计数涨了但数字错 → 问题在工具本身（SQL、时区、`CANCELLED` 没排），不在装配。别把"上周"塞回判据：数据钉在 11 月，问"上周"必然空，空 ≠ 工具坏了。
 
 ### B2 默认工具：`Read` / `Grep` / `Glob` 常驻，`WebFetch` 按用户原话给
 
@@ -471,14 +462,16 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 同一用户连问几轮会累积会话记忆，模型会引用上一轮结果。
 - **判据**：换一个没用过的新用户重问，数字仍对；换 `X-Claw4j-Chat-Id` 也是干净会话。
 
-### D3 种子日期：库放一周，"上周"就漂了
-B1 / B3 / B5 的数字来自种子，日期按迁移那一刻的本周一算，库放一周数字全变——不是模型算错。
+### D3 种子日期：钉死在 2026-11，问"上周"必然空
+种子日期由 `V10__pin_seed_dates.sql` 写死成 **2026-11-02 ~ 2026-11-23**，不随建库日期变，重灌也不变。所以判据里那些数字（128400 / 74400 / 185900）永远对得上，不用每周重灌。
+
+代价要记住：**数据固定在 11 月，"上周/本周"这类相对问法今天已经查不到数**。答"查不到"是数据的事，不是工具坏了——这也是 B1 只问固定区间的原因。
+
+要重灌（清空后按固定日期插回，重复执行幂等）：
 
 ```bash
-docker exec claw4j-postgres psql -U claw4j -d claw4j \
-  -c "delete from business.order_item; delete from business.sales_order; delete from business.customer; delete from business.region;"
-docker exec -i claw4j-postgres psql -U claw4j -d claw4j \
-  < claw4j-example-sales/src/main/resources/db/migration/V2__business_seed.sql
+docker exec -i claw4j-postgres psql -U claw4j -d <临时库> \
+  < claw4j-example-sales/src/main/resources/db/migration/V10__pin_seed_dates.sql
 ```
 
 ## E. 故障与降级
@@ -1012,7 +1005,7 @@ PY
 | 验什么 | 问什么 / 做什么 | 主要判据 | 最容易踩的坑 |
 | --- | --- | --- | --- |
 | 装配（A1/A2） | 只有那个工具/server 能答的一句话 | 计数从 404 变成 1.0 | 模型说"我调了"不算 |
-| 业务工具（B1） | 固定日期：某天到某天，华东成交额 | `128400` / 单日 `74400` + `querySales ok` | 问"上周"这种相对时间，过一周数字就漂 |
+| 业务工具（B1） | 固定日期：某天到某天，华东成交额 | `128400` / 单日 `74400` + `querySales ok` | 问"上周"必然空——数据钉在 2026-11 |
 | 默认工具（B2） | 四句人话，不点工具名 | 结果对得上 + 对应工具计数涨 | `WebFetch` 先检索；路径不在边界目录 |
 | Skill（B3） | 按 `weekly-sales` 口径给各区 | `185900` + `Skill ok` | 没配人设会先问口径（正常） |
 | 脚本（B4） | 用 `summarize` 处理 `sample.md` | 逐字相同 + `Bash ok` | 限制"三句以内"就验不了逐字 |
