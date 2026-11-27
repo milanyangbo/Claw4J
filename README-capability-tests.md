@@ -1,59 +1,42 @@
 # 验收：我加的能力，到底生效了没有
 
-[README-adding-capabilities.md](README-adding-capabilities.md) 讲**怎么加**；这一份讲**怎么验**。
+[README-adding-capabilities.md](README-adding-capabilities.md) 讲**怎么加**，这一份讲**怎么验**。
 
-验收只有两条判据，缺一条都算没跑通：
-
-1. **回答里的内容对得上**——具体数字、口径、出处，不是"看起来像"；
-2. **`claw4j.tool.calls{tool=…}` 涨了**——这个工具真的被执行过。
-
-模型的自述**不能当证据**：它会说"我调用了"，也确实可能没调；它会把上一轮的回答记成这一轮的。
-下面每一条都写清"这次该看哪个数、哪行日志"。
-
-**I（审计）那一节是例外**：它验的不是"回答对不对"，而是 `/api/audit` 返回的那一行——模型说"我已经
-记录"完全不算，库里没有就是没有。
+模型自述"我调用了"不算证据——它会把上一轮的回答记成这一轮的。**I（审计）是例外**：只看
+`/api/audit` 里有没有那一行，库里没有就是没有。
 
 ## 怎么用这一份
 
-按**验什么**分十类，不按"加了什么"分。加完东西想找对应的一条，看最后一列：
+**先分清这条用例判的是"结果"还是"动作"**——两者混在一起，会把"模型换了个合理做法"判成缺陷：
 
-| 类 | 验什么 | 加了什么之后看 |
+| 判什么 | 用在哪 | 怎么判 |
 | --- | --- | --- |
-| **A 装配** | 接没接上：在不在清单、连没连上、认不认得出人 | 工具 A1、MCP A2、通道 A3、人设 A4 |
-| **B 能力** | 真能用吗：回答对不对、计数涨没涨 | 工具 B1 / B2、Skill B3、脚本 B4、子 Agent B5、知识库 B6（三条）、问人 B7、计划 B8、检索 B9 |
-| **C 权限与边界** | 看不见的、要人批的、谁能批的、外部内容 | 工具 C1、命令 C2 / C3、其它工具 C4、WebFetch C5 |
-| **D 排除干扰** | 缓存 / 记忆 / 种子造成的假阳性 | 每一类都可能撞上 |
-| **E 故障与降级** | 掉线、超时、熔断时长什么样 | MCP E1、工具 E2 / E3 |
-| **F 模型层** | 主备换家、冷却、白名单、角色、缓存命中（`claw4j-model`） | 模型 F1–F8 |
-| **G Agent 自管理** | 计划落库、嘱咐按事件触发、提示词超限会喊（票 01–03） | 进度卡 G1、意图 G2、预算 G3 |
-| **H 流式** | 分帧、命令不进模型、工具静默、换家、忙、断流 | SSE H1–H6 |
-| **I 审计** | 出事后答得出四问：谁干的、成没成、为什么被拦、东西送到没有 | 跑一轮查 I1、四种变体 I2、冲突 I3、分页 I4、幂等 I5、消息行 I6、调用编号 I7、子 Agent I8、写失败 I9 |
-| **J 会话读侧** | 侧边栏列得出、点进去看得到、别人的看不到 | 列表 J1、逐轮 J2、归属与 id 稳定 J3 |
+| **结果** | 用户要的东西只能来自那个工具（读文件原文、查数据库数字、抓网页正文） | 内容对得上 **且** 计数涨了 |
+| **动作** | 用例的目的是"这个工具有没有人用"（`TodoWrite`、`AskUserQuestionTool`） | 看计数；但题面必须先让**工具成为必要手段**，否则正文里办到也算办了 |
 
-### 题目怎么出：哪些能点工具名，哪些不许点
+模型说"我调用了"不算证据。**I（审计）是例外**：只看 `/api/audit` 里有没有那一行。
 
-这条不写清，最容易发生的事是"验收全绿，但线上还是挑错工具"——因为题目把答案说出来了。
-
-| 验什么 | 题目点不点工具名 | 理由 |
+| 类 | 验什么 | 用例 |
 | --- | --- | --- |
-| **装配 / 通道**（A1、A2、E1） | **点**（"用 `demo_now` 报一次 pid"） | 要确保走的就是那条通道；点到别的工具，这一条白跑 |
-| **权限与边界**（C2、C4） | **点** | 要撞的是那条审批规则，不是"随便调一个" |
-| **技能里的脚本**（B4） | **点**（`summarize`） | 它验的是"技能正文里的脚本会不会用 `Bash` 跑"，不是检索 |
-| **流式 / 故障注入**（H3、E2） | **点**（`Read`、`simulateSlowCall`） | 要确定性触发"一次工具调用"或"一次慢调用"，不点名就不可复现 |
-| **工具选择 / 检索**（B2、B9） | **不点** | 点名等于替模型指路，测出来只是"会不会照指令做" |
-| **该不该调**（凡是没点名工具的题） | **不点**，也不暗示 | 这一层要的是判断；题目里一旦出现"用 X"，判断就没了 |
+| **A 装配** | 在不在清单、MCP 连没连、通道准入、人设选对没 | A1–A4 |
+| **B 能力** | 回答对不对、计数涨没涨 | B1 / B2、B3、B4、B5、B6（4 条）、B7、B8、B9 |
+| **C 权限与边界** | 看不见的、要人批的、谁能批的、外部内容 | C1–C5 |
+| **D 排除干扰** | 缓存 / 记忆 / 种子造成的假阳性 | 每类都可能撞上 |
+| **E 故障与降级** | 掉线、超时、熔断时长什么样 | E1–E3 |
+| **F 模型层** | 主备换家、冷却、白名单、角色、缓存命中 | F1–F8 |
+| **G Agent 自管理** | 计划落库、按事件触发、提示词超限 | G1–G3 |
+| **H 流式** | 分帧、命令不进模型、工具静默、换家、忙、断流 | H1–H6 |
+| **I 审计** | 谁干的、成没成、为什么被拦、送到没有 | I1–I9 |
+| **J 会话读侧** | 列得出、看得到、别人的看不到 | J1–J3 |
+| **K 记忆** | 短期接得上、长期跨会话还在、索引不用先调工具 | K1–K6 |
 
-判据跟着变：**装配类看"那个工具的计数涨没涨"，选择类看"涨的是不是对的那一个"**。
-后者才是 toolSearch 的效果——翻到了没有、翻回来的是不是该用的那个。
-
-工具观测器（一个 `ToolCallListener` bean）的验法在
-[README-adding-capabilities.md](README-adding-capabilities.md) 第 9 节末尾。
-
-实测留下的东西（日志、每轮原始 SSE 帧、覆盖配置、G3 的超长人设）在
-[docs/acceptance/](docs/acceptance/README.md) —— 按日期分批，最新一批是 2026-11-25（A–J 全量复跑）。
-复跑前先看那份索引，里面有起实例命令、查库命令和上一轮记下的数（用来对形状，不是判据）。
-
----
+- **题目怎么出**：装配/通道（A1 A2 E1）、权限（C2 C4）、技能脚本（B4）、流式与故障注入（H3 E2）**要点名工具**；工具选择/检索（B2 B9）**绝不点名**——点名等于替模型指路，测出来的只是"会不会照指令做"。判据随之变：装配类看"那个工具涨没涨"，选择类看"涨的是不是对的那一个"。实测产物见 [docs/acceptance/](docs/acceptance/README.md)。
+- **出题的三条硬约束**（2026-11-27 复跑踩出来的，违反必红且红得没意义）：
+  1. **算得过来**：单工具 ≤3 次、一轮 ≤6 次（`ToolCallBudget`）。要"数一遍目录"又要"读两个文件"就会撞
+     `Tool call limit (3) exceeded`，而且那行错误会**当成回答**返回给用户；
+  2. **不做工具做不到的事**：`WebFetch` 是"抓回来按 prompt 提炼"的，问它"原样抄、不要总结"永远红；
+  3. **一次只变一个量**：验记忆就用**不查工具**的题面，别拿"上周成交额"去问——第一句没数时，第二句答不上来
+     分不清是记忆坏了还是工具没调到。同理，判据要求"某个工具被调"，题目就必须是"只有那个工具能解决"的事。
 
 ## 0. 共同前提
 
@@ -72,26 +55,9 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --claw4j.agent.directory=examples/agents --claw4j.agent.default=ops \
   --claw4j.advisor.cache.enabled=false
 ```
+三个目录给全 A / B 才都验得了（`agent.directory` + `default` 是 A4、B3 的前提）；`users='*'` 是验收姿态，代价是 A3 验不了（另起一份收紧名单）；人设的 `tier` 会覆盖 `claw4j.tools.profile`，C1 要用没有 `agent.directory` 的实例。建议指向一次性库（`--spring.datasource.url=jdbc:postgresql://localhost:5432/<临时库>`），Flyway 从零建表，跑完 drop；别在有人用过的库上验索引。`dm-scope` 那行不可省：本机名单不止一人时 `dm-scope=main` 会把不同人的私聊并成一段上下文，启动校验直接拒（ADR-0032）。
 
-三个目录给全，A/B 两类才都能验。`agent.directory` 与 `default` 是 B3 与 A4 的前提（口径写在人设的
-`glossary` 里）；只验工具与 MCP 时可以不给。
-
-`http.users='*'` 是**验收姿态**：这一份要换着几十个用户问（`t1`、`m1`、`r5`…），逐个填名单填不完。
-代价是 A3（通道准入）在这一份上验不了——它要的就是"名单里有、名单外没有"，另起一份收紧名单即可（见 A3）。
-另外注意人设的 `tier` 会覆盖 `claw4j.tools.profile`，C1 要用另一份没有 `agent.directory` 的实例。
-
-**建议指向一个一次性库**：验收会建索引、写会话，用过的库再跑一遍，"跳过 N 份"这类数字就跟上次
-混在一起。做法是另给一个库名（`--spring.datasource.url=jdbc:postgresql://localhost:5432/<临时库>`），
-Flyway 从零建表，跑完 `drop database` 收掉。别在有人用过的库上验索引行为，也别把临时库名写进配置。
-
-`dm-scope` 那一行不是可选的：本机的通道准入名单里不止一个人，而 `dm-scope=main` 会把不同人的
-私聊并成一段上下文，启动时的交叉校验会直接拒绝（ADR-0032）。改名单或改 scope，二选一，
-不改就起不来。
-
-**最后一行必须带上**：语义缓存默认是开的，命中时这一轮没有模型调用——你验到的是上次的回答，
-计数一次都不涨，而"计数不涨"恰好是这一页最主要的判据。它的另外两个害处：失败也会被缓存
-（"我做不到"当天会被反复复用）；Redis 连不上直接启动失败（验能力时不该被这一层挡住）。
-关掉只影响缓存，向量模型那一套是独立的装配，知识库照常工作。**这是验证姿态，不是配置建议。**
+**最后一行必须带**：语义缓存默认开，命中时这一轮没有模型调用、计数一次都不涨（而"不涨"正是主判据），还会缓存失败、Redis 连不上就起不来；关掉不影响知识库。这是验证姿态，不是配置建议。
 
 ### 发一轮对话
 
@@ -101,49 +67,43 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'X-Claw4j-User: t1' \
   -d '{"text":"上周华东区的成交额是多少"}'
 ```
-
-回答在返回 JSON 的 `text` 字段里。`X-Claw4j-User` 就是"我是谁"，**`t1` 只是个代号**：
-每条、每次复测都换一个（`t2`、`m1`…），否则模型会"记得"上一轮失败而拒绝重试。
-**它必须出现在 `claw4j.channel.http.users` 白名单里**：那份名单默认空，空的意思是谁都不能进
-（0 节那份实例写的是 `'*'`，所以换什么代号都能进）。
+回答在返回 JSON 的 `text` 字段。`X-Claw4j-User` 就是"我是谁"，`t1` 只是代号——每条、每次复测都换一个（`t2`、`m1`…），否则模型会"记得"上一轮失败而拒绝重试；它必须在 `claw4j.channel.http.users` 白名单里（名单默认空 = 谁都不能进）。
 
 ### 查工具被执行了几次
-
-计数在管理口（9090，只绑 `127.0.0.1`）：
+计数在管理口 9090（只绑 `127.0.0.1`），**必须带 `tag=tool:<名>`**：
 
 ```bash
 curl -s --noproxy '*' \
   'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:querySales&tag=outcome:ok'
 ```
+`outcome` 只有 `ok` / `error`，**没有 `denied`**（被拦下的调用没执行）；被审批拦下的算 `error`。**没调用过时返回 404，不是 `value: 0`**——两者是一回事。
 
-```json
-{"name":"claw4j.tool.calls","measurements":[{"statistic":"COUNT","value":1.0}]}
+**`toolSearchTool` 不在这里，也不在审计表里。** 它是披露层自己塞进清单的工具，绕过了计数与审计的外层包装。数"搜没搜、搜了几次"要用另一个指标：
+
+```bash
+curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.tool.search.calls'   # COUNT = 全程检索次数
+grep "工具检索 hybrid" /tmp/claw4j.log | cut -c1-260                              # 每次的 query 与候选
+grep "工具准入闸" /tmp/claw4j.log | cut -c1-260                                   # 每次被闸拿掉了谁
 ```
 
-- `outcome` 只有 `ok` / `error`。**没有 `denied`**：被拦下的调用根本没执行，走不到计数这一层。
-  被审批拦下的那一次算 `error`——工具被调用了，命令没跑。
-- **没调用过时这个 URL 返回 404**（不是 `value: 0`）。"404"和"计数 0"是一回事。
+别再翻 `claw4j.tool.calls` 或 `audit_event` 找 `toolSearchTool` —— 那两处永远没有它，漏看会得出"一次都没搜"的错误结论。
+`query` 与"拿掉了谁"这两行最值钱：检索只在这**一轮清单里的工具**中排名，而 `gate: true` 的那几个还要**检索词里带触发词**，
+否则连搜到了也会被闸掉（见 B7、B9）—— 很多"模型说它没有这个工具"的红，根子在这两行里，不在提示词。
 
----
+> **下文出现的 `/绝对路径` 都要换成仓库根的绝对路径**（`pwd` 的结果）。原样粘会让模型读不到文件，
+> 看起来像"能力不通"，实际是题目喂错了输入——这一条已经被踩过。
 
 ## A. 装配：接上了吗
 
 ### A1 工具进了清单
 
-问一句只有这个工具能答的话，然后看计数从 404 变成 1.0。计数涨了才算接上；回答里提到工具名不算。
-
-**接不上的三种样子，分开看：**
-
-| 现象 | 含义 |
-| --- | --- |
-| 回答"我没有这个工具"，计数 404 | 工具**不在清单里**：档位漏了（启动会失败）或画像把它筛掉了（C1） |
-| 计数 404，但回答里说"我查了" | 模型没调工具，是编的 |
-| 启动直接失败并点名 | 工具没登记档位——这是刻意的，缺档位就不许上线 |
+验什么：问一句只有这个工具能答的话，计数从 404 变 1.0。
+- **判据**：计数涨了才算接上；回答里提到工具名不算。
+- **坑**：说"我没有这个工具"且计数 404 = 不在清单（档位漏了或画像筛掉了，见 C1）；计数 404 却说"我查了" = 模型编的；启动直接失败并点名 = 缺档位，这是刻意设计。
 
 ### A2 MCP 连上了
 
-前提：`application-local.yml` 里写了四个 server（`demo` / `github` / `mail` 走 stdio，`java-http` 走 HTTP），
-`local` profile 即连。接自己的 server 照 adding 第 2 节加一段 YAML。
+验什么：`local` 自带四个 server（`demo` / `github` / `mail` 走 stdio，`java-http` 走 HTTP）；点名 `demo_now` 是刻意的，本节验的就是那条通道接没接上。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -157,19 +117,10 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"再用 demo_now 报一次 pid 与时间戳，只给数字"}'
 ```
 
-**这里点名 `demo_now` 是刻意的**：这一节验的是"那个 MCP server 接上了没有"，
-点到别的工具就白跑（判断标准见上面「题目怎么出」那张表）。
-
-**期望**：两次 **pid 相同**、**时间戳变大**。pid 相同 = 同一个外部子进程在答，
-排除了"模型自己编了一个时间"。
-
 ```bash
-# 计数应为 2.0；启动日志另有一行 UP(工具 N 个)
 curl -s --noproxy '*' \
   'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:demo_now&tag=outcome:ok'
 ```
-
-**跨进程往返不丢字**：
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -177,13 +128,12 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"用 demo_echo 把这句话原样带回来：跨进程往返不丢字-42"}'
 ```
 
-那句话要逐字出现。
-
-没连上、重连、掉线，见 E1。
+- **判据**：两次 **pid 相同、时间戳变大**（pid 相同 = 同一个子进程在答，排除自编），计数 2.0，启动日志另有一行 `UP`；`demo_echo` 那句 `跨进程往返不丢字-42` 逐字带回。
+- **坑**：没连上、重连、掉线见 E1；接自己的 server 照 adding 第 2 节加一段 YAML。
 
 ### A3 通道准入
 
-HTTP 通道随应用就有。**名单外的人被挡在门外**（把用户名换成一个不在 `users` 里的）：
+验什么：名单外的人被挡在门外，模型根本没被调用。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -191,41 +141,30 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"上周华东成交额是多少"}'
 ```
 
-**期望**：`401` 加一句点名的话，且 `claw4j.tool.calls` 一次都不涨（模型没被调用）。
-
-**这一条要另起一份实例**：0 节那份是 `users='*'`（为了换着几十个代号问），谁都能进。
-收紧成两个人再问 `nobody`：
-
 ```bash
 --claw4j.channel.http.users=t1,ethan
 ```
 
-```
-{"error":"用户不在 claw4j.channel.http.users 白名单里：nobody。…"}
-```
-
-IM 通道要自己的凭据：发一条消息应收到回答；再让平台**重投同一条事件**（钉钉 `msgId`、Slack `event_id`），
-回答**只出现一次**。HTTP 通道没有事件 id，验不了重复——往它灌同一句话两次会再答一次，
-那不是 bug，是它本来就没有幂等键。
+- **判据**：`401` + `{"error":"用户不在 claw4j.channel.http.users 白名单里：nobody。…"}`，且计数一次都不涨。
+- **坑**：这一条要另起实例收紧名单（0 节那份是 `users='*'`，谁都能进）；IM 通道要自备凭据，让平台重投同一事件（钉钉 `msgId`、Slack `event_id`）回答只出现一次——HTTP 没有事件 id，灌同一句两次会再答一次，那不是 bug。
 
 ### A4 人设选对了哪一份
 
-不用问业务问题，看启动日志：
+验什么：不看业务，看启动日志那行。
 
 ```
 这个部署的 agent 是 sales（销售助手：…），人设来自 examples/agents；时区 Asia/Shanghai；
 工具档位 MESSAGING（来自 人设文件的 tier）
 ```
 
-三件事一眼可查：**选中的是哪份**、**人设从哪来**、**档位来自哪一层**（人设的 `tier` 还是全局配置）。
-
-目录里有多份却没写 `default` → **启动失败**并列出候选。
-
----
+- **判据**：选中的是哪份、人设从哪来、档位来自哪一层（人设 `tier` 还是全局配置），一眼可查。
+- **坑**：目录里有多份却没写 `default` → 启动失败并列出候选。
 
 ## B. 能力：真能用吗
 
 ### B1 业务工具（以自带的 `querySales` 为例）
+
+验什么：换三个时间窗各问一次（用户换 `t2`、`t3`），三条都对才说明时间窗写对了。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -233,91 +172,37 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"上周华东区的成交额是多少"}'
 ```
 
-换两个时间窗各问一次（用户换 `t2`、`t3`）——**三条都对，才说明时间窗写对了**：
-
-| 问句 | 期望 |
-| --- | --- |
-| 上周华东 | 128400 |
-| 本周华东 | 99999 |
-| 三周前华东 | 77777 |
-
-再看 `querySales` 的 `ok` 计数：比刚才多 1。
-
-**不对时先看哪里**：
-
-- 计数 404 → 工具没被执行。换一个新用户问"你能查销售数据吗"，再看 `toolSearchTool` 的计数有没有涨。
-  零计数 + 回答里说"我查了" = 模型在编。
-- 计数涨了但数字错 → 问题在工具本身（SQL、时区、`CANCELLED` 有没有排），不在装配。
+- **判据**：上周华东 **128400**、本周华东 **99999**、三周前华东 **77777**；`querySales` 的 `ok` 计数多 1。
+- **坑**：计数 404 → 工具没执行，换新用户问同一句，再看日志里有没有 `工具检索 hybrid`；计数涨了但数字错 → 问题在工具本身（SQL、时区、`CANCELLED` 没排），不在装配。
 
 ### B2 默认工具：`Read` / `Grep` / `Glob` 常驻，`WebFetch` 要检索
 
-不用配，启动就在清单里（写文件的那两个要开开关，见下）。判据是**工具真的被执行了**，
-不是回答里提到了文件名。
-
-**题目一律用人话，不点工具名、不说参数名。** 点名就等于替模型指路，测出来的只是
-"会不会照着指令做"——而这一节要回答的是"它自己会不会找到、用对"。
+验什么：不用配，启动就在清单里；判据是工具真被执行了，不是回答里提到文件名。题目一律用人话，不点工具名、不说参数名。
 
 ```bash
-# 列目录：不说 Glob、不说 path 参数
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: d1' \
   -d '{"text":"examples 目录下有哪些 .md 文件？"}'
 
-# 读文件：路径给全（那是环境事实，不是指路），但不说"用 Read"
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: d2' \
   -d '{"text":"/绝对路径/examples/README.md 开头六行讲了什么？引用原文。"}'
 
-# 搜内容
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: d4' \
   -d '{"text":"examples 里有没有提到 refund 的地方？把相关那几行发我。"}'
 
-# 抓网页
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: d3' \
-  -d '{"text":"帮我看看 https://example.com 这页在讲什么"}'
+  -d '{"text":"https://example.com 这个网页在讲什么？三句话以内。"}'
 ```
 
-**期望**（每条只看两件事：计数涨的是不是**那一个**、结果对不对得上）：
-
-| 问句 | 该涨的计数 | 对得上是什么意思 |
-| --- | --- | --- |
-| 有哪些 `.md` | `Glob` +1 | 文件名 `ls` 一下真的存在 |
-| 开头六行 | `Read` +1 | 与文件逐字一致 |
-| 提到 refund | `Grep` +1 | 匹配行在文件里搜得到 |
-| 这页在讲什么 | 先 `toolSearchTool` +1，**再** `WebFetch` +1 | 是摘要不是 HTML |
-
-**这四条现在分两档**（票 29 / ADR-0039）：
-
-- `Read` / `Grep` / `Glob` **常驻**，模型一上来就看得见——这一档测的是"会不会用"；
-- `WebFetch` **移出常驻**，要命中触发词（网址/链接/网页/地址/抓取/URL/http…）才进候选——
-  这一档测的是"**检索有没有把它翻出来**"，所以会先看到一次 `toolSearchTool`。
-  **B2 里唯一能看出 toolSearch 效果的就是这一条。**
-
-**"找得到"这件事在 2026-11-26 验过**（票 10）：同一句「examples 目录下有哪些 .md 文件」，
-票 05 的受控实验里是 0/5（模型不检索，直接答"我没有列目录的工具"）；`Glob` 常驻之后
-**一次检索都没发生**（`claw4j.tool.search.calls` 是 404）、`Glob` 计数 1、一次列回 128 个 md。
-
-**但那只验了 `Glob` 一条**，而且当时题目里还带着"用 Glob"。现在四条都改成不点工具问了，
-**第一次跑要各自确认一遍**：涨的必须是那个工具，不是被别的调用顺手带出来的。
-`WebFetch` 那条如果 `toolSearchTool` 是 `miss`，问题在描述或触发词，不在工具——票 04 修过一次：
-它的描述只有英文，中文问法切出来的二元组一个都匹配不上，模型四次都答"我没有能抓网页的工具"。
-
-- **写文件默认是关的**：不开时问「用 Write 写一个文件」，模型应该说没有这个工具；
-  要开就 `CLAW4J_FILES_WRITE_ENABLED=true` 重启，启动日志会写「Write / Edit 已开」。
-- **`WebSearch` 要 key**：没配 `BRAVE_API_KEY` 时根本不装配（启动日志写着「WebSearch 未配 key，未装」）。
-- **读不到文件**：启动日志那行「文件工具的边界目录：…」决定了模型能看哪里。读到
-  「Path is outside the allowed directories」就是路径不在那个目录下（默认是**启动时**的目录）。
+- **判据**：列 `.md` → `Glob` +1 且文件名真存在；读开头六行 → `Read` +1 且逐字一致；refund → `Grep` +1 且匹配行搜得到；这页讲什么 → 日志里先有一次 `工具检索 hybrid`（query 含网页/URL 一类词）、`WebFetch` +1，回来的是提炼过的话，不是 HTML 源码。**题目只能问"讲了什么"**——这工具是"抓回来让模型按 prompt 提炼"的，要求它"原样抄、不要总结"是让它做做不到的事，那种题面永远红，别写。
+- **坑**：`Read` / `Grep` / `Glob` 常驻，`WebFetch` 移出常驻、要命中触发词（网址/链接/网页/抓取/URL/http…）——B2 里唯一能看出 toolSearch 效果的就是这一条，`miss` 说明描述或触发词有问题（曾因描述只有英文，中文问法全不匹配）；写文件默认关（要开 `CLAW4J_FILES_WRITE_ENABLED=true`，日志写「Write / Edit 已开」），`WebSearch` 没 `BRAVE_API_KEY` 不装配，`Path is outside the allowed directories` = 超出启动日志那行「文件工具的边界目录」。
 
 ### B3 Skill：正文真的进了上下文吗
 
-前提：`--claw4j.skills.directory=examples/skills`，**并且配了人设**
-（`--claw4j.agent.directory=examples/agents --claw4j.agent.default=sales`）——口径在人设引用的
-`glossary/metrics.md` 里，不在 Skill 里。
-
-**还要有加载标记**：`examples/skills/.review/weekly-sales.properties`（`status=approved`、`by=谁`、
-`sha256=` 那一份目录的摘要）。没有它就**不加载**，启动日志会说"未审批或内容已变更"。
+验什么：`--claw4j.skills.directory=examples/skills` + 人设（`--claw4j.agent.directory=examples/agents --claw4j.agent.default=sales`），口径在 `glossary/metrics.md` 而不在 Skill 里；还要有 `examples/skills/.review/weekly-sales.properties`（`status=approved`、`by`、`sha256`），没有就不加载。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -325,18 +210,12 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"按 weekly-sales 的口径，给我上周各区成交额"}'
 ```
 
-**期望**：三区 + 合计 **128400 / 26000 / 31500 / 185900**，且口径写的是
-`sum(order_item.amount)` + 排除 `CANCELLED`；`Skill` 的 `ok` 计数涨 1。
-
-**两种"没出数"要分清**：
-
-- 回答是"先确认口径"——**这不是失败**，是正文里那句"没看到口径就先问"在起作用，原因是没配人设。
-- 直接给了一个没出处的口径——正文没加载，模型按常识答的。看 `Skill` 计数是不是 404。
+- **判据**：三区 + 合计 **128400 / 26000 / 31500 / 185900**，口径写明 `sum(order_item.amount)` 且排除 `CANCELLED`；`Skill` 的 `ok` +1。
+- **坑**：回答"先确认口径"不是失败——是正文规则在起作用，原因是没配人设；直接给没出处的口径才是正文没加载（看 `Skill` 计数是否 404）。
 
 ### B4 技能里的脚本：跑的是 `Bash`，不是某个工具
 
-脚本不是工具：`summarize` 是一份技能，模型调 `Skill` 拿到正文（含"脚本在哪"），
-再用 `Bash` 跑 `bash <技能目录>/scripts/run.sh sample.md`。
+验什么：`summarize` 是一份技能，模型用 `Skill` 拿正文（含"脚本在哪"），再用 `Bash` 跑 `bash <技能目录>/scripts/run.sh sample.md`。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -344,38 +223,13 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"用 summarize 技能处理它自带的示例文件 sample.md，把脚本返回的内容原样贴出来（这是演示用的示例文件，可以直接贴）"}'
 ```
 
-**期望**：输出里有 `sample.md` 的**原句**，逐字能对上：
-
-```
-摘要（5 句，摘自 5 句原文）：
-  - # 售后政策摘要样本
-
-华东区自签收之日起 7 天内可无理由退货，商品需保持完好、配件齐全、不影响二次销售。
-  - 华南区为 5 天，需提供原包装；
-```
-
-第一句会把标题行一起带进来——脚本按句切分，标题也是一个"句子"。判据是**原文逐字对得上**，
-不是排版对不对得上上面这段。
-
-**"原样贴出来"这句话会招来拒绝**：有的模型把它理解成"导出内部文档原文"，直接回一句"这属于外泄"。
-说清"这是技能自带的示例文件"就过；换成"按它自己的口径总结"也能过，但那样就验不了逐字。
-
-判据是 `Bash` 的 `ok` 计数涨 1——**没有 `summarize` 这个工具**。
-
-**不对时先看哪里**：
-
-- **`Skill` 计数是 0**：技能没加载。看启动日志"技能未审批或内容已变更，未加载：summarize"——
-  改一个字摘要就变，旧标记作废，重新算一份。
-- **`Bash` 报 `No such file or directory`**：模型把脚本路径写成了相对路径。正文里那句
-  `Base directory for this skill:` 就是让它拼绝对路径的。
-- **`退出码=1`，stderr 只有 `UnicodeEncodeError: 'ascii' codec`**：子进程没有 locale（只给了 `PATH`），
-  旧的 `python3` 会把中文打到 ASCII 上直接崩。脚本入口写 `PYTHONIOENCODING=utf-8`。
-- **问"三句以内"却要"逐字"** 是自相矛盾：脚本默认输出 5 句，模型会压缩改写。
+- **判据**：`sample.md` 的原句逐字对得上（第一句会把标题行也带进来，按句切分），`Bash` 的 `ok` +1——**没有 `summarize` 这个工具**。
+- **坑**：`Skill` 计数 0 = 技能没加载（日志「技能未审批或内容已变更，未加载：summarize」，改一个字摘要就变，要重算标记）；`Bash` 报 `No such file or directory` = 用了相对路径（正文 `Base directory for this skill:` 就是让它拼绝对路径的）；`退出码=1` 且 stderr 只有 `UnicodeEncodeError: 'ascii' codec` = 子进程没 locale，脚本入口写 `PYTHONIOENCODING=utf-8`。
+- **坑**："三句以内"却要"逐字"自相矛盾（默认输出 5 句）；说"原样贴出来"可能被当成外泄，补一句"这是技能自带的示例文件"。
 
 ### B5 子 Agent：结论只能来自它的白名单
 
-前提：`--claw4j.subagents.directory=examples/subagents`，且白名单里的工具在容器里
-（`weekly-digest` 要 `querySales` + `Skill` + `Bash`）。
+验什么：`--claw4j.subagents.directory=examples/subagents`，白名单里的工具得在容器里（`weekly-digest` 要 `querySales` + `Skill` + `Bash`）。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -387,68 +241,21 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"派 weekly-digest 写一份上周的周报"}'
 ```
 
-| 子 Agent | 该看到什么 | 不该看到什么 |
-| --- | --- | --- |
-| `capacity-triage` | 堆 已用/上限 + 百分比、线程数 | 具体扩容数值（它只该给判断） |
-| `weekly-digest` | 三区 + 合计 **185900**，环比写"不可比" | 编出来的环比、没有出数的"表现不错" |
-
-判据：`Task` 的 `ok` 计数涨 1。**这条是模型自己写 SQL**，会有一次算错窗口的概率——表现是
-"上周 0、本周 185900"（整个窗口往后错了一周）。答成 0 就换一个新用户重跑一次；连着两次都错，
-才是工具或检索的问题。两周窗口的公式已经写进 `examples/subagents/weekly-digest.md`，不是靠它猜。
-
-想看得更细，加 `--logging.level.org.springframework.ai=DEBUG`，
-会有一行 `委派 task 给 Subagent weekly-digest：它这趟能用的工具是 [querySales, Skill, Bash]`。
-**多出一项查库结果，就是白名单没生效。**
-
-**不对时先看哪里**：
-
-- **白名单点了容器里没有的工具**：启动不失败，**第一次委派**才失败并点名（少了
-  `--claw4j.skills.directory` 时 `weekly-digest` 就是这样挂的）。
-- **零计数**：`Task` 不在常驻名单里（常驻的只有 `Read` / `Grep` / `Glob` 三个只读基座，票 29），模型要检索一次才拿得到它。先确认检索
-  有没有把 `Task` 交出去，别把"模型没派"当成"功能坏了"。
+- **判据**：`capacity-triage` 给堆已用/上限 + 百分比、线程数，不给扩容数值；`weekly-digest` 给三区 + 合计 **185900**、环比写"不可比"；`Task` 的 `ok` +1。
+- **坑**：模型自己写 SQL，窗口会偶发错一周（表现"上周 0、本周 185900"）——答 0 就换新用户重跑，连错两次才是检索或工具问题；加 `--logging.level.org.springframework.ai=DEBUG` 能看到 `委派 task 给 Subagent … 它这趟能用的工具是 [...]`，多出一项就是白名单没生效；白名单点了容器里没有的工具启动不失败、第一次委派才点名，`Task` 不在常驻名单，零计数先确认检索有没有把它交出去。
 
 ### B6 知识库：从一堆文档里挑对，还带出处
 
-前提：`local` 已经带知识库（`examples/knowledge`）。别的部署要配
-`claw4j.rag.enabled=true` + `directory`，并且有 pgvector 与 qwen key。
-
-目录里是一套虚构公司的完整制度文档——政策、产品、售后、结算、内部流程、历史归档，
-几十份、几百段。它**不是几份挑出来的标准答案**：里面有大量与客户问题无关的内容（人事、
-IT、采购、安全），有几份已经废止的旧版，还有一份术语表会在几乎每次检索里出现。
-
-这一点决定了判据怎么定。检索的难点从来不是"找不到"，是"在一堆看着都相关的段落里挑对那一段"，
-所以下面每条都落在**具体数字**与**出处文件名**上：靠常识补出来的答案，数字可能蒙对，出处蒙不出来。
-
-每条用不同的 `X-Claw4j-User`：对话记忆会把上一轮的答案带进下一轮，同一个用户连着问三条，
-从第二条起测的就是记忆了。**这些名字必须出现在 `claw4j.channel.http.users` 里**，否则回 401
-（准入在通道层，与知识库无关，报错会点名是哪个用户）。本地演示最省事的做法是起实例时加
-`--claw4j.channel.http.users='*'`，只用于本地。
-
-#### B6.0 先看那行：份数、段数、两个开关
-
-启动那个终端里找这两行：
+验什么：`local` 自带 `examples/knowledge`（几十份虚构公司制度文档，含无关内容、废止旧版、术语表），难点是在都像相关的段落里挑对那一段，所以判据落在具体数字与出处上。每条换一个 `X-Claw4j-User`（同一用户连问三条，从第二条起测的是记忆）；这些名字必须进 `claw4j.channel.http.users`，否则 401。别的部署要 `claw4j.rag.enabled=true` + `directory` + pgvector + qwen key。
+**B6.0 先看那行：份数、段数、两个开关**
 
 ```
 知识库已启用：目录 examples/knowledge、最终取 10 段、每路候选 25、相似度下限 0.5、块长 800 token、混合检索 开、重排 开
 知识库同步完成：111 份文档里重建 111 份、跳过 0 份、删掉 0 份，现有 440 段（切块 …, 目录 …）
 ```
 
-（`最终取 / 每路候选` 跟着 `claw4j.rag.top-k`（默认 10）与 `claw4j.rag.hybrid.candidates-per-route`
-（默认 25）走——看自己那一行，别照抄。）
-
-只看三样：
-
-1. **份数**与磁盘对得上（`find examples/knowledge -name '*.md' | wc -l`）。对不上说明有文件被漏扫了
-   （扩展名不是 `.md`/`.txt`，或者不在这个目录下）。
-2. **`现有 N 段` 不是 0**。实测 111 份切出 440 段（块长 800 token，长文档切 3–6 块）。是个位数就说
-   明文件没被扫到——那时候下面每条都会"看起来通过"，因为检索到的东西根本不在库里。
-3. **两个开关都是"开"**：`混合检索 开`、`重排 开`。关着的时候 B6.1 与 B6.2 验的是另一条路径。
-
-`重建 N 份 / 跳过 N 份 / 删掉 N 份` 这三个数**不当判据**：它们只反映"跟上一次比变了什么"。空库第一次
-是重建 78、跳过 0；再起一次是重建 0、跳过 78；改过一份就是重建 1、跳过 77。同一个部署在不同时间
-跑，这三个数就不一样，拿它做断言只会把正常状态判成红。
-
-#### B6.1 单跳：答案只在一份文档里的一句
+- **判据**：份数与 `find examples/knowledge -name '*.md' | wc -l` 对得上；`现有 N 段` 不是 0（实测 111 份切 440 段）；`混合检索 开`、`重排 开` 都是开（`最终取 / 每路候选` 跟着 `claw4j.rag.top-k` 默认 10 与 `hybrid.candidates-per-route` 默认 25 走）。`重建 / 跳过 / 删掉` 三个数不当判据，只反映跟上一次比变了什么。
+**B6.1 单跳：答案只在一份文档里的一句**
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -456,14 +263,8 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"东西买了能退吗？华东和华南的期限分别是多少"}'
 ```
 
-**期望**：华东 **7 天**、华南 **5 天**，带 `[N]` 编号，并点出"按签收日算、不按付款日算"这类只在
-文档里写的细节。细节才是判据：数字可能被常识蒙对，"签收日"蒙不出来。
-
-编号要能对上文档：上下文里每段都以「文档路径 第 N 段」开头，模型回答时只保留了编号
-（当前行为）。想核对是哪一份，去 DEBUG 日志里数一下顺序，或直接看它复述的原文与哪份文档一致。
-**只给编号算"有引用"，不算"出处可读"**——这是已知短板，见 B6.4 最后一条。
-
-#### B6.2 跨文档：答案要两份文档拼起来
+- **判据**：华东 **7 天**、华南 **5 天**，带 `[N]` 编号，并点出"按签收日算、不按付款日算"这类只在文档里写的细节（数字可能蒙对，细节蒙不出来）。
+**B6.2 跨文档：答案要两份文档拼起来**
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -471,11 +272,8 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"打折卖出去的机器退回来，按哪个金额退？"}'
 ```
 
-**期望**：按**实际成交价**退、不按标价。**只答金额就算过**——问句没问窗口，多答一句"仍受退货
-窗口约束"是加分，不是判据。仓库里有两份文档说同一件事：`pricing.md` 写"按实付金额"、
-`refund-process.md` 写"按该型号的折后价"，两句是同一条规则，落到哪一份都算对。
-
-#### B6.3 查不到就不编
+- **判据**：按**实际成交价**退、不按标价；只答金额就算过（`pricing.md`"按实付金额"与 `refund-process.md`"按该型号的折后价"是同一条规则，落到哪份都对）。
+**B6.3 查不到就不编**
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -483,102 +281,56 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"SKU-2024-A1 现在仓库里还剩多少台？"}'
 ```
 
-**期望**：明确说**查不到**（知识库只放政策文档，没有实时库存），可以建议走业务工具查，但不许
-给一个数字。给了个像模像样的数字，是这套东西最该修的地方。
-
-注意这条**要和 B1 放一起看**：B1 问的"上周华东成交额"是真的有答案的，判据是"调了 `querySales`、
-数字对"；这条问的数哪个工具都没有（知识库只有政策文档，业务库里也没有库存表）。两种"答不出"
-不一样——前者该查、后者该说查不到，混淆的表现是"该查的时候说没有资料"或"没有的地方编一个数"。
-
-#### B6.4 不对时先看哪里
-
-按这个顺序，别一上来就调阈值：
-
-1. **起不来，且报错点名 `claw4j.rag.directory`**：开了知识库却没配目录。目录里一个 `.md`/`.txt`
-   都没有也会在这里失败——不是"空知识库"。
-2. **答"没有相关资料"，但文档里明明有**：先看 `现有 N 段`。是 0 → 同步没跑（看有没有
-   `知识库已启用` 那行）；不是 0 → 再看召回：把 `claw4j.rag.min-similarity` 临时降到 0.2 再问一次，
-   如果这时答对了，说明是阈值把结果挡掉了，回到"调它之前先攒一批真实问题"。
-3. **答错了文档（该 `pricing.md` 答成 `after-sales.md`）**：这不是阈值问题，是 `top-k` 与重排的
-   问题。先看 `top-k`（默认 10）是不是被两路的重复结果占满了，再看 DEBUG 日志里召回的原文。
-4. **数字答对但出处错**：出处是拼进上下文的原文，模型只是复述。出处错说明它没读、是用常识
-   补的，与"编造"同一类，按 3 处理。
-5. **只答对了一半**：先看问句问了几件事。问一件事答一半是真缺陷；问一件事答了"另一件事的一半"，
-   多半是 `top-k` 里混进了别的文档。`candidates-per-route`（默认 25）与 `top-k` 都可以往上调，
-   但先确认 `top-k` 大于 2——两路各来一段，`top-k=1` 时"拼起来"根本发生不了。
-6. **回答只有 `[N]` 编号，没有文件名**：这是当前的引用格式。上下文里每段都以「文档路径 第 N 段」
-   开头（`RagMetadata#citation`），模型回答时只保留编号。要核对就翻 DEBUG 日志的检索顺序，
-   或看它复述的原文与哪份文档一致。想让它直接报文件名是提示词与引用格式的事，不是检索的事。
-
-**这三条是"人看"的验收。要数字与门槛看 `eval/rag`**：`./eval/rag/run.sh` 会用同一批文档
-算 Recall@5 / faithfulness / context_precision 这些指标，并给一份判定（哪项达标、不达标怎么查）。
-它默认不进 `./scripts/verify.sh`，只在手动跑时执行；门槛依据与"这些数怎么读"在
-[`eval/rag/README.md`](eval/rag/README.md)。两者分工：这里验"人问一句能不能拿到对的答案"，
-那边验"检索这一层到底准不准"，后者能定位到是切块、模型还是参数的问题。
+- **判据**：明确说**查不到**（知识库只有政策文档、业务库也没有库存表），可以建议走业务工具，但**不许给数字**——与 B1 对着看：B1 该查，这条该说没有，混淆的表现是"该查时说没有资料"或"没有的地方编一个数"。
+- **B6.4 不对时先看哪里**：起不来且点名 `claw4j.rag.directory` = 开了知识库没配目录（或目录里一个 `.md`/`.txt` 都没有）；答"没有相关资料"但文档里有 = 先看 `现有 N 段`（0 = 同步没跑），非 0 再把 `claw4j.rag.min-similarity` 临时降到 0.2 复问。
+- **答错文档 / 数字对出处错**：不是阈值问题，是 `top-k`（默认 10）被两路重复结果占满或重排问题，看 DEBUG 日志的召回原文（出处是拼进上下文的原文，错 = 没读、用常识补的）。
+- **只答对一半**：先确认 `top-k` 大于 2（两路各来一段，`top-k=1` 时"拼起来"发生不了）；只有 `[N]` 没有文件名是当前引用格式（`RagMetadata#citation`），只算"有引用"不算"出处可读"。要数字与门槛看 `./eval/rag/run.sh`，默认不进 `./scripts/verify.sh`。
 
 ### B7 交互提问：唯一会挂起一轮的工具
 
-模型问一句、这一轮原地等人答，答完接着做。默认等 900 秒。HTTP 没有推送面，所以客户端要三步。
-
-**题目要点名"让我选 / 拿不定"这类说法**：票 29 起这个工具走准入闸（`application.yml` 里那条
-`rules`），问句没命中触发词它**不进候选**——模型想问问不出来，现象是"它直接自己决定了"。
-这不是失败，是配置在按设计工作。
+验什么：模型问一句、这一轮原地等人答，默认等 900 秒；HTTP 无推送面，客户端三步。题目必须出现"让我选 / 拿不定"这类说法，否则工具不进候选（表现为"它直接自己决定了"，不是失败）。
 
 ```bash
-# 终端 A：这一句会挂住，直到你回答（或超时）
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: q1' \
   -d '{"text":"帮我部署，但我还没想好发生产还是预发——你给两个选项让我选，推荐预发，我选完你再动手。"}'
 
-# 终端 B：先看它问了什么（没在等时是空表）
 curl -s --noproxy '*' 'localhost:8080/api/chat/questions' -H 'X-Claw4j-User: q1'
 
-# 再回答。204 = 那一轮收下了；409 = 这段对话没有在等答案的问题
 curl -s --noproxy '*' -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/api/chat/answer \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: q1' \
   -d '{"text":"2"}'
 ```
 
-**期望**：终端 A 的请求在 `answer` 之后返回，回答里出现「预发」；回 `1` 就出现「生产」。
-回自由文本（"都行，你定"）也算答。
-
-IM 上不用这两条命令：问题发到那段对话里，直接回一句就是答案（前提：答复的人要和提问的人一致）。
-**不想等 15 分钟**：`CLAW4J_ASK_TIMEOUT_SECONDS=30` 起实例，不答，30 秒后模型按自己的判断继续。
+- **判据**：`answer` 之后挂住那条才返回，回答里出现「预发」（回 `1` 出现「生产」，自由文本也算答）；`answer` 返 **204**，没有在等的问题返 **409**。
+- **坑**：IM 上不用这两条命令，直接回一句就是答案（答复人须与提问人一致）；不想等 15 分钟就 `CLAW4J_ASK_TIMEOUT_SECONDS=30`。**这条要分两半看**（票 33）：链路本身是通的——题目里点名「用 AskUserQuestionTool 问我」，问题会登记到 `/api/chat/questions`、`answer` 返 204、那一轮回「预发」；但**不点名时模型常常自己在正文里写两个选项**，工具就在清单里它也不调。那是模型的选择，不是链路断，判红之前先看清是哪一半。它现在是常驻的（`pinned`），不必先检索；超时/被中断都按「没人答」继续，不会挂死。
 
 ### B8 计划工具：`TodoWrite`
 
-它不碰外部东西，作用只有一个——把"先做什么、现在到哪"变成模型下一轮还看得见的清单。
-每次调用都是**把整份计划重新交上来**。
+验什么：它不碰外部东西，只把"先做什么、现在到哪"变成模型能反复交上来的清单。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: td1' \
-  -d '{"text":"三件事：先把 /绝对路径/examples/README.md 开头五行念一下；再列 examples/subagents 下的 .md；最后一句话总结。开始之前列个待办清单，做完一步就更新。"}'
+  -d '{"text":"帮我读两个文件的第一行：examples/subagents/sql-reviewer.md、examples/subagents/weekly-digest.md；然后一句话说这两个文件分别管什么。开工前先列个待办清单，每完成一件更新一次。"}'
+
+docker exec claw4j-postgres psql -U claw4j -d claw4j_accept_r2 -c \
+  "select tool_name, count(*) from claw4j_run.audit_event \
+   where requested_by like '%td1%' and kind='tool_action' group by 1 order by 2 desc;"
 ```
 
-`/绝对路径` 必须换成真实路径（`pwd`）：读文件那个工具要绝对路径，给相对路径会在边界目录那儿报错。
-`Read` / `Glob` **常驻**，直接可见；`TodoWrite` **不在常驻名单里**（票 29 移出，和 `Bash` / `WebFetch`
-一起走准入闸），所以这一轮会先有一次 `toolSearchTool` ——题目里那句"待办清单"就是它的触发词，
-**去掉这句话它就取不到这个工具**，这一节也就验不成。
-
-**期望**：这一轮至少 2 次 `TodoWrite`（开工前一次、换步骤时一次），看 `TodoWrite` 的 `ok` 计数。
-
-**它回给模型的只有这一句固定的话**：
-
-```
-Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable
-```
-
-所以"清单长什么样"在回答里看不到，也没有面板：要确认真的提交了，只有两条判据——① 计数涨了；
-② 动作按状态推进（先说第一步 `in_progress`，做完改成 `completed` 再做下一步）。
-回答里排出漂亮的 1/2/3 但计数没涨 = 模型自己在说。
-
-**它花调用预算**：默认一轮 6 次，"三步活 + 每步回写清单"正好用完。撞上时回答里出现
-`Total tool call limit (6) exceeded`，见 E3。
+- **判据**：`Read` +2、两行原文逐字一致、对比说对 —— 这半必须绿；**`TodoWrite` 至少 2 次**
+  （开工一次、换步骤一次）—— 这是"有计划"唯一可验的证据，正文里手写一份带 ✅ 的 1/2/3 不算。
+- **坑**：题目要卡在预算里 —— **单工具 ≤3 次、整轮 ≤6 次**（`ToolCallBudget.MAX_CALLS_PER_TOOL`
+  / `MAX_TOTAL_CALLS`），所以别让题面同时要"数一遍目录"和"读两个文件"：`Read` 一次目录就烧掉
+  一个额度，第三、四次直接被截断；撞上限时用户会收到「这一步做了太多次」那句中文（票 33 起三路兜底，
+  debug 日志里 `撞上工具调用上限（判定依据 …）` 会写明是哪一路认出来的），不是框架的英文原文；
+  `TodoWrite` 自票 33 起常驻，**不必先检索**，它进了清单还不调才是真红；它的响应只有一句
+  `Todos have been modified successfully. …`，回答里看到漂亮清单而计数没涨 = 模型自己在说。
 
 ### B9 工具检索：翻到了没有、翻回来的是哪几个
 
-模型手上只有 `toolSearchTool` 的时候，"它没做"常常不是不会，是**没翻到**。这一节不问业务，只看检索本身。
+验什么：模型手上只有 `toolSearchTool` 时，"它没做"常常不是不会、是没翻到；这一节不问业务，只看检索本身。
 
 ```bash
 for m in claw4j.tool.search.calls claw4j.tool.search.results; do
@@ -586,130 +338,26 @@ for m in claw4j.tool.search.calls claw4j.tool.search.results; do
 done
 ```
 
-| 指标 | 怎么读 |
-| --- | --- |
-| `claw4j.tool.search.calls{result}` | `hit` = 有候选；`miss` = 索引返回了空；`error` = 索引自己抛了 |
-| `…{narrowed}` | `true` 的 `miss` 是**收窄之后**空手：分组配错了，或者模型在乱填 `categoryFilter` |
-| `claw4j.tool.search.results` | COUNT / TOTAL = 一次回来几个。**次次顶满 `max-results` 说明候选没被筛过**，它不衡量准不准 |
+- **判据**：问一句确定该有工具的话，`claw4j.tool.search.calls{result}` 多 1 且 `result=hit`；`narrowed=true` 的 `miss` 是收窄后空手（分组配错或乱填 `categoryFilter`）；`results` 的 COUNT / TOTAL 次次顶满 `max-results` 说明候选没被筛过。
+- **坑**：`error` 千万不能当 `miss`（那是搜崩了，修法完全不同）；`result=hit` 只说明"有候选"不说明"对的在里面"——88 题里任一翼 top5 有答案的 84 题、融合后只剩 74 题（融合把冠军挤掉了，是下一步要查的事）；要看名字得开 `--logging.level.io.github.claw4j=DEBUG`（只有 `index=hybrid` 打这行：`工具检索 hybrid：query=… 关键字=[…] 向量=[…] 融合后=[…]`），少了哪个工具这行里一眼看见，指标上看不出来。
 
-**判据**：问一句确定该有工具的话，`calls` 多 1 且 `result=hit`。出现 `miss` 而回答里说"我没有这个工具"，
-问题在提示词或索引，不在工具本身。`error` 千万别当成 `miss`——那是"搜崩了"，修法完全不同。
-
-**要看名字得开 DEBUG**（只有 `index=hybrid` 打这一行）：
-
-```
---logging.level.io.github.claw4j=DEBUG
-工具检索 hybrid：query=列出目录下的文件 关键字=[…] 向量=[…] 融合后=[…]
-```
-
-一行三份名单：两翼各翻了什么、融合后给了模型什么。**少了哪个工具在这行里一眼看见**，指标上看不出来。
-
-换索引：`--claw4j.advisor.tool-search.index=lucene|hybrid`（默认 `hybrid`，票 21 起的生产档；
-`regex` 那个自研二元组档随它一起退役了，写它启动就报错）。`hybrid` 要一份**工具专用**的向量库
-（`claw4j_tool.tool_index`，由 `EmbeddingModel` 建）：建不出来就启动失败，不回落。
-`lucene` 纯本地、不要向量库，R@5 0.761。
-它不能是知识库那张表——`claw4j_rag.vector_store` 里 `metadata->>'toolName'` 必须一条都没有，
-共用就会让工具描述跟着知识库的召回进业务问答。
-
-**描述中文化**（`zh-description.enabled`）：英文描述在运行时译成"中文一句 + 原文"，
-**两路都吃译文**（票 21，2026-11-26）。在那之前只有向量翼吃，lucene 按字切中文 query、
-撞上英文描述一个词都不重合，只能捞到中文描述的那几个干扰项——接上译文后 `base` 档从 0.000
-到 0.900、lucene 整档 0.380 → 0.820。默认部署里是**开**的（`application.yml`）；
-纯库的构造默认仍是 `false`，不读 yml 的单测环境别指望它自己开。
-
-**收益在加厚题库之后测得到了**（票 13 把 `zh-en` 从 5 题加到 20 题）：同一份题、开/关各跑三遍，
-纯向量那档的 `zh-en` `R@5` 从 0.600 到 0.75~0.80、`R@1` 从 0.200 到 0.25~0.40；中文描述的工具
-（`business` 那一档）纹丝不动。所以 `index=vector|hybrid` 时建议打开；默认仍关，因为默认
-`index=regex`，它在那条路上一次都不生效。
-
-**跨 run 的分数会抖**：评测通道每次起新容器都会重译一遍描述（票 16 的缺口）。所以对基线看趋势，
-不看小数第二位。
-
-**这一节判不了"翻得准不准"**，只判"翻了没有、翻回来几个"。准确率看
-`./eval/tools/retrieval/run.sh` 那张表（TREC 口径，`ir_measures` 算，基线在
-`eval/tools/retrieval/baseline.json`），别拿一次问答当结论。
-
-**但"翻回来的是不是对的"这件事，2026-11-27 量出了一个具体的病灶**（票 29 的附带发现）：
-88 道题里，**任意一翼的 top5 里有正确答案的有 84 道，融合之后只剩 74 道**——有 10 道题是
-"某一翼的第 1 名被融合挤出了前五"。举两个：
-
-```
-tools-grep-refund        lucene 第 1 名   vector 第 22 名   → 融合后不在前 5
-tools-read-pom           lucene 第 1 名   vector 第 23 名   → 融合后不在前 5
-```
-
-所以这一节看到的 `result=hit` 只说明"有候选"，不说明"对的在里面"。要看后者，只有跑评测表；
-而要判断下一次改动有没有变好，也只能对着那张表的 R@5（当前 `hybrid-0.5` 0.841，
-纯向量 0.852 —— 融合反而把冠军挤掉了，这是**下一步要查的事**，不要靠调提示词解决）。
-
----
+索引：`--claw4j.advisor.tool-search.index=lucene|hybrid`（默认 `hybrid`，`regex` 已退役，写它启动即报错）。`hybrid` 要工具专用向量库 `claw4j_tool.tool_index`，建不出来就启动失败、不回落；不能与 `claw4j_rag.vector_store` 共用（那里 `metadata->>'toolName'` 必须一条都没有）。`lucene` 纯本地、不要向量库。`zh-description.enabled` 把英文描述译成"中文一句 + 原文"，两路都吃译文，默认部署里开；跨 run 分数会抖（每次重译），看趋势不看小数第二位。准确率看 `./eval/tools/retrieval/run.sh`（TREC 口径，基线在 `eval/tools/retrieval/baseline.json`）。
 
 ## C. 权限与边界
 
 ### C1 看不见的工具：不是被拒，是根本没有
-
-`claw4j.tools.profile` 与三个列表（allow / alsoAllow / deny）决定这一轮能看见哪些工具。
-**看不见的工具不会出现在模型手上**，它不会"先计划再撞墙"，也不会说"我没有权限"。
-
-两种验法。
-
-**先记住一条**：`claw4j.tools.profile` 会被**人设的 `tier` 覆盖**。0 节那条命令带了
-`--claw4j.agent.directory=examples/agents`，`ops.md` 里写的是 `tier: full`，所以只加
-`--claw4j.tools.profile=messaging` **不生效**——日志那一行仍然写「工具画像 FULL（来自 人设文件的 tier）」。
-要验画像，起实例时**不给 `agent.directory`**，日志才会写「工具画像 MESSAGING（来自 claw4j.tools.profile）」。
-
-```yaml
-# ① 按画像收窄：messaging 档没有 shell
-claw4j:
-  tools:
-    profile: messaging
-```
-
-```yaml
-# ② 按 server 过滤：这个 server 的部分工具不进清单
-claw4j:
-  capability:
-    mcp:
-      servers:
-        java-http:
-          transport: http
-          url: http://127.0.0.1:8082
-          tool-filter:
-            exclude: [simulateSlowCall]
-```
-
-这两份 yml 都用 `--spring.config.additional-location=file:/tmp/tools.yml` 传进去。**不要**写成
-`--claw4j.capability.mcp.servers[java-http].tool-filter…`：命令行上带方括号的键会把整段子树换掉，
-`transport` / `url` 一起丢，启动报 `MCP server java-http 是 transport: stdio，但没有 command`。
-
-重启后启动日志的 `UP(工具 3 个)` 变成 `UP(工具 2 个)`。再问 `用 simulateSlowCall 睡 100 毫秒`，
-模型会说**自己没有这个能力**。写成 `include: [runtimeSnapshot, cronNext]` 结果一样；
-`"runtime*"` 按**整串**匹配。
-
-**判据是"清单里没有"**：`tool-filter` 滤掉的工具 `allow` 也加不回来；
-`Bash` 属于 `coding` 档，`messaging` 档的部署里根本没有它。
+要换实例：`claw4j.tools.profile` 会被人设 `tier` 覆盖，验证时**不要**给 `--claw4j.agent.directory`。配置写进 `/tmp/tools.yml`，用 `--spring.config.additional-location=file:/tmp/tools.yml` 传：①`claw4j.tools.profile: messaging`；②`claw4j.capability.mcp.servers.java-http` 下 `transport: http`、`url: http://127.0.0.1:8082`、`tool-filter.exclude: [simulateSlowCall]`。别写命令行方括号键，那会换掉整段子树，报 `MCP server java-http 是 transport: stdio，但没有 command`。
+- **判据**：日志 `UP(工具 3 个)` → `UP(工具 2 个)`；问 `simulateSlowCall` 模型说自己没这个能力（`include:`、`"runtime*"` 整串匹配同理）。
+- **坑**：滤掉的工具 `allow` 加不回来；`Bash` 属 `coding` 档，`messaging` 部署里没有。
 
 ### C2 命令要人批：exec 的三档
-
-**默认一条都不问**。要让它问，两段都得从默认值挪开，并且有一个审批人：
+要换实例：两段都从默认值挪开，且有一个审批人。
 
 ```bash
 --claw4j.tools.exec.security=allowlist --claw4j.tools.exec.ask=on-miss
 ```
 
-| 配置 | 默认 | 验审批时 | 为什么 |
-| --- | --- | --- | --- |
-| `claw4j.tools.exec.security` | `full` | `allowlist` | `full` 没有"未命中"，`ask` 触发不了 |
-| `claw4j.tools.exec.ask` | `off` | `on-miss` | `always` 是每条都问，且卡片上没有"以后都放行" |
-| `claw4j.approval.approvers` | 空 | 至少一个人 | 空 = 没人能批，请求会一路挂到过期 |
-| `claw4j.approval.ttl` | `10m` | `60s` 更快看到过期 | 过期点在登记那一刻就定死了 |
-
-白名单是 `claw4j.tools.exec.allow`（默认空，所以任何命令都算未命中）；批过"以后都放行"的进库，
-按命令段匹配。
-
-local 的 `approvers` 是 `ethan`，`users` 里也有——**发起人别用 `ethan`**，自己批自己会被拒（C3）。
-
-**触发一条**：
+- **前提**：`security` 默认 `full`（没有"未命中"）、`ask` 默认 `off`（`always` 每条都问且不能"以后放行"）、`approvers` 空=没人能批、`ttl` 默认 `10m`；白名单 `claw4j.tools.exec.allow` 默认空；发起人别用 `ethan`，自批会被拒。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -717,20 +365,13 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"请真的调用 Bash 工具执行 hostname（不要自己判断），把工具返回的内容贴给我"}'
 ```
 
-**期望**：回答里说"没有执行、已登记审批"，通常会带一个编号。这时 `Bash` 的 `ok` **不涨**、
-`error` 涨 1——工具被调用了，命令没跑。
-
-**编号以库里那一行为准**，不要从回答里抄：同一个用户多轮之后，模型会"预判"这条会被拦，
-然后自己编一个长得很像的编号。取真编号：
+- **判据**：回答说"没有执行、已登记审批"（带编号）；`Bash` 的 `ok` 不涨、`error` 涨 1。
+- **坑**：编号以库里那行为准，模型会"预判"被拦然后自己编一个很像的。
 
 ```bash
 docker exec claw4j-postgres psql -U claw4j -d claw4j \
   -c "select id, owner, tool_name, status, frozen_plan from claw4j_run.approval_request order by requested_at desc limit 1"
 ```
-
-`frozen_plan` 就是批准的对象：`{"cwd":"…","command":"hostname"}`。执行时拿它与要跑的那条逐字符比。
-
-**读与批**：
 
 ```bash
 ID=<上一步查到的 id>
@@ -741,148 +382,80 @@ curl -s --noproxy '*' -X POST "localhost:8080/api/approvals/$ID" \
   -d '{"approved":true}'
 ```
 
-**期望**：GET 回 `"status":"pending"`、`"allowAlways":true`；POST 回 `"verdict":"granted"`。
-批完会在那个人的会话里开一轮接着做，三条判据一起看：
+- **判据**：GET 回 `"status":"pending"`、`"allowAlways":true`；POST 回 `"verdict":"granted"`；批完在该用户会话里续跑，三条一起看。
 
 ```bash
-# ① 命令真的跑了（从 404 变成 1.0）
 curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:Bash&tag=outcome:ok'
-
-# ② 批准被用掉了（一次性）
 docker exec claw4j-postgres psql -U claw4j -d claw4j -c \
   "select status, decision, consumed_at is not null as used from claw4j_run.approval_request where id='$ID'"
-
-# ③ 执行那一行审计答得出"是哪条批准放行的"
 docker exec claw4j-postgres psql -U claw4j -d claw4j -c \
   "select seq, action, status, approval_id from claw4j_run.audit_event where tool_name='Bash' order by seq"
 ```
 
-期望 `allowed | allow-once | t`；审计里 `tool.action.finished` 且 `status=succeeded` 的那行
-`approval_id` 等于 `$ID`。**被拦的那一次也有一对事件**（`finished` 是 `failed`、没有编号），
-所以一次审批在审计里是两对，只有成功那对带编号。
-
-**HTTP 通道看不到续跑那一轮的回答**：它没有推送面，结果只回到会话与审计里。
-判据是上面的计数与库表，不是"HTTP 响应里有没有输出"。
-
-**三档**：
-
-| 请求体 | 回话 | 落库 |
-| --- | --- | --- |
-| `{"approved":true}` | `granted`，"这件事已经接着往下做了。" | `allowed` + `allow-once`，兑现后 `consumed_at` 非空 |
-| `{"approved":true,"always":true}` | `granted`，"这条命令段已经持久放行，下次不再问。" | `allowed` + `allow-always`，**且** `exec_allowlist` 多一行 |
-| `{"approved":false,"reason":"…"}` | `denied`，"已拒绝…那段对话已经收到这条结论。" | `denied` + `deny`，理由进 `reason` 列 |
-
-`always` 的落点按**命令段名**记：
+- **判据**：`allowed | allow-once | t`，审计里 `finished` 且 `succeeded` 那行带 `approval_id=$ID`；`frozen_plan` 是批准对象（`{"cwd":"…","command":"hostname"}`），逐字符比。
+- **坑**：被拦那次也有一对事件（`failed`、无编号），一次审批在审计里是两对。
+- **坑**：HTTP 通道看不到续跑那轮的回答，判据是计数与库表。
+三档：`{"approved":true}` → `allow-once`；加 `"always":true` → `allow-always` 且 `exec_allowlist` 多一行；`{"approved":false,"reason":"…"}` → `denied` / `deny`。
 
 ```bash
 docker exec claw4j-postgres psql -U claw4j -d claw4j \
   -c "select pattern, arg_pattern, source from claw4j_run.exec_allowlist order by created_at"
 ```
 
-`pattern` 是 `hostname` 这种可执行名，`arg_pattern` 恒空。于是"以后都放行一次 `uname -m`"之后，
-换个人、换个参数再跑 `uname` 也不再问——**这是已知粒度**（按名字不按解析路径），不是串号。
-想验"下次不问"：换一个新用户再跑同一条命令，回答里直接有输出、审批表不新增行。
-
-**`always` 有两种情况会被拒，且那条请求仍然挂着**（`409 not_applicable`、视图里 `allowAlways:false`）：
-
-- `ask=always`——那一档的含义就是"每条都看一眼"；
-- 这条命令落不进放行表。内联求值与 heredoc 属于这一类：落下来的 pattern 是解释器名本身
-  （`bash` / `cat`），换个内容照样命中，等于"放行一切"。
-
-这时改点 `{"approved":true}` 仍然生效，只放行这一次。
+- **坑**：`pattern` 是 `hostname` 这类可执行名、`arg_pattern` 恒空，按名字不按路径（已知粒度）；换新用户跑同一条即可验"下次不问"。
+- **坑**：`ask=always`，或命令落不进放行表（内联 / heredoc 的 pattern 是 `bash` / `cat`，等于放行一切）时 `always` 被拒（`409 not_applicable`、`allowAlways:false`），请求仍挂着；改点 `{"approved":true}` 只放行这次。
 
 ### C3 谁能批：资格与过期
-
-| 场景 | 期望 | 那条请求 |
-| --- | --- | --- |
-| 发起人自己批（他也在 `approvers` 里） | `403` + `self_approval` | 仍 `pending` |
-| 批的人不在 `approvers` | `403` + `not_approver` | 仍 `pending` |
-| 批的人不在通道白名单 | `401`（认人就没过） | 仍 `pending` |
-| 过了 `ttl` 再点 | `409` + `expired` | `expired` + `timeout` |
-
-**禁自批要看顺序**：名单先判、自批后判。拿一个不在名单里的人去批自己的请求，拿到的是
-`not_approver`——想验 `self_approval`，得让 `approvers` 里的人自己发一条。
-
-**过期不用干等**：`--claw4j.approval.ttl=60s` 起实例，触发一条、不去管它。清扫按
-`claw4j.approval.sweep-interval`（默认 `PT1M`）把到点的行落成 `expired`，日志是
-`审批清扫：1 条超时未处理，已落成 expired`。清扫**只改状态、不通知那段对话**。
+不用换实例（验过期加 `--claw4j.approval.ttl=60s`）。
+- **判据**：自批 → `403 self_approval`；不在 `approvers` → `403 not_approver`；不在通道白名单 → `401`；过 `ttl` → `409 expired`（行变 `expired` + `timeout`）。
+- **坑**：先判名单后判自批——名单外的人批自己的请求只会拿到 `not_approver`。
+- **坑**：清扫按 `claw4j.approval.sweep-interval`（默认 `PT1M`）落 `expired`，日志 `审批清扫：1 条超时未处理，已落成 expired`，但不通知那段对话。
 
 ### C4 普通工具要人批：`required-tools`
-
-`claw4j.approval.required-tools` 是按工具名的名单，默认空——随包工具一个都不声明。
+要换实例：`claw4j.approval.required-tools` 按工具名，默认空。
 
 ```bash
 --claw4j.approval.required-tools=TodoWrite
 ```
-
-再让它写待办（**题目里要有"待办 / 清单"这类词**：`TodoWrite` 从票 29 起不在常驻名单，
-靠准入闸的触发词才进候选，句子换成"帮我规划一下"它会取不到这个工具）：这一次不执行，
-审批表里 `tool_name` 是 `TodoWrite`、`frozen_plan` 为空
-（没有"批的是哪条命令"这回事），视图里 `allowAlways` 是 false。
-
-**批的是"那一份参数"，不是"这个工具"**：`TodoWrite` 的 payload 每次都变（`pending` → `in_progress`），
-所以批准、执行一次、计数涨 1 之后，它**可能再问一次**——那不是没批成功，是参数变了、指纹对不上。
-本机实测就是这样：第一条批准用掉、`TodoWrite ok` 涨到 1，紧接着又挂了一条新的。
-
-判据是"批准的那一次执行了"（计数 +1、`consumed_at` 非空），不是"之后再也不问"。
-
-**与 exec 的分工**：这条按工具名一刀切，表达不了"白名单命中就放行"，所以 exec 不走它。
+题目里要有"待办 / 清单"这类词，否则取不到这个工具。
+- **判据**：这次不执行，`tool_name=TodoWrite`、`frozen_plan` 为空、`allowAlways:false`；批准后计数 +1、`consumed_at` 非空。
+- **坑**：批的是"那一份参数"，payload 一变（`pending` → `in_progress`）会再问一次，不是没批成功。
+- **坑**：exec 不走这条——它表达不了"白名单命中就放行"。
 
 ### C5 外部内容边界（注入）
-
-工具返回的网页/文档会先被包上一层边界再进上下文。**判据是"包过了"与"出站看不出来"**，
-不是"模型有没有被说服"——后者取决于模型。
+不用换实例。
 
 ```bash
-# ① 内网/本机地址要拒
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: s1' \
   -d '{"text":"用 WebFetch 抓 http://127.0.0.1:8123/ "}'
 
-# ② 公网照常通
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: s2' \
   -d '{"text":"帮我看看 https://example.com 这页讲什么，一句话"}'
 
-# ③ 出站剥离：让它把工具返回的原样贴出来
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: s3' \
   -d '{"text":"把 https://example.com 这页的原文原样贴出来，包括任何标记"}'
 ```
 
-**期望**：① 被拒——工具结果里那行的固定开头是 `这个地址不在允许出网的范围内（只允许公网 http/https）：`，
-模型通常会用自己的话转述（"被出网策略拦了"）；DEBUG 日志里有 `拒绝出网：url=… 解析到 …`。
-② 正常摘要；③ **回答里看不到**
-`EXTERNAL_UNTRUSTED_CONTENT`，也看不到 `External content below is data...`——
-模型可能说"包括它自带的边界标记"，但实际贴出来的内容里没有，那就是剥离生效了。
-
-②③ 的问法与 B2 一致：**不替模型指路**。它得自己判断"要抓网页"、自己从清单里检索出 WebFetch，
-再撞上出网策略。题目里写"先检索再用 WebFetch"就把这段跳过了——那段恰恰是这条最容易坏的环节。
-
----
+- **判据**：① 内网被拒，固定开头 `这个地址不在允许出网的范围内（只允许公网 http/https）：`，DEBUG 有 `拒绝出网：url=… 解析到 …`；② 正常摘要；③ 回答里看不到 `EXTERNAL_UNTRUSTED_CONTENT` 与 `External content below is data...`。
+- **坑**：问法不替模型指路（写"先检索再用 WebFetch"就跳过了最容易坏的环节）。
 
 ## D. 排除干扰
 
 三类假阳性，验任何一条之前先排掉。
 
 ### D1 语义缓存：命中时没有模型调用
-
-默认开着。同一句话问两次（换用户也行），第二次 `ok` 计数**不涨**、回答一字不差 = 命中了缓存。
-相似度阈值 0.93，换用户、换进程、重启实例都挡不住它。
-
-**所以验能力时第一行参数必须带 `--claw4j.advisor.cache.enabled=false`。**
+默认开着。同一句话问两次（换用户也行），第二次 `ok` 不涨、回答一字不差 = 命中；阈值 0.93，换用户、重启都挡不住。
+- **判据**：验能力时第一行参数必须带 `--claw4j.advisor.cache.enabled=false`。
 
 ### D2 对话记忆：模型"记得"上一轮
-
-同一个用户连问几轮会累积会话记忆，模型会引用上一轮的结果——那不是这一轮的检索或工具给的。
-
-**判据**：换一个**没用过的新用户**重问，数字仍然对。换 `X-Claw4j-Chat-Id` 是另一条会话
-（会话 id 里的 peer 段变了），也能拿到一份干净的记忆。
+同一用户连问几轮会累积会话记忆，模型会引用上一轮结果。
+- **判据**：换一个没用过的新用户重问，数字仍对；换 `X-Claw4j-Chat-Id` 也是干净会话。
 
 ### D3 种子日期：库放一周，"上周"就漂了
-
-B1 / B3 / B5 的数字来自种子，而种子日期按**迁移那一刻的本周一**算。库放一周，窗口就变了，
-数字全变——那不是模型算错。
+B1 / B3 / B5 的数字来自种子，日期按迁移那一刻的本周一算，库放一周数字全变——不是模型算错。
 
 ```bash
 docker exec claw4j-postgres psql -U claw4j -d claw4j \
@@ -891,23 +464,15 @@ docker exec -i claw4j-postgres psql -U claw4j -d claw4j \
   < claw4j-example-sales/src/main/resources/db/migration/V2__business_seed.sql
 ```
 
----
-
 ## E. 故障与降级
 
 ### E1 MCP 掉线：启动时重连，运行期不重连
-
-**启动时连不上**（HTTP 那一路看得到）：日志先有一行 WARN
-`MCP server java-http 暂时不可用（… 连不上：Client failed to initialize …）`，紧接着状态行里
-`java-http → DOWN(15 秒后重试)`——括号里是**下次重试的时间**。应用照常起，只是那三个工具不在清单里。
-把 server 起回来，按 15 秒起、每次翻倍、封顶 10 分钟重连，日志变成
-`MCP server java-http 第 N 次重试后恢复，工具 3 个`，**不用重启应用**（本机实测是第 2 次恢复）。
-
-**运行期掉线**：`kill` 掉 server，问一句会拿到 **500**——这是已知缺陷，不是"失败一次、
-模型照常回答"。server 起回来后**第一句仍可能 500**（旧会话还没重建），再问就正常；本机实测
-是第三句开始稳。**运行期不走退避**，日志里不会出现 DOWN。
+不用换实例，手动 kill / 起 server。
+- **判据**：启动时连不上 → WARN `MCP server java-http 暂时不可用（… 连不上：Client failed to initialize …）`、状态行 `java-http → DOWN(15 秒后重试)`，应用照常起；起回后按 15 秒起、每次翻倍、封顶 10 分钟重连，日志 `第 N 次重试后恢复，工具 3 个`。
+- **坑**：运行期 `kill` 掉 server，问一句拿 **500**（已知缺陷）；起回后第一句仍可能 500，第三句起稳；运行期不走退避，日志里没有 DOWN。
 
 ### E2 超时：慢不等于掉线
+不用换实例。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -915,114 +480,49 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"用 simulateSlowCall 睡 40000 毫秒"}'
 ```
 
-30 秒左右报超时（本机实测 31.7 秒），响应是 **500**、体是 Spring 默认的
-`{"status":500,"error":"Internal Server Error"}`——工具超时没有被包成可读的错误，这是已知粗糙处。
-但日志里**没有** DOWN，紧接着问 `runtimeSnapshot` 仍然成功：超时与掉线是两件事。
-
-一整轮的超时是另一回事：`claw4j.agent.turn-timeout` 默认 10 分钟，到点这一轮停下，
-不会把后面的模型调用再发出去。写 0 关掉它。
+- **判据**：30 秒左右（本机 31.7 秒）报 **500**，体是 `{"status":500,"error":"Internal Server Error"}`；日志里没有 DOWN，紧接着问 `runtimeSnapshot` 仍成功。
+- **坑**：工具超时没包成可读错误，是已知粗糙处；整轮超时看 `claw4j.agent.turn-timeout`（默认 10 分钟，写 0 关掉）。
 
 ### E3 预算熔断：不是额度
-
-一轮最多 6 次工具调用（`claw4j.agent.tool-call-limit`，可调），单个工具 3 次（不可调）。
-回答里出现：
-
-```
-Total tool call limit (6) exceeded for this turn. No further tool calls are allowed.
-```
-
-就是撞了熔断。**单个工具先撞**：让它连调同一个工具，拿到的是
-
-```
-Tool call limit (3) exceeded for tool 'demo_now'. No further calls to this tool are allowed in this turn.
-```
-
-要撞上面那条总预算，得**换着工具**调（本机是 `demo_now` ×3 + `runtimeSnapshot` ×2 + `cronNext` ×1
-之后撞上 6）。多区/多窗的活要写成**一条 SQL 一次取回**，不是多调几次。
-调大它只是为了把活干完：`--claw4j.agent.tool-call-limit=20`。
-
----
+不用换实例。
+- **判据**：一轮 6 次（`claw4j.agent.tool-call-limit`，可调）报 `Total tool call limit (6) exceeded for this turn. No further tool calls are allowed.`；单工具 3 次（不可调）先撞：`Tool call limit (3) exceeded for tool 'demo_now'. No further calls to this tool are allowed in this turn.`。
+- **坑**：撞总预算得换着工具调（本机 `demo_now` ×3 + `runtimeSnapshot` ×2 + `cronNext` ×1）；多区多窗写成一条 SQL。
 
 ## F. 模型层（`claw4j-model`）
 
-验的是**模型自己出问题时**的行为：换家、冷却、白名单、角色、缓存命中。
-
-这一节**不改代码**，只用一份临时配置：`--spring.config.additional-location=file:/tmp/xxx.yml`
-覆盖写进去的那几项，`application.yml` 里其余照旧。别用 `--claw4j.model.providers.xxx=…` 一长串
-命令行覆盖——那会把整段子树替换掉（C1 的 MCP 那条也一样，踩过一次，报的是
-`MCP server java-http 是 transport: stdio`）。
+整节**不改代码**，只把改动写进 `/tmp/xxx.yml`，用 `--spring.config.additional-location=file:/tmp/xxx.yml` 覆盖；别用 `--claw4j.model.providers.xxx=…` 命令行覆盖，那会替换整段子树。
 
 ### F1 启动那四行：目录、窗口、角色
-
-按 0 节起应用之后，日志里这四行就是模型层的装配结果：
+不用换实例。启动日志：
 
 ```
-已装配 DeepSeek 适配器：id=deepseek, baseUrl=https://api.deepseek.com, model=deepseek-chat, 窗口=65536, 凭据=secret:deepseek_api_key, …
-已装配 OpenAI 兼容端点：id=qwen, baseUrl=…, model=qwen-plus, 窗口=131072, …
+已装配 DeepSeek 适配器：id=deepseek, model=deepseek-chat, 窗口=65536, …
 模型角色：main=deepseek/deepseek-chat；utility=继承 main
 会话压缩已启用：窗口 65536 token、到 32768 触发（50%）、保留最近 20 条事件
 ```
 
-三条判据：
-
-- 装配行后面有 **`窗口=`**：窗口是**模型那一行**的元数据（`models[].context-window`）；
-- 第四行的窗口与第一行**相同**（65536），不是 `claw4j.advisor.session.context-window` 那个数。
-  本机实测：`--claw4j.advisor.session.context-window=131072` 起实例，这一行仍然写 65536
-  （目录优先、会话配置兜底）；
-- 指标的 `route` 标签是 **`provider/model`**：
-
-  ```bash
-  curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.calls'
-  ```
-
-  的 `availableTags` 里应该有 `deepseek/deepseek-chat` 与 `qwen/qwen-plus`，不是 `deepseek` 一个词。
+- **判据**：装配行带 `窗口=`（来自 `models[].context-window`）；压缩那行窗口与第一行相同，不是 `claw4j.advisor.session.context-window`；`curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.calls'` 的 `availableTags` 里应有 `deepseek/deepseek-chat` 与 `qwen/qwen-plus`，`route` 标签是 `provider/model`。
+- **坑**：`--claw4j.advisor.session.context-window=131072` 也不改这一行（目录优先、会话配置兜底）。
 
 ### F2 主模型失败 → 换备（候选链）
-
-用"模型名写错"制造一次**快速**失败（端点打不通那种要等 90 秒，见 F4）。
-
-```yaml
-# /tmp/model-404.yml
-claw4j:
-  model:
-    providers:
-      deepseek:
-        models:
-          - id: no-such-model-xyz
-            context-window: 65536
-```
+要换实例：`claw4j.model.providers.deepseek.models[0]` 写 `id: no-such-model-xyz`、`context-window: 65536`（模型名写错制造快速失败；端点不通要等 90 秒，见 F4）。
 
 ```bash
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar … \
   --spring.config.additional-location=file:/tmp/model-404.yml
 ```
 
-问一句（`1+1 等于几` 就够），**回答照常出来**。三处证据：
+- **判据**：问 `1+1 等于几` 回答照常出来，三处证据——日志 `模型 deepseek/no-such-model-xyz 调用失败（model_not_found），换下一个（若有）`；`?tag=reason:model_not_found` 有数；`?tag=route:qwen/qwen-plus&tag=outcome:ok` 有数。
+- **坑**：看到 `所有模型都调用失败，尝试：[deepseek/no-such-model-xyz=auth(failed)]` 就是退回旧 bug（400 被误分类成 `auth`，整链 503）。
 
 ```bash
-# ① 换家发生在同一轮里
 grep "调用失败" /tmp/claw4j-app.log
-# 模型 deepseek/no-such-model-xyz 调用失败（model_not_found），换下一个（若有）
-
-# ② 失败记了原因，不只是 outcome=error
 curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.calls?tag=reason:model_not_found'
-
-# ③ 备用那家真的答了
 curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.calls?tag=route:qwen/qwen-plus&tag=outcome:ok'
 ```
 
-**这条验出过一个真 bug，值得记住形状**：DeepSeek 的"模型名不存在"是 HTTP **400**，
-Spring AI 把它包成 `NonTransientAiException`；分类器一度**把它一律当 `auth`**，而 `auth` 是
-"换家也没用"——于是整条候选链当场 503，`model_not_found` 成了永远不出现的词。现在按消息开头的
-状态码加文案细分。看到下面这种回答就是退回了旧行为：
-
-```
-所有模型都调用失败，尝试：[deepseek/no-such-model-xyz=auth(failed)]
-```
-
 ### F3 冷却：失败过的模型 30 秒内不再打
-
-接 F2 的实例，**连着问三句**（每句换一个新用户）：
+接 F2 的实例，连问三句，每句换新用户。
 
 ```bash
 for u in g1 g2 g3; do
@@ -1032,116 +532,50 @@ for u in g1 g2 g3; do
 done
 ```
 
-三句都答得出来，但 `model_not_found` 的计数**停在 2**，不是 3：
-
-| 第几句 | 主家 | 为什么 |
-| --- | --- | --- |
-| 第一句 | 打一次、失败 | 之前没有冷却，必须打一次才知道它坏了 |
-| 第二句 | 又打一次、失败 | 冷却里还没有"探测时刻"，这一句就是那次探测 |
-| 第三句 | **跳过** | 探测刚发生（< 30 秒），且冷却离到期还早（> 2 分钟不探） |
-
-判据：`?tag=reason:model_not_found` 是 2，`route:qwen/qwen-plus&outcome:ok` 是 3。
-
-**第三句没有日志行**——被跳过不写 WARN。"没试"与"试了失败"在日志里是两件事，所以别拿"没有
-WARN"当"没跳过"。等 30 秒以上再问一句，计数会到 3（探测放行，又打了主家一次）。
+- **判据**：三句都答得出，`model_not_found` 停在 **2**（前两句各打一次主家），`qwen/qwen-plus&outcome:ok` 是 **3**。
+- **坑**：第三句被跳过，没有日志行——别拿"没有 WARN"当"没跳过"；等 30 秒以上再问，计数到 3。
 
 ### F4 主家不可达：先把重试预算耗完，再换家
-
-```yaml
-claw4j:
-  model:
-    providers:
-      deepseek:
-        base-url: http://127.0.0.1:9
-```
-
-结论对：回答仍然出来，原因记成 `route_unavailable`。**代价要预期**：第一句要等**约 90 秒**
-——同家重试是"8 次 / 90 秒窗口、1 秒起每次翻倍"（票 08 的预算），耗完才轮到下一家。
+要换实例：`claw4j.model.providers.deepseek.base-url: http://127.0.0.1:9`。
+- **判据**：回答仍出来，原因记 `route_unavailable`；第一句要等**约 90 秒**（同家 8 次 / 90 秒窗口、1 秒起翻倍），`claw4j.model.calls` 只涨 **1**。
+- **坑**：计数看不出打了几次，要看得看耗时。
 
 ```bash
 grep route_unavailable /tmp/claw4j-app.log
 curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.calls?tag=reason:route_unavailable'
 ```
 
-`claw4j.model.calls` 只涨 **1**：重试发生在**一次** `ChatModel.call` 内部。所以这个计数看不出
-"打了几次"，要看得看耗时。90 秒这个数是个取舍：一边是"链路抖一下别急着换家"，一边是
-"主家死了别让用户干等"，现在偏前者。
-
 ### F5 白名单：把主模型排除 → 启动失败
-
-```yaml
-claw4j:
-  model:
-    policy:
-      allow: [qwen/*]
-```
-
-启动直接失败，消息点名：
-
-```
-主模型 deepseek/deepseek-chat 被 claw4j.model.policy.allow 排除了。允许集是 [qwen/*]，
-目录里有 [deepseek/deepseek-chat, qwen/qwen-plus]。要么把它的写法加进白名单，要么改 primary。
-```
-
-**不是"退到第一个被允许的模型"**：本仓没有"自动挑模型"的场景，静默换一个等于让配错的人以为
-自己配对了。写法三种：`provider/model` 精确、`provider/*` 整家、`provider/family-*` 名字前缀；
-`*` 只认在末尾，写在中间或写在供应商那一段都在启动时被拒。备选（`roles.*.fallbacks`）不按白名单过滤。
+要换实例：`claw4j.model.policy.allow: [qwen/*]`。
+- **判据**：启动直接失败，消息点名 `主模型 deepseek/deepseek-chat 被 claw4j.model.policy.allow 排除了。允许集是 [qwen/*]…要么把它的写法加进白名单，要么改 primary。`
+- **坑**：不会"退到第一个被允许的模型"；写法只有 `provider/model`、`provider/*`、`provider/family-*`，`*` 只能在末尾；备选不按白名单过滤。
 
 ### F6 配置形状与凭据：都在启动时点名
-
-| 写错什么 | 消息 |
-| --- | --- |
-| `api: gemini` | `…api=gemini 不认识。可选 [deepseek, openai-completions]…` |
-| 缺 `api-keys` 且没写 `auth: none` | `…api-keys 是空的。…要么这一家不支持鉴权时写 auth: none。` |
-| `models` 空 / 窗口不是正数 | `…models 是空的。至少写一行…` / `…context-window 没写或不是正数。` |
-
-**"配进表里就必须可用"** 是这一层的取舍：以前某家没钥匙会静默跳过，现在启动失败并点名。
-不想用某一家就从 `providers` 里删掉它，而不是留一条没钥匙的。
-
-`auth: none` 有一个已知偏差：SDK 的 `build()` 不接受"完全没有凭据"，所以它实际发的是空值
-`Authorization: Bearer`，不是"不发这个头"。不校验头部的端点（Ollama / vLLM / 内网网关）照常工作。
+不用换实例。
+- **判据**：`api: gemini` → `…api=gemini 不认识。可选 [deepseek, openai-completions]…`；缺 `api-keys` 且无 `auth: none` → `…api-keys 是空的。…`；`models` 空 / 窗口非正数 → `…models 是空的。至少写一行…` / `…context-window 没写或不是正数。`
+- **坑**：`auth: none` 实际发空值 `Authorization: Bearer`（SDK `build()` 不接受完全没凭据），不校验头的端点照常工作；不想用某家就从 `providers` 删掉。
 
 ### F7 角色：`utility` 是另一条链
-
-```yaml
-claw4j:
-  model:
-    roles:
-      utility:
-        primary: qwen/qwen-plus
-```
-
-启动日志从 `utility=继承 main` 变成 **`utility=独立链 qwen/qwen-plus`**。三档都看得到：
-不写这段 = 继承；写空串 `primary: ""` = 关闭（一用就抛，不悄悄回落 main）；写具体引用 = 独立链。
-
-**已知缺口**：这一票只给了入口，没有调用方——压缩、子 Agent、检索改写都还在用主模型。
-所以这里只能验"链建对了"，验不了"谁在用它"。
+要换实例：`claw4j.model.roles.utility.primary: qwen/qwen-plus`。
+- **判据**：日志从 `utility=继承 main` 变成 `utility=独立链 qwen/qwen-plus`。
+- **坑**：写空串 `primary: ""` = 关闭（一用就抛，不回落 main）；这一票只建了链、没有调用方，只能验"链建对了"。
 
 ### F8 缓存命中：`cache-read` 有数
-
-DeepSeek 的上下文缓存按前缀自动命中，我们不做缓存层，只让命中率可见：
+不用换实例。
 
 ```bash
 curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.tokens?tag=kind:cache-read'
 ```
 
-一次对话之后就有数（本机实测 12416）。两条取数路径：OpenAI 兼容侧读
-`getCacheReadInputTokens()`，DeepSeek 侧读 native usage 的 `promptTokensDetails.cachedTokens()`。
+- **判据**：一次对话后就有数（本机 12416）；OpenAI 兼容侧读 `getCacheReadInputTokens()`，DeepSeek 侧读 `promptTokensDetails.cachedTokens()`。
+- **坑**：两边都取不到时什么都不记（不是记 0），所以这个指标 **404 是正常的**。
 
-**两边都取不到时什么都不记**（不是记 0）——"没拿到"与"真的没命中"混成一个 0，命中率就永远算不对。
-所以这个指标 **404 是正常的**（换成一个没有缓存概念的端点就是 404）。
-
----
-
-## G. Agent 自管理（票 01–03）
-
-验三件**系统自己维护的状态**：计划、嘱咐、提示词的量。这一节的证据不在回答里，而在
-**库里那两行**与**一行 WARN**——模型自述在这三件事上尤其不可信：它会说"清单我记下了"，
-而卡可能压根没落；它会说"我提醒你了"，而那一轮并没有注入提醒。
+## G. Agent 自管理
+要不要换实例：不用，接着 B8 那个实例；只有 G3 要换人设。
 
 ### G1 进度卡：`TodoWrite` 落库
 
-触发就用 B8 那条命令（三步任务 + 要求先写清单），换成自己的绝对路径。跑完查库：
+验什么：那一轮 `TodoWrite` 的卡真的落库了，且状态在推进。
 
 ```bash
 docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
@@ -1149,135 +583,40 @@ docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
     order by updated_at desc limit 1;"
 ```
 
-（本机没有 `psql` 时用 `docker exec`，库名换成 0 节起的那个临时库；有 `psql` 就直接连。）
-
-**本机实测**（用户 `td1`、chat `card-1`；这是 2026-11-22 段下线之前的形状，现在尾部没有那一截）：
-
-```
-                     session_key                     | revision | steps_json
------------------------------------------------------+----------+-------------
- claw4j:user:td1:http:http:card-1:1795348016149-e212 |        2 | [{"step":"用 Read 读 examples/README.md 前 5 行","status":"COMPLETED"}, …]
-```
-
-四条判据：
-
-- **`revision ≥ 2`**：开工前一次、换步骤时一次。只有 1 说明那一轮模型只交了一份清单（任务太短）。
-- **状态在推进**：看到 `COMPLETED`（做完的），末尾可能还剩一条 `IN_PROGRESS`；**三条全是 `PENDING`
-  说明卡住了**——那是它只写了计划没做事。
-- **没有 `activeForm`、`content` 变成了 `step`**：卡上只有"做什么"和"到哪了"，`activeForm`（"正在核对"）
-  是给模型看的措辞，不进卡。
-- **`session_key` 就是会话键**（`claw4j:user:<owner>:<peer>`）：段那层已经下线（ADR-0026 修订），
-  尾部不再挂 `:<epochMilli>-<四位十六进制>`，也没有会换键的命令了（`/new` 已下线，票 03），
-  所以"一段对话一张卡"仍然成立。
-
-| 看到 | 含义 |
-| --- | --- |
-| 一行都没有 | 这一轮没调 `TodoWrite`（先看 B8 的计数），或这一轮没有会话 id（那种情况**不落假键**） |
-| 清空之后行还在、`steps_json is null` | 正常：清空是**墓碑 + `revision + 1`**，不是删行 |
-| 两步文字粘成一句 | 清洗把换行当"不可见字符"删了（修过一次的真 bug，已改成先判空白） |
-
-两点要知道：
-
-- **`revision` 是同段并发写的护栏**：两处同时改时后来者拿到 `Stale`，不会互相覆盖。
-- **撞调用预算不影响卡**：三步那句话有时正好把 6 次预算用完（B8 的已知现象，回答里是
-  `Total tool call limit (6) exceeded`），而库里 `revision` 已经是 2——落库发生在这个上限之前。
-
-**卡是给人看的，不是给模型看的**（ADR-0024 的实测结论没变）：模型那侧仍然只收到 B8 那句固定回话。
-所以"计划进没进模型的上下文"不在这里验，也不该在这里验。
+- **判据**：`revision ≥ 2`（开工一次、换步骤一次）；`steps_json` 里出现 `COMPLETED`，末尾可留一条 `IN_PROGRESS`；三条全 `PENDING` 等于只写计划没做事。
+- **坑**：卡上只有 `step` + `status`，没有 `activeForm`；清空是墓碑 + `revision+1`（行还在、`steps_json is null`），一行都没有＝这轮没调 `TodoWrite`。
 
 ### G2 意图：说一次，遇到才提醒
 
-它和定时任务的分界只有一句：定时任务是**到点做**，意图是**遇到才做**，两者都别拿来验对方。
-
-**① 记一条。**（`X-Claw4j-User: it1`、`X-Claw4j-Chat-Id: intent-1`）
+验什么：嘱咐只记一次、命中一次、冷却内不再提醒，且能列能撤。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: it1' -H 'X-Claw4j-Chat-Id: intent-1' \
   -d '{"text":"帮我记一条提醒：以后我提到「客户数」的时候，先问我这是签约数还是活跃数。就记这一条，别做别的。"}'
-```
-
-回答里带一个 8 位编号（实测 `cb6c8264`），并且 `intent` 计数 +1：
-
-```bash
 curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.tool.calls?tag=tool:intent&tag=outcome:ok'
-```
-
-```bash
 docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
   "select id, owner, trigger_keywords, status, fire_count, max_fires, cooldown_seconds,
           channel_scope, sender_scope, trigger_embedding is null as emb_null
      from claw4j_session.standing_intents;"
 ```
-
-期望一行：
-
-```
-    id    | owner | trigger_keywords | status | fire_count | max_fires | cooldown_seconds | channel_scope | sender_scope | emb_null
-----------+-------+------------------+--------+------------+-----------+------------------+---------------+--------------+----------
- cb6c8264 | it1   | 客户数           | armed  |          0 |         3 |            86400 | http          | it1          | t
-```
-
-三处值得看：
-
-- **`owner` / `sender_scope` 取自这一轮的身份证**，不是模型在参数里声明的——参数里带 owner 等于让它自己说"我是谁"。
-- **`trigger_embedding` 是 `t`（null）**：这一版只做关键词匹配，列留着给将来那条向量路径。
-- **意图不挂在某一条会话上**：表里只有 `owner`，没有 `session_key`。嘱咐跨会话存活——同一个人
-  换条对话再提「客户数」照样提醒。这是 ADR-0036 的取舍（跟着会话存，等于用户一开新对话就把
-  嘱咐全丢了）。
-
-**② 命中一次。必须换一个 chat id**：
+命中要换一个新 chat id（`intent-2`），冷却内再换一个，列与撤同理，都是同形命令：
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: it1' -H 'X-Claw4j-Chat-Id: intent-2' \
   -d '{"text":"我们现在的客户数是多少？"}'
-```
-
-期望：回答里出现那句提醒（本机实测："按之前留下的提醒，先确认口径：你要的是签约客户数还是活跃客户数"），
-库里 `fire_count=1`、`status=fired`、`last_fired_at` 有值。
-
-**换 chat id 这条不是洁癖**：同一段对话里模型凭上文就记得你交代过，不注入提醒它也会追问——
-那种回答**不能当命中证据**。判断命中只有两条：`fire_count` 涨了，且这是**全新一段对话**。
-
-**③ 冷却内再来一次**（再换一个 chat id）：`fire_count` **停在 1**。默认冷却 86400 秒、最多 3 次——
-这两个数都能在建的时候改（`cooldownSeconds` / `maxFires`）。
-
-**这一步别拿回答的措辞当判据**：人设与口径本身也会让它顺口提一句"这是档案总数，不是活跃数"，
-那跟提醒没关系。能分辨的只有库里那个数——注入与否，`fire_count` 会告诉你。
-
-**④ 列与撤**（又要换新 chat，否则它凭记忆念）：
-
-```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: it1' -H 'X-Claw4j-Chat-Id: intent-9' \
   -d '{"text":"用 intent 工具列出我名下所有意图，原样念出来。"}'
 ```
 
-念出来的是这种形状（本机实测）：
-
-```
-你留下的意图：
-- cb6c8264 [fired] 触发词「客户数」 → 提到「客户数」时，先确认是签约数还是活跃数，再回答（已触发 1/3）
-```
-
-**编号、状态、进度**都在，模型要靠编号才撤得掉。说"把编号 cb6c8264 那条撤掉"之后 `status` 变
-`cancelled`；此后含触发词的话不再算命中（`fire_count` 不再涨）。
-
-| 看到 | 含义 |
-| --- | --- |
-| `intent` 计数没涨，但回答里有编号 | 它在编。编号只可能来自工具回话 |
-| 建完 `status` 不是 `armed` | 建表就没落成（看 G1 同款的迁移日志） |
-| 命中后 `fire_count` 一直是 0 | 触发词没匹配上：中文按**子串**、英文按**整词**；"客户数"要写成 `客户数` 而不是 `客户 数` |
-| 同一句话提醒了两遍 | 记账不是一条 `update`（冷却/预算/过期都该在 `where` 里，不是调用方记得） |
-
-**已知局限**：只做关键词，不做语义；`trigger_embedding` 恒 null。说"帮我盯着老王的电话"这种
-没有固定触发词的嘱咐，它记不成意图——那本来也不是这一档要解决的。
+- **判据**：建完 `status=armed`、`owner`/`sender_scope` 取自身份证；`intent-2` 后 `fire_count=1`、`status=fired`、`last_fired_at` 有值；冷却内再问仍是 1；撤掉变 `cancelled` 后不再涨。
+- **坑**：同一段对话里它凭上文就追问口径，拿这个当命中是假过——只认"全新 chat id + `fire_count` 涨"；且只做关键词（中文子串、英文整词），`trigger_embedding` 恒 null。
 
 ### G3 提示词预算：超了会喊一声，且只喊一次
 
-造一份超长人设（正文 3 万字，超过单段 20000 的上限），用它起一个实例。这一份**已经留在仓库里**：
-`docs/acceptance/2026-11-22/bigagent/big.md`。丢了就照下面重造：
+验什么：人设超单段上限时截断一次、只喊一声，回答照常。
 
 ```bash
 mkdir -p docs/acceptance/2026-11-22/bigagent
@@ -1286,52 +625,20 @@ body = "\n".join("第%d条：占位口径，只为把提示词撑过两万字符
 open('docs/acceptance/2026-11-22/bigagent/big.md', 'w', encoding='utf-8').write(
     "---\nname: big\ndescription: 超长人设，只为验提示词预算\ntier: full\n---\n\n# 你是谁\n\n" + body)
 PY
-```
-
-起实例时把 0 节那条命令的 `--claw4j.agent.directory=examples/agents --claw4j.agent.default=ops`
-换成 `--claw4j.agent.directory=docs/acceptance/2026-11-22/bigagent --claw4j.agent.default=big`，其余照旧。随便问一句：
-
-```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: bg1' -H 'X-Claw4j-Chat-Id: big-1' \
   -d '{"text":"1+1 等于几？只给数字"}'
 ```
-
-日志里出现这一行（本机实测）：
-
-```
-WARN … i.g.c.agent.advisor.AgentContextAdvisor : 提示词超预算已截断：22479 → 20106 字符（上限 60000），稳定段 20000 字符
-```
-
-三条判据：
-
-- **回答照常是 `2`**。预算是闸，不是故障：截断之后这一轮照跑。
-- **只出现一行**。再问一次（换用户）不会刷第二行——每轮刷一条 WARN，真正要看的那条会被淹掉。
-- **括号里的 60000 是合计上限，先撞的是单段 20000**。这行字同时报了两个数，读的时候分开看：
-  这次是先按单段 20000 截的稳定段（人设），合计上限根本没到。
-
-| 看到 | 含义 |
-| --- | --- |
-| 一行都没有 | 人设没超 20000 字符（`wc -m` 数的是字符，中文一个算一个） |
-| 每轮都刷 | 一次性开关失效了 |
-| 回答里带"内容不全"之类的话 | 正常：截断会附一句固定提示，但它**不说截了哪一段**（说了等于让模型去读它未必有权读的文件） |
-
-**验不了的那一半**：跨天之后稳定段是否逐字节不变（前缀缓存的前提），手工验收做不了——
-要在两个日期各跑一次再比字节。这条由单测钉着：
-`PromptCompositionTest#stableNeverChangesAcrossDays`。这一节能验的只是"超长时喊一声、喊完还答得出"。
-
----
+起实例时把 0 节的 `--claw4j.agent.directory=examples/agents --claw4j.agent.default=ops` 换成 `bigagent` / `big`。
+- **判据**：日志一行 `提示词超预算已截断：22479 → 20106 字符（上限 60000），稳定段 20000 字符`；回答仍是 `2`；换用户再问不刷第二行。
+- **坑**：先撞的是单段 20000，括号里的 60000 是合计上限；回答里的"内容不全"是截断的固定提示，正常。
 
 ## H. 流式（SSE）
-
-流式不是另一套能力，是同一条路的另一种出站：模型、工具、会话、审计全都一样。但**它的失败模式不一样**：
-一次性回答只有"成功"和"报错"两种结果，流有第三种——**话说到一半没了**。所以这一节的重点是
-**结束信号**，不是内容对不对。
-
-起手就一条：`curl` 必须带 `-N`。不加它 curl 会把响应攒完再一次性打出来，看起来一点都不像流式，
-而你会以为"流式没生效"。端点固定是 `POST /api/chat/stream`，请求体与 `/api/chat` 完全相同。
+要不要换实例：不用；H4 换 `model-404.yml`，H5/H6 换启动参数。curl 必须带 `-N`，否则完全不像流式。
 
 ### H1 帧的形状：`chunk` 是增量，`done` 是唯一结束
+
+验什么：短回答是几十帧、一个 `done`，拼起来不重不漏。
 
 ```bash
 curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
@@ -1340,35 +647,12 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
   -w '\n---TIMING first=%{time_starttransfer} total=%{time_total}\n'
 ```
 
-**本机实测**：79 个 `chunk`、1 个 `done`、`first=1.73 total=2.17`。帧长这样：
-
-```
-event:chunk
-data:我是
-
-event:chunk
-data:运维
-
-...
-
-event:done
-data:
-```
-
-四条判据：
-
-- **一次短回答是几十帧**（79 帧对一百多字），不是"一帧整段"。一帧到底说明对面没在流式。
-- **`done` 恰好一次**，且 `data:` 为空。它是唯一的正常结束信号。
-- **把所有 `data:` 拼起来等于回答全文**——不重不漏。这条比"看着像流式"实在。
-- **`first` 明显小于 `total`**（1.73 vs 2.17）：首字先到、尾巴后到。
-
-| 看到 | 含义 |
-| --- | --- |
-| 帧一次性全出现 | 漏了 `-N`，或者中间有代理在缓冲 |
-| `done` 出现两次 | 正文那一帧带了 `finalChunk`（见 H2，出过这个 bug） |
-| 只有 1 个 `chunk` 就 `done` | 对面把整段当一块发：内容照样对，但这不是流式的价值 |
+- **判据**：本机 79 个 `chunk` + 1 个 `done`（`data:` 为空），所有 `data:` 拼起来等于全文；`first` 明显小于 `total`（1.73 vs 2.17）。
+- **坑**：帧一次性全出现＝漏 `-N` 或有代理缓冲；`done` 两次＝正文帧带了 `finalChunk`（H2 那个 bug）。
 
 ### H2 命令不进模型：一帧正文 + 一帧 `done`
+
+验什么：发命令得到一帧回执，且一次模型调用都不发生。
 
 ```bash
 curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
@@ -1376,26 +660,12 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
   -d '{"text":"/elevated"}'
 ```
 
-```
-event:chunk
-data:这个部署没有开提权（claw4j.tools.elevated.enabled=false），命令只能跑在配置好的位置。
-
-event:done
-data:
-```
-
-**1 个 `chunk` + 1 个 `done`**，而且 `claw4j.model.calls` 一次都不涨——命令这一路根本没进模型。
-正文那句随部署变（开了提权回当前档、名单里没这个人回"你不在提权名单里"、压根没开回"这个部署
-没有开提权…"）：判的是帧数与计数，不是文案。
-
-**这条验出过一个真 bug，值得记住形状**：正文那一帧原来是用"整块回答"的工厂造的，带着
-`finalChunk=true`。通道看到 `finalChunk` 就只发 `done`、正文丢掉——于是用户发命令看不到回执，
-`done` 还来了两次；而实现那边看起来"我说了那句话"。现在端口契约（`AgentPort#stream`）写明
-**正文帧的 `finalChunk` 必须是 false**，用例 `commandsOnTheStreamPathDoNotReachTheModel` 也加了这条断言。
-
-所以 H2 的三条判据是：帧数 = 2、第一帧是正文且**不是**结束、`model.calls` 不变。
+- **判据**：1 个 `chunk` + 1 个 `done`，`claw4j.model.calls` 一次不涨；文案随部署变，只判帧数与计数。
+- **坑**：正文帧的 `finalChunk` 必须是 false，否则正文被丢、`done` 来两次。
 
 ### H3 工具在流里是静默的
+
+验什么：工具真跑了，但参数与结果不变成帧。
 
 ```bash
 curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
@@ -1403,18 +673,12 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
   -d '{"text":"用 Read 读 /绝对路径/examples/README.md 的前 3 行，然后原样贴出来。"}'
 ```
 
-**本机实测**：45 个 `chunk`、首帧 `2.25` 秒（纯聊天那一句是 1.73）。
-
-- **流里搜不到工具名与 JSON**：`grep -c 'Read\|todos\|{"'` 应为 **0**。工具参数、工具结果都不会变成帧。
-- **但工具真的跑了**：`claw4j.tool.calls{tool=Read}` +1。
-- **首帧比纯聊天晚**：工具那一轮来回的时间全算在首帧之前。
-
-这条的意义是**别把静默当卡死**：一段要调三次工具的活，可能四五秒一个帧都没有，而它正在正常工作。
-判断"还活着"看工具计数与日志，不要盯流。
+- **判据**：流里 `grep -c 'Read\|todos\|{"'` 为 0，但 `claw4j.tool.calls{tool=Read}` +1；首帧比纯聊天晚（2.25 vs 1.73）。
+- **坑**：长静默不是卡死，判断"还活着"看工具计数与日志，别盯流。
 
 ### H4 换家发生在首帧之前
 
-用 F2 那份 `model-404.yml`（主模型名写错；现成的一份在 `docs/acceptance/2026-11-22/model-404.yml`），请求走 `/stream`：
+验什么：主模型不可用时换备用，客户端看到的仍是一段完整回答。
 
 ```bash
 curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
@@ -1422,30 +686,12 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
   -d '{"text":"1+1 等于几？只给数字"}'
 ```
 
-回答照常出来（`2`），`done` 一次，日志里有：
-
-```
-模型 deepseek/no-such-model-xyz 流式失败（unclassified，未吐内容），换下一个
-```
-
-两句要分清：
-
-- **吐过内容就不再换人**（换了客户端会看到重复的半句），所以没吐内容才换、首帧还是干净的。
-- **已知缺口：流式的失败原因记成 `unclassified`**，不是 F2 里的 `model_not_found`。原因是这一路的异常是
-  `WebClientResponseException$BadRequest`，响应体（"模型不存在"那句话）不在异常消息里，分类器拿不到。
-  冷却照常（默认 30 秒→1 分→5 分），保护没丢，**只是 F2 那条按 `reason` 查的判据在流式上不成立**——
-  流式要看日志里那行，或者查 `?tag=outcome:error`。
+- **判据**：照常答 `2`、`done` 一次，日志一行"流式失败（unclassified，未吐内容），换下一个"。
+- **坑**：吐过内容就不再换家；流式的 `reason` 是 `unclassified`，F2 那条按 `reason` 查的判据在流上不成立。
 
 ### H5 忙：一句话 + `done`，不是沉默
 
-默认 `lane-wait` 是 60 秒，所以"同一段对话连发两句"通常是**排队等着**，你看到的是两条正常回答。
-要验"忙"这一支，起实例时把它设成 0：
-
-```
---claw4j.agent.lane-wait=0
-```
-
-然后同一会话同时发两条（第二条在前一条还没说完时发出）：
+验什么：lane 被占时立刻回一句忙话，而不是挂着。起实例加 `--claw4j.agent.lane-wait=0`，在上一句没说完时发这条。
 
 ```bash
 curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
@@ -1453,227 +699,113 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
   -d '{"text":"第二句"}'
 ```
 
-```
-event:chunk
-data:现在有点忙，请稍后再问一次。
-
-event:done
-data:
-```
-
-1 个 `chunk` + 1 个 `done`。**忙也要说话**：这一支跟 H2 同形，用了带 `finalChunk` 的工厂就是
-"沉默 + 两个 done"——同一个 bug 的两个入口。
+- **判据**：1 个 `chunk`（"现在有点忙，请稍后再问一次。"）+ 1 个 `done`。
+- **坑**：默认 60 秒是排队，看到的是两条正常回答，验不到这一支；用带 `finalChunk` 的工厂就变成"沉默 + 两个 done"。
 
 ### H6 超时 / 断流：没有 `done`
 
-起实例时给一个很短的流超时，再让它写一篇长东西：
+验什么：话说到一半没了，客户端只能靠缺 `done` 分辨。起实例加 `--claw4j.channel.http.stream-timeout=2s`，再让它写一篇长东西。
+- **判据**：本机 32 个 `chunk` 后断连、`done` 出现 0 次、总耗时 2.1 秒，服务端 `AsyncRequestTimeoutException`（response committed，只有一行 Warning）。
+- **坑**：没有 `done` 的字不能当答案；"换家全失败""进程被杀"同形，客户端只认 `done`，不拿连接关闭当成功。
 
-```
---claw4j.channel.http.stream-timeout=2s
-```
-
-**本机实测**：拿到 32 个 `chunk` 之后连接就断了，**`event:done` 出现 0 次**，总耗时 2.1 秒；
-服务端日志是 `AsyncRequestTimeoutException`（`response committed already`，所以只有一行 Warning）。
-
-这是客户端**唯一**能分辨"说完了"和"说到一半"的地方：
-
-- 有 `done`：这段文本是完整的；
-- 没有 `done`：**别把收到的那些字当答案**。它可能是半句，也可能刚好断在工具调用前。
-
-同一条判据也管"服务端换家换到最后一家也失败"和"进程被杀"——它们的表现都是缺 `done`。
-所以客户端不要用"连接关闭"当成功，只认 `done`。
-
----
-
-## I. 审计：出事后答得出四个问题
-
-审计不是日志。日志按"发生了什么"写，审计按**谁干的、成没成、为什么被拦、东西送到没有**四问组
-织，而且**只记元数据**——消息正文、工具参数、命令输出都不进来。所以这一节的判据全落在
-**接口那一行**上，一条都不落在模型的回答里：它会说"我已经记录"，而库里可能一行都没有。
-
-前提：`local` 带着库（`claw4j.persistence.enabled` 默认 `true`），`/api/audit` 就存在；没配库时
-它回 **404**——那是"能力不在场"，不是接口写错了（与 `/api/approvals` 没装审批时同一个判断）。
+## I. 审计
+要不要换实例：不用。前提是带库（`persistence.enabled` 默认 true），否则 `/api/audit` 回 404——那是能力不在场。判据全落在接口那一行，不在回答里。
 
 ### I1 跑一轮，看那几行
 
-一条会调工具的活（沿用 B1 那句），顺手把执行编号取出来：
+验什么：一轮的四个事件按执行编号查得出来，字段形状对。
 
 ```bash
 EXEC=$(curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: t1' \
   -d '{"text":"上周华东区的成交额是多少"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["executionId"])')
-
 curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC"
 ```
 
-**期望**：`{"events":[…],"nextCursor":…}`，里面按 `sequence` **倒序**，正常是四行——两条 `agent_run`
-（`started` / `finished`）+ 两条 `tool_action`（`started` / `finished`）。一轮的数据长这样（节选）：
-
-```json
-{"events":[
- {"eventType":"tool_action","schemaVersion":1,"eventId":"…","sequence":4,"sourceSequence":2,
-  "occurredAt":1795348800123,"kind":"tool_action","action":"tool.action.finished","status":"succeeded",
-  "actor":{"type":"agent","id":"ops"},"agentId":"ops","sessionKey":"…","sessionId":"…",
-  "executionId":"…","toolCallId":"sha256:…","toolName":"querySales","redaction":"metadata_only"},
- …
-],"nextCursor":null}
-```
-
-五条判据，一条不对就是没对齐：
-
-- **`eventType` 是四种之一**（`agent_run` / `tool_action` / `inbound_message` / `outbound_message`），
-  不是 `run` / `tool`。它是**算出来的**，不是一列：库里只有 `kind` 与消息方向。
-- **`sequence` 递减**（4、3、2、1）。按时间倒序在"同一毫秒写了多条"时会重复或漏行，所以游标跟
-  的是 `sequence`，时间只是另一条索引。
-- **`occurredAt` 是 13 位毫秒整数**，不是 ISO 字符串、不是秒。
-- **`actor` 是对象**：`{"type":"agent","id":"ops"}`。`id` 是执行者——运行/工具行是 `agentId`，
-  入站消息行是发送者假名（与 `accountRef` 同值）。
-- **整段 JSON 里没有 `runId`**：`grep -c runId` 应为 0。那一格叫 `executionId`（ADR-0038）。
+- **判据**：四行按 `sequence` 倒序（`agent_run` started/finished + `tool_action` started/finished）；`eventType` 是四种之一；`occurredAt` 是 13 位毫秒；`actor` 是对象；整段 `grep -c runId` 为 0。
+- **坑**：`eventType` 是算出来的，库里只有 `kind` 与方向；游标跟 `sequence` 不跟时间，同毫秒多条会重复。
 
 ### I2 四种变体，各自的必填格不同
 
-一条 `agent_run`、一条 `tool_action`、一条入站、一条出站逐格比：
-
-| 变体 | 必有 | 必定没有 |
-| --- | --- | --- |
-| `agent_run` | `eventType` `schemaVersion` `eventId` `sequence` `sourceSequence` `occurredAt` `kind` `action` `status` `actor` `redaction` | `toolName` `toolCallId` `direction` `channel` |
-| `tool_action` | 同上 + `toolName` | `direction` `channel` |
-| `inbound_message` | 同上 + `channel` `direction=inbound` `conversationKind` `outcome` | `toolName` `toolCallId` |
-| `outbound_message` | 同上 + `channel` `direction=outbound` `conversationKind` `outcome` `deliveryKind`（正常发出时） | `toolName` `toolCallId` |
-
-**空字段整格不出现**，不是写成 `null`：四个变体都是闭对象，多一格在严格客户端那里就是解析失败。
-`argsDigest` 与 `approvalId` 是我们的扩展列，**不进报文**——`grep -c argsDigest` 应为 0。
+验什么：四种事件各带哪些格，多一格少一格都不行。
+- **判据**：`agent_run` 无 `toolName`/`direction`/`channel`；`tool_action` 多 `toolName`；两种消息行多 `channel`+`direction`+`conversationKind`+`outcome`，出站正常发出时还有 `deliveryKind`。
+- **坑**：空字段整格不出现，不写 `null`；`argsDigest`/`approvalId` 不进报文（`grep -c argsDigest` 为 0）。
 
 ### I3 参数自相矛盾：400，不是空页
 
-三种组合各试一次：
+验什么：互斥参数组合被拒绝，且说清是哪两个。
 
 ```bash
-# ① 消息行没有会话键，所以 kind=message 不许带 sessionKey
 curl -s -o /dev/null -w '%{http_code} ' --noproxy '*' \
   'localhost:8080/api/audit?kind=message&sessionKey=sk'
-
-# ② 方向与通道只属于消息行
 curl -s -o /dev/null -w '%{http_code} ' --noproxy '*' \
   'localhost:8080/api/audit?kind=tool_action&direction=inbound'
-
-# ③ 不给 kind，却一边给 sessionKey、一边给 channel
 curl -s -o /dev/null -w '%{http_code}\n' --noproxy '*' \
   'localhost:8080/api/audit?sessionKey=sk&channel=http'
-```
-
-**期望**：三个 `400`，且 `error` 说清是哪两个参数冲突
-（例：`kind=message 与 sessionKey 不能同时用：消息行没有会话键（只有 agent_run / tool_action 有）`）。
-
-**为什么不能回空页**：空页在客户端看来是"这段时间没有审计"，而真相是"这两个参数不该一起用"。
-两种结论，排查方向完全相反。
-
-坏游标也是 400（不是 500、不是悄悄从头来一页）：
-
-```bash
 curl -s --noproxy '*' 'localhost:8080/api/audit?cursor=abc'
-# {"error":"cursor 必须是上一页返回的 nextCursor：abc"}
 ```
+
+- **判据**：前三个都是 `400`，`error` 点名冲突参数（消息行没有会话键、方向只属于消息行）；坏游标也是 400，不是 500、不是悄悄从头。
+- **坑**：空页会被读成"这段时间没有审计"，与"参数不该一起用"排查方向正相反。
 
 ### I4 翻页：游标是上一页的 `nextCursor`
+
+验什么：翻页不重不漏，末页给 `null`。
 
 ```bash
 P1=$(curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC&limit=2")
 echo "$P1" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(len(d["events"]),d["nextCursor"])'
-
 CUR=$(echo "$P1" | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextCursor"])')
 curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC&limit=2&cursor=$CUR"
 ```
 
-**期望**：第一页 2 条、`nextCursor` 是**字符串**（那一页最后一行的 `sequence`，例 `"3"`）；
-第二页接着往后，与第一页**没有重叠**；最后一页的 `nextCursor` 是 `null`（不是 `"0"`——`"0"` 在游标
-里等于"从第 0 条往后"，会被当成还有一页）。
-
-`limit` 越界会被钳到 1–500 而不报错（`limit=0`、`limit=9999` 都照常返回一页）——这是钳位，不是静默
-截断：要的条数不对时先看自己传了什么。
+- **判据**：第一页 2 条、`nextCursor` 是字符串（如 `"3"`）、第二页与第一页不重叠、末页是 `null`（不是 `"0"`）。
+- **坑**：`limit` 越界被钳到 1–500 而不报错——条数不对先看自己传了什么。
 
 ### I5 幂等：同一件事投两次只留一行
 
-幂等的落点是唯一键 `(source_id, source_sequence)`，重复投递走 `on conflict do nothing`。
-真实的重复来自平台重投（IM 通道把同一条事件再推一次），那件事不好手动造；下面用探针把
-"唯一键确实在挡"变成可重复的一条命令。（`DB` 换成 0 节起的那个库，下面几处同。）
+验什么：唯一键 `(source_id, source_sequence)` 挡住重复投递，且是安静地挡。
 
 ```bash
 DB=<临时库>
-
-# 第一次：插得进去
 docker exec -i claw4j-postgres psql -U claw4j -d $DB -c "
 insert into claw4j_run.audit_event
   (event_id, kind, action, status, execution_id, actor, source_id, source_sequence)
 values ('dup-probe-1', 'agent_run', 'agent.run.started', 'started', '$EXEC', 'agent-1',
         'probe:duplicate', 1);"
-
-# 第二次：换个 event_id，来源键一模一样
 docker exec -i claw4j-postgres psql -U claw4j -d $DB -c "
 insert into claw4j_run.audit_event
   (event_id, kind, action, status, execution_id, actor, source_id, source_sequence)
 values ('dup-probe-2', 'agent_run', 'agent.run.started', 'started', '$EXEC', 'agent-1',
         'probe:duplicate', 1)
 on conflict (source_id, source_sequence) do nothing;"
-```
-
-**期望**：第一条 `INSERT 0 1`，第二条 **`INSERT 0 0`**（没进去），下面这条查询返回空：
-
-```bash
 docker exec -i claw4j-postgres psql -U claw4j -d $DB -c "
 select source_id, source_sequence, count(*) from claw4j_run.audit_event
  where source_id = 'probe:duplicate' group by 1,2 having count(*) > 1;"
-```
-
-**判据是"第二行不存在"，不是"报错"**：报错会让调用方以为写失败了，而正确行为是安静地只留一行。
-
-`claw4j.audit.duplicates` 记的是**应用侧**被挡下的次数——**手插这两行不会让它动**（那是 psql 干的，
-不经过账本）。所以：
-
-- 这个指标 404 是正常的，不代表幂等没生效；要让它涨，只能真的重放（IM 通道重投同一条事件）。
-- 想确认"重放只留一行"，看上面那条 `having count(*) > 1` 返回空就够了。
-
-验完收掉探针：
-
-```bash
 docker exec -i claw4j-postgres psql -U claw4j -d $DB -c \
   "delete from claw4j_run.audit_event where event_id like 'dup-probe%'"
 ```
 
+- **判据**：第一条 `INSERT 0 1`、第二条 `INSERT 0 0`、`having count(*) > 1` 返回空；判的是"第二行不存在"，不是"报错"。
+- **坑**：手插两行不会让 `claw4j.audit.duplicates` 涨（那是应用侧计数，404 正常）；真实重复只来自平台重投。
+
 ### I6 消息行：默认不记，打开才有
 
-`claw4j.audit.messages` **默认 `false`**（照 OpenClaw 的分工：运行与工具是运维账，默认记；消息多出
-"谁跟谁说了话"这种关系数据，默认关）。先确认现在是哪一种：
+验什么：开关打开后进出各一条，且引用是假名（`--claw4j.audit.messages=true`）。
 
 ```bash
-# 关着时：空页，不是 400、不是报错
+# 关着时（默认）：空页，不是 400、不是报错
 curl -s --noproxy '*' 'localhost:8080/api/audit?kind=message&limit=5'
-# {"events":[],"nextCursor":null}
-```
-
-要验消息行，起实例时加 `--claw4j.audit.messages=true`，再走 B1 那一句（发一条、收一条），然后：
-
-```bash
 curl -s --noproxy '*' 'localhost:8080/api/audit?kind=message&limit=5'
 ```
 
-**期望**：两条——`inbound_message`（`outcome=completed`、`resultCount=1`）与
-`outbound_message`（`outcome=sent`、`deliveryKind=text`），都带 `channel` 与 `conversationKind`。
-
-| 判据 | 期望 | 为什么 |
-| --- | --- | --- |
-| `direction` | `inbound` / `outbound` 各一条 | 合成一列的话答不出"这条是进来的还是出去的" |
-| `channel` + `conversationKind` | 都有值 | 读侧四个变体里它们是必填，缺了客户端解析不了 |
-| 假名引用 | `accountRef` 形如 `hmac-sha256:v1:<keyId>:<digest>` | 原文不进库；同一人两轮相同、换人不同 |
-| `executionId` | 入站那条**可以没有** | 入站消息在开跑之前就到了（可能被跳过、可能没认出身分） |
-
-被抑制（`outcome=suppressed`）那条**没有 `deliveryKind`、但必有 `reasonCode`**。它手工不好造
-（要真的触到发送策略），所以由库里的 CHECK 钉着：`ck_audit_event_delivery_kind_absent` /
-`ck_audit_event_outbound_reason`，`\d claw4j_run.audit_event` 就看得到。要正面验它们，跑
-`PersistenceSchemaTest` 那一类——它会把每种非法组合都插一遍，插得进去就红。
+- **判据**：两条——`inbound_message`（`outcome=completed`、`resultCount=1`）与 `outbound_message`（`outcome=sent`、`deliveryKind=text`），都带 `channel` 与 `conversationKind`，`accountRef` 形如 `hmac-sha256:v1:<keyId>:<digest>`。
+- **坑**：默认 `false`，不打开永远是空页；入站那条可以没有 `executionId`（它在开跑之前就到了）。
 
 ### I7 工具行带调用编号，运行与消息行不许有
+
+验什么：`toolCallId` 只挂在工具行，且是哈希不是原值。
 
 ```bash
 curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC" | python3 -c '
@@ -1682,30 +814,23 @@ for e in json.load(sys.stdin)["events"]:
     print(e["eventType"], e.get("toolCallId","<无>"))'
 ```
 
-**期望**：`tool_action` 两行有值、`agent_run` 两行是 `<无>`。形状是 `sha256:<64 hex>`，
-**不是 provider 的原值**——编号是 provider 的字节，能用来对账，但不是我们的档案。
-
-**这一格就是"同参数两次调用"的分辨办法**：`argsDigest` 相同、`toolCallId` 不同。取不到时留空、
-不编 id：没开观测的部署这一格就是空的，那时只能靠 `argsDigest` + `toolName`。
+- **判据**：`tool_action` 两行有值（`sha256:<64 hex>`），`agent_run` 两行是 `<无>`；同参数两次调用靠 `argsDigest` 同、`toolCallId` 不同分辨。
+- **坑**：不是 provider 原值；取不到就留空，不许现编 id。
 
 ### I8 子 Agent：每次委派是另一轮
 
-派一个（沿用 B5），再按子 Agent 的会话键查：
+验什么：委派真的产生了自己的执行编号与工具行。
 
 ```bash
 curl -s --noproxy '*' 'localhost:8080/api/audit?sessionKey=subagent:weekly-digest&limit=20'
 ```
 
-**期望**：
-
-- `sessionKey` 是 `subagent:<定义名>`、`agentId` 是 `<定义名>`；
-- 每次委派一个**新的 `executionId`**，与父那一轮不同；子链的工具行挂在这个编号上，不是父的；
-- 父子之间**没有 lineage 列**：不从父编号编一个"看起来像"的关联，缺就缺着。
-
-**判据是"子那一轮的工具行落得下去"**：B5 那条如果只看到父的 `Task` 行、没有任何
-`sessionKey=subagent:` 的行，说明委派那一侧没把审计传下去。
+- **判据**：`sessionKey` 是 `subagent:<定义名>`、`agentId` 同值；每次委派新的 `executionId`，子链工具行挂在这个编号上；父子之间没有 lineage 列。
+- **坑**：只看到父的 `Task` 行、没有任何 `subagent:` 行＝委派那侧没把审计传下去。
 
 ### I9 五个计数：哪一个涨了说明什么
+
+验什么：写失败、跳过、重放、清理、关联失败各有计数，404 等于 0。
 
 ```bash
 for m in write_errors skipped duplicates purged link_errors; do
@@ -1714,54 +839,15 @@ for m in write_errors skipped duplicates purged link_errors; do
 done
 ```
 
-| 指标 | 有数说明什么 | 该不该有 |
-| --- | --- | --- |
-| `write_errors` | 写库失败（约束、连接、列对不上） | **不该有**；一有就说明这些天缺了记录 |
-| `skipped` | 没有执行编号，账本直接跳过（不是写失败，是"没有归属"） | 可以有；无归属的行不写 |
-| `duplicates` | 同一来源键投了两次，被幂等挡掉 | 可以有；重放时正常 |
-| `purged` | 超过 30 天 / 10 万行被清掉 | 老库会有 |
-| `link_errors` | 审批与执行的关联没写成 | **不该有** |
+- **判据**：`write_errors` 与 `link_errors` 不该有（一有就说明缺记录）；`skipped`（无归属不写）、`duplicates`（重放被挡）、`purged`（超 30 天/10 万行）可以有。
+- **坑**：404 是"一次都没发生"，不是坏了；行数少时三个数指向三件事，别混着读。
 
-**404 等于 0**（一次都没发生过就没有这个指标），与 `claw4j.tool.calls` 同一条读法。
-
-### I10 不对时先看哪里
-
-1. **整个接口 404**：没配库，或 `claw4j.persistence.enabled=false`——能力不在场，不是参数写错。
-2. **空页，但刚才确实跑过**：先看 `claw4j.audit.enabled`（默认 true）；再看是不是 `kind`/`direction`
-   把行挡在外面（消息行要 `kind=message`，运行/工具行不能带 `direction`/`channel`）。
-3. **400**：回到 I3 那三种组合——冲突是**参数**的问题，不是数据的问题。
-4. **行数比预期少**：`skipped` 涨了（无归属不写）、`duplicates` 涨了（重放被挡）、
-   还是 `write_errors` 涨了（写失败被吞成计数）。三个数指向三件不同的事。
-5. **时间对不上**：`occurredAt` 是**事件产生那一刻**，不是落库那一刻。入站消息用
-   `now - durationMs` 反推，所以它与"日志里看到接收"差一个处理耗时。
-6. **`occurredAt` 变成了 ISO 字符串**：报文翻译那层退化了——`at` 是 `timestamptz`，报文里必须是
-   毫秒整数。
-7. **谁都能查全量**：这一版 `/api/audit` **没有鉴权**，也没有 operator 身份。这是已知缺口
-   （ADR-0037 里唯一没对齐的那一条），不是配置错了。
-
-**这一节验不了的两条**：30 天 / 10 万行清理要等时钟（`purged` 到点才涨）；`audit.run.inspect`
-那一套（按 run 发现多个执行）**已经撤除**——我们没有"一次 run 下多个执行"，按 `executionId`
-筛时间线就是单次取证。
-
----
-
-## J. 会话读侧：侧边栏列得出、点进去看得到
-
-会话身份那一层已经交回框架（ADR-0029 修订）：一个会话就是 `ai_session` 一行，消息在
-`ai_session_event`；`sessionId` 就是会话键 `claw4j:user:<owner>:<peer>`，**没有"段"这层后缀**。
-这一节验的就是这两件事能不能从 HTTP 上读出来——两个端点各管一层，合起来用：
-
-| 端点 | 回答 |
-| --- | --- |
-| `GET /api/sessions` | 这个人**有哪几条会话**（一个会话一行） |
-| `GET /api/sessions/{id}/messages` | **某一条**里每一轮说了什么（一条消息一行） |
-
-认人还是 `X-Claw4j-User`，与 `/api/chat` 同一条。**它不是"谁的会话都能查"**：喂别人的
-`sessionId` 回 404。
+## J. 会话读侧
+要不要换实例：不用。身份还是 `X-Claw4j-User`；别人的 `sessionId` 一律 404。
 
 ### J1 列表：按人、最近聊过的在前、标题是首条用户消息
 
-先跑两轮对话（两个用户各一句，或者同一个用户换个 chat id），再列：
+验什么：侧边栏能列出"我的会话"，顺序与标题对。
 
 ```bash
 for u in j1 j2; do
@@ -1769,38 +855,16 @@ for u in j1 j2; do
     -H 'Content-Type: application/json' -H "X-Claw4j-User: $u" \
     -d '{"text":"1+1 等于几？只给数字"}' >/dev/null
 done
-
 curl -s --noproxy '*' 'localhost:8080/api/sessions?limit=5' \
   -H 'X-Claw4j-User: j1'
 ```
 
-```json
-{"sessions":[{"id":"claw4j:user:j1:http:http:j1","createdAt":"2026-11-25T15:02:18.455231Z",
-              "lastActivityAt":"2026-11-25T15:02:21.043271Z","title":"1+1 等于几？只给数字"}],
- "nextCursor":null}
-```
-
-四条判据：
-
-- **只有自己的**：`j1` 的列表里不该出现 `claw4j:user:j2:…`。这一条最容易假过——只补了路由、
-  没按 `user_id` 过滤时，两条都会回来。
-- **id 的形状**：`claw4j:user:<owner>:<peer>`，**尾部没有 `:<epochMilli>-<四位十六进制>`**。
-  看到那一截说明段那层又长回来了（ADR-0026 修订把它下线了）。
-  本机 `dm-scope=per-channel-peer` 时 peer 段是 `<通道>:<chatId>`，而 HTTP 的 chatId 自己带
-  `http:` 前缀——所以看起来是两个 `http:`（`…:j1:http:http:j1`），这是对的，不是重复拼了一遍。
-- **`title` 是首条用户消息的前 40 字**，长句会被截断加 `…`；一条消息都没有时是 `新对话`。
-  它是**截出来的，不是模型生成的**——所以标题里出现"总结"字样就是跑错路了。
-- **顺序按 `lastActivityAt` 倒序**：刚聊过的那条在最前面。按 `createdAt` 排的话，聊了三天的
-  会话会一直沉底。
-
-| 看到 | 含义 |
-| --- | --- |
-| 404 | 没装配会话层（`claw4j.advisor.session.*` 那一段与库都要在），不是参数写错 |
-| 401 | `X-Claw4j-User` 不在 `claw4j.channel.http.users` 里 |
-| `sessions` 是空数组 | 这个人确实还没聊过；换 `j1` 先发一句再列 |
-| `nextCursor` 有值 | 还有下一页，原样带回去（`?cursor=<nextCursor>`） |
+- **判据**：只有自己的；id 形如 `claw4j:user:<owner>:<peer>`（尾部没有段后缀）；`title` 是首条用户消息前 40 字（截的，不是模型总结，空会话是 `新对话`）；按 `lastActivityAt` 倒序。
+- **坑**：只补路由、没按 `user_id` 过滤时两条都会回来；`per-channel-peer` 下出现两个 `http:`（`…:j1:http:http:j1`）是正常的。
 
 ### J2 逐轮：按时间正序、分得出谁说的
+
+验什么：某一条会话里每一轮都读得出，顺序与角色对。
 
 ```bash
 curl -s --noproxy '*' \
@@ -1808,96 +872,160 @@ curl -s --noproxy '*' \
   -H 'X-Claw4j-User: j1'
 ```
 
-```json
-{"id":"claw4j:user:j1:http:http:j1","createdAt":"2026-11-25T15:02:18.455231Z","hasMore":false,
- "turns":[{"id":"a7c38760-9ced-4d0e-954c-5447486806be","at":"2026-11-25T15:02:18.456662Z",
-          "role":"user","text":"1+1 等于几？只给数字"},
-         {"id":"ca6546b2-13b6-4008-9bb2-d08e4f98a849","at":"2026-11-25T15:02:21.043271Z",
-          "role":"assistant","text":"2"}]}
-```
-
-三条判据：
-
-- **顺序是时间正序**：越早的越靠前。窗口取的是**最近 N 轮**（`limit`），但回过来仍按时间排——
-  这样客户端直接从上往下渲染，不用自己反一遍。
-- **`role` 只有 `user` / `assistant`**：`system`、工具请求、工具结果不属于"说过的话"，不进这一列。
-- **`hasMore`**：`true` 表示更早的还有（这一版没有"往前翻"的参数，先让人知道有）。
-
-**会话 id 里带冒号是正常的**，路径段里原样带着即可，不用转义。
+- **判据**：时间正序（窗口取最近 N 轮，回过来仍正序）；`role` 只有 `user`/`assistant`；`hasMore` 表示更早的还有。
+- **坑**：id 带冒号正常，路径段原样带即可，不用转义。
 
 ### J3 别人的会话看不到，自己的 id 不随问话变
 
+验什么：归属判定生效，且会话身份不随时间漂移。
+
 ```bash
-# ① 拿别人的 id：404，不是 403
 curl -s -o /dev/null -w '%{http_code}\n' --noproxy '*' \
   'localhost:8080/api/sessions/claw4j:user:j2:http:http:j2/messages' -H 'X-Claw4j-User: j1'
-
-# ② 再聊一句：还是同一条 id，逐轮从 2 条变 4 条
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: j1' -d '{"text":"2+2 等于几？只给数字"}'
 curl -s --noproxy '*' 'localhost:8080/api/sessions?limit=5' -H 'X-Claw4j-User: j1'
 ```
 
-- **① 必须是 404**：403 等于告诉调用方"这个 id 存在，只是不是你的"。不存在与不属于，
-  在报文上是同一个答案。
-- **② 列表里还是那一条**：id 与 `createdAt` 都不动，`lastActivityAt` 往后走，逐轮变成 4 条。
-  这条挡的是"每问一句就新开一条会话"——那样侧边栏会越聊越多行。
-- **没有"清空这条对话"的命令了**（`/new` 已下线，票 03）：要让它忘掉刚才那些，只能等 TTL。
+- **判据**：别人的 id 回 `404`（不是 403）；再聊一句还是同一条 id，`createdAt` 不动、`lastActivityAt` 前进、逐轮 2 条变 4 条。
+- **坑**：403 等于告诉对方"这个 id 存在"；每问一句多出一行＝身份又挂上了会变的东西。
 
-| 看到 | 含义 |
-| --- | --- |
-| ① 回 200 且带正文 | 归属判定没做：任何知道 id 的人都能读别人的对话 |
-| ② 多出一行新 id | 会话身份又挂上了会变的东西（段、时间戳、轮次） |
-| ② `createdAt` 变了 | 走的是"删了再建"，不是"接着聊" |
 
----
+## K. 记忆：短期与长期
+
+两套机制，别混着验：
+
+| | 存在哪 | 怎么进上下文 |
+| --- | --- | --- |
+| **短期** | 会话表 | 历史消息插在本次提问前面 |
+| **长期** | `~/.claw4j/memory/<前缀>-<哈希>/MEMORY.md` | 内容**直接拼进系统提示**（超 6000 字符截断） |
+
+### K1 短期记忆：同一段对话接得上上一轮
+
+连问两句，`X-Claw4j-Chat-Id` 不变：
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: k1' -d '{"text":"下周我要去杭州出差三天，先跟你说一声。"}'
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: k1' -d '{"text":"我刚才说要去哪、去几天？"}'
+```
+
+- **判据**：第二句直接答"杭州、三天"，不再问一遍。
+- **坑**：这段对话**故意不查任何工具**——短记忆这件事只该有一个变量（上文在不在），
+  拿"上周成交额"那种题去问，第一句就可能因检索失败而没数，第二句答不上来时分不清是
+  记忆坏了还是工具没调到（A1 已经负责工具那件事）；第二句反问"哪次""什么出差" = 历史没进提示词。
+
+### K2 短期记忆的边界：换会话就是新人
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: k1' \
+  -H 'X-Claw4j-Chat-Id: k1-other' -d '{"text":"我刚才说要去哪出差？"}'
+```
+
+- **判据**：它**不该**知道（反问，或明说没有上文）。
+- **坑**：它答"杭州" = 会话隔离没做，别人的上文被当成了自己的。
+
+### K3 长期记忆：说"以后都记得"就得落盘
+
+题目要出成**跨会话仍然成立**的偏好（长期记忆是"用户是谁、长期怎么协作"），不要拿一次性的细节去试——那种东西模型判断"本轮够用、不必落盘"是**合理的**。
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: k3' \
+  -d '{"text":"记一下我的习惯：以后给我看金额一律用人民币，别换算成美元。"}'
+
+ls -d ~/.claw4j/memory/k3-*        # 目录名是 前缀-12位哈希，不是原始 userId
+cat ~/.claw4j/memory/k3-*/MEMORY.md
+ls  ~/.claw4j/memory/k3-*/         # 写了的话，除 MEMORY.md 外还该有一个记忆文件
+```
+
+- **判据**（三种结果，只有第三种算失败）：
+  - 写盘了：`MEMORY.md` 多一行 `- [标题](文件.md) — 一句话`，且那个文件真的存在 → **通过**；
+  - 明确说"这条只在本轮有效，不会带到以后的对话" → **通过**，它是在诚实地划边界；
+  - 说"我记住了、以后都会这样"但磁盘上什么都没有 → **失败**，那是话术不是记忆。
+- **坑**：不要用"我只看华东区"这种可能只是一次性口径的话去判——模型不写它不算错。
+
+### K4 长期记忆：下次会话开场就生效，且不用先调工具
+
+换一段对话（换 chat id）再问：
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: k3' \
+  -H 'X-Claw4j-Chat-Id: k3-second' -d '{"text":"上次那个金额的显示习惯，你还记得吗？"}'
+```
+
+- **判据**：它说得出生意上那条习惯（"金额一律人民币"）；这一轮**不该**出现 `MemoryView` 调用——索引已经拼在系统提示里了。
+- **前提**：K3 落在"写盘了"那一支才验得了；K3 是"只在本轮"就别跑这条。
+- **反向确认**：把 `--claw4j.advisor.memory.directory` 指到空目录再起实例，同一用户应当答不上来 —— 答不上来才说明验的是长期记忆，不是短期记忆。
+
+### K5 回归：记忆工具不会被披露层吃掉
+
+```bash
+grep -c "No ToolCallback found" /tmp/claw4j.log        # 必须是 0
+grep "这一轮注入的工具" /tmp/claw4j.log | tail -3        # DEBUG 下能看见 6 个名字
+```
+
+- **判据**：0 条 `No ToolCallback found`；6 个 `Memory*` 每轮都在（直接问"你有哪些记忆工具"，它能逐个报出名字）。
+- **坑**：这条原来崩在**每个会话的第一个动作**上（提示词许可了、清单没给），不是偶发边界情况。
+
+### K6 索引超预算：截断但不丢
+
+```bash
+python3 - <<'PY'
+import glob, os
+d = glob.glob(os.path.expanduser("~/.claw4j/memory/k6-*"))[0]
+os.makedirs(d, exist_ok=True)
+open(os.path.join(d, "MEMORY.md"), "w").write("长" * 7000)
+PY
+```
+
+- **判据**：回答照常；系统提示里出现"已截断"，并指明全文用 `MemoryView` 读。
+- **坑**：整份 7000 字塞进去（把提示词撑大），或者整段被丢掉（等于没有记忆）。
 
 ## 一页速查
-
-完整命令都在对应小节里；这里只列"问什么、看什么"。
-
 | 验什么 | 问什么 / 做什么 | 主要判据 | 最容易踩的坑 |
 | --- | --- | --- | --- |
-| 装配（A1/A2） | 只有那个工具/ server 能答的一句话 | 计数从 404 变成 1.0 | 模型说"我调了"不算 |
+| 装配（A1/A2） | 只有那个工具/server 能答的一句话 | 计数从 404 变成 1.0 | 模型说"我调了"不算 |
 | 业务工具（B1） | 上周华东成交额 | `128400` + `querySales ok` | 只看数字不看计数 |
-| 默认工具（B2） | 四句人话，**不点工具名**（列 md / 念六行 / 搜 refund / 看网页） | 结果对得上 + **涨的是那个工具的计数** | `WebFetch` 会先检索一次；路径不在边界目录 |
-| Skill（B3） | 按 `weekly-sales` 口径给上周各区 | `185900` + `Skill ok` | 没配人设 → 它先问口径（正常） |
-| 脚本（B4） | 用 `summarize` 处理 `sample.md`，原样贴回 | 与原文逐字相同 + `Bash ok` | 限制"三句以内"就验不了逐字 |
-| 子 Agent（B5） | 派 `weekly-digest` 写周报 | 三区 + 185900 + `Task ok` | 白名单工具缺失 → **首次委派**才失败 |
-| 知识库（B6） | 条款细节 / 两份文档拼起来 / 查一个库里没有的数 | 数字与出处都对；查不到的说查不到 | 一个用户只问一条，别让记忆串了 |
-| 问人（B7） | 一件事拿不定，**让它给两个选项让你选** | 挂起 → `answer` → 出现选项内容 | 题目里没有"让我选"→ 准入闸不给它工具；409 = 没在等答案 |
-| 计划（B8） | 三步任务，说一句"列个待办清单" | `TodoWrite ok` ≥ 2 | `TodoWrite` 不在常驻，要靠"待办"触发词检索进来；清单吃调用预算 |
-| 检索（B9） | 问一句该有工具的话，再查 `claw4j.tool.search.*` | `result=hit` 多 1，没有 `miss`/`error` | 顶满 `max-results` ≠ 翻得准；`error` 不是 `miss` |
-| 看不见（C1） | 把画像收到 messaging，问它会不会跑脚本 | 回答"没有这个能力"，计数 404 | 这不是"被拒" |
-| 命令审批（C2） | 跑一条白名单外的命令，再批 | `granted` + 计数涨 + 审计带编号 | 编号**以库里为准** |
-| 资格（C3） | 自己批自己 / 名单外 / 过期后点 | 403 / 403 / 409 | 名单先判，自批后判 |
-| 普通工具审批（C4） | 配 `required-tools=TodoWrite` 再写待办 | 先挂起，批了才执行 | 视图里 `allowAlways` 是 false |
+| 默认工具（B2） | 四句人话，不点工具名 | 结果对得上 + 对应工具计数涨 | `WebFetch` 先检索；路径不在边界目录 |
+| Skill（B3） | 按 `weekly-sales` 口径给各区 | `185900` + `Skill ok` | 没配人设会先问口径（正常） |
+| 脚本（B4） | 用 `summarize` 处理 `sample.md` | 逐字相同 + `Bash ok` | 限制"三句以内"就验不了逐字 |
+| 子 Agent（B5） | 派 `weekly-digest` 写周报 | 三区 + 185900 + `Task ok` | 白名单缺工具 → 首次委派才失败 |
+| 知识库（B6） | 条款细节 / 拼两份文档 / 查没有的数 | 数字出处都对；查不到说查不到 | 一个用户只问一条，别让记忆串了 |
+| 问人（B7） | 拿不定的事，让它给两个选项 | 挂起 → `answer` → 出现选项 | 题目没"让我选"就没工具；409=没在等 |
+| 计划（B8） | 三步任务 + "列个待办清单" | `TodoWrite ok` ≥ 2 | 靠"待办"触发词检索进来；吃调用预算 |
+| 检索（B9） | 问一句该有工具的话，查 `tool.search.*` | `result=hit` +1，无 `miss`/`error` | 顶满 `max-results` ≠ 翻得准 |
+| 看不见（C1） | 画像收到 messaging，问会不会跑脚本 | 答"没有这个能力"，计数 404 | 这不是"被拒" |
+| 命令审批（C2） | 跑白名单外的命令再批 | `granted` + 计数涨 + 审计带编号 | 编号以库里为准 |
+| 资格（C3） | 自批 / 名单外 / 过期后点 | 403 / 403 / 409 | 名单先判，自批后判 |
+| 普通工具审批（C4） | `required-tools=TodoWrite` 再写待办 | 先挂起，批了才执行 | 视图里 `allowAlways` 是 false |
 | 注入（C5） | 抓 127.0.0.1 / 让它原样贴返回 | 拒 / 剥离 | 模型说"有标记"不算 |
-| 掉线（E1） | 停掉 MCP server 再问 | 启动时 DOWN→恢复；运行期 500 | 运行期不走退避 |
-| 超时（E2） | `simulateSlowCall` 睡 40 秒 | 超时但连接仍在 | 慢 ≠ 掉线 |
-| 熔断（E3） | 一个任务里连调多次工具 | 限额提示 | 单工具先撞（3 次），总预算要换工具才撞 |
-| 模型装配（F1） | 起实例看那四行日志 | 窗口来自模型行；`route` 是 `provider/model` | 别拿会话配置的窗口当准 |
-| 换家与冷却（F2/F3） | 模型名写错，再连问三句 | `model_not_found` 计数停在 2、备用 3 次 ok | 第三句是被冷却跳过，正常 |
+| 掉线/超时/熔断（E1–E3） | 停 MCP、睡 40 秒、连调多次 | 启动 DOWN→恢复；超时但连接在；限额提示 | 运行期不走退避；慢 ≠ 掉线 |
+| 模型装配（F1） | 起实例看那四行日志 | 窗口来自模型行，`route`=provider/model | 别拿会话配置的窗口当准 |
+| 换家与冷却（F2/F3） | 模型名写错，连问三句 | `model_not_found` 停在 2，备用 3 次 ok | 第三句是被冷却跳过 |
 | 主家不可达（F4） | `base-url` 指到 9 端口 | `route_unavailable` + 约 90 秒 | 慢是重试预算，不是挂住 |
 | 白名单与形状（F5/F6） | 故意写错再启动 | 启动失败并点名 | 不是静默跳过 |
-| 角色（F7） | 配 `roles.utility` | 日志「独立链 provider/model」 | 只验建链，没有调用方 |
-| 缓存命中（F8） | 查 `kind:cache-read` | 有数，或 404 | 404 不是坏事（取不到就不记） |
-| 进度卡（G1） | 跑 B8 那句三步任务，再查 `session_progress_cards` | `revision ≥ 2` + 三种状态 + 没有 `activeForm` | 卡是给人看的；模型侧只有那句固定回话 |
-| 意图（G2） | 记一条「客户数」提醒，**换 chat id** 再问 | `fire_count` 1 → 冷却内仍 1；回答先问口径 | 同一段对话里它凭上文就答，别拿它当命中 |
-| 提示词预算（G3） | 用一份 3 万字人设起实例 | 一行 WARN、只一次、回答照常 | 括号里 60000 是合计，先撞的是单段 20000 |
-| 流式分帧（H1） | `POST /api/chat/stream`，curl 带 `-N` | 几十个 `chunk` + 一个 `done`；拼起来等于全文 | 不带 `-N` 看起来一点都不像流式 |
-| 命令走流式（H2） | 发 `/elevated` | 1 帧正文 + 1 帧 `done`，`model.calls` 不涨 | 正文帧带 `finalChunk` 会丢掉正文、done 来两次 |
-| 工具走流式（H3） | 让它 Read 一个文件 | 工具计数 +1，流里没有工具名/JSON | 长静默不是卡死 |
-| 换家走流式（H4） | 模型名写错，发 `/stream` | 照常答 + `done` 一次 | `reason` 是 `unclassified`，不是 `model_not_found` |
-| 忙（H5） | `lane-wait=0`，同会话并发两条 | 一条忙话 + `done` | 默认 60 秒是排队，验不到忙 |
-| 断流（H6） | `stream-timeout=2s`，让它写长文 | 没有 `done`，耗时约等于超时值 | 没 `done` 的那段字不能当答案 |
-| 审计四问（I1/I2） | 跑一轮会调工具的活，按 `executionId` 查 `/api/audit` | 四行倒序、`eventType` 是四种之一、`occurredAt` 是毫秒；整段没有 `runId` | 模型说"我记了"不算；空字段是整格省掉，不是 `null` |
-| 审计参数（I3/I4） | 三种冲突组合、坏 cursor、`limit=2` 翻页 | 三个 400；`nextCursor` 是字符串，第二页不重叠 | 空页 ≠ 没有审计，冲突是参数的问题 |
-| 审计幂等（I5） | 用同一个来源键插两次 | 第一次 `INSERT 0 1`、第二次 `INSERT 0 0`；`having count(*)>1` 为空 | 手插不会让 `duplicates` 涨，那个计数只记应用侧被挡的次数 |
-| 消息审计（I6） | `--claw4j.audit.messages=true` 后发一条 | 进出各一条、带 `channel`/`conversationKind`、假名引用 | 默认关，不打开永远是空页 |
-| 调用编号（I7） | 看工具行有没有 `toolCallId` | `sha256:` 打头；运行行与消息行没有 | 原值不进报文，也不许现编 |
-| 子 Agent 审计（I8） | 派 `weekly-digest` 后按 `subagent:…` 查 | 自己的 `executionId`，工具行挂在它上面 | 父那一轮不会带上子的行 |
-| 审计写失败（I9） | 查五个 `claw4j.audit.*` 指标 | `write_errors` / `link_errors` 必须是 404 | 404 = 0，不是坏了 |
-| 会话列表（J1） | 两个用户各发一句，再 `GET /api/sessions` | 只有自己的；id 无段后缀；标题是首条消息前 40 字；最近活动在前 | 只补路由、不按人过滤时两条都会回来 |
-| 会话逐轮（J2） | `GET /api/sessions/{id}/messages` | 时间正序；`role` 只有 user / assistant；`hasMore` | 会话 id 带冒号是正常的，不用转义 |
-| 归属与 id 稳定（J3） | 拿别人的 id 查；再聊一句再列 | 404；同一条 id、逐轮 2 条变 4 条 | 403 等于确认「这个 id 存在」 |
+| 角色与缓存（F7/F8） | 配 `roles.utility`；查 `kind:cache-read` | 「独立链」日志；有数或 404 | 404 不是坏事 |
+| 进度卡（G1） | B8 三步任务后查 `session_progress_cards` | `revision ≥ 2` + 状态推进 + 无 `activeForm` | 卡是给人看的，模型侧只有固定回话 |
+| 意图（G2） | 记「客户数」提醒，换 chat id 再问 | `fire_count` 1 → 冷却内仍 1 | 同一段对话凭上文就答，假过 |
+| 提示词预算（G3） | 3 万字人设起实例 | 一行 WARN、只一次、回答照常 | 先撞单段 20000，60000 是合计 |
+| 流式分帧（H1） | `/api/chat/stream`，curl 带 `-N` | 几十 chunk + 一个 done，拼起来是全文 | 不带 `-N` 看不出流 |
+| 命令走流式（H2） | 发 `/elevated` | 1 正文 + 1 done，`model.calls` 不涨 | 正文帧带 `finalChunk` 会丢正文 |
+| 工具走流式（H3） | 让它 Read 一个文件 | 工具计数 +1，流里无工具名/JSON | 长静默不是卡死 |
+| 换家走流式（H4） | 模型名写错发 `/stream` | 照常答 + done 一次 | `reason` 是 `unclassified` |
+| 忙与断流（H5/H6） | `lane-wait=0` 并发两条；`stream-timeout=2s` 写长文 | 一条忙话 + done；没有 done 就算断 | 默认 60 秒是排队；没 done 的字不能当答案 |
+| 审计四问（I1/I2） | 跑一轮，按 `executionId` 查 | 四行倒序、eventType 四种、毫秒时间、无 `runId` | 空字段整格省掉；"我记了"不算 |
+| 审计参数与翻页（I3/I4） | 三种冲突、坏 cursor、`limit=2` | 三个 400；`nextCursor` 是字符串、不重叠 | 空页 ≠ 没有审计 |
+| 审计幂等（I5） | 同一来源键插两次 | `0 1` → `0 0`，having 为空 | 手插不涨 `duplicates` |
+| 消息审计与编号（I6/I7） | `audit.messages=true` 后发一条；看工具行的 `toolCallId` | 进出各一条带假名；工具行 `sha256:` 打头，别的行没有 | 默认关是空页；编号不是原值，不许现编 |
+| 子 Agent 与指标（I8/I9） | 派 `weekly-digest` 后按 `subagent:…` 查；查五个 `claw4j.audit.*` | 自己的 `executionId`，工具行挂着；`write_errors`/`link_errors` 必须 404 | 父那轮不带子的行；404 = 0 |
+| 会话列表（J1） | 两用户各一句，`GET /api/sessions` | 只有自己的；无段后缀；最近在前 | 不按人过滤时两条都回来 |
+| 会话逐轮（J2） | `GET /api/sessions/{id}/messages` | 正序；`role` 只有两种；`hasMore` | id 带冒号正常，不用转义 |
+| 归属与稳定（J3） | 拿别人 id 查；再聊一句再列 | 404；同一条 id，2 条变 4 条 | 403 等于确认 id 存在 |
+| 短期记忆（K1/K2） | 同一段对话连问两句；换 chat id 再问"刚才" | 第二句接得上；换 id 后接不上 | 换用户也共享上文 = dm-scope 配错 |
+| 长期记忆（K3/K4） | 说"以后金额一律用人民币"，换 chat id 再问 | 落盘了、下次说得出来，且**没调** `MemoryView` | "只在本轮"也是合格答案；"我记住了"却没落盘才是失败 |
+| 记忆工具回归（K5） | `grep 'No ToolCallback found' 日志` | 0 条 | 之前这句在每个会话第一个动作上就出现 |
+| 索引超预算（K6） | 把 `MEMORY.md` 写到 7000 字 | 照常回答 + "已截断"标记 | 整份塞进去撑爆提示词，或整段丢掉 |
