@@ -5,6 +5,7 @@ import io.github.claw4j.agent.audit.AuditEvent;
 import io.github.claw4j.agent.audit.AuditStatus;
 import io.github.claw4j.agent.audit.RunOutcome;
 import io.github.claw4j.agent.audit.ToolCallAudit;
+import io.github.claw4j.agent.question.AskUserTool;
 import io.github.claw4j.agent.turn.ToolCallBudget;
 import io.github.claw4j.agent.toolaccess.ToolSearch;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
@@ -222,7 +223,7 @@ public final class SubagentRunner implements SubagentExecutor {
      */
     private String run(SubagentDefinition definition, String task, Principal principal,
                        AuditEvent.Scope scope) {
-        List<ToolCallback> tools = definition.selectTools(availableTools.get());
+        List<ToolCallback> tools = AskUserTool.mainSessionOnly(definition.selectTools(availableTools.get()));
         log.debug("委派 task 给 Subagent {}：它这趟能用的工具是 {}",
                 definition.name(),
                 tools.stream().map(callback -> callback.getToolDefinition().name()).toList());

@@ -113,14 +113,16 @@ public interface QuestionGate {
     /**
      * 一道题。
      *
+     * @param id 答案键，同一批问题里唯一（照 OpenClaw 的 {@code ask_user}，如 {@code deploy_target}）
      * @param header 短标签（界面上当芯片用，比如"部署目标"）
      * @param text 完整问句
      * @param options 可选项；可以为空——空表示这是一句自由问答
      * @param multiSelect 能不能多选
      */
-    record Question(String header, String text, List<Option> options, boolean multiSelect) {
+    record Question(String id, String header, String text, List<Option> options, boolean multiSelect) {
 
         public Question {
+            Objects.requireNonNull(id, "id");
             Objects.requireNonNull(text, "text");
             options = options == null ? List.of() : List.copyOf(options);
         }
@@ -143,7 +145,7 @@ public interface QuestionGate {
      * 一次提问的结局。
      *
      * @param status 三种结局之一
-     * @param answers 按<b>题目原文</b>分组的答案；非 {@link Status#ANSWERED} 时为空表
+     * @param answers 按<b>问题 {@code id}</b> 分组的答案；非 {@link Status#ANSWERED} 时为空表
      */
     record Outcome(Status status, Map<String, List<String>> answers) {
 
@@ -155,7 +157,7 @@ public interface QuestionGate {
         /**
          * 拿到答案了。
          *
-         * @param answers 按题目原文分组的答案
+         * @param answers 按问题 {@code id} 分组的答案
          * @return 结局
          */
         public static Outcome answered(Map<String, List<String>> answers) {

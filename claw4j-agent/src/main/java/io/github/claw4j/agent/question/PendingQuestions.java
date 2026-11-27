@@ -215,7 +215,7 @@ public final class PendingQuestions implements QuestionGate {
      *
      * @param text 用户说的话
      * @param questions 这次的问题
-     * @return 按题目原文分组的答案；多题但拆不开时为 {@code null}
+     * @return 按问题 {@code id} 分组的答案；多题但拆不开时为 {@code null}
      */
     static Map<String, List<String>> parse(String text, List<Question> questions) {
         String trimmed = text == null ? "" : text.strip();
@@ -223,7 +223,7 @@ public final class PendingQuestions implements QuestionGate {
             return null;
         }
         if (questions.size() == 1) {
-            return Map.of(questions.get(0).text(), valuesOf(trimmed, questions.get(0)));
+            return Map.of(questions.get(0).id(), valuesOf(trimmed, questions.get(0)));
         }
         List<String> parts = splitAnswers(trimmed);
         if (parts.size() != questions.size()) {
@@ -231,7 +231,7 @@ public final class PendingQuestions implements QuestionGate {
         }
         Map<String, List<String>> answers = new LinkedHashMap<>();
         for (int i = 0; i < questions.size(); i++) {
-            answers.put(questions.get(i).text(), valuesOf(parts.get(i), questions.get(i)));
+            answers.put(questions.get(i).id(), valuesOf(parts.get(i), questions.get(i)));
         }
         return answers;
     }

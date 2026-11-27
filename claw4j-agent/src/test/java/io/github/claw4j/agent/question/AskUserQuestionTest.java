@@ -1,12 +1,19 @@
 package io.github.claw4j.agent.question;
 
+import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.port.OutboundDelivery;
 import io.github.claw4j.domain.principal.Principal;
 import io.github.claw4j.domain.question.QuestionGate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -50,7 +57,7 @@ class AskUserQuestionTest {
     private final ExecutorService waiting = Executors.newCachedThreadPool();
 
     @Test
-    @DisplayName("回数字 / 选项名 / 自由文本都能答对，答案按题目原文分组")
+    @DisplayName("回数字 / 选项名 / 自由文本都能答对，答案按问题 id 分组")
     void plainTextAnswersResolvePendingQuestion() throws Exception {
         PendingQuestions gate = gate();
         Future<QuestionGate.Outcome> outcome = askInBackground(gate, singleChoiceAsk(Duration.ofSeconds(5)));
@@ -62,7 +69,7 @@ class AskUserQuestionTest {
 
         assertThat(outcome.get(3, TimeUnit.SECONDS).answers())
                 .as("数字 2 要换成选项名：模型拿到的该是人在选的那个东西，不是一个序号")
-                .containsEntry(QUESTION, List.of("预发"));
+                .containsEntry("deploy_target", List.of("预发"));
 
         assertThat(pushed.get("chat-1"))
                 .as("问题要真的推到那段对话里，并且带上可选的选项")
@@ -134,16 +141,16 @@ class AskUserQuestionTest {
     void multiQuestionNeedsOneLinePerQuestion() throws Exception {
         PendingQuestions gate = gate();
         List<QuestionGate.Question> questions = List.of(
-                question("部署到哪个环境？", "生产", "预发"),
-                question("要不要通知业务方？", "要", "不要"));
+                question("deploy_env", "部署到哪个环境？", "生产", "预发"),
+                question("notify", "要不要通知业务方？", "要", "不要"));
 
         Future<QuestionGate.Outcome> ok = askInBackground(gate, new QuestionGate.Ask(
                 "feishu", "chat-1", asker(), "run-1", questions, Duration.ofSeconds(5)));
         awaitPushed("chat-1");
         assertThat(gate.answer("feishu", "chat-1", asker(), "2\n1")).isTrue();
         assertThat(ok.get(3, TimeUnit.SECONDS).answers())
-                .containsEntry("部署到哪个环境？", List.of("预发"))
-                .containsEntry("要不要通知业务方？", List.of("要"));
+                .containsEntry("deploy_env", List.of("预发"))
+                .containsEntry("notify", List.of("要"));
 
         pushed.clear();
         Future<QuestionGate.Outcome> bad = askInBackground(gate, new QuestionGate.Ask(
@@ -155,15 +162,100 @@ class AskUserQuestionTest {
                 .isEqualTo(QuestionGate.Status.NO_ANSWER);
     }
 
-    private static QuestionGate.Question question(String text, String... labels) {
+    @Test
+    @DisplayName("两题原文一模一样、id 不同：答案各归各的，不会串")
+    void answersAreKeyedByIdNotByQuestionText() throws Exception {
+        PendingQuestions gate = gate();
+        List<QuestionGate.Question> questions = List.of(
+                question("east", "哪个区？", "华东", "华南", "华北"),
+                question("south", "哪个区？", "华东", "华南", "华北"));
+
+        Future<QuestionGate.Outcome> outcome = askInBackground(gate, new QuestionGate.Ask(
+                "feishu", "chat-1", asker(), "run-1", questions, Duration.ofSeconds(5)));
+        awaitPushed("chat-1");
+        assertThat(gate.answer("feishu", "chat-1", asker(), "1\n2")).isTrue();
+
+        assertThat(outcome.get(3, TimeUnit.SECONDS).answers())
+                .as("按题目原文当键的话，两题会写进同一个格子——后一个覆盖前一个，模型拿到两个一样的答案")
+                .containsEntry("east", List.of("华东"))
+                .containsEntry("south", List.of("华南"));
+    }
+
+    @Test
+    @DisplayName("模型给错形状时改好而不是抛异常：缺 id 补 q1、header 截 12 字、label 截 64 字")
+    void malformedShapeIsRepairedNotThrown() {
+        List<QuestionGate.Ask> seen = new ArrayList<>();
+        QuestionGate capturing = new QuestionGate() {
+
+            @Override
+            public Outcome ask(Ask ask) {
+                seen.add(ask);
+                return Outcome.noAnswer();
+            }
+
+            @Override
+            public boolean answer(String channel, String chatRef, Principal who, String text) {
+                return false;
+            }
+        };
+        ToolContext context = new ToolContext(Map.of(
+                ContextKeys.PRINCIPAL, asker(),
+                ContextKeys.CHAT_REF, "chat-1",
+                ContextKeys.CHANNEL, "feishu"));
+
+        String result = new AskUserTool(capturing).askUserQuestion(List.of(
+                new AskUserTool.Question(null, "部署目标环境这个标签特别长", "部署到哪？",
+                        List.of(new AskUserTool.Option("x".repeat(80), null)), false)), context);
+
+        assertThat(result).as("工具不该抛异常：一抛这一轮就断了").contains("no_answer");
+        QuestionGate.Question asked = seen.getFirst().questions().getFirst();
+        assertThat(asked.id()).as("缺 id 就补一个，不然答案没地方放").isEqualTo("q1");
+        assertThat(asked.header()).as("芯片位放不下长标签").hasSize(12);
+        assertThat(asked.options().getFirst().label()).hasSize(64);
+    }
+
+    @Test
+    @DisplayName("子 Agent 的工具面里没有提问工具：问不出来就别摆在眼前")
+    void subagentsDoNotGetTheAskTool() {
+        ToolCallback ask = MethodToolCallbackProvider.builder()
+                .toolObjects(new AskUserTool(QuestionGate.unsupported()))
+                .build()
+                .getToolCallbacks()[0];
+        ToolCallback other = MethodToolCallbackProvider.builder()
+                .toolObjects(new DemoTools())
+                .build()
+                .getToolCallbacks()[0];
+
+        assertThat(AskUserTool.mainSessionOnly(List.of(ask, other)))
+                .as("提问会把这一轮停下来等人，而没人盯着子 Agent 那个会话等一句答案")
+                .extracting(callback -> callback.getToolDefinition().name())
+                .containsExactly("demo_echo");
+    }
+
+    @Test
+    @DisplayName("描述里有 OpenClaw 那几条反向约束：不许拿它问能否继续、不许在正文里列选项代替它")
+    void descriptionCarriesTheTwoWayContract() {
+        String description = MethodToolCallbackProvider.builder()
+                .toolObjects(new AskUserTool(QuestionGate.unsupported()))
+                .build()
+                .getToolCallbacks()[0].getToolDefinition().description();
+
+        assertThat(description)
+                .as("只说\"何时该用\"的话，模型会在正文里写两个选项了事——这正是 B7 一直红的原因")
+                .contains("Do not list the options as plain text in your reply")
+                .contains("Do not use it to ask whether you may continue")
+                .contains("(Recommended)");
+    }
+
+    private static QuestionGate.Question question(String id, String text, String... labels) {
         List<QuestionGate.Option> options = Arrays.stream(labels)
                 .map(label -> new QuestionGate.Option(label, null))
                 .toList();
-        return new QuestionGate.Question("部署", text, options, false);
+        return new QuestionGate.Question(id, "部署", text, options, false);
     }
 
     private static List<QuestionGate.Question> singleChoice() {
-        return List.of(question(QUESTION, "生产", "预发"));
+        return List.of(question("deploy_target", QUESTION, "生产", "预发"));
     }
 
     private static QuestionGate.Ask singleChoiceAsk(Duration timeout) {
@@ -192,5 +284,14 @@ class AskUserQuestionTest {
 
     private static Principal other() {
         return new Principal("u2");
+    }
+
+    /** 一个与提问无关的工具：用来验"剔掉提问工具"只剔它自己。 */
+    static final class DemoTools {
+
+        @Tool(name = "demo_echo", description = "Echo the text back.")
+        public String echo(@ToolParam(description = "Text to echo") String text) {
+            return text;
+        }
     }
 }

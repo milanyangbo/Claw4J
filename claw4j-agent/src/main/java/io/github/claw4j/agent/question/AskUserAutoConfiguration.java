@@ -6,6 +6,7 @@ import io.github.claw4j.domain.principal.ToolTierRegistry;
 import io.github.claw4j.domain.question.QuestionGate;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -19,8 +20,9 @@ import java.util.Map;
 /**
  * 交互提问的装配：一个登记表 + 一个工具。
  *
- * <p>工具名是库的（{@code AskUserQuestionTool}），不是 {@code ask_user}：这一层没有自己写工具，
- * 名字就只能跟着库走，而权限表、档位表、清单断言三处都按这个名字认领。
+ * <p>工具名沿用库的 {@code AskUserQuestionTool}（不是 OpenClaw 那个 {@code ask_user}）：权限表、
+ * 档位表、清单断言三处都按这个名字认领，换名字的收益只是"看起来更像"，代价是三处一起改。
+ * 工具实现已经不是库的了（票 35：库那份的答案键是题目原文，见 {@link AskUserTool}）。
  *
  * <p>登记表里没有「有没有开关」这件事：开关只有一个（{@code claw4j.tools.ask.enabled}），
  * 关掉就没有工具。留着空的登记表也不会有人调它——加第二个开关只会多出一种"开了但没人问"的组合。
@@ -33,8 +35,8 @@ import java.util.Map;
 @EnableConfigurationProperties(AskProperties.class)
 public class AskUserAutoConfiguration {
 
-    /** 工具名，取自库的 {@code @Tool(name = …)}。 */
-    public static final String TOOL_NAME = "AskUserQuestionTool";
+    /** 工具名。只为不打破现有引用而留着——真名叫 {@link AskUserTool#TOOL_NAME}，两处各写一份迟早会分叉。 */
+    public static final String TOOL_NAME = AskUserTool.TOOL_NAME;
 
     /**
      * 问一句人话所需的动作名。
@@ -73,7 +75,10 @@ public class AskUserAutoConfiguration {
     @Bean
     @ConditionalOnProperty(prefix = "claw4j.tools.ask", name = "enabled", matchIfMissing = true)
     public ToolCallback askUserToolCallback(QuestionGate gate) {
-        return AskUserTool.callback(gate);
+        return MethodToolCallbackProvider.builder()
+                .toolObjects(new AskUserTool(gate))
+                .build()
+                .getToolCallbacks()[0];
     }
 
     /**
