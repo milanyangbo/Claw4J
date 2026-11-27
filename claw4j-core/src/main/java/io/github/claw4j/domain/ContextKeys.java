@@ -99,6 +99,23 @@ public final class ContextKeys {
      */
     public static final String CONVERSATION = "claw4j.conversation";
 
+    /**
+     * 上游 advisor 注入的工具名。披露层每轮并回清单，不参与筛选（票 32）。
+     *
+     * <p>为什么需要这个键：{@code DisclosureToolCallingAdvisor.prepare()} 每轮<b>整表重建</b>
+     * 工具清单，只装「检索工具 + {@code pinned} + 历史里检索到过的名字」。记忆那 6 个三样都不占，
+     * 于是每轮都被抹掉；而记忆的系统提示词里点着名要求模型先调 {@code MemoryView}——
+     * 提示词许了、清单没给，模型一伸手就是 {@code IllegalStateException}（500）。
+     *
+     * <p>为什么由注入方报名，而不是披露层自己"看上游给了什么"：{@code initialize()} 拿到的
+     * {@code options} 里，「全部候选工具」与「别人注入的工具」已经混在一起，<b>分不出谁是谁</b>。
+     * 所以只能由知道的那一方写：它对比自己转发前后的工具名集合，差集就是它加的。
+     *
+     * <p>存的是<b>名字</b>不是 {@code ToolCallback}：回调对象只在当轮有效，名字可以跨轮比对；
+     * 而且清单里要不要放，本来就是按名字从当轮的 map 里取的。
+     */
+    public static final String INJECTED_TOOLS = "claw4j.injectedTools";
+
     private ContextKeys() {
     }
 }

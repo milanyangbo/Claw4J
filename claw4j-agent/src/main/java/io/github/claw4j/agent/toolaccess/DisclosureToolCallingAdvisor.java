@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.toolaccess;
 
+import io.github.claw4j.domain.ContextKeys;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,7 +20,6 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
 import org.springframework.ai.tool.toolsearch.ToolReference;
-import org.springframework.ai.tool.toolsearch.ToolSearchTool;
 import org.springframework.ai.util.JsonHelper;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.util.Assert;
@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
@@ -90,7 +91,7 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
         this.categories = ToolCategories.of(properties.categories());
         this.systemMessageSuffix = systemMessageSuffix == null ? "" : systemMessageSuffix;
         this.toolSearchToolCallback = MethodToolCallbackProvider.builder()
-                .toolObjects(new ToolSearchTool(toolIndex, properties.maxResults()))
+                .toolObjects(new DescriptiveToolSearchTool(toolIndex, properties.maxResults()))
                 .build()
                 .getToolCallbacks()[0];
     }
@@ -163,7 +164,7 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
                     .forEach(callback -> callbacks.putIfAbsent(callback.getToolDefinition().name(), callback));
         }
         request.context().put(CACHED_TOOL_CALLBACKS_KEY, callbacks);
-        request.context().put(ToolSearchTool.TOOL_SEARCH_TOOL_SESSION_ID_KEY, sessionId);
+        request.context().put(DescriptiveToolSearchTool.TOOL_SEARCH_TOOL_SESSION_ID_KEY, sessionId);
         request.context().put(REVEAL_ALL_KEY, revealAll);
 
         if (revealAll) {
@@ -203,6 +204,7 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
                 (Map<String, ToolCallback>) request.context().get(CACHED_TOOL_CALLBACKS_KEY);
         if (callbacks != null) {
             addPinned(callbacks, selected);
+            addInjected(callbacks, request.context().get(ContextKeys.INJECTED_TOOLS), selected);
             referencedNames(request.prompt().getInstructions()).forEach(name -> {
                 ToolCallback found = callbacks.get(name);
                 if (found != null) {
@@ -213,9 +215,11 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
 
         ToolCallingChatOptions replaced = ((ToolCallingChatOptions.Builder<?>) options.mutate())
                 .toolCallbacks(new ArrayList<>(selected))
-                .toolContext(ToolSearchTool.TOOL_SEARCH_TOOL_SESSION_ID_KEY,
+                .toolContext(DescriptiveToolSearchTool.TOOL_SEARCH_TOOL_SESSION_ID_KEY,
                         Objects.requireNonNull(request.context().get(
-                                ToolSearchTool.TOOL_SEARCH_TOOL_SESSION_ID_KEY)))
+                                DescriptiveToolSearchTool.TOOL_SEARCH_TOOL_SESSION_ID_KEY)))
+                // 签名要按名字取完整定义，索引里只有名字与描述（票 32）。
+                .toolContext(DescriptiveToolSearchTool.TOOL_CALLBACKS_KEY, callbacks)
                 .build();
         return request.mutate()
                 .prompt(request.prompt().mutate().chatOptions(replaced).build())
@@ -239,6 +243,33 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
             } else if (this.warnedPinnedNames.add(name)) {
                 LOGGER.warn("claw4j.advisor.tool-search.pinned 里的 {} 不在这一轮的工具清单里，已忽略。"
                                 + "可能拼错了，也可能它被工具策略（档位 / allow / deny）挡掉了。", name);
+            }
+        }
+    }
+
+    /**
+     * 上游 advisor 注入的工具：每轮都要在，且不经过筛选（票 32）。
+     *
+     * <p>为什么这一批不能靠检索拿回来：注入方（长期记忆）在自己的系统提示里**点了名**要求模型
+     * 先调 {@code MemoryView}。模型看得见名字、清单里没有，伸手就是
+     * {@code IllegalStateException: No ToolCallback found}——不是降级，是整轮 500。
+     *
+     * <p>名字对不上时静默跳过：登记方在，回调不在，说明它被工具策略（档位 / allow / deny）挡掉了，
+     * 那是策略该有的结果。这里告警的话，每个挡掉的场景都会刷一条，而挡掉是常态。
+     *
+     * @param callbacks 这一轮可用的回调
+     * @param injected  上游登记的注入工具名
+     * @param selected  要交给模型的清单
+     */
+    private void addInjected(Map<String, ToolCallback> callbacks, @Nullable Object injected,
+                             Set<ToolCallback> selected) {
+        if (!(injected instanceof Collection<?> names)) {
+            return;
+        }
+        for (Object name : names) {
+            ToolCallback callback = callbacks.get(String.valueOf(name));
+            if (callback != null) {
+                selected.add(callback);
             }
         }
     }
@@ -302,11 +333,57 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
                 .toList();
     }
 
+    /**
+     * 从检索工具的响应里解出工具名。
+     *
+     * <p>两种形状都要认（票 32）：老的是 {@code ["Read","Grep"]}，新的是
+     * {@code [{"name":"Read","description":"…","input":"…"}]}。只认一种的失效方式很坏——
+     * 解析不出来只是"第二轮清单没更新"，模型搜到了工具却调不动，而日志上一个字都没有。
+     * 所以这条既做兼容，也在"响应非空却一个名字都没解出来"时告警。
+     *
+     * @param response 检索工具的一条响应
+     * @return 工具名，按出现顺序；解不出来时为空
+     */
     private List<String> namesIn(ToolResponse response) {
-        List<String> names = JSON.fromJson(response.responseData(),
-                new ParameterizedTypeReference<List<String>>() {
+        List<Object> hits = JSON.fromJson(response.responseData(),
+                new ParameterizedTypeReference<List<Object>>() {
                 });
-        return names == null ? List.of() : names;
+        if (hits == null) {
+            return List.of();
+        }
+        List<String> names = hits.stream()
+                .map(DisclosureToolCallingAdvisor::nameOf)
+                .filter(name -> !name.isBlank())
+                .toList();
+        if (names.isEmpty() && !hits.isEmpty()) {
+            LOGGER.warn("检索工具返回了 {} 条命中，但一个工具名都没解出来，这一轮清单不会更新。"
+                    + "响应开头：{}", hits.size(), abbreviate(response.responseData()));
+        }
+        return names;
+    }
+
+    /**
+     * 一条命中的名字：老形状是字符串，新形状是带 {@code name} 的对象。
+     *
+     * @param hit 一条命中
+     * @return 工具名；解不出来时为空串
+     */
+    private static String nameOf(Object hit) {
+        if (hit instanceof String name) {
+            return name;
+        }
+        if (hit instanceof Map<?, ?> map) {
+            Object name = map.get("name");
+            return name == null ? "" : String.valueOf(name);
+        }
+        return "";
+    }
+
+    private static String abbreviate(String text) {
+        if (text == null) {
+            return "null";
+        }
+        return text.length() <= 200 ? text : text.substring(0, 200) + "…";
     }
 
     private static String fingerprintOf(List<ToolReference> references) {

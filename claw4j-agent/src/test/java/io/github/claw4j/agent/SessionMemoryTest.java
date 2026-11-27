@@ -917,9 +917,10 @@ class SessionMemoryTest {
                 .contains("MemoryView", "MemoryCreate", "MemoryStrReplace",
                         "MemoryInsert", "MemoryDelete", "MemoryRename");
         assertThat(request.prompt().getSystemMessage().getText())
-                .as("人设还是开头，记忆那一段接在后面（order 必须大于 persona）")
+                .as("人设还是开头，记忆那一段接在后面（order 必须大于 persona）。"
+                        + "票 32 换掉了库那份「先用 MemoryView」的英文说明书，改成我们自己的")
                 .startsWith("人设")
-                .contains("persistent, file-based memory system");
+                .contains("# 长期记忆");
     }
 
     @Test
