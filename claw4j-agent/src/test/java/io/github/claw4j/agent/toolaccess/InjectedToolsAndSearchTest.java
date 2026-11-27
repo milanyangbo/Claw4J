@@ -102,6 +102,26 @@ class InjectedToolsAndSearchTest {
                 .isEqualTo("(path: string, viewRange?: string)");
     }
 
+    @Test
+    @DisplayName("用户原话提到网页，WebFetch 直接进清单，不必等模型想起去检索（票 34）")
+    void mentionedToolIsLitFromUserWords() {
+        ChatClientRequest prepared = prepare(withWebFetch(memoryTools()), List.of(),
+                "https://example.com 这个网页在讲什么？三句话以内。");
+
+        assertThat(names(prepared))
+                .as("模型对「我上不了网」的先验太强，不点它它连搜都不搜——所以判据取用户原话")
+                .contains("WebFetch");
+    }
+
+    @Test
+    @DisplayName("原话里没提就不给：这条通路不是第二个 pinned")
+    void unmentionedToolStaysOut() {
+        ChatClientRequest prepared = prepare(withWebFetch(memoryTools()), List.of(),
+                "上周华东区的成交额是多少");
+
+        assertThat(names(prepared)).doesNotContain("WebFetch");
+    }
+
     // ------------------------------------------------------------ 夹具
 
     /**
@@ -112,11 +132,23 @@ class InjectedToolsAndSearchTest {
      * @return 这一轮准备发给模型的请求
      */
     private static ChatClientRequest prepare(List<ToolCallback> tools, List<String> injected) {
-        return prepare(request(tools, injected, null));
+        return prepare(request(tools, injected, null, "上周华东成交额"));
+    }
+
+    /**
+     * 同上，但指定本轮用户原话（票 34 的"按原话点亮"要用）。
+     *
+     * @param tools    这一轮的全部工具
+     * @param injected 上游登记注入的工具名
+     * @param userText 本轮用户消息
+     * @return 这一轮准备发给模型的请求
+     */
+    private static ChatClientRequest prepare(List<ToolCallback> tools, List<String> injected, String userText) {
+        return prepare(request(tools, injected, null, userText));
     }
 
     private static ChatClientRequest prepareWithHistory(List<ToolCallback> tools, String searchResponse) {
-        return prepare(request(tools, List.of(), searchResponse));
+        return prepare(request(tools, List.of(), searchResponse, "上周华东成交额"));
     }
 
     private static ChatClientRequest prepare(ChatClientRequest request) {
@@ -128,13 +160,13 @@ class InjectedToolsAndSearchTest {
     }
 
     private static ChatClientRequest request(List<ToolCallback> tools, List<String> injected,
-                                             String searchResponse) {
+                                             String searchResponse, String userText) {
         ToolCallingChatOptions options = ToolCallingChatOptions.builder()
                 .toolCallbacks(tools)
                 .build();
         List<org.springframework.ai.chat.messages.Message> messages = new ArrayList<>();
         messages.add(new SystemMessage("你是助手"));
-        messages.add(new UserMessage("上周华东成交额"));
+        messages.add(new UserMessage(userText));
         if (searchResponse != null) {
             messages.add(ToolResponseMessage.builder()
                     .responses(List.of(new ToolResponseMessage.ToolResponse(
@@ -144,12 +176,25 @@ class InjectedToolsAndSearchTest {
         Map<String, Object> context = new HashMap<>();
         context.put(ChatMemory.CONVERSATION_ID, "s-32");
         context.put(ContextKeys.INJECTED_TOOLS, injected);
+        // 原话走上下文而不是 Prompt 里那条 user 消息：真实链路上知识库会把文档拼进用户消息（票 34）。
+        context.put(ContextKeys.USER_TEXT, userText);
         return new ChatClientRequest(new Prompt(messages, options), context);
     }
 
     private static ToolSearchProperties properties() {
+        // 与 application.yml 里那条 WebFetch 规则同一个写法：打了 gate 才走"按原话点亮"。
+        List<ToolSearchProperties.Rule> rules = List.of(
+                new ToolSearchProperties.Rule("网址|链接|网页|地址|抓取|URL|url|http", List.of("WebFetch"), true),
+                new ToolSearchProperties.Rule("跑|执行|命令", List.of("Bash"), true));
         return new ToolSearchProperties(null, 5, null, ToolSearchProperties.Mode.ALWAYS, 0,
-                List.of(), Map.of(), null, null, null);
+                List.of(), Map.of(), null, null, rules);
+    }
+
+    /** 加一个 {@code WebFetch}：闸里那个名字要真实存在，否则"点亮"验不出来。 */
+    private static List<ToolCallback> withWebFetch(List<ToolCallback> tools) {
+        List<ToolCallback> all = new ArrayList<>(tools);
+        all.add(single("WebFetch", "Fetch a URL and summarize it."));
+        return List.copyOf(all);
     }
 
     private static List<String> names(ChatClientRequest request) {

@@ -116,6 +116,19 @@ public final class ContextKeys {
      */
     public static final String INJECTED_TOOLS = "claw4j.injectedTools";
 
+    /**
+     * 这一轮用户原话（已脱敏、已去系统标签），由组装方写进 Advisor 上下文。
+     *
+     * <p>为什么不能从 {@code Prompt} 里取最后一条 user 消息：知识库那层会把检索到的文档
+     * <b>拼进用户消息</b>（Spring AI 的问答顾问就是这个形状），于是到了工具循环，「最后一条 user
+     * 消息」里已经混进几段文档。拿它做关键词判断会把文档里出现的词当成用户说的话——
+     * 2026-11-27 实测过一次：用户只问"这个网页在讲什么"，命中的却是 Bash 那条规则
+     * （文档里有"执行""测试"），于是每轮都白给一个 Bash。
+     *
+     * <p>要的是用户自己说的那句话，所以由知道原文的那一方写下来。
+     */
+    public static final String USER_TEXT = "claw4j.userText";
+
     private ContextKeys() {
     }
 }

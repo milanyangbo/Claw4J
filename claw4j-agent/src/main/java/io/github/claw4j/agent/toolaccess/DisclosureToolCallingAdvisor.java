@@ -38,6 +38,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * 工具循环：按配置决定这一轮**给模型看多少**，看不见的那部分靠 {@code toolSearchTool} 找回来。
@@ -81,6 +83,15 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
     /** 已经告警过的 {@code pinned} 名字。同一个名字每轮告警一次会把日志刷满，而它是个配置错误。 */
     private final Set<String> warnedPinnedNames = ConcurrentHashMap.newKeySet();
 
+    /**
+     * "用户这么说，就把这几个工具给他"——{@code rules} 里标了 {@code gate: true} 的那几条（票 34）。
+     *
+     * <p>与 {@code GatedToolIndex} 用的是同一份配置，但判据不同：那边看**模型改写的检索词**，
+     * 这边看**用户原话**。要两个都留，是因为它们堵的是两个不同的洞：模型搜了但被闸挡、
+     * 与模型压根不搜（用户点名它都断言"没有这个工具"）。
+     */
+    private final List<Mention> mentionRules;
+
     protected DisclosureToolCallingAdvisor(ToolCallingManager toolCallingManager, int advisorOrder,
                                            ToolExecutionEligibilityChecker toolExecutionEligibilityChecker,
                                            boolean conversationHistoryEnabled, ToolIndex toolIndex,
@@ -90,6 +101,7 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.categories = ToolCategories.of(properties.categories());
         this.systemMessageSuffix = systemMessageSuffix == null ? "" : systemMessageSuffix;
+        this.mentionRules = compileMentions(properties.rules());
         this.toolSearchToolCallback = MethodToolCallbackProvider.builder()
                 .toolObjects(new DescriptiveToolSearchTool(toolIndex, properties.maxResults()))
                 .build()
@@ -205,6 +217,7 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
         if (callbacks != null) {
             addPinned(callbacks, selected);
             addInjected(callbacks, request.context().get(ContextKeys.INJECTED_TOOLS), selected);
+            addMentioned(callbacks, selected, userTextOf(request.context()));
             referencedNames(request.prompt().getInstructions()).forEach(name -> {
                 ToolCallback found = callbacks.get(name);
                 if (found != null) {
@@ -245,6 +258,97 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
                                 + "可能拼错了，也可能它被工具策略（档位 / allow / deny）挡掉了。", name);
             }
         }
+    }
+
+    /**
+     * 用户原话里提到的那几类事，把对应工具直接放进清单（票 34）。
+     *
+     * <p>为什么要这条：把通用工具移出常驻、改成"检索才给"之后，模型**一次都不搜**——2026-11-27 的
+     * 两条探针里，用户直接点名"用 WebFetch 抓一下这个网址"，它答的是"我这边没有 WebFetch 这个工具"，
+     * 检索次数 0。它一旦有"我上不了网"的先验，就不会去翻目录。所以需要一条不依赖它自觉的通路。
+     *
+     * <p>判据取**用户原话**而不是模型的检索词，是因为后者由模型改写，用户说"让我选"它可能写成
+     * {@code deployment environment release pipeline}（票 32 现场）。用户说了什么，是这一层唯一
+     * 稳定的输入。
+     *
+     * @param callbacks 这一轮可用的回调
+     * @param selected  要交给模型的清单
+     * @param text      本轮用户消息正文，可为 null
+     */
+    private void addMentioned(Map<String, ToolCallback> callbacks, Set<ToolCallback> selected,
+                              @Nullable String text) {
+        if (this.mentionRules.isEmpty() || text == null || text.isBlank()) {
+            return;
+        }
+        for (Mention mention : this.mentionRules) {
+            if (!mention.pattern().matcher(text).find()) {
+                continue;
+            }
+            List<String> lit = new ArrayList<>(mention.tools().size());
+            for (String name : mention.tools()) {
+                ToolCallback found = callbacks.get(name);
+                if (found != null && selected.add(found)) {
+                    lit.add(name);
+                }
+            }
+            if (!lit.isEmpty()) {
+                LOGGER.debug("用户原话命中「{}」，这一轮直接给出：{}", mention.pattern().pattern(), lit);
+            }
+        }
+    }
+
+    /**
+     * 编译"按原话点亮"的规则：只取 {@code gate: true} 的那几条。
+     *
+     * <p>没标 gate 的规则不动——它们本来就由 {@code RuleToolIndex} 在检索里置顶，把它们也塞进清单
+     * 等于绕过检索，那是另一回事。正则写错在构造时抛，与 {@code GatedToolIndex} 同一个态度：
+     * 别留到运行期被 catch 成一次空结果。
+     *
+     * @param rules 配置里的规则，可为 null
+     * @return 编译好的规则
+     */
+    private static List<Mention> compileMentions(List<ToolSearchProperties.Rule> rules) {
+        if (rules == null || rules.isEmpty()) {
+            return List.of();
+        }
+        List<Mention> mentions = new ArrayList<>();
+        for (ToolSearchProperties.Rule rule : rules) {
+            if (rule == null || !rule.gate() || rule.tools() == null || rule.tools().isEmpty()) {
+                continue;
+            }
+            try {
+                mentions.add(new Mention(Pattern.compile(rule.pattern()), List.copyOf(rule.tools())));
+            } catch (PatternSyntaxException failure) {
+                throw new IllegalArgumentException(
+                        "claw4j.advisor.tool-search.rules 的正则写错了：" + rule.pattern(), failure);
+            }
+        }
+        return List.copyOf(mentions);
+    }
+
+    /**
+     * 本轮用户原话，从上下文取（{@link ContextKeys#USER_TEXT}）。
+     *
+     * <p><b>不从 {@code Prompt} 里取最后一条 user 消息</b>：知识库那层会把检索到的文档拼进用户消息
+     * （Spring AI 问答顾问的形状），到这一步「最后一条 user 消息」里已经混着几段文档。实测过一次：
+     * 用户只问"这个网页在讲什么"，按最后一条消息匹配却命中了 Bash 那条规则（文档里有"执行""测试"），
+     * 于是每一轮都白给一个 Bash。
+     *
+     * @param context Advisor 上下文
+     * @return 用户原话；调用方没写这个键时为 null（失败姿势是"什么都不点亮"）
+     */
+    private static @Nullable String userTextOf(Map<String, Object> context) {
+        Object value = context == null ? null : context.get(ContextKeys.USER_TEXT);
+        return value instanceof String text ? text : null;
+    }
+
+    /**
+     * 一条"按原话点亮"的规则。
+     *
+     * @param pattern 用户原话里要出现的样子
+     * @param tools   命中就给的工具名
+     */
+    private record Mention(Pattern pattern, List<String> tools) {
     }
 
     /**

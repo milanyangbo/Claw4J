@@ -249,6 +249,9 @@ final class PromptComposer {
                 .advisors(spec -> {
                     spec.param(ContextKeys.PRINCIPAL, principal)
                             .param(SessionMemoryAdvisor.SESSION_ID_CONTEXT_KEY, sessionId)
+                            // 用户原话进上下文（票 34）：披露层要按"用户说了什么"决定给不给通用工具，
+                            // 而 Prompt 里最后一条 user 消息会被知识库那层拼上检索到的文档，不能用。
+                            .param(ContextKeys.USER_TEXT, masked)
                             // 外键用归属键而不是裸 userId：跨会话召回走 user_id 精确匹配，
                             // 传裸 userId 的话"换角色即换会话"在召回那条路上等于没做（见 SessionKeys）。
                             .param(SessionMemoryAdvisor.USER_ID_CONTEXT_KEY, owner);
