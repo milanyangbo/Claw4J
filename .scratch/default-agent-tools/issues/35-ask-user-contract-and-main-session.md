@@ -56,3 +56,51 @@ B7「给两个选项让我选」一直是红的，而且两半都红：链路通
 
 BFCL 不进这次评估：它的 240 题只给 BFCL 自带的函数，我们的工具描述与常驻名单都不进那份请求
 （`--with-prompt` 只加系统提示）。所以本票**不需要重跑 BFCL**。
+
+## 复核（2026-11-27 22:56，`claw4j_accept_33` / 日志 `/tmp/claw4j-35.log`）
+
+### 落了什么
+
+| # | 文件 | 改了什么 |
+| --- | --- | --- |
+| 1 | `AskUserTool`（重写，不再用库的 `AskUserQuestionTool`） | 自建 `@Tool`：描述 = 库那四条"该用" + OpenClaw 四条反向约束（该用户拍板时用它且**别在正文里列选项代替**、别问"能否继续"、别用来确认自己的计划、推荐项排第一标 `(Recommended)`、别自写 `Other`、`no_answer` 后按判断继续）；入参加 `id`/`header`；`header` 截 12 字、`label` 截 64 字、`description` 改可选 |
+| 2 | `AskUserTool.mainSessionOnly(...)` + `SubagentRunner` | 子 Agent 的工具面里剔掉提问工具（照 OpenClaw 只在主会话） |
+| 3 | `QuestionGate.Question` | 加 `id`；`Outcome.answers` 的 key 从**题目原文**改成 **id** |
+| 4 | `PendingQuestions.parse` | 按 `id` 分组 |
+| 5 | `AskUserAutoConfiguration` | 用 `new AskUserTool(gate)` 建回调；`TOOL_NAME` 改成引用 `AskUserTool.TOOL_NAME`，不再两处各写一份 |
+| 6 | `AskUserQuestionTest` | 6 → 10 条：按 id 分组（同文不同 id 不串）、形状修好而不抛、子 Agent 不给、描述里那三句反向约束 |
+
+校验一律"改好"不抛异常：`id` 缺失/重复/不合规补 `q1..qn`，超长截断，问题条数超 4 才回一句文字让它拆开。
+工具里抛异常会把这一轮打成 500，而模型给错形状是常事。
+
+### 实测
+
+| 验什么 | 结果 |
+| --- | --- |
+| **B7 不点名那一半** | ✅ **转绿**。用户原话"给我两个选项让我选，别替我决定，推荐预发" → 模型**主动调了工具**，`/questions` 返回 `{"header":"发布方式","question":"新版本发布走哪条路？","options":[{"label":"先发预发（推荐）",…},{"label":"直接全量",…}]}`；回 `1` → **204** → 挂住那轮回「你选了**先发预发**」 |
+| 子 Agent 工具面 | ✅ 日志 `委派 task 给 Subagent incident-triage：它这趟能用的工具是 [...]` 里 **0 次** `AskUserQuestionTool`（剔之前它会在，因为该定义只有 `disallowedTools`、拿到的是全量清单） |
+| 单测 | `claw4j-agent` **248/248**；`ApplicationAssemblyTest` **25/25** |
+
+`header` 的 12 字上限实际生效：日志里那条 `header=发布方式` 四个字。推荐项用了中文「（推荐）」而不是
+`(Recommended)`——模型按中文语境本地化了，语义对，不追。
+
+### 顺带发现一个已存在的缺陷（不属于本票，没动）
+
+触发 `incident-triage` 时子 Agent **启动即失败**，父链把原因原样回报给用户：
+
+```
+工具注册表报重名冲突（systemStatus、Read、BashOutput 等一批工具各注册了两份），subagent 启动即失败
+```
+
+那行日志可数出来：子 Agent 的工具面 **102 个名字、每个正好两遍**（`world_clock` 2、`word_define` 2…），
+而父链同一时刻 `Indexed 66 tools`（无重复）。也就是说重复出在 `SubagentDefinition.selectTools(...)`——
+只给 `disallowedTools`、没给 `tools` 的那种定义会拿到全量清单的两份拷贝。
+`examples/subagents` 里其余五个都写了显式 `tools:`，所以平时跑不到这条路。
+**与本票改动无关**（这里只做过滤，不会复制），要修另开票。
+
+### 没跑
+
+- 检索评测没重跑：它吃的是 `eval/tools/retrieval/catalogue.txt` 快照，不是活代码；这次改的是一句描述，
+  快照没重生成。**哪天重生成快照，`gold.yaml` 里那条"让人先问清楚（AskUserQuestionTool）"要复核。**
+- BFCL 不需要（理由见票面「量具说明」）。
+- C/D/E/F/G/H/I/J 各节照旧没动。
