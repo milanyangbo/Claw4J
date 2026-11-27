@@ -174,8 +174,8 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"上周华东区的成交额是多少"}'
 ```
 
-- **判据**：上周华东 **128400**、本周华东 **99999**、三周前华东 **77777**；`querySales` 的 `ok` 计数多 1。
-- **坑**：计数 404 → 工具没执行，换新用户问同一句，再看日志里有没有 `工具检索 hybrid`；计数涨了但数字错 → 问题在工具本身（SQL、时区、`CANCELLED` 没排），不在装配。
+- **判据**：上周华东 **128400**、本周华东 **99999**、三周前华东 **77777**；`querySales` 的 `ok` 计数多 1（三个窗各多 1）。
+- **坑**：计数 404 → 工具没执行，换新用户问同一句，再看日志里有没有 `工具检索 hybrid`；计数涨了但数字错 → 问题在工具本身（SQL、时区、`CANCELLED` 没排），不在装配。**三个窗要各看一眼检索日志**：同一句式上周搜了、本周和三周前没搜（`claw4j.tool.search.calls` 不涨），那是模型这一轮没检索，跟时间窗写没写对无关——这种先按方差记，重复几次拿到"几次里挂几次"再谈改机制。
 
 ### B2 默认工具：`Read` / `Grep` / `Glob` 常驻，`WebFetch` 按用户原话给
 
@@ -204,16 +204,18 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ### B3 Skill：正文真的进了上下文吗
 
-验什么：`--claw4j.skills.directory=examples/skills` + 人设（`--claw4j.agent.directory=examples/agents --claw4j.agent.default=sales`），口径在 `glossary/metrics.md` 而不在 Skill 里；还要有 `examples/skills/.review/weekly-sales.properties`（`status=approved`、`by`、`sha256`），没有就不加载。
+验什么：`--claw4j.skills.directory=examples/skills` + 人设（`--claw4j.agent.directory=examples/agents --claw4j.agent.default=sales`）；还要有 `examples/skills/.review/weekly-sales.properties`（`status=approved`、`by`、`sha256`），没有就不加载。
+
+**题目要问"格式"，不要只问"口径"**：口径在 `examples/agents/glossary/metrics.md`（人设带进来的），Skill 正文开头就写明"那段由人设给出，这里不再抄一遍"——所以问口径它不必打开 Skill，`querySales` 加人设照样答得对。只有"按固定格式出周报"这类事（三区+合计的排版、末尾那句环比提示）才只在正文里。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: k1' \
-  -d '{"text":"按 weekly-sales 的口径，给我上周各区成交额"}'
+  -d '{"text":"按 weekly-sales 那套固定格式，出一份上周各区成交额周报，末尾该点的那句也点上"}'
 ```
 
-- **判据**：三区 + 合计 **128400 / 26000 / 31500 / 185900**，口径写明 `sum(order_item.amount)` 且排除 `CANCELLED`；`Skill` 的 `ok` +1。
-- **坑**：回答"先确认口径"不是失败——是正文规则在起作用，原因是没配人设；直接给没出处的口径才是正文没加载（看 `Skill` 计数是否 404）。
+- **判据**：三区 + 合计 **128400 / 26000 / 31500 / 185900**，口径写明 `sum(order_item.amount)` 且排除 `CANCELLED`，末尾有"环比要上周之前的数据"那句；`Skill` 的 `ok` +1。
+- **坑**：回答"先确认口径"不是失败——是正文规则在起作用，原因是没配人设；直接给没出处的口径才是正文没加载（看 `Skill` 计数是否 404）。**只问口径那版是假红**：数字全对、`Skill` 0 次（票 36 后实测），看着像"正文没加载"，其实是题目没逼它打开。
 
 ### B4 技能里的脚本：跑的是 `Bash`，不是某个工具
 
@@ -341,7 +343,7 @@ done
 ```
 
 - **判据**：问一句确定该有工具的话，`claw4j.tool.search.calls{result}` 多 1 且 `result=hit`；`narrowed=true` 的 `miss` 是收窄后空手（分组配错或乱填 `categoryFilter`）；`results` 的 COUNT / TOTAL 次次顶满 `max-results` 说明候选没被筛过。
-- **坑**：`error` 千万不能当 `miss`（那是搜崩了，修法完全不同）；`result=hit` 只说明"有候选"不说明"对的在里面"——88 题里任一翼 top5 有答案的 84 题、融合后只剩 74 题（融合把冠军挤掉了，是下一步要查的事）；要看名字得开 `--logging.level.io.github.claw4j=DEBUG`（只有 `index=hybrid` 打这行：`工具检索 hybrid：query=… 关键字=[…] 向量=[…] 融合后=[…]`），少了哪个工具这行里一眼看见，指标上看不出来。
+- **坑**：`error` 千万不能当 `miss`（那是搜崩了，修法完全不同）；`calls` 一次不涨 ＝模型压根没检索（这一节量的是**触发**，不是召回；判召回去跑 `eval/tools/retrieval/run.sh`）；`result=hit` 只说明"有候选"不说明"对的在里面"——88 题里任一翼 top5 有答案的 84 题、融合后只剩 74 题（融合把冠军挤掉了，是下一步要查的事）；要看名字得开 `--logging.level.io.github.claw4j=DEBUG`（只有 `index=hybrid` 打这行：`工具检索 hybrid：query=… 关键字=[…] 向量=[…] 融合后=[…]`），少了哪个工具这行里一眼看见，指标上看不出来。
 
 索引：`--claw4j.advisor.tool-search.index=lucene|hybrid`（默认 `hybrid`，`regex` 已退役，写它启动即报错）。`hybrid` 要工具专用向量库 `claw4j_tool.tool_index`，建不出来就启动失败、不回落；不能与 `claw4j_rag.vector_store` 共用（那里 `metadata->>'toolName'` 必须一条都没有）。`lucene` 纯本地、不要向量库。`zh-description.enabled` 把英文描述译成"中文一句 + 原文"，两路都吃译文，默认部署里开；跨 run 分数会抖（每次重译），看趋势不看小数第二位。准确率看 `./eval/tools/retrieval/run.sh`（TREC 口径，基线在 `eval/tools/retrieval/baseline.json`）。
 
@@ -577,7 +579,13 @@ curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.tokens?tag=k
 
 ### G1 进度卡：`TodoWrite` 落库
 
-验什么：那一轮 `TodoWrite` 的卡真的落库了，且状态在推进。
+验什么：那一轮 `TodoWrite` 的卡真的落库了，且状态在推进。**题面得是多步骤的活**——单步问答它不列卡，那不是缺陷（实测问"这个文件第一行是什么"→ `TodoWrite` 0 次）。
+
+```bash
+curl -s --noproxy '*' -X POST localhost:8080/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: g1' \
+  -d '{"text":"把「读懂这份 README」拆成三步：先看目录结构、再读共同前提、最后给我一句话结论。先列进度卡，做完一步更新一步，都做完再回话。"}'
+```
 
 ```bash
 docker exec -i claw4j-postgres psql -U claw4j -d <临时库> -c \
@@ -614,7 +622,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ```
 
 - **判据**：建完 `status=armed`、`owner`/`sender_scope` 取自身份证；`intent-2` 后 `fire_count=1`、`status=fired`、`last_fired_at` 有值；冷却内再问仍是 1；撤掉变 `cancelled` 后不再涨。
-- **坑**：同一段对话里它凭上文就追问口径，拿这个当命中是假过——只认"全新 chat id + `fire_count` 涨"；且只做关键词（中文子串、英文整词），`trigger_embedding` 恒 null。
+- **坑**：同一段对话里它凭上文就追问口径，拿这个当命中是假过——只认"全新 chat id + `fire_count` 涨"；且只做关键词（中文子串、英文整词），`trigger_embedding` 恒 null。表里 0 行时先分两种：`intent` 计数 404 **且那轮日志没有 `工具检索 hybrid`** ＝它压根没检索、嘴上"已记下"（票 36 后实测就是这个）；检索了但没调 `intent` ＝工具给了它不接，才轮到查落库。
 
 ### G3 提示词预算：超了会喊一声，且只喊一次
 
@@ -874,7 +882,7 @@ curl -s --noproxy '*' \
   -H 'X-Claw4j-User: j1'
 ```
 
-- **判据**：时间正序（窗口取最近 N 轮，回过来仍正序）；`role` 只有 `user`/`assistant`；`hasMore` 表示更早的还有。
+- **判据**：响应里那一批在 `turns`（**不是 `messages`**，按 `messages` 取恒 0 条）；时间正序（窗口取最近 N 轮，回过来仍正序）；`role` 只有 `user`/`assistant`；`hasMore` 表示更早的还有。
 - **坑**：id 带冒号正常，路径段原样带即可，不用转义。
 
 ### J3 别人的会话看不到，自己的 id 不随问话变
