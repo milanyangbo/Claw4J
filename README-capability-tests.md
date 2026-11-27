@@ -57,6 +57,8 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 ```
 三个目录给全 A / B 才都验得了（`agent.directory` + `default` 是 A4、B3 的前提）；`users='*'` 是验收姿态，代价是 A3 验不了（另起一份收紧名单）；人设的 `tier` 会覆盖 `claw4j.tools.profile`，C1 要用没有 `agent.directory` 的实例。建议指向一次性库（`--spring.datasource.url=jdbc:postgresql://localhost:5432/<临时库>`），Flyway 从零建表，跑完 drop；别在有人用过的库上验索引。`dm-scope` 那行不可省：本机名单不止一人时 `dm-scope=main` 会把不同人的私聊并成一段上下文，启动校验直接拒（ADR-0032）。
 
+**A1 / B1 要业务数字，得用 `sales` 人设**：例子里 `default=ops` 是运维助手（进程状态、定时任务、审批），问销售成交额它会**正当拒绝**——回答是「当前环境里没有能查业务库的工具」，计数 404。那不是工具没接上，是人设不干这个（票 34 实测：同一句换成 `--claw4j.agent.default=sales` 就回 128,400.00、`querySales` +1）。验 A1 / B1 时把这一项换掉，A4 那几条再换回来。
+
 **最后一行必须带**：语义缓存默认开，命中时这一轮没有模型调用、计数一次都不涨（而"不涨"正是主判据），还会缓存失败、Redis 连不上就起不来；关掉不影响知识库。这是验证姿态，不是配置建议。
 
 ### 发一轮对话
@@ -175,7 +177,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 - **判据**：上周华东 **128400**、本周华东 **99999**、三周前华东 **77777**；`querySales` 的 `ok` 计数多 1。
 - **坑**：计数 404 → 工具没执行，换新用户问同一句，再看日志里有没有 `工具检索 hybrid`；计数涨了但数字错 → 问题在工具本身（SQL、时区、`CANCELLED` 没排），不在装配。
 
-### B2 默认工具：`Read` / `Grep` / `Glob` 常驻，`WebFetch` 要检索
+### B2 默认工具：`Read` / `Grep` / `Glob` 常驻，`WebFetch` 按用户原话给
 
 验什么：不用配，启动就在清单里；判据是工具真被执行了，不是回答里提到文件名。题目一律用人话，不点工具名、不说参数名。
 
@@ -197,8 +199,8 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -d '{"text":"https://example.com 这个网页在讲什么？三句话以内。"}'
 ```
 
-- **判据**：列 `.md` → `Glob` +1 且文件名真存在；读开头六行 → `Read` +1 且逐字一致；refund → `Grep` +1 且匹配行搜得到；这页讲什么 → 日志里先有一次 `工具检索 hybrid`（query 含网页/URL 一类词）、`WebFetch` +1，回来的是提炼过的话，不是 HTML 源码。**题目只能问"讲了什么"**——这工具是"抓回来让模型按 prompt 提炼"的，要求它"原样抄、不要总结"是让它做做不到的事，那种题面永远红，别写。
-- **坑**：`Read` / `Grep` / `Glob` 常驻，`WebFetch` 移出常驻、要命中触发词（网址/链接/网页/抓取/URL/http…）——B2 里唯一能看出 toolSearch 效果的就是这一条，`miss` 说明描述或触发词有问题（曾因描述只有英文，中文问法全不匹配）；写文件默认关（要开 `CLAW4J_FILES_WRITE_ENABLED=true`，日志写「Write / Edit 已开」），`WebSearch` 没 `BRAVE_API_KEY` 不装配，`Path is outside the allowed directories` = 超出启动日志那行「文件工具的边界目录」。
+- **判据**：列 `.md` → `Glob` +1 且文件名真存在；读开头六行 → `Read` +1 且逐字一致；refund → `Grep` +1 且匹配行搜得到；这页讲什么 → **`WebFetch` +1**，回来的是提炼过的话，不是 HTML 源码。`WebFetch` 不是常驻，是**按用户原话点亮**（票 34）：话里有"网址/网页/链接/URL"就进清单，日志会打 `用户原话命中「网址|…」，这一轮直接给出：[WebFetch]`——**不必先检索**。**题目只能问"讲了什么"**——这工具是"抓回来让模型按 prompt 提炼"的，要求它"原样抄、不要总结"是让它做做不到的事，那种题面永远红，别写。
+- **坑**：`Read` / `Grep` / `Glob` 常驻，`WebFetch` 靠"用户原话命中"进清单，不用它自己想起去检索——**它不会想**：票 34 实测里用户直接说"用 WebFetch 抓一下这个网址"，它回"我这边没有 WebFetch 这个工具"，检索 0 次（先验"我上不了网"压过了一切）。写文件默认关（要开 `CLAW4J_FILES_WRITE_ENABLED=true`，日志写「Write / Edit 已开」），`WebSearch` 没 `BRAVE_API_KEY` 不装配，`Path is outside the allowed directories` = 超出启动日志那行「文件工具的边界目录」。
 
 ### B3 Skill：正文真的进了上下文吗
 

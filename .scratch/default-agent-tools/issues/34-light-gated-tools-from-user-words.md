@@ -78,3 +78,51 @@ B7 不点名那一半不在此列：`AskUserQuestionTool` 现在常驻（看得�
   不再是"我没有这个工具"这种断言。
 - BFCL `--with-prompt` 的 `irrelevance` 不低于回退后的 84.17%（BFCL 题面里没有网址/网页这类词，
   按道理不受影响；掉了说明匹配写宽了）。
+
+## 复核（2026-11-27 22:40，`claw4j_accept_33` / 日志 `/tmp/claw4j-34b.log` 起）
+
+### 落了什么
+
+| # | 文件 | 改了什么 |
+| --- | --- | --- |
+| 1 | `DisclosureToolCallingAdvisor` | 构造时把 `rules` 里 `gate: true` 的编译成闸；`prepare()` 里按**用户原话**匹配，命中就把该规则的工具并进清单（第四个补位来源），并打 debug「用户原话命中「…」，这一轮直接给出：[…]」 |
+| 2 | `ContextKeys.USER_TEXT` + `PromptComposer` | 用户原话（已脱敏、已去系统标签）写进 Advisor 上下文 |
+| 3 | `InjectedToolsAndSearchTest` | 两条：原话提到网页 → `WebFetch` 进清单；没提 → 不进（6/6） |
+| 4 | `README-capability-tests.md` | B2 改成"按用户原话给"，判据换成 `WebFetch +1` 与那条日志；0 节补 A1/B1 要用 `sales` 人设 |
+
+### 一次做错的实现，记下来
+
+第一版直接拿 `Prompt` 里**最后一条 user 消息**当原话。跑 B2-4 时日志里出现了：
+
+```
+用户原话命中「跑|执行|命令|脚本|编译|测试|安装|部署|终端|git|shell|build|make|mvn|npm」，这一轮直接给出：[Bash]
+用户原话命中「网址|链接|网页|…」，这一轮直接给出：[WebFetch]
+```
+
+用户只问"这个网页在讲什么"，Bash 也被点亮了。原因是**知识库那层把检索到的文档拼进了用户消息**
+（Spring AI 问答顾问就是这个形状），文档里有"执行""测试"，于是被当成了用户说的话——
+`Bash` 恰好是票 28 里误调最多的那个（9 条），这么点亮等于把那个毛病请回来。
+改成由组装方把原话写进 `ContextKeys.USER_TEXT`（`PromptComposer` 里 `masked` 那一份），披露层只认它；
+没有这个键就什么都不点亮。
+
+### 实测
+
+| 验什么 | 结果 |
+| --- | --- |
+| B2-4 不点名（`wf4`） | ✅ **0 次检索**，日志只点亮 `[WebFetch]`，`WebFetch` 调用 1 次，答出 example.com 的真实内容（"IANA 保留的示例域名…"） |
+| 对照：业务问句（`a34`） | ✅ 一个通用工具都没点亮，`WebFetch` / `Bash` 都不在清单 |
+| 之前的两条探针 | `wf1`（点名但不说"去找"）→ 0 检索、答"我没有 WebFetch"；`wf2`（说"先去搜搜看"）→ 检索 1 次、抓到真内容。说明链路一直通，断的是"模型不搜" |
+| BFCL `--with-prompt` | simple_python **93.75%** / irrelevance **84.58%**，与回退后那次的 93.50 / 84.17 同一量级——**没有因为多一个补位来源掉分**（BFCL 题面里没有网址/网页这类词，本来就不该受影响） |
+| 单测 | `claw4j-agent` 全量见下一节；`InjectedToolsAndSearchTest` 6/6、`ModelAndToolSelectionTest` 26/26、`ChatPipelineTest` 24/24 |
+
+### 顺带发现：A1/B1 一直是用错人设跑的
+
+票 33 修好人设被覆盖那个 P0 之后，A1 反而红了：`ops` 人设回答"当前环境里没有能查业务库的工具"。
+查下来不是工具的问题——同一句换成 `--claw4j.agent.default=sales`，**128,400.00、`querySales` +1**。
+也就是说：**人设那条 bug 一直在替这个配置错遮丑**（人设被整段覆盖，谁都表现得一样）。已在
+`README-capability-tests.md` 的 0 节写明 A1/B1 要 `sales`，A4 再换回来。
+
+### 还没做
+
+- B7 不点名那一半仍是红的：`AskUserQuestionTool` 常驻（看得见）它也不调，自己在正文写两个选项。
+  按 ADR-0042，这属会话策略，不在本票。
