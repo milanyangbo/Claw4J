@@ -21,6 +21,7 @@ import io.github.claw4j.agent.subagent.SubagentDefinition;
 import io.github.claw4j.agent.subagent.SubagentDelegation;
 import io.github.claw4j.agent.subagent.SubagentRunner;
 import io.github.claw4j.agent.subagent.SubagentTaskRepository;
+import io.github.claw4j.capability.tool.ToolCatalog;
 import io.github.claw4j.capability.untrusted.UntrustedToolCallback;
 import io.github.claw4j.domain.ContextKeys;
 import io.github.claw4j.domain.principal.Principal;
@@ -135,6 +136,40 @@ class SubagentDelegationTest {
      * 只要一个可枚举的 {@code ObjectProvider}：收集方法只用到 {@code orderedStream()}。
      * 其余入口在这里不该被走到——走到就说明装配依赖了"单例"语义，而那正是要避免的。
      */
+    /**
+     * 台账不是货源：{@code ToolCatalog} 是这条收集路径的产物，同时又实现 {@code ToolCallbackProvider}。
+     *
+     * <p>把它也算成一个来源，就是把刚收好的那一份再收一遍——每个工具两份。父链看不出来（下游按名字建
+     * map，重名互相覆盖），子链直接把清单交给 {@code ChatClient}，Spring AI 建注册表时校验名字唯一，
+     * 于是"子 Agent 一委派就报工具重名冲突，起不来"。
+     */
+    @Test
+    @DisplayName("台账不会把自己再收一遍：清单里每个名字只出现一次（票 36）")
+    void catalogIsNotASourceOfItself() {
+        ToolCallAudit audit = new ToolCallAudit(event -> { });
+        ToolProfile profile = ToolsProperties.defaults().toProfile();
+        List<ToolTierRegistry> tiers =
+                List.of(ToolTierRegistry.sameFor(Set.of("lookup", "echo"), ToolTier.MESSAGING));
+        List<ToolCallback> raw = List.of(new RecordingTool("lookup", "1"), new RecordingTool("echo", "2"));
+
+        List<ToolCallback> once = AgentAutoConfiguration.collectToolCallbacks(
+                providerOf(raw), providerOf(List.of()),
+                null, audit, SpanTracer.NONE, ObservationRegistry.NOOP, profile,
+                tiers, ToolPolicyPipeline.none(), selection -> { });
+        ToolCatalog catalog = new ToolCatalog("ops", profile, once);
+
+        List<ToolCallback> twice = AgentAutoConfiguration.collectToolCallbacks(
+                providerOf(raw), providerOf(List.of(catalog)),
+                null, audit, SpanTracer.NONE, ObservationRegistry.NOOP, profile,
+                tiers, ToolPolicyPipeline.none(), selection -> { });
+
+        assertThat(twice)
+                .as("两份清单进 ChatClient 就是重名冲突：子 Agent 起不来，父链只会看到一句库的报错")
+                .extracting(callback -> callback.getToolDefinition().name())
+                .doesNotHaveDuplicates()
+                .hasSize(2);
+    }
+
     private static <T> ObjectProvider<T> providerOf(List<T> items) {
         return new ObjectProvider<>() {
             @Override

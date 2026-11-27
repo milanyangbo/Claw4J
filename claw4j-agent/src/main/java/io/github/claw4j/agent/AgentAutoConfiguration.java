@@ -559,7 +559,15 @@ public class AgentAutoConfiguration {
         callbacks.orderedStream().forEach(collected::add);
         // provider 的 getToolCallbacks() 每次调用都重新问一次来源：MCP 那一层是活视图，
         // 恢复之后出现的工具从这里进来（票 03）。这里不能缓存它的结果。
+        //
+        // 但台账（ToolCatalog）要跳过：它**是这条收集路径的产物**，只是顺带实现了 ToolCallbackProvider
+        // （MCP server 那一头按 provider 取工具，见下面 toolCatalog 的注释）。把它也当成货源，就是把刚
+        // 收好的那一份再收一遍——每个工具两份。父链看不出来（下游按名字建 map，重名互相覆盖），
+        // 子链把清单直接交给 ChatClient，Spring AI 建注册表时校验名字唯一，于是"一委派就报工具重名
+        // 冲突、起不来"（票 36）。不做按名字去重兜底：那会把"两个不同的工具撞了名"这种真配置错误
+        // 一起吃掉，名单唯一性由 SubagentDelegationTest 钉住。
         providers.orderedStream()
+                .filter(provider -> !(provider instanceof ToolCatalog))
                 .forEach(provider -> collected.addAll(List.of(provider.getToolCallbacks())));
 
         // 先筛再包（P09）：被挡掉的工具不该连包装对象都造出来。筛的是名字，
