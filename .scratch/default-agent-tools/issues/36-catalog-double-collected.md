@@ -53,3 +53,31 @@ providers.orderedStream().forEach(p -> collected.addAll(List.of(p.getToolCallbac
 | 1 | 收集不会再把自己交的那份收第二遍 | 单测：把一个 provider 交回刚收好的那份（模拟 `ToolCatalog`），结果仍是 1 个而不是 2 个 |
 | 2 | 名字在收集结果里唯一 | 单测断言 `doesNotHaveDuplicates` |
 | 3 | 子 Agent 真跑得起来 | 实测：派 `incident-triage`，日志里工具面每个名字只出现一次，且父链拿到的是子 Agent 的结论而不是报错 |
+
+## 复核（2026-11-27 23:08，`claw4j_accept_33` / 日志 `/tmp/claw4j-36.log`）
+
+### 落了什么
+
+`AgentAutoConfiguration.collectToolCallbacks`：收 provider 时跳过 `ToolCatalog`（台账不是货源）。
+按名字去重没有做——那会把"两个不同工具撞名"这种真配置错误一起吃掉；名单唯一性交给
+`SubagentDelegationTest#catalogIsNotASourceOfItself` 钉住。
+
+### 先红后绿
+
+| 阶段 | 结果 |
+| --- | --- |
+| 只加测试、不改实现 | 红（`doesNotHaveDuplicates` 在 4 个名字上失败） |
+| 改完之后 | `SubagentDelegationTest` **26/26**；`claw4j-agent` **249/249**；`ApplicationAssemblyTest` **25/25** |
+
+### 实测
+
+| 验什么 | 修之前 | 修之后 |
+| --- | --- | --- |
+| 子 Agent 工具面 | **102 个名字 / 51 个工具**（每个两遍） | **51 个名字 / 51 个工具** |
+| 派 `incident-triage` | 启动即失败，父链回「工具注册表报重名冲突…」 | **跑通**，父链拿到它的初筛结论（堆内存/线程数那一份） |
+| 父链索引 | `Indexed 66 tools`（按名字建索引，重名被吃掉，所以看不出问题） | 仍 `Indexed 66 tools`，工具照常可用（问 examples 下几个 `.md`，`Glob` 报 130） |
+| 子 Agent 有没有提问工具 | 0 次（票 35 的过滤生效） | 0 次 |
+
+顺带确认了一件此前只是推断的事：**父链一直带着两份清单在跑**，只是下游按名字建 map 把重名覆盖掉了。
+`VectorToolIndex` 那行 `Indexed 51 tools` 在修之前也是 51——它是按名字建索引，同样把重复吃掉了，
+所以"索引数正常"从来不能用来判断工具面有没有重复。
