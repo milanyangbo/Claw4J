@@ -35,9 +35,10 @@ public class SalesTools {
               business.order_item(id, order_id, product_name, quantity, unit_price, amount)
                                                                 -- amount = quantity * unit_price，已由数据库算好
             成交额口径：sum(order_item.amount) 且 status <> 'CANCELLED'（已取消的订单不计入）。
-            时间窗一律用半开区间 [起始, 结束)：
-              上周 = order_date >= date_trunc('week', current_date) - interval '7 days'
-                     and order_date <  date_trunc('week', current_date)
+            时间窗一律用 order_date 的区间条件，写成半开区间 [起始, 结束)：
+              order_date >= date '2026-11-16' and order_date < date '2026-11-23'
+            日期要具体写出来。别用 date_trunc('week', current_date) 这种跟着"今天"走的写法：
+            库里的演示数据就那几天，按今天换算只会查空。
             """;
 
     private static final String DESCRIPTION = "把关于销售额的自然语言问题翻译成一条只读 SELECT 语句并执行，"

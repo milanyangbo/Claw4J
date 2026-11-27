@@ -35,7 +35,7 @@
   1. **算得过来**：单工具 ≤3 次、一轮 ≤6 次（`ToolCallBudget`）。要"数一遍目录"又要"读两个文件"就会撞
      `Tool call limit (3) exceeded`，而且那行错误会**当成回答**返回给用户；
   2. **不做工具做不到的事**：`WebFetch` 是"抓回来按 prompt 提炼"的，问它"原样抄、不要总结"永远红；
-  3. **一次只变一个量**：验记忆就用**不查工具**的题面，别拿"上周成交额"去问——第一句没数时，第二句答不上来
+  3. **一次只变一个量**：验记忆就用**不查工具**的题面，别拿"区间成交额"去问——第一句没数时，第二句答不上来
      分不清是记忆坏了还是工具没调到。同理，判据要求"某个工具被调"，题目就必须是"只有那个工具能解决"的事。
 
 ## 0. 共同前提
@@ -67,7 +67,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' \
   -H 'X-Claw4j-User: t1' \
-  -d '{"text":"上周华东区的成交额是多少"}'
+  -d '{"text":"2026-11-16 到 2026-11-22 华东区的成交额是多少"}'
 ```
 回答在返回 JSON 的 `text` 字段。`X-Claw4j-User` 就是"我是谁"，`t1` 只是代号——每条、每次复测都换一个（`t2`、`m1`…），否则模型会"记得"上一轮失败而拒绝重试；它必须在 `claw4j.channel.http.users` 白名单里（名单默认空 = 谁都不能进）。
 
@@ -140,7 +140,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: nobody' \
-  -d '{"text":"上周华东成交额是多少"}'
+  -d '{"text":"2026-11-16 到 2026-11-22 华东区的成交额是多少"}'
 ```
 
 ```bash
@@ -166,7 +166,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ### B1 业务工具（以自带的 `querySales` 为例）
 
-验什么：问**固定日期区间**，不问"上周/本周"。种子日期由 `V10__pin_seed_dates.sql` 钉死成 2026-11-02 ~ 2026-11-23，跟今天是哪天、库是哪天建的一点关系都没有，重灌也不变。（迁移号是全局的，V1–V9 已被别的模块占掉，所以是 V10。）代价写在 D3：数据固定在 11 月，所以"上周/本周"这类相对问法今天已经查不到数——那是数据的事，不是工具坏了。
+验什么：问**固定日期区间**，不问"上周/本周"。种子日期由 `V2__pin_seed_dates.sql` 钉死成 2026-11-02 ~ 2026-11-23，跟今天是哪天、库是哪天建的一点关系都没有，重灌也不变。代价写在 D3：数据固定在 11 月，所以"上周/本周"这类相对问法今天已经查不到数——那是数据的事，不是工具坏了。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -215,10 +215,10 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: k1' \
-  -d '{"text":"按 weekly-sales 那套固定格式，出一份上周各区成交额周报，末尾该点的那句也点上"}'
+  -d '{"text":"按 weekly-sales 那套固定格式，出一份 2026-11-16 到 2026-11-22 的各区成交额周报，末尾该点的那句也点上"}'
 ```
 
-- **判据**：三区 + 合计 **128400 / 26000 / 31500 / 185900**，口径写明 `sum(order_item.amount)` 且排除 `CANCELLED`，末尾有"环比要上周之前的数据"那句；`Skill` 的 `ok` +1。
+- **判据**：三区 + 合计 **128400 / 26000 / 31500 / 185900**，口径写明 `sum(order_item.amount)` 且排除 `CANCELLED`，末尾点明环比要的是紧邻的上一个同长区间（这一版不查）；`Skill` 的 `ok` +1。
 - **坑**：回答"先确认口径"不是失败——是正文规则在起作用，原因是没配人设；直接给没出处的口径才是正文没加载（看 `Skill` 计数是否 404）。**只问口径那版是假红**：数字全对、`Skill` 0 次（票 36 后实测），看着像"正文没加载"，其实是题目没逼它打开。
 
 ### B4 技能里的脚本：跑的是 `Bash`，不是某个工具
@@ -246,11 +246,11 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: a2' \
-  -d '{"text":"派 weekly-digest 写一份上周的周报"}'
+  -d '{"text":"派 weekly-digest 写一份 2026-11-16 到 2026-11-22 的成交周报"}'
 ```
 
 - **判据**：`capacity-triage` 给堆已用/上限 + 百分比、线程数，不给扩容数值；`weekly-digest` 给三区 + 合计 **185900**、环比写"不可比"；`Task` 的 `ok` +1。
-- **坑**：模型自己写 SQL，窗口会偶发错一周（表现"上周 0、本周 185900"）——答 0 就换新用户重跑，连错两次才是检索或工具问题；加 `--logging.level.org.springframework.ai=DEBUG` 能看到 `委派 task 给 Subagent … 它这趟能用的工具是 [...]`，多出一项就是白名单没生效；白名单点了容器里没有的工具启动不失败、第一次委派才点名，`Task` 不在常驻名单，零计数先确认检索有没有把它交出去。
+- **坑**：模型自己写 SQL，区间会偶发写错（表现"这一段 0、另一段 185900"）——答 0 就换新用户重跑，连错两次才是检索或工具问题；加 `--logging.level.org.springframework.ai=DEBUG` 能看到 `委派 task 给 Subagent … 它这趟能用的工具是 [...]`，多出一项就是白名单没生效；白名单点了容器里没有的工具启动不失败、第一次委派才点名，`Task` 不在常驻名单，零计数先确认检索有没有把它交出去。
 
 ### B6 知识库：从一堆文档里挑对，还带出处
 
@@ -463,7 +463,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 - **判据**：换一个没用过的新用户重问，数字仍对；换 `X-Claw4j-Chat-Id` 也是干净会话。
 
 ### D3 种子日期：钉死在 2026-11，问"上周"必然空
-种子日期由 `V10__pin_seed_dates.sql` 写死成 **2026-11-02 ~ 2026-11-23**，不随建库日期变，重灌也不变。所以判据里那些数字（128400 / 74400 / 185900）永远对得上，不用每周重灌。
+种子日期由 `V2__pin_seed_dates.sql` 写死成 **2026-11-02 ~ 2026-11-23**，不随建库日期变，重灌也不变。所以判据里那些数字（128400 / 74400 / 185900）永远对得上，不用每周重灌。
 
 代价要记住：**数据固定在 11 月，"上周/本周"这类相对问法今天已经查不到数**。答"查不到"是数据的事，不是工具坏了——这也是 B1 只问固定区间的原因。
 
@@ -471,7 +471,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ```bash
 docker exec -i claw4j-postgres psql -U claw4j -d <临时库> \
-  < claw4j-example-sales/src/main/resources/db/migration/V10__pin_seed_dates.sql
+  < claw4j-example-sales/src/main/resources/db/migration/V2__pin_seed_dates.sql
 ```
 
 ## E. 故障与降级
@@ -734,7 +734,7 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
 ```bash
 EXEC=$(curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: t1' \
-  -d '{"text":"上周华东区的成交额是多少"}' \
+  -d '{"text":"2026-11-16 到 2026-11-22 华东区的成交额是多少"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["executionId"])')
 curl -s --noproxy '*' "localhost:8080/api/audit?executionId=$EXEC"
 ```
@@ -929,7 +929,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 - **判据**：第二句直接答"杭州、三天"，不再问一遍。
 - **坑**：这段对话**故意不查任何工具**——短记忆这件事只该有一个变量（上文在不在），
-  拿"上周成交额"那种题去问，第一句就可能因检索失败而没数，第二句答不上来时分不清是
+  拿"某段区间成交额"那种题去问，第一句就可能因检索失败而没数，第二句答不上来时分不清是
   记忆坏了还是工具没调到（A1 已经负责工具那件事）；第二句反问"哪次""什么出差" = 历史没进提示词。
 
 ### K2 短期记忆的边界：换会话就是新人
@@ -1007,9 +1007,9 @@ PY
 | 装配（A1/A2） | 只有那个工具/server 能答的一句话 | 计数从 404 变成 1.0 | 模型说"我调了"不算 |
 | 业务工具（B1） | 固定日期：某天到某天，华东成交额 | `128400` / 单日 `74400` + `querySales ok` | 问"上周"必然空——数据钉在 2026-11 |
 | 默认工具（B2） | 四句人话，不点工具名 | 结果对得上 + 对应工具计数涨 | `WebFetch` 先检索；路径不在边界目录 |
-| Skill（B3） | 按 `weekly-sales` 口径给各区 | `185900` + `Skill ok` | 没配人设会先问口径（正常） |
+| Skill（B3） | 按 `weekly-sales` 格式给固定区间的各区 | `185900` + `Skill ok` | 只问"口径"不会打开正文 |
 | 脚本（B4） | 用 `summarize` 处理 `sample.md` | 逐字相同 + `Bash ok` | 限制"三句以内"就验不了逐字 |
-| 子 Agent（B5） | 派 `weekly-digest` 写周报 | 三区 + 185900 + `Task ok` | 白名单缺工具 → 首次委派才失败 |
+| 子 Agent（B5） | 派 `weekly-digest` 写固定区间的周报 | 三区 + 185900 + `Task ok` | 白名单缺工具 → 首次委派才失败 |
 | 知识库（B6） | 条款细节 / 拼两份文档 / 查没有的数 | 数字出处都对；查不到说查不到 | 一个用户只问一条，别让记忆串了 |
 | 问人（B7） | 拿不定的事，让它给两个选项 | 挂起 → `answer` → 出现选项 | 题目没"让我选"就没工具；409=没在等 |
 | 计划（B8） | 三步任务 + "列个待办清单" | `TodoWrite ok` ≥ 2 | 靠"待办"触发词检索进来；吃调用预算 |

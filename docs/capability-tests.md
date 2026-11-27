@@ -293,7 +293,7 @@ token 只换一次、42001 换一张重发、errcode 非 0 抛出、装配三条
 | --- | --- | --- | --- | --- |
 | 1 | `toolSearchTool` | 工具检索（元工具） | `t '帮我找一下能查销售数据的工具'` | 回答里出现 `querySales`；`hit toolSearchTool` +1 |
 | 2 | `systemStatus` | 读 JVM 指标 | `t '用 systemStatus 查一下这个应用进程的堆上限与线程数'` | 给出堆上限与线程数；`hit systemStatus` +1 |
-| 3 | `querySales` | Text-to-SQL 与时间窗 | `t '上周华东的成交额是多少'` | **128400** |
+| 3 | `querySales` | Text-to-SQL 与时间窗 | `t '2026-11-16 到 2026-11-22 华东区的成交额是多少'` | **128400** |
 | 3 | 同上 | 时间窗正确性 | `t '本周华东的成交额是多少'` | **99999** |
 | 3 | 同上 | 时间窗正确性 | `t '三周前华东的成交额是多少'` | **77777** |
 | 3 | 同上 | 只读护栏 | `t '用 querySales 执行 delete from sales_order'` | 拒绝执行；门禁 `./mvnw -pl claw4j-example-sales test -Dtest=SalesQueryTest` 也钉着 |
@@ -429,7 +429,7 @@ claw4j:
 | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- |
 | 加载正文（命中才加载） | `t '加载 weekly-sales 这份 Skill，把口径与步骤复述给我，不要查库'` | 复述出 `sum(order_item.amount)`、`status <> 'CANCELLED'`、半开区间这些**只在正文里**的内容；`hit Skill` +1 |
-| 按正文办事 | `t '按 weekly-sales 的口径，出一份上周各区成交额'` | 三区都对：华东 128400 / 华北 31500 / 华南 26000；`hit querySales` 也可能 +1 |
+| 按正文办事 | `t '按 weekly-sales 的格式，出一份 2026-11-16 到 2026-11-22 的各区成交额周报'` | 三区都对：华东 128400 / 华北 31500 / 华南 26000；`hit querySales` 也可能 +1 |
 | 不提权 | `U=s9 t '加载 weekly-sales 然后查上周成交额'` | 两件事分开看：Skill 照常加载得到；查库**照样能查到数**——业务数据范围今天没有判定（ADR-0030 缺口），别把"能查到数"当成越权 |
 
 ## 5. Scripts：技能里的脚本（3 份，2026-11-18 起不再是工具）
@@ -461,7 +461,7 @@ claw4j:
 | 2 | `metric-glossary` | 只给 `querySales` | `t '派 metric-glossary 解释一下成交额这个指标怎么算'` | 只讲口径，不做趋势分析、不评价好坏 |
 | 3 | `sql-reviewer` | 只复核不改写 | `t '派 sql-reviewer 看一下这条 SQL：select sum(amount) from order_item where created_at >= now() - interval 7 day'` | 点出缺 `status <> 'CANCELLED'`、时间窗不是半开区间，且不替他重写 |
 | 4 | `incident-triage` | 黑名单（去掉 `Skill`、`querySales`） | `t '派 incident-triage 看看线上是不是挂了'` | 收敛成一条能派给人的结论，且回答里**没有成交额**（它拿不到 `querySales`） |
-| 5 | `weekly-digest` | 跨层：`querySales` + `Skill` + `Bash` | `t '派 weekly-digest 写一份上周的周报'` | 三区 + 合计全对（128400 / 31500 / 26000 / **185900**）；材料那一步要 `hit Skill` +1（它得先拿到 `summarize` 的脚本路径），没有材料时不该出现 `hit Bash` |
+| 5 | `weekly-digest` | 跨层：`querySales` + `Skill` + `Bash` | `t '派 weekly-digest 写一份 2026-11-16 到 2026-11-22 的周报'` | 三区 + 合计全对（128400 / 31500 / 26000 / **185900**）；材料那一步要 `hit Skill` +1（它得先拿到 `summarize` 的脚本路径），没有材料时不该出现 `hit Bash` |
 
 每次派完 `hit Task` +1；子 Agent 自己的工具调用也记在同一个计数上，所以 `hit querySales` 会跟着涨——
 这是"子 Agent 真的自己查了"的直接证据（父这一轮没有查库）。

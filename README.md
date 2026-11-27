@@ -82,8 +82,8 @@ curl -s -X POST http://localhost:8080/api/chat \
 # 流式：客户端断开即中断背后的模型调用
 curl -N -X POST http://localhost:8080/api/chat/stream \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: ethan' \
-  -d '{"text":"上周华东的成交额是多少"}'
-# event:chunk / data:上周华东的成交额是 128,400.00…… / event:done
+  -d '{"text":"2026-11-16 到 2026-11-22 华东的成交额是多少"}'
+# event:chunk / data:该区间华东成交额是 128,400.00…… / event:done
 ```
 
 ### 身份与权限

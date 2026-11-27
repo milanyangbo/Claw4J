@@ -55,7 +55,7 @@ class SalesQueryTest {
     @Test
     @DisplayName("固定区间华东成交额一次查全：128400 从种子落到工具返回值")
     void eastRevenueForFixedRangeComesFromTheSeed() {
-        // 种子的日期已经钉死（V10__pin_seed_dates.sql），所以这里也用绝对日期：写「上周」的话，过一周就查不到数了。
+        // 种子的日期已经钉死（V2__pin_seed_dates.sql），所以这里也用绝对日期：写「上周」的话，过一周就查不到数了。
         String answer = tools.querySales("""
                 select sum(oi.amount) as revenue
                 from business.sales_order o

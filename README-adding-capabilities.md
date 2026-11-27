@@ -207,7 +207,7 @@ examples/skills/weekly-sales/SKILL.md
 ```markdown
 ---
 name: weekly-sales
-description: 出一份上周各区成交额周报。用户问“上周卖得怎么样”“各区对比”时用它。
+description: 出一份指定日期区间的各区成交额周报。用户给了起止日期、要“各区对比”时用它。
 ---
 
 ## 口径

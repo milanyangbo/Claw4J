@@ -126,10 +126,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import(ApplicationAssemblyTest.ChannelProbes.class)
 class ApplicationAssemblyTest {
 
-    /** 种子里华东区上周 = 54000 + 74400。这个数只有真查了库才拿得到。 */
-    private static final String EAST_LAST_WEEK = "128400";
+    /** 种子里华东区 2026-11-16 ~ 11-22 是 54000 + 74400。这里只用来证明"没被守卫挡下就会带出业务数字"。 */
+    private static final String BUSINESS_ANSWER = "128400";
 
-    private static final String QUESTION = "上周华东区成交额多少";
+    private static final String QUESTION = "2026-11-16 到 2026-11-22 华东区成交额多少";
 
     /** HTTP 通道那条白名单里的人。默认空名单，所以这个值也要在 {@code datasource} 里登记。 */
     private static final String GUARD_USER = "assembly-guard";
@@ -280,7 +280,7 @@ class ApplicationAssemblyTest {
         assertThat(answer)
                 .as("这条消息应当在模型之前被挡下，回答是配置里那句固定答复：%s", answer)
                 .contains(GuardProperties.DEFAULT_FAILURE_RESPONSE)
-                .doesNotContain(EAST_LAST_WEEK);
+                .doesNotContain(BUSINESS_ANSWER);
     }
 
     @Test
