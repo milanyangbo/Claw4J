@@ -1,0 +1,1 @@
+{"chatId":"http:td2","text":"Total tool call limit (6) exceeded for this turn. No further tool calls are allowed.","executionId":"770cb5ee-b5e2-44b9-ab43-2f038311252d"}

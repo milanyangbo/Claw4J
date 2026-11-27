@@ -1,0 +1,1 @@
+{"chatId":"http:a1b","text":"**上周（2026-11-16 至 2026-11-22）华东区成交额：128,400.00 元**，共 2 笔订单。\n\n口径：`sum(order_item.amount)`，已排除 `status = 'CANCELLED'` 的订单；时间窗为半开区间 `[上周一, 本周一)`；区域按代码 `east` 取。","executionId":"c4bd8727-5b41-449d-b319-470303f34a6e"}
