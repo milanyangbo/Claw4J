@@ -71,6 +71,36 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(measured["model"], 0.0, "有候选的那一条它调了，模型口径是 0")
 
 
+class ReviewTableTest(unittest.TestCase):
+    """第三个口径（票 29）：BFCL 判"有没有解出函数调用"，人工表判"用户会不会觉得它在干活"。"""
+
+    def test_real_table_parses(self):
+        table = run_live.load_review()
+        self.assertGreater(len(table), 30, "复核表至少该覆盖首版的 48 条误调")
+        self.assertTrue(set(table.values()) <= {"reasonable", "off_target"},
+                        "verdict 只有两档：多一档就没人再看第二遍")
+        self.assertIn("irrelevance_17", table, "问「现在几点」那一条必须在表里")
+
+    def test_missing_file_is_not_a_crash(self):
+        self.assertEqual(run_live.load_review("/nonexistent/review.yaml"), {},
+                         "复核表是可选的诊断输入：缺了报「没复核」，不能让主流程挂")
+
+    def test_unreviewed_calls_are_not_free(self):
+        results = [{"id": "seen-ok", "calls": ["world_clock"]},
+                   {"id": "seen-bad", "calls": ["Bash"]},
+                   {"id": "never-seen", "calls": ["Bash"]}]
+        table = {"seen-ok": "reasonable", "seen-bad": "off_target"}
+        measured = run_live.score(results, table)
+        self.assertEqual(measured["bfcl"], 0.0, "三条全都调了工具，BFCL 口径是 0")
+        self.assertEqual(measured["unreviewed"], 1, "没复核过的那一条要单独报出来")
+        self.assertAlmostEqual(measured["reasonable"], 1 / 3,
+                               msg="未复核的一律算不合理：靠「没看过」抬高分数比压低更糟")
+
+    def test_no_table_means_no_number(self):
+        measured = run_live.score([{"id": "a", "calls": ["Bash"]}])
+        self.assertIsNone(measured["reasonable"], "没复核表就不给这个数，别默认成 100%")
+
+
 class SideEffectListTest(unittest.TestCase):
 
     def test_write_list_has_no_read_only_tool(self):

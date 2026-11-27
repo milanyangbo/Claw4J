@@ -53,8 +53,9 @@ CATEGORY_ORDER = [
     "weather", "media", "food", "culture", "money", "health", "books", "travel",
 ]
 CATEGORY_MEANING = {
-    "base": "基座工具（Read/Grep/Glob/Bash/WebFetch/TodoWrite）。它们现在常驻（票 10），"
-            "检索掉分不影响线上，但它是「索引还能不能工作」的底线",
+    "base": "基座工具（Read/Grep/Glob/Bash/WebFetch/TodoWrite）。票 29 之后只有前三个常驻，"
+            "后三个要命中触发词才进（`rules` 带 `gate: true`）。检索掉分不影响线上，"
+            "但它是「索引还能不能工作」的底线",
     "business": "中文问法 × 中文描述。掉分说明索引本身坏了，是最不该掉的一档",
     "zh-en": "中文问法 × 英文描述。关键字那一路几乎全空，只有向量那一路能看",
     "weather": "天气三问：现在、未来、空气。这一档考的是「冷不冷」和「能不能跑步」"

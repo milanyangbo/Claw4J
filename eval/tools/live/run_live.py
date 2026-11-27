@@ -114,11 +114,39 @@ def ask(item, meta, api_key, retries=3):
     return {"id": item["id"], "calls": [], "error": str(last)}
 
 
-def score(results):
-    """三个数都从**题**算起，不从调用次数算起。
+REVIEW_PATH = os.path.join(HERE, "review.yaml")
+
+
+def load_review(path=REVIEW_PATH):
+    """读人工复核表：{题 id: verdict}。
+
+    不引 PyYAML：评测环境只有标准库 + ir_measures，为六行结构加一个依赖不值。
+    文件缺失返回空表——这个分数是诊断项，缺了不该让主流程挂；但报告里会明说"没复核"。
+    """
+    verdicts = {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            current = None
+            for line in handle:
+                text = line.strip()
+                if text.startswith("- id:"):
+                    current = text.split(":", 1)[1].strip()
+                elif text.startswith("verdict:") and current:
+                    verdicts[current] = text.split(":", 1)[1].strip()
+    except FileNotFoundError:
+        return {}
+    return verdicts
+
+
+def score(results, review=None):
+    """所有数都从**题**算起，不从调用次数算起。
 
     `empty` 是"检索一个候选都没给"的题：模型根本没得调，必然算作没调用。
     把它混在分母里会让 `bfcl` 虚高，所以另给一个 `model`——只在"有候选"的题里看模型的决定。
+
+    `reasonable` 是第三个口径（票 29）：BFCL 判"有没有解出函数调用"，可我们的目录里
+    真有工具能答那些问句（问几点→world_clock）。这里按人工复核表算"用户会不会觉得它在干活"。
+    **没复核到的误调一律算成不合理的**——宁可压低估，也不要靠"没看过"抬高。
     """
     total = len(results)
     empty = sum(1 for row in results if row.get("empty_candidates"))
@@ -138,6 +166,11 @@ def score(results):
         "model": (with_candidates - len([row for row in called if not row.get("empty_candidates")]))
         / with_candidates if with_candidates else 0.0,
         "production": (total - len(side)) / total if total else 0.0,
+        "reasonable": None if review is None else
+        (total - len([row for row in called if review.get(row["id"]) != "reasonable"])) / total
+        if total else 0.0,
+        "unreviewed": None if review is None else
+        len([row for row in called if row["id"] not in review]),
     }
 
 
@@ -156,7 +189,7 @@ def report(results, measured, meta):
         % (meta.get("config"), meta.get("top_k"), meta.get("tool_count")),
         "- 模型：%s" % MODEL,
         "",
-        "## 两个数",
+        "## 三个口径",
         "",
         "| 分数 | 当前 | 线 | 量的是什么 |",
         "| --- | --- | --- | --- |",
@@ -166,6 +199,11 @@ def report(results, measured, meta):
         % (measured["model"] * 100, measured["with_candidates"]),
         "| `production`（没调到有副作用的） | %.2f%% | 100%% | 真的会造成后果的那一类 |"
         % (measured["production"] * 100),
+        measured["reasonable"] is None
+        and "| `reasonable`（人工复核：用户会不会觉得它在干活） | — | — | 没找到 review.yaml |"
+        or ("| `reasonable`（人工复核：用户会不会觉得它在干活） | %.2f%% | — | 逐条看过 `review.yaml`；"
+            "尚待复核的误调 %d 条，一律算不合理 |"
+            % (measured["reasonable"] * 100, measured["unreviewed"])),
         "",
         "调用了工具的题：%d / %d；其中改外部世界（%s）的：%d 条；"
         "执行本地命令（`Bash`）的：%d 条。"
@@ -236,7 +274,7 @@ def main(argv):
             for row in results:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    measured = score(results)
+    measured = score(results, load_review())
     os.makedirs(REPORTS, exist_ok=True)
     with open(os.path.join(REPORTS, "report.md"), "w", encoding="utf-8") as handle:
         handle.write(report(results, measured, meta))
@@ -250,6 +288,11 @@ def main(argv):
     print("  model       %.2f%%  (诊断项，分母是 %d 条有候选的题)"
           % (measured["model"] * 100, measured["with_candidates"]))
     print("  production  %.2f%%  (线 100%%)" % (measured["production"] * 100))
+    if measured["reasonable"] is None:
+        print("  reasonable   —      (没找到 review.yaml)")
+    else:
+        print("  reasonable  %.2f%%  (人工复核；尚有 %d 条误调未复核，按不合理计)"
+              % (measured["reasonable"] * 100, measured["unreviewed"]))
     print("报告：%s" % os.path.join(REPORTS, "report.md"))
 
     if measured["errors"] * 2 > measured["total"]:

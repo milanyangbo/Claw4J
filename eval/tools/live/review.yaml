@@ -18,8 +18,9 @@
 # 这一份是**输入**，不是产物：改 verdict 分数就变，所以每次改都要能被看见。
 # 结果里的题不在这里（新题或换了模型）一律算「未复核」，不计入这个分数，单独报数量。
 #
-# 2026-11-27 首版：48 条误调里 27 条 reasonable、21 条 off_target（生产口径 91.25%，
-# BFCL 口径 80.00%）。复核人：与 Claude 对跑，逐条看问句与工具描述。
+# 2026-11-27 首版（无闸，48 条误调）：27 条 reasonable、21 条 off_target，生产口径 91.25%。
+# 同日落地准入闸之后重跑（45 条误调），新增的 11 条在这里补了判定；上一版里已经不再误调的
+# 条目**保留**——这张表是判据库，不是某一跑的快照，下次同一个 id 又误调时不用重判。
 
 criterion: 用户会觉得它在干活（reasonable），还是在瞎搞（off_target）
 reviewed_at: 2026-11-27
@@ -172,3 +173,39 @@ cases:
   - id: irrelevance_83
     verdict: off_target
     why: 问当前利率，fx_rates 是汇率，不是利率
+
+  # ---- 2026-11-27 第二版补判（落地准入闸之后新出现的 11 条误调）-----------------
+
+  - id: irrelevance_33
+    verdict: off_target
+    why: 让识别基因序列 "ATCG"，Grep 是搜文件内容
+  - id: irrelevance_89
+    verdict: off_target
+    why: 问租客的法律权利，Bash 不是法律顾问
+  - id: irrelevance_115
+    verdict: reasonable
+    why: 问波士顿到某地要多久，city_distance 能按直线距离估
+  - id: irrelevance_116
+    verdict: reasonable
+    why: 让推荐一部电影，tv_show_search 能搜剧集
+  - id: irrelevance_121
+    verdict: reasonable
+    why: 查运动神经元疾病的信息，WebFetch 抓网页是在干活
+  - id: irrelevance_152
+    verdict: off_target
+    why: 问哪种岩石适合某用途，art_search 查的是艺术品
+  - id: irrelevance_177
+    verdict: off_target
+    why: 问格莱美年度专辑得主，该用 artist_lookup/music_search，却调了 Bash
+  - id: irrelevance_186
+    verdict: off_target
+    why: 问足球队排名，tv_show_search 是剧集
+  - id: irrelevance_194
+    verdict: off_target
+    why: 问国际象棋白方最佳走法，AskUserQuestionTool 是反问用户
+  - id: irrelevance_206
+    verdict: off_target
+    why: 问打龙用什么角色，Skill 是翻技能文档
+  - id: irrelevance_212
+    verdict: reasonable
+    why: 问煮鸡蛋的最佳方法，recipe_by_ingredient 是菜谱类

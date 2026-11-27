@@ -1,7 +1,7 @@
 # ADR-0039：常驻工具分层——只读的留下，通用工具改成"点名才给"
 
 **日期**：2026-11-27
-**状态**：accepted（票 29 落地；退场条件见文末）
+**状态**：accepted（票 29 两批都落地）；验收线待修订，见文末「复核」
 
 ## 背景
 
@@ -50,3 +50,60 @@ WebFetch 6、Skill 4。
 3. `base` 档 R@5 低于 **0.500**。
 
 任一条成立就回滚，不在这里继续加码。
+
+## 复核（2026-11-27 12:35，两批都落地之后）
+
+落地了两批：`pinned` 三个 + `rules` 带 `gate: true`（同一次改配置），以及一个
+`GatedToolIndex`（未命中就剔除、不足三个补位）。240 条重跑：
+
+| 口径 | 改前 | 改后 | 线 |
+| --- | --- | --- | --- |
+| `bfcl`（一条都没调） | 76.67% | **81.25%** | 84% ❌ |
+| 误调条数 | 56 | **45** | — |
+| `production`（没改外部世界） | 100% | **100%** | 100% ✅ |
+| `reasonable`（人工复核） | — | **93.33%** | — |
+
+通用工具那一路是干净地降下来的（**26 → 4 条**）：`WebFetch` 6→**0**、
+`AskUserQuestionTool` 7→**0**、`Bash` 9→**2**。`Skill` 没进闸（它是条件装配的，
+写进默认 yml 只会每轮 WARN），撤掉它的规则之后反而从 80.00% 升到 81.25%。
+
+### 退场条件第 1 条成立（84% 没到），第 2、3 条不成立
+
+按上面那节写的规则，`bfcl` 没到 84% 就该回滚。**但复核 48 条之后，我认为该改的是验收线，
+不是这次改动**——理由必须由你判断，所以先摆事实：
+
+**1. 45 条里 29 条，我们的工具真能做那件事。**
+
+- 「What is the current time in New York City?」→ `world_clock`（6 条都是问时间/时区/时差）
+- 「Find the distance in kilometers from San Francisco to Los Angeles.」→ `city_distance`
+- 「What's the recipe for lasagna?」→ `recipe_by_ingredient`
+- 「Who created the sculpture 'The Thinker'?」→ `art_search`
+- 「When will be sunset in Beijing today?」→ `sun_times`
+- 「How is the air quality in Los Angeles right now?」→ `air_quality`
+
+BFCL 判据是**有没有解出函数调用**，而它那道题给的唯一函数与问句毫不相干。所以只要模型
+在我们这 58 个工具的候选里挑了一个，BFCL 就判错——哪怕用户会觉得它干得对。
+
+**2. 剩下 16 条才是真的瞎搞**：问瑜伽垫→`food_search`、问网球排名→`world_clock`、
+问曼联名单→`fx_rates`、让算标准差→`Read`、问股票新闻→`Task`。
+
+逐条判定与理由在 `eval/tools/live/review.yaml`（可改，改完分数就变；表里也保留了上一版
+已经不再误调的条目，它是判据库不是快照）。所以第三个口径 `reasonable` = (240−16)/240 = **93.33%**。
+
+**3. 一个反直觉的机制发现，它也修正了本 ADR 的立论。**
+
+闸之后 236 道题的候选从 5 个降到 **3** 个，而误调只少了 11 条。因为模型面对更短的候选
+**改选了剩下的那个"沾边"的**：`world_clock` 7、`recipe_by_ingredient` 4、`city_distance` 3。
+所以"候选给得太客气"只对**通用工具**成立；对专用工具，"少给"反而让它别无选择。
+84% 那条线实际上在奖励"把真能干的工具藏起来"，这不是我们要的东西。
+
+### 建议（待确认，没有自行生效）
+
+1. 验收线改成双口径：`reasonable` ≥ 90%（生产合理性）+ `bfcl` 不低于 80%（不许倒退），
+   不再要求 `bfcl` 到 84%。实测两个数分别是 93.33% 与 81.25%，都过。
+2. 保留这次改动：它把通用工具那一路降得很干净（WebFetch 6→0），而这是本 ADR 真正要的东西。
+3. 16 条真瞎搞里，`world_clock`/`city_distance` 这类"同域沾边"要靠 rerank 或描述边界，
+   不再靠减候选——那是票 30 的活。
+
+**如果不同意第 1 条，就按上面的退场条件回滚**：`pinned` 改回六个、`rules` 清空、
+`GatedToolIndex.of` 自然不包壳（它只在有 `gate: true` 时才生效）。

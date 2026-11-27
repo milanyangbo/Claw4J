@@ -21,7 +21,13 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
+import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.PropertySource;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -158,6 +164,12 @@ class LiveCandidatesExportTest {
     @Test
     @DisplayName("每道题都有候选、候选都带 parameters，且 system_suffix 取的是线上那一份")
     void export() throws IOException {
+        // 量具自检：配置里一条闸都没有的话，这一跑量的就是票 28 那一版（没有闸），
+        // 而分数"看着没变"——那种"怎么改都没效果"最难查，所以在这里先断掉。
+        assertThat(appYmlRules())
+                .as("线上 yml 里没有 gate 规则：这张量具退化成票 28 那一版，量不出准入的效果")
+                .anyMatch(ToolSearchProperties.Rule::gate);
+
         List<ToolCallback> tools = mcpBackedCatalogue();
         Map<String, ToolCallback> byName = tools.stream()
                 .collect(Collectors.toMap(callback -> callback.getToolDefinition().name(),
@@ -198,6 +210,10 @@ class LiveCandidatesExportTest {
         meta.put("tool_count", tools.size());
         meta.put("system_suffix", ToolSearch.SYSTEM_SUFFIX);
         meta.put("empty_candidates", empty);
+        meta.put("gate_rules", appYmlRules().stream()
+                .filter(ToolSearchProperties.Rule::gate)
+                .map(rule -> rule.tools().toString())
+                .toList());
         meta.put("generated_at", java.time.OffsetDateTime.now().toString());
 
         Path out = TestPaths.repositoryRoot().resolve("eval/tools/live/candidates.json");
@@ -246,9 +262,34 @@ class LiveCandidatesExportTest {
         }
     }
 
+    /**
+     * 从**线上那份** {@code application.yml} 读准入规则，而不是在这里抄一份。
+     *
+     * <p>抄一份的后果票 24 已经吃过：测试里那份和线上那份各自演化，量出来的分与线上无关。
+     * 这里只读其中一段（{@code claw4j.advisor.tool-search.rules}），不把整份 yml 导进上下文——
+     * 那会把数据源、Redis、模型 key 一起拖进来，而这台量具只需要一张触发词表。
+     *
+     * <p>读不到就抛，不退回空表：空表会让这一层悄悄退化成票 28 那一版（没有闸），
+     * 而分数看起来"没变"——那种"怎么改都没效果"最难查。
+     */
+    private static List<ToolSearchProperties.Rule> appYmlRules() {
+        Path yml = TestPaths.repositoryRoot().resolve("claw4j-app/src/main/resources/application.yml");
+        try {
+            List<PropertySource<?>> loaded = new YamlPropertySourceLoader()
+                    .load("application", new FileSystemResource(yml));
+            Binder binder = new Binder(ConfigurationPropertySources.from(loaded));
+            return binder.bind("claw4j.advisor.tool-search.rules",
+                            Bindable.listOf(ToolSearchProperties.Rule.class))
+                    .orElse(List.of());
+        }
+        catch (IOException failure) {
+            throw new IllegalStateException("读不到 " + yml + "：这张量具要和线上同一份配置才叫量具", failure);
+        }
+    }
+
     private ToolIndex hybrid() {
         ToolSearchProperties properties = new ToolSearchProperties(ToolSearchProperties.Index.HYBRID, TOP_K, null,
-                null, 0, null, Map.of(), new ToolSearchProperties.Hybrid(KEYWORD_WEIGHT), null, null);
+                null, 0, null, Map.of(), new ToolSearchProperties.Hybrid(KEYWORD_WEIGHT), null, appYmlRules());
         VectorStore vectorStore = ToolVectorStore.create(this.jdbc, this.embeddings, 1024);
         return ToolSearch.index(properties, vectorStore, ToolCategories.of(Map.of()), this.translator);
     }
