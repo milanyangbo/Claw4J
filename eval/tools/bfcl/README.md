@@ -22,7 +22,16 @@
 ./eval/tools/bfcl/run.sh --smoke             # 6 条冒烟，十来秒
 ./eval/tools/bfcl/run.sh --from-score        # 不调模型，只重算分与报告
 ./eval/tools/bfcl/run.sh --update-baseline   # 确认改好了，把分数钉成新基线
+
+# 提示词实验台（票 30）：只改 system，其余不变，看 irrelevance / simple_python 怎么动
+./eval/tools/bfcl/run.sh --with-prompt                        # 用 system-prompt.txt（代码导出的真值）
+./eval/tools/bfcl/run.sh --prompt-file /tmp/try1.txt          # 临时换一份做对照
 ```
+
+`--with-prompt` 读的 `system-prompt.txt` **不是手写的**：它由 `SystemPromptExportTest`
+从 `ToolSearch.SYSTEM_SUFFIX` 导出。改了提示词要先跑那个测试，否则量的是上一版。
+带提示词的产物落在 `prompt-run/`（另一个 `BFCL_PROJECT_ROOT`），与裸跑互不覆盖，
+也不跟裸跑的基线比——两档不是一条线。
 
 - 唯一要的环境变量：`DEEPSEEK_API_KEY`。缺了退出 2（不是跑出 0 分）。
 - 退出码：`0` 达标（绝对门与回归门都过）；`1` 有不达标或回归项；`2` 环境没搭起来
@@ -99,6 +108,25 @@
 补丁只补这一处：父类缺 `api_key` 且确实是 DeepSeek 注册项时，用 `DEEPSEEK_API_KEY` 顶上。
 **升级 `bfcl-eval` 后要先看一眼还需不需要**——判据是 `--smoke` 能不能直接跑通；
 不需要了就把 `patch/` 删掉。`boot.py` 在目标函数消失时会打印提示，不会静默通过。
+
+## 提示词实验台：四个档实测（票 30，2026-11-27）
+
+同一批 640 题、同一个模型、同一判据，只改 system：
+
+| 注入内容 | `irrelevance` | `simple_python` |
+| --- | --- | --- |
+| 不注入（裸跑） | **77.08%** | 95.50% |
+| 完整四句 `SYSTEM_SUFFIX` | 72.08% | 94.50% |
+| 只「取不到就直接说明…」 | 75.83% | 94.75% |
+| 只「没有能用的工具就直接说明…」 | 76.67% / 77.08%（跑两次） | 94.75% |
+
+**结论是负面的：在当前模型上，挂提示词是净损失。** 详见票 30 的「复核」。
+两个坑值得记住：
+
+1. **`input_token_count` 不能用来判断提示词进没进去**——它不含 system 部分，注入前后完全一样。
+   判据只能是「逐题结果与裸跑有没有差异」。
+2. **票 24 记的 89.58% 复现不了**（同文本现在 184/185）。裸跑 240 条逐题与当时完全一致，
+   所以变的是模型对 system 的遵循，不是数据也不是判据。**这套读数会随外部模型漂。**
 
 ## 现在这一轮的数字
 

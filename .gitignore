@@ -58,12 +58,7 @@ eval/tools/bfcl/.file_locks/
 eval/tools/bfcl/reports/*
 !eval/tools/bfcl/reports/.gitkeep
 eval/tools/bfcl/__pycache__/
+# `--with-prompt` 那档的产物（票 30）：与裸跑分开放，不入库。
+eval/tools/bfcl/prompt-run/
 eval/tools/bfcl/patch/__pycache__/
 
-# 真实链路评测（票 28）：问句清单与脚本入库，跑出来的候选与逐题结果不入库。
-# `candidates.json` 是导出产物（换个配置就换一份），`results.jsonl` 是模型输出——都是产物。
-eval/tools/live/candidates.json
-eval/tools/live/results.jsonl
-eval/tools/live/reports/*
-!eval/tools/live/reports/.gitkeep
-eval/tools/live/__pycache__/

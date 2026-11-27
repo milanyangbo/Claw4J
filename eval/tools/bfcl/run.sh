@@ -12,6 +12,10 @@
 #   ./eval/tools/bfcl/run.sh --smoke             # 6 条冒烟，几秒钟，改脚本时先跑这个
 #   ./eval/tools/bfcl/run.sh --from-score        # 不调模型，只按当前门槛重算分与报告
 #   ./eval/tools/bfcl/run.sh --update-baseline   # 确认改好了，把分数钉成新基线
+#   ./eval/tools/bfcl/run.sh --with-prompt       # 挂上 ToolSearch.SYSTEM_SUFFIX 再跑（提示词实验台）
+#
+# --with-prompt 用的是 `system-prompt.txt`，它由 SystemPromptExportTest 从
+# `ToolSearch.SYSTEM_SUFFIX` 导出。改了提示词要先跑那个测试，否则量的是上一版。
 #
 # 退出码：0 达标（绝对门与回归门都过）；1 有不达标或回归项（看报告「判定」表的结论列）；
 #         2 环境没搭起来（缺 key / 缺依赖）。
@@ -36,14 +40,52 @@ tmpdir="$here/tmpdir"
 
 smoke=0
 from_score=0
+with_prompt=0
+prompt_override=""
 passthrough=()
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --smoke) smoke=1 ;;
         --from-score) from_score=1 ;;
-        *) passthrough+=("$arg") ;;
+        --with-prompt) with_prompt=1 ;;
+        # 临时换一份提示词做对照（不碰 system-prompt.txt，那个是代码导出的真值）。
+        # 隐含 --with-prompt：传了这个就是想跑带提示词那档，只是换一份。
+        --prompt-file)
+            if [ $# -lt 2 ]; then
+                echo "--prompt-file 后面要跟一个路径"
+                exit 2
+            fi
+            prompt_override="$2"
+            with_prompt=1
+            shift ;;
+        *) passthrough+=("$1") ;;
     esac
+    shift
 done
+
+# 模型名不能改：BFCL 只认 MODEL_CONFIG_MAPPING 里注册过的名字，加个后缀它直接
+# `ValueError: Unknown model_name`。分离两档产物要用它自己的 BFCL_PROJECT_ROOT
+# （它从那个根往下读写 test_case_ids / result / score），模型名保持不动。
+model="DeepSeek-V3.2-Exp-FC"
+prompt_file="$here/system-prompt.txt"
+if [ -n "$prompt_override" ]; then
+    prompt_file="$prompt_override"
+fi
+prompt_root=""
+if [ "$with_prompt" -eq 1 ]; then
+    if [ ! -s "$prompt_file" ]; then
+        echo "缺 ${prompt_file}：先跑 ./mvnw -o -Peval -pl claw4j-eval -am test -Dtest=SystemPromptExportTest"
+        echo "它是从 ToolSearch.SYSTEM_SUFFIX 导出的真值，不手写。"
+        exit 2
+    fi
+    # 必须是绝对路径：bfcl 会在这个根上再拼 result / score，相对路径会被拼两次。
+    prompt_root="$PWD/$here/prompt-run"
+    /bin/mkdir -p "$prompt_root"
+    export BFCL_PROJECT_ROOT="$prompt_root"
+    export CLAW4J_BFCL_SYSTEM_PROMPT_FILE="$PWD/$prompt_file"
+    echo "== 挂上系统提示（${prompt_file}，$(wc -c < "$prompt_file" | tr -d ' ') 字节）=="
+    echo "   产物落在 ${prompt_root}，与裸跑那档互不覆盖"
+fi
 
 # 缺 key 是失败，不是跳过（与 eval/tools/retrieval/run.sh、eval/rag/run.sh 同一条规矩）。
 if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
@@ -138,14 +180,14 @@ if [ "$from_score" -eq 0 ]; then
     if [ "$smoke" -eq 1 ]; then
         echo "== 选择层 1/3：冒烟 6 条（读 test_case_ids_to_generate.json）=="
         "$venv/bin/python" "$here/boot.py" generate \
-            --model DeepSeek-V3.2-Exp-FC \
+            --model "$model" \
             --test-category simple_python,irrelevance \
             --run-ids || exit $?
     else
         echo "== 选择层 1/3：生成（simple_python + irrelevance，全量 640 条）=="
         echo "   640 条大约一分半到十分钟（看并发）、1 元上下。只想过一遍脚本就加 --smoke。"
         "$venv/bin/python" "$here/boot.py" generate \
-            --model DeepSeek-V3.2-Exp-FC \
+            --model "$model" \
             --test-category simple_python,irrelevance \
             --num-threads "${BFCL_THREADS:-8}" || exit $?
     fi
@@ -153,7 +195,7 @@ if [ "$from_score" -eq 0 ]; then
     # --partial-eval：我们只跑了两档，不写它的话 BFCL 会因为"其他类别没有结果"判失败。
     echo "== 选择层 2/3：按它的判据打分（AST 比对）=="
     "$venv/bin/python" "$here/boot.py" evaluate \
-        --model DeepSeek-V3.2-Exp-FC \
+        --model "$model" \
         --test-category simple_python,irrelevance \
         --partial-eval || exit $?
 else
@@ -164,6 +206,7 @@ if [ "$smoke" -eq 1 ]; then
     # 6 条没法跟 640 条的基线比，所以只出报告、不判定。
     echo "== 选择层 3/3：冒烟报告（不判回归）=="
     "$venv/bin/python" "$here/report.py" \
+        --model "$model" \
         --score-dir "$smoke_root/score" \
         --reports-dir "$smoke_root/reports" \
         --no-baseline || exit $?
@@ -172,8 +215,15 @@ if [ "$smoke" -eq 1 ]; then
 fi
 
 echo "== 选择层 3/3：判定与报告 =="
-if [ ${#passthrough[@]} -gt 0 ]; then
-    "$venv/bin/python" "$here/report.py" "${passthrough[@]}"
+# 带提示词那档不跟裸跑基线比：baseline.json 只有一条线（裸跑那条），拿它判"回归"
+# 会得出"挂了提示词就回归了 15 个点"这种没有意义的结论。实验档只看绝对门。
+if [ "$with_prompt" -eq 1 ] && [ ${#passthrough[@]} -eq 0 ]; then
+    "$venv/bin/python" "$here/report.py" --model "$model" \
+        --score-dir "$prompt_root/score" \
+        --reports-dir "$prompt_root/reports" \
+        --no-baseline
+elif [ ${#passthrough[@]} -gt 0 ]; then
+    "$venv/bin/python" "$here/report.py" --model "$model" "${passthrough[@]}"
 else
-    "$venv/bin/python" "$here/report.py"
+    "$venv/bin/python" "$here/report.py" --model "$model"
 fi
