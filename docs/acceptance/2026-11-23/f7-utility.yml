@@ -1,5 +1,0 @@
-claw4j:
-  model:
-    roles:
-      utility:
-        primary: qwen/qwen-plus

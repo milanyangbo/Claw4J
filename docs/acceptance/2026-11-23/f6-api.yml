@@ -1,5 +1,0 @@
-claw4j:
-  model:
-    providers:
-      deepseek:
-        api: gemini

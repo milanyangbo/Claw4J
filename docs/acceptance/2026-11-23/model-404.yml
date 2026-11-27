@@ -1,7 +1,0 @@
-claw4j:
-  model:
-    providers:
-      deepseek:
-        models:
-          - id: no-such-model-xyz
-            context-window: 65536

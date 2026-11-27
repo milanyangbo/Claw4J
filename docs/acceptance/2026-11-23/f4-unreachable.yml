@@ -1,5 +1,0 @@
-claw4j:
-  model:
-    providers:
-      deepseek:
-        base-url: http://127.0.0.1:9

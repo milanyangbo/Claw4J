@@ -1,6 +1,0 @@
-event:chunk
-data:这个部署没有开提权（claw4j.tools.elevated.enabled=false），命令只能跑在配置好的位置。
-
-event:done
-data:
-

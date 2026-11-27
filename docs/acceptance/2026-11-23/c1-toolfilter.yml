@@ -1,9 +1,0 @@
-claw4j:
-  capability:
-    mcp:
-      servers:
-        java-http:
-          transport: http
-          url: http://127.0.0.1:8082
-          tool-filter:
-            exclude: [simulateSlowCall]
