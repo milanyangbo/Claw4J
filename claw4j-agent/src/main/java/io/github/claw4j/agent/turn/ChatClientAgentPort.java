@@ -23,11 +23,13 @@ import io.github.claw4j.domain.untrusted.OutboundText;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.model.tool.ToolCallLimitExceededException;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -66,6 +68,15 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
     public static final String TOOL_CALL_CAPPED =
             "这一步做了太多次，我先停下。请把要求说得更具体一些（查哪张表、哪段时间），"
                     + "我再试一次。";
+
+    /**
+     * 框架那句超限原文的稳定片段（小写后比）。
+     *
+     * <p>{@code ToolCallLimits.check} 只产两句：{@code Tool call limit (3) exceeded for tool 'X'…}
+     * 与 {@code Total tool call limit (6) exceeded for this turn…}，两句都含这一截。用它做兜底，
+     * 是因为只剩这一条能把「用户拿到英文报错」挡住；它是最后一道，不是主判据。
+     */
+    private static final String CAPPED_MESSAGE_MARK = "tool call limit (";
 
     /** 会话定位（两个键的形状）。 */
     private final SessionAddress address;
@@ -603,19 +614,47 @@ public class ChatClientAgentPort implements AgentPort, TaskLauncher {
      * （{@code ToolCallLimitBehavior.THROW}），它把超限变成一代回答，话是框架的英文原话。这里是唯一
      * 既知道「这是一次回答」又知道「它撞的是哪条线」的地方，换掉比让用户去读一句框架内部的话合适。
      *
-     * <p>判定看 {@code finishReason} 这个公开常量，不做文本匹配：拿话术去认「这是不是超限」会在框架
-     * 改一次措辞之后静默失效。
+     * <p><b>三条判定，按顺序试，命中哪条打进 debug 日志</b>（票 33）：只看 {@code finishReason}
+     * 实测不够——上线后用户拿到的仍是框架那句英文，说明超限那一代回答的元数据在某条链路上没回来。
+     * 于是补两条：框架只在超限时挂 {@code METADATA_PARTIAL_TOOL_RESPONSES}，以及它
+     * {@code ToolCallLimits.check} 生成的那两句原文。第三条是文本匹配，本就脆弱（框架改措辞即失效），
+     * 单独留一条日志是为了下次能从「命中的是哪条」看出该删哪条，而不是靠猜。
      *
      * @param response 模型响应，可为 null
      * @return 回答文本；撞上限时换成 {@link #TOOL_CALL_CAPPED}
      */
     private static String cappedText(ChatResponse response) {
         String text = textOf(response);
-        boolean capped = response != null && response.getResult() != null
-                && response.getResult().getMetadata() != null
-                && ToolCallLimitExceededException.FINISH_REASON
-                .equals(response.getResult().getMetadata().getFinishReason());
-        return capped ? TOOL_CALL_CAPPED : text;
+        String hit = cappedBy(response, text);
+        if (hit == null) {
+            return text;
+        }
+        log.debug("撞上工具调用上限（判定依据 {}），把框架那句换掉：原文={}", hit, text);
+        return TOOL_CALL_CAPPED;
+    }
+
+    /**
+     * 这一代回答是不是「超限」那一代。
+     *
+     * @param response 模型响应，可为 null
+     * @param text 已取出的文本，可为 null
+     * @return 命中的判定名；不是超限时为 null
+     */
+    private static String cappedBy(ChatResponse response, String text) {
+        if (response == null || response.getResult() == null) {
+            return null;
+        }
+        ChatGenerationMetadata metadata = response.getResult().getMetadata();
+        if (metadata != null) {
+            if (ToolCallLimitExceededException.FINISH_REASON.equals(metadata.getFinishReason())) {
+                return "finishReason";
+            }
+            if (metadata.get(ToolCallLimitExceededException.METADATA_PARTIAL_TOOL_RESPONSES) != null) {
+                return "partialToolResponses";
+            }
+        }
+        return text != null && text.toLowerCase(Locale.ROOT).contains(CAPPED_MESSAGE_MARK)
+                ? "message" : null;
     }
 
     /**

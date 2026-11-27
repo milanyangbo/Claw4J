@@ -198,7 +198,7 @@ claw4j:
       # 0/5；常驻之后同一句就通。代价是每轮多六段描述（约 1–2k token），固定值、不随工具集增长。
       #
       # **不带条件装配的名字**：Write / Edit（默认关）、WebSearch（要 key）、Task / TaskOutput、
-      # AskUserQuestionTool、Skill、Memory*、BashOutput / KillShell——写进来只会在没装它的部署上
+      # Skill、Memory*、BashOutput / KillShell——写进来只会在没装它的部署上
       # 每次启动留一条"不在这一轮清单里"的告警，而它们都不是每轮都可能用。
       # 名字来自库的 @Tool(name=…)，与 AgentToolsAutoConfiguration.READ_ONLY_TOOL_NAMES、
       # ExecAutoConfiguration.TOOL_NAMES 是同一批；改名单要连着那两处一起看（那条断言会红）。
@@ -212,7 +212,17 @@ claw4j:
       #
       # Read / Grep / Glob 留下的理由：只读、几乎每个任务都要、而且没有"凑合"的余地——找不到文件
       # 就是找不到，不会像 Bash 那样顺手算出个答案。
-      pinned: [Read, Grep, Glob]
+      #
+      # 2026-11-27（票 33 / ADR-0043）：AskUserQuestionTool 与 TodoWrite 回常驻。它们不是能力、是**控制流**
+      # （这一轮要不要停下来等人、先把步骤记下来），模型需要它们的时候正在组织回答，不会先去检索
+      # 「有没有一个反问工具」；而闸的判据是模型自己改写的检索词，用户说的「让我选」在改写后就没了
+      # ——票 32 的现场：两条检索 query 都真召回了它，仍被闸拿掉，模型如实回「我没有这个工具」。
+      # 票 28 里 Ask 的 7 条误调全是「题面完整、不该反问」的题判的，而真实场景的输入本来就有模糊边界；
+      # TodoWrite 是 0 条误调，当初移出只是为了凑数。
+      #
+      # 代价：Ask 用错一次，这一轮会真的停下来等人（默认 900 秒，`claw4j.tools.ask.timeout-seconds`）。
+      # 关掉它的部署（`claw4j.tools.ask.enabled=false`）记得把名字从下面这行删掉，否则每轮一条告警。
+      pinned: [Read, Grep, Glob, AskUserQuestionTool, TodoWrite]
       # 类别（namespace）→ 工具名。不配就按名字前缀推导（github_issue_list -> github）。
       # 模型可以通过检索工具的 categoryFilter 收窄到一组；成形（>=2 个工具）的组会写进提示词。
       categories: {}

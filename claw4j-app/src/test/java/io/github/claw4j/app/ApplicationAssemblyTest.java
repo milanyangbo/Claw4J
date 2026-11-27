@@ -486,9 +486,14 @@ class ApplicationAssemblyTest {
      * <p>票 29 又把它从六个改回三个（ADR-0039）。这一改动最怕的不是"常驻少了"，而是
      * **能力被悄悄拿走**——所以下面多断一条：凡是从 {@code pinned} 移出的工具，{@code rules}
      * 里必须有人接着。没有这条，把名字从 yml 里删掉就等于删掉能力，而且不报错。
+     *
+     * <p>票 33（ADR-0043）把 {@code AskUserQuestionTool} 与 {@code TodoWrite} 加了回来：它们是控制类
+     * （这一轮怎么走），不是能力类，检索闸对它们不通——票 32 的现场里两条检索 query 都召回了
+     * {@code AskUserQuestionTool}，仍被闸按「检索词里没有触发词」拿掉。所以"移出的"从三个变回两个，
+     * 而这两个仍然必须有 rules 接着。
      */
     @Test
-    @DisplayName("工具面默认 auto 并按 10 滑档；只读三件套常驻，移出的三个由 rules 接住（票 06 / 10 / 29）")
+    @DisplayName("工具面默认 auto 并按 10 滑档；只读三件套 + 两件控制类常驻，移出的两个由 rules 接住（票 06 / 10 / 29 / 33）")
     void toolSurfaceDefaultsToAutoAndWrapsGrouping() {
         ToolSearchProperties properties = context.getBean(ToolSearchProperties.class);
 
@@ -498,23 +503,27 @@ class ApplicationAssemblyTest {
         assertThat(properties.revealBelow()).isEqualTo(10);
         assertThat(properties.pinned())
                 .as("只读三件套常驻：读、找、搜。它们没有「凑合」的余地——找不到就是找不到")
-                .containsExactly("Read", "Grep", "Glob");
+                .contains("Read", "Grep", "Glob");
+        assertThat(properties.pinned())
+                .as("两件控制类也常驻（票 33 / ADR-0043）：反问与记计划不是「能做什么」，"
+                        + "是「这一轮怎么走」，模型需要它们时不会先去检索一个反问工具")
+                .contains("AskUserQuestionTool", "TodoWrite");
         assertThat(properties.pinned())
                 .as("名单必须覆盖库里的只读三件套——名字来自库，与那个常量同源，不是另抄一份字面量")
                 .containsAll(AgentToolsAutoConfiguration.READ_ONLY_TOOL_NAMES);
 
         String execTool = ExecAutoConfiguration.TOOL_NAMES.getFirst();
         assertThat(properties.pinned())
-                .as("跑命令、看网页、记计划不再是基座（票 29）：它们对任何话题都能凑合，"
+                .as("跑命令、看网页不再是基座（票 29）：它们对任何话题都能凑合，"
                         + "常驻就等于默认把「顺手用一下」摆到眼前")
-                .doesNotContain(execTool, "WebFetch", "TodoWrite");
+                .doesNotContain(execTool, "WebFetch");
 
         Set<String> ruled = properties.rules().stream()
                 .flatMap(rule -> rule.tools().stream())
                 .collect(Collectors.toSet());
         assertThat(ruled)
-                .as("从常驻移出的三个，rules 里必须点名——否则就是悄悄拿走能力，还查不出来")
-                .contains(execTool, "WebFetch", "TodoWrite");
+                .as("从常驻移出的两个，rules 里必须点名——否则就是悄悄拿走能力，还查不出来")
+                .contains(execTool, "WebFetch");
         assertThat(ruled)
                 .as("rules 点名的工具都得真的在清单里：写错名字只打一行 WARN，评测里表现为「这条规则好像没生效」")
                 .isSubsetOf(context.getBean(ToolCatalog.class).names());

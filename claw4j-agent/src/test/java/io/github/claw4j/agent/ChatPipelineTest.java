@@ -248,6 +248,19 @@ class ChatPipelineTest {
     }
 
     @Test
+    @DisplayName("模型照抄框架那句超限原文时，也换成我们自己的话")
+    void frameworkLimitSentenceEchoedByTheModelIsStillReplaced() {
+        ChatClientAgentPort port = port(new FixedChatModel(
+                "Total tool call limit (6) exceeded for this turn. No further tool calls are allowed."));
+
+        OutboundMessage answer = port.reply(message("chat-cap-echo", "一直查"));
+
+        assertThat(answer.text())
+                .as("票 33 的现场就是这样：元数据没回来，模型把框架那句当自己的话吐了出来")
+                .isEqualTo(ChatClientAgentPort.TOOL_CALL_CAPPED);
+    }
+
+    @Test
     @DisplayName("鉴权放行后工具真的被调到，结果参与最终回答")
     void authorizedToolActuallyRunsInsideTheLoop() {
         AtomicInteger modelCalls = new AtomicInteger();
