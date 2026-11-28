@@ -265,6 +265,20 @@ class InjectedToolsAndSearchTest {
     }
 
     /** 真工具：描述多段、有必填与可选参数——签名与截断都靠它验。 */
+    @Test
+    @DisplayName("闸的判据：query 里直接写了工具名就算点名，不要求命中触发词")
+    void gateSeesTheToolNameInTheQuery() {
+        assertThat(GatedToolIndex.containsName("统计 bash 下的 md 文件", "Bash"))
+                .as("模型自己在 query 里写了 bash，就是它在说要这个工具")
+                .isTrue();
+        assertThat(GatedToolIndex.containsName("统计 md 文件数量", "Bash"))
+                .as("没点名、也没有触发词，就不算——它只是排在后面，不是消失")
+                .isFalse();
+        assertThat(GatedToolIndex.containsName("shell script 里有什么", "sh"))
+                .as("名字太短不参与，免得英文句子里到处撞")
+                .isFalse();
+    }
+
     static class MemoryTools {
 
         @Tool(name = "MemoryView", description = """

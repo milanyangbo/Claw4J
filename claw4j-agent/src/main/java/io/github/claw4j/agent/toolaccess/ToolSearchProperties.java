@@ -194,8 +194,9 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      *
      * @param pattern 匹配整句 query 的正则（{@code find}，不是整句相等），如 {@code 报销|发票|开票}
      * @param tools   命中后要置顶的工具名（{@code @Tool(name=…)} 的值），按此顺序排在最前
-     * @param gate    {@code true} 时这条规则反过来用：没命中就把 {@code tools} <b>从候选里拿掉</b>
-     *                （{@link GatedToolIndex}）。默认 {@code false}，只置顶不删——原有配置一行不用改
+     * @param gate    {@code true} 时这条规则只管 {@code tools} 这几个"对什么都能凑合"的工具
+     *                （{@link GatedToolIndex}）：命中提到最前，没命中让它们留在检索给的原位——
+     *                <b>不删任何一个候选</b>。默认 {@code false}，与普通规则的置顶完全一样
      */
     public record Rule(String pattern, List<String> tools, boolean gate) {
 

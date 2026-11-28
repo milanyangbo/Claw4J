@@ -839,18 +839,17 @@ class ToolGovernanceTest {
     // ---------------------------------------------------------------- 准入闸那一半（票 29 / ADR-0039）
 
     /**
-     * 通用工具的准入闸：问句没点名，它就不该出现在候选里。
+     * 通用工具的准入闸：点到了名就提到候选最前面，没点到名的留在原位——<b>一个都不删</b>。
      *
-     * <p>这一半和上面审批那一半问的是同一个问题的两端：审批管"调了之后要不要放行"，闸管
-     * "该不该出现在眼前"。票 28 量出来 240 条里误调 56 条，26 条集中在四个"对什么都能凑合"的
-     * 工具上——它们在候选里，模型就会顺手用一下，而审批拦不住这种"看着像在干活"的调用。
-     *
-     * <p>闸只负责**删**，不负责**排**：置顶是 {@code RuleToolIndex} 的活。两条各管一半，
-     * 用同一张配置表，所以断言要分开看——混在一起测，"删错了"与"没排对"分不出来。
+     * <p>2026-11-28 改的口径。以前是"没点名就删"，理由是票 28 量出来 240 条里 26 条误调集中在
+     * 四个"对什么都能凑合"的工具上。但"删"的判据是一张手写的触发词表（闭集）：用户写了
+     * 「用 bash 数一下 examples 下有多少个 .md 文件」，检索也确实召回了 {@code Bash}，
+     * 只因为表里没写 {@code bash}，它就被砍掉，模型只好拿 {@code Glob} 反复试到上限。
+     * 检索能召回就是检索给这句子下的结论，闸只该调名次，不该替检索否决用户。
      */
     @Test
-    @DisplayName("通用工具没被点名就不进候选；没标 gate 的规则一条都不删（票 29）")
-    void gateTakesGenericToolOutUnlessTheQuestionNamesIt() {
+    @DisplayName("通用工具点名就提到最前；没点名也留着（排在后面），一个候选都不删")
+    void gatePromotesNamedGenericToolWithoutDroppingAnything() {
         ToolSearchProperties.Rule bash = new ToolSearchProperties.Rule("跑|编译|测试", List.of("Bash"), true);
         ToolSearchProperties.Rule finance = new ToolSearchProperties.Rule("报销", List.of("finance_export"), false);
         ToolIndex index = GatedToolIndex.of(
@@ -858,42 +857,21 @@ class ToolGovernanceTest {
                 List.of(bash, finance));
 
         assertThat(names(index.search(request("讲个笑话"))))
-                .as("问句里没有「跑/编译/测试」：Bash 不该出现——它在候选里，模型就会拿它算个数")
-                .doesNotContain("Bash")
-                .contains("weather_now", "book_search");
+                .as("没点名：Bash 留在原地，不删——删掉它等于替检索否决这句话")
+                .hasSize(5)
+                .contains("Bash", "weather_now", "book_search");
         assertThat(names(index.search(request("在仓库里跑一遍单元测试"))))
-                .as("点名了就得给：这是「该调没调」那一侧的错，比误调更难被发现")
-                .contains("Bash");
+                .as("点名了就得排最前：这是「该调没调」那一侧的错，比误调更难被发现")
+                .startsWith("Bash");
         assertThat(names(index.search(request("这个月报销多少"))))
-                .as("没标 gate 的规则不进闸：finance_export 不会因为句子里没有触发词就消失——"
-                        + "既有那条「报销」配置的行为一行没变")
+                .as("没标 gate 的规则不进这一层：finance_export 的行为一行没变")
                 .contains("finance_export");
-    }
 
-    /**
-     * 兜底：过滤之后不足三个候选就按原名次补回来（门槛写在 `GatedToolIndex.MIN_CANDIDATES`）。
-     *
-     * <p>补回来看起来是"放水"，但空候选更糟：模型没得调时会自己编一个答案，或者干脆说
-     * "我没有这个能力"，两种都看不出是检索出了问题（票 28 那条空候选就是这么暴露的）。
-     */
-    @Test
-    @DisplayName("闸后不足三个候选就按原名次补回来；没配 gate 时不多包一层（票 29）")
-    void gateBackfillsSoTheModelAlwaysHasSomethingToChoose() {
-        ToolIndex three = GatedToolIndex.of(
-                new FixedIndex(List.of("Bash", "WebFetch", "book_search")),
-                List.of(new ToolSearchProperties.Rule("跑|编译|测试", List.of("Bash"), true),
-                        new ToolSearchProperties.Rule("网址|http", List.of("WebFetch"), true)));
-
-        List<String> after = names(three.search(request("讲个笑话")));
-        assertThat(after)
-                .as("两个被闸管着的都命不中，只剩 book_search 一个——补回到三个，且留下那个排在前面")
-                .hasSize(3)
-                .startsWith("book_search");
-
-        ToolSearchProperties.Rule finance = new ToolSearchProperties.Rule("报销", List.of("finance_export"), false);
-        assertThat(GatedToolIndex.of(three, List.of(finance)))
+        ToolSearchProperties.Rule onlyFinance =
+                new ToolSearchProperties.Rule("报销", List.of("finance_export"), false);
+        assertThat(GatedToolIndex.of(index, List.of(onlyFinance)))
                 .as("一条 gate 规则都没有时原样返回：空转一层只会让装配断言多包一层壳")
-                .isSameAs(three);
+                .isSameAs(index);
     }
 
     /** 假索引：固定返回几个名字，名次就是列表顺序。这一层要验的是"删/不删"，不是"像不像"。 */

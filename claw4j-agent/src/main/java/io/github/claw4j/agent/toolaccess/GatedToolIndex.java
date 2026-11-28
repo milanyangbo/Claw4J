@@ -1,5 +1,6 @@
 package io.github.claw4j.agent.toolaccess;
 
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.toolsearch.ToolIndex;
@@ -16,55 +17,39 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 /**
- * 通用工具的准入闸：配了 {@code gate} 的工具，问句没点名就不进候选。
+ * 通用工具的准入闸：配了 {@code gate} 的工具，问句点到了名就<b>提到候选最前面</b>。
  *
  * <p>它和 {@link RuleToolIndex} 是同一份配置的两个方向，所以放在一起看：
  * <ul>
- *   <li>{@link RuleToolIndex}：命中就把工具<b>提前</b>（正向断言）；</li>
- *   <li>这一层：没命中就把工具<b>拿掉</b>（反向断言）。</li>
+ *   <li>{@link RuleToolIndex}：命中就提前（正向断言）；</li>
+ *   <li>这一层：只对 {@code gate} 那几个工具判——命中提前，没命中留在原位（<b>不删</b>）。</li>
  * </ul>
- * 两件事必须用同一张表，否则会出现"规则把它排第一、闸又把它删了"这种自相矛盾的配置，
- * 而且从现象上只看得出"检索时好时坏"。
+ * 两件事必须用同一张表，否则会出现"规则把它排第一、闸又把它删了"这种自相矛盾的配置。
  *
- * <p><b>为什么需要这一层</b>（票 28 / 29，ADR-0039）：{@code Bash} / {@code WebFetch} /
- * {@code AskUserQuestionTool} / {@code Skill} 这类工具对任何话题都能"凑合"——模型不是在执行，
- * 是在拿它们算个数、上个网、问一句。票 28 的 240 条真实链路里误调 56 条，这四个占 26 条。
- * 检索只会做"按像不像排队、永远凑够 5 个"，所以光靠打分压不住它们：必须有一层说得清
- * "这句话压根没让你动这台机器"的闸。
+ * <p><b>它不删任何候选</b>（2026-11-28 改）。原来这一层是"没命中就从候选里拿掉"，理由是
+ * 票 28 / 29 的实测：{@code Bash} / {@code WebFetch} / {@code AskUserQuestionTool} / {@code Skill}
+ * 这类工具对任何话题都能"凑合"，240 条真实链路里误调 56 条，这四个占 26 条。但"拿掉"这个动作
+ * 的输入是一张手写的触发词表，而表是闭集：用户写了「用 bash 数一下 examples 下有多少个 .md 文件」，
+ * 检索也确实召回了 {@code Bash}，只因为表里没有 {@code bash} 这个词，它就被砍掉，
+ * 模型只好拿 {@code Glob} 反复试到上限。
  *
- * <p><b>它不做意图判断</b>：凭的是配置里那几个触发词（闭集），不是"这句是不是在闲聊"。
- * 票 22 删掉 {@code ChitchatToolIndex} 就是因为后者要在检索层猜意图；这一层不猜——问句里
- * 有没有"跑/编译/网址"是能逐条对数的事实，判错了也能从配置改回来。
+ * <p>检索能召回，就是检索对这句子给的结论；闸的职责是"调名次"，不是"替检索否决用户"。
+ * 所以现在只做一件事：命中的排前面，没命中的跟在后面，两路按名字去重合并——
+ * 截断时没命中的自然落到尾部，而不是凭空消失。
  *
- * <p><b>兜底优先于净化</b>：过滤后不足 {@value #MIN_CANDIDATES} 个候选时，按原来的名次把被拿掉的
- * 补回来。空候选比误调更难查——模型没得调时会自己编一个答案，或者干脆说"我没有这个能力"，
- * 两种都看不出是检索的问题（票 28 里那条空候选就是这么暴露的）。
+ * <p><b>判据看模型的检索词</b>（{@link ToolSearchRequest#query()}），里面出现工具名本身也算命中：
+ * 那是模型在说"我要这个工具"，比任何词表都准。
  *
- * <p>包在<b>最外层</b>（{@code Metered → Gated → Rule → 融合}）：它要看到置顶之后的最终顺序，
- * 否则"规则点名了却被后面的截断挤掉"这件事它看不见。
+ * <p>包在<b>最外层</b>（{@code Metered → Gated → Rule → 融合}）：它要看到置顶之后的最终顺序。
  */
 public final class GatedToolIndex implements ToolIndex {
 
     private static final Logger log = LoggerFactory.getLogger(GatedToolIndex.class);
 
-    /**
-     * 过滤后至少要剩这么多个候选，不够就补回被拿掉的。
-     *
-     * <p>取 3 而不是 5：留 5 就等于不闸（通用工具通常正好占满头几名）。3 是"还挑得动"与
-     * "别只剩一个别无选择"的折中，也是票面临时定的数，没有更细的依据。
-     */
-    static final int MIN_CANDIDATES = 3;
-
     private final ToolIndex delegate;
 
     /** 只留 {@code gate=true} 的那几条，编译一次。没配闸时整层不生效。 */
     private final List<Gate> gates;
-
-    /**
-     * 已经告警过的工具名。写错名字在这里只是"这条闸永远不命中"，与"这条闸没配"分不开，
-     * 所以要说一声——但不能每轮刷屏。
-     */
-    private final Set<String> warned = new LinkedHashSet<>();
 
     public GatedToolIndex(ToolIndex delegate, List<ToolSearchProperties.Rule> rules) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
@@ -125,35 +110,37 @@ public final class GatedToolIndex implements ToolIndex {
             return plain;
         }
 
+        // 两路按名字去重合并：点到了名的闸工具（提前）+ 检索给的其余候选（保持原序）。
+        // 一个都不删——被闸管着但没点名的只是排在后面，由 maxResults 自然截断。
         String query = toolSearchRequest.query();
-        List<ToolReference> kept = new ArrayList<>();
-        List<ToolReference> dropped = new ArrayList<>();
+        List<ToolReference> named = new ArrayList<>();
+        List<ToolReference> rest = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
         for (ToolReference reference : plain.toolReferences()) {
-            if (reference == null || reference.toolName() == null) {
+            if (reference == null || reference.toolName() == null || !seen.add(reference.toolName())) {
                 continue;
             }
-            if (isGated(reference.toolName()) && !allowed(reference.toolName(), query)) {
-                dropped.add(reference);
+            if (isGated(reference.toolName()) && namedIn(query, reference.toolName())) {
+                named.add(reference);
             }
             else {
-                kept.add(reference);
+                rest.add(reference);
             }
         }
-        if (dropped.isEmpty()) {
+        if (named.isEmpty()) {
             return plain;
         }
-
-        List<ToolReference> chosen = kept.size() >= MIN_CANDIDATES
-                ? kept : backfill(kept, dropped);
         if (log.isDebugEnabled()) {
-            log.debug("工具准入闸：query={} 拿掉={} 最终={}", query,
-                    dropped.stream().map(ToolReference::toolName).toList(),
-                    chosen.stream().map(ToolReference::toolName).toList());
+            log.debug("工具准入闸：query={} 提到前面={}", query,
+                    named.stream().map(ToolReference::toolName).toList());
         }
 
+        List<ToolReference> merged = new ArrayList<>(named.size() + rest.size());
+        merged.addAll(named);
+        merged.addAll(rest);
         return ToolSearchResponse.builder()
-                .toolReferences(chosen)
-                .totalMatches(chosen.size())
+                .toolReferences(merged)
+                .totalMatches(merged.size())
                 .searchMetadata(plain.searchMetadata())
                 .build();
     }
@@ -174,46 +161,50 @@ public final class GatedToolIndex implements ToolIndex {
     }
 
     /**
-     * 这个工具此刻放不放行：管它的那些闸里，<b>任意一条</b>命中就放行。
+     * 这句 query 点没点到这个工具的名：管它的闸里<b>任意一条</b>命中就算，或者 query 里直接写了工具名。
      *
      * <p>取"任意"不取"全部"：同一个工具被两条闸写着（比如一条管命令、一条管 git），
-     * 用户说了其中一种就该给。取"全部"会让它只在两种话同时出现时才出现，等于永远不给。
+     * 用户说了其中一种就该给；取"全部"会让它只在两种话同时出现时才给。
+     *
+     * <p>写名字也算，是因为触发词表是闭集、永远漏得掉某一种写法；而"query 里出现了 bash"
+     * 本身就是模型在说"我要这个工具"。
+     *
+     * @param query 模型给检索工具的那句 query，可为 null
+     * @param toolName 工具名
+     * @return 点到了就返回 true
      */
-    private boolean allowed(String toolName, String query) {
-        boolean gated = false;
+    private boolean namedIn(@Nullable String query, String toolName) {
+        if (query == null) {
+            return false;
+        }
+        if (containsName(query, toolName)) {
+            return true;
+        }
         for (Gate gate : this.gates) {
-            if (!gate.tools().contains(toolName)) {
-                continue;
-            }
-            gated = true;
-            if (query != null && gate.pattern().matcher(query).find()) {
+            if (gate.tools().contains(toolName) && gate.pattern().matcher(query).find()) {
                 return true;
             }
-        }
-        if (gated && this.warned.add(toolName) && log.isDebugEnabled()) {
-            // 只在 debug 说：这条闸没命中的常见原因是"用户确实没让它干活"，不是配置错。
-            log.debug("工具 {} 被准入闸拿掉：问句里没有它的触发词", toolName);
         }
         return false;
     }
 
     /**
-     * 按原来的名次把被拿掉的补回末尾，补到 {@link #MIN_CANDIDATES} 为止。
+     * 这段文字里有没有直接写出这个工具名（忽略大小写）。
      *
-     * <p>补在末尾而不是插回原位：留下的那几个仍然是"最像"的，通用工具只是"凑够数量"。
+     * <p>名字太短的（&lt;= 2 个字符）不参与判定：{@code sh}、{@code fs} 这种在英文句子里到处撞。
+     *
+     * @param text 待查的文字，可为 null
+     * @param toolName 工具名
+     * @return 出现了就返回 true
      */
-    private List<ToolReference> backfill(List<ToolReference> kept, List<ToolReference> dropped) {
-        List<ToolReference> merged = new ArrayList<>(kept);
-        for (ToolReference reference : dropped) {
-            if (merged.size() >= MIN_CANDIDATES) {
-                break;
-            }
-            merged.add(reference);
+    static boolean containsName(@Nullable String text, @Nullable String toolName) {
+        if (text == null || toolName == null || toolName.length() <= 2) {
+            return false;
         }
-        return merged;
+        return text.toLowerCase(java.util.Locale.ROOT).contains(toolName.toLowerCase(java.util.Locale.ROOT));
     }
 
-    /** 一条闸：命中 {@code pattern} 就放行 {@code tools}。 */
+    /** 一条闸：命中 {@code pattern} 就把 {@code tools} 提到前面。 */
     private record Gate(Pattern pattern, Set<String> tools, String source) {
     }
 }
