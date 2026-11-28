@@ -484,7 +484,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 不用换实例。
 验什么：到上限就停，且**报的是一句能看懂的话**，不是把半截结果当答案。
 
-- **判据**：先撞单工具——同一个工具第 9 次：`Tool call limit (8) exceeded for tool 'demo_now'. No further calls to this tool are allowed in this turn.`；再撞整轮——合计第 21 次：`Total tool call limit (20) exceeded for this turn. No further tool calls are allowed.`
+- **判据**：先撞单工具——同一个工具超出 `tool-call-limit-per-tool` 时：`Tool call limit (8) exceeded for tool 'demo_now'. No further calls to this tool are allowed in this turn.`；再撞整轮：`Total tool call limit (20) exceeded for this turn. No further tool calls are allowed.`。**括号里的数字跟着配置走**（默认 8 / 20，压低之后就是 2 / 3），别按默认值去比对。
 - **坑**：20 次在本机自然撞不到（一次派单也就 6–10 次），**别硬凑，把上限压下来验**：起实例加 `--claw4j.agent.tool-call-limit=3 --claw4j.agent.tool-call-limit-per-tool=2`，再让它"先数目录、再读两个文件"，两句话就能分别撞到这两个上限。两个数都可配，改完记得起回默认值。
 
 ## F. 模型层（`claw4j-model`）
@@ -533,8 +533,12 @@ for u in g1 g2 g3; do
 done
 ```
 
-- **判据**：三句都答得出，`model_not_found` 停在 **2**（前两句各打一次主家），`qwen/qwen-plus&outcome:ok` 是 **3**。
-- **坑**：冷却窗口是 **30 秒**，而本机一句就要 20–30 秒 —— 三句一旦问慢了，窗口已经过期，计数会到 3（不是缺陷）。所以这三句要连着发；想确认"真跳过了"就看第三句前后 `model_not_found` 有没有动，别指望日志里有行。
+- **判据**：每句都答得出，`qwen/qwen-plus&outcome:ok` 与句数相等，而 `model_not_found` **不按句数 1:1 涨**。
+  2026-11-28 实测：6 问涨 3（三次打主家、三次直接换备），**别指望"停在 2"**——原因见下面的坑。
+- **坑**：跳过靠"冷却 + 探测节流"两层（`ProbeThrottle`：冷却还剩 2 分钟以上就别探；两次探测至少隔 30 秒），
+  而 `model_not_found` 的冷却本身很短。所以**句与句挨得近就会跳过，隔半分钟以上就会各打一次**——
+  2026-11-28 实测 22:04:23 / 22:04:46 / 22:05:22 三问全打（间隔 23s、36s），随后并发两问却没打。
+  要看"真跳过"：并发发两问，看 `model_not_found` 只涨 1；日志里不写"跳过"，它只写"调用失败"。
 
 ### F4 白名单：把主模型排除 → 启动失败
 要换实例：`claw4j.model.policy.allow: [qwen/*]`。
@@ -686,8 +690,12 @@ curl -sN --noproxy '*' -X POST localhost:8080/api/chat/stream \
 ### H5 超时 / 断流：没有 `done`
 
 验什么：话说到一半没了，客户端只能靠缺 `done` 分辨。起实例加 `--claw4j.channel.http.stream-timeout=20s`，再让它写一篇长东西。
-- **判据**：**先有若干 `chunk`、然后连接断**、`done` 出现 0 次，总耗时贴着超时值，服务端 `AsyncRequestTimeoutException`（response committed，只有一行 Warning）。
-- **坑**：超时设太小（2 秒）时第一个 chunk 都还没出来 —— 拿到的是 0 chunk / 0 done，那不是"断流"，是"还没开始"。本机首字要 8–20 秒（工具目录大时更慢），所以要么把超时抬到 20 秒，要么让它写更长的东西。
+- **判据**：**连接被切断 + `done` 出现 0 次 + 总耗时贴着超时值**；有 `chunk` 更好，没有也算断流。
+  HTTP 层拿到的是 **503**（`{"status":503,"error":"Service Unavailable"}`），不是 200 的空体。
+- **坑**：`chunk` 为 0 只说明**首字还没到**，不说明"没断流"。2026-11-28 三次实测：20 秒超时 → 20 秒处 503、0 chunk；
+  40 秒超时 + 1200 字 → 21 秒正常跑完（799 chunk + 1 done，没触发）；40 秒超时 + 6000 字 → 41 秒处 503、0 chunk
+  （首字就超过 40 秒）。本机首字从 2 秒到 40 秒以上都出现过，**先跑一次看首字再定超时**；想要"先有 chunk 再断"，
+  得让回答本身比超时长。
 - **坑**：没有 `done` 的字不能当答案；"换家全失败""进程被杀"同形，客户端只认 `done`，不拿连接关闭当成功。
 
 ## I. 审计
@@ -987,7 +995,7 @@ PY
 | 注入（C5） | 抓 127.0.0.1 / 让它原样贴返回 | 拒 / 剥离 | 模型说"有标记"不算 |
 | 掉线/超时/熔断（E1–E3） | 停 MCP、睡 40 秒、连调多次 | 启动 DOWN→恢复；超时但连接在；限额提示 | 运行期不走退避；慢 ≠ 掉线 |
 | 模型装配（F1） | 起实例看那四行日志 | 窗口来自模型行，`route`=provider/model | 别拿会话配置的窗口当准 |
-| 换家与冷却（F2/F3） | 模型名写错，三句连着问 | `model_not_found` 停在 2，备用 3 次 ok | 30 秒冷却窗口一过就不跳了，计数会到 3 |
+| 换家与冷却（F2/F3） | 模型名写错，三句连着问 | 每句都答出、备用 ok 与句数相等 | `model_not_found` 不按句数 1:1 涨：挨着问会跳，隔半分钟各打一次 |
 | 白名单与形状（F4/F5） | 故意写错再启动 | 启动失败并点名 | 不是静默跳过 |
 | 缓存命中（F6） | 查 `kind:cache-read` | 有数或 404 | 404 不是坏事 |
 | 进度卡（G1） | 三步任务后查 `session_progress_cards` | `revision ≥ 2` + 状态推进 + 无 `activeForm` | 卡是给人看的，模型侧只有固定回话 |
@@ -996,7 +1004,7 @@ PY
 | 流式分帧（H1） | `/api/chat/stream`，curl 带 `-N` | 几十 chunk + 一个 done，拼起来是全文 | 不带 `-N` 看不出流 |
 | 命令走流式（H2） | 发 `/elevated` | 1 正文 + 1 done，`model.calls` 不涨 | 正文帧带 `finalChunk` 会丢正文 |
 | 工具走流式（H3） | 让它 Read 一个文件 | 工具计数 +1，流里无工具名/JSON | 长静默不是卡死 |
-| 忙与断流（H4/H5） | `lane-wait=0`、同一个 Chat-Id 并发两条；`stream-timeout=20s` 写长文 | 一条忙话 + done；先有 chunk 再断且没有 done | lane 按对话排，换 Chat-Id 就不冲突；超时太小连首字都等不到 |
+| 忙与断流（H4/H5） | `lane-wait=0`、同一个 Chat-Id 并发两条；`stream-timeout` 写长文 | 一条忙话 + done；连接断、没有 done、HTTP 503 | lane 按对话排，换 Chat-Id 就不冲突；chunk=0 是首字没到，不是没断流 |
 | 审计四问（I1/I2） | 跑一轮，按 `executionId` 查 | 四行倒序、eventType 四种、毫秒时间、无 `runId` | 空字段整格省掉；"我记了"不算 |
 | 审计参数与翻页（I3/I4） | 三种冲突、坏 cursor、`limit=2` | 三个 400；`nextCursor` 是字符串、不重叠 | 空页 ≠ 没有审计 |
 | 审计幂等（I5） | 同一来源键插两次 | `0 1` → `0 0`，having 为空 | 手插不涨 `duplicates` |
