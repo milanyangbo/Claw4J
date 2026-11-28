@@ -44,7 +44,7 @@
 
 ```bash
 set -a; . ./.env; set +a
-./mvnw -q -DskipTests package
+./mvnw -q -DskipTests clean package   # 必须带 clean：改了迁移/资源不 clean，旧的会被打进 fat jar
 
 java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --spring.profiles.active=local \
@@ -209,7 +209,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 - **判据**：列 `.md` → `Glob` +1 且文件名真存在；读开头六行 → `Read` +1 且逐字一致；refund → `Grep` +1 且匹配行搜得到；这页讲什么 → **`WebFetch` +1**，回来的是提炼过的话，不是 HTML 源码。`WebFetch` 不是常驻，是**按用户原话点亮**：话里有"网址/网页/链接/URL"就进清单，日志会打 `用户原话命中「网址|…」，这一轮直接给出：[WebFetch]`——**不必先检索**。**题目只能问"讲了什么"**——这工具是"抓回来让模型按 prompt 提炼"的，要求它"原样抄、不要总结"是让它做做不到的事，那种题面永远红，别写。
 - **坑（2026-11-28 实测，deepseek-flash；按审计与抓包还原过整条链）**：用户原话是「examples 里有没有提到 refund 的地方？把相关那几行发我。」——这一轮**一次检索都没发**，先调常驻的 `Glob`（成功），紧接着点了 `Bash(grep -rn -i refund …)`。`Bash` 不在这一轮披露的 12 个工具里，框架抛 `IllegalStateException: No ToolCallback found for tool name: Bash`，**整轮 500、回答是空的**；审计里 `Bash` 没有 `tool_action` 行（它根本没执行），`agent_run` 记 `failed`。
   它为什么改道：思维链写的是"Grep 可能跳过点目录，`.review/…` 在隐藏目录里"。**这个猜测是错的**——`GrepTool` / `GlobTool` 的 `isIgnoredPath` 只排 `.git/ node_modules/ target/ build/ .idea/ .vscode/ dist/ __pycache__/`，`.review/` 照样搜；而且这句问的是"内容里有没有"（`Glob` 只匹配文件名，本来就答不了），常驻的 `Grep` 一问就有：`grep -rl refund examples` 是那 5 个文件，`.review/refund-triage.properties` 文件名带 refund、内容里没有。
-  所以这条要分开看：**"Bash 该不该给"和"点名没披露的工具要不要 500"是两个问题**。前者按 ADR-0039 的闸判定（这句话里没有一个触发词），后者才是缺口。
+  所以这条要分开看：**"Bash 该不该给"和"点名没披露的工具要不要 500"是两个问题**。前者看检索有没有召回、规则有没有点名（2026-11-28 起不再有"没命中就删"的准入闸，触发词表只在命中时把工具提前）；后者才是缺口。
   **2026-11-28 已补**：`ToolCallBudget` 给 manager 挂了 `UndisclosedToolFallback`（占位回调，不是真工具），
   未披露的名字现在回一条工具结果——「不在这一轮的工具清单里…要就自己写 query 去 `toolSearchTool` 检索一次」——
   模型下一轮自己改道，不再 500。判据从"有没有异常栈"变成"回答里有没有出现「不在这一轮」这类转述，
@@ -313,18 +313,19 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: q1' \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Chat-Id: ask-1' \
   -d '{"text":"帮我部署，但我还没想好发生产还是预发——你给两个选项让我选，推荐预发，我选完你再动手。"}'
 
-curl -s --noproxy '*' 'localhost:8080/api/chat/questions' -H 'X-Claw4j-User: q1'
+curl -s --noproxy '*' 'localhost:8080/api/chat/questions' \
+  -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Chat-Id: ask-1'
 
 curl -s --noproxy '*' -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/api/chat/answer \
-  -H 'Content-Type: application/json' -H 'X-Claw4j-User: q1' \
+  -H 'Content-Type: application/json' -H 'X-Claw4j-User: q1' -H 'X-Claw4j-Chat-Id: ask-1' \
   -d '{"text":"2"}'
 ```
 
 - **判据**：`/questions` 里出现那道题（选项 2–4 个、推荐项排第一），`answer` 返 **204**，挂住那条才返回且回答里出现「预发」；不点名工具也一样。
-- **坑**：IM 上不用这两条命令，直接回一句就是答案（答复人须与提问人一致）；不想等 15 分钟就 `--claw4j.tools.ask.timeout-seconds=30`。它常驻（`pinned`），不必先检索；超时/被中断都按「没人答」继续，不会挂死。**子 Agent 里没有这个工具**（照 OpenClaw 只在主会话）：给它等于让父链陪着一个没人盯着的会话等满 900 秒；判断方法是看日志里那行 `委派 task 给 Subagent …：它这趟能用的工具是 […]` 有没有它。
+- **坑**：**三条命令必须带同一个 `X-Claw4j-Chat-Id`**（不带就各自落到新对话，`/questions` 永远空——2026-11-28 踩过）；第一句要等它真的调起工具（本机 15–25 秒，索引大时更久），别 5 秒就查表。IM 上不用这两条命令，直接回一句就是答案（答复人须与提问人一致）；不想等 15 分钟就 `--claw4j.tools.ask.timeout-seconds=30`。它常驻（`pinned`），不必先检索；超时/被中断都按「没人答」继续，不会挂死。**子 Agent 里没有这个工具**（照 OpenClaw 只在主会话）：给它等于让父链陪着一个没人盯着的会话等满 900 秒；判断方法是看日志里那行 `委派 task 给 Subagent …：它这趟能用的工具是 […]` 有没有它。
 
 ### B8 工具检索：翻到了没有、翻回来的是哪几个
 
@@ -481,8 +482,10 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ### E3 预算熔断：不是额度
 不用换实例。
-- **判据**：一轮 20 次（`claw4j.agent.tool-call-limit`，可调）报 `Total tool call limit (20) exceeded for this turn. No further tool calls are allowed.`；单工具 8 次（`claw4j.agent.tool-call-limit-per-tool`，可调）先撞：`Tool call limit (8) exceeded for tool 'demo_now'. No further calls to this tool are allowed in this turn.`。整轮默认 20 次，撞的是 `Total tool call limit (20) exceeded for this turn.`。
-- **坑**：撞总预算得换着工具调（本机 `demo_now` ×3 + `runtimeSnapshot` ×2 + `cronNext` ×1）；多区多窗写成一条 SQL。
+验什么：到上限就停，且**报的是一句能看懂的话**，不是把半截结果当答案。
+
+- **判据**：先撞单工具——同一个工具第 9 次：`Tool call limit (8) exceeded for tool 'demo_now'. No further calls to this tool are allowed in this turn.`；再撞整轮——合计第 21 次：`Total tool call limit (20) exceeded for this turn. No further tool calls are allowed.`
+- **坑**：20 次在本机自然撞不到（一次派单也就 6–10 次），**别硬凑，把上限压下来验**：起实例加 `--claw4j.agent.tool-call-limit=3 --claw4j.agent.tool-call-limit-per-tool=2`，再让它"先数目录、再读两个文件"，两句话就能分别撞到这两个上限。两个数都可配，改完记得起回默认值。
 
 ## F. 模型层（`claw4j-model`）
 
@@ -975,7 +978,7 @@ PY
 | 脚本（B4） | 用 `summarize` 处理 `sample.md` | 逐字相同 + `Bash ok` | 限制"三句以内"就验不了逐字 |
 | 子 Agent（B5） | 派 `weekly-digest` 写固定区间的周报 | 三区 + 185900 + `Task ok` | 白名单缺工具 → 首次委派才失败 |
 | 知识库（B6） | 条款细节 / 拼两份文档 / 查没有的数 | 数字出处都对；查不到说查不到 | 一个用户只问一条，别让记忆串了 |
-| 问人（B7） | 拿不定的事，让它给两个选项 | 挂起 → `answer` → 出现选项 | 题目没"让我选"就没工具；409=没在等 |
+| 问人（B7） | 拿不定的事，让它给两个选项 | 挂起 → `answer` → 出现选项 | 三条命令要同一个 `Chat-Id`，不然 `/questions` 永远空；409=没在等 |
 | 检索（B8） | 问一句该有工具的话，查 `tool.search.*` | `result=hit` +1，无 `miss`/`error` | 顶满 `max-results` ≠ 翻得准 |
 | 看不见（C1） | 画像收到 messaging，问会不会跑脚本 | 答"没有这个能力"，计数 404 | 这不是"被拒" |
 | 命令审批（C2） | 跑白名单外的命令再批 | `granted` + 计数涨 + 审计带编号 | 编号以库里为准 |
