@@ -53,9 +53,12 @@ claw4j:
         api-keys: [secret:deepseek_api_key]
         # 一行一个模型。context-window 是总窗口，压缩阈值按它算（ADR-0035）：
         # 它跟着模型走，降级到备模型之后用的就是备模型的窗口。
+        # id 用官方现名（deepseek-flash / deepseek-v4-pro）。`deepseek-chat` 是 flash 的旧别名，
+        # 带思考的那一档拿不到——它不返回 reasoning_content，遇到"资料里没有"这类台阶就直接收尾，
+        # 不会自己去检索工具目录。窗口 1M 也是 flash 的实际上限。
         models:
-          - id: ${DEEPSEEK_MODEL:deepseek-chat}
-            context-window: 65536
+          - id: ${DEEPSEEK_MODEL:deepseek-flash}
+            context-window: 1048576
       qwen:
         api: openai-completions
         base-url: ${QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
@@ -415,7 +418,7 @@ claw4j:
     #     deepseek:                 # 这个供应商的所有模型
     #       profile: messaging
     #       deny: [group:runtime]
-    #     deepseek/deepseek-chat:   # 只对这一个模型
+    #     deepseek/deepseek-flash:   # 只对这一个模型
     #       allow: [querySales]
     byProvider: {}
     #
