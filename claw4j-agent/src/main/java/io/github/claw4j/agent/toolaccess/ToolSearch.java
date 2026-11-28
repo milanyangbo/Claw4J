@@ -136,9 +136,9 @@ public final class ToolSearch {
         // 没配规则时原样返回 base：空转一层会让所有既有装配断言多包一层壳，收益是零。
         ToolIndex ranked = properties.rules().isEmpty()
                 ? base : new RuleToolIndex(base, properties.rules(), categories);
-        // 准入闸在规则层**外面**（票 29 / ADR-0039）：同一张规则表，两个方向——规则把命中的工具提前，
-        // 闸把没命中的通用工具拿掉。闸必须在最外，否则"规则刚把它置顶、截断又把它挤掉"这类结果它看不见；
-        // 它也要看到最终顺序，才能判断"过滤完还剩几个、要不要兜底补位"。
+        // 准入闸在规则层**外面**（票 29 / ADR-0039）：同一张规则表，规则层对所有规则置顶，
+        // 闸只对 gate 那几个再看一眼"检索词点到名没有"。2026-11-28 起它也不删候选、只调名次
+        // （以前"没命中就拿掉"，把用户点名要的工具也从结果里砍了）。
         // 没配 gate 规则时原样返回 gated==ranked，不多包一层。
         ToolIndex gated = GatedToolIndex.of(ranked, properties.rules());
 
