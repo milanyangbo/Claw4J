@@ -153,11 +153,39 @@ public final class RuleToolIndex implements ToolIndex {
             return null;
         }
         for (CompiledRule rule : this.rules) {
-            if (rule.pattern().matcher(query).find()) {
+            if (rule.pattern().matcher(query).find() || namesTool(query, rule.tools())) {
                 return rule;
             }
         }
         return null;
+    }
+
+    /**
+     * query 里有没有直接写出这条规则点名的工具（忽略大小写）。
+     *
+     * <p>为什么要这一条：正则是一张手写的闭集，永远漏得掉某一种说法。而"模型在检索词里写了
+     * {@code bash}"本身就是它在说"我要这个工具"，不需要任何词表覆盖。2026-11-28 的现场：
+     * 用户写「用 bash 数一下 examples 下有多少个 .md」，模型把 query 写成"统计 md 文件数量"，
+     * 触发词一条都不中，工具就没被提前——它明明已经点名了。
+     *
+     * <p>名字太短的（&lt;= 2 个字符）不参与：{@code sh}、{@code fs} 这种在英文句子里到处撞。
+     *
+     * @param query 模型这一轮写的检索词
+     * @param tools 规则点名的工具
+     * @return 写到其中一个就返回 true
+     */
+    static boolean namesTool(String query, List<String> tools) {
+        if (query == null || tools == null) {
+            return false;
+        }
+        String text = query.toLowerCase(java.util.Locale.ROOT);
+        for (String name : tools) {
+            if (name != null && name.length() > 2
+                    && text.contains(name.toLowerCase(java.util.Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

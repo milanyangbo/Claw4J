@@ -2,7 +2,6 @@ package io.github.claw4j.app;
 
 import io.github.claw4j.agent.AgentAutoConfiguration;
 import io.github.claw4j.agent.observability.MeteredToolIndex;
-import io.github.claw4j.agent.toolaccess.GatedToolIndex;
 import io.github.claw4j.agent.toolaccess.HybridToolIndex;
 import io.github.claw4j.agent.toolaccess.NamespacedToolIndex;
 import io.github.claw4j.agent.toolaccess.RuleToolIndex;
@@ -538,20 +537,8 @@ class ApplicationAssemblyTest {
                 .as("最外层是计量：包在里层记到的是收窄之前那一批，答不了「模型看到几个」")
                 .isInstanceOf(MeteredToolIndex.class);
         ToolIndex second = ((MeteredToolIndex) index).delegate();
-        // 票 29 的两层，顺序不能换：**闸在规则层外，规则层在融合外**。
-        // 闸要在最外，才能看到最终顺序、判「过滤完还剩几个、要不要兜底」；规则要在融合外，
-        // 否则融合会按 RRF 重排，"规则置顶"当场失效。先剥闸，再剥规则。
-        if (second instanceof GatedToolIndex gated) {
-            assertThat(properties.rules())
-                    .as("有闸层就得真配了 gate 规则：空白层只会让装配断言多包一层壳")
-                    .anyMatch(ToolSearchProperties.Rule::gate);
-            second = gated.delegate();
-        }
-        else {
-            assertThat(properties.rules())
-                    .as("配了 gate 规则却没包上闸层，等于闸被静默忽略——评测里表现为「怎么一点都没变」")
-                    .noneMatch(ToolSearchProperties.Rule::gate);
-        }
+        // 规则层必须在融合外：包在里面的话融合会按 RRF 重排，"规则置顶"当场失效。
+        // （票 29 曾在这层外面再包一道准入闸，2026-11-28 已删——它和规则层做的是同一件事。）
         if (second instanceof RuleToolIndex rule) {
             assertThat(properties.rules())
                     .as("有规则层就得真配了规则：空白层只会让既有装配断言多包一层壳，收益是零")

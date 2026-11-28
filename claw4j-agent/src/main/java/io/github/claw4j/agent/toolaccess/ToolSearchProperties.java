@@ -194,9 +194,10 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
      *
      * @param pattern 匹配整句 query 的正则（{@code find}，不是整句相等），如 {@code 报销|发票|开票}
      * @param tools   命中后要置顶的工具名（{@code @Tool(name=…)} 的值），按此顺序排在最前
-     * @param gate    {@code true} 时这条规则只管 {@code tools} 这几个"对什么都能凑合"的工具
-     *                （{@link GatedToolIndex}）：命中提到最前，没命中让它们留在检索给的原位——
-     *                <b>不删任何一个候选</b>。默认 {@code false}，与普通规则的置顶完全一样
+     * @param gate    {@code true} 表示这条规则管的是一个"通用 / 控制类"工具（Bash / WebFetch /
+     *                TodoWrite / AskUserQuestionTool）：除了在检索里置顶，披露层还会在**用户原话**
+     *                命中它时直接把这个工具放进这一轮的清单（票 34），不指望模型先想起来去检索。
+     *                默认 {@code false}，只参与检索置顶
      */
     public record Rule(String pattern, List<String> tools, boolean gate) {
 
@@ -205,10 +206,9 @@ public record ToolSearchProperties(Index index, int maxResults, Lucene lucene, M
          *
          * <p>抛在这里而不是等第一次检索：配置错要在启动时红，而不是在上线后表现为"这条规则好像没生效"。
          *
-         * <p><b>不要给它加一个两参的兼容构造器</b>：Spring Boot 绑 record 时只认唯一的那个构造器，
+         * <p><b>不要给它加兼容构造器</b>：Spring Boot 绑 record 时只认唯一的那个构造器，
          * 多一个就绑不上，报的还是"这些配置项没有绑定"（{@code UnboundConfigurationPropertiesException}），
-         * 指向 {@code rules[0].gate} 而不是构造器——2026-11-27 加 {@code gate} 时就踩过这一次。
-         * 不写 {@code gate} 的 YAML 会取 primitive 的默认值 {@code false}，本来就不需要兼容构造器。
+         * 指向具体字段而不是构造器——2026-11-27 加字段时就踩过这一次。
          */
         public Rule {
             if (pattern == null || pattern.isBlank()) {

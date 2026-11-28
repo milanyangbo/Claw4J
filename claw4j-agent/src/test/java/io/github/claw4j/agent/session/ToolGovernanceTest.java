@@ -2,7 +2,8 @@ package io.github.claw4j.agent.session;
 
 import io.github.claw4j.agent.audit.DecisionFacts;
 import io.github.claw4j.agent.audit.ToolCallAudit;
-import io.github.claw4j.agent.toolaccess.GatedToolIndex;
+import io.github.claw4j.agent.toolaccess.RuleToolIndex;
+import io.github.claw4j.agent.toolaccess.ToolCategories;
 import io.github.claw4j.agent.toolaccess.ToolSearchProperties;
 import io.github.claw4j.agent.audit.AuditAction;
 import io.github.claw4j.agent.audit.AuditErrorCode;
@@ -839,39 +840,46 @@ class ToolGovernanceTest {
     // ---------------------------------------------------------------- 准入闸那一半（票 29 / ADR-0039）
 
     /**
-     * 通用工具的准入闸：点到了名就提到候选最前面，没点到名的留在原位——<b>一个都不删</b>。
+     * 规则层：命中的规则把工具提到最前，其余候选一条不动——**两路去重合并，不删任何东西**。
      *
-     * <p>2026-11-28 改的口径。以前是"没点名就删"，理由是票 28 量出来 240 条里 26 条误调集中在
-     * 四个"对什么都能凑合"的工具上。但"删"的判据是一张手写的触发词表（闭集）：用户写了
-     * 「用 bash 数一下 examples 下有多少个 .md 文件」，检索也确实召回了 {@code Bash}，
-     * 只因为表里没写 {@code bash}，它就被砍掉，模型只好拿 {@code Glob} 反复试到上限。
-     * 检索能召回就是检索给这句子下的结论，闸只该调名次，不该替检索否决用户。
+     * <p>2026-11-28 之前这里外面还有一层准入闸（{@code GatedToolIndex}），"没命中就把通用工具
+     * 从候选里拿掉"。它和规则层做的是同一件事（命中置顶），却多了一个副作用：判据是手写的
+     * 触发词表（闭集）。用户写了「用 bash 数一下 examples 下有多少个 .md」，检索也确实召回了
+     * {@code Bash}，只因表里没有 {@code bash} 就被砍掉，模型只好拿 {@code Glob} 反复试到上限。
+     * 那一层已删，规则层是唯一入口：命中提前、写名字也算命中、其余原样保留。
      */
     @Test
-    @DisplayName("通用工具点名就提到最前；没点名也留着（排在后面），一个候选都不删")
-    void gatePromotesNamedGenericToolWithoutDroppingAnything() {
-        ToolSearchProperties.Rule bash = new ToolSearchProperties.Rule("跑|编译|测试", List.of("Bash"), true);
-        ToolSearchProperties.Rule finance = new ToolSearchProperties.Rule("报销", List.of("finance_export"), false);
-        ToolIndex index = GatedToolIndex.of(
-                new FixedIndex(List.of("Bash", "weather_now", "book_search", "sun_times", "finance_export")),
-                List.of(bash, finance));
+    @DisplayName("规则层：命中把工具提到最前；没命中原样透传，一条候选都不删")
+    void rulePromotesNamedToolWithoutDroppingAnything() {
+        ToolIndex index = ruleIndex(List.of(
+                new ToolSearchProperties.Rule("跑|编译|测试", List.of("Bash"), true),
+                new ToolSearchProperties.Rule("报销", List.of("finance_export"), false)));
+        index.indexTools(SESSION, List.of(
+                new ToolReference("Bash", 1.0, "跑命令"),
+                new ToolReference("weather_now", 1.0, "天气"),
+                new ToolReference("book_search", 1.0, "找书"),
+                new ToolReference("sun_times", 1.0, "日出"),
+                new ToolReference("finance_export", 1.0, "导出")));
 
         assertThat(names(index.search(request("讲个笑话"))))
-                .as("没点名：Bash 留在原地，不删——删掉它等于替检索否决这句话")
-                .hasSize(5)
-                .contains("Bash", "weather_now", "book_search");
+                .as("一条规则都不命中：原样透传，Bash 留在原地，谁也没被删")
+                .containsExactly("Bash", "weather_now", "book_search", "sun_times", "finance_export");
         assertThat(names(index.search(request("在仓库里跑一遍单元测试"))))
-                .as("点名了就得排最前：这是「该调没调」那一侧的错，比误调更难被发现")
+                .as("命中就提到最前，其余保持检索给的顺序")
+                .startsWith("Bash")
+                .hasSize(5);
+        assertThat(names(index.search(request("用 bash 数一下 examples 下有多少个 .md 文件"))))
+                .as("触发词一个不中，但 query 里写了 bash——点名也算命中")
                 .startsWith("Bash");
         assertThat(names(index.search(request("这个月报销多少"))))
-                .as("没标 gate 的规则不进这一层：finance_export 的行为一行没变")
-                .contains("finance_export");
+                .as("另一条规则同样生效")
+                .startsWith("finance_export");
+    }
 
-        ToolSearchProperties.Rule onlyFinance =
-                new ToolSearchProperties.Rule("报销", List.of("finance_export"), false);
-        assertThat(GatedToolIndex.of(index, List.of(onlyFinance)))
-                .as("一条 gate 规则都没有时原样返回：空转一层只会让装配断言多包一层壳")
-                .isSameAs(index);
+    private static ToolIndex ruleIndex(List<ToolSearchProperties.Rule> rules) {
+        return new RuleToolIndex(
+                new FixedIndex(List.of("Bash", "weather_now", "book_search", "sun_times", "finance_export")),
+                rules, ToolCategories.of(Map.of()));
     }
 
     /** 假索引：固定返回几个名字，名次就是列表顺序。这一层要验的是"删/不删"，不是"像不像"。 */

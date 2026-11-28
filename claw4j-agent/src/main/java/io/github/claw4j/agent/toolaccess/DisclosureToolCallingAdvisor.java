@@ -85,9 +85,9 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
     /**
      * "用户这么说，就把这几个工具给他"——{@code rules} 里标了 {@code gate: true} 的那几条（票 34）。
      *
-     * <p>与 {@code GatedToolIndex} 用的是同一份配置，但判据不同：那边看**模型改写的检索词**，
-     * 这边看**用户原话**。要两个都留，是因为它们堵的是两个不同的洞：模型搜了但被闸挡、
-     * 与模型压根不搜（用户点名它都断言"没有这个工具"）。
+     * <p>与 {@code RuleToolIndex} 用的是同一份配置，但判据不同：那边看**模型改写的检索词**，
+     * 这边看**用户原话**。要两个都留，是因为它们堵的是两个不同的洞：模型搜了、但那条规则的名字
+     * 没被它写进 query，与模型压根不搜（用户点名它都断言"没有这个工具"）。
      */
     private final List<Mention> mentionRules;
 
@@ -301,7 +301,7 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
      * 编译"按原话点亮"的规则：只取 {@code gate: true} 的那几条。
      *
      * <p>没标 gate 的规则不动——它们本来就由 {@code RuleToolIndex} 在检索里置顶，把它们也塞进清单
-     * 等于绕过检索，那是另一回事。正则写错在构造时抛，与 {@code GatedToolIndex} 同一个态度：
+     * 等于绕过检索，那是另一回事。正则写错在构造时抛，与 {@code RuleToolIndex} 同一个态度：
      * 别留到运行期被 catch 成一次空结果。
      *
      * @param rules 配置里的规则，可为 null

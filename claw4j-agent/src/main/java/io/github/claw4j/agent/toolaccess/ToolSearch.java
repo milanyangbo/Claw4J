@@ -136,11 +136,6 @@ public final class ToolSearch {
         // 没配规则时原样返回 base：空转一层会让所有既有装配断言多包一层壳，收益是零。
         ToolIndex ranked = properties.rules().isEmpty()
                 ? base : new RuleToolIndex(base, properties.rules(), categories);
-        // 准入闸在规则层**外面**（票 29 / ADR-0039）：同一张规则表，规则层对所有规则置顶，
-        // 闸只对 gate 那几个再看一眼"检索词点到名没有"。2026-11-28 起它也不删候选、只调名次
-        // （以前"没命中就拿掉"，把用户点名要的工具也从结果里砍了）。
-        // 没配 gate 规则时原样返回 gated==ranked，不多包一层。
-        ToolIndex gated = GatedToolIndex.of(ranked, properties.rules());
 
         // 这一层只回答"怎么把 query 变成候选"，不回答"这一轮该不该检索"（票 22）。
         // 撤掉 ChitchatToolIndex 的三条理由，都是事实：
@@ -151,10 +146,10 @@ public final class ToolSearch {
         //      模型该不该调）。我们选后者：检索层无条件给候选，克制的责任在模型。
         // 空 query 也不再挡：它和寒暄是同一类判断，留一条口子就等于留下"检索层判意图"的先例。
         //
-        // 票 29 的准入闸要跟上面那条③分清楚，否则会被当成"又把意图判断塞回检索层"：
-        // 它不判"这句是不是在闲聊"，只判"这句里有没有'跑/编译/网址'这些**能逐条对数**的词"。
+        // 规则层要跟上面那条③分清楚，否则会被当成"又把意图判断塞回检索层"：
+        // 它不判"这句是不是在闲聊"，只做"命中了就把它点名的工具提到最前"，一个候选都不删。
         // 触发词是配置，判错了改配置；而寒暄词表当年判的是"整句有没有意义"，没有可改的对象。
-        return gated;
+        return ranked;
     }
 
     /**
