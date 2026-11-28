@@ -409,6 +409,12 @@ docker exec claw4j-postgres psql -U claw4j -d claw4j \
 - **判据**：自批 → `403 self_approval`；不在 `approvers` → `403 not_approver`；不在通道白名单 → `401`；过 `ttl` → `409 expired`（行变 `expired` + `timeout`）。
 - **坑**：先判名单后判自批——名单外的人批自己的请求只会拿到 `not_approver`。
 - **坑**：清扫按 `claw4j.approval.sweep-interval`（默认 `PT1M`）落 `expired`，日志 `审批清扫：1 条超时未处理，已落成 expired`，但不通知那段对话。
+- **2026-11-28 实测（`--approval.ttl=60s --approval.sweep-interval=PT10S`，四条一次跑完）**：
+  发起人 `ethan`（在名单里）自批 → `403 self_approval`「这条请求是你自己提的」；
+  `t1` 发起、`sam2`（不在名单）批 → `403 not_approver`「你不在审批人名单里」；
+  `t9`（不在 `channel.http.users`）发对话与查审批 → 都是 `401`；
+  `t2` 发起后等 75 秒 → 库里 `status=expired`（`expires_at` 正好是 `requested_at + 60s`）→ `ethan` 再点 → `409 expired`「过期的批准不能补点」。
+- **坑**：`ttl` 一压到 60 秒，**造请求到点批之间就没多少余量**——一轮问答本身要 15–30 秒，慢一点就先变 `expired`、拿到的是 409 而不是 403。要验 403 那两条就把 `ttl` 留在默认 `10m`，只把 `ttl` 压小专门验 409。
 
 ### C4 普通工具要人批：`required-tools`
 要换实例：`claw4j.approval.required-tools` 按工具名，默认空。
@@ -448,6 +454,8 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 ### D1 语义缓存：命中时没有模型调用
 默认开着。同一句话问两次，第二次 `模型调用` 不涨、回答一字不差 = 命中；阈值 0.93。命中范围实测过三种：同一段对话、同一个人换 `Chat-Id`、换一个人 —— 三种都命中过。
 - **判据**：命中就看 `claw4j.model.calls` **不涨** + 回答一字不差；只像不算。两次请求挨得极近（前一次还没写回）时可能两次都不命中，那不是缺陷。验能力时第一行参数必须带 `--claw4j.advisor.cache.enabled=false`。
+- **前提**：要三样同时在——`qwen_api_key` 有真值（缓存挂在 `QwenModelCondition` 上，DeepSeek 没有 embedding 接口）、Redis 是**带 `search` 模块的** Redis Stack、`cache.enabled` 没被关。装配靠 `SemanticCacheAdvisor`，连不上 Redis 是**启动失败**，不是降级。
+- **2026-11-28 实测（不关缓存）**：`d1a` 问「1+1 等于几？只给数字」→ `model.calls = 1`；换人 `d1b` + 换 `Chat-Id` 问同一句 → 仍是 `1`，回答一字不差（`2 [1][2]…[10]`），两次 `executionId` 不同。查不到命中先看日志有没有 Redis 报错，别怀疑阈值。
 
 ### D2 种子日期：钉死在 2026-11，问"上周"必然空
 种子日期由 `V2__pin_seed_dates.sql` 写死成 **2026-11-02 ~ 2026-11-23**，不随建库日期变，重灌也不变。所以判据里那些数字（128400 / 74400 / 185900）永远对得上，不用每周重灌。
@@ -466,6 +474,8 @@ docker exec -i claw4j-postgres psql -U claw4j -d <临时库> \
 ### E1 MCP 掉线：启动时重连，运行期不重连
 不用换实例，手动 kill / 起 server。
 - **判据**：启动时连不上 → WARN `MCP server java-http 暂时不可用（… 连不上：Client failed to initialize …）`、状态行 `java-http → DOWN(15 秒后重试)`，应用照常起；起回后按 15 秒起、每次翻倍、封顶 10 分钟重连，日志 `第 N 次重试后恢复，工具 3 个`。
+- **2026-11-28 实测（不用手动 kill，控制启动顺序就行）**：8082 没起时直接起应用 → 22:32:56.216 那行 WARN + `MCP server 状态：demo → UP(工具 2 个)，java-http → DOWN(15 秒后重试)…`，`Started Claw4jApplication in 5.4s` 照常；
+  再起 8082 → 22:33:11.384 `MCP server java-http 第 1 次重试后恢复，工具 3 个`（正好 15 秒）。要验"翻倍、封顶 10 分钟"就得让它继续失败下去，本机不划算，只认第一次跳变。
 - **坑**：运行期 `kill` 掉 server，问一句拿 **500**（已知缺陷）；起回后第一句仍可能 500，第三句起稳；运行期不走退避，日志里没有 DOWN。
 
 ### E2 超时：慢不等于掉线
@@ -557,8 +567,9 @@ done
 curl -s --noproxy '*' 'localhost:9090/actuator/metrics/claw4j.model.tokens?tag=kind:cache-read'
 ```
 
-- **判据**：一次对话后就有数（本机 12416）；OpenAI 兼容侧读 `getCacheReadInputTokens()`，DeepSeek 侧读 `promptTokensDetails.cachedTokens()`。
-- **坑**：两边都取不到时什么都不记（不是记 0），所以这个指标 **404 是正常的**。
+- **判据**：一次对话后就有数（2026-11-28 实测 8832，`prompt` 12181 / `completion` 23）；OpenAI 兼容侧读 `getCacheReadInputTokens()`，DeepSeek 侧读 `promptTokensDetails.cachedTokens()`。**数值随前缀长度变，有数就算过**，别拿 12416 去比。
+- **坑**：两边都取不到时什么都不记（不是记 0），所以这个指标 **404 是正常的**。要让它出数得靠**服务端前缀缓存命中**——问一句新的、短的（"1+1 等于几"）大概率 404；同一前缀（同一段对话、同一份人设）连着问才是它涨的场景。
+- **别和 D1 混**：这个 `kind:cache-read` 指的是**模型侧的 prompt cache**，跟语义缓存（Redis）没有任何关系。语义缓存命中时这一轮压根没有模型调用，`cache-read` 也不会动。
 
 ## G. Agent 自管理
 要不要换实例：不用，接着标准实例；只有 G3 要换人设。
@@ -997,7 +1008,7 @@ PY
 | 模型装配（F1） | 起实例看那四行日志 | 窗口来自模型行，`route`=provider/model | 别拿会话配置的窗口当准 |
 | 换家与冷却（F2/F3） | 模型名写错，三句连着问 | 每句都答出、备用 ok 与句数相等 | `model_not_found` 不按句数 1:1 涨：挨着问会跳，隔半分钟各打一次 |
 | 白名单与形状（F4/F5） | 故意写错再启动 | 启动失败并点名 | 不是静默跳过 |
-| 缓存命中（F6） | 查 `kind:cache-read` | 有数或 404 | 404 不是坏事 |
+| 缓存命中（F6） | 查 `kind:cache-read` | 有数或 404 | 这是**模型侧前缀缓存**，跟语义缓存（D1）无关；新问必 404，同前缀连问才涨 |
 | 进度卡（G1） | 三步任务后查 `session_progress_cards` | `revision ≥ 2` + 状态推进 + 无 `activeForm` | 卡是给人看的，模型侧只有固定回话 |
 | 意图（G2） | 记「客户数」提醒，换 chat id 再问 | `fire_count` 1 → 冷却内仍 1 | 同一段对话凭上文就答，假过 |
 | 提示词预算（G3） | 3 万字人设起实例 | 一行 WARN、只一次、回答照常 | 先撞单段 20000，60000 是合计 |
