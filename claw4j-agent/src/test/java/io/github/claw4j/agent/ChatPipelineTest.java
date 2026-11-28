@@ -42,7 +42,9 @@ import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -163,6 +165,35 @@ class ChatPipelineTest {
 
         assertThat(tool.calls()).isEqualTo(ToolCallBudget.MAX_CALLS_PER_TOOL);
         assertThat(text).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("点名一个没披露的工具：不抛异常，回一条工具结果让模型自己改道")
+    void undisclosedToolNameBecomesAToolResult() {
+        RecordingTool tool = new RecordingTool("lookup", "128400");
+        AtomicInteger rounds = new AtomicInteger();
+        List<Message> secondRound = new ArrayList<>();
+        FixedChatModel model = new FixedChatModel(
+                prompt -> {
+                    if (rounds.getAndIncrement() == 0) {
+                        return requestTool("Bash", "{\"command\":\"ls examples\"}");
+                    }
+                    secondRound.addAll(prompt.getInstructions());
+                    return answer("改道后答完了");
+                },
+                List.of());
+
+        String text = port(model, List.of(tool)).reply(message("chat-ghost", "用 bash 数文件")).text();
+
+        assertThat(text).isEqualTo("改道后答完了");
+        assertThat(tool.calls()).as("没有对应的真实工具，谁都不该被执行").isZero();
+        List<ToolResponseMessage> toolMessages = secondRound.stream()
+                .filter(ToolResponseMessage.class::isInstance)
+                .map(ToolResponseMessage.class::cast)
+                .toList();
+        assertThat(toolMessages).as("模型拿到的是一条工具结果，不是异常").hasSize(1);
+        assertThat(toolMessages.get(0).getResponses().get(0).responseData())
+                .contains("不在这一轮的工具清单里");
     }
 
     @Test

@@ -72,7 +72,6 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
 
     private final ToolSearchProperties properties;
 
-    private final ToolCategories categories;
 
     /** 接在系统提示词后面的那段话（隐藏模式用；全塞模式不拼，见 {@link #initialize}）。 */
     private final String systemMessageSuffix;
@@ -99,7 +98,6 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
         super(toolCallingManager, toolExecutionEligibilityChecker, advisorOrder, conversationHistoryEnabled);
         this.toolIndex = Objects.requireNonNull(toolIndex, "toolIndex");
         this.properties = Objects.requireNonNull(properties, "properties");
-        this.categories = ToolCategories.of(properties.categories());
         this.systemMessageSuffix = systemMessageSuffix == null ? "" : systemMessageSuffix;
         this.mentionRules = compileMentions(properties.rules());
         this.toolSearchToolCallback = MethodToolCallbackProvider.builder()
@@ -182,8 +180,10 @@ public class DisclosureToolCallingAdvisor extends ToolCallingAdvisor {
         if (revealAll) {
             return request;
         }
-        String suffix = this.systemMessageSuffix
-                + this.categories.promptLine(references.stream().map(ToolReference::toolName).toList());
+        // 2026-11-28 起不再往 system 末尾拼"这个目录有哪些工具"的清单：那是部署快照（66 个就四百字，
+        // 接一批 MCP 就上千），而且把"存在"和"现在能调"混成一句——模型照着它点名一个没披露的工具，
+        // 执行层只会抛异常。实测关掉之后，天气与区间成交额两句都在第一步自己发起了检索。
+        String suffix = this.systemMessageSuffix;
         return request.mutate()
                 .prompt(request.prompt()
                         .copy()

@@ -109,7 +109,8 @@ public class SubagentAutoConfiguration {
                         auditSink, observations),
                 toolIndex,
                 toolSearch,
-                agent.toolCallLimit());
+                agent.toolCallLimit(),
+                agent.toolCallLimitPerTool());
         // 工具的形状（名字、TaskCall 的 schema、描述模板、按 subagent_type 分派、后台任务）
         // 全部来自库的 TaskTool；这里只填它留的两个扩展点：怎么按引用读定义、怎么执行一次委派。
         // kind 用我们自己的，于是库里那四份内置 Claude 定义不会被塞进来。

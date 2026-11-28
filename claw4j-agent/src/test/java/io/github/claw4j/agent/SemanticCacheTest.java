@@ -182,7 +182,7 @@ class SemanticCacheTest {
                 "---\nname: sales\ndescription: 销售助手\ntier: messaging\n"
                         + "glossary:\n  - glossary/metrics.md\n---\n\n你是销售侧的助手。\n");
 
-        AgentProperties properties = new AgentProperties(agents.toString(), "sales", null, null, 0, null);
+        AgentProperties properties = new AgentProperties(agents.toString(), "sales", null, null, 0, 0, null);
         AgentAutoConfiguration configuration = new AgentAutoConfiguration();
         PersonaCatalog.Catalog catalog = configuration.personaCatalog(properties);
         AgentContextAdvisor advisor = configuration.agentContextAdvisor(catalog, properties);
@@ -224,7 +224,7 @@ class SemanticCacheTest {
         Files.writeString(agents.resolve("sales.md"),
                 "---\nname: sales\ndescription: 销售助手\n---\n\n你是销售侧的助手。\n");
 
-        AgentProperties properties = new AgentProperties(agents.toString(), "sales", null, null, 0, null);
+        AgentProperties properties = new AgentProperties(agents.toString(), "sales", null, null, 0, 0, null);
         AgentAutoConfiguration configuration = new AgentAutoConfiguration();
         AgentContextAdvisor advisor = configuration.agentContextAdvisor(
                 configuration.personaCatalog(properties), properties);

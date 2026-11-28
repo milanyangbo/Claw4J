@@ -268,7 +268,7 @@ public class AgentAutoConfiguration {
         // ToolIndex 是必填参数而不是 ObjectProvider：循环只有"检索"这一种，
         // 没有索引时唯一的出路是启动就失败，而不是悄悄退化成全塞。
         var toolCallingAdvisor = ToolSearch.toolLoop(toolSearch, toolIndex, observations,
-                agent.toolCallLimit());
+                agent.toolCallLimit(), agent.toolCallLimitPerTool());
 
         return ChatClient.builder(chatModel, observations, null, null, toolCallingAdvisor)
                 // 没有 defaultSystem：系统提示词由 AgentContextAdvisor 每轮拼（人设 + 口径 + 现在的时间）。

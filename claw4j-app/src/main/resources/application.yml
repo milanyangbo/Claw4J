@@ -91,8 +91,12 @@ claw4j:
     zone: ${CLAW4J_AGENT_ZONE:Asia/Shanghai}
     # 同一段对话排队：等上一位说完最多这么久，超时回一句"现在有点忙"。0 = 不排队。
     lane-wait: 60s
-    # 一轮最多调几次工具，到点就停。它是熔断，不是 token 额度。
-    tool-call-limit: 6
+    # 一轮最多调几次工具（所有工具合计），到点就停。它是熔断，不是 token 额度。
+    # 20：一次多步任务（检索 → 派单 → 取数 → 读几个文件）实测 6–10 次，留一倍余量给自纠错。
+    tool-call-limit: 20
+    # 同一个工具一轮最多几次。8：模型会并行发批次（一次 3–4 个 Read、一次 2 个检索），
+    # 而计数按"每次调用"算，上限必须容得下一次正常批次。0 与不写都用默认值 8。
+    tool-call-limit-per-tool: 8
     # 一轮最多跑多久，到点就中止这一轮。工具次数管不住"某一次调用卡住"，由这条兜底。
     # 0 = 不设上限（长任务才这么配）。
     turn-timeout: 10m
@@ -224,7 +228,8 @@ claw4j:
       # 关掉它的部署（`claw4j.tools.ask.enabled=false`）记得把名字从下面这行删掉，否则每轮一条告警。
       pinned: [Read, Grep, Glob, AskUserQuestionTool, TodoWrite]
       # 类别（namespace）→ 工具名。不配就按名字前缀推导（github_issue_list -> github）。
-      # 模型可以通过检索工具的 categoryFilter 收窄到一组；成形（>=2 个工具）的组会写进提示词。
+      # 模型可以通过检索工具的 categoryFilter 收窄到一组。**不写进提示词**：曾经把全量分组
+      # 拼进 system 末尾当"能力清单"，结果是模型照着它点名没披露的工具；那份快照已删。
       categories: {}
       # 看不见的那部分用哪种索引找回来（见 README.md 的「身份与权限」，第 ② 条后面那段）。
       # 只有两档（票 21 收敛），两档都吃中文译文：

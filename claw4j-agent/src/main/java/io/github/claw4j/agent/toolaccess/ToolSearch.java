@@ -191,16 +191,37 @@ public final class ToolSearch {
      * @param toolIndex 检索索引，必填。没有索引时 {@code build()} 直接报错，而不悄悄退化成全塞
      * @param observations 观测注册表，透传给工具调用 manager
      * @param toolCallLimit 整轮工具调用上限，见 {@link ToolCallBudget#toolCallingManager}
+     * @param toolCallLimitPerTool 单工具调用上限；{@code <= 0} 用
+     *     {@link ToolCallBudget#MAX_CALLS_PER_TOOL}
      * @return 配好索引、候选数、提示词与熔断的 builder
+     */
+    /**
+     * 单工具上限取默认值时的那一版，给只关心整轮上限的调用方（测试、脚本）。
+     *
+     * @param properties 检索配置
+     * @param toolIndex 检索索引
+     * @param observations 观测注册表
+     * @param toolCallLimit 整轮上限
+     * @return 配好的 builder
      */
     public static DisclosureToolCallingAdvisor.Builder toolLoop(ToolSearchProperties properties,
                                                                     ToolIndex toolIndex,
                                                                     ObservationRegistry observations,
                                                                     int toolCallLimit) {
+        return toolLoop(properties, toolIndex, observations, toolCallLimit,
+                ToolCallBudget.MAX_CALLS_PER_TOOL);
+    }
+
+    public static DisclosureToolCallingAdvisor.Builder toolLoop(ToolSearchProperties properties,
+                                                                    ToolIndex toolIndex,
+                                                                    ObservationRegistry observations,
+                                                                    int toolCallLimit,
+                                                                    int toolCallLimitPerTool) {
         return DisclosureToolCallingAdvisor.builder()
                 .toolIndex(Objects.requireNonNull(toolIndex, "toolIndex"))
                 .properties(Objects.requireNonNull(properties, "properties"))
                 .systemMessageSuffix(SYSTEM_SUFFIX)
-                .toolCallingManager(ToolCallBudget.toolCallingManager(observations, toolCallLimit));
+                .toolCallingManager(ToolCallBudget.toolCallingManager(
+                        observations, toolCallLimit, toolCallLimitPerTool));
     }
 }

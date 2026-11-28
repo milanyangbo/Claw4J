@@ -96,6 +96,9 @@ public final class SubagentRunner implements SubagentExecutor {
     /** 一轮的工具调用熔断（与父同一份配置）：委派不该变成绕过它的口子。 */
     private final int toolCallLimit;
 
+    /** 单工具上限，同样与父共享一份配置。 */
+    private final int toolCallLimitPerTool;
+
     /**
      * 审计接缝（票 08）：子 Agent 那一轮的两条运行事件从这里写。
      *
@@ -110,7 +113,8 @@ public final class SubagentRunner implements SubagentExecutor {
                           Supplier<List<ToolCallback>> availableTools,
                           ToolIndex toolIndex,
                           ToolSearchProperties toolSearch,
-                          int toolCallLimit) {
+                          int toolCallLimit,
+                          int toolCallLimitPerTool) {
         this.model = Objects.requireNonNull(model, "model");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.audit = audit;
@@ -118,6 +122,29 @@ public final class SubagentRunner implements SubagentExecutor {
         this.toolIndex = Objects.requireNonNull(toolIndex, "toolIndex");
         this.toolSearch = Objects.requireNonNull(toolSearch, "toolSearch");
         this.toolCallLimit = toolCallLimit;
+        this.toolCallLimitPerTool = toolCallLimitPerTool;
+    }
+
+    /**
+     * 单工具上限取默认值时的那一版（测试与只关心整轮上限的调用方用）。
+     *
+     * @param model 模型
+     * @param observations 观测注册表
+     * @param audit 审计接缝，可为 null
+     * @param availableTools 子 Agent 能用的工具
+     * @param toolIndex 检索索引
+     * @param toolSearch 检索配置
+     * @param toolCallLimit 整轮上限
+     */
+    public SubagentRunner(ChatModel model,
+                          ObservationRegistry observations,
+                          ToolCallAudit audit,
+                          Supplier<List<ToolCallback>> availableTools,
+                          ToolIndex toolIndex,
+                          ToolSearchProperties toolSearch,
+                          int toolCallLimit) {
+        this(model, observations, audit, availableTools, toolIndex, toolSearch, toolCallLimit,
+                io.github.claw4j.agent.turn.ToolCallBudget.MAX_CALLS_PER_TOOL);
     }
 
     /**
@@ -229,7 +256,8 @@ public final class SubagentRunner implements SubagentExecutor {
                 tools.stream().map(callback -> callback.getToolDefinition().name()).toList());
 
         ChatClient subagent = ChatClient.builder(model, observations, null, null,
-                        ToolSearch.toolLoop(toolSearch, toolIndex, observations, toolCallLimit))
+                        ToolSearch.toolLoop(toolSearch, toolIndex, observations, toolCallLimit,
+                                toolCallLimitPerTool))
                 .defaultSystem(definition.systemPrompt())
                 .defaultToolCallbacks(tools)
                 // 记忆与脱敏都不进子链（理由见类注释）。原来还挂着一个鉴权 Advisor，它在
