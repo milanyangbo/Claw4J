@@ -781,9 +781,9 @@ class ModelAndToolSelectionTest {
                 .containsExactly(ToolSearch.TOOL_NAME);
     }
 
-    /** 分组：配置优先，没配按名字前缀。这是"通用"的那一半——代码里不认任何具体工具名。 */
+    /** 分组：配置优先，没配按名字前缀；分组那一段既要给收窄用法，也要给"有哪些能力"这个事实。 */
     @Test
-    @DisplayName("类别：配置优先，否则取名字第一个下划线之前的部分")
+    @DisplayName("类别：配置优先，否则取前缀；提示词里的分组按数量降序、单件点名、不截断")
     void categoryDefaultsToNamePrefix() {
         ToolCategories derived = ToolCategories.of(Map.of());
         assertThat(derived.categoryOf("github_issue_list")).isEqualTo("github");
@@ -796,6 +796,43 @@ class ModelAndToolSelectionTest {
         assertThat(configured.categoryOf("web_fetch"))
                 .as("配置里没有的仍然按前缀推导，不是「配了就全得配」")
                 .isEqualTo("web");
+
+        // ---- 分组那一段是"事实"不是"用法" ----
+        // 2026-11-28 的事故：原来按字母序列 10 组就停，weather / tv 正好被截掉，句子却读起来像穷举；
+        // 模型据此判"这个部署没有天气能力"，五次问天气零次检索。所以这里钉两件事：按数量降序
+        // （大组不会被挤到末尾）、单件工具也点名（"有这类东西"同样是事实）。
+        // 上限已经整个删掉了——任何上限都会有一组落在外面，而那对模型不可见。
+        List<String> tools = List.of(
+                "weather_now", "weather_forecast", "air_quality",
+                "tv_show_search", "tv_show_detail",
+                "art_search", "art_detail",
+                "book_search", "book_detail", "book_by_author",
+                "Read", "Grep", "bmi_calc");
+        String line = ToolCategories.of(Map.of()).promptLine(tools);
+
+        assertThat(line)
+                .as("按数量降序：3 个工具的那组排第一，而不是按字母序把 weather 沉到底")
+                .startsWith("这个目录这一刻有 13 个工具，按能力分成 4 组");
+        assertThat(line).contains("book(3)");
+        assertThat(line)
+                .as("排在后面的组必须原样出现：事故就是 weather 被字母序挤到砍线外")
+                .contains("weather(2)").contains("tv(2)");
+        assertThat(line)
+                .as("单件工具不是组，但「它存在」是事实，照样点名")
+                .contains("各自成一组：").contains("bmi_calc");
+        assertThat(line).doesNotContain("没列出来").doesNotContain("其余");
+
+        List<String> many = new ArrayList<>();
+        for (int i = 0; i < 30; i++) {
+            many.add("g" + i + "_a");
+            many.add("g" + i + "_b");
+        }
+        String allThirty = ToolCategories.of(Map.of()).promptLine(many);
+        assertThat(allThirty)
+                .as("30 组也全部列出来：没有上限，就没有「落在外面」这回事")
+                .contains("按能力分成 30 组")
+                .contains("g29(2)")
+                .doesNotContain("没列出来");
     }
 
     /** 检索时按组收窄：框架把这个参数交给模型了，但现成索引都不读它。 */
