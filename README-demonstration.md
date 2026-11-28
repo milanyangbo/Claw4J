@@ -39,7 +39,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --claw4j.channel.http.users='*' \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents \
-  --claw4j.agent.directory=examples/agents --claw4j.agent.default=ops \
+  --claw4j.agent.directory=examples/agents --claw4j.agent.default=assistant \
   --claw4j.tools.exec.security=allowlist --claw4j.tools.exec.ask=on-miss \
   --claw4j.tools.elevated.enabled=true --claw4j.tools.elevated.allow-from=d1,d2 \
   --claw4j.advisor.cache.enabled=false
@@ -275,7 +275,8 @@ curl -s -m 90 --noproxy '*' -X POST localhost:8080/api/chat \
 后面跟着口径（`sum(order_item.amount)`、排除 `CANCELLED`）与一句"环比这一版没查"。
 
 **怎么算过**：四个数与库对得上；`tool.calls{tool=Skill}` 涨；回答里出现口径那两行——
-**口径不是模型编的，是人设里那份 glossary 给的**（`examples/agents/glossary/metrics.md`）。
+**口径不是模型编的**：取哪张表、哪个字段、排除什么，写在 `querySales` 的工具描述里（schema）；
+一次统计该怎么描述（来源、统计方式、排除项、覆盖范围）由人设带的 `glossary/metrics.md` 定。
 
 ### B2 追问异常：本周为什么只有一单
 

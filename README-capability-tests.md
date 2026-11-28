@@ -52,12 +52,12 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
   --claw4j.channel.http.users='*' \
   --claw4j.skills.directory=examples/skills \
   --claw4j.subagents.directory=examples/subagents \
-  --claw4j.agent.directory=examples/agents --claw4j.agent.default=ops \
+  --claw4j.agent.directory=examples/agents --claw4j.agent.default=assistant \
   --claw4j.advisor.cache.enabled=false
 ```
 三个目录给全 A / B 才都验得了（`agent.directory` + `default` 是 A4、B3 的前提）；`users='*'` 是验收姿态，代价是 A3 验不了（另起一份收紧名单）；人设的 `tier` 会覆盖 `claw4j.tools.profile`，C1 要用没有 `agent.directory` 的实例。建议指向一次性库（`--spring.datasource.url=jdbc:postgresql://localhost:5432/<临时库>`），Flyway 从零建表，跑完 drop；别在有人用过的库上验索引。`dm-scope` 那行不可省：本机名单不止一人时 `dm-scope=main` 会把不同人的私聊并成一段上下文，启动校验直接拒（ADR-0032）。
 
-**A1 / B1 要业务数字，得用 `sales` 人设**：例子里 `default=ops` 是运维助手（进程状态、定时任务、审批），问销售成交额它会**正当拒绝**——回答是「当前环境里没有能查业务库的工具」，计数 404。那不是工具没接上，是人设不干这个（票 34 实测：同一句换成 `--claw4j.agent.default=sales` 就回数字，`querySales` +1）。验 A1 / B1 时把这一项换掉，A4 那几条再换回来。
+**A1 / B1 要业务数字，`assistant` 本来就覆盖**：以前这个部署分 `sales`（只做销售）与 `ops`（只做运维），问错门类会被**正当拒绝**，得换人设。现在只有一份通用人设（`tier: full`），业务数字与运维问题同一个入口。若仍答「当前环境里没有能查业务库的工具」，先查日志有没有 `工具检索 hybrid`——没有就是模型没检索，不是人设不干这个。
 
 **最后一行必须带**：语义缓存默认开，命中时这一轮没有模型调用、计数一次都不涨（而"不涨"正是主判据），还会缓存失败、Redis 连不上就起不来；关掉不影响知识库。这是验证姿态，不是配置建议。
 
@@ -208,9 +208,10 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
 
 ### B3 Skill：正文真的进了上下文吗
 
-验什么：`--claw4j.skills.directory=examples/skills` + 人设（`--claw4j.agent.directory=examples/agents --claw4j.agent.default=sales`）；还要有 `examples/skills/.review/weekly-sales.properties`（`status=approved`、`by`、`sha256`），没有就不加载。
+验什么：`--claw4j.skills.directory=examples/skills` + 人设（`--claw4j.agent.directory=examples/agents --claw4j.agent.default=assistant`）；还要有 `examples/skills/.review/weekly-sales.properties`（`status=approved`、`by`、`sha256`），没有就不加载。
 
-**题目要问"格式"，不要只问"口径"**：口径在 `examples/agents/glossary/metrics.md`（人设带进来的），Skill 正文开头就写明"那段由人设给出，这里不再抄一遍"——所以问口径它不必打开 Skill，`querySales` 加人设照样答得对。只有"按固定格式出周报"这类事（三区+合计的排版、末尾那句环比提示）才只在正文里。
+**题目要问"格式"，不要只问"口径"**：具体取数口径在 `querySales` 的工具描述里（schema 段），
+而 `glossary/metrics.md` 只定"一次统计要交代哪四件事"（2026-11-28 起它不再写具体指标），Skill 正文开头就写明"那段由人设给出，这里不再抄一遍"——所以问口径它不必打开 Skill，`querySales` 加人设照样答得对。只有"按固定格式出周报"这类事（三区+合计的排版、末尾那句环比提示）才只在正文里。
 
 ```bash
 curl -s --noproxy '*' -X POST localhost:8080/api/chat \
@@ -645,7 +646,7 @@ curl -s --noproxy '*' -X POST localhost:8080/api/chat \
   -H 'Content-Type: application/json' -H 'X-Claw4j-User: bg1' -H 'X-Claw4j-Chat-Id: big-1' \
   -d '{"text":"1+1 等于几？只给数字"}'
 ```
-起实例时把 0 节的 `--claw4j.agent.directory=examples/agents --claw4j.agent.default=ops` 换成 `bigagent` / `big`。
+起实例时把 0 节的 `--claw4j.agent.directory=examples/agents --claw4j.agent.default=assistant` 换成 `bigagent` / `big`。
 - **判据**：日志一行 `提示词超预算已截断：22479 → 20106 字符（上限 60000），稳定段 20000 字符`；回答仍是 `2`；换用户再问不刷第二行。
 - **坑**：先撞的是单段 20000，括号里的 60000 是合计上限；回答里的"内容不全"是截断的固定提示，正常。
 

@@ -438,8 +438,9 @@ claw4j:
 **它们不是工具**：`Skill` 把正文（含脚本路径）交给模型，模型再用 `Bash` 跑
 `bash <技能目录>/scripts/run.sh <参数>`。所以每条要涨两个计数：`hit Skill` 与 `hit Bash`。
 
-**这一节要 `full` 档**：`--claw4j.agent.default=ops`（`tier: full`）。`Bash` 与 `Skill` 都属
-`coding`，用 `sales` 那个人设（`tier: messaging`）跑会看到"没有这个工具"——那不是缺陷，是档位在起作用。
+**这一节要 `full` 档**：`--claw4j.agent.default=assistant`（`tier: full`）。`Bash` 与 `Skill` 都属
+`coding`，拿一份 `tier: messaging` 的人设去跑会看到"没有这个工具"——那不是缺陷，是档位在起作用。
+（2026-11-28 起示例目录只有一份 `assistant`，就是 `full` 档；要验档位本身，临时写一份 `messaging` 的人设即可。）
 
 | # | 技能 | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- | --- | --- |
@@ -453,7 +454,7 @@ claw4j:
 工具名 `Task`，入参是库的 `TaskCall`：`subagent_type`（派谁）+ `prompt`（让它做什么），
 要后台跑再加 `run_in_background: true`，之后用 `TaskOutput` 拿结论。每个子 Agent 的白名单
 （它能用哪些工具）不同，要逐个派。
-**这一节要 `full` 档**（`--claw4j.agent.default=ops`）：`Task` 属 `coding`，`sales` 那个人设看不到它。
+**这一节要 `full` 档**（`--claw4j.agent.default=assistant`）：`Task` 属 `coding`，`messaging` 档的人设看不到它；现在目录里唯一的 `assistant` 就是 `full`，能看见。
 
 | # | 子 Agent | 测什么功能 | 接口调用 | 通过标准 |
 | --- | --- | --- | --- | --- |
@@ -741,7 +742,7 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 ## 2026-11-18 全量真跑记录（ADR-0030 改完后的第一次）
 
 跑法：`--spring.profiles.active=local --claw4j.advisor.cache.enabled=false`，三个目录给全，
-人设 `--claw4j.agent.default=ops`（full 档）。每条换一个用户，避免会话记忆把上一轮结论带进来。
+人设 `--claw4j.agent.default=assistant`（full 档）。每条换一个用户，避免会话记忆把上一轮结论带进来。
 
 | 节 | 结果 | 备注 |
 | --- | --- | --- |
@@ -766,4 +767,4 @@ java -jar claw4j-app/target/claw4j-app-0.1.0-SNAPSHOT.jar \
 1. **MCP 档位登记是快照**：`java-http` 启动时 DOWN，重连成功后它的三个工具没有画像登记，
    清单组装处直接抛 `工具 X 没有声明能力画像` → **每一轮对话 500**。改成活视图（`LiveMcpTiers`），
    加了 `McpToolTest#tierRegistryAnswersForToolsThatAppearedLater` 钉住。
-2. **`sales` 人设看不到 `Bash` 与 `Task`**：不是缺陷，是 `tier: messaging` 在起作用；§5/§6 已写明要 `full` 档。
+2. **`messaging` 档的人设看不到 `Bash` 与 `Task`**：不是缺陷，是档位在起作用；§5/§6 已写明要 `full` 档。

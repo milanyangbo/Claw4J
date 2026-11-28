@@ -276,11 +276,13 @@ skills/
 
 ```text
 agents/
-  sales.md              # 一个人设
-  ops.md                # 另一个
+  assistant.md          # 通用企业助理（full 档）
   glossary/
     metrics.md          # 口径，被几份人设共同引用
 ```
+
+示例目录刻意只放一份：多份人设的价值在"同一个 jar 按部署换身份"，不在示例里凑数。
+真要拆专职助手（只做销售、只做运维），加一份 md 即可，`default` 指向它就行。
 
 ```markdown
 ---
